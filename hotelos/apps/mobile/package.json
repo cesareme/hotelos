@@ -1,0 +1,32 @@
+{
+  "name": "@hotelos/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "main": "node_modules/expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "ios": "expo run:ios",
+    "android": "expo run:android",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^15.0.0",
+    "@hotelos/integrations": "workspace:*",
+    "@hotelos/product": "workspace:*",
+    "@hotelos/shared": "workspace:*",
+    "@hotelos/ui": "workspace:*",
+    "expo": "^53.0.0",
+    "expo-dev-client": "^5.0.0",
+    "expo-status-bar": "^2.2.0",
+    "lucide-react-native": "^0.511.0",
+    "react": "^19.0.0",
+    "react-native": "^0.79.0",
+    "react-native-safe-area-context": "^5.4.0",
+    "react-native-svg": "^15.11.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "^5.8.0"
+  }
+}

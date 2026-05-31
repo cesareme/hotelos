@@ -1,0 +1,388 @@
+/* ============================================================
+   HotelOS Cocoa Edition — Design Tokens
+   Generated from docs/cocoa-design/SPEC-tokens.md
+   Namespace: --cocoa-*
+   Two appearance scopes:
+     :root                          → light defaults
+     :root[data-theme='dark']       → dark overrides (forced)
+     @media (prefers-color-scheme)  → dark when OS prefers it and user has not forced light
+   ============================================================ */
+
+:root {
+  color-scheme: light;
+
+  /* ============================================================
+     1. COLORS — Light defaults
+     ============================================================ */
+
+  /* Labels — AppKit label opacities on black */
+  --cocoa-label:                rgb(0 0 0 / 0.85);
+  --cocoa-label-secondary:      rgb(0 0 0 / 0.50);
+  --cocoa-label-tertiary:       rgb(0 0 0 / 0.26);
+  --cocoa-label-quaternary:     rgb(0 0 0 / 0.10);
+
+  /* Backgrounds */
+  --cocoa-background-window:    #ECECEC;
+  --cocoa-background-content:   #FFFFFF;
+  --cocoa-background-sidebar:   #E8E8E8;
+  --cocoa-background-toolbar:   rgb(246 246 246 / 0.72);
+  --cocoa-background-control:   #FFFFFF;
+  --cocoa-background-selection: #0064E1;
+
+  /* Separators */
+  --cocoa-separator:            rgb(0 0 0 / 0.10);
+  --cocoa-separator-opaque:     #C6C6C8;
+
+  /* Accent — controlAccentColor (Apple Blue / Sequoia) */
+  --cocoa-accent:               #0064E1;
+  --cocoa-accent-hover:         #0055C4;
+  --cocoa-accent-pressed:       #0047A6;
+  --cocoa-accent-contrast:      #FFFFFF;
+
+  /* Status — Sequoia system tints */
+  --cocoa-success:              #28A745;
+  --cocoa-warning:              #FF9500;
+  --cocoa-danger:               #FF3B30;
+  --cocoa-info:                 #007AFF;
+
+  /* Focus ring — keyboardFocusIndicatorColor */
+  --cocoa-focus-ring:           rgb(0 100 225 / 0.50);
+
+  /* Find highlight */
+  --cocoa-find-highlight:       #FFFF00;
+
+  /* ============================================================
+     2. TYPOGRAPHY
+     ============================================================ */
+
+  /* Family stacks */
+  --cocoa-font:
+    "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont,
+    "Helvetica Neue", "Inter", "Segoe UI", Roboto, sans-serif;
+
+  --cocoa-font-family:
+    "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont,
+    "Helvetica Neue", "Inter", "Segoe UI", Roboto, sans-serif;
+
+  --cocoa-font-display:
+    "SF Pro Display", system-ui, -apple-system, BlinkMacSystemFont,
+    "Helvetica Neue", "Inter", "Segoe UI", Roboto, sans-serif;
+
+  --cocoa-font-mono:
+    "SF Mono", ui-monospace, "Menlo", "Monaco",
+    "JetBrains Mono", "Cascadia Code", Consolas, monospace;
+
+  --cocoa-font-rounded:
+    "SF Pro Rounded", system-ui, -apple-system, "Nunito", sans-serif;
+
+  /* Sizes — macOS HIG defaults */
+  --cocoa-fs-large-title: 26px;
+  --cocoa-fs-title-1:     22px;
+  --cocoa-fs-title-2:     17px;
+  --cocoa-fs-title-3:     15px;
+  --cocoa-fs-headline:    13px;
+  --cocoa-fs-body:        13px;
+  --cocoa-fs-callout:     12px;
+  --cocoa-fs-subheadline: 11px;
+  --cocoa-fs-footnote:    11px;
+  --cocoa-fs-caption:     10px;
+
+  /* Line heights */
+  --cocoa-lh-large-title: 32px;
+  --cocoa-lh-title-1:     26px;
+  --cocoa-lh-title-2:     22px;
+  --cocoa-lh-title-3:     20px;
+  --cocoa-lh-headline:    16px;
+  --cocoa-lh-body:        16px;
+  --cocoa-lh-callout:     15px;
+  --cocoa-lh-subheadline: 14px;
+  --cocoa-lh-footnote:    13px;
+  --cocoa-lh-caption:     13px;
+
+  /* Weights */
+  --cocoa-fw-regular:   400;
+  --cocoa-fw-medium:    500;
+  --cocoa-fw-semibold:  600;
+  --cocoa-fw-bold:      700;
+
+  /* Tracking */
+  --cocoa-tracking-tight:  -0.011em;
+  --cocoa-tracking-normal:  0;
+  --cocoa-tracking-wide:    0.012em;
+
+  /* Numeric feature recipes */
+  --cocoa-font-numeric-tabular: "tnum" 1, "lnum" 1;
+  --cocoa-font-numeric-old:     "onum" 1;
+  --cocoa-font-confirmation:    "tnum" 1, "ss01" 1;
+  --cocoa-font-smallcaps:       "smcp" 1, "c2sc" 1;
+
+  /* ============================================================
+     3. SPACING — 4pt grid
+     ============================================================ */
+  --cocoa-space-1: 4px;
+  --cocoa-space-2: 8px;
+  --cocoa-space-3: 12px;
+  --cocoa-space-4: 16px;
+  --cocoa-space-5: 24px;
+  --cocoa-space-6: 32px;
+  --cocoa-space-7: 48px;
+  --cocoa-space-8: 64px;
+
+  /* ============================================================
+     4. RADII
+     ============================================================ */
+  --cocoa-radius-sm:   4px;
+  --cocoa-radius-md:   8px;
+  --cocoa-radius-lg:  12px;
+  --cocoa-radius-xl:  16px;
+  --cocoa-radius-full: 9999px;
+
+  /* ============================================================
+     5. SHADOWS — Cocoa depth model (ambient + edge ring)
+     ============================================================ */
+  --cocoa-shadow-control:
+    0 1px 0 rgb(0 0 0 / 0.05),
+    0 1px 2px rgb(0 0 0 / 0.08);
+
+  --cocoa-shadow-popover:
+    0 0 0 1px rgb(0 0 0 / 0.08),
+    0 8px 16px rgb(0 0 0 / 0.12),
+    0 2px 4px rgb(0 0 0 / 0.08);
+
+  --cocoa-shadow-window:
+    0 0 0 1px rgb(0 0 0 / 0.10),
+    0 24px 48px rgb(0 0 0 / 0.18),
+    0 2px 6px rgb(0 0 0 / 0.10);
+
+  --cocoa-shadow-modal:
+    0 0 0 1px rgb(0 0 0 / 0.12),
+    0 48px 96px rgb(0 0 0 / 0.28),
+    0 8px 16px rgb(0 0 0 / 0.14);
+
+  /* ============================================================
+     6. MOTION
+     ============================================================ */
+  --cocoa-duration-fast:  100ms;
+  --cocoa-duration-base:  200ms;
+  --cocoa-duration-slow:  400ms;
+
+  --cocoa-ease-out:     cubic-bezier(0.2, 0, 0, 1);
+  --cocoa-ease-in-out:  cubic-bezier(0.4, 0, 0.2, 1);
+  --cocoa-ease-spring:  cubic-bezier(0.5, 1.5, 0.5, 1);
+  --cocoa-ease-bouncy:  cubic-bezier(0.34, 1.56, 0.64, 1.0);
+  --cocoa-ease-default: cubic-bezier(0.25, 0.1, 0.25, 1.0);
+
+  /* ============================================================
+     7. MATERIALS — backdrop-filter recipes (NSVisualEffectView)
+     ============================================================ */
+
+  /* Toolbar / titlebar */
+  --cocoa-material-toolbar-bg:    rgb(246 246 246 / 0.72);
+  --cocoa-material-toolbar-blur:  saturate(180%) blur(20px);
+
+  /* Sidebar */
+  --cocoa-material-sidebar-bg:    rgb(232 232 232 / 0.78);
+  --cocoa-material-sidebar-blur:  saturate(180%) blur(30px);
+
+  /* Popover / menu / combobox */
+  --cocoa-material-popover-bg:    rgb(255 255 255 / 0.78);
+  --cocoa-material-popover-blur:  saturate(180%) blur(24px);
+
+  /* HUD */
+  --cocoa-material-hud-bg:        rgb(40 40 40 / 0.78);
+  --cocoa-material-hud-blur:      saturate(180%) blur(30px);
+  --cocoa-material-hud-color:     rgb(255 255 255 / 0.95);
+
+  /* Convenience combined */
+  --cocoa-material-toolbar: var(--cocoa-material-toolbar-blur);
+  --cocoa-material-sidebar: var(--cocoa-material-sidebar-blur);
+  --cocoa-material-popover: var(--cocoa-material-popover-blur);
+  --cocoa-material-hud:     var(--cocoa-material-hud-blur);
+
+  /* ============================================================
+     8. Z-INDEX SCALE
+     ============================================================ */
+  --cocoa-z-base:     0;
+  --cocoa-z-sticky:   100;
+  --cocoa-z-toolbar:  200;
+  --cocoa-z-sidebar:  300;
+  --cocoa-z-dropdown: 400;
+  --cocoa-z-popover:  500;
+  --cocoa-z-sheet:    600;
+  --cocoa-z-modal:    700;
+  --cocoa-z-toast:    800;
+  --cocoa-z-tooltip:  900;
+}
+
+/* ============================================================
+   DARK — explicit override via data-theme="dark"
+   ============================================================ */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* Labels — AppKit label opacities on white */
+  --cocoa-label:                rgb(255 255 255 / 0.85);
+  --cocoa-label-secondary:      rgb(255 255 255 / 0.55);
+  --cocoa-label-tertiary:       rgb(255 255 255 / 0.25);
+  --cocoa-label-quaternary:     rgb(255 255 255 / 0.10);
+
+  /* Backgrounds */
+  --cocoa-background-window:    #323232;
+  --cocoa-background-content:   #1E1E1E;
+  --cocoa-background-sidebar:   #2A2A2A;
+  --cocoa-background-toolbar:   rgb(40 40 40 / 0.72);
+  --cocoa-background-control:   #3A3A3C;
+  --cocoa-background-selection: #0A84FF;
+
+  /* Separators */
+  --cocoa-separator:            rgb(255 255 255 / 0.10);
+  --cocoa-separator-opaque:     #38383A;
+
+  /* Accent */
+  --cocoa-accent:               #0A84FF;
+  --cocoa-accent-hover:         #2E95FF;
+  --cocoa-accent-pressed:       #006FE0;
+  --cocoa-accent-contrast:      #FFFFFF;
+
+  /* Status — dark variants */
+  --cocoa-success:              #30D158;
+  --cocoa-warning:              #FF9F0A;
+  --cocoa-danger:               #FF453A;
+  --cocoa-info:                 #0A84FF;
+
+  /* Focus */
+  --cocoa-focus-ring:           rgb(10 132 255 / 0.60);
+
+  /* Find highlight */
+  --cocoa-find-highlight:       #FFCC00;
+
+  /* Shadows — dark mode multiplies opacity (~3-4x) */
+  --cocoa-shadow-control:
+    0 1px 0 rgb(0 0 0 / 0.40),
+    0 1px 2px rgb(0 0 0 / 0.50);
+
+  --cocoa-shadow-popover:
+    0 0 0 1px rgb(0 0 0 / 0.60),
+    0 8px 16px rgb(0 0 0 / 0.45),
+    0 2px 4px rgb(0 0 0 / 0.30);
+
+  --cocoa-shadow-window:
+    0 0 0 1px rgb(0 0 0 / 0.70),
+    0 24px 48px rgb(0 0 0 / 0.55),
+    0 2px 6px rgb(0 0 0 / 0.40);
+
+  --cocoa-shadow-modal:
+    0 0 0 1px rgb(0 0 0 / 0.80),
+    0 48px 96px rgb(0 0 0 / 0.70),
+    0 8px 16px rgb(0 0 0 / 0.45);
+
+  /* Materials — dark tints */
+  --cocoa-material-toolbar-bg:  rgb(40 40 40 / 0.72);
+  --cocoa-material-sidebar-bg:  rgb(42 42 42 / 0.78);
+  --cocoa-material-popover-bg:  rgb(48 48 48 / 0.85);
+  --cocoa-material-hud-bg:      rgb(20 20 20 / 0.78);
+  --cocoa-material-hud-color:   rgb(255 255 255 / 0.95);
+}
+
+/* ============================================================
+   DARK — OS preference (only when user hasn't forced light)
+   Mirrors :root[data-theme="dark"] block.
+   ============================================================ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --cocoa-label:                rgb(255 255 255 / 0.85);
+    --cocoa-label-secondary:      rgb(255 255 255 / 0.55);
+    --cocoa-label-tertiary:       rgb(255 255 255 / 0.25);
+    --cocoa-label-quaternary:     rgb(255 255 255 / 0.10);
+
+    --cocoa-background-window:    #323232;
+    --cocoa-background-content:   #1E1E1E;
+    --cocoa-background-sidebar:   #2A2A2A;
+    --cocoa-background-toolbar:   rgb(40 40 40 / 0.72);
+    --cocoa-background-control:   #3A3A3C;
+    --cocoa-background-selection: #0A84FF;
+
+    --cocoa-separator:            rgb(255 255 255 / 0.10);
+    --cocoa-separator-opaque:     #38383A;
+
+    --cocoa-accent:               #0A84FF;
+    --cocoa-accent-hover:         #2E95FF;
+    --cocoa-accent-pressed:       #006FE0;
+    --cocoa-accent-contrast:      #FFFFFF;
+
+    --cocoa-success:              #30D158;
+    --cocoa-warning:              #FF9F0A;
+    --cocoa-danger:               #FF453A;
+    --cocoa-info:                 #0A84FF;
+
+    --cocoa-focus-ring:           rgb(10 132 255 / 0.60);
+    --cocoa-find-highlight:       #FFCC00;
+
+    --cocoa-shadow-control:
+      0 1px 0 rgb(0 0 0 / 0.40),
+      0 1px 2px rgb(0 0 0 / 0.50);
+
+    --cocoa-shadow-popover:
+      0 0 0 1px rgb(0 0 0 / 0.60),
+      0 8px 16px rgb(0 0 0 / 0.45),
+      0 2px 4px rgb(0 0 0 / 0.30);
+
+    --cocoa-shadow-window:
+      0 0 0 1px rgb(0 0 0 / 0.70),
+      0 24px 48px rgb(0 0 0 / 0.55),
+      0 2px 6px rgb(0 0 0 / 0.40);
+
+    --cocoa-shadow-modal:
+      0 0 0 1px rgb(0 0 0 / 0.80),
+      0 48px 96px rgb(0 0 0 / 0.70),
+      0 8px 16px rgb(0 0 0 / 0.45);
+
+    --cocoa-material-toolbar-bg:  rgb(40 40 40 / 0.72);
+    --cocoa-material-sidebar-bg:  rgb(42 42 42 / 0.78);
+    --cocoa-material-popover-bg:  rgb(48 48 48 / 0.85);
+    --cocoa-material-hud-bg:      rgb(20 20 20 / 0.78);
+    --cocoa-material-hud-color:   rgb(255 255 255 / 0.95);
+  }
+}
+
+/* ============================================================
+   REDUCED MOTION — collapse durations, linearize easings
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --cocoa-duration-fast: 0ms;
+    --cocoa-duration-base: 0ms;
+    --cocoa-duration-slow: 0ms;
+    --cocoa-ease-spring:   linear;
+    --cocoa-ease-out:      linear;
+    --cocoa-ease-in-out:   linear;
+  }
+}
+
+/* ============================================================
+   NO BACKDROP-FILTER FALLBACK — collapse materials to opaque
+   ============================================================ */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root {
+    --cocoa-material-toolbar-bg: #F6F6F6;
+    --cocoa-material-sidebar-bg: #E8E8E8;
+    --cocoa-material-popover-bg: #FFFFFF;
+    --cocoa-material-hud-bg:     #282828;
+  }
+  :root[data-theme="dark"] {
+    --cocoa-material-toolbar-bg: #282828;
+    --cocoa-material-sidebar-bg: #2A2A2A;
+    --cocoa-material-popover-bg: #303030;
+    --cocoa-material-hud-bg:     #141414;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --cocoa-material-toolbar-bg: #282828;
+      --cocoa-material-sidebar-bg: #2A2A2A;
+      --cocoa-material-popover-bg: #303030;
+      --cocoa-material-hud-bg:     #141414;
+    }
+  }
+}

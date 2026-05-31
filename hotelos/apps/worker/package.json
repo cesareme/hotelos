@@ -1,0 +1,28 @@
+{
+  "name": "@hotelos/worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "dependencies": {
+    "@hotelos/compliance": "workspace:*",
+    "@hotelos/config": "workspace:*",
+    "@hotelos/database": "workspace:*",
+    "@hotelos/integrations": "workspace:*",
+    "@hotelos/shared": "workspace:*",
+    "@prisma/client": "^6.7.0",
+    "pg-boss": "^10.1.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

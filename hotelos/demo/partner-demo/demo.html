@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HotelOS — demo para socio</title>
+  <style>
+    :root {
+      --bg: #0a0d10;
+      --surface: #11161b;
+      --surface-2: #1a2128;
+      --ink: #e8eef3;
+      --ink-muted: #93a1ad;
+      --accent: #4ee0a3;
+      --accent-soft: rgba(78, 224, 163, 0.12);
+      --border: #232b33;
+      --radius: 14px;
+      --shadow: 0 10px 30px rgba(0,0,0,0.4);
+      --max-width: 1100px;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    .container {
+      max-width: var(--max-width);
+      margin: 0 auto;
+      padding: 64px 24px;
+    }
+    .hero {
+      padding: 80px 24px 32px;
+      text-align: center;
+      max-width: var(--max-width);
+      margin: 0 auto;
+    }
+    .hero-eyebrow {
+      display: inline-block;
+      padding: 4px 12px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      border-radius: 99px;
+      margin-bottom: 16px;
+      font-weight: 600;
+    }
+    .hero h1 {
+      font-size: 56px;
+      line-height: 1.05;
+      letter-spacing: -0.02em;
+      margin: 0 0 16px;
+      font-weight: 700;
+    }
+    .hero p {
+      font-size: 20px;
+      color: var(--ink-muted);
+      margin: 0 auto;
+      max-width: 720px;
+    }
+    .pillbar {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      flex-wrap: wrap;
+      margin-top: 28px;
+    }
+    .pill {
+      padding: 6px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 99px;
+      color: var(--ink-muted);
+      font-size: 13px;
+    }
+    .pill strong { color: var(--ink); }
+    .scene {
+      margin-top: 96px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 24px;
+    }
+    .scene-meta {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .scene-num {
+      font-size: 13px;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 600;
+    }
+    .scene-section {
+      font-size: 13px;
+      color: var(--ink-muted);
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .scene h2 {
+      font-size: 32px;
+      letter-spacing: -0.01em;
+      margin: 0;
+      font-weight: 700;
+    }
+    .scene-lead {
+      font-size: 17px;
+      color: var(--ink-muted);
+      margin: 0;
+      max-width: 720px;
+    }
+    .scene-shot {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #000;
+      box-shadow: var(--shadow);
+      aspect-ratio: 1440 / 900;
+      position: relative;
+    }
+    .scene-shot img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .scene-shot .placeholder {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      color: var(--ink-muted);
+      font-size: 14px;
+      gap: 8px;
+      padding: 32px;
+      text-align: center;
+    }
+    .scene-shot .placeholder code {
+      background: var(--surface-2);
+      padding: 2px 8px;
+      border-radius: 4px;
+      color: var(--ink);
+      font-size: 12px;
+    }
+    .scene-body {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 24px;
+      margin-top: 8px;
+    }
+    @media (max-width: 900px) {
+      .scene-body { grid-template-columns: 1fr; }
+      .hero h1 { font-size: 38px; }
+      .scene h2 { font-size: 26px; }
+    }
+    .scene-points {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .scene-points li {
+      padding-left: 22px;
+      position: relative;
+      color: var(--ink);
+    }
+    .scene-points li::before {
+      content: "→";
+      position: absolute;
+      left: 0;
+      color: var(--accent);
+    }
+    .scene-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .scene-card h3 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .scene-card p {
+      margin: 0;
+      color: var(--ink-muted);
+      font-size: 14px;
+    }
+    .scene-punch {
+      font-size: 18px;
+      font-style: italic;
+      color: var(--ink);
+      border-left: 3px solid var(--accent);
+      padding: 4px 0 4px 16px;
+      margin: 8px 0 0;
+    }
+    .footer {
+      margin-top: 120px;
+      padding: 48px 24px;
+      text-align: center;
+      border-top: 1px solid var(--border);
+      color: var(--ink-muted);
+      font-size: 14px;
+    }
+    .footer strong { color: var(--ink); }
+    .footer a { color: var(--accent); text-decoration: none; }
+    .stack-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 12px;
+      margin: 32px 0;
+    }
+    .stack-tile {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .stack-tile-label {
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--ink-muted);
+      margin-bottom: 6px;
+    }
+    .stack-tile-value {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--ink);
+    }
+  </style>
+</head>
+<body>
+
+<section class="hero">
+  <span class="hero-eyebrow">HotelOS · Demo para socio</span>
+  <h1>El PMS+ERP nativo de IA<br/>para hoteles independientes españoles.</h1>
+  <p>Una sola plataforma que reemplaza el PMS legacy, el channel manager, el revenue management, el ERP financiero y la capa de cumplimiento normativo. Construida desde cero para España.</p>
+  <div class="pillbar">
+    <span class="pill"><strong>1 888</strong> reservas en demo</span>
+    <span class="pill"><strong>47</strong> habitaciones</span>
+    <span class="pill"><strong>4</strong> propiedades</span>
+    <span class="pill"><strong>CI</strong> verde</span>
+    <span class="pill"><strong>Typecheck</strong> a cero</span>
+  </div>
+</section>
+
+<main class="container">
+
+  <!-- Escena 1 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 1</span>
+      <span class="scene-section">Recepción · Mi día</span>
+    </div>
+    <h2>La portada de trabajo de la recepcionista.</h2>
+    <p class="scene-lead">Lo primero que ve al entrar: cuántas llegadas, cuántas salidas, cuántos huéspedes hay en hotel, cuántos cobros pendientes. No es un dashboard de marketing — es la ficha del día.</p>
+    <div class="scene-shot"><img src="shots/01-mi-dia.png" alt="Mi día"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/01-mi-dia.png</code> en esta carpeta.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li><strong>14 llegadas, 14 salidas, 20 huéspedes en hotel</strong> hoy.</li>
+        <li><strong>14 reservas sin habitación asignada</strong> y <strong>584 € pendientes de cobro</strong> destacados.</li>
+        <li>Cada llegada tiene los dos botones que más usa la recepcionista: <strong>Hacer check-in</strong> y <strong>Ver folio</strong>. Cero clics intermedios.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">No es un dashboard de marketing. Es la portada de trabajo.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 2 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 2</span>
+      <span class="scene-section">Búsqueda global · ⌘K</span>
+    </div>
+    <h2>Encuentra cualquier cosa en dos segundos.</h2>
+    <p class="scene-lead">Un único cuadro indexa reservas, huéspedes, habitaciones, folios, facturas, propiedades y tarifas. Latencia medida: 3–10 ms en 1 888 reservas.</p>
+    <div class="scene-shot"><img src="shots/02-busqueda-global.png" alt="Búsqueda global"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/02-busqueda-global.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>Teclea <strong>Petrova</strong> → 7 reservas confirmadas de Nina Petrova de distintos canales (booking.com, expedia, direct).</li>
+        <li>Teclea <strong>103</strong> → reservas con código que contiene 103 + habitación 103 «inspeccionada».</li>
+        <li>Teclea un <strong>número de factura</strong> o un <strong>email de huésped</strong> y aparece exacto.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">Un PMS clásico te obliga a navegar menús anidados. Aquí escribes y aparece.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 3 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 3</span>
+      <span class="scene-section">Reservas · Live Timeline</span>
+    </div>
+    <h2>El rack de habitaciones, pero arrastrable.</h2>
+    <p class="scene-lead">Misma idea que el rack de Opera o Mews, pero con tooltips ricos al pasar el ratón, filtros por estado y canal, y drag & drop de reservas con confirmación antes de mover.</p>
+    <div class="scene-shot"><img src="shots/03-live-timeline.png" alt="Live Timeline"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/03-live-timeline.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li><strong>47 habitaciones × 1 803 reservas</strong> visibles con filtros.</li>
+        <li>Filtros por <strong>estado</strong> (confirmada, en casa, no-show, cancelada) y por <strong>canal</strong> (Booking, Expedia, direct, etc.).</li>
+        <li>Tooltip al hover con huésped, fechas, importe; arrastrar para mover.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">El rack que tu recepcionista quería que tuviese Opera.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 4 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 4</span>
+      <span class="scene-section">Finanzas · Folios divididos · Diferenciador</span>
+    </div>
+    <h2>Split folios reales: huésped, empresa, agencia.</h2>
+    <p class="scene-lead">Estándar en cadenas grandes (Opera, Cloudbeds, Mews), ausente en la mayoría de PMS españoles. Sin esto, no puedes vender a corporate.</p>
+    <div class="scene-shot"><img src="shots/04-folios.png" alt="Folios divididos"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/04-folios.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>Dos folios en una reserva: <strong>guest (principal)</strong> y <strong>company (secundario)</strong>, cada uno con su balance.</li>
+        <li>Regla declarativa: <em>«todo cargo de minibar va al folio company»</em> aplicada automáticamente al postear.</li>
+        <li>Botón <strong>Transferir</strong> en cada línea: mover manualmente un cargo a otro folio, auditado.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">Sin esto no puedes vender a empresa. Con esto, sí.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 5 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 5</span>
+      <span class="scene-section">Operaciones · Pisos</span>
+    </div>
+    <h2>Pisos en vivo: limpia, sucia, inspeccionada.</h2>
+    <p class="scene-lead">El tablero de housekeeping en tiempo real. La camarera de planta marca con un tap. La gobernanta ve avance y bloqueos. La recepción sabe qué está vendible.</p>
+    <div class="scene-shot"><img src="shots/05-housekeeping.png" alt="Tablero de pisos"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/05-housekeeping.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>KPIs en vivo: <strong>17 sucias · 12 limpias · 12 inspeccionadas · 9 tareas abiertas</strong>.</li>
+        <li>Filtros por estado y tareas; cada habitación tiene acciones contextuales (marcar limpia, inspeccionar, añadir tarea).</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">Reemplaza Quore, hotelkit o el WhatsApp del grupo.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 6 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 6</span>
+      <span class="scene-section">Operaciones · Mantenimiento</span>
+    </div>
+    <h2>Avisos, partes y bloqueo de habitación.</h2>
+    <p class="scene-lead">La recepción crea un parte → mantenimiento lo ve en vivo → bloquea la habitación si hace falta → la habitación deja de ser vendible en availability automáticamente.</p>
+    <div class="scene-shot"><img src="shots/06-mantenimiento.png" alt="Tablero de mantenimiento"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/06-mantenimiento.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>Priorización por urgencia: <strong>1 emergencia, 5 abiertas, 2 en curso, 3 con habitación bloqueada</strong>.</li>
+        <li>Estados claros, asignación a técnico, conexión con disponibilidad y revenue.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">Si bloqueas una habitación aquí, deja de venderse en Booking. Sin intervención humana.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 7 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 7</span>
+      <span class="scene-section">Cumplimiento · Diferenciador #1</span>
+    </div>
+    <h2>España resuelta dentro del core.</h2>
+    <p class="scene-lead">~70 controles por área (PMS, RGPD, fiscal, contra incendios, alimentación, prevención). Filtrable por comunidad autónoma y tipo de hotel. Vault documental con alertas de caducidad.</p>
+    <div class="scene-shot"><img src="shots/07-compliance.png" alt="Centro de cumplimiento"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/07-compliance.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>KPIs: <strong>53 % cumplimiento, 3 críticos abiertos, 5 vencidos, 9 vencen en 30 días</strong>.</li>
+        <li>Matriz por área (Licencias, Turismo, Registro de viajeros, Protección de datos, Laboral, PRL, Incendios…).</li>
+        <li>Asistente IA + carpeta de inspección imprimible para auditorías.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">El foso defensivo frente a Cloudbeds y Mews. Ellos lo dejan a un partner. Nosotros lo incluimos.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 8 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 8</span>
+      <span class="scene-section">Revenue Management</span>
+    </div>
+    <h2>Pace, pickup, forecast, BAR recommendations.</h2>
+    <p class="scene-lead">Revenue de verdad: snapshots reales, MAPE de forecast, recomendaciones BAR, rate shopper, presupuesto vs actual. Sustituye IDeaS o Duetto para hoteles independientes.</p>
+    <div class="scene-shot"><img src="shots/08-revenue.png" alt="Revenue dashboard"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/08-revenue.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li><strong>OTB 30d 1 078 noches · pace +775 · pickup 7d 945 · precisión forecast 91.54 %</strong>.</li>
+        <li>Ocupación mes en curso <strong>73,3 %</strong>, ADR <strong>137,52 €</strong>, RevPAR <strong>94,33 €</strong>.</li>
+        <li>Alertas activas con acción directa: «abrir parrilla de tarifas» desde el dashboard.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">Revenue management profesional dentro del PMS, no un addon de 800 €/mes.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 9 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 9</span>
+      <span class="scene-section">Distribución · Channel Manager</span>
+    </div>
+    <h2>Agregador propio multi-canal.</h2>
+    <p class="scene-lead">Booking, Expedia, Airbnb, Hotelbeds, Vrbo. Empujamos tarifas y disponibilidad, recibimos reservas e identificación. Sustituye SiteMinder.</p>
+    <div class="scene-shot"><img src="shots/09-channel-manager.png" alt="Channel Manager"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/09-channel-manager.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>Estado de sincronización por canal, mappings por room type y rate plan.</li>
+        <li>Health check continuo + alertas de paridad de tarifa.</li>
+        <li>Modo sandbox para validar credenciales antes de ir a producción.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">Una capa menos en tu stack — y un partner menos al que pagar comisión.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 10 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 10</span>
+      <span class="scene-section">IA · HITL · Diferenciador #2</span>
+    </div>
+    <h2>AI-native, no AI-washing.</h2>
+    <p class="scene-lead">Cada salida del modelo (parsear email de reserva, draft de respuesta al huésped, OCR de DNI) pasa por revisión humana opcional con score de confianza y fallback determinista.</p>
+    <div class="scene-shot"><img src="shots/10-hitl.png" alt="Cola HITL"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/10-hitl.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>Cola con <strong>3 pendientes · 3 fuera de plazo · resolución media 44 min</strong>.</li>
+        <li>Acciones: Asignar, Aprobar, Rechazar, Escalar. Auditadas.</li>
+        <li>Tipos: recomendación de tarifa, problema de factura, parte de viajeros…</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">Cero alucinaciones en producción. Cada llamada al modelo es auditable y tiene fallback.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 11 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 11</span>
+      <span class="scene-section">Comercial · Tour operadores</span>
+    </div>
+    <h2>Cupos contratados con TT.OO.</h2>
+    <p class="scene-lead">Bloques de habitaciones para Hotelbeds, TUI, FTI, JetTours… con release period automático y precio contratado. Otro diferenciador frente a Cloudbeds/Mews.</p>
+    <div class="scene-shot"><img src="shots/11-allotments.png" alt="Allotments"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/11-allotments.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>4 tour operadores configurados (FTI, Hotelbeds, JetTours, TUI) con comisión y plazo de pago.</li>
+        <li>3 cupos activos: 16 habitaciones/día contratadas, release a 14–21 días.</li>
+        <li>Botón <strong>Liberar cuotas vencidas</strong> que devuelve habitaciones al pool general.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">Si vendes a TT.OO. mayoristas, no puedes vivir sin allotments.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Escena 12 -->
+  <article class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Escena 12</span>
+      <span class="scene-section">F&B · Inventario y carta</span>
+    </div>
+    <h2>Stock, recetas y descuento automático.</h2>
+    <p class="scene-lead">El TPV postea un menú → el motor descuenta los ingredientes según la receta (BOM) → si hay stock bajo, alerta. Recetas, mermas, márgenes por plato.</p>
+    <div class="scene-shot"><img src="shots/12-fnb-inventory.png" alt="F&B Inventory"/><div class="placeholder">Si no ves la imagen, guarda <code>shots/12-fnb-inventory.png</code>.</div></div>
+    <div class="scene-body">
+      <ul class="scene-points">
+        <li>9 referencias activas, 6 platos/bebidas, 3 puntos de venta.</li>
+        <li>Niveles mínimos, stock actual, semáforo de reposición.</li>
+      </ul>
+      <aside class="scene-card">
+        <h3>Punch line</h3>
+        <p class="scene-punch">El restaurante del hotel deja de ser un agujero negro contable.</p>
+      </aside>
+    </div>
+  </article>
+
+  <!-- Cierre / Stack -->
+  <section class="scene">
+    <div class="scene-meta">
+      <span class="scene-num">Cierre</span>
+      <span class="scene-section">Stack y estado</span>
+    </div>
+    <h2>Real, no maqueta.</h2>
+    <p class="scene-lead">Producto en estado funcional. Base de datos sembrada con datos representativos. CI verde. Listo para piloto con 1–3 hoteles reales.</p>
+    <div class="stack-grid">
+      <div class="stack-tile"><div class="stack-tile-label">Frontend</div><div class="stack-tile-value">React 19 + Vite + TS</div></div>
+      <div class="stack-tile"><div class="stack-tile-label">API</div><div class="stack-tile-value">Fastify + Prisma</div></div>
+      <div class="stack-tile"><div class="stack-tile-label">Base de datos</div><div class="stack-tile-value">PostgreSQL 16</div></div>
+      <div class="stack-tile"><div class="stack-tile-label">IA</div><div class="stack-tile-value">Anthropic / OpenAI + fallback</div></div>
+      <div class="stack-tile"><div class="stack-tile-label">Compliance</div><div class="stack-tile-value">XAdES · VeriFactu · PII cifrada</div></div>
+      <div class="stack-tile"><div class="stack-tile-label">Build</div><div class="stack-tile-value">Monorepo pnpm · CI verde</div></div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="footer">
+  <p><strong>HotelOS</strong> · Demo enviada a un socio. Hablamos del piloto.</p>
+  <p>📧 <a href="mailto:">tu@email</a> · 📞 [tu teléfono] · 🇪🇸 Madrid</p>
+</footer>
+
+</body>
+</html>

@@ -1,0 +1,16 @@
+FROM node:22-bookworm-slim AS base
+WORKDIR /app
+COPY package*.json ./
+COPY apps/api/package.json apps/api/package.json
+COPY packages packages
+RUN npm install
+COPY apps/api apps/api
+COPY tsconfig.base.json tsconfig.base.json
+RUN npm --workspace @hotelos/api run build
+
+FROM node:22-bookworm-slim
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=base /app /app
+EXPOSE 3000
+CMD ["npm", "--workspace", "@hotelos/api", "run", "start"]

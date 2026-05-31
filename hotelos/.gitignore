@@ -1,0 +1,60 @@
+node_modules/
+.expo/
+.turbo/
+dist/
+build/
+coverage/
+.env
+.env.*
+!.env.example
+*.log
+*.tsbuildinfo
+ios/
+android/
+
+# Stale TypeScript compilation outputs accidentally placed next to .ts sources
+apps/*/src/**/*.js
+apps/*/src/**/*.js.map
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+
+# macOS noise
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE / editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local Claude / agent transcripts and workflow scratch
+.claude/projects/
+**/transcript-*.jsonl
+
+# OS / temp
+Thumbs.db
+*.pid
+.cache/
+
+# Prisma local
+packages/database/prisma/migrations/.migrate-lock.json
+
+# Demo / runtime scratch
+demo/output/
+demo/screenshots-*/
+tests/screenshots/
+playwright-report/
+test-results/
+
+# Lockfiles for tools we don't ship
+.npm/_logs/
+
+# Sentry source maps (we generate these but never commit)
+.sentry-cli/
+
+# Worktree scratch
+worktrees/
+

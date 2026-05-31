@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "HotelOS Mobile",
+    "slug": "hotelos-mobile",
+    "scheme": "hotelos",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.hotelos.mobile",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Used to scan guest documents, attach maintenance photos, and send guest-chat photos.",
+        "NSMicrophoneUsageDescription": "Used for staff voice commands and guest-chat voice notes.",
+        "NSPhotoLibraryUsageDescription": "Used to attach photos to guest conversations.",
+        "NSSpeechRecognitionUsageDescription": "Used to transcribe staff voice commands."
+      }
+    },
+    "android": {
+      "package": "com.hotelos.mobile",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_AUDIO"
+      ]
+    },
+    "extra": {
+      "eas": {
+        "projectId": "replace-with-eas-project-id"
+      }
+    }
+  }
+}

@@ -1,0 +1,105 @@
+# docker-compose para PILOTO / DEMO completa.
+# Incluye admin-web (nginx) + API + worker + ai-gateway + postgres + redis.
+# Diseñado para un VPS de €5-10/mes (Hetzner / DigitalOcean / Contabo).
+#
+# Uso:
+#   1. cp ../../.env.example ../../.env  (y editar con valores reales)
+#   2. docker compose -f docker-compose.pilot.yml up -d --build
+#   3. docker compose -f docker-compose.pilot.yml exec api npm --workspace @hotelos/database run db:push
+#   4. docker compose -f docker-compose.pilot.yml exec api npx tsx src/seeds/chain-8-hotels.ts
+#   5. abrir http://<host>:8080
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hotelos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-hotelos}
+      POSTGRES_DB: ${POSTGRES_DB:-hotelos}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # NO exponer puerto en producción; solo intra-red docker.
+    networks:
+      - hotelos
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - hotelos
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hotelos}:${POSTGRES_PASSWORD:-hotelos}@postgres:5432/${POSTGRES_DB:-hotelos}
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - hotelos
+    # En piloto exponemos para que admin-web pueda llamar (en mismo host).
+    # En producción ponlo detrás de nginx/caddy.
+    ports:
+      - "3000:3000"
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    restart: unless-stopped
+    env_file:
+      - ../../.env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hotelos}:${POSTGRES_PASSWORD:-hotelos}@postgres:5432/${POSTGRES_DB:-hotelos}
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on:
+      - postgres
+      - redis
+      - api
+    networks:
+      - hotelos
+
+  ai-gateway:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.ai-gateway
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://api:3000
+      NODE_ENV: production
+    depends_on:
+      - api
+    networks:
+      - hotelos
+
+  admin-web:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.admin-web
+      args:
+        # En el demo, el navegador del cliente llama al API por el host público.
+        # Cambia esto al dominio real cuando lo tengas. Para localhost: http://localhost:3000.
+        VITE_API_URL: ${PUBLIC_API_URL:-http://localhost:3000}
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    networks:
+      - hotelos
+
+volumes:
+  postgres_data:
+
+networks:
+  hotelos:
+    driver: bridge

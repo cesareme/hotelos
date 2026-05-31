@@ -1,0 +1,56 @@
+# HotelOS · Auto-deploy to Hostinger VPS
+#
+# Triggers when CI passes on `main`. SSH-es into the VPS as the `hotelos`
+# user and runs `deploy/scripts/deploy.sh` which:
+#   1. git pulls the latest main
+#   2. rebuilds Docker images
+#   3. applies prisma db push
+#   4. rolls API + admin-web containers (zero-downtime)
+#   5. smoke-tests /health
+#
+# Required GitHub secrets (Repo → Settings → Secrets and variables → Actions):
+#   VPS_HOST       - the public IP or hostname of your Hostinger VPS
+#   VPS_USER       - "hotelos" (the user created by bootstrap-vps.sh)
+#   VPS_SSH_KEY    - private SSH key authorised on the VPS (paste the whole
+#                    contents of your local id_ed25519 / id_rsa)
+#
+# Disable this workflow during the very first manual setup; re-enable once
+# the VPS exists and the SSH key is added.
+
+name: Deploy to Hostinger VPS
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: SSH deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Only run if CI succeeded (skip on failure or cancellation).
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    steps:
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run deploy script on VPS
+        run: |
+          ssh -i ~/.ssh/id_ed25519 \
+              -o StrictHostKeyChecking=accept-new \
+              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "cd /opt/hotelos && bash deploy/scripts/deploy.sh"
+
+      - name: Verify health
+        run: |
+          # Caddy is in front so we hit https://DOMAIN/health.
+          # If you haven't set a DOMAIN yet, swap this for the VPS IP.
+          curl -fsS --max-time 20 "https://${{ vars.PUBLIC_DOMAIN || secrets.VPS_HOST }}/health" | head -c 200
+          echo

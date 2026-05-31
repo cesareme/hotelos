@@ -1,0 +1,23 @@
+-- Sprint 32: encryption-at-rest for PII fields.
+--
+-- This file is NOT a Prisma migration. It lives outside prisma/migrations
+-- on purpose: Prisma's shadow database may not have rights to CREATE
+-- EXTENSION, so we manage pgcrypto out-of-band.
+--
+-- Run on production (and any environment where you want server-side
+-- crypto / digest helpers available) once, as a Postgres superuser:
+--
+--   psql "$DATABASE_URL" -f packages/database/migrations/_pgcrypto.sql
+--
+-- The application's primary encryption path is Node's built-in AES-256-GCM
+-- via packages/database/src/crypto-fields.ts; pgcrypto is enabled here so
+-- that future migrations can:
+--   * add deterministic SHA-256 digest columns alongside encrypted PII
+--     (for equality lookup of e.g. email),
+--   * build GIN indexes on those digests for fast point queries, and
+--   * perform server-side `pgp_sym_*` operations during one-shot backfill
+--     jobs without round-tripping every row through Node.
+--
+-- IF NOT EXISTS makes this idempotent — safe to re-run.
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;

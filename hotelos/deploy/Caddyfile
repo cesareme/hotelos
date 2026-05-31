@@ -1,0 +1,63 @@
+# HotelOS · Caddyfile · automatic HTTPS via Let's Encrypt
+#
+# Caddy detects the DOMAIN env var, requests a certificate, renews it and
+# reverse-proxies frontend + backend. No manual cert / nginx config needed.
+#
+# Routes:
+#   /api/*    → Fastify on api:3000  (strip the /api prefix server-side)
+#   /health   → Fastify /health
+#   anything else → admin-web static (Vite build served by nginx in the image)
+#
+# For multi-region / multi-domain just duplicate the `:443` block with another
+# `DOMAIN_2 { ... }` host and Caddy will provision another cert.
+
+{
+	# Use this contact for Let's Encrypt expiry notices.
+	email admin@{$DOMAIN:hotelos.app}
+}
+
+{$DOMAIN:hotelos.app} {
+	# Strong defaults: HSTS, no server fingerprint header.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(self), geolocation=(self)"
+		-Server
+	}
+
+	# Health check is unauthenticated for uptime monitoring; the API answers
+	# directly without going through the SPA bundle.
+	handle /health {
+		reverse_proxy api:3000
+	}
+
+	# Backend API behind `/api/*`. We strip the prefix because the Fastify
+	# routes are defined at the root (`/properties`, `/users`, `/admin/*`).
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy api:3000 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+
+	# Everything else is the admin-web SPA (Vite build).
+	handle {
+		reverse_proxy admin-web:80
+	}
+
+	# Block obvious scanning noise.
+	@blocked {
+		path /.env /.git/* /wp-admin/* /xmlrpc.php
+	}
+	respond @blocked 403
+
+	# Access log to stdout — Hostinger's journalctl picks it up.
+	log {
+		output stdout
+		format console
+	}
+}

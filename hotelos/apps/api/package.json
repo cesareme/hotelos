@@ -1,0 +1,35 @@
+{
+  "name": "@hotelos/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "backfill:pii": "tsx src/jobs/pii-backfill.ts"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@hotelos/ai-tools": "workspace:*",
+    "@hotelos/compliance": "workspace:*",
+    "@hotelos/config": "workspace:*",
+    "@hotelos/database": "workspace:*",
+    "@hotelos/product": "workspace:*",
+    "@hotelos/revenue": "workspace:*",
+    "@hotelos/shared": "workspace:*",
+    "@prisma/client": "^6.7.0",
+    "@sentry/node": "^10.55.0",
+    "fastify": "^5.3.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

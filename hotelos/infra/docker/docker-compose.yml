@@ -1,0 +1,53 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: hotelos
+      POSTGRES_PASSWORD: hotelos
+      POSTGRES_DB: hotelos
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  api:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.api
+    env_file:
+      - ../../.env
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+      - redis
+
+  ai-gateway:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.ai-gateway
+    environment:
+      API_BASE_URL: http://api:3000
+    ports:
+      - "3100:3100"
+    depends_on:
+      - api
+
+  worker:
+    build:
+      context: ../..
+      dockerfile: infra/docker/Dockerfile.worker
+    env_file:
+      - ../../.env
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  postgres_data:
+

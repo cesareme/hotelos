@@ -1,0 +1,4746 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoomStatus {
+  clean
+  dirty
+  inspected
+  occupied
+  out_of_order
+  out_of_service
+}
+
+enum ReservationStatus {
+  draft
+  confirmed
+  checked_in
+  checked_out
+  cancelled
+  no_show
+}
+
+enum FolioStatus {
+  open
+  closed
+}
+
+enum PaymentStatus {
+  pending
+  captured
+  refunded
+  failed
+}
+
+enum InvoiceStatus {
+  draft
+  issued
+  cancelled
+  rectified
+}
+
+enum JournalStatus {
+  draft
+  posted
+  reversed
+}
+
+enum HousekeepingTaskStatus {
+  pending
+  assigned
+  in_progress
+  done
+  rejected
+}
+
+enum WorkOrderStatus {
+  open
+  assigned
+  in_progress
+  waiting_vendor
+  resolved
+  closed
+}
+
+enum ComplianceStatus {
+  draft
+  missing_data
+  ready_to_sign
+  signed
+  ready_to_submit
+  queued
+  exported
+  submitted
+  accepted
+  rejected
+  failed
+  annulled
+  corrected
+  expired
+}
+
+enum SubmissionStatus {
+  queued
+  sent
+  accepted
+  rejected
+  failed
+  annulled
+  retrying
+}
+
+enum ActorType {
+  user
+  ai
+  system
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  legalName String?  @map("legal_name")
+  taxId     String?  @map("tax_id")
+  country   String   @default("ES")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("organizations")
+}
+
+model Property {
+  id                    String   @id @default(cuid())
+  organizationId        String   @map("organization_id")
+  name                  String
+  legalName             String?  @map("legal_name")
+  address               String?
+  municipality          String?
+  province              String?
+  country               String   @default("ES")
+  taxRegion             String?  @map("tax_region")
+  timezone              String   @default("Europe/Madrid")
+  status                String   @default("open")
+  sesHospedajesEnabled  Boolean  @default(false) @map("ses_hospedajes_enabled")
+  verifactuEnabled      Boolean  @default(false) @map("verifactu_enabled")
+  // Invoice branding: the hotel's logo (URL or data: URI) and a free-text legal
+  // disclaimer / footer block printed at the bottom of every invoice (privacy
+  // notice, mercantile registry data, payment terms, etc.).
+  invoiceLogoUrl        String?  @map("invoice_logo_url")
+  invoiceLegalFooter    String?  @map("invoice_legal_footer")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  rateChangeJournals    RateChangeJournal[]
+
+  @@index([organizationId])
+  @@map("properties")
+}
+
+model User {
+  id                   String    @id @default(cuid())
+  organizationId       String    @map("organization_id")
+  email                String    @unique
+  phone                String?
+  fullName             String    @map("full_name")
+  status               String    @default("active")
+  mfaEnabled           Boolean   @default(false) @map("mfa_enabled")
+  passwordHash         String?   @map("password_hash")
+  // Lockout para defensa anti-brute-force (PILOT-D1)
+  failedLoginAttempts  Int       @default(0) @map("failed_login_attempts")
+  lockedUntil          DateTime? @map("locked_until")
+  lastLoginAt          DateTime? @map("last_login_at")
+  passwordChangedAt    DateTime? @map("password_changed_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+  themePreference      String    @default("auto") @map("theme_preference")
+  accentColor          String    @default("#007aff") @map("accent_color")
+  reducedMotion        Boolean   @default(false) @map("reduced_motion")
+  highContrast         Boolean   @default(false) @map("high_contrast")
+
+  @@index([organizationId])
+  @@map("users")
+}
+
+// PasswordResetToken — single-use token for password reset flow (PILOT-D1).
+// TTL 15 min, token guardado como hash para que un dump de DB no comprometa
+// los reset pendientes. Marca de uso evita replay.
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String    @map("user_id")
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model Device {
+  id           String   @id @default(cuid())
+  userId       String   @map("user_id")
+  deviceName   String   @map("device_name")
+  platform     String
+  pushToken    String?  @map("push_token")
+  trusted      Boolean  @default(false)
+  registeredAt DateTime @default(now()) @map("registered_at")
+  lastSeenAt   DateTime @default(now()) @map("last_seen_at")
+
+  @@index([userId, trusted])
+  @@map("devices")
+}
+
+model Session {
+  id         String    @id @default(cuid())
+  userId     String    @map("user_id")
+  deviceId   String    @map("device_id")
+  status     String    @default("active")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at")
+  revokedAt  DateTime? @map("revoked_at")
+
+  @@index([userId, status])
+  @@map("sessions")
+}
+
+model MfaChallenge {
+  id              String   @id @default(cuid())
+  userId          String   @map("user_id")
+  purpose         String
+  status          String   @default("pending")
+  deliveryChannel String   @map("delivery_channel")
+  codeHash        String?  @map("code_hash")
+  expiresAt       DateTime @map("expires_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([userId, status, expiresAt])
+  @@map("mfa_challenges")
+}
+
+model Notification {
+  id         String   @id @default(cuid())
+  propertyId String   @map("property_id")
+  userId     String   @map("user_id")
+  type       String
+  title      String
+  body       String
+  status     String   @default("unread")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([userId, status, createdAt])
+  @@map("notifications")
+}
+
+model OfflineSyncRecord {
+  id         String   @id @default(cuid())
+  propertyId String   @map("property_id")
+  deviceId   String   @map("device_id")
+  actionJson Json     @map("action_json")
+  resultJson Json     @map("result_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, deviceId, createdAt])
+  @@map("offline_sync_records")
+}
+
+model WorkerJobRun {
+  id            String    @id @default(cuid())
+  jobName       String    @map("job_name")
+  queueName     String    @default("default") @map("queue_name")
+  payloadJson   Json      @map("payload_json")
+  resultJson    Json?     @map("result_json")
+  status        String    @default("queued")
+  attempts      Int       @default(0)
+  lastError     String?   @map("last_error")
+  correlationId String?   @map("correlation_id")
+  scheduledFor  DateTime? @map("scheduled_for")
+  startedAt     DateTime? @map("started_at")
+  finishedAt    DateTime? @map("finished_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([status, scheduledFor])
+  @@index([jobName, status])
+  @@map("worker_job_runs")
+}
+
+model RetentionPolicy {
+  id               String   @id @default(cuid())
+  organizationId   String   @map("organization_id")
+  propertyId       String?  @map("property_id")
+  entityType       String   @map("entity_type")
+  mode             String
+  retentionMonths  Int?     @map("retention_months")
+  legalHoldAllowed Boolean  @default(true) @map("legal_hold_allowed")
+  enabled          Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@unique([organizationId, propertyId, entityType])
+  @@index([entityType, enabled])
+  @@map("retention_policies")
+}
+
+model Module {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  category    String
+  isCore      Boolean  @default(false) @map("is_core")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([category, isCore])
+  @@map("modules")
+}
+
+model PropertyModule {
+  id                String    @id @default(cuid())
+  propertyId        String    @map("property_id")
+  moduleId          String    @map("module_id")
+  status            String
+  configurationJson Json      @default("{}") @map("configuration_json")
+  enabledAt         DateTime? @map("enabled_at")
+  disabledAt        DateTime? @map("disabled_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@unique([propertyId, moduleId])
+  @@index([propertyId, status])
+  @@map("property_modules")
+}
+
+model ModuleDependency {
+  id               String @id @default(cuid())
+  moduleId         String @map("module_id")
+  requiredModuleId String @map("required_module_id")
+
+  @@unique([moduleId, requiredModuleId])
+  @@map("module_dependencies")
+}
+
+model ModuleHealthCheck {
+  id           String   @id @default(cuid())
+  propertyId   String   @map("property_id")
+  moduleCode   String   @map("module_code")
+  checkCode    String   @map("check_code")
+  status       String
+  severity     String
+  message      String
+  metadataJson Json     @default("{}") @map("metadata_json")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, moduleCode, checkCode])
+  @@map("module_health_checks")
+}
+
+model PropertySetupStep {
+  id           String    @id @default(cuid())
+  propertyId   String    @map("property_id")
+  stepCode     String    @map("step_code")
+  status       String
+  completedAt  DateTime? @map("completed_at")
+  completedBy  String?   @map("completed_by")
+  metadataJson Json      @default("{}") @map("metadata_json")
+
+  @@unique([propertyId, stepCode])
+  @@map("property_setup_steps")
+}
+
+model PropertySetupFormSubmission {
+  id                   String   @id @default(cuid())
+  propertyId           String   @map("property_id")
+  formCode             String   @map("form_code")
+  status               String   @default("saved")
+  payloadJson          Json     @default("{}") @map("payload_json")
+  validationErrorsJson Json     @default("[]") @map("validation_errors_json")
+  targetEntityType     String?  @map("target_entity_type")
+  targetEntityId       String?  @map("target_entity_id")
+  createdBy            String?  @map("created_by")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, formCode, createdAt])
+  @@map("property_setup_form_submissions")
+}
+
+model ManualSetupSubmission {
+  id                   String   @id @default(cuid())
+  propertyId           String   @map("property_id")
+  optionCode           String   @map("option_code")
+  status               String   @default("saved")
+  payloadJson          Json     @default("{}") @map("payload_json")
+  validationErrorsJson Json     @default("[]") @map("validation_errors_json")
+  targetTablesJson     Json     @default("[]") @map("target_tables_json")
+  inputCategoriesJson  Json     @default("[]") @map("input_categories_json")
+  completionChecksJson Json     @default("[]") @map("completion_checks_json")
+  createdBy            String?  @map("created_by")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, optionCode, createdAt])
+  @@map("manual_setup_submissions")
+}
+
+model PropertyReadinessCheck {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  checkCode         String   @map("check_code")
+  status            String
+  severity          String
+  message           String
+  relatedEntityType String?  @map("related_entity_type")
+  relatedEntityId   String?  @map("related_entity_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, checkCode])
+  @@map("property_readiness_checks")
+}
+
+model Department {
+  id          String  @id @default(cuid())
+  propertyId  String  @map("property_id")
+  name        String
+  code        String
+  description String?
+  active      Boolean @default(true)
+
+  @@unique([propertyId, code])
+  @@map("departments")
+}
+
+model UserDepartment {
+  id           String  @id @default(cuid())
+  userId       String  @map("user_id")
+  departmentId String  @map("department_id")
+  roleLabel    String? @map("role_label")
+  active       Boolean @default(true)
+
+  @@unique([userId, departmentId])
+  @@map("user_departments")
+}
+
+model PropertyComplianceSetting {
+  id                      String   @id @default(cuid())
+  propertyId              String   @unique @map("property_id")
+  country                 String
+  taxRegion               String?  @map("tax_region")
+  vatRegime               String?  @map("vat_regime")
+  tourismTaxRegion        String?  @map("tourism_tax_region")
+  sesHospedajesEnabled    Boolean  @default(false) @map("ses_hospedajes_enabled")
+  verifactuEnabled        Boolean  @default(false) @map("verifactu_enabled")
+  ticketbaiEnabled        Boolean  @default(false) @map("ticketbai_enabled")
+  siiEnabled              Boolean  @default(false) @map("sii_enabled")
+  b2bEinvoiceEnabled      Boolean  @default(false) @map("b2b_einvoice_enabled")
+  configurationJson       Json     @default("{}") @map("configuration_json")
+  updatedAt               DateTime @updatedAt @map("updated_at")
+
+  @@map("property_compliance_settings")
+}
+
+model InvoiceSequence {
+  id           String  @id @default(cuid())
+  propertyId   String  @map("property_id")
+  sequenceCode String  @map("sequence_code")
+  prefix       String?
+  nextNumber   Int     @default(1) @map("next_number")
+  padding      Int     @default(6)
+  invoiceType  String  @map("invoice_type")
+  active       Boolean @default(true)
+
+  @@unique([propertyId, sequenceCode])
+  @@map("invoice_sequences")
+}
+
+model AccountingSetting {
+  id                   String   @id @default(cuid())
+  organizationId        String   @map("organization_id")
+  propertyId            String?  @map("property_id")
+  chartTemplate         String?  @map("chart_template")
+  fiscalYearStartMonth  Int      @default(1) @map("fiscal_year_start_month")
+  configurationJson     Json     @default("{}") @map("configuration_json")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@index([organizationId, propertyId])
+  @@map("accounting_settings")
+}
+
+model CostCenter {
+  id         String  @id @default(cuid())
+  propertyId String  @map("property_id")
+  code       String
+  name       String
+  type       String
+  active     Boolean @default(true)
+
+  @@unique([propertyId, code])
+  @@map("cost_centers")
+}
+
+model PropertyAiSetting {
+  id                     String   @id @default(cuid())
+  propertyId             String   @unique @map("property_id")
+  aiEnabled              Boolean  @default(true) @map("ai_enabled")
+  defaultAutomationLevel String   @default("suggest_and_confirm") @map("default_automation_level")
+  guestFacingDisclosure  String?  @map("guest_facing_disclosure")
+  voiceLocales           String[] @map("voice_locales")
+  configurationJson      Json     @default("{}") @map("configuration_json")
+  updatedAt              DateTime @updatedAt @map("updated_at")
+
+  @@map("property_ai_settings")
+}
+
+model PropertyAiToolSetting {
+  id                   String  @id @default(cuid())
+  propertyId           String  @map("property_id")
+  toolName             String  @map("tool_name")
+  enabled              Boolean @default(true)
+  automationLevel      String  @default("suggest_and_confirm") @map("automation_level")
+  requiresConfirmation Boolean @default(true) @map("requires_confirmation")
+  requiresApprovalRole String? @map("requires_approval_role")
+  configurationJson    Json    @default("{}") @map("configuration_json")
+
+  @@unique([propertyId, toolName])
+  @@map("property_ai_tool_settings")
+}
+
+model DocumentTemplate {
+  id            String   @id @default(cuid())
+  propertyId    String   @map("property_id")
+  templateCode  String   @map("template_code")
+  name          String
+  channel       String
+  language      String
+  subject       String?
+  body          String
+  variablesJson Json     @default("{}") @map("variables_json")
+  active        Boolean  @default(true)
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, templateCode, language])
+  @@map("document_templates")
+}
+
+model QrCode {
+  id         String   @id @default(cuid())
+  propertyId String   @map("property_id")
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  qrValue    String   @map("qr_value")
+  purpose    String
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([propertyId, entityType, entityId, purpose])
+  @@map("qr_codes")
+}
+
+model PropertyImport {
+  id           String    @id @default(cuid())
+  propertyId   String    @map("property_id")
+  importType   String    @map("import_type")
+  status       String
+  previewJson  Json      @default("{}") @map("preview_json")
+  errorJson    Json      @default("{}") @map("error_json")
+  committedAt  DateTime? @map("committed_at")
+  createdBy    String?   @map("created_by")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, importType, status])
+  @@map("property_imports")
+}
+
+model BackOfficeAiSuggestion {
+  id                  String    @id @default(cuid())
+  propertyId          String    @map("property_id")
+  userId              String    @map("user_id")
+  prompt              String
+  status              String
+  proposedChangesJson Json      @default("{}") @map("proposed_changes_json")
+  requiresConfirmation Boolean  @default(true) @map("requires_confirmation")
+  appliedAt           DateTime? @map("applied_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, status, createdAt])
+  @@map("backoffice_ai_suggestions")
+}
+
+model RevenueForecast {
+  id                   String   @id @default(cuid())
+  propertyId           String   @map("property_id")
+  forecastDate         DateTime @map("forecast_date")
+  roomTypeId           String?  @map("room_type_id")
+  ratePlanId           String?  @map("rate_plan_id")
+  channelId            String?  @map("channel_id")
+  segment              String?
+  expectedOccupancy    Decimal? @map("expected_occupancy") @db.Decimal(5, 2)
+  expectedRoomsSold    Decimal? @map("expected_rooms_sold") @db.Decimal(8, 2)
+  expectedAdr          Decimal? @map("expected_adr") @db.Decimal(12, 2)
+  expectedRevpar       Decimal? @map("expected_revpar") @db.Decimal(12, 2)
+  expectedTrevpar      Decimal? @map("expected_trevpar") @db.Decimal(12, 2)
+  expectedGoppar       Decimal? @map("expected_goppar") @db.Decimal(12, 2)
+  expectedRoomRevenue  Decimal? @map("expected_room_revenue") @db.Decimal(12, 2)
+  expectedTotalRevenue Decimal? @map("expected_total_revenue") @db.Decimal(12, 2)
+  expectedProfit       Decimal? @map("expected_profit") @db.Decimal(12, 2)
+  cancellationProbability Decimal? @map("cancellation_probability") @db.Decimal(5, 2)
+  noShowProbability    Decimal? @map("no_show_probability") @db.Decimal(5, 2)
+  confidence           Decimal? @db.Decimal(5, 2)
+  modelVersion         String?  @map("model_version")
+  driversJson          Json     @default("[]") @map("drivers_json")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, forecastDate])
+  @@map("revenue_forecasts")
+}
+
+model RevenueRecommendation {
+  id                   String    @id @default(cuid())
+  propertyId           String    @map("property_id")
+  recommendationType   String    @map("recommendation_type")
+  targetDate           DateTime  @map("target_date")
+  roomTypeId           String?   @map("room_type_id")
+  ratePlanId           String?   @map("rate_plan_id")
+  channelId            String?   @map("channel_id")
+  currentValueJson     Json      @default("{}") @map("current_value_json")
+  recommendedValueJson Json      @default("{}") @map("recommended_value_json")
+  expectedImpactJson   Json      @default("{}") @map("expected_impact_json")
+  reasonJson           Json      @default("[]") @map("reason_json")
+  confidence           Decimal?  @db.Decimal(5, 2)
+  riskLevel            String    @default("medium") @map("risk_level")
+  status               String    @default("pending")
+  approvedBy           String?   @map("approved_by")
+  rejectedBy           String?   @map("rejected_by")
+  appliedAt            DateTime? @map("applied_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, status, targetDate])
+  @@map("revenue_recommendations")
+}
+
+model DemandCalendarEvent {
+  id             String   @id @default(cuid())
+  propertyId     String   @map("property_id")
+  name           String
+  eventType      String?  @map("event_type")
+  startDate      DateTime @map("start_date")
+  endDate        DateTime @map("end_date")
+  expectedImpact String?  @map("expected_impact")
+  impactScore    Decimal? @map("impact_score") @db.Decimal(5, 2)
+  source         String?
+  metadataJson   Json     @default("{}") @map("metadata_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, startDate, endDate])
+  @@map("demand_calendar_events")
+}
+
+model ChannelProfitabilitySnapshot {
+  id             String   @id @default(cuid())
+  propertyId     String   @map("property_id")
+  date           DateTime
+  channel        String
+  grossRevenue   Decimal? @map("gross_revenue") @db.Decimal(12, 2)
+  commissionCost Decimal? @map("commission_cost") @db.Decimal(12, 2)
+  paymentCost    Decimal? @map("payment_cost") @db.Decimal(12, 2)
+  operatingCost  Decimal? @map("operating_cost") @db.Decimal(12, 2)
+  netRevenue     Decimal? @map("net_revenue") @db.Decimal(12, 2)
+  profit         Decimal? @db.Decimal(12, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, date, channel])
+  @@map("channel_profitability_snapshots")
+}
+
+model RevenueDailySnapshot {
+  id                       String   @id @default(cuid())
+  propertyId               String   @map("property_id")
+  snapshotDate             DateTime @map("snapshot_date")
+  roomTypeId               String?  @map("room_type_id")
+  ratePlanId               String?  @map("rate_plan_id")
+  channelId                String?  @map("channel_id")
+  segment                  String?
+  market                   String?
+  totalOcc                 Int      @default(0) @map("total_occ")
+  arrivalRooms             Int      @default(0) @map("arrival_rooms")
+  departureRooms           Int      @default(0) @map("departure_rooms")
+  compRooms                Int      @default(0) @map("comp_rooms")
+  houseUseRooms            Int      @default(0) @map("house_use_rooms")
+  dayUseRooms              Int      @default(0) @map("day_use_rooms")
+  noShowRooms              Int      @default(0) @map("no_show_rooms")
+  oooRooms                 Int      @default(0) @map("ooo_rooms")
+  deductIndividualRooms    Int      @default(0) @map("deduct_individual_rooms")
+  nonDeductIndividualRooms Int      @default(0) @map("non_deduct_individual_rooms")
+  deductGroupRooms         Int      @default(0) @map("deduct_group_rooms")
+  nonDeductGroupRooms      Int      @default(0) @map("non_deduct_group_rooms")
+  adultsChildren           Int      @default(0) @map("adults_children")
+  roomRevenue              Decimal  @default(0) @map("room_revenue") @db.Decimal(12, 2)
+  totalRevenue             Decimal  @default(0) @map("total_revenue") @db.Decimal(12, 2)
+  netRoomRevenue           Decimal  @default(0) @map("net_room_revenue") @db.Decimal(12, 2)
+  grossOperatingProfit     Decimal? @map("gross_operating_profit") @db.Decimal(12, 2)
+  adr                      Decimal? @db.Decimal(12, 2)
+  revpar                   Decimal? @db.Decimal(12, 2)
+  trevpar                  Decimal? @db.Decimal(12, 2)
+  goppar                   Decimal? @db.Decimal(12, 2)
+  occupancyPercent         Decimal? @map("occupancy_percent") @db.Decimal(5, 2)
+  dataSource               String   @default("system") @map("data_source")
+  createdAt                DateTime @default(now()) @map("created_at")
+  updatedAt                DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, snapshotDate, roomTypeId, ratePlanId, channelId, segment, market])
+  @@index([propertyId, snapshotDate])
+  @@map("revenue_daily_snapshots")
+}
+
+model RevenueForecastSnapshot {
+  id                               String   @id @default(cuid())
+  propertyId                       String   @map("property_id")
+  forecastDate                     DateTime @map("forecast_date")
+  roomTypeId                       String?  @map("room_type_id")
+  ratePlanId                       String?  @map("rate_plan_id")
+  channelId                        String?  @map("channel_id")
+  segment                          String?
+  market                           String?
+  expectedTotalOcc                 Decimal? @map("expected_total_occ") @db.Decimal(8, 2)
+  expectedArrivalRooms             Decimal? @map("expected_arrival_rooms") @db.Decimal(8, 2)
+  expectedDepartureRooms           Decimal? @map("expected_departure_rooms") @db.Decimal(8, 2)
+  expectedCompRooms                Decimal? @map("expected_comp_rooms") @db.Decimal(8, 2)
+  expectedHouseUseRooms            Decimal? @map("expected_house_use_rooms") @db.Decimal(8, 2)
+  expectedDayUseRooms              Decimal? @map("expected_day_use_rooms") @db.Decimal(8, 2)
+  expectedNoShowRooms              Decimal? @map("expected_no_show_rooms") @db.Decimal(8, 2)
+  expectedOooRooms                 Decimal? @map("expected_ooo_rooms") @db.Decimal(8, 2)
+  expectedDeductIndividualRooms    Decimal? @map("expected_deduct_individual_rooms") @db.Decimal(8, 2)
+  expectedNonDeductIndividualRooms Decimal? @map("expected_non_deduct_individual_rooms") @db.Decimal(8, 2)
+  expectedDeductGroupRooms         Decimal? @map("expected_deduct_group_rooms") @db.Decimal(8, 2)
+  expectedNonDeductGroupRooms      Decimal? @map("expected_non_deduct_group_rooms") @db.Decimal(8, 2)
+  expectedAdultsChildren           Decimal? @map("expected_adults_children") @db.Decimal(8, 2)
+  expectedRoomRevenue              Decimal? @map("expected_room_revenue") @db.Decimal(12, 2)
+  expectedTotalRevenue             Decimal? @map("expected_total_revenue") @db.Decimal(12, 2)
+  expectedNetRoomRevenue           Decimal? @map("expected_net_room_revenue") @db.Decimal(12, 2)
+  expectedGrossOperatingProfit     Decimal? @map("expected_gross_operating_profit") @db.Decimal(12, 2)
+  expectedAdr                      Decimal? @map("expected_adr") @db.Decimal(12, 2)
+  expectedRevpar                   Decimal? @map("expected_revpar") @db.Decimal(12, 2)
+  expectedTrevpar                  Decimal? @map("expected_trevpar") @db.Decimal(12, 2)
+  expectedGoppar                   Decimal? @map("expected_goppar") @db.Decimal(12, 2)
+  expectedOccupancyPercent         Decimal? @map("expected_occupancy_percent") @db.Decimal(5, 2)
+  confidence                       Decimal? @db.Decimal(5, 2)
+  confidenceLowJson                Json     @default("{}") @map("confidence_low_json")
+  confidenceHighJson               Json     @default("{}") @map("confidence_high_json")
+  driversJson                      Json     @default("[]") @map("drivers_json")
+  modelVersion                     String?  @map("model_version")
+  createdAt                        DateTime @default(now()) @map("created_at")
+  updatedAt                        DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, forecastDate, roomTypeId, ratePlanId, channelId, segment, market, modelVersion])
+  @@index([propertyId, forecastDate])
+  @@map("revenue_forecast_snapshots")
+}
+
+// On-the-books (OTB) captured "as of" a capture date, per stay date. Lets us
+// compute real PACE (build-up vs a prior capture / STLY) and PICKUP (net new
+// bookings in a window). Captured nightly; one row per (property, capture, stay).
+model RevenuePaceSnapshot {
+  id           String   @id @default(cuid())
+  propertyId   String   @map("property_id")
+  captureDate  DateTime @map("capture_date") @db.Date
+  stayDate     DateTime @map("stay_date") @db.Date
+  roomsOtb     Int      @default(0) @map("rooms_otb")
+  revenueOtb   Decimal  @default(0) @map("revenue_otb") @db.Decimal(12, 2)
+  reservations Int      @default(0)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@unique([propertyId, captureDate, stayDate])
+  @@index([propertyId, stayDate])
+  @@index([propertyId, captureDate])
+  @@map("revenue_pace_snapshots")
+}
+
+// Forecast accuracy log: a stored forecast value vs the realized actual for a
+// stay date, with absolute/percentage error. Powers the accuracy view.
+model ForecastAccuracy {
+  id            String   @id @default(cuid())
+  propertyId    String   @map("property_id")
+  stayDate      DateTime @map("stay_date") @db.Date
+  metric        String
+  segment       String?
+  forecastValue Decimal  @map("forecast_value") @db.Decimal(14, 4)
+  actualValue   Decimal  @map("actual_value") @db.Decimal(14, 4)
+  absError      Decimal  @map("abs_error") @db.Decimal(14, 4)
+  pctError      Decimal? @map("pct_error") @db.Decimal(8, 2)
+  modelVersion  String?  @map("model_version")
+  capturedAt    DateTime @default(now()) @map("captured_at")
+
+  @@unique([propertyId, stayDate, metric, segment])
+  @@index([propertyId, stayDate])
+  @@map("forecast_accuracy")
+}
+
+// A rate-shop run: captures competitor rates into CompetitorRateSnapshot. The
+// provider is deterministic/honest by default (no live scraper configured) and
+// labelled via `source`.
+model RateShopJob {
+  id          String    @id @default(cuid())
+  propertyId  String    @map("property_id")
+  status      String    @default("completed")
+  shopDate    DateTime  @map("shop_date") @db.Date
+  daysAhead   Int       @default(30) @map("days_ahead")
+  competitors Int       @default(0)
+  snapshots   Int       @default(0)
+  source      String    @default("deterministic")
+  startedAt   DateTime  @default(now()) @map("started_at")
+  finishedAt  DateTime? @map("finished_at")
+
+  @@index([propertyId, shopDate])
+  @@map("rate_shop_jobs")
+}
+
+// A pricing rule: when occupancy falls in [min,max], adjust the BAR by a percent
+// or fixed amount, clamped to [minPrice,maxPrice]. Evaluated by priority asc.
+model PricingRule {
+  id           String   @id @default(cuid())
+  propertyId   String   @map("property_id")
+  name         String
+  priority     Int      @default(100)
+  minOccupancy Decimal? @map("min_occupancy") @db.Decimal(5, 2)
+  maxOccupancy Decimal? @map("max_occupancy") @db.Decimal(5, 2)
+  adjustType   String   @default("percent") @map("adjust_type")
+  adjustValue  Decimal  @default(0) @map("adjust_value") @db.Decimal(12, 2)
+  minPrice     Decimal? @map("min_price") @db.Decimal(12, 2)
+  maxPrice     Decimal? @map("max_price") @db.Decimal(12, 2)
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active, priority])
+  @@map("pricing_rules")
+}
+
+// Optional BAR ladder: recommendations can snap to the nearest defined level.
+model BarLevel {
+  id         String   @id @default(cuid())
+  propertyId String   @map("property_id")
+  name       String
+  price      Decimal  @db.Decimal(12, 2)
+  sortOrder  Int      @default(0) @map("sort_order")
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("bar_levels")
+}
+
+// Monthly budget targets, used for budget-vs-forecast-vs-actual variance.
+model Budget {
+  id                  String   @id @default(cuid())
+  propertyId          String   @map("property_id")
+  periodMonth         String   @map("period_month")
+  budgetedRoomsSold   Int?     @map("budgeted_rooms_sold")
+  budgetedOccupancy   Decimal? @map("budgeted_occupancy") @db.Decimal(5, 2)
+  budgetedAdr         Decimal? @map("budgeted_adr") @db.Decimal(12, 2)
+  budgetedRoomRevenue Decimal? @map("budgeted_room_revenue") @db.Decimal(14, 2)
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, periodMonth])
+  @@map("budgets")
+}
+
+// Market segment catalog (transient/corporate/group/wholesale/other).
+model MarketSegment {
+  id         String   @id @default(cuid())
+  propertyId String   @map("property_id")
+  code       String
+  name       String
+  category   String?
+  active     Boolean  @default(true)
+  sortOrder  Int      @default(0) @map("sort_order")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([propertyId, code])
+  @@index([propertyId, active])
+  @@map("market_segments")
+}
+
+// Email connector: a connected mailbox the AI reads to extract reservations.
+// Refresh token / IMAP password are encrypted at rest (registered in PII_FIELDS).
+model EmailConnection {
+  id                String    @id @default(cuid())
+  propertyId        String    @map("property_id")
+  provider          String    // gmail | microsoft | imap | manual
+  status            String    @default("pending_auth") // pending_auth | connected | error | disconnected
+  emailAddress      String?   @map("email_address")
+  oauthRefreshToken String?   @map("oauth_refresh_token")
+  imapPassword      String?   @map("imap_password")
+  configJson        Json      @default("{}") @map("config_json")
+  cursor            String?   // historyId / deltaLink / last UID / last ISO date
+  lastSyncAt        DateTime? @map("last_sync_at")
+  lastError         String?   @map("last_error")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@index([propertyId, status])
+  @@map("email_connections")
+}
+
+// Staged inbound email + its AI-extracted reservation draft (dedup by messageId).
+// GDPR: we keep a short snippet + structured draft, not the full raw body.
+model InboundEmail {
+  id            String    @id @default(cuid())
+  connectionId  String    @map("connection_id")
+  propertyId    String    @map("property_id")
+  provider      String
+  messageId     String    @map("message_id")
+  threadId      String?   @map("thread_id")
+  fromAddress   String?   @map("from_address")
+  subject       String?
+  receivedAt    DateTime? @map("received_at")
+  snippet       String?
+  detectedSource String?  @map("detected_source") // booking_com | expedia | airbnb | direct | unknown
+  status        String    @default("received") // received | ignored | review | reservation_created | error
+  parseSource   String?   @map("parse_source") // ai | rules | none
+  confidence    Decimal?  @db.Decimal(5, 2)
+  draftJson     Json      @default("{}") @map("draft_json")
+  reviewItemId  String?   @map("review_item_id")
+  reservationId String?   @map("reservation_id")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@unique([connectionId, messageId])
+  @@index([propertyId, status])
+  @@map("inbound_emails")
+}
+
+model RevenueReportView {
+  id          String   @id @default(cuid())
+  propertyId  String   @map("property_id")
+  userId      String?  @map("user_id")
+  name        String
+  reportType  String   @default("history_forecast") @map("report_type")
+  filtersJson Json     @default("{}") @map("filters_json")
+  layoutJson  Json     @default("{}") @map("layout_json")
+  isShared    Boolean  @default(false) @map("is_shared")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, reportType, isShared])
+  @@map("revenue_report_views")
+}
+
+model GuestProfile {
+  id                String   @id @default(cuid())
+  organizationId    String   @map("organization_id")
+  primaryGuestId    String?  @map("primary_guest_id")
+  displayName       String?  @map("display_name")
+  email             String?
+  phone             String?
+  preferredLanguage String?  @map("preferred_language")
+  vipLevel          String?  @map("vip_level")
+  lifetimeValue     Decimal  @default(0) @map("lifetime_value") @db.Decimal(12, 2)
+  totalStays        Int      @default(0) @map("total_stays")
+  totalNights       Int      @default(0) @map("total_nights")
+  totalSpend        Decimal  @default(0) @map("total_spend") @db.Decimal(12, 2)
+  preferencesJson   Json     @default("{}") @map("preferences_json")
+  consentJson       Json     @default("{}") @map("consent_json")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([organizationId, email])
+  @@map("guest_profiles")
+}
+
+model GuestProfileLink {
+  id              String   @id @default(cuid())
+  guestProfileId  String   @map("guest_profile_id")
+  guestId         String   @map("guest_id")
+  linkConfidence  Decimal? @map("link_confidence") @db.Decimal(5, 2)
+  linkReason      String?  @map("link_reason")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([guestProfileId, guestId])
+  @@map("guest_profile_links")
+}
+
+model CrmSegment {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  description    String?
+  rulesJson      Json     @default("{}") @map("rules_json")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, active])
+  @@map("crm_segments")
+}
+
+model CrmCampaign {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  campaignType   String   @map("campaign_type")
+  segmentId      String?  @map("segment_id")
+  channel        String
+  status         String   @default("draft")
+  scheduleJson   Json     @default("{}") @map("schedule_json")
+  contentJson    Json     @default("{}") @map("content_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, status])
+  @@map("crm_campaigns")
+}
+
+model LoyaltyProgram {
+  id                String   @id @default(cuid())
+  organizationId    String   @map("organization_id")
+  name              String
+  configurationJson Json     @default("{}") @map("configuration_json")
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, active])
+  @@map("loyalty_programs")
+}
+
+model LoyaltyMembership {
+  id               String   @id @default(cuid())
+  loyaltyProgramId String   @map("loyalty_program_id")
+  guestProfileId   String   @map("guest_profile_id")
+  tier             String?
+  pointsBalance    Int      @default(0) @map("points_balance")
+  status           String   @default("active")
+  joinedAt         DateTime @default(now()) @map("joined_at")
+
+  @@index([loyaltyProgramId, guestProfileId])
+  @@map("loyalty_memberships")
+}
+
+model LoyaltyTransaction {
+  id                String   @id @default(cuid())
+  membershipId      String   @map("membership_id")
+  type              String
+  points            Int
+  reason            String?
+  externalReference String?  @map("external_reference")
+  occurredAt        DateTime @default(now()) @map("occurred_at")
+  propertyId        String?  @map("property_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([membershipId, occurredAt])
+  @@index([propertyId, type, occurredAt])
+  @@map("loyalty_transactions")
+}
+
+model SalesAccount {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  accountType    String   @map("account_type")
+  name           String
+  taxId          String?  @map("tax_id")
+  contactJson    Json     @default("{}") @map("contact_json")
+  billingJson    Json     @default("{}") @map("billing_json")
+  status         String   @default("active")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, status])
+  @@map("sales_accounts")
+}
+
+model SalesOpportunity {
+  id                String    @id @default(cuid())
+  propertyId        String    @map("property_id")
+  accountId         String?   @map("account_id")
+  name              String
+  opportunityType   String    @map("opportunity_type")
+  stage             String
+  estimatedValue    Decimal?  @map("estimated_value") @db.Decimal(12, 2)
+  expectedValue     Decimal?  @map("expected_value") @db.Decimal(14, 2)
+  probability       Decimal?  @db.Decimal(5, 2)
+  expectedCloseDate DateTime? @map("expected_close_date")
+  ownerUserId       String?   @map("owner_user_id")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, stage])
+  @@map("sales_opportunities")
+}
+
+model GroupBooking {
+  id               String   @id @default(cuid())
+  propertyId       String   @map("property_id")
+  accountId        String?  @map("account_id")
+  opportunityId    String?  @map("opportunity_id")
+  name             String
+  status           String   @default("draft")
+  arrivalDate      DateTime @map("arrival_date")
+  departureDate    DateTime @map("departure_date")
+  releaseDate      DateTime? @map("release_date")
+  masterFolioId    String?  @map("master_folio_id")
+  billingRulesJson Json     @default("{}") @map("billing_rules_json")
+  code              String?
+  groupType         String   @default("corporate") @map("group_type")
+  marketCode        String?  @map("market_code")
+  sourceCode        String?  @map("source_code")
+  assignedToUserId  String?  @map("assigned_to_user_id")
+  contactPersonName String?  @map("contact_person_name")
+  contactEmail      String?  @map("contact_email")
+  contactPhone      String?  @map("contact_phone")
+  contactRole       String?  @map("contact_role")
+  companyName       String?  @map("company_name")
+  companyTaxId      String?  @map("company_tax_id")
+  companyAddress    String?  @map("company_address")
+  industry          String?
+  contractedRate    Decimal? @map("contracted_rate") @db.Decimal(12, 2)
+  currency          String   @default("EUR")
+  rateType          String   @default("net") @map("rate_type")
+  commissionPct     Decimal? @map("commission_pct") @db.Decimal(5, 2)
+  cutOffDate          DateTime? @map("cut_off_date") @db.Date
+  roomingListDueDate  DateTime? @map("rooming_list_due_date") @db.Date
+  attritionType       String    @default("cumulative") @map("attrition_type")
+  attritionThresholdPct Decimal @default(80) @map("attrition_threshold_pct") @db.Decimal(5, 2)
+  attritionPenaltyPct   Decimal @default(100) @map("attrition_penalty_pct") @db.Decimal(5, 2)
+  billingMethod   String   @default("master_folio") @map("billing_method")
+  paymentMethod   String   @default("cc_guarantee") @map("payment_method")
+  depositPct      Decimal? @map("deposit_pct") @db.Decimal(5, 2)
+  breakfastIncluded Boolean @default(false) @map("breakfast_included")
+  mealPlan          String  @default("none") @map("meal_plan")
+  welcomeCocktail   Boolean @default(false) @map("welcome_cocktail")
+  galaDinner        Boolean @default(false) @map("gala_dinner")
+  regimenEspecialAaee  Boolean @default(false) @map("regimen_especial_aaee")
+  confidentialArrival  Boolean @default(false) @map("confidential_arrival")
+  notes             String?
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status, arrivalDate])
+  @@map("group_bookings")
+}
+
+model GroupRoomBlock {
+  id             String   @id @default(cuid())
+  groupBookingId String   @map("group_booking_id")
+  roomTypeId     String   @map("room_type_id")
+  date           DateTime
+  blockedCount   Int      @map("blocked_count")
+  pickedUpCount  Int      @default(0) @map("picked_up_count")
+  rate           Decimal? @db.Decimal(12, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([groupBookingId, date])
+  @@map("group_room_blocks")
+}
+
+model EventSpace {
+  id           String   @id @default(cuid())
+  propertyId   String   @map("property_id")
+  name         String
+  spaceId      String?  @map("space_id")
+  capacityJson Json     @default("{}") @map("capacity_json")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("event_spaces")
+}
+
+model Event {
+  id             String   @id @default(cuid())
+  propertyId     String   @map("property_id")
+  groupBookingId String?  @map("group_booking_id")
+  eventSpaceId   String?  @map("event_space_id")
+  name           String
+  eventType      String?  @map("event_type")
+  startAt        DateTime @map("start_at")
+  endAt          DateTime @map("end_at")
+  status         String   @default("draft")
+  setupJson      Json     @default("{}") @map("setup_json")
+  cateringJson   Json     @default("{}") @map("catering_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, startAt, endAt])
+  @@map("events")
+}
+
+model EventOrder {
+  id          String   @id @default(cuid())
+  eventId     String   @map("event_id")
+  orderType   String   @map("order_type")
+  contentJson Json     @default("{}") @map("content_json")
+  status      String   @default("draft")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([eventId, status])
+  @@map("event_orders")
+}
+
+model StaffProfile {
+  id             String   @id @default(cuid())
+  userId         String   @map("user_id")
+  propertyId     String   @map("property_id")
+  employeeCode   String?  @map("employee_code")
+  departmentId   String?  @map("department_id")
+  employmentType String?  @map("employment_type")
+  hourlyCost     Decimal? @map("hourly_cost") @db.Decimal(12, 2)
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("staff_profiles")
+}
+
+model Shift {
+  id             String   @id @default(cuid())
+  propertyId     String   @map("property_id")
+  staffProfileId String?  @map("staff_profile_id")
+  departmentId   String?  @map("department_id")
+  shiftDate      DateTime @map("shift_date")
+  startAt        DateTime @map("start_at")
+  endAt          DateTime @map("end_at")
+  status         String   @default("scheduled")
+  roleLabel      String?  @map("role_label")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, shiftDate])
+  @@map("shifts")
+}
+
+model TimeClockEntry {
+  id             String   @id @default(cuid())
+  propertyId     String   @map("property_id")
+  staffProfileId String   @map("staff_profile_id")
+  clockType      String   @map("clock_type")
+  clockAt        DateTime @map("clock_at")
+  source         String?
+  deviceId       String?  @map("device_id")
+  metadataJson   Json     @default("{}") @map("metadata_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, staffProfileId, clockAt])
+  @@map("time_clock_entries")
+}
+
+model AbsenceRequest {
+  id             String   @id @default(cuid())
+  propertyId     String   @map("property_id")
+  staffProfileId String   @map("staff_profile_id")
+  absenceType    String   @map("absence_type")
+  startDate      DateTime @map("start_date")
+  endDate        DateTime @map("end_date")
+  status         String   @default("pending")
+  approvedBy     String?  @map("approved_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status, startDate])
+  @@map("absence_requests")
+}
+
+model LaborForecast {
+  id                 String   @id @default(cuid())
+  propertyId         String   @map("property_id")
+  forecastDate       DateTime @map("forecast_date")
+  departmentId       String?  @map("department_id")
+  requiredStaffCount Decimal? @map("required_staff_count") @db.Decimal(8, 2)
+  requiredLaborHours Decimal? @map("required_labor_hours") @db.Decimal(8, 2)
+  reasonJson         Json     @default("{}") @map("reason_json")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, forecastDate])
+  @@map("labor_forecasts")
+}
+
+model Supplier {
+  id               String   @id @default(cuid())
+  organizationId   String   @map("organization_id")
+  name             String
+  taxId            String?  @map("tax_id")
+  contactJson      Json     @default("{}") @map("contact_json")
+  paymentTermsJson Json     @default("{}") @map("payment_terms_json")
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, active])
+  @@map("suppliers")
+}
+
+model StockLocation {
+  id           String   @id @default(cuid())
+  propertyId   String   @map("property_id")
+  name         String
+  locationType String   @map("location_type")
+  roomId       String?  @map("room_id")
+  spaceId      String?  @map("space_id")
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("stock_locations")
+}
+
+model InventoryItem {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  sku               String?
+  name              String
+  category          String?
+  unit              String
+  defaultSupplierId String?  @map("default_supplier_id")
+  minLevel          Decimal? @map("min_level") @db.Decimal(12, 2)
+  maxLevel          Decimal? @map("max_level") @db.Decimal(12, 2)
+  unitCost          Decimal? @map("unit_cost") @db.Decimal(12, 4)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("inventory_items")
+}
+
+// MenuItem — what the POS sells. Linked to a PosOutlet (string id) so the
+// same property can have different menus per outlet (restaurant/bar/spa).
+// A MenuItem optionally has a MenuRecipe that decrements InventoryItems
+// when the ticket closes — bridging POS revenue with F&B inventory.
+model MenuItem {
+  id          String   @id @default(cuid())
+  propertyId  String   @map("property_id")
+  outletId    String   @map("outlet_id") // free string matching PosOutlet.id (e.g. "out_bar")
+  sku         String?
+  name        String
+  category    String?
+  price       Decimal  @db.Decimal(12, 2)
+  taxRate     Decimal? @map("tax_rate") @db.Decimal(5, 2)
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, outletId, name])
+  @@index([propertyId, outletId, active])
+  @@map("menu_items")
+}
+
+// MenuRecipe — a line in the bill-of-materials of a MenuItem. One sale of
+// the MenuItem consumes `quantity` of `inventoryItemId` (in the item's unit).
+// Examples:
+//   "Copa vino tinto"  → 0.15 botella Rioja Reserva
+//   "Café con leche"   → 0.008 kg café molido + 0.18 L leche
+//   "Ración patatas"   → 0.35 kg patatas + 0.05 L aceite
+model MenuRecipe {
+  id              String   @id @default(cuid())
+  menuItemId      String   @map("menu_item_id")
+  inventoryItemId String   @map("inventory_item_id")
+  quantity        Decimal  @db.Decimal(12, 4)
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([menuItemId])
+  @@index([inventoryItemId])
+  @@map("menu_recipes")
+}
+
+model StockMovement {
+  id              String   @id @default(cuid())
+  propertyId      String   @map("property_id")
+  inventoryItemId String   @map("inventory_item_id")
+  stockLocationId String   @map("stock_location_id")
+  movementType    String   @map("movement_type")
+  quantity        Decimal  @db.Decimal(12, 2)
+  unitCost        Decimal? @map("unit_cost") @db.Decimal(12, 2)
+  sourceType      String?  @map("source_type")
+  sourceId        String?  @map("source_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, inventoryItemId, createdAt])
+  @@map("stock_movements")
+}
+
+model PurchaseOrder {
+  id           String    @id @default(cuid())
+  propertyId   String    @map("property_id")
+  supplierId   String?   @map("supplier_id")
+  status       String    @default("draft")
+  total        Decimal   @default(0) @db.Decimal(12, 2)
+  approvedBy   String?   @map("approved_by")
+  orderedAt    DateTime? @map("ordered_at")
+  promisedDate DateTime? @map("promised_date")
+  receivedDate DateTime? @map("received_date")
+  receivedAt   DateTime? @map("received_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@index([propertyId, promisedDate])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderLine {
+  id              String  @id @default(cuid())
+  purchaseOrderId String  @map("purchase_order_id")
+  inventoryItemId String? @map("inventory_item_id")
+  description     String
+  quantity        Decimal @db.Decimal(12, 2)
+  unitPrice       Decimal @map("unit_price") @db.Decimal(12, 2)
+  total           Decimal @db.Decimal(12, 2)
+
+  @@index([purchaseOrderId])
+  @@map("purchase_order_lines")
+}
+
+model GuestPortalSession {
+  id            String   @id @default(cuid())
+  propertyId    String   @map("property_id")
+  reservationId String?  @map("reservation_id")
+  guestId       String?  @map("guest_id")
+  tokenHash     String   @map("token_hash")
+  status        String   @default("active")
+  expiresAt     DateTime @map("expires_at")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status, expiresAt])
+  @@map("guest_portal_sessions")
+}
+
+model GuestPortalAction {
+  id            String   @id @default(cuid())
+  propertyId    String   @map("property_id")
+  reservationId String?  @map("reservation_id")
+  guestId       String?  @map("guest_id")
+  actionType    String   @map("action_type")
+  status        String   @default("pending")
+  payloadJson   Json     @default("{}") @map("payload_json")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, actionType, status])
+  @@map("guest_portal_actions")
+}
+
+model UpsellOffer {
+  id                    String   @id @default(cuid())
+  propertyId            String   @map("property_id")
+  name                  String
+  offerType             String   @map("offer_type")
+  price                 Decimal? @db.Decimal(12, 2)
+  taxCode               String?  @map("tax_code")
+  availabilityRulesJson Json     @default("{}") @map("availability_rules_json")
+  active                Boolean  @default(true)
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("upsell_offers")
+}
+
+model GuestUpsellPurchase {
+  id             String   @id @default(cuid())
+  propertyId     String   @map("property_id")
+  reservationId  String?  @map("reservation_id")
+  upsellOfferId  String?  @map("upsell_offer_id")
+  status         String   @default("pending")
+  amount         Decimal? @db.Decimal(12, 2)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("guest_upsell_purchases")
+}
+
+model UpsellImpression {
+  id                   String   @id @default(cuid())
+  offerId              String   @map("offer_id")
+  reservationId        String?  @map("reservation_id")
+  guestId              String?  @map("guest_id")
+  propertyId           String   @map("property_id")
+  channel              String?
+  shownAt              DateTime @default(now()) @map("shown_at")
+  converted            Boolean  @default(false)
+  conversionPurchaseId String?  @map("conversion_purchase_id")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, shownAt])
+  @@index([offerId, shownAt])
+  @@map("upsell_impressions")
+}
+
+model ReviewSource {
+  id         String   @id @default(cuid())
+  propertyId String   @map("property_id")
+  provider   String
+  status     String   @default("connected")
+  configJson Json     @default("{}") @map("config_json")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, provider])
+  @@map("review_sources")
+}
+
+model GuestReview {
+  id                String    @id @default(cuid())
+  propertyId        String    @map("property_id")
+  reservationId     String?   @map("reservation_id")
+  guestId           String?   @map("guest_id")
+  source            String
+  rating            Decimal?  @db.Decimal(3, 2)
+  title             String?
+  body              String?
+  language          String?
+  sentiment         String?
+  topicsJson        Json      @default("{}") @map("topics_json")
+  externalReference String?   @map("external_reference")
+  receivedAt        DateTime? @map("received_at")
+  respondedAt       DateTime? @map("responded_at")
+  responseBody      String?   @map("response_body")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, rating, createdAt])
+  @@index([propertyId, respondedAt])
+  @@map("guest_reviews")
+}
+
+model Survey {
+  id            String   @id @default(cuid())
+  propertyId    String   @map("property_id")
+  name          String
+  surveyType    String   @map("survey_type")
+  questionsJson Json     @default("[]") @map("questions_json")
+  active        Boolean  @default(true)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("surveys")
+}
+
+model SurveyResponse {
+  id            String   @id @default(cuid())
+  surveyId      String   @map("survey_id")
+  reservationId String?  @map("reservation_id")
+  guestId       String?  @map("guest_id")
+  responsesJson Json     @default("{}") @map("responses_json")
+  score         Decimal? @db.Decimal(5, 2)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([surveyId, createdAt])
+  @@map("survey_responses")
+}
+
+model QualityCase {
+  id            String    @id @default(cuid())
+  propertyId    String    @map("property_id")
+  reservationId String?   @map("reservation_id")
+  guestId       String?   @map("guest_id")
+  roomId        String?   @map("room_id")
+  caseType      String    @map("case_type")
+  priority      String    @default("normal")
+  status        String    @default("open")
+  title         String
+  description   String?
+  ownerUserId   String?   @map("owner_user_id")
+  slaTargetAt   DateTime? @map("sla_target_at")
+  rootCause     String?   @map("root_cause")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  resolvedAt    DateTime? @map("resolved_at")
+
+  @@index([propertyId, status, priority])
+  @@index([propertyId, slaTargetAt])
+  @@map("quality_cases")
+}
+
+model UtilityMeter {
+  id         String   @id @default(cuid())
+  propertyId String   @map("property_id")
+  meterType  String   @map("meter_type")
+  name       String
+  buildingId String?  @map("building_id")
+  floorId    String?  @map("floor_id")
+  zoneId     String?  @map("zone_id")
+  unit       String
+  provider   String?
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, meterType, active])
+  @@map("utility_meters")
+}
+
+model UtilityReading {
+  id          String   @id @default(cuid())
+  propertyId  String   @map("property_id")
+  meterId     String   @map("meter_id")
+  readingDate DateTime @map("reading_date")
+  value       Decimal  @db.Decimal(14, 4)
+  source      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, meterId, readingDate])
+  @@map("utility_readings")
+}
+
+model SustainabilityMetric {
+  id           String   @id @default(cuid())
+  propertyId   String   @map("property_id")
+  metricDate   DateTime @map("metric_date")
+  metricCode   String   @map("metric_code")
+  value        Decimal? @db.Decimal(14, 4)
+  unit         String?
+  metadataJson Json     @default("{}") @map("metadata_json")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, metricCode, metricDate])
+  @@map("sustainability_metrics")
+}
+
+model SustainabilityAction {
+  id                 String   @id @default(cuid())
+  propertyId         String   @map("property_id")
+  title              String
+  description        String?
+  category           String?
+  status             String   @default("planned")
+  estimatedCost      Decimal? @map("estimated_cost") @db.Decimal(12, 2)
+  estimatedSavings   Decimal? @map("estimated_savings") @db.Decimal(12, 2)
+  linkedCapexProjectId String? @map("linked_capex_project_id")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("sustainability_actions")
+}
+
+model SafetyIncident {
+  id                 String    @id @default(cuid())
+  propertyId         String    @map("property_id")
+  incidentType       String    @map("incident_type")
+  severity           String
+  status             String    @default("open")
+  title              String
+  description        String?
+  locationEntityType String?   @map("location_entity_type")
+  locationEntityId   String?   @map("location_entity_id")
+  guestId            String?   @map("guest_id")
+  reservationId      String?   @map("reservation_id")
+  reportedBy         String?   @map("reported_by")
+  assignedTo         String?   @map("assigned_to")
+  occurredAt         DateTime? @map("occurred_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  resolvedAt         DateTime? @map("resolved_at")
+
+  @@index([propertyId, status, severity])
+  @@map("safety_incidents")
+}
+
+model IncidentEvidence {
+  id           String   @id @default(cuid())
+  incidentId   String   @map("incident_id")
+  evidenceType String   @map("evidence_type")
+  objectKey    String?  @map("object_key")
+  notes        String?
+  createdBy    String?  @map("created_by")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([incidentId])
+  @@map("incident_evidence")
+}
+
+model SafetyCheck {
+  id                 String   @id @default(cuid())
+  propertyId         String   @map("property_id")
+  checkType          String   @map("check_type")
+  title              String
+  frequency          String?
+  locationEntityType String?  @map("location_entity_type")
+  locationEntityId   String?  @map("location_entity_id")
+  assignedTo         String?  @map("assigned_to")
+  nextDueDate        DateTime? @map("next_due_date")
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active, nextDueDate])
+  @@map("safety_checks")
+}
+
+model SafetyCheckResult {
+  id            String   @id @default(cuid())
+  safetyCheckId String   @map("safety_check_id")
+  status        String
+  notes         String?
+  completedBy   String?  @map("completed_by")
+  completedAt   DateTime @default(now()) @map("completed_at")
+
+  @@index([safetyCheckId, completedAt])
+  @@map("safety_check_results")
+}
+
+model MetricDefinition {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  metricCode     String   @map("metric_code")
+  name           String
+  description    String?
+  formulaJson    Json     @default("{}") @map("formula_json")
+  category       String?
+  active         Boolean  @default(true)
+
+  @@unique([organizationId, metricCode])
+  @@map("metric_definitions")
+}
+
+model AnalyticsSnapshot {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  propertyId     String?  @map("property_id")
+  snapshotDate   DateTime @map("snapshot_date")
+  metricCode     String   @map("metric_code")
+  value          Decimal? @db.Decimal(14, 4)
+  dimensionsJson Json     @default("{}") @map("dimensions_json")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, snapshotDate])
+  @@map("analytics_snapshots")
+}
+
+model AnomalyEvent {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  propertyId     String?  @map("property_id")
+  anomalyType    String   @map("anomaly_type")
+  metricCode     String?  @map("metric_code")
+  severity       String
+  title          String
+  description    String?
+  detectedAt     DateTime @default(now()) @map("detected_at")
+  status         String   @default("open")
+
+  @@index([organizationId, propertyId, status])
+  @@map("anomaly_events")
+}
+
+model ScheduledReport {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  propertyId     String?  @map("property_id")
+  name           String
+  reportType     String   @map("report_type")
+  scheduleJson   Json     @default("{}") @map("schedule_json")
+  recipientsJson Json     @default("[]") @map("recipients_json")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, active])
+  @@map("scheduled_reports")
+}
+
+model DeveloperApp {
+  id               String   @id @default(cuid())
+  organizationId   String   @map("organization_id")
+  name             String
+  appType          String   @map("app_type")
+  status           String   @default("draft")
+  clientId         String   @unique @map("client_id")
+  clientSecretHash String?  @map("client_secret_hash")
+  scopes           String[]
+  createdBy        String?  @map("created_by")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, status])
+  @@map("developer_apps")
+}
+
+model WebhookSubscription {
+  id             String   @id @default(cuid())
+  developerAppId String   @map("developer_app_id")
+  propertyId     String?  @map("property_id")
+  eventTypes     String[] @map("event_types")
+  targetUrl      String   @map("target_url")
+  secretRef      String?  @map("secret_ref")
+  active         Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([developerAppId, active])
+  @@map("webhook_subscriptions")
+}
+
+model WebhookDelivery {
+  id                    String   @id @default(cuid())
+  webhookSubscriptionId String   @map("webhook_subscription_id")
+  eventType             String   @map("event_type")
+  payloadJson           Json     @default("{}") @map("payload_json")
+  status                String
+  responseStatus        Int?     @map("response_status")
+  errorMessage          String?  @map("error_message")
+  attemptedAt           DateTime @default(now()) @map("attempted_at")
+
+  @@index([webhookSubscriptionId, status, attemptedAt])
+  @@map("webhook_deliveries")
+}
+
+model ApiUsageLog {
+  id             String   @id @default(cuid())
+  developerAppId String?  @map("developer_app_id")
+  organizationId String?  @map("organization_id")
+  propertyId     String?  @map("property_id")
+  endpoint       String
+  method         String
+  statusCode     Int?     @map("status_code")
+  latencyMs      Int?     @map("latency_ms")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, createdAt])
+  @@map("api_usage_logs")
+}
+
+model AiPolicy {
+  id                String   @id @default(cuid())
+  organizationId    String   @map("organization_id")
+  propertyId        String?  @map("property_id")
+  policyCode        String   @map("policy_code")
+  name              String
+  configurationJson Json     @default("{}") @map("configuration_json")
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, active])
+  @@map("ai_policies")
+}
+
+model AiToolRegistry {
+  id                   String   @id @default(cuid())
+  toolName             String   @unique @map("tool_name")
+  moduleCode           String   @map("module_code")
+  riskLevel            String   @map("risk_level")
+  inputSchemaVersion   String?  @map("input_schema_version")
+  outputSchemaVersion  String?  @map("output_schema_version")
+  requiresConfirmation Boolean  @default(true) @map("requires_confirmation")
+  active               Boolean  @default(true)
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@index([moduleCode, active])
+  @@map("ai_tool_registry")
+}
+
+model AiPromptVersion {
+  id          String    @id @default(cuid())
+  promptCode  String    @map("prompt_code")
+  version     String
+  content     String
+  status      String    @default("draft")
+  notes       String?
+  createdBy   String?   @map("created_by")
+  publishedAt DateTime? @map("published_at")
+  archivedAt  DateTime? @map("archived_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@unique([promptCode, version])
+  @@index([promptCode, status])
+  @@map("ai_prompt_versions")
+}
+
+model AiEvaluation {
+  id             String    @id @default(cuid())
+  organizationId String?   @map("organization_id")
+  propertyId     String?   @map("property_id")
+  evaluationName String    @map("evaluation_name")
+  evaluationType String    @map("evaluation_type")
+  promptCode     String?   @map("prompt_code")
+  status         String    @default("pending")
+  score          Decimal?  @db.Decimal(5, 2)
+  passRate       Decimal?  @db.Decimal(5, 2) @map("pass_rate")
+  sampleSize     Int?      @map("sample_size")
+  resultsJson    Json      @default("{}") @map("results_json")
+  completedAt    DateTime? @map("completed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, status])
+  @@map("ai_evaluations")
+}
+
+model AiIncident {
+  id                  String    @id @default(cuid())
+  organizationId      String    @map("organization_id")
+  propertyId          String?   @map("property_id")
+  incidentType        String    @map("incident_type")
+  severity            String
+  title               String
+  description         String?
+  relatedAiToolCallId String?   @map("related_ai_tool_call_id")
+  status              String    @default("open")
+  assignedTo          String?   @map("assigned_to")
+  rootCause           String?   @map("root_cause")
+  resolutionNotes     String?   @map("resolution_notes")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  resolvedAt          DateTime? @map("resolved_at")
+
+  @@index([organizationId, propertyId, status])
+  @@map("ai_incidents")
+}
+
+model AiHumanReviewItem {
+  id                String   @id @default(cuid())
+  organizationId    String   @map("organization_id")
+  propertyId        String?  @map("property_id")
+  reviewType        String   @map("review_type")
+  relatedEntityType String?  @map("related_entity_type")
+  relatedEntityId   String?  @map("related_entity_id")
+  payloadJson       Json     @default("{}") @map("payload_json")
+  status            String   @default("pending")
+  assignedTo        String?  @map("assigned_to")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, status])
+  @@map("ai_human_review_items")
+}
+
+model IntegrationCategory {
+  id          String  @id @default(cuid())
+  code        String  @unique
+  name        String
+  description String?
+
+  @@map("integration_categories")
+}
+
+model IntegrationProvider {
+  id                   String   @id @default(cuid())
+  categoryId           String   @map("category_id")
+  code                 String   @unique
+  name                 String
+  authType             String   @map("auth_type")
+  supportedRegions     String[] @map("supported_regions")
+  capabilitiesJson     Json     @default("{}") @map("capabilities_json")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@index([categoryId])
+  @@map("integration_providers")
+}
+
+model IntegrationConnection {
+  id                   String    @id @default(cuid())
+  propertyId           String    @map("property_id")
+  providerId           String    @map("provider_id")
+  status               String
+  credentialsSecretRef String?   @map("credentials_secret_ref")
+  configJson           Json      @default("{}") @map("config_json")
+  lastSyncAt           DateTime? @map("last_sync_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("integration_connections")
+}
+
+model IntegrationEvent {
+  id            String   @id @default(cuid())
+  connectionId  String   @map("connection_id")
+  direction     String
+  eventType     String   @map("event_type")
+  payloadJson   Json     @default("{}") @map("payload_json")
+  status        String
+  errorMessage  String?  @map("error_message")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([connectionId, createdAt])
+  @@map("integration_events")
+}
+
+model Building {
+  id          String   @id @default(cuid())
+  propertyId  String   @map("property_id")
+  name        String
+  code        String?
+  description String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, active, sortOrder])
+  @@map("buildings")
+}
+
+model Floor {
+  id          String   @id @default(cuid())
+  propertyId  String   @map("property_id")
+  buildingId  String?  @map("building_id")
+  name        String
+  floorNumber Int?     @map("floor_number")
+  code        String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, buildingId, active, sortOrder])
+  @@map("floors")
+}
+
+model PropertyZone {
+  id          String   @id @default(cuid())
+  propertyId  String   @map("property_id")
+  buildingId  String?  @map("building_id")
+  floorId     String?  @map("floor_id")
+  name        String
+  code        String?
+  zoneType    String   @map("zone_type")
+  description String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, buildingId, floorId, zoneType])
+  @@map("property_zones")
+}
+
+model PropertySpace {
+  id          String   @id @default(cuid())
+  propertyId  String   @map("property_id")
+  buildingId  String?  @map("building_id")
+  floorId     String?  @map("floor_id")
+  zoneId      String?  @map("zone_id")
+  name        String
+  code        String?
+  spaceType   String   @map("space_type")
+  description String?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, buildingId, floorId, zoneId])
+  @@map("property_spaces")
+}
+
+model PropertyMapPosition {
+  id           String   @id @default(cuid())
+  propertyId   String   @map("property_id")
+  entityType   String   @map("entity_type")
+  entityId     String   @map("entity_id")
+  floorId      String?  @map("floor_id")
+  x            Decimal  @db.Decimal(10, 2)
+  y            Decimal  @db.Decimal(10, 2)
+  width        Decimal? @db.Decimal(10, 2)
+  height       Decimal? @db.Decimal(10, 2)
+  rotation     Decimal? @db.Decimal(10, 2)
+  metadataJson Json     @default("{}") @map("metadata_json")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, floorId, entityType])
+  @@map("property_map_positions")
+}
+
+model RatePlan {
+  id                 String   @id @default(cuid())
+  propertyId         String   @map("property_id")
+  code               String
+  name               String
+  ratePlanType       String   @map("rate_plan_type")
+  parentRatePlanId   String?  @map("parent_rate_plan_id")
+  derivationJson     Json     @default("{}") @map("derivation_json")
+  cancellationPolicyId String? @map("cancellation_policy_id")
+  mealPlan           String?  @map("meal_plan")
+  active             Boolean  @default(true)
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@unique([propertyId, code])
+  @@map("rate_plans")
+}
+
+model Channel {
+  id                   String    @id @default(cuid())
+  propertyId           String    @map("property_id")
+  providerCode         String    @map("provider_code")
+  name                 String
+  channelType          String    @map("channel_type")
+  status               String    @default("inactive")
+  commissionPercent    Decimal?  @map("commission_percent") @db.Decimal(5, 2)
+  paymentCostPercent   Decimal?  @map("payment_cost_percent") @db.Decimal(5, 2)
+  configurationJson    Json      @default("{}") @map("configuration_json")
+  credentialsSecretRef String?   @map("credentials_secret_ref")
+  lastSyncAt           DateTime? @map("last_sync_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("channels")
+}
+
+model ChannelRoomMapping {
+  id               String @id @default(cuid())
+  channelId        String @map("channel_id")
+  roomTypeId       String @map("room_type_id")
+  externalRoomCode String @map("external_room_code")
+  externalRoomName String? @map("external_room_name")
+  status           String @default("active")
+
+  @@unique([channelId, roomTypeId, externalRoomCode])
+  @@map("channel_room_mappings")
+}
+
+model ChannelRateMapping {
+  id               String @id @default(cuid())
+  channelId        String @map("channel_id")
+  ratePlanId       String @map("rate_plan_id")
+  externalRateCode String @map("external_rate_code")
+  externalRateName String? @map("external_rate_name")
+  status           String @default("active")
+
+  @@unique([channelId, ratePlanId, externalRateCode])
+  @@map("channel_rate_mappings")
+}
+
+model InventoryDay {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  roomTypeId        String   @map("room_type_id")
+  date              DateTime @db.Date
+  totalInventory    Int      @map("total_inventory")
+  availableCount    Int      @map("available_count")
+  outOfOrderCount   Int      @default(0) @map("out_of_order_count")
+  overbookingLimit  Int      @default(0) @map("overbooking_limit")
+  stopSell          Boolean  @default(false) @map("stop_sell")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, roomTypeId, date])
+  @@map("inventory_days")
+}
+
+model RestrictionDay {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  roomTypeId        String   @map("room_type_id")
+  ratePlanId        String?  @map("rate_plan_id")
+  channelId         String?  @map("channel_id")
+  date              DateTime @db.Date
+  minStay           Int?     @map("min_stay")
+  maxStay           Int?     @map("max_stay")
+  closedToArrival   Boolean  @default(false) @map("closed_to_arrival")
+  closedToDeparture Boolean  @default(false) @map("closed_to_departure")
+  stopSell          Boolean  @default(false) @map("stop_sell")
+  restrictionSource String   @default("manual") @map("restriction_source")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, roomTypeId, ratePlanId, channelId, date])
+  @@map("restriction_days")
+}
+
+model RateDay {
+  id               String   @id @default(cuid())
+  propertyId       String   @map("property_id")
+  ratePlanId       String   @map("rate_plan_id")
+  roomTypeId       String   @map("room_type_id")
+  date             DateTime @db.Date
+  price            Decimal  @db.Decimal(12, 2)
+  currency         String
+  minPrice         Decimal? @map("min_price") @db.Decimal(12, 2)
+  maxPrice         Decimal? @map("max_price") @db.Decimal(12, 2)
+  manuallyOverridden Boolean @default(false) @map("manually_overridden")
+  updatedBy        String?  @map("updated_by")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+  restrictionsJson Json     @default("{}") @map("restrictions_json")
+
+  @@unique([propertyId, ratePlanId, roomTypeId, date])
+  @@map("rate_days")
+}
+
+model ChannelSyncJob {
+  id                  String    @id @default(cuid())
+  propertyId          String    @map("property_id")
+  channelId           String?   @map("channel_id")
+  syncType            String    @map("sync_type")
+  status              String    @default("queued")
+  dateRangeStart      DateTime? @map("date_range_start") @db.Date
+  dateRangeEnd        DateTime? @map("date_range_end") @db.Date
+  requestPayloadJson  Json      @default("{}") @map("request_payload_json")
+  responsePayloadJson Json      @default("{}") @map("response_payload_json")
+  errorMessage        String?   @map("error_message")
+  idempotencyKey      String?   @map("idempotency_key")
+  startedAt           DateTime? @map("started_at")
+  finishedAt          DateTime? @map("finished_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, channelId, status])
+  @@map("channel_sync_jobs")
+}
+
+model CompetitorHotel {
+  id              String   @id @default(cuid())
+  propertyId      String   @map("property_id")
+  name            String
+  locationJson    Json     @default("{}") @map("location_json")
+  category        String?
+  starRating      Decimal? @map("star_rating") @db.Decimal(3, 1)
+  comparableScore Decimal? @map("comparable_score") @db.Decimal(5, 2)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("competitor_hotels")
+}
+
+model CompetitorRateSnapshot {
+  id                       String   @id @default(cuid())
+  propertyId               String   @map("property_id")
+  competitorHotelId        String?  @map("competitor_hotel_id")
+  sourceChannel            String?  @map("source_channel")
+  shopDate                 DateTime @map("shop_date") @db.Date
+  stayDate                 DateTime @map("stay_date") @db.Date
+  roomTypeLabel            String?  @map("room_type_label")
+  ratePlanLabel            String?  @map("rate_plan_label")
+  price                    Decimal? @db.Decimal(12, 2)
+  currency                 String?
+  availabilityStatus       String?  @map("availability_status")
+  cancellationPolicyLabel  String?  @map("cancellation_policy_label")
+  metadataJson             Json     @default("{}") @map("metadata_json")
+  createdAt                DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, stayDate, sourceChannel])
+  @@map("competitor_rate_snapshots")
+}
+
+model RateParityAlert {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  alertType         String   @map("alert_type")
+  severity          String
+  stayDate          DateTime @map("stay_date") @db.Date
+  sourceChannel     String?  @map("source_channel")
+  directRate        Decimal? @map("direct_rate") @db.Decimal(12, 2)
+  channelRate       Decimal? @map("channel_rate") @db.Decimal(12, 2)
+  currency          String?
+  message           String
+  status            String   @default("open")
+  metadataJson      Json     @default("{}") @map("metadata_json")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, severity, status])
+  @@map("rate_parity_alerts")
+}
+
+model RevenueAutomationRule {
+  id              String   @id @default(cuid())
+  propertyId      String   @map("property_id")
+  name            String
+  automationLevel String   @map("automation_level")
+  scopeJson       Json     @default("{}") @map("scope_json")
+  constraintsJson Json     @default("{}") @map("constraints_json")
+  active          Boolean  @default(true)
+  createdBy       String?  @map("created_by")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@map("revenue_automation_rules")
+}
+
+model RevenueScenario {
+  id           String   @id @default(cuid())
+  propertyId   String   @map("property_id")
+  name         String
+  scenarioType String   @map("scenario_type")
+  inputJson    Json     @default("{}") @map("input_json")
+  outputJson   Json     @default("{}") @map("output_json")
+  createdBy    String?  @map("created_by")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, scenarioType, createdAt])
+  @@map("revenue_scenarios")
+}
+
+model ExternalReservation {
+  id                    String   @id @default(cuid())
+  propertyId            String   @map("property_id")
+  channelId             String?  @map("channel_id")
+  externalReservationId String   @map("external_reservation_id")
+  status                String
+  guestName             String?  @map("guest_name")
+  arrivalDate           DateTime? @map("arrival_date") @db.Date
+  departureDate         DateTime? @map("departure_date") @db.Date
+  payloadJson           Json     @default("{}") @map("payload_json")
+  importedAt            DateTime @default(now()) @map("imported_at")
+
+  @@unique([propertyId, externalReservationId])
+  @@index([propertyId, channelId, status])
+  @@map("external_reservations")
+}
+
+model PaymentProviderConnection {
+  id                   String   @id @default(cuid())
+  propertyId           String   @map("property_id")
+  provider             String
+  status               String
+  credentialsSecretRef String?  @map("credentials_secret_ref")
+  configJson           Json     @default("{}") @map("config_json")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("payment_provider_connections")
+}
+
+model PaymentIntent {
+  id                 String   @id @default(cuid())
+  propertyId         String   @map("property_id")
+  reservationId      String?  @map("reservation_id")
+  folioId            String?  @map("folio_id")
+  amount             Decimal  @db.Decimal(12, 2)
+  currency           String
+  status             String
+  provider           String?
+  providerReference  String?  @map("provider_reference")
+  paymentLinkUrl     String?  @map("payment_link_url")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("payment_intents")
+}
+
+model PaymentRefund {
+  id                String   @id @default(cuid())
+  paymentId         String   @map("payment_id")
+  amount            Decimal  @db.Decimal(12, 2)
+  status            String
+  requiresApproval  Boolean  @default(true) @map("requires_approval")
+  approvedBy        String?  @map("approved_by")
+  providerReference String?  @map("provider_reference")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([paymentId, status])
+  @@map("payment_refunds")
+}
+
+model PaymentToken {
+  id            String   @id @default(cuid())
+  organizationId String  @map("organization_id")
+  guestId       String?  @map("guest_id")
+  provider      String   // "redsys" | "stripe" | "adyen"
+  tokenRef      String   @map("token_ref")  // cifrado en aplicación
+  last4         String?
+  brand         String?  // "visa" | "mastercard" | "amex"
+  expiryMonth   Int?     @map("expiry_month")
+  expiryYear    Int?     @map("expiry_year")
+  isDefault     Boolean  @default(false) @map("is_default")
+  createdAt     DateTime @default(now()) @map("created_at")
+  deletedAt     DateTime? @map("deleted_at")
+
+  @@index([organizationId])
+  @@index([guestId])
+  @@index([deletedAt])
+  @@map("payment_tokens")
+}
+
+model Outlet {
+  id         String @id @default(cuid())
+  propertyId String @map("property_id")
+  name       String
+  outletType String @map("outlet_type")
+  status     String
+
+  @@index([propertyId, status])
+  @@map("outlets")
+}
+
+model PosProduct {
+  id         String  @id @default(cuid())
+  propertyId String  @map("property_id")
+  outletId   String? @map("outlet_id")
+  name       String
+  category   String?
+  price      Decimal @db.Decimal(12, 2)
+  taxCode    String? @map("tax_code")
+  active     Boolean @default(true)
+
+  @@index([propertyId, active])
+  @@map("pos_products")
+}
+
+model PosOrder {
+  id            String   @id @default(cuid())
+  propertyId    String   @map("property_id")
+  outletId      String   @map("outlet_id")
+  roomId        String?  @map("room_id")
+  reservationId String?  @map("reservation_id")
+  status        String
+  total         Decimal  @default(0) @db.Decimal(12, 2)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("pos_orders")
+}
+
+model PosOrderLine {
+  id          String  @id @default(cuid())
+  posOrderId  String  @map("pos_order_id")
+  productId   String? @map("product_id")
+  description String
+  quantity    Decimal @db.Decimal(12, 2)
+  unitPrice   Decimal @map("unit_price") @db.Decimal(12, 2)
+  total       Decimal @db.Decimal(12, 2)
+
+  @@index([posOrderId])
+  @@map("pos_order_lines")
+}
+
+model Role {
+  id             String @id @default(cuid())
+  organizationId String @map("organization_id")
+  name           String
+
+  @@unique([organizationId, name])
+  @@map("roles")
+}
+
+model Permission {
+  id          String @id @default(cuid())
+  key         String @unique
+  description String
+
+  @@map("permissions")
+}
+
+model RolePermission {
+  id           String @id @default(cuid())
+  roleId       String @map("role_id")
+  permissionId String @map("permission_id")
+
+  @@unique([roleId, permissionId])
+  @@map("role_permissions")
+}
+
+model UserPropertyRole {
+  id         String @id @default(cuid())
+  userId     String @map("user_id")
+  propertyId String @map("property_id")
+  roleId     String @map("role_id")
+
+  @@unique([userId, propertyId, roleId])
+  @@map("user_property_roles")
+}
+
+model RoomType {
+  id           String  @id @default(cuid())
+  propertyId   String  @map("property_id")
+  name         String
+  code         String
+  maxOccupancy Int     @map("max_occupancy")
+  baseCapacity Int     @map("base_capacity")
+  description  String?
+  defaultBedConfigurationJson Json    @default("{}") @map("default_bed_configuration_json")
+  defaultAmenitiesJson        Json    @default("{}") @map("default_amenities_json")
+  defaultPhotosJson           Json    @default("{}") @map("default_photos_json")
+  defaultRateCategory         String? @map("default_rate_category")
+  sellable                    Boolean @default(true)
+  displayOrder                Int     @default(0) @map("display_order")
+  active                      Boolean @default(true)
+
+  @@unique([propertyId, code])
+  @@map("room_types")
+}
+
+model Room {
+  id                   String     @id @default(cuid())
+  propertyId           String     @map("property_id")
+  roomTypeId           String     @map("room_type_id")
+  buildingId           String?    @map("building_id")
+  floorId              String?    @map("floor_id")
+  zoneId               String?    @map("zone_id")
+  number               String
+  floor                String?
+  roomCode             String?    @map("room_code")
+  displayName          String?    @map("display_name")
+  maxOccupancy         Int?       @map("max_occupancy")
+  standardOccupancy    Int?       @map("standard_occupancy")
+  bedConfigurationJson Json       @default("{}") @map("bed_configuration_json")
+  featuresJson         Json       @default("{}") @map("features_json")
+  accessibilityJson    Json       @default("{}") @map("accessibility_json")
+  viewType             String?    @map("view_type")
+  orientation          String?
+  squareMeters         Decimal?   @map("square_meters") @db.Decimal(10, 2)
+  status               RoomStatus @default(clean)
+  housekeepingStatus   String?    @map("housekeeping_status")
+  maintenanceStatus    String?    @map("maintenance_status")
+  sellable             Boolean    @default(true)
+  active               Boolean    @default(true)
+  sortOrder            Int        @default(0) @map("sort_order")
+  createdAt            DateTime   @default(now()) @map("created_at")
+
+  // Relations (P1-4) — habilita join tipado en dashboards de pisos / mantenimiento.
+  stays                Stay[]
+
+  @@unique([propertyId, number])
+  @@index([propertyId, status])
+  @@index([propertyId, buildingId, floorId, zoneId])
+  @@map("rooms")
+}
+
+model RoomFeature {
+  id         String  @id @default(cuid())
+  propertyId String  @map("property_id")
+  code       String
+  name       String
+  category   String?
+  active     Boolean @default(true)
+
+  @@unique([propertyId, code])
+  @@map("room_features")
+}
+
+model RoomFeatureAssignment {
+  id            String @id @default(cuid())
+  roomId        String @map("room_id")
+  roomFeatureId String @map("room_feature_id")
+
+  @@unique([roomId, roomFeatureId])
+  @@map("room_feature_assignments")
+}
+
+model BedType {
+  id         String  @id @default(cuid())
+  propertyId String  @map("property_id")
+  code       String
+  name       String
+  capacity   Int     @default(1)
+  active     Boolean @default(true)
+
+  @@unique([propertyId, code])
+  @@map("bed_types")
+}
+
+model CategoryDefinition {
+  id              String   @id @default(cuid())
+  code            String   @unique
+  name            String
+  description     String?
+  categoryGroup   String   @map("category_group")
+  entityType      String?  @map("entity_type")
+  mode            String   @default("property_extendable")
+  valueSchemaJson Json     @default("{}") @map("value_schema_json")
+  isCore          Boolean  @default(false) @map("is_core")
+  active          Boolean  @default(true)
+  sortOrder       Int      @default(0) @map("sort_order")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@map("category_definitions")
+}
+
+model PropertyCategoryOption {
+  id                   String   @id @default(cuid())
+  propertyId           String   @map("property_id")
+  categoryDefinitionId String   @map("category_definition_id")
+  code                 String
+  label                String
+  description          String?
+  colorToken           String?  @map("color_token")
+  iconName             String?  @map("icon_name")
+  parentOptionId       String?  @map("parent_option_id")
+  metadataJson         Json     @default("{}") @map("metadata_json")
+  isSystemDefault      Boolean  @default(false) @map("is_system_default")
+  active               Boolean  @default(true)
+  sortOrder            Int      @default(0) @map("sort_order")
+  createdBy            String?  @map("created_by")
+  updatedBy            String?  @map("updated_by")
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, categoryDefinitionId, code])
+  @@index([propertyId, categoryDefinitionId, active])
+  @@map("property_category_options")
+}
+
+model PropertyCategoryOptionTranslation {
+  id               String  @id @default(cuid())
+  categoryOptionId String  @map("category_option_id")
+  language         String
+  label            String
+  description      String?
+
+  @@unique([categoryOptionId, language])
+  @@map("property_category_option_translations")
+}
+
+model PropertyCustomFieldDefinition {
+  id                          String   @id @default(cuid())
+  propertyId                  String   @map("property_id")
+  entityType                  String   @map("entity_type")
+  fieldKey                    String   @map("field_key")
+  label                       String
+  description                 String?
+  dataType                    String   @map("data_type")
+  required                    Boolean  @default(false)
+  searchable                  Boolean  @default(false)
+  visibleInList               Boolean  @default(false) @map("visible_in_list")
+  visibleInDetail             Boolean  @default(true) @map("visible_in_detail")
+  optionsCategoryDefinitionId String?  @map("options_category_definition_id")
+  validationJson              Json     @default("{}") @map("validation_json")
+  visibilityRulesJson         Json     @default("{}") @map("visibility_rules_json")
+  defaultValueJson            Json     @default("{}") @map("default_value_json")
+  active                      Boolean  @default(true)
+  sortOrder                   Int      @default(0) @map("sort_order")
+  createdAt                   DateTime @default(now()) @map("created_at")
+  updatedAt                   DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, entityType, fieldKey])
+  @@index([propertyId, entityType, active])
+  @@map("property_custom_field_definitions")
+}
+
+model PropertyCustomFieldValue {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  entityType        String   @map("entity_type")
+  entityId          String   @map("entity_id")
+  fieldDefinitionId String   @map("field_definition_id")
+  valueJson         Json     @default("{}") @map("value_json")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([entityType, entityId, fieldDefinitionId])
+  @@index([propertyId, entityType, entityId])
+  @@map("property_custom_field_values")
+}
+
+model RoomBed {
+  id        String @id @default(cuid())
+  roomId    String @map("room_id")
+  bedTypeId String @map("bed_type_id")
+  quantity  Int    @default(1)
+
+  @@unique([roomId, bedTypeId])
+  @@map("room_beds")
+}
+
+model Guest {
+  id                       String   @id @default(cuid())
+  organizationId           String   @map("organization_id")
+  title                    String?  // salutation: Sr./Sra./Dr./Mr./Mrs./Ms./Mx.
+  firstName                String   @map("first_name")
+  middleName               String?  @map("middle_name")
+  surname1                 String?  @map("surname_1")
+  surname2                 String?  @map("surname_2")
+  dateOfBirth              DateTime? @map("date_of_birth")
+  nationality              String?
+  sex                      String?
+  languagePreference       String?  @map("language_preference")
+  documentType             String?  @map("document_type")
+  documentNumber           String?  @map("document_number")
+  documentNumberLookupHash String?  @map("document_number_lookup_hash")
+  documentSupportNumber    String?  @map("document_support_number")
+  documentIssueCountry     String?  @map("document_issue_country")
+  documentExpiryDate       DateTime? @map("document_expiry_date")
+  phone                    String?
+  phoneLookupHash          String?  @map("phone_lookup_hash")
+  mobilePhone              String?  @map("mobile_phone")
+  email                    String?
+  emailLookupHash          String?  @map("email_lookup_hash")
+  company                  String?
+  residenceAddress         String?  @map("residence_address")
+  residenceLocality        String?  @map("residence_locality")
+  residenceProvince        String?  @map("residence_province")
+  residencePostalCode      String?  @map("residence_postal_code")
+  residenceCountry         String?  @map("residence_country")
+  // Loyalty / VIP / preferences — parity with Opera Cloud & Mews profiles.
+  vipCode                  String?  @map("vip_code")
+  loyaltyProgram           String?  @map("loyalty_program")
+  loyaltyNumber            String?  @map("loyalty_number")
+  loyaltyTier              String?  @map("loyalty_tier")
+  preferencesJson          Json?    @map("preferences_json")
+  emergencyContactName     String?  @map("emergency_contact_name")
+  emergencyContactPhone    String?  @map("emergency_contact_phone")
+  marketingConsent         Boolean? @map("marketing_consent")
+  notes                    String?
+  gdprConsentFlags         Json?    @map("gdpr_consent_flags")
+  createdAt                DateTime @default(now()) @map("created_at")
+  deletedAt                DateTime? @map("deleted_at")
+
+  // Relations (P1-4) — habilita join tipado en search global + dashboards de CRM.
+  reservationGuests        ReservationGuest[]
+
+  @@index([organizationId, documentNumber])
+  @@index([organizationId, emailLookupHash])
+  @@index([organizationId, documentNumberLookupHash])
+  // Hot-fix perf: search by name (firstName / surname1) within an org.
+  // Used by the guests list endpoint when filtering by name.
+  @@index([organizationId, firstName])
+  @@index([organizationId, surname1])
+  @@index([deletedAt])
+  @@map("guests")
+}
+
+// CancellationPolicy — defines free-cancel window + penalty on late cancel and
+// no-show. Wired to Reservation via cancellationPolicyId/code. The engine in
+// modules/pms/cancellation-policy.service.ts uses these to auto-post fees on
+// cancel (transitionReservation) and on no-show (night-audit step).
+// TourOperator — B2B partner (Hotelbeds, TUI, FTI, JetTours, Iberostar B2B…)
+// who negotiates room blocks with the hotel. Lives at organization level
+// because a chain typically negotiates a single contract per TT.OO. across
+// multiple properties. Per-property terms are captured in the Allotment.
+model TourOperator {
+  id                   String   @id @default(cuid())
+  organizationId       String   @map("organization_id")
+  code                 String
+  name                 String
+  taxId                String?  @map("tax_id")
+  contactEmail         String?  @map("contact_email")
+  contactPhone         String?  @map("contact_phone")
+  defaultCommissionPct Decimal? @map("default_commission_pct") @db.Decimal(5, 2)
+  paymentTermsDays     Int      @default(30) @map("payment_terms_days")
+  currency             String   @default("EUR")
+  active               Boolean  @default(true)
+  notes                String?
+  createdAt            DateTime @default(now()) @map("created_at")
+  updatedAt            DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, code])
+  @@index([organizationId, active])
+  @@map("tour_operators")
+}
+
+// Allotment — a contracted block of rooms reserved for a TourOperator during a
+// validity window, broken down per day (AllotmentDay). The "release period"
+// returns unused inventory to the hotel's general availability N days before
+// the use date (e.g. 14 days), making the engine usable for any market.
+model Allotment {
+  id              String   @id @default(cuid())
+  propertyId      String   @map("property_id")
+  tourOperatorId  String?  @map("tour_operator_id")
+  channelId       String?  @map("channel_id")
+  code            String
+  name            String
+  roomTypeId      String   @map("room_type_id")
+  ratePlanId      String?  @map("rate_plan_id")
+  validFrom       DateTime @map("valid_from") @db.Date
+  validTo         DateTime @map("valid_to") @db.Date
+  totalRooms      Int      @map("total_rooms")
+  releaseDays     Int      @default(14) @map("release_days")
+  contractedRate  Decimal? @map("contracted_rate") @db.Decimal(12, 2)
+  currency        String   @default("EUR")
+  status          String   @default("active") // draft|active|expired|released|cancelled
+
+  // ────── Industria · campos B2B estándar ──────
+  // allotmentType — modelo contractual del cupo (Hotelbeds, TUI, Jet2…)
+  //   soft       — release period libera lo no vendido (estándar TT.OO. europeos)
+  //   hard       — commit: TT.OO. paga aunque no venda (riesgo financiero del operador)
+  //   free_sale  — sin inventario reservado, request-by-request
+  allotmentType   String   @default("soft") @map("allotment_type")
+
+  // counterpartyType — naturaleza comercial de la contraparte
+  //   tour_operator | bedbank | corporate | ota
+  counterpartyType String  @default("tour_operator") @map("counterparty_type")
+
+  // rateType — net rate (operador aplica markup propio) vs commissionable (% comisión)
+  //   net | commissionable
+  rateType        String   @default("net") @map("rate_type")
+  commissionPct   Decimal? @map("commission_pct") @db.Decimal(5, 2)
+
+  // stopSell — botón rojo de cierre rápido (rechaza nuevas reservas vía este cupo).
+  //   No toca AllotmentDay; el código de reserva debe filtrar Allotment.stopSell=false.
+  stopSell        Boolean  @default(false) @map("stop_sell")
+
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, code])
+  @@index([propertyId, status, validFrom, validTo])
+  @@index([tourOperatorId])
+  @@map("allotments")
+}
+
+// AllotmentDay — the daily granular cuota for a given Allotment.
+//   blockedRooms  — capacity contracted for that day
+//   pickedUpRooms — rooms already consumed by reservations
+//   releasedRooms — rooms automatically returned to general pool because the
+//                   release-period window expired before pickup
+// Remaining cuota available = blockedRooms − pickedUpRooms − releasedRooms.
+model AllotmentDay {
+  id             String   @id @default(cuid())
+  allotmentId    String   @map("allotment_id")
+  date           DateTime @db.Date
+  blockedRooms   Int      @map("blocked_rooms")
+  pickedUpRooms  Int      @default(0) @map("picked_up_rooms")
+  releasedRooms  Int      @default(0) @map("released_rooms")
+  notes          String?
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([allotmentId, date])
+  @@index([allotmentId])
+  @@map("allotment_days")
+}
+
+model CancellationPolicy {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  code              String
+  name              String
+  description       String?
+  // How many hours BEFORE arrival the guest may cancel free of charge.
+  // 0 = no free cancellation window (any cancellation triggers the penalty).
+  freeCancelHours   Int      @default(48) @map("free_cancel_hours")
+  // Penalty when cancelled after the free window:
+  //   first_night    — charge the price of the first night
+  //   percent        — charge `penaltyValue`% of the total stay
+  //   fixed_amount   — charge `penaltyValue` €
+  //   all_stay       — charge the full stay total
+  //   none           — never penalize
+  penaltyType       String   @default("first_night") @map("penalty_type")
+  penaltyValue      Decimal? @map("penalty_value") @db.Decimal(12, 2)
+  // No-show penalty (applied automatically by the night audit when arrivalDate
+  // is past and no check-in happened). Same value set as penaltyType.
+  noShowPenaltyType String   @default("first_night") @map("no_show_penalty_type")
+  noShowPenaltyValue Decimal? @map("no_show_penalty_value") @db.Decimal(12, 2)
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, code])
+  @@index([propertyId, active])
+  @@map("cancellation_policies")
+}
+
+model Reservation {
+  id                   String            @id @default(cuid())
+  propertyId           String            @map("property_id")
+  code                 String
+  channel              String
+  status               ReservationStatus @default(draft)
+  arrivalDate          DateTime          @map("arrival_date") @db.Date
+  departureDate        DateTime          @map("departure_date") @db.Date
+  adults               Int               @default(1)
+  children             Int               @default(0)
+  infants              Int               @default(0)
+  childrenAgesJson     Json?             @map("children_ages_json")
+  roomsCount           Int               @default(1) @map("rooms_count")
+  eta                  String?           // estimated time of arrival "HH:MM"
+  etd                  String?           // estimated time of departure "HH:MM"
+  roomTypeId           String?           @map("room_type_id")
+  assignedRoomId       String?           @map("assigned_room_id")
+  ratePlanId           String?           @map("rate_plan_id")
+  boardType            String?           @map("board_type") // RO / BB / HB / FB / AI
+  marketSegment        String?           @map("market_segment")
+  sourceCode           String?           @map("source_code")
+  purposeOfStay        String?           @map("purpose_of_stay") // leisure / business / group / other
+  guaranteeType        String?           @map("guarantee_type")
+  depositAmount        Decimal?          @map("deposit_amount") @db.Decimal(12, 2)
+  cancellationPolicyCode String?         @map("cancellation_policy_code")
+  billingInstruction   String?           @map("billing_instruction")
+  companyName          String?           @map("company_name")
+  travelAgentName      String?           @map("travel_agent_name")
+  groupCode            String?           @map("group_code")
+  externalReference    String?           @map("external_reference") // OTA / channel confirmation no.
+  bookerName           String?           @map("booker_name")
+  bookerEmail          String?           @map("booker_email")
+  specialRequests      String?           @map("special_requests")
+  notes                String?
+  totalAmount          Decimal           @default(0) @map("total_amount") @db.Decimal(12, 2)
+  currency             String            @default("EUR")
+  cancellationPolicyId String?           @map("cancellation_policy_id")
+  // 2026 audit: PMS field parity with Mews / Opera / Cloudbeds. All optional /
+  // defaulted so existing rows remain valid; `bookingSource` complements the
+  // pre-existing `sourceCode` (channel) by storing a free-text origin tag.
+  bookingSource        String?           @map("booking_source")
+  internalNotes        String?           @map("internal_notes")
+  estimatedArrivalTime String?           @map("estimated_arrival_time")
+  paymentMethod        String?           @map("payment_method")
+  depositPaid          Decimal?          @map("deposit_paid") @db.Decimal(12, 2)
+  depositDueDate       DateTime?         @map("deposit_due_date") @db.Date
+  vipFlag              Boolean           @default(false) @map("vip_flag")
+  accessibilityNeeds   String?           @map("accessibility_needs")
+  dietaryRequirements  String?           @map("dietary_requirements")
+  groupBookingId       String?           @map("group_booking_id")
+  createdAt            DateTime          @default(now()) @map("created_at")
+  deletedAt            DateTime?         @map("deleted_at")
+
+  // Relations (added in 2026 audit P1-3 / P1-4).
+  folios               Folio[]           @relation("ReservationFolios")
+  reservationGuests    ReservationGuest[]
+  stays                Stay[]
+
+  @@unique([propertyId, code])
+  @@index([propertyId, arrivalDate, departureDate])
+  @@index([propertyId, status, arrivalDate])
+  @@index([propertyId, status, departureDate])
+  @@index([propertyId, externalReference])
+  @@index([propertyId, code])
+  @@index([deletedAt])
+  @@map("reservations")
+}
+
+model InventoryResource {
+  id              String   @id @default(cuid())
+  propertyId      String   @map("property_id")
+  resourceType    String   @map("resource_type")
+  roomId          String?  @map("room_id")
+  spaceId         String?  @map("space_id")
+  assetId         String?  @map("asset_id")
+  name            String
+  capacity        Int?
+  bookable        Boolean  @default(true)
+  sellable        Boolean  @default(true)
+  hourlyBookable  Boolean  @default(false) @map("hourly_bookable")
+  dailyBookable   Boolean  @default(true) @map("daily_bookable")
+  monthlyBookable Boolean  @default(false) @map("monthly_bookable")
+  status          String   @default("available")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, resourceType, status])
+  @@index([roomId])
+  @@index([spaceId])
+  @@map("inventory_resources")
+}
+
+model ReservationResource {
+  id                  String   @id @default(cuid())
+  reservationId       String   @map("reservation_id")
+  inventoryResourceId String   @map("inventory_resource_id")
+  startAt             DateTime @map("start_at")
+  endAt               DateTime @map("end_at")
+  pricingMode         String   @default("nightly") @map("pricing_mode")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([reservationId])
+  @@index([inventoryResourceId, startAt, endAt])
+  @@map("reservation_resources")
+}
+
+model ReservationGuest {
+  id               String  @id @default(cuid())
+  reservationId    String  @map("reservation_id")
+  guestId          String  @map("guest_id")
+  isPrimary        Boolean @default(false) @map("is_primary")
+  relationshipType String? @map("relationship_type")
+
+  // Relations (P1-4) — habilita join tipado para la búsqueda global y los
+  // dashboards de huéspedes recurrentes.
+  reservation      Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  guest            Guest       @relation(fields: [guestId], references: [id], onDelete: Cascade)
+
+  @@unique([reservationId, guestId])
+  @@map("reservation_guests")
+}
+
+model Stay {
+  id            String    @id @default(cuid())
+  reservationId String    @map("reservation_id")
+  roomId        String    @map("room_id")
+  checkinAt     DateTime? @map("checkin_at")
+  checkoutAt    DateTime? @map("checkout_at")
+  status        String
+
+  reservation   Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  room          Room        @relation(fields: [roomId], references: [id])
+
+  @@index([reservationId])
+  @@map("stays")
+}
+
+model Folio {
+  id            String      @id @default(cuid())
+  reservationId String      @map("reservation_id")
+  guestId       String?     @map("guest_id")
+  status        FolioStatus @default(open)
+  currency      String      @default("EUR")
+  // Label distinguishes one folio from another on the same reservation. The
+  // first folio is "guest" by convention; adding a "company" folio lets the
+  // routing engine split charges between payers. Free-form so chains can use
+  // their own labels (e.g. "F&B", "Travel agent").
+  label         String      @default("guest")
+  isPrimary     Boolean     @default(true) @map("is_primary")
+  deletedAt     DateTime?   @map("deleted_at")
+
+  // Relations (added in 2026 audit P1-3 to enable typed `include` and reduce
+  // N+1 queries in folio routing / dashboards).
+  reservation   Reservation @relation("ReservationFolios", fields: [reservationId], references: [id], onDelete: Cascade)
+  lines         FolioLine[]
+  payments      Payment[]
+
+  @@index([reservationId])
+  // Hot-fix perf: filter the open vs closed folios on a reservation
+  // (folio routing & balance views).
+  @@index([reservationId, status])
+  @@index([deletedAt])
+  @@map("folios")
+}
+
+// FolioRoutingRule — when a new FolioLine of a given type is posted on a
+// reservation's PRIMARY folio, automatically reroute it to a specific
+// secondary folio. Standard PMS pattern: "Room goes to guest folio; F&B and
+// minibar go to the company folio". Rules are evaluated in priority order.
+//   sourceType: free text matching FolioLine.type (e.g. "room", "tax",
+//               "breakfast", "minibar", "adjustment") or "*" for all.
+//   targetFolioId: the secondary folio that should receive the line.
+model FolioRoutingRule {
+  id            String   @id @default(cuid())
+  reservationId String   @map("reservation_id")
+  sourceType    String   @map("source_type")
+  targetFolioId String   @map("target_folio_id")
+  priority      Int      @default(0)
+  active        Boolean  @default(true)
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([reservationId, active, priority])
+  @@map("folio_routing_rules")
+}
+
+model FolioLine {
+  id          String   @id @default(cuid())
+  folioId     String   @map("folio_id")
+  type        String
+  description String
+  quantity    Decimal  @default(1) @db.Decimal(12, 2)
+  unitPrice   Decimal  @map("unit_price") @db.Decimal(12, 2)
+  taxCode     String?  @map("tax_code")
+  total       Decimal  @db.Decimal(12, 2)
+  postedAt    DateTime @default(now()) @map("posted_at")
+  postedBy    String?  @map("posted_by")
+  deletedAt   DateTime? @map("deleted_at")
+
+  folio       Folio    @relation(fields: [folioId], references: [id], onDelete: Cascade)
+
+  @@index([folioId])
+  @@index([folioId, type])
+  @@index([deletedAt])
+  @@map("folio_lines")
+}
+
+model Payment {
+  id           String        @id @default(cuid())
+  propertyId   String        @map("property_id")
+  folioId      String        @map("folio_id")
+  amount       Decimal       @db.Decimal(12, 2)
+  currency     String        @default("EUR")
+  method       String
+  pspReference String?       @map("psp_reference")
+  status       PaymentStatus @default(pending)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  deletedAt    DateTime?     @map("deleted_at")
+
+  folio        Folio         @relation(fields: [folioId], references: [id], onDelete: Cascade)
+
+  @@index([propertyId, folioId])
+  // Hot-fix perf: per-folio payment timeline (folio.service.getFolioBalance
+  // sorts payments by createdAt within a folio).
+  @@index([folioId, createdAt])
+  // Hot-fix perf: PSP reference lookup (webhook reconciliation, refund tools).
+  @@index([pspReference])
+  @@index([deletedAt])
+  @@map("payments")
+}
+
+model Invoice {
+  id                  String        @id @default(cuid())
+  propertyId          String        @map("property_id")
+  invoiceNumber       String?       @map("invoice_number")
+  invoiceType         String        @map("invoice_type")
+  customerType        String        @map("customer_type")
+  customerTaxId       String?       @map("customer_tax_id")
+  status              InvoiceStatus @default(draft)
+  issuedAt            DateTime?     @map("issued_at")
+  total               Decimal       @default(0) @db.Decimal(12, 2)
+  taxTotal            Decimal       @default(0) @map("tax_total") @db.Decimal(12, 2)
+  currencyCode        String        @default("EUR") @map("currency_code")
+  fxRate              Decimal?      @db.Decimal(14, 8) @map("fx_rate")
+  baseTotal           Decimal?      @db.Decimal(12, 2) @map("base_total")
+  rectifyingForId     String?       @map("rectifying_for_id")
+  rectifyingReasonCode String?      @map("rectifying_reason_code")
+  cancelledAt         DateTime?     @map("cancelled_at")
+  verifactuHash       String?       @map("verifactu_hash")
+  previousInvoiceHash String?       @map("previous_invoice_hash")
+  qrPayload           String?       @map("qr_payload")
+  createdAt           DateTime      @default(now()) @map("created_at")
+  deletedAt           DateTime?     @map("deleted_at")
+
+  @@unique([propertyId, invoiceNumber])
+  @@index([propertyId, status])
+  @@index([propertyId, issuedAt])
+  @@index([rectifyingForId])
+  @@index([deletedAt])
+  @@map("invoices")
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoiceId   String  @map("invoice_id")
+  description String
+  quantity    Decimal @default(1) @db.Decimal(12, 2)
+  unitPrice   Decimal @map("unit_price") @db.Decimal(12, 2)
+  taxCode     String  @map("tax_code")
+  taxRate     Decimal @map("tax_rate") @db.Decimal(5, 2)
+  total       Decimal @db.Decimal(12, 2)
+
+  @@index([invoiceId])
+  @@map("invoice_lines")
+}
+
+model Account {
+  id             String  @id @default(cuid())
+  organizationId String  @map("organization_id")
+  code           String
+  name           String
+  accountType    String  @map("account_type")
+  parentId       String? @map("parent_id")
+
+  @@unique([organizationId, code])
+  @@map("accounts")
+}
+
+model JournalEntry {
+  id             String        @id @default(cuid())
+  organizationId String        @map("organization_id")
+  propertyId     String?       @map("property_id")
+  sourceType     String        @map("source_type")
+  sourceId       String?       @map("source_id")
+  status         JournalStatus @default(draft)
+  postedAt       DateTime?     @map("posted_at")
+  createdBy      String?       @map("created_by")
+  currencyCode   String        @default("EUR") @map("currency_code")
+  fxRate         Decimal?      @db.Decimal(14, 8) @map("fx_rate")
+  fiscalYearId   String?       @map("fiscal_year_id")
+  entryKind      String        @default("normal") @map("entry_kind")
+
+  @@index([organizationId, propertyId])
+  @@index([fiscalYearId, entryKind])
+  @@map("journal_entries")
+}
+
+model JournalLine {
+  id             String  @id @default(cuid())
+  journalEntryId String  @map("journal_entry_id")
+  accountId      String  @map("account_id")
+  debit          Decimal @default(0) @db.Decimal(12, 2)
+  credit         Decimal @default(0) @db.Decimal(12, 2)
+  currency       String  @default("EUR")
+  description    String?
+
+  @@index([journalEntryId])
+  @@map("journal_lines")
+}
+
+model SupplierBill {
+  id                   String    @id @default(cuid())
+  propertyId           String    @map("property_id")
+  supplierId           String?   @map("supplier_id")
+  supplierName         String?   @map("supplier_name")
+  supplierTaxId        String?   @map("supplier_tax_id")
+  invoiceNumber        String?   @map("invoice_number")
+  issueDate            DateTime? @map("issue_date") @db.Date
+  dueDate              DateTime? @map("due_date") @db.Date
+  paymentDate          DateTime? @map("payment_date") @db.Date
+  total                Decimal   @default(0) @db.Decimal(12, 2)
+  taxTotal             Decimal   @default(0) @map("tax_total") @db.Decimal(12, 2)
+  retentionRate        Decimal?  @db.Decimal(5, 2) @map("retention_rate")
+  retentionAmount      Decimal?  @db.Decimal(12, 2) @map("retention_amount")
+  rowCode              String?   @map("row_code")
+  suggestedAccountCode String?   @map("suggested_account_code")
+  roomId               String?   @map("room_id")
+  status               String    @default("draft")
+  documentObjectKey    String?   @map("document_object_key")
+  createdAt            DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@index([supplierId, issueDate])
+  @@map("supplier_bills")
+}
+
+// ---- GDPR data subject requests (Sprint 31) ----
+
+model GdprRequest {
+  id                      String    @id @default(cuid())
+  organizationId          String    @map("organization_id")
+  propertyId              String?   @map("property_id")
+  subjectType             String    @default("guest") @map("subject_type")
+  subjectId               String?   @map("subject_id")
+  subjectEmail            String?   @map("subject_email")
+  requestType             String    @map("request_type")
+  status                  String    @default("pending")
+  requestedAt             DateTime  @default(now()) @map("requested_at")
+  acknowledgedAt          DateTime? @map("acknowledged_at")
+  completedAt             DateTime? @map("completed_at")
+  rejectedAt              DateTime? @map("rejected_at")
+  rejectedReason          String?   @map("rejected_reason")
+  requestorEmail          String    @map("requestor_email")
+  payloadJson             Json?     @map("payload_json")
+  fulfillmentMetadataJson Json?     @map("fulfillment_metadata_json")
+  documentObjectKey       String?   @map("document_object_key")
+  assigneeUserId          String?   @map("assignee_user_id")
+  dueAt                   DateTime? @map("due_at")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  updatedAt               DateTime  @updatedAt @map("updated_at")
+
+  @@index([organizationId, status, requestedAt])
+  @@index([subjectId, requestType])
+  @@map("gdpr_requests")
+}
+
+model HousekeepingTask {
+  id         String                 @id @default(cuid())
+  propertyId String                 @map("property_id")
+  roomId     String                 @map("room_id")
+  taskType   String                 @map("task_type")
+  priority   String                 @default("normal")
+  status     HousekeepingTaskStatus @default(pending)
+  assignedTo String?                @map("assigned_to")
+  dueAt      DateTime?              @map("due_at")
+  createdAt  DateTime               @default(now()) @map("created_at")
+
+  @@index([propertyId, roomId, status])
+  // Hot-fix perf: due-date scheduling view (HK supervisor sorts by dueAt).
+  @@index([propertyId, dueAt])
+  @@map("housekeeping_tasks")
+}
+
+model HousekeepingEvent {
+  id             String   @id @default(cuid())
+  taskId         String   @map("task_id")
+  eventType      String   @map("event_type")
+  note           String?
+  photoObjectKey String?  @map("photo_object_key")
+  createdBy      String?  @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([taskId])
+  @@map("housekeeping_events")
+}
+
+model HousekeepingSection {
+  id          String  @id @default(cuid())
+  propertyId  String  @map("property_id")
+  name        String
+  code        String?
+  description String?
+  active      Boolean @default(true)
+
+  @@index([propertyId, active])
+  @@map("housekeeping_sections")
+}
+
+model HousekeepingSectionRoom {
+  id                    String @id @default(cuid())
+  housekeepingSectionId String @map("housekeeping_section_id")
+  roomId                String @map("room_id")
+
+  @@unique([housekeepingSectionId, roomId])
+  @@map("housekeeping_section_rooms")
+}
+
+model HousekeepingRule {
+  id                String  @id @default(cuid())
+  propertyId        String  @map("property_id")
+  ruleCode          String  @map("rule_code")
+  configurationJson Json    @default("{}") @map("configuration_json")
+  active            Boolean @default(true)
+
+  @@unique([propertyId, ruleCode])
+  @@map("housekeeping_rules")
+}
+
+model Asset {
+  id                String    @id @default(cuid())
+  propertyId        String    @map("property_id")
+  buildingId        String?   @map("building_id")
+  floorId           String?   @map("floor_id")
+  zoneId            String?   @map("zone_id")
+  spaceId           String?   @map("space_id")
+  roomId            String?   @map("room_id")
+  assetType         String    @map("asset_type")
+  assetCode         String?   @map("asset_code")
+  name              String
+  serialNumber      String?   @map("serial_number")
+  manufacturer      String?
+  model             String?
+  installationDate  DateTime? @map("installation_date") @db.Date
+  warrantyUntil     DateTime? @map("warranty_until") @db.Date
+  purchaseCost      Decimal?  @map("purchase_cost") @db.Decimal(12, 2)
+  usefulLifeMonths  Int?      @map("useful_life_months")
+  qrCodeValue       String?   @map("qr_code_value")
+  supplierId        String?   @map("supplier_id")
+  status            String    @default("active")
+
+  @@index([propertyId, buildingId, floorId, zoneId])
+  @@index([propertyId, roomId])
+  @@map("assets")
+}
+
+model WorkOrder {
+  id          String          @id @default(cuid())
+  propertyId  String          @map("property_id")
+  roomId      String?         @map("room_id")
+  assetId     String?         @map("asset_id")
+  title       String
+  description String?
+  priority    String          @default("normal")
+  status      WorkOrderStatus @default(open)
+  blocksRoom  Boolean         @default(false) @map("blocks_room")
+  createdBy   String?         @map("created_by")
+  assignedTo  String?         @map("assigned_to")
+  dueDate     DateTime?       @map("due_date")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  resolvedAt  DateTime?       @map("resolved_at")
+
+  @@index([propertyId, status])
+  @@index([propertyId, status, dueDate])
+  // Hot-fix perf: triage by priority within a property (dashboards filter on
+  // status + priority simultaneously).
+  @@index([propertyId, status, priority])
+  // Hot-fix perf: "my open work orders" view (an assignee filters by themself).
+  @@index([assignedTo, status])
+  @@map("work_orders")
+}
+
+model WorkOrderMedia {
+  id          String @id @default(cuid())
+  workOrderId String @map("work_order_id")
+  objectKey   String @map("object_key")
+  mediaType   String @map("media_type")
+
+  @@index([workOrderId])
+  @@map("work_order_media")
+}
+
+model MaintenanceArea {
+  id          String  @id @default(cuid())
+  propertyId  String  @map("property_id")
+  name        String
+  code        String?
+  description String?
+  active      Boolean @default(true)
+
+  @@index([propertyId, active])
+  @@map("maintenance_areas")
+}
+
+model MaintenanceAreaRoom {
+  id                String @id @default(cuid())
+  maintenanceAreaId String @map("maintenance_area_id")
+  roomId            String @map("room_id")
+
+  @@unique([maintenanceAreaId, roomId])
+  @@map("maintenance_area_rooms")
+}
+
+model MaintenanceRule {
+  id                String  @id @default(cuid())
+  propertyId        String  @map("property_id")
+  ruleCode          String  @map("rule_code")
+  configurationJson Json    @default("{}") @map("configuration_json")
+  active            Boolean @default(true)
+
+  @@unique([propertyId, ruleCode])
+  @@map("maintenance_rules")
+}
+
+model CapexProject {
+  id              String    @id @default(cuid())
+  propertyId      String    @map("property_id")
+  name            String
+  description     String?
+  budget          Decimal   @default(0) @db.Decimal(12, 2)
+  status          String    @default("proposed")
+  startDate       DateTime? @map("start_date") @db.Date
+  targetEndDate   DateTime? @map("target_end_date") @db.Date
+  ownerApprovedBy String?   @map("owner_approved_by")
+
+  @@index([propertyId, status])
+  @@map("capex_projects")
+}
+
+model CapexItem {
+  id             String  @id @default(cuid())
+  capexProjectId String  @map("capex_project_id")
+  roomId          String? @map("room_id")
+  assetId         String? @map("asset_id")
+  description     String
+  estimatedCost   Decimal @default(0) @map("estimated_cost") @db.Decimal(12, 2)
+  actualCost      Decimal @default(0) @map("actual_cost") @db.Decimal(12, 2)
+  status          String  @default("proposed")
+
+  @@index([capexProjectId])
+  @@map("capex_items")
+}
+
+model FixedAsset {
+  id                      String    @id @default(cuid())
+  propertyId              String    @map("property_id")
+  assetId                 String?   @map("asset_id")
+  name                    String
+  acquisitionDate         DateTime? @map("acquisition_date") @db.Date
+  acquisitionCost         Decimal   @default(0) @map("acquisition_cost") @db.Decimal(12, 2)
+  depreciationMethod      String?   @map("depreciation_method")
+  usefulLifeMonths        Int?      @map("useful_life_months")
+  accumulatedDepreciation Decimal   @default(0) @map("accumulated_depreciation") @db.Decimal(12, 2)
+
+  @@index([propertyId])
+  @@map("fixed_assets")
+}
+
+model Conversation {
+  id            String   @id @default(cuid())
+  propertyId    String   @map("property_id")
+  guestId       String?  @map("guest_id")
+  reservationId String?  @map("reservation_id")
+  channel       String
+  status        String   @default("open")
+  aiEnabled     Boolean  @default(true) @map("ai_enabled")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("conversations")
+}
+
+model Message {
+  id             String   @id @default(cuid())
+  conversationId String   @map("conversation_id")
+  senderType     String   @map("sender_type")
+  body           String
+  language       String?
+  sentAt         DateTime @default(now()) @map("sent_at")
+  metadataJson   Json?    @map("metadata_json")
+
+  @@index([conversationId])
+  @@map("messages")
+}
+
+model MessageAttachment {
+  id                    String   @id @default(cuid())
+  messageId             String   @map("message_id")
+  attachmentType        String   @map("attachment_type")
+  objectKey             String   @map("object_key")
+  fileName              String?  @map("file_name")
+  mimeType              String   @map("mime_type")
+  sizeBytes             Int?     @map("size_bytes")
+  durationMs            Int?     @map("duration_ms")
+  width                 Int?
+  height                Int?
+  privacyReviewRequired Boolean  @default(false) @map("privacy_review_required")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([messageId])
+  @@index([attachmentType])
+  @@map("message_attachments")
+}
+
+model ServiceRequest {
+  id                 String   @id @default(cuid())
+  propertyId         String   @map("property_id")
+  reservationId      String?  @map("reservation_id")
+  guestId            String?  @map("guest_id")
+  requestType        String   @map("request_type")
+  status             String   @default("open")
+  assignedDepartment String?  @map("assigned_department")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, status])
+  @@map("service_requests")
+}
+
+model GuestRegisterRecord {
+  id                         String           @id @default(cuid())
+  propertyId                 String           @map("property_id")
+  reservationId              String?          @map("reservation_id")
+  guestId                    String?          @map("guest_id")
+  recordType                 String           @default("checkin") @map("record_type")
+  status                     ComplianceStatus @default(draft)
+  isPrimaryGuest             Boolean          @default(false) @map("is_primary_guest")
+  isMinor                    Boolean          @default(false) @map("is_minor")
+  providedByAdultGuestId     String?          @map("provided_by_adult_guest_id")
+  firstName                  String?          @map("first_name")
+  surname1                   String?          @map("surname_1")
+  surname2                   String?          @map("surname_2")
+  sex                        String?
+  nationality                String?
+  dateOfBirth                DateTime?        @map("date_of_birth")
+  documentType               String?          @map("document_type")
+  documentNumber             String?          @map("document_number")
+  documentNumberLookupHash   String?          @map("document_number_lookup_hash")
+  documentSupportNumber      String?          @map("document_support_number")
+  residenceFullAddress       String?          @map("residence_full_address")
+  residenceLocality          String?          @map("residence_locality")
+  residenceCountry           String?          @map("residence_country")
+  phoneLandline              String?          @map("phone_landline")
+  phoneMobile                String?          @map("phone_mobile")
+  phoneMobileLookupHash      String?          @map("phone_mobile_lookup_hash")
+  email                      String?
+  emailLookupHash            String?          @map("email_lookup_hash")
+  travellerCount             Int?             @map("traveller_count")
+  kinshipRelationIfMinor     String?          @map("kinship_relation_if_minor")
+  contractReference          String?          @map("contract_reference")
+  contractDate               DateTime?        @map("contract_date")
+  checkinAt                  DateTime?        @map("checkin_at")
+  checkoutAt                 DateTime?        @map("checkout_at")
+  propertyFullAddress        String?          @map("property_full_address")
+  contractedRoomCount        Int?             @map("contracted_room_count")
+  internetConnection         Boolean?         @map("internet_connection")
+  paymentType                String?          @map("payment_type")
+  paymentMethodIdentifier    String?          @map("payment_method_identifier")
+  paymentHolder              String?          @map("payment_holder")
+  paymentCardExpiryMonth     Int?             @map("payment_card_expiry_month")
+  paymentCardExpiryYear      Int?             @map("payment_card_expiry_year")
+  paymentDate                DateTime?        @map("payment_date")
+  paymentReference           String?          @map("payment_reference")
+  requiredPayloadJson        Json             @map("required_payload_json")
+  validationErrorsJson       Json             @default("[]") @map("validation_errors_json")
+  signatureRequired          Boolean          @default(true) @map("signature_required")
+  signatureObjectKey         String?          @map("signature_object_key")
+  signedAt                   DateTime?        @map("signed_at")
+  identityVerified           Boolean          @default(false) @map("identity_verified")
+  identityVerifiedBy         String?          @map("identity_verified_by")
+  identityVerifiedAt         DateTime?        @map("identity_verified_at")
+  identityVerificationMethod String?          @map("identity_verification_method")
+  idImageStored              Boolean          @default(false) @map("id_image_stored")
+  idImageDiscarded           Boolean          @default(false) @map("id_image_discarded")
+  idImageDiscardedAt         DateTime?        @map("id_image_discarded_at")
+  retentionUntil             DateTime         @map("retention_until")
+  createdBy                  String?          @map("created_by")
+  updatedBy                  String?          @map("updated_by")
+  createdAt                  DateTime         @default(now()) @map("created_at")
+  updatedAt                  DateTime         @updatedAt @map("updated_at")
+
+  @@index([propertyId, status])
+  @@map("guest_register_records")
+}
+
+model SesHospedajesSubmission {
+  id                    String           @id @default(cuid())
+  propertyId            String           @map("property_id")
+  guestRegisterRecordId String           @map("guest_register_record_id")
+  reservationId         String?          @map("reservation_id")
+  externalReference     String?          @unique @map("external_reference")
+  submissionType        String           @map("submission_type")
+  status                SubmissionStatus @default(queued)
+  requestPayloadJson    Json             @map("request_payload_json")
+  responsePayloadJson   Json?            @map("response_payload_json")
+  errorMessage          String?          @map("error_message")
+  errorCode             String?          @map("error_code")
+  submittedAt           DateTime?        @map("submitted_at")
+  endpoint              String?
+  xmlPayload            String?          @map("xml_payload")
+  responseAck           String?          @map("response_ack")
+  acknowledgementCode   String?          @map("acknowledgement_code")
+  trackingNumber        String?          @map("tracking_number")
+  attempts              Int              @default(0)
+  signatureMode         String?          @map("signature_mode")
+  signedAt              DateTime?        @map("signed_at")
+  acknowledgedAt        DateTime?        @map("acknowledged_at")
+  nextRetryAt           DateTime?        @map("next_retry_at")
+  correlationId         String?          @map("correlation_id")
+  createdAt             DateTime         @default(now()) @map("created_at")
+  updatedAt             DateTime         @updatedAt @map("updated_at")
+
+  @@index([propertyId, status])
+  @@index([guestRegisterRecordId])
+  @@index([status, nextRetryAt])
+  @@map("ses_hospedajes_submissions")
+}
+
+model AuthorityReportingSetting {
+  id                            String   @id @default(cuid())
+  propertyId                    String   @unique @map("property_id")
+  country                       String   @default("ES")
+  regionCode                    String?  @map("region_code")
+  authorityType                 String   @default("ses_hospedajes") @map("authority_type")
+  enabled                       Boolean  @default(true)
+  professionalActivity          Boolean  @default(true) @map("professional_activity")
+  establishmentCode             String?  @map("establishment_code")
+  landlordCode                  String?  @map("landlord_code")
+  webServiceEnabled             Boolean  @default(false) @map("web_service_enabled")
+  webServiceUsername            String?  @map("web_service_username")
+  webServiceSecretRef           String?  @map("web_service_secret_ref")
+  batchExportEnabled            Boolean  @default(true) @map("batch_export_enabled")
+  automaticSubmissionEnabled    Boolean  @default(false) @map("automatic_submission_enabled")
+  configurationJson             Json     @default("{}") @map("configuration_json")
+  createdAt                     DateTime @default(now()) @map("created_at")
+  updatedAt                     DateTime @updatedAt @map("updated_at")
+
+  @@map("authority_reporting_settings")
+}
+
+model LodgingLegalProfile {
+  id                    String   @id @default(cuid())
+  propertyId            String   @unique @map("property_id")
+  legalName             String   @map("legal_name")
+  taxId                 String   @map("tax_id")
+  municipality          String?
+  province              String?
+  phone                 String?
+  email                 String?
+  website               String?
+  listingUrl            String?  @map("listing_url")
+  establishmentType     String?  @map("establishment_type")
+  establishmentName     String?  @map("establishment_name")
+  fullAddress           String   @map("full_address")
+  postalCode            String?  @map("postal_code")
+  locality              String?
+  establishmentProvince String?  @map("establishment_province")
+  roomCount             Int?     @map("room_count")
+  internetConnection    Boolean? @map("internet_connection")
+  createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @updatedAt @map("updated_at")
+
+  @@map("lodging_legal_profiles")
+}
+
+model AuthoritySubmissionBatch {
+  id                 String   @id @default(cuid())
+  propertyId         String   @map("property_id")
+  authorityType      String   @map("authority_type")
+  batchType          String   @map("batch_type")
+  status             String   @default("draft")
+  periodFrom         DateTime? @map("period_from")
+  periodTo           DateTime? @map("period_to")
+  fileFormat         String?  @map("file_format")
+  fileObjectKey      String?  @map("file_object_key")
+  recordCount        Int      @default(0) @map("record_count")
+  idempotencyKey     String?  @map("idempotency_key")
+  generatedBy        String?  @map("generated_by")
+  submittedBy        String?  @map("submitted_by")
+  generatedAt        DateTime? @map("generated_at")
+  submittedAt        DateTime? @map("submitted_at")
+  responseReceivedAt DateTime? @map("response_received_at")
+  responsePayloadJson Json    @default("{}") @map("response_payload_json")
+  errorMessage       String?  @map("error_message")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, status])
+  @@map("authority_submission_batches")
+}
+
+model AuthoritySubmissionBatchRecord {
+  id                    String @id @default(cuid())
+  batchId               String @map("batch_id")
+  guestRegisterRecordId String @map("guest_register_record_id")
+  status                String @default("included")
+  responsePayloadJson   Json   @default("{}") @map("response_payload_json")
+  errorMessage          String? @map("error_message")
+
+  @@unique([batchId, guestRegisterRecordId])
+  @@map("authority_submission_batch_records")
+}
+
+model AuthoritySubmission {
+  id                    String           @id @default(cuid())
+  propertyId            String           @map("property_id")
+  guestRegisterRecordId String?          @map("guest_register_record_id")
+  batchId               String?          @map("batch_id")
+  authorityType         String           @map("authority_type")
+  submissionType        String           @map("submission_type")
+  status                SubmissionStatus @default(queued)
+  externalReference     String?          @map("external_reference")
+  requestPayloadJson    Json             @default("{}") @map("request_payload_json")
+  responsePayloadJson   Json             @default("{}") @map("response_payload_json")
+  errorCode             String?          @map("error_code")
+  errorMessage          String?          @map("error_message")
+  submittedAt           DateTime?        @map("submitted_at")
+  acceptedAt            DateTime?        @map("accepted_at")
+  rejectedAt            DateTime?        @map("rejected_at")
+  createdAt             DateTime         @default(now()) @map("created_at")
+  updatedAt             DateTime         @updatedAt @map("updated_at")
+
+  @@index([propertyId, status])
+  @@map("authority_submissions")
+}
+
+model IdentityDocumentProcessingEvent {
+  id                  String   @id @default(cuid())
+  propertyId          String   @map("property_id")
+  reservationId       String?  @map("reservation_id")
+  guestId             String?  @map("guest_id")
+  eventType           String   @map("event_type")
+  processor           String?
+  fieldsExtractedJson Json     @default("{}") @map("fields_extracted_json")
+  confidenceJson      Json     @default("{}") @map("confidence_json")
+  imageStored         Boolean  @default(false) @map("image_stored")
+  imageDiscarded      Boolean  @default(true) @map("image_discarded")
+  createdBy           String?  @map("created_by")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([propertyId, eventType])
+  @@map("identity_document_processing_events")
+}
+
+model AuthorityRoutingRule {
+  id                String   @id @default(cuid())
+  propertyId        String?  @map("property_id")
+  country           String   @default("ES")
+  regionCode        String?  @map("region_code")
+  authorityType     String   @map("authority_type")
+  priority          Int      @default(100)
+  active            Boolean  @default(true)
+  configurationJson Json     @default("{}") @map("configuration_json")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([country, regionCode, active])
+  @@map("authority_routing_rules")
+}
+
+model OnboardingProject {
+  id               String    @id @default(cuid())
+  organizationId   String    @map("organization_id")
+  propertyId       String?   @map("property_id")
+  name             String
+  sourceSystem     String?   @map("source_system")
+  status           String    @default("draft")
+  targetGoLiveDate DateTime? @map("target_go_live_date") @db.Date
+  createdBy        String?   @map("created_by")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@index([organizationId, propertyId, status])
+  @@map("onboarding_projects")
+}
+
+model OnboardingSourceConnection {
+  id                  String    @id @default(cuid())
+  onboardingProjectId String    @map("onboarding_project_id")
+  providerCode        String    @map("provider_code")
+  status              String    @default("pending")
+  credentialsSecretRef String?  @map("credentials_secret_ref")
+  configJson          Json      @default("{}") @map("config_json")
+  lastTestedAt        DateTime? @map("last_tested_at")
+  lastSyncAt          DateTime? @map("last_sync_at")
+  errorMessage        String?   @map("error_message")
+  createdAt           DateTime  @default(now()) @map("created_at")
+
+  @@index([onboardingProjectId, providerCode, status])
+  @@map("onboarding_source_connections")
+}
+
+model OnboardingFile {
+  id                   String   @id @default(cuid())
+  onboardingProjectId  String   @map("onboarding_project_id")
+  fileName             String   @map("file_name")
+  fileType             String?  @map("file_type")
+  objectKey            String   @map("object_key")
+  detectedDocumentType String?  @map("detected_document_type")
+  status               String   @default("uploaded")
+  extractionStatus     String   @default("not_started") @map("extraction_status")
+  metadataJson         Json     @default("{}") @map("metadata_json")
+  createdBy            String?  @map("created_by")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@index([onboardingProjectId, status, extractionStatus])
+  @@map("onboarding_files")
+}
+
+model OnboardingExtractedEntity {
+  id                  String   @id @default(cuid())
+  onboardingProjectId String   @map("onboarding_project_id")
+  onboardingFileId    String?  @map("onboarding_file_id")
+  sourceType          String   @map("source_type")
+  entityType          String   @map("entity_type")
+  sourceIdentifier    String?  @map("source_identifier")
+  rawJson             Json     @default("{}") @map("raw_json")
+  normalizedJson      Json     @default("{}") @map("normalized_json")
+  confidence          Decimal? @db.Decimal(5, 2)
+  status              String   @default("extracted")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([onboardingProjectId, entityType, status])
+  @@map("onboarding_extracted_entities")
+}
+
+model OnboardingMappingSuggestion {
+  id                  String   @id @default(cuid())
+  onboardingProjectId String   @map("onboarding_project_id")
+  sourceEntityId      String?  @map("source_entity_id")
+  targetEntityType    String   @map("target_entity_type")
+  suggestedTargetJson Json     @default("{}") @map("suggested_target_json")
+  confidence          Decimal? @db.Decimal(5, 2)
+  riskLevel           String   @default("medium") @map("risk_level")
+  reasonJson          Json     @default("[]") @map("reason_json")
+  warningsJson        Json     @default("[]") @map("warnings_json")
+  missingDataJson     Json     @default("[]") @map("missing_data_json")
+  status              String   @default("pending")
+  reviewedBy          String?  @map("reviewed_by")
+  reviewedAt          DateTime? @map("reviewed_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([onboardingProjectId, targetEntityType, status])
+  @@map("onboarding_mapping_suggestions")
+}
+
+model OnboardingMigrationBatch {
+  id                  String    @id @default(cuid())
+  onboardingProjectId String    @map("onboarding_project_id")
+  batchType           String    @map("batch_type")
+  status              String    @default("draft")
+  dryRunResultJson    Json      @default("{}") @map("dry_run_result_json")
+  appliedResultJson   Json      @default("{}") @map("applied_result_json")
+  errorMessage        String?   @map("error_message")
+  createdBy           String?   @map("created_by")
+  appliedBy           String?   @map("applied_by")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  appliedAt           DateTime? @map("applied_at")
+
+  @@index([onboardingProjectId, batchType, status])
+  @@map("onboarding_migration_batches")
+}
+
+model OnboardingMigrationBatchRecord {
+  id                  String   @id @default(cuid())
+  batchId             String   @map("batch_id")
+  mappingSuggestionId String?  @map("mapping_suggestion_id")
+  targetEntityType    String   @map("target_entity_type")
+  targetEntityId      String?  @map("target_entity_id")
+  operation           String
+  status              String   @default("pending")
+  beforeJson          Json     @default("{}") @map("before_json")
+  afterJson           Json     @default("{}") @map("after_json")
+  errorMessage        String?  @map("error_message")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@index([batchId, targetEntityType, status])
+  @@map("onboarding_migration_batch_records")
+}
+
+model AiOnboardingRun {
+  id                  String    @id @default(cuid())
+  onboardingProjectId String    @map("onboarding_project_id")
+  agentName           String    @map("agent_name")
+  status              String    @default("running")
+  inputJson           Json      @default("{}") @map("input_json")
+  outputJson          Json      @default("{}") @map("output_json")
+  confidence          Decimal?  @db.Decimal(5, 2)
+  traceId             String?   @map("trace_id")
+  errorMessage        String?   @map("error_message")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  completedAt         DateTime? @map("completed_at")
+
+  @@index([onboardingProjectId, agentName, status])
+  @@map("ai_onboarding_runs")
+}
+
+model AuditEvent {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  propertyId     String?   @map("property_id")
+  actorUserId    String?   @map("actor_user_id")
+  actorType      ActorType @map("actor_type")
+  action         String
+  entityType     String    @map("entity_type")
+  entityId       String?   @map("entity_id")
+  beforeJson     Json?     @map("before_json")
+  afterJson      Json?     @map("after_json")
+  ipAddress      String?   @map("ip_address")
+  deviceId       String?   @map("device_id")
+  correlationId  String?   @map("correlation_id")
+  hashAlgorithm  String    @default("sha256") @map("hash_algorithm")
+  previousHash   String?   @map("previous_hash")
+  currentHash    String    @map("current_hash")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, createdAt])
+  @@index([entityType, entityId, createdAt])
+  @@index([currentHash])
+  @@map("audit_events")
+}
+
+model AiToolCall {
+  id                   String   @id @default(cuid())
+  organizationId        String   @map("organization_id")
+  propertyId            String?  @map("property_id")
+  userId                String?  @map("user_id")
+  conversationId        String?  @map("conversation_id")
+  toolName              String   @map("tool_name")
+  inputJson             Json     @map("input_json")
+  outputJson            Json?    @map("output_json")
+  confidence            Decimal? @db.Decimal(5, 4)
+  requiredConfirmation  Boolean  @default(false) @map("required_confirmation")
+  confirmedBy           String?  @map("confirmed_by")
+  status                String
+  model                 String?
+  latencyMs             Int?     @map("latency_ms")
+  tokensInput           Int?     @map("tokens_input")
+  tokensOutput          Int?     @map("tokens_output")
+  costEur               Decimal? @db.Decimal(12, 6) @map("cost_eur")
+  errorMessage          String?  @map("error_message")
+  automationLevel       String?  @map("automation_level")
+  createdAt             DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, createdAt])
+  @@index([toolName, createdAt])
+  @@index([status, createdAt])
+  @@map("ai_tool_calls")
+}
+
+model EventStream {
+  eventId        String    @id @default(cuid()) @map("event_id")
+  organizationId String    @map("organization_id")
+  propertyId     String    @map("property_id")
+  entityType     String    @map("entity_type")
+  entityId       String    @map("entity_id")
+  eventType      String    @map("event_type")
+  payload        Json
+  actorType      ActorType @map("actor_type")
+  actorUserId    String?   @map("actor_user_id")
+  correlationId  String    @map("correlation_id")
+  hashAlgorithm  String    @default("sha256") @map("hash_algorithm")
+  previousHash   String?   @map("previous_hash")
+  currentHash    String    @map("current_hash")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@index([organizationId, propertyId, createdAt])
+  @@index([currentHash])
+  @@map("event_stream")
+}
+
+model BusinessDate {
+  id          String    @id @default(cuid())
+  propertyId  String    @unique @map("property_id")
+  currentDate DateTime  @map("current_date") @db.Date
+  closedAt    DateTime? @map("closed_at")
+  closedBy    String?   @map("closed_by")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@map("business_dates")
+}
+
+model NightAuditRun {
+  id              String    @id @default(cuid())
+  propertyId      String    @map("property_id")
+  businessDate    DateTime  @map("business_date") @db.Date
+  status          String    @default("not_started")
+  startedAt       DateTime? @map("started_at")
+  completedAt     DateTime? @map("completed_at")
+  startedBy       String?   @map("started_by")
+  stepResultsJson Json      @default("{}") @map("step_results_json")
+  errorMessage    String?   @map("error_message")
+  correlationId   String?   @map("correlation_id")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@unique([propertyId, businessDate])
+  @@index([propertyId, status])
+  @@map("night_audit_runs")
+}
+
+model FiscalPeriod {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  propertyId     String?   @map("property_id")
+  periodCode     String    @map("period_code")
+  periodType     String    @map("period_type")
+  startDate      DateTime  @map("start_date") @db.Date
+  endDate        DateTime  @map("end_date") @db.Date
+  status         String    @default("open")
+  closedAt       DateTime? @map("closed_at")
+  closedBy       String?   @map("closed_by")
+  closingNotes   String?   @map("closing_notes")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@unique([organizationId, propertyId, periodCode])
+  @@index([organizationId, propertyId, status])
+  @@index([startDate, endDate])
+  @@map("fiscal_periods")
+}
+
+model Tax {
+  id              String   @id @default(cuid())
+  organizationId  String   @map("organization_id")
+  code            String
+  name            String
+  country         String   @default("ES")
+  taxRegion       String   @map("tax_region")
+  liabilityAccountCode String? @map("liability_account_code")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([organizationId, code, taxRegion])
+  @@map("taxes")
+}
+
+model TaxRate {
+  id            String    @id @default(cuid())
+  taxId         String    @map("tax_id")
+  rateCode      String    @map("rate_code")
+  ratePercent   Decimal   @map("rate_percent") @db.Decimal(5, 2)
+  appliesTo     String    @map("applies_to")
+  validFrom     DateTime  @map("valid_from") @db.Date
+  validTo       DateTime? @map("valid_to") @db.Date
+  active        Boolean   @default(true)
+
+  @@unique([taxId, rateCode, appliesTo, validFrom])
+  @@index([appliesTo, validFrom])
+  @@map("tax_rates")
+}
+
+model VerifactuSubmission {
+  id              String    @id @default(cuid())
+  invoiceId       String    @map("invoice_id")
+  propertyId      String    @map("property_id")
+  status          String    @default("pending")
+  endpoint        String?
+  xmlPayload      String?   @map("xml_payload") @db.Text
+  responseAck     String?   @map("response_ack") @db.Text
+  acceptedHash    String?   @map("accepted_hash")
+  csvCode         String?   @map("csv_code")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  attempts        Int       @default(0)
+  signatureMode   String?   @map("signature_mode")
+  signedAt        DateTime? @map("signed_at")
+  submittedAt     DateTime? @map("submitted_at")
+  acknowledgedAt  DateTime? @map("acknowledged_at")
+  nextRetryAt     DateTime? @map("next_retry_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([invoiceId])
+  @@index([propertyId, status])
+  @@index([status, nextRetryAt])
+  @@map("verifactu_submissions")
+}
+
+model TbaiSubmission {
+  id              String    @id @default(cuid())
+  invoiceId       String    @map("invoice_id")
+  propertyId      String    @map("property_id")
+  territory       String
+  status          String    @default("pending")
+  endpoint        String?
+  xmlPayload      String?   @map("xml_payload") @db.Text
+  responseAck     String?   @map("response_ack") @db.Text
+  tbaiCode        String?   @map("tbai_code")
+  tbaiHash        String?   @map("tbai_hash")
+  previousTbaiHash String?  @map("previous_tbai_hash")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  attempts        Int       @default(0)
+  submittedAt     DateTime? @map("submitted_at")
+  acknowledgedAt  DateTime? @map("acknowledged_at")
+  nextRetryAt     DateTime? @map("next_retry_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([invoiceId])
+  @@index([propertyId, territory, status])
+  @@index([status, nextRetryAt])
+  @@map("tbai_submissions")
+}
+
+model IgicSubmission {
+  id              String    @id @default(cuid())
+  invoiceId       String    @map("invoice_id")
+  propertyId      String    @map("property_id")
+  status          String    @default("pending")
+  endpoint        String?
+  xmlPayload      String?   @map("xml_payload") @db.Text
+  responseAck     String?   @map("response_ack") @db.Text
+  csvCode         String?   @map("csv_code")
+  errorCode       String?   @map("error_code")
+  errorMessage    String?   @map("error_message")
+  attempts        Int       @default(0)
+  submittedAt     DateTime? @map("submitted_at")
+  acknowledgedAt  DateTime? @map("acknowledged_at")
+  nextRetryAt     DateTime? @map("next_retry_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@unique([invoiceId])
+  @@index([propertyId, status])
+  @@index([status, nextRetryAt])
+  @@map("igic_submissions")
+}
+
+// Modelo 111 — IRPF withholdings practiced on payments to workers, professionals,
+// agrarian activities, etc. Each row represents a withholding event at the moment
+// of payment (gross-up of cuenta 4751 H.P. acreedor por retenciones practicadas).
+// Aggregated by quarter to produce AEAT Modelo 111.
+model WithholdingTaxRecord {
+  id               String    @id @default(cuid())
+  organizationId   String    @map("organization_id")
+  propertyId       String    @map("property_id")
+  // payroll_payment | professional_invoice | agrarian | other
+  sourceType       String    @map("source_type")
+  sourceId         String    @map("source_id")
+  recipientNif     String?   @map("recipient_nif")
+  recipientName    String?   @map("recipient_name")
+  recipientAddress    String? @map("recipient_address")
+  cadastralReference  String? @map("cadastral_reference")
+  grossAmount      Decimal   @map("gross_amount") @db.Decimal(14, 2)
+  retentionRate    Decimal   @map("retention_rate") @db.Decimal(5, 2)
+  retentionAmount  Decimal   @map("retention_amount") @db.Decimal(14, 2)
+  // Modelo 111 row codes: "01" empleados, "02" profesionales, "03" agrarias, etc.
+  rowCode          String    @map("row_code")
+  paymentDate      DateTime  @map("payment_date") @db.Date
+  fiscalPeriodId   String?   @map("fiscal_period_id")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  @@index([propertyId, paymentDate])
+  @@index([sourceType, sourceId])
+  @@index([organizationId, paymentDate])
+  @@map("withholding_tax_records")
+}
+
+
+// ---- Bank reconciliation (Sprint 21) ----
+
+model BankAccount {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  organizationId    String   @map("organization_id")
+  name              String
+  bankName          String?  @map("bank_name")
+  iban              String?
+  bic               String?
+  currencyCode      String   @default("EUR") @map("currency_code")
+  ledgerAccountCode String?  @map("ledger_account_code")
+  openingBalance    Decimal  @default(0) @db.Decimal(14, 2) @map("opening_balance")
+  active            Boolean  @default(true)
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@index([propertyId, active])
+  @@index([organizationId])
+  @@map("bank_accounts")
+}
+
+model BankStatement {
+  id              String    @id @default(cuid())
+  bankAccountId   String    @map("bank_account_id")
+  propertyId      String    @map("property_id")
+  periodStart     DateTime  @map("period_start")
+  periodEnd       DateTime  @map("period_end")
+  openingBalance  Decimal   @db.Decimal(14, 2) @map("opening_balance")
+  closingBalance  Decimal   @db.Decimal(14, 2) @map("closing_balance")
+  source          String?
+  status          String    @default("pending")
+  importedAt      DateTime  @default(now()) @map("imported_at")
+
+  @@index([bankAccountId, periodEnd])
+  @@map("bank_statements")
+}
+
+model BankStatementLine {
+  id            String    @id @default(cuid())
+  statementId   String    @map("statement_id")
+  bankAccountId String    @map("bank_account_id")
+  txDate        DateTime  @map("tx_date")
+  valueDate     DateTime? @map("value_date")
+  amount        Decimal   @db.Decimal(14, 2)
+  currencyCode  String    @default("EUR") @map("currency_code")
+  description   String?
+  reference     String?
+  counterparty  String?
+  rawJson       Json?     @map("raw_json")
+  matchedTo     String?   @map("matched_to")
+
+  @@index([statementId, txDate])
+  @@index([bankAccountId, txDate])
+  @@map("bank_statement_lines")
+}
+
+model ReconciliationMatch {
+  id              String   @id @default(cuid())
+  bankAccountId   String   @map("bank_account_id")
+  bankLineId      String   @map("bank_line_id")
+  matchType       String   @map("match_type")
+  matchedEntityId String   @map("matched_entity_id")
+  amount          Decimal  @db.Decimal(14, 2)
+  matchedAt       DateTime @default(now()) @map("matched_at")
+  matchedByUserId String?  @map("matched_by_user_id")
+  confidence      String?
+  notes           String?
+
+  @@unique([bankLineId])
+  @@index([matchType, matchedEntityId])
+  @@map("reconciliation_matches")
+}
+
+// ---- Commission engine (Sprint 22) ----
+
+model CommissionRule {
+  id                String    @id @default(cuid())
+  propertyId        String    @map("property_id")
+  channelId         String?   @map("channel_id")
+  channelCode       String?   @map("channel_code")
+  ratePct           Decimal   @db.Decimal(5, 2) @map("rate_pct")
+  appliesTo         String    @default("net_revenue") @map("applies_to")
+  ledgerAccountCode String    @default("6230") @map("ledger_account_code")
+  active            Boolean   @default(true)
+  effectiveFrom     DateTime? @map("effective_from")
+  effectiveTo       DateTime? @map("effective_to")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  @@index([propertyId, active])
+  @@index([channelId, active])
+  @@map("commission_rules")
+}
+
+model CommissionAccrual {
+  id               String   @id @default(cuid())
+  propertyId       String   @map("property_id")
+  reservationId    String?  @map("reservation_id")
+  invoiceId        String?  @map("invoice_id")
+  channelId        String?  @map("channel_id")
+  channelCode      String?  @map("channel_code")
+  baseAmount       Decimal  @db.Decimal(14, 2) @map("base_amount")
+  ratePct          Decimal  @db.Decimal(5, 2) @map("rate_pct")
+  commissionAmount Decimal  @db.Decimal(14, 2) @map("commission_amount")
+  currencyCode     String   @default("EUR") @map("currency_code")
+  accruedAt        DateTime @default(now()) @map("accrued_at")
+  journalEntryId   String?  @map("journal_entry_id")
+  status           String   @default("accrued")
+
+  @@index([propertyId, accruedAt])
+  @@index([channelId, status])
+  @@index([reservationId])
+  @@map("commission_accruals")
+}
+
+// ---- Payroll bridge (Sprint 23) ----
+
+model EmploymentContract {
+  id                     String    @id @default(cuid())
+  staffProfileId         String    @map("staff_profile_id")
+  propertyId             String?   @map("property_id")
+  organizationId         String    @map("organization_id")
+  contractType           String    @map("contract_type")
+  startDate              DateTime  @map("start_date")
+  endDate                DateTime? @map("end_date")
+  grossSalary            Decimal   @db.Decimal(14, 2) @map("gross_salary")
+  payFrequency           String    @default("monthly") @map("pay_frequency")
+  payCount               Int       @default(14) @map("pay_count")
+  irpfRatePct            Decimal?  @db.Decimal(5, 2) @map("irpf_rate_pct")
+  socialSecurityCategory String?   @map("social_security_category")
+  costCenterId           String?   @map("cost_center_id")
+  active                 Boolean   @default(true)
+  createdAt              DateTime  @default(now()) @map("created_at")
+  updatedAt              DateTime  @updatedAt @map("updated_at")
+
+  @@index([staffProfileId, active])
+  @@index([propertyId, active])
+  @@map("employment_contracts")
+}
+
+model PayrollPeriod {
+  id             String    @id @default(cuid())
+  propertyId     String?   @map("property_id")
+  organizationId String    @map("organization_id")
+  periodCode     String    @map("period_code")
+  startDate      DateTime  @map("start_date")
+  endDate        DateTime  @map("end_date")
+  status         String    @default("open")
+  totalGross     Decimal   @default(0) @db.Decimal(14, 2) @map("total_gross")
+  totalNet       Decimal   @default(0) @db.Decimal(14, 2) @map("total_net")
+  totalIrpf      Decimal   @default(0) @db.Decimal(14, 2) @map("total_irpf")
+  totalSs        Decimal   @default(0) @db.Decimal(14, 2) @map("total_ss")
+  exportedAt     DateTime? @map("exported_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  @@unique([organizationId, periodCode, propertyId])
+  @@index([organizationId, status])
+  @@map("payroll_periods")
+}
+
+model PayrollSlip {
+  id                String   @id @default(cuid())
+  periodId          String   @map("period_id")
+  staffProfileId    String   @map("staff_profile_id")
+  contractId        String?  @map("contract_id")
+  grossSalary       Decimal  @db.Decimal(14, 2) @map("gross_salary")
+  irpfRetention     Decimal  @db.Decimal(14, 2) @map("irpf_retention")
+  ssEmployee        Decimal  @db.Decimal(14, 2) @map("ss_employee")
+  ssEmployer        Decimal  @db.Decimal(14, 2) @map("ss_employer")
+  netSalary         Decimal  @db.Decimal(14, 2) @map("net_salary")
+  daysWorked        Int      @default(30) @map("days_worked")
+  documentObjectKey String?  @map("document_object_key")
+  status            String   @default("draft")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@unique([periodId, staffProfileId])
+  @@index([staffProfileId])
+  @@map("payroll_slips")
+}
+
+model PayrollLine {
+  id          String  @id @default(cuid())
+  slipId      String  @map("slip_id")
+  lineType    String  @map("line_type")
+  code        String
+  description String?
+  amount      Decimal @db.Decimal(14, 2)
+
+  @@index([slipId, lineType])
+  @@map("payroll_lines")
+}
+
+// ---- Multi-currency (Sprint 24) ----
+
+model ExchangeRate {
+  id              String   @id @default(cuid())
+  baseCurrency    String   @map("base_currency")
+  quoteCurrency   String   @map("quote_currency")
+  rate            Decimal  @db.Decimal(14, 8)
+  effectiveDate   DateTime @map("effective_date")
+  source          String?
+  organizationId  String?  @map("organization_id")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@unique([baseCurrency, quoteCurrency, effectiveDate, organizationId])
+  @@index([effectiveDate])
+  @@map("exchange_rates")
+}
+
+// ---- Fiscal year + closing (Sprint 25) ----
+
+model FiscalYear {
+  id                 String    @id @default(cuid())
+  organizationId     String    @map("organization_id")
+  propertyId         String?   @map("property_id")
+  code               String
+  startDate          DateTime  @map("start_date")
+  endDate            DateTime  @map("end_date")
+  status             String    @default("open")
+  closedAt           DateTime? @map("closed_at")
+  closingEntryId     String?   @map("closing_entry_id")
+  openingEntryId     String?   @map("opening_entry_id")
+  netResult          Decimal?  @db.Decimal(14, 2) @map("net_result")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+
+  @@unique([organizationId, propertyId, code])
+  @@index([organizationId, status])
+  @@map("fiscal_years")
+}
+
+// ---- Notifications dispatch (Sprint 26) ----
+
+model NotificationTemplate {
+  id              String   @id @default(cuid())
+  organizationId  String   @map("organization_id")
+  propertyId      String?  @map("property_id")
+  code            String
+  channel         String
+  language        String   @default("es")
+  subject         String?
+  body            String   @db.Text
+  variablesJson   Json?    @map("variables_json")
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, propertyId, code, channel, language])
+  @@index([code, channel])
+  @@map("notification_templates")
+}
+
+model NotificationDelivery {
+  id                String    @id @default(cuid())
+  organizationId    String    @map("organization_id")
+  propertyId        String?   @map("property_id")
+  notificationId    String?   @map("notification_id")
+  templateCode      String?   @map("template_code")
+  channel           String
+  recipient         String
+  status            String    @default("pending")
+  providerMessageId String?   @map("provider_message_id")
+  subject           String?
+  bodyRendered      String?   @db.Text @map("body_rendered")
+  payloadJson       Json?     @map("payload_json")
+  attempts          Int       @default(0)
+  errorMessage      String?   @map("error_message")
+  scheduledFor      DateTime? @map("scheduled_for")
+  sentAt            DateTime? @map("sent_at")
+  failedAt          DateTime? @map("failed_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  @@index([propertyId, status, scheduledFor])
+  @@index([channel, status])
+  @@map("notification_deliveries")
+}
+
+// ===========================================================================
+// Compliance Center — regulatory compliance matrix for Spanish hotels.
+// Areas + requirement catalog (jurisdiction-aware) → per-property items with
+// status semaphore, documents, tasks. Keyed by stable codes (area/requirement).
+// ===========================================================================
+
+model ComplianceArea {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  description String?
+  sortOrder   Int      @default(0) @map("sort_order")
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("compliance_areas")
+}
+
+model ComplianceRequirement {
+  id                       String   @id @default(cuid())
+  areaCode                 String   @map("area_code")
+  code                     String   @unique
+  title                    String
+  description              String?
+  jurisdiction             String   @default("STATE")
+  autonomousCommunity      String?  @map("autonomous_community")
+  municipality             String?
+  legalReference           String?  @map("legal_reference")
+  appliesWhen              String?  @map("applies_when")
+  appliesRule              String?  @map("applies_rule")
+  defaultApplies           Boolean  @default(true) @map("default_applies")
+  hotelTypes               String[] @default([]) @map("hotel_types")
+  riskLevel                String   @default("MEDIUM")
+  requiredDocuments        String[] @map("required_documents")
+  renewalRequired          Boolean  @default(false) @map("renewal_required")
+  defaultRenewalPeriodDays Int?     @map("default_renewal_period_days")
+  active                   Boolean  @default(true)
+  createdAt                DateTime @default(now()) @map("created_at")
+
+  @@index([areaCode])
+  @@map("compliance_requirements")
+}
+
+model CompliancePropertyProfile {
+  id                  String   @id @default(cuid())
+  propertyId          String   @unique @map("property_id")
+  autonomousCommunity String?  @map("autonomous_community")
+  hotelType           String?  @map("hotel_type")
+  hasRestaurant     Boolean  @default(false) @map("has_restaurant")
+  hasKitchen        Boolean  @default(false) @map("has_kitchen")
+  hasPool           Boolean  @default(false) @map("has_pool")
+  hasSpa            Boolean  @default(false) @map("has_spa")
+  hasParking        Boolean  @default(false) @map("has_parking")
+  hasEvents         Boolean  @default(false) @map("has_events")
+  hasTerrace        Boolean  @default(false) @map("has_terrace")
+  hasLaundry        Boolean  @default(false) @map("has_laundry")
+  buildingProtected Boolean  @default(false) @map("building_protected")
+  expiringSoonDays  Int      @default(30) @map("expiring_soon_days")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@map("compliance_property_profiles")
+}
+
+model ComplianceItem {
+  id                  String    @id @default(cuid())
+  propertyId          String    @map("property_id")
+  requirementCode     String    @map("requirement_code")
+  applies             Boolean   @default(true)
+  appliesOverride     Boolean?  @map("applies_override")
+  notApplicableReason String?   @map("not_applicable_reason")
+  status              String    @default("PENDING")
+  responsibleUserId   String?   @map("responsible_user_id")
+  responsibleName     String?   @map("responsible_name")
+  externalAdvisorName String?   @map("external_advisor_name")
+  issueDate           DateTime? @map("issue_date")
+  expiryDate          DateTime? @map("expiry_date")
+  lastReviewDate      DateTime? @map("last_review_date")
+  nextReviewDate      DateTime? @map("next_review_date")
+  notes               String?
+  correctiveAction    String?   @map("corrective_action")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  @@unique([propertyId, requirementCode])
+  @@index([propertyId])
+  @@map("compliance_items")
+}
+
+model ComplianceDocument {
+  id               String    @id @default(cuid())
+  propertyId       String    @map("property_id")
+  requirementCode  String?   @map("requirement_code")
+  areaCode         String?   @map("area_code")
+  title            String
+  documentType     String?   @map("document_type")
+  fileName         String    @map("file_name")
+  objectKey        String?   @map("object_key")
+  mimeType         String?   @map("mime_type")
+  fileSize         Int       @default(0) @map("file_size")
+  issueDate        DateTime? @map("issue_date")
+  expiryDate       DateTime? @map("expiry_date")
+  issuingAuthority String?   @map("issuing_authority")
+  providerName     String?   @map("provider_name")
+  isCurrent        Boolean   @default(true) @map("is_current")
+  uploadedByUserId String?   @map("uploaded_by_user_id")
+  uploadedAt       DateTime  @default(now()) @map("uploaded_at")
+  tags             String[]
+  notes            String?
+
+  @@index([propertyId])
+  @@index([propertyId, requirementCode])
+  @@map("compliance_documents")
+}
+
+model ComplianceTask {
+  id              String    @id @default(cuid())
+  propertyId      String    @map("property_id")
+  requirementCode String?   @map("requirement_code")
+  title           String
+  description     String?
+  assignedToName  String?   @map("assigned_to_name")
+  status          String    @default("OPEN")
+  priority        String    @default("MEDIUM")
+  dueDate         DateTime? @map("due_date")
+  completedAt     DateTime? @map("completed_at")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  @@index([propertyId])
+  @@map("compliance_tasks")
+}
+
+// =============================================================================
+// Tourist tax engine (multi-CCAA, calendar-aware)
+// =============================================================================
+//
+// España es uno de los pocos países donde la tasa turística se decide a nivel
+// autonómico Y municipal, con tablas que cambian cada año (a veces a mitad de
+// año por aprobación parlamentaria), tarifa por categoría de establecimiento,
+// número máximo de noches gravables y exenciones por edad.
+//
+// El motor cumple 3 funciones:
+//   1. Catálogo (`TouristTaxRate`): qué se cobra en cada jurisdicción, válido
+//      en un rango de fechas. Soporta tarifas escalonadas por categoría de
+//      hotel (eg. Cataluña: 5* lujo > 5* > 4* > 3* > camping...).
+//   2. Aplicación (`TouristTaxApplication`): qué se ha aplicado a cada estancia,
+//      con quién pagaba y si se cargó al folio. Permite informe trimestral
+//      autoliquidable.
+//   3. Exenciones (`TouristTaxExemption`): menores, viajes médicos, fuerzas
+//      armadas, etc. — distintas por CCAA.
+
+model TouristTaxRate {
+  id                 String   @id @default(cuid())
+  // Jurisdicción: combinación de país (ES) + comunidad autónoma + municipio
+  // (opcional, para tasas municipales como Barcelona o San Sebastián).
+  country            String   @default("ES")
+  ccaaCode           String   @map("ccaa_code") // p.ej. CAT, BAL, CAN, EUSK
+  municipality       String?  // null = aplica a toda la CCAA
+  // Categoría del establecimiento — cada CCAA tiene su propio escalado:
+  // CAT: lujo_5e, 5_estrellas, 4_estrellas, 3_estrellas, 2_o_menos, camping...
+  // BAL: 5_estrellas, 4_estrellas, 3_estrellas, apt_4_4sup, apt_3_2_1...
+  // Almacenado como string para flexibilidad. La UI lo presenta como dropdown.
+  establishmentClass String   @map("establishment_class")
+  // Tarifa en EUR por persona y noche.
+  amountPerPersonNight Decimal @db.Decimal(6, 4) @map("amount_per_person_night")
+  currency           String   @default("EUR")
+  // Validez: la mayoría de tarifas tienen `validUntil = null` (sigue vigente
+  // hasta que la sustituya otra).
+  validFrom          DateTime @map("valid_from") @db.Date
+  validUntil         DateTime? @map("valid_until") @db.Date
+  // Máximo de noches por estancia (CAT cobra hasta 7; otras 0 = sin límite).
+  maxNightsPerStay   Int      @default(0) @map("max_nights_per_stay")
+  // Recarga por temporada alta (p.ej. CAT verano +2 €): expresada como
+  // % adicional sobre la tarifa base, aplicado solo entre highSeasonFrom y
+  // highSeasonUntil (mm-dd, año actual).
+  highSeasonSurcharge Decimal? @db.Decimal(5, 4) @map("high_season_surcharge")
+  highSeasonFromMmdd  String?  @map("high_season_from_mmdd")  // "06-15"
+  highSeasonUntilMmdd String?  @map("high_season_until_mmdd") // "09-15"
+  // Edad mínima gravable. La mayoría 16 años; alguna 0.
+  taxableAgeFrom     Int      @default(16) @map("taxable_age_from")
+  // Legal source (BOE/DOGC/BOJA reference) for auditability.
+  legalSource        String?  @map("legal_source")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([country, ccaaCode, municipality])
+  @@index([validFrom, validUntil])
+  @@map("tourist_tax_rates")
+}
+
+model TouristTaxApplication {
+  id                String   @id @default(cuid())
+  propertyId        String   @map("property_id")
+  reservationId     String   @map("reservation_id")
+  folioId           String?  @map("folio_id")
+  folioLineId       String?  @map("folio_line_id")
+  rateId            String   @map("rate_id")
+  // Snapshot of the rate at the moment of application (for reproducibility
+  // even if rates table is edited later).
+  ccaaCode          String   @map("ccaa_code")
+  municipality      String?
+  establishmentClass String  @map("establishment_class")
+  amountPerPersonNight Decimal @db.Decimal(6, 4) @map("amount_per_person_night")
+  currency          String   @default("EUR")
+  // Computation details — replicable from these fields alone.
+  adultsTaxable     Int      @map("adults_taxable")
+  nightsTaxable     Int      @map("nights_taxable")
+  totalAmount       Decimal  @db.Decimal(10, 2) @map("total_amount")
+  stayFrom          DateTime @map("stay_from") @db.Date
+  stayUntil         DateTime @map("stay_until") @db.Date
+  exemptionsApplied Json?    @map("exemptions_applied") // [{ guestId, reason }]
+  appliedAt         DateTime @default(now()) @map("applied_at")
+
+  @@index([propertyId, stayFrom])
+  @@index([reservationId])
+  @@map("tourist_tax_applications")
+}
+
+model TouristTaxExemption {
+  id             String   @id @default(cuid())
+  ccaaCode       String   @map("ccaa_code")
+  code           String   // "MENORES_16", "MEDICAL_TRIP", "ARMED_FORCES", ...
+  description    String
+  // Optional age range when applicable.
+  ageFrom        Int?     @map("age_from")
+  ageTo          Int?     @map("age_to")
+  active         Boolean  @default(true)
+  legalSource    String?  @map("legal_source")
+
+  @@index([ccaaCode, active])
+  @@map("tourist_tax_exemptions")
+}
+
+// =============================================================================
+// CSRD / ESRS reporting (mandatorio en 2026 para grandes empresas)
+// =============================================================================
+//
+// La Corporate Sustainability Reporting Directive (CSRD) obliga a publicar
+// indicadores ESRS (European Sustainability Reporting Standards) en 4 áreas:
+//   E (Environment): Scope 1/2/3 CO2, agua, energía, residuos.
+//   S (Social): plantilla, accidentes, brecha salarial, diversidad.
+//   G (Governance): conflictos de interés, anti-corrupción.
+//   General: cadena de valor, materialidad.
+//
+// Grandes empresas (>250 empleados, >50M€ facturación, >25M€ balance) deben
+// reportar con datos 2025 antes de fin de 2026. Las cadenas hoteleras
+// españolas medianas (Meliá, NH, RIU…) entran en este perímetro.
+//
+// Este módulo solo modela los datos primarios; el cálculo de indicadores y la
+// exportación al formato XBRL/iXBRL queda en el servicio.
+
+model EsrsIndicator {
+  id              String   @id @default(cuid())
+  propertyId      String?  @map("property_id")
+  organizationId  String   @map("organization_id")
+  /** Ejercicio: "2025", "2026". */
+  fiscalYear      String   @map("fiscal_year")
+  /** Standard ESRS: "ESRS_E1", "ESRS_E2", "ESRS_S1", etc. */
+  standardCode    String   @map("standard_code")
+  /** Disclosure: "E1-6_GHG_Scope1", "E1-6_GHG_Scope2_LocationBased", "S1-6_Headcount". */
+  disclosureCode  String   @map("disclosure_code")
+  /** Tipo: NUMERIC | TEXT | BOOLEAN | PERCENTAGE | MONETARY. */
+  valueType       String   @map("value_type")
+  numericValue    Decimal? @db.Decimal(16, 4) @map("numeric_value")
+  textValue       String?  @map("text_value")
+  unit            String?  // tCO2e, m3, kWh, EUR, headcount...
+  /** Fuente del dato: "manual", "imported_sap", "energy_meter_iot", etc. */
+  source          String   @default("manual")
+  /** Cualquier metadato adicional (notas, fórmulas, períodos). */
+  metadataJson    Json?    @map("metadata_json")
+  computedAt      DateTime @default(now()) @map("computed_at")
+  reportedAt      DateTime? @map("reported_at")
+
+  @@unique([organizationId, propertyId, fiscalYear, disclosureCode])
+  @@index([organizationId, fiscalYear, standardCode])
+  @@map("esrs_indicators")
+}
+
+model EsrsReport {
+  id              String   @id @default(cuid())
+  organizationId  String   @map("organization_id")
+  fiscalYear      String   @map("fiscal_year")
+  status          String   @default("draft") // draft, ready, submitted
+  /** Formato exportable: "xbrl_inline", "pdf", "json". */
+  format          String   @default("json")
+  /** Hash de los datos para integridad — cambia si se altera el contenido. */
+  contentHash     String?  @map("content_hash")
+  /** Resumen ejecutivo generado: { totalIndicators, completeness%, ... }. */
+  summaryJson     Json?    @map("summary_json")
+  payloadXbrl     String?  @map("payload_xbrl") @db.Text
+  generatedBy     String?  @map("generated_by")
+  generatedAt     DateTime @default(now()) @map("generated_at")
+  submittedAt     DateTime? @map("submitted_at")
+
+  @@unique([organizationId, fiscalYear])
+  @@index([organizationId, status])
+  @@map("esrs_reports")
+}
+
+// =============================================================================
+// OAuth2 / Marketplace público — emisión de tokens para apps de terceros
+// =============================================================================
+//
+// Apaleo y Mews siguen este patrón: la cadena hotelera autoriza una "App"
+// (RoomDiary, un CRM, un BI...) que recibe scopes específicos y puede consumir
+// la API del PMS en nombre del hotel.
+//
+// Flujo soportado:
+//   1. Authorization Code + PKCE — la App redirige al hotel a /oauth/authorize.
+//   2. Client Credentials — para integraciones server-to-server (typical para
+//      partners empresariales).
+//
+// Tokens almacenados con hash; refresh tokens rotativos.
+
+model OAuthAuthorizationCode {
+  id              String   @id @default(cuid())
+  appId           String   @map("app_id")
+  organizationId  String   @map("organization_id")
+  propertyId      String?  @map("property_id")
+  userId          String?  @map("user_id")
+  codeHash        String   @unique @map("code_hash")
+  codeChallenge   String?  @map("code_challenge")
+  codeChallengeMethod String? @map("code_challenge_method")
+  redirectUri     String   @map("redirect_uri")
+  scopes          String[]
+  expiresAt       DateTime @map("expires_at")
+  consumedAt      DateTime? @map("consumed_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([appId, expiresAt])
+  @@map("oauth_authorization_codes")
+}
+
+model OAuthToken {
+  id              String   @id @default(cuid())
+  appId           String   @map("app_id")
+  organizationId  String   @map("organization_id")
+  propertyId      String?  @map("property_id")
+  userId          String?  @map("user_id")
+  /** "access" | "refresh". */
+  kind            String
+  tokenHash       String   @unique @map("token_hash")
+  scopes          String[]
+  expiresAt       DateTime @map("expires_at")
+  revokedAt       DateTime? @map("revoked_at")
+  /** Cuando un refresh token genera uno nuevo, lo encadenamos. */
+  rotatedFromId   String?  @map("rotated_from_id")
+  lastUsedAt      DateTime? @map("last_used_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  @@index([appId, kind, expiresAt])
+  @@index([tokenHash])
+  @@map("oauth_tokens")
+}
+
+model MarketplaceListing {
+  id              String   @id @default(cuid())
+  appId           String   @unique @map("app_id")
+  publishedAt     DateTime? @map("published_at")
+  status          String   @default("draft") // draft | review | published | unlisted
+  category        String   // crm, channel_manager, payments, accounting, smart_lock, energy, etc.
+  /** Snippet visible en el catálogo. */
+  tagline         String
+  description     String   @db.Text
+  iconUrl         String?  @map("icon_url")
+  screenshotsJson Json?    @map("screenshots_json")
+  pricing         String?  // "free" | "freemium" | "paid" | "contact_sales"
+  privacyUrl      String?  @map("privacy_url")
+  termsUrl        String?  @map("terms_url")
+  /** Apps verificadas tienen badge. */
+  verified        Boolean  @default(false)
+  installsCount   Int      @default(0) @map("installs_count")
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@index([status, category])
+  @@map("marketplace_listings")
+}
+
+model AppInstallation {
+  id              String   @id @default(cuid())
+  appId           String   @map("app_id")
+  organizationId  String   @map("organization_id")
+  propertyId      String?  @map("property_id")
+  scopes          String[]
+  installedAt     DateTime @default(now()) @map("installed_at")
+  uninstalledAt   DateTime? @map("uninstalled_at")
+  installedByUserId String? @map("installed_by_user_id")
+
+  @@unique([appId, organizationId, propertyId])
+  @@index([organizationId, propertyId])
+  @@map("app_installations")
+}
+
+model RateChangeJournal {
+  id            String   @id @default(cuid())
+  propertyId    String
+  userId        String
+  userEmail     String?
+  timestamp     DateTime @default(now())
+  changesCount  Int
+  changesJson   Json     // detalle de celdas afectadas
+  reason        String?
+  pushedTo      String[] @default([])  // channel ids
+  pushStatus    String   @default("draft") // draft|pushed|failed
+  property      Property @relation(fields: [propertyId], references: [id])
+  @@index([propertyId, timestamp])
+  @@map("rate_change_journals")
+}

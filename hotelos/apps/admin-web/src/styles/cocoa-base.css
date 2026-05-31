@@ -1,0 +1,44 @@
+/* Cocoa base styles - aplican global */
+* {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--cocoa-font);
+  font-size: var(--cocoa-fs-body);
+  color: var(--cocoa-label);
+  background: var(--cocoa-background-window);
+  font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1, 'ss01' 1;
+  letter-spacing: -0.01em;
+}
+
+.cocoa-tabular {
+  font-feature-settings: 'tnum' 1, 'kern' 1;
+}
+
+.cocoa-mono {
+  font-family: var(--cocoa-font-mono);
+  font-feature-settings: 'kern' 0;
+}
+
+.cocoa-vibrancy {
+  background: var(--cocoa-background-toolbar);
+  backdrop-filter: var(--cocoa-material-toolbar-blur);
+  -webkit-backdrop-filter: var(--cocoa-material-toolbar-blur);
+}
+
+.cocoa-focus-ring:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0,122,255,0.4);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    /* duplica el bloque dark del cocoa-tokens.css o usa cascade */
+  }
+}

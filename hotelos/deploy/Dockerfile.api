@@ -1,0 +1,75 @@
+# HotelOS API · Production image
+#
+# Multi-stage build:
+#   stage 1 (builder)  → install workspace deps, compile TS, run prisma generate
+#   stage 2 (runtime)  → minimal Node 22 image with only what we need to run
+#
+# Why the workspace dance: this is an npm-workspaces monorepo. We need to copy
+# every workspace's package.json BEFORE running `npm ci` so the install resolves
+# the workspace:* protocol correctly; copying source first would invalidate the
+# install cache on every code change.
+
+# ---- stage 1: builder ----
+FROM node:22-alpine AS builder
+
+# Build-only deps: prisma needs `libc6-compat`, node-gyp deps for some packages.
+RUN apk add --no-cache libc6-compat python3 make g++
+
+WORKDIR /repo
+
+# Copy ALL workspace manifests first so install caches when only source changes.
+COPY package.json package-lock.json* ./
+COPY apps/api/package.json ./apps/api/
+COPY packages/database/package.json ./packages/database/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/compliance/package.json ./packages/compliance/
+COPY packages/integrations/package.json ./packages/integrations/
+COPY packages/ai-tools/package.json ./packages/ai-tools/
+COPY packages/product/package.json ./packages/product/
+COPY packages/ui/package.json ./packages/ui/
+
+# Install deps for the API + transitive workspaces. `--include=dev` because
+# we need tsc + prisma to run the build step.
+RUN npm install --include=dev --ignore-scripts
+
+# Now bring in the source.
+COPY packages ./packages
+COPY apps/api ./apps/api
+
+# Generate the Prisma client (uses packages/database/prisma/schema.prisma).
+RUN npm --workspace @hotelos/database run prisma:generate || \
+    (cd packages/database && npx prisma generate)
+
+# Compile the API (TypeScript → dist/).
+RUN npm --workspace @hotelos/api run build
+
+# Prune devDependencies for the runtime stage.
+RUN npm prune --workspaces --omit=dev
+
+# ---- stage 2: runtime ----
+FROM node:22-alpine AS runtime
+
+# Required for Prisma's native binaries (alpine uses musl, prisma ships glibc).
+RUN apk add --no-cache libc6-compat tini wget
+
+# Non-root user for security.
+RUN addgroup -S app && adduser -S -G app app
+
+WORKDIR /app
+
+# Copy only what the API needs at runtime.
+COPY --from=builder --chown=app:app /repo/node_modules ./node_modules
+COPY --from=builder --chown=app:app /repo/packages ./packages
+COPY --from=builder --chown=app:app /repo/apps/api/dist ./apps/api/dist
+COPY --from=builder --chown=app:app /repo/apps/api/package.json ./apps/api/package.json
+
+USER app
+
+EXPOSE 3000
+
+# `tini` reaps zombie processes correctly when the API spawns workers/cron.
+ENTRYPOINT ["/sbin/tini", "--"]
+
+# Run Prisma migrations as a separate step (deploy/scripts/migrate.sh handles
+# this in the deploy script), then start the compiled server.
+CMD ["node", "apps/api/dist/server.js"]

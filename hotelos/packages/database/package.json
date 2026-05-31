@@ -1,0 +1,32 @@
+{
+  "name": "@hotelos/database",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate dev",
+    "db:seed": "prisma db seed",
+    "db:seed:commercial": "node --env-file=../../.env --import tsx prisma/seed-commercial-demo.ts",
+    "db:seed:snapshots": "node --env-file=../../.env --import tsx prisma/seed-revenue-snapshots.ts",
+    "db:seed:compliance": "node --env-file=../../.env --import tsx prisma/seed-compliance.ts",
+    "db:seed:operations": "node --env-file=../../.env --import tsx prisma/seed-operations.ts",
+    "db:seed:cancellation": "node --env-file=../../.env --import tsx prisma/seed-cancellation-policies.ts",
+    "db:seed:allotments": "node --env-file=../../.env --import tsx prisma/seed-allotments.ts",
+    "db:seed:fnb": "node --env-file=../../.env --import tsx prisma/seed-fnb-inventory.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint ."
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "prisma": "^6.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.8.0"
+  }
+}

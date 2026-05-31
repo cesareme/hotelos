@@ -1,0 +1,576 @@
+:root {
+  /* Warm guest-facing palette */
+  --gp-bg: #fdfbf7;
+  --gp-surface: #ffffff;
+  --gp-ink: #2a1f15;
+  --gp-ink-soft: #6b5b4a;
+  --gp-muted: #9a8a78;
+  --gp-line: #ece3d6;
+  --gp-soft: #f6efe2;
+  --gp-accent: #b08a3e;
+  --gp-accent-soft: #f4ead2;
+  --gp-accent-deep: #8e6b25;
+  --gp-success: #2e7d57;
+  --gp-success-soft: #e7f3eb;
+  --gp-warn: #b97a1f;
+  --gp-warn-soft: #fdf2dc;
+  --gp-error: #b3382f;
+  --gp-error-soft: #fbe7e3;
+  --gp-info: #4a5f8f;
+  --gp-info-soft: #e9eef8;
+
+  color: var(--gp-ink);
+  background: var(--gp-bg);
+  font-family: "Inter", "Helvetica Neue", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  color-scheme: light;
+}
+
+/* Dark mode — warm charcoal variant of the gold guest palette.
+   Guests have no toggle, so we follow the OS preference. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --gp-bg: #15120e;
+    --gp-surface: #211c15;
+    --gp-ink: #f3ece1;
+    --gp-ink-soft: #c8bba8;
+    --gp-muted: #998a76;
+    --gp-line: #362d22;
+    --gp-soft: #2a2319;
+    --gp-accent: #d2a64e;
+    --gp-accent-soft: #2e2614;
+    --gp-accent-deep: #e2bb6a;
+    --gp-success: #5fcf95;
+    --gp-success-soft: #14291e;
+    --gp-warn: #e2a84e;
+    --gp-warn-soft: #2c2310;
+    --gp-error: #ef8d83;
+    --gp-error-soft: #2e1613;
+    --gp-info: #9fb2e0;
+    --gp-info-soft: #1a2031;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+.gp-bootstrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  color: var(--gp-ink-soft);
+  font-size: 15px;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(1200px 600px at 50% -200px, rgba(176, 138, 62, 0.12), transparent 60%),
+    var(--gp-bg);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+a {
+  color: inherit;
+}
+
+/* -------- Shell -------- */
+.gp-shell {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 20px 18px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 100vh;
+}
+
+.gp-header {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.gp-header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  min-height: 32px;
+}
+
+.gp-wordmark {
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 12px;
+  color: var(--gp-accent-deep);
+}
+
+.gp-link {
+  background: none;
+  border: none;
+  color: var(--gp-accent-deep);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 0;
+  font-size: 14px;
+}
+
+.gp-link:hover {
+  text-decoration: underline;
+}
+
+.gp-hero {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.gp-eyebrow {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--gp-accent-deep);
+  font-weight: 700;
+}
+
+.gp-hero h1 {
+  margin: 0;
+  font-size: 32px;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.gp-subtitle {
+  margin: 0;
+  color: var(--gp-ink-soft);
+  font-size: 15px;
+}
+
+.gp-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 4px;
+  color: var(--gp-ink-soft);
+  font-size: 14px;
+}
+
+.gp-hero-code {
+  background: var(--gp-accent-soft);
+  color: var(--gp-accent-deep);
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+.gp-main {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: 1;
+}
+
+.gp-footer {
+  color: var(--gp-muted);
+  font-size: 12px;
+  text-align: center;
+  padding-top: 12px;
+}
+
+/* -------- Card -------- */
+.gp-card {
+  background: var(--gp-surface);
+  border: 1px solid var(--gp-line);
+  border-radius: 20px;
+  padding: 20px;
+  box-shadow: 0 1px 0 rgba(176, 138, 62, 0.04), 0 12px 28px rgba(42, 31, 21, 0.05);
+}
+
+.gp-skeleton {
+  color: var(--gp-muted);
+  text-align: center;
+  font-style: italic;
+}
+
+/* -------- Stay -------- */
+.gp-stay {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.gp-stay-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.gp-stay-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 12px;
+}
+
+.gp-stay-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gp-label {
+  margin: 0;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--gp-muted);
+  font-weight: 600;
+}
+
+.gp-value {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--gp-ink);
+}
+
+.gp-meta {
+  margin: 0;
+  font-size: 13px;
+  color: var(--gp-ink-soft);
+}
+
+/* -------- Actions grid -------- */
+.gp-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.gp-action {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--gp-surface);
+  border: 1px solid var(--gp-line);
+  border-radius: 18px;
+  padding: 16px;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color 0.15s ease, transform 0.15s ease, box-shadow 0.15s ease;
+  min-height: 96px;
+}
+
+.gp-action:hover:not(:disabled) {
+  border-color: var(--gp-accent);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(176, 138, 62, 0.12);
+}
+
+.gp-action:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
+.gp-action-icon {
+  font-size: 20px;
+  color: var(--gp-accent-deep);
+}
+
+.gp-action-label {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.gp-action-hint {
+  color: var(--gp-ink-soft);
+  font-size: 13px;
+}
+
+/* -------- Forms -------- */
+.gp-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.gp-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gp-field > span {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gp-ink-soft);
+}
+
+.gp-field small {
+  color: var(--gp-muted);
+  font-weight: 400;
+}
+
+.gp-field input,
+.gp-field select,
+.gp-field textarea {
+  width: 100%;
+  border: 1px solid var(--gp-line);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--gp-surface);
+  font-size: 15px;
+  color: var(--gp-ink);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.gp-field input:focus,
+.gp-field select:focus,
+.gp-field textarea:focus {
+  outline: none;
+  border-color: var(--gp-accent);
+  box-shadow: 0 0 0 3px var(--gp-accent-soft);
+}
+
+.gp-field textarea {
+  resize: vertical;
+  min-height: 80px;
+}
+
+.gp-fieldset {
+  border: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.gp-fieldset legend {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--gp-ink-soft);
+  padding: 0;
+}
+
+.gp-category-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.gp-category {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px;
+  border: 1px solid var(--gp-line);
+  border-radius: 14px;
+  cursor: pointer;
+  background: var(--gp-surface);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.gp-category input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.gp-category.is-active {
+  border-color: var(--gp-accent);
+  background: var(--gp-accent-soft);
+}
+
+.gp-category-icon {
+  font-size: 22px;
+}
+
+.gp-category-label {
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.gp-category-hint {
+  font-size: 12px;
+  color: var(--gp-ink-soft);
+}
+
+/* -------- Buttons -------- */
+.gp-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 12px;
+  padding: 14px 18px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+  min-height: 48px;
+}
+
+.gp-button:active {
+  transform: translateY(1px);
+}
+
+.gp-button-primary {
+  background: var(--gp-accent);
+  color: #ffffff;
+}
+
+.gp-button-primary:hover:not(:disabled) {
+  background: var(--gp-accent-deep);
+}
+
+.gp-button-primary:disabled {
+  background: var(--gp-muted);
+  cursor: progress;
+}
+
+.gp-button-ghost {
+  background: transparent;
+  border-color: var(--gp-line);
+  color: var(--gp-ink);
+}
+
+.gp-button-ghost:hover:not(:disabled) {
+  border-color: var(--gp-accent);
+}
+
+.gp-stacked {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.gp-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--gp-muted);
+  text-align: center;
+}
+
+/* -------- Status -------- */
+.gp-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.gp-pill-ok {
+  color: var(--gp-success);
+  background: var(--gp-success-soft);
+}
+
+.gp-pill-warn {
+  color: var(--gp-warn);
+  background: var(--gp-warn-soft);
+}
+
+.gp-pill-info {
+  color: var(--gp-info);
+  background: var(--gp-info-soft);
+}
+
+.gp-pill-error {
+  color: var(--gp-error);
+  background: var(--gp-error-soft);
+}
+
+/* -------- Messages -------- */
+.gp-error {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--gp-error-soft);
+  color: var(--gp-error);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.gp-success {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--gp-success);
+  background: var(--gp-success-soft);
+}
+
+.gp-success h2 {
+  margin: 0;
+  font-size: 22px;
+  color: var(--gp-success);
+}
+
+.gp-success p {
+  margin: 0;
+  color: var(--gp-ink);
+}
+
+.gp-confirmation {
+  font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--gp-success);
+  margin: 0;
+}
+
+.gp-disclosure {
+  font-size: 12px;
+  color: var(--gp-muted);
+  line-height: 1.5;
+  margin: 0;
+}
+
+/* -------- Larger screens (still keep mobile-feel column) -------- */
+@media (min-width: 600px) {
+  .gp-shell {
+    padding: 32px 24px 64px;
+  }
+  .gp-hero h1 {
+    font-size: 36px;
+  }
+}
+
+/* -------- Motion preferences -------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

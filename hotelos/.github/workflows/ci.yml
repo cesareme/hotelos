@@ -1,0 +1,131 @@
+name: CI
+
+# Build + typecheck + deployment-critical checks on every push to main and
+# every PR. All three workspaces typecheck cleanly: packages/ui,
+# apps/admin-web and apps/api. The build, env validation, contract tests,
+# smoke test and Docker image builds are the production gates.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    name: Build all
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Build admin-web (production)
+        run: npm run -w @hotelos/admin-web build
+
+  typecheck-strict:
+    name: Typecheck (strict packages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Typecheck @hotelos/ui
+        run: npm run -w @hotelos/ui typecheck
+      - name: Typecheck admin-web
+        run: npm run -w @hotelos/admin-web typecheck
+      - name: Typecheck API
+        run: npm run -w @hotelos/api typecheck
+
+  validate-env:
+    name: Validate deployment env contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Validate required environment variables
+        env:
+          # Provide dummy values so the validator can confirm every required
+          # variable is listed without failing the deploy gate in CI.
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+          REDIS_URL: redis://localhost:6379
+          JWT_SECRET: ci-jwt-secret-32-chars-min-aaaaaaaa
+          ENCRYPTION_KEY: ci-encryption-key-32-chars-min-aaaa
+          OBJECT_STORAGE_BUCKET: ci-bucket
+          AI_PROVIDER_API_KEY: ci-ai-key
+          SES_HOSPEDAJES_CLIENT_SECRET: ci-ses-secret
+          APP_PUBLIC_API_URL: https://api.example.com
+          SENTRY_DSN: https://example@sentry.example.com/0
+        run: npm run validate:env
+
+  contract-tests:
+    name: Contract tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Run contract tests
+        run: npm run test
+
+  smoke-demo:
+    name: Smoke test demo preview
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - run: npm ci
+      - name: Smoke test the demo preview
+        run: npm run smoke:demo
+
+  docker-images:
+    name: Build Docker images
+    runs-on: ubuntu-latest
+    needs: [build]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build API image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.api
+          push: false
+          tags: hotelos-api:ci
+      - name: Build AI Gateway image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.ai-gateway
+          push: false
+          tags: hotelos-ai-gateway:ci
+      - name: Build Worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.worker
+          push: false
+          tags: hotelos-worker:ci
+      - name: Build admin-web image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: infra/docker/Dockerfile.admin-web
+          push: false
+          tags: hotelos-admin-web:ci

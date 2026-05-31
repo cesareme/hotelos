@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Pre-commit hook — discoverability + typecheck gate.
+#
+# Activation (one-time per clone):
+#   git config core.hooksPath .husky
+# or run `npm run prepare` which does the same.
+#
+# Runs:
+#   1. node scripts/check-discoverability.mjs
+#      Validates that every screen in apps/admin-web/src/screens/ is either
+#      reachable from Sidebar.tsx or explicitly whitelisted, that every
+#      sidebar item targets a registered screen in App.tsx, and that the
+#      placeholder budget is under control.
+#
+#   2. typecheck on the workspaces that have changed files staged.
+#      We use --quiet so the hook stays terse on success and only roars on
+#      failure. Add `--no-verify` on `git commit` to bypass in genuine
+#      emergencies — every bypass should be documented in the PR.
+
+set -euo pipefail
+
+echo "🔍 Pre-commit: discoverability check..."
+node scripts/check-discoverability.mjs
+
+echo ""
+echo "🧪 Pre-commit: typecheck admin-web..."
+npm --workspace @hotelos/admin-web run typecheck --silent
+
+echo ""
+echo "✅ Pre-commit checks passed."

@@ -1,0 +1,27 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@hotelos/shared": ["packages/shared/src/index.ts"],
+      "@hotelos/compliance": ["packages/compliance/src/index.ts"],
+      "@hotelos/database": ["packages/database/src/index.ts"],
+      "@hotelos/ai-tools": ["packages/ai-tools/src/index.ts"],
+      "@hotelos/integrations": ["packages/integrations/src/index.ts"],
+      "@hotelos/onboarding": ["packages/onboarding/src/index.ts"],
+      "@hotelos/product": ["packages/product/src/index.ts"],
+      "@hotelos/revenue": ["packages/revenue/src/index.ts"],
+      "@hotelos/ui": ["packages/ui/src/index.ts"],
+      "@hotelos/ui/timeline": ["packages/ui/src/components/timeline/index.ts"],
+      "@hotelos/ui/panels": ["packages/ui/src/components/panels/index.ts"],
+      "@hotelos/config": ["packages/config/src/index.ts"]
+    }
+  }
+}

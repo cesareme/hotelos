@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "admin-web",
+      "runtimeExecutable": "/Users/cfernandez/.npm-global/bin/pnpm",
+      "runtimeArgs": ["--filter", "@hotelos/admin-web", "dev", "--", "--port", "5173"],
+      "port": 5173
+    }
+  ]
+}

@@ -1,0 +1,1742 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>HotelOS Mobile Demo</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <aside class="rail" aria-label="HotelOS navigation">
+        <div class="brand">
+          <span class="brand-mark">H</span>
+          <div>
+            <strong>HotelOS</strong>
+            <span>Madrid Centro</span>
+          </div>
+        </div>
+        <nav>
+          <button class="nav-item active" data-screen="today"><span></span>Hoy</button>
+          <button class="nav-item" data-screen="pms"><span></span>Timeline</button>
+          <button class="nav-item" data-screen="ai"><span></span>IA</button>
+          <button class="nav-item" data-screen="ops"><span></span>Operaciones</button>
+          <button class="nav-item" data-screen="more"><span></span>Mas</button>
+        </nav>
+        <div class="rail-footer">
+          <span class="status-dot"></span>
+          <span>Audit chain verified</span>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Thursday, May 14, 2026</p>
+            <h1 id="screenTitle">Today</h1>
+          </div>
+          <div class="header-actions" aria-label="Current property and sync state">
+            <span class="sync-chip">Online</span>
+            <div class="property-chip">
+              <span>PROP</span>
+              <strong>prop_123</strong>
+            </div>
+          </div>
+        </header>
+
+        <section class="visual-strip" aria-label="Hotel lobby preview">
+          <img src="/assets/lobby.png" alt="Hotel lobby reception illustration" />
+          <div class="visual-panel">
+            <span>Live operations</span>
+            <strong>26 arrivals</strong>
+            <small>4 rooms not ready for arrival</small>
+          </div>
+        </section>
+
+        <section class="screen active" id="today">
+          <section class="panel local-launcher" aria-label="HotelOS Local Demo launcher">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">HotelOS Local Demo</p>
+                <h2>Choose where to go</h2>
+              </div>
+              <span class="status-badge queued">Local Super Admin</span>
+            </div>
+            <div class="dashboard-grid compact-grid">
+              <article class="market-card enabled">
+                <strong>Operar hotel</strong>
+                <span>Recepcion, timeline, IA y operaciones diarias.</span>
+                <button data-screen-jump="today" type="button">Open hotel operations</button>
+              </article>
+              <article class="market-card enabled">
+                <strong>Back Office / Configuración</strong>
+                <span>Configurar propiedad, habitaciones, modulos, integraciones, compliance y usuarios.</span>
+                <button data-screen-jump="backoffice" type="button">Back Office / Configuración</button>
+              </article>
+              <article class="market-card enabled">
+                <strong>Manual Setup Center</strong>
+                <span>All manual hotel input routes: property, categories, revenue, channels, finance, compliance, AI and users.</span>
+                <button data-screen-jump="manual-setup" type="button">Manual Setup Center</button>
+              </article>
+              <article class="market-card enabled">
+                <strong>Manual Setup / Property Setup</strong>
+                <span>Enter the hotel data manually: legal profile, buildings, floors, zones, room types, rooms, spaces, resources, departments and categories.</span>
+                <button data-screen-jump="property-setup" type="button">Start Manual Setup</button>
+              </article>
+              <article class="market-card enabled">
+                <strong>Revenue Management</strong>
+                <span>Forecast, History & Forecast, Rate Grid, Channel Manager y recomendaciones.</span>
+                <button data-screen-jump="revenue" type="button">Revenue Management</button>
+              </article>
+              <article class="market-card enabled">
+                <strong>AI Setup Wizard</strong>
+                <span>Upload PMS exports, room lists, rate sheets, reservations, floor plans and revenue reports; AI proposes mappings with review and dry-run.</span>
+                <button data-screen-jump="ai-setup" type="button">AI Setup Wizard</button>
+              </article>
+              <article class="market-card enabled">
+                <strong>Owner Dashboard</strong>
+                <span>Resumen ejecutivo, revenue, cash, mantenimiento y riesgos.</span>
+                <button data-screen-jump="owner" type="button">Owner Dashboard</button>
+              </article>
+            </div>
+          </section>
+
+          <div class="kpis">
+            <article><span>Arrivals</span><strong>26</strong><small>8 checked in</small></article>
+            <article><span>Departures</span><strong>18</strong><small>3 pending folios</small></article>
+            <article><span>Ready rooms</span><strong>41</strong><small>Clean inspected</small></article>
+            <article><span>Blocked</span><strong>2</strong><small>Maintenance</small></article>
+            <article><span>Revenue</span><strong>EUR 8,420</strong><small>Today</small></article>
+            <article><span>Compliance</span><strong>1 failed</strong><small>Needs review</small></article>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel arrivals-panel">
+              <div class="panel-head">
+                <h2>Today arrivals</h2>
+                <span class="count-pill">26</span>
+              </div>
+              <div class="arrival-row highlighted">
+                <span class="room-pill">432</span>
+                <div>
+                  <strong>Maria Lopez Garcia</strong>
+                  <span>RES-18392 - paid - phone missing</span>
+                </div>
+                <button class="text-action" data-screen-jump="ai">Check in</button>
+              </div>
+              <div class="arrival-row">
+                <span class="room-pill subtle">308</span>
+                <div>
+                  <strong>R. Silva</strong>
+                  <span>OTA - balance due EUR 96</span>
+                </div>
+                <span class="status-badge review">Balance</span>
+              </div>
+              <div class="arrival-row">
+                <span class="room-pill subtle">214</span>
+                <div>
+                  <strong>A. Kramer</strong>
+                  <span>Corporate - invoice on checkout</span>
+                </div>
+                <span class="status-badge queued">Ready</span>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>AI daily briefing</h2>
+                <span class="ai-chip">AI</span>
+              </div>
+              <p>
+                Occupancy is 84%. Four rooms are not ready for arrival, two rooms are blocked, and one SES.HOSPEDAJES
+                record needs review.
+              </p>
+              <div class="briefing-actions">
+                <span>Recommended</span>
+                <strong>Inspect room 432 HVAC before the weekend.</strong>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Revenue Snapshot</h2>
+                <span class="status-badge queued">Commercial</span>
+              </div>
+              <div class="import-preview-grid">
+                <article><span>Occupancy forecast</span><strong>89%</strong><small>Weekend compression</small></article>
+                <article><span>ADR</span><strong>EUR 142</strong><small>Blended forecast</small></article>
+                <article><span>RevPAR</span><strong>EUR 126</strong><small>Room revenue</small></article>
+                <article><span>Pickup last 24h</span><strong>+7 RN</strong><small>EUR 1,026 added</small></article>
+              </div>
+              <p>Revenue alerts: 1 parity issue and 2 pending recommendations require manager review.</p>
+              <div class="button-row">
+                <button data-screen-jump="revenue" type="button">Open Revenue</button>
+                <button data-screen-jump="revenue" type="button">History & Forecast</button>
+                <button data-screen-jump="revenue" type="button">View Recommendations</button>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="screen" id="ai">
+          <section class="flow-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Flagship flow</p>
+                <h2>Check in this customer in room 432</h2>
+              </div>
+              <button class="primary-action" id="runDemo">Run demo</button>
+            </div>
+            <div class="flow-steps" id="flowSteps" aria-label="Check-in progress">
+              <span data-step="0">Voice</span>
+              <span data-step="1">OCR</span>
+              <span data-step="2">Match</span>
+              <span data-step="3">Validate</span>
+              <span data-step="4">Confirm</span>
+              <span data-step="5">Execute</span>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Voice check-in screens</p>
+                <h2>From command to signed check-in</h2>
+              </div>
+              <span class="ai-chip">UI-5</span>
+            </div>
+            <div class="flow-storyboard" aria-label="Voice check-in flow screens">
+              <article class="story-card active"><strong>VoiceCommandScreen</strong><span>Command captured and intent previewed.</span></article>
+              <article class="story-card"><strong>DocumentScanScreen</strong><span>Temporary ID scan opens OCR flow.</span></article>
+              <article class="story-card"><strong>OcrReviewScreen</strong><span>Field confidence and missing phone are visible.</span></article>
+              <article class="story-card"><strong>ReservationMatchScreen</strong><span>RES-18392 is proposed before execution.</span></article>
+              <article class="story-card"><strong>RoomValidationScreen</strong><span>Room 432 is clean, inspected and unblocked.</span></article>
+              <article class="story-card warning"><strong>CheckInConfirmationScreen</strong><span>High-risk ConfirmationCard lists every change.</span></article>
+              <article class="story-card"><strong>GuestSignatureScreen</strong><span>Entry form signature is captured.</span></article>
+              <article class="story-card success"><strong>CheckInSuccessScreen</strong><span>Room occupied, SES queued, audit sealed.</span></article>
+            </div>
+          </section>
+
+          <div class="command-layout">
+            <section class="command-panel">
+              <div class="command-head">
+                <div>
+                  <p class="eyebrow">AI Command Dock</p>
+                  <h2>Voice, scan, approve</h2>
+                </div>
+                <span class="state-badge" id="riskBadge">Human approval</span>
+              </div>
+              <label for="commandText">Command</label>
+              <textarea id="commandText">Check in this customer in room 432</textarea>
+              <div class="button-row">
+                <button id="scanDoc">Scan ID</button>
+                <button class="primary-action" id="confirmCheckIn" disabled>Confirm check-in</button>
+                <button id="resetDemo">Reset</button>
+              </div>
+              <div class="mini-grid" aria-label="ID scan data">
+                <div><span>Guest</span><strong>Maria Lopez Garcia</strong></div>
+                <div><span>Document</span><strong>DNI 12345678X</strong></div>
+                <div><span>Image</span><strong>Discarded</strong></div>
+                <div><span>Signature</span><strong>Required</strong></div>
+              </div>
+              <div class="state-line" id="stateLine">Ready for voice input.</div>
+              <div class="ai-result-grid" aria-label="AI command interpretation">
+                <div><span>Intent</span><strong>CHECK_IN_GUEST</strong></div>
+                <div><span>Confidence</span><strong>94%</strong></div>
+                <div><span>Risk</span><strong>High</strong></div>
+                <div><span>Next step</span><strong>Confirmation</strong></div>
+              </div>
+            </section>
+
+            <section class="confirmation-card" id="confirmationCard" hidden>
+              <p class="eyebrow">Confirmation required</p>
+              <h2>Confirm check-in</h2>
+              <p id="confirmSummary">Ready to check in Maria Lopez Garcia to room 432.</p>
+              <dl>
+                <div><dt>Reservation</dt><dd>RES-18392</dd></div>
+                <div><dt>Stay</dt><dd>May 14-16</dd></div>
+                <div><dt>Room</dt><dd>432 clean inspected</dd></div>
+                <div><dt>Balance</dt><dd>EUR 0</dd></div>
+              </dl>
+              <div class="warning">Phone number is missing. Ask guest before confirming.</div>
+              <ul class="check-list">
+                <li>Save required guest data</li>
+                <li>Request signature</li>
+                <li>Check in reservation</li>
+                <li>Mark room occupied</li>
+                <li>Queue authority submission</li>
+                <li>Send welcome message</li>
+              </ul>
+            </section>
+          </div>
+
+          <section class="panel audit-panel">
+            <div class="panel-head">
+              <h2>Audit trail</h2>
+              <span class="sync-chip">Hash chain ok</span>
+            </div>
+            <ol class="timeline" id="timeline">
+              <li><strong>Ready</strong><span>Waiting for command</span></li>
+            </ol>
+          </section>
+        </section>
+
+        <section class="screen" id="pms">
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Timeline-first operating system</p>
+                  <h2>Live Timeline</h2>
+                </div>
+                <span class="status-badge queued">Rooms + spaces</span>
+              </div>
+              <div class="revenue-filter-bar">
+                <span>Rooms</span>
+                <span>Parking spaces</span>
+                <span>Meeting rooms</span>
+                <span>Coworking desks</span>
+                <span>Spa rooms</span>
+                <span>Event spaces</span>
+              </div>
+              <div class="timeline-board" aria-label="Live timeline resource board">
+                <article class="timeline-row"><strong>Room 432</strong><span class="timeline-block arrival">Maria Lopez - arrival 15:00</span><small>Tap opens Reservation Detail Panel</small></article>
+                <article class="timeline-row"><strong>Parking P-08</strong><span class="timeline-block">Guest parking booking</span><small>Hourly or daily inventory</small></article>
+                <article class="timeline-row"><strong>Meeting Room Sol</strong><span class="timeline-block event">Corporate workshop</span><small>Event and meeting room booking</small></article>
+                <article class="timeline-row"><strong>Room 108</strong><span class="timeline-block blocked">Out of order</span><small>Critical moves require confirmation</small></article>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Reservation Detail Panel</h2>
+                <span class="ai-chip">AI Smart Tip</span>
+              </div>
+              <div class="arrival-row highlighted">
+                <span class="room-pill">432</span>
+                <div><strong>Maria Lopez Garcia</strong><span>Journey blocked at identity verified. Balance paid. Guest register phone missing.</span></div>
+              </div>
+              <div class="briefing-actions">
+                <span>Suggested action</span>
+                <strong>Complete legal data, request signature and check in.</strong>
+              </div>
+              <div class="button-row">
+                <button>Open guest journey</button>
+                <button>Request payment</button>
+                <button class="primary-action">Check in with confirmation</button>
+              </div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Room inventory</h2>
+                <span class="count-pill">6 shown</span>
+              </div>
+              <div class="room-grid">
+                <span class="room ready">432<small>Ready</small></span>
+                <span class="room dirty">204<small>Dirty</small></span>
+                <span class="room blocked">108<small>Blocked</small></span>
+                <span class="room ready">308<small>Ready</small></span>
+                <span class="room occupied">214<small>Occupied</small></span>
+                <span class="room ready">501<small>Ready</small></span>
+              </div>
+              <div class="room-operational-list" aria-label="Mobile room planning cards">
+                <article class="room-op-card">
+                  <div><strong>Room 432</strong><span>Double Standard - vacant - inspected</span></div>
+                  <span class="status-badge queued">Next: check in</span>
+                  <small>Next arrival Maria Lopez, 15:00. Balance EUR 0. Signature pending.</small>
+                </article>
+                <article class="room-op-card blocked">
+                  <div><strong>Room 108</strong><span>Double Standard - clean - maintenance blocked</span></div>
+                  <span class="status-badge failed">Blocked</span>
+                  <small>Bathroom leak work order prevents assignment and channel availability.</small>
+                </article>
+                <article class="room-op-card dirty">
+                  <div><strong>Room 204</strong><span>Departure pending - dirty - balance EUR 42</span></div>
+                  <span class="status-badge review">Clean first</span>
+                  <small>Departure clean and supervisor inspection required before arrival assignment.</small>
+                </article>
+              </div>
+            </section>
+            <section class="panel">
+              <h2>Assignment validation</h2>
+              <p>Room 432 is sellable, inspected, and has no maintenance block. Room 108 is blocked and cannot be assigned.</p>
+              <div class="validation-list">
+                <span>Sellable inventory checked</span>
+                <span>Maintenance blocks checked</span>
+                <span>Reservation overlap checked</span>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="screen" id="ops">
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Housekeeping</h2>
+                <span class="count-pill">2 active</span>
+              </div>
+              <div class="arrival-row"><span class="room-pill">432</span><div><strong>Inspection done</strong><span>Arrival ready</span></div></div>
+              <div class="arrival-row"><span class="room-pill subtle">204</span><div><strong>Departure clean</strong><span>Pending</span></div></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Maintenance</h2>
+                <span class="status-badge failed">Urgent</span>
+              </div>
+              <div class="arrival-row"><span class="room-pill alert">108</span><div><strong>Bathroom leak</strong><span>Blocks inventory</span></div></div>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Operations queue</h2>
+                <span class="count-pill">7 lanes</span>
+              </div>
+              <div class="guest-task-grid">
+                <article><strong>Guest requests</strong><span>3 open, 1 VIP-sensitive.</span></article>
+                <article><strong>Safety incidents</strong><span>1 draft report needs manager review.</span></article>
+                <article><strong>Compliance</strong><span>SES.HOSPEDAJES queue due today.</span></article>
+                <article><strong>Lost & Found</strong><span>2 items waiting owner match.</span></article>
+                <article><strong>Approvals</strong><span>1 refund and 2 revenue changes pending.</span></article>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="screen" id="chat">
+          <div class="chat-layout">
+            <section class="panel chat-list">
+              <div class="panel-head">
+                <h2>Guest inbox</h2>
+                <span class="count-pill">12 open</span>
+              </div>
+              <div class="arrival-row highlighted">
+                <span class="room-pill">432</span>
+                <div>
+                  <strong>Maria Lopez Garcia</strong>
+                  <span>App chat - AI enabled</span>
+                </div>
+                <span class="status-badge queued">Open</span>
+              </div>
+              <div class="arrival-row">
+                <span class="room-pill subtle">308</span>
+                <div>
+                  <strong>R. Silva</strong>
+                  <span>WhatsApp - parking question</span>
+                </div>
+              </div>
+              <div class="arrival-row">
+                <span class="room-pill subtle">214</span>
+                <div>
+                  <strong>A. Kramer</strong>
+                  <span>Email - invoice request</span>
+                </div>
+              </div>
+            </section>
+
+            <section class="panel thread-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Conversation</p>
+                  <h2>Room 432 guest chat</h2>
+                </div>
+                <span class="ai-chip">AI disclosed</span>
+              </div>
+              <div class="message-list" id="chatMessages" aria-label="Guest chat messages">
+                <article class="message guest">
+                  <strong>Guest</strong>
+                  <p>Do you have parking?</p>
+                </article>
+                <article class="message staff">
+                  <strong>Staff</strong>
+                  <p>Parking is available on request. I can add it to your reservation.</p>
+                </article>
+              </div>
+
+              <div class="composer" aria-label="Message composer">
+                <textarea id="chatInput">Parking is available. I can send directions and add it to your reservation.</textarea>
+                <div class="attachment-tray" id="attachmentTray" aria-label="Pending attachments"></div>
+                <div class="composer-tools">
+                  <button id="attachPhoto">Attach photo</button>
+                  <button id="useCamera">Camera</button>
+                  <button id="attachFile">Attach file</button>
+                  <button id="recordVoiceNote">Voice note</button>
+                  <button class="primary-action" id="sendChatMessage">Send</button>
+                </div>
+                <div class="state-line" id="chatState">Ready to send message media.</div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="screen" id="ai-setup">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">AI Onboarding & Migration</p>
+              <h2>AI Setup Wizard</h2>
+              <p>Upload what you have. HotelOS AI classifies, extracts and maps it, then asks for review before dry-run, apply or go-live.</p>
+              <div class="button-row">
+                <button type="button">Upload hotel data</button>
+                <button type="button">Generate Hotel Blueprint</button>
+                <button type="button">Run dry-run</button>
+                <button type="button">Open Go-Live Readiness</button>
+              </div>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge review">Review required</span>
+              <strong>62% setup progress</strong>
+              <small>2 blocking issues before go-live.</small>
+            </aside>
+          </section>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">Wizard flow</p>
+                  <h2>From old PMS to HotelOS</h2>
+                </div>
+                <span class="ai-chip">AI suggests, human approves</span>
+              </div>
+              <div class="setup-progress-grid">
+                <article class="setup-progress complete"><span>Source system</span><strong>Generic PMS</strong><small>Mews, OPERA/OHIP, Cloudbeds, Apaleo or manual also supported.</small></article>
+                <article class="setup-progress complete"><span>Files classified</span><strong>6 files</strong><small>Room list, rate sheet, reservations, channel mapping, floor plan and revenue report.</small></article>
+                <article class="setup-progress review"><span>AI mappings</span><strong>84% confidence</strong><small>Low-confidence mappings are in human review.</small></article>
+                <article class="setup-progress blocked"><span>Go-live</span><strong>Blocked</strong><small>SES.HOSPEDAJES setup and revenue totals validation pending.</small></article>
+              </div>
+              <div class="market-grid">
+                <article class="market-card enabled"><strong>Room Walk Setup</strong><span>Voice transcript preview: floor 2 east wing rooms 201-216 Double Standard, 217-218 Superior, 219 storage and 220 out of order.</span></article>
+                <article class="market-card"><strong>Floor plan assist</strong><span>AI can detect room labels, spaces and emergency-exit hints, but every label is review-only until confirmed.</span></article>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Demo onboarding project</h2>
+                <span class="status-badge queued">HotelOS Demo Onboarding Project</span>
+              </div>
+              <div class="arrival-row highlighted">
+                <span class="ai-chip">AI</span>
+                <div><strong>Property Blueprint</strong><span>1 building, 4 floors, 70 rooms, 4 room types, restaurant, parking, meeting room and rooftop.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge queued">File</span>
+                <div><strong>history_forecast_may_2026.xlsx</strong><span>Classified as revenue_history_forecast_report with History, Forecast, subtotals and Total rows.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge review">Mapping</span>
+                <div><strong>Room 432 → inventory_resource</strong><span>Confidence 93%. Human can approve, reject or edit before dry-run.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge review">Review</span>
+                <div><strong>Human Review Queue</strong><span>Pending, low-confidence, financial and compliance mappings block apply until approved, rejected or edited.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge queued">Privacy</span>
+                <div><strong>Masked sensitive previews</strong><span>Guest document, email, phone, address and payment fields are masked unless onboarding.view_sensitive is granted.</span></div>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Dry-run and go-live</p>
+                <h2>Controlled migration batches</h2>
+              </div>
+              <span class="status-badge failed">No direct AI apply</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Dry-run result</strong><span>Will create 1 building, 4 floors, 70 rooms, 73 inventory resources, 3 channels and 426 future reservations.</span></article>
+              <article class="market-card enabled"><strong>Import application order</strong><span>Property blueprint, compliance, rooms, inventory, rates, channels, guests, reservations, revenue history and users/roles.</span></article>
+              <article class="market-card"><strong>Warnings</strong><span>14 reservations missing email, 3 probable duplicate guests and 2 rate plans missing cancellation policy.</span></article>
+              <article class="market-card"><strong>Blocking issues</strong><span>SES.HOSPEDAJES settings missing and History & Forecast totals require validation.</span></article>
+              <article class="market-card"><strong>Apply gate</strong><span>Apply requires completed dry-run, explicit human confirmation, zero blocking issues and zero pending mapping reviews.</span></article>
+              <article class="market-card enabled"><strong>Rollback policy</strong><span>Only migration batches not locked by live activity can be rolled back, and every rollback is audited.</span></article>
+              <article class="market-card enabled"><strong>Cutover Assistant</strong><span>T-30 discovery, T-14 test import, T-7 staff review, T-1 freeze, go-live delta import and T+1 checks are tracked.</span></article>
+              <article class="market-card"><strong>Delta import dry-run</strong><span>Final PMS changes are previewed from a source watermark. Folios and balances use manual conflict review before go-live.</span></article>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" id="more">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Configuration & Admin</p>
+                <h2>Visible Back Office access</h2>
+              </div>
+              <span class="status-badge queued">backoffice.access</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Back Office / Configuración</strong><span>Open property setup, modules, integrations, compliance and users.</span><button data-screen-jump="manual-setup" type="button">Open Manual Setup Center</button></article>
+              <article class="market-card enabled"><strong>Configuration Center</strong><span>Manage categories, custom fields, room types, spaces, departments, revenue segments and operations setup.</span><button data-screen-jump="manual-setup" type="button">Open Configuration Center</button></article>
+              <article class="market-card enabled"><strong>Category Manager</strong><span>Room features, bed types, spaces, housekeeping, maintenance, revenue, POS, assets, compliance and AI categories.</span><button data-manual-setup="category_manager" type="button">Open Category Manager</button></article>
+              <article class="market-card enabled"><strong>Manual Setup / Property Setup</strong><span>Enter property data manually: legal profile, mapper input categories, room types, spaces, departments, resources and inventory.</span><button data-screen-jump="property-setup" type="button">Start Manual Setup</button></article>
+              <article class="market-card enabled"><strong>Module Marketplace</strong><span>Enable modules, inspect health and configure dependencies.</span><button data-manual-setup="modules" type="button">Module Marketplace</button></article>
+              <article class="market-card enabled"><strong>Integration Marketplace</strong><span>Connect OTAs, payments, messaging and government adapters.</span><button data-manual-setup="integrations" type="button">Integration Marketplace</button></article>
+              <article class="market-card enabled"><strong>AI Setup Wizard</strong><span>Upload exports, classify files, generate Hotel Blueprint, review mappings, dry-run and go-live readiness.</span><button data-manual-setup="ai_setup" type="button">AI Setup Wizard</button></article>
+              <article class="market-card enabled"><strong>Custom Fields</strong><span>Create property-specific fields for rooms, guests, reservations, assets and work orders.</span><button data-manual-setup="custom_fields" type="button">Custom Fields</button></article>
+              <article class="market-card enabled"><strong>User & Roles</strong><span>Invite users, roles and permissions.</span><button data-manual-setup="users_roles" type="button">Users & Roles</button></article>
+              <article class="market-card enabled"><strong>AI Settings</strong><span>Tool governance, disclosure, prompts and review queue.</span><button data-manual-setup="ai_governance" type="button">AI Settings</button></article>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Commercial Tools</p>
+                <h2>Revenue tools</h2>
+              </div>
+              <span class="status-badge queued">revenue.read</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Reservations</strong><span>Create and manage reservations, categories, guests, stays, folios and reports.</span><button data-screen-jump="reservations" type="button">Open Reservations</button></article>
+              <article class="market-card enabled"><strong>Create Reservation</strong><span>Manual PMS booking flow: quote, guest, channel, segment, guarantee and billing instruction.</span><button data-screen-jump="reservation-create" type="button">Create Reservation</button></article>
+              <article class="market-card enabled"><strong>Revenue Management</strong><span>Forecasts, KPIs, recommendations and pricing.</span><button data-screen-jump="revenue" type="button">Open Revenue</button></article>
+              <article class="market-card enabled"><strong>History & Forecast</strong><span>Historical and future performance by period.</span><button data-manual-setup="history_forecast" type="button">History & Forecast</button></article>
+              <article class="market-card enabled"><strong>Rate Grid</strong><span>Manage prices, availability and restrictions.</span><button data-manual-setup="rate_grid" type="button">Rate Grid</button></article>
+              <article class="market-card enabled"><strong>Forecast</strong><span>Forecast graphs, confidence and drivers.</span><button data-screen-jump="revenue" type="button">Forecast</button></article>
+              <article class="market-card enabled"><strong>Recommendations</strong><span>Review AI revenue actions before applying.</span><button data-manual-setup="revenue_settings" type="button">Recommendations</button></article>
+              <article class="market-card enabled"><strong>Channel Manager</strong><span>Sync rates, inventory and reservations.</span><button data-manual-setup="channel_connections" type="button">Channel Manager</button></article>
+              <article class="market-card enabled"><strong>Channel Mappings</strong><span>Map room/resource and rate plan codes to OTA listings.</span><button data-manual-setup="channel_mappings" type="button">Channel Mappings</button></article>
+              <article class="market-card enabled"><strong>Demand Calendar</strong><span>Events, compression dates and demand signals.</span><button data-screen-jump="revenue" type="button">Demand Calendar</button></article>
+              <article class="market-card"><strong>Rate Shopper</strong><span>Competitors, market position and rate shopping.</span><button data-screen-jump="revenue" type="button">Rate Shopper</button></article>
+              <article class="market-card enabled"><strong>Parity Alerts</strong><span>OTA/direct price mismatch and undercutting alerts.</span><button data-screen-jump="revenue" type="button">Parity Alerts</button></article>
+              <article class="market-card enabled"><strong>Scenario Simulator</strong><span>What-if pricing, channel and restriction decisions.</span><button data-screen-jump="revenue" type="button">Scenario Simulator</button></article>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Suite hubs</p>
+                <h2>Guest, finance, owner and platform tools</h2>
+              </div>
+              <span class="status-badge queued">Visible hubs</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Guest Journey</strong><span>Booked to post-stay workflow with blocked steps and next best action.</span><button data-screen-jump="chat" type="button">Guest Journey</button></article>
+              <article class="market-card enabled"><strong>Payments</strong><span>Payment links, captures, refunds and token references.</span><button data-manual-setup="payments" type="button">Payments</button></article>
+              <article class="market-card enabled"><strong>Billing Center</strong><span>Folios, charges, payments, invoice drafts and issue workflow.</span><button data-screen-jump="billing-center" type="button">Billing Center</button></article>
+              <article class="market-card enabled"><strong>Invoices</strong><span>Billing, tax and invoice issue status.</span><button data-manual-setup="billing" type="button">Invoices</button></article>
+              <article class="market-card enabled"><strong>Reports Center</strong><span>Reservation, billing, revenue and owner reports with PDF/CSV/XLSX/JSON export.</span><button data-screen-jump="reports-center" type="button">Reports Center</button></article>
+              <article class="market-card enabled"><strong>Accounting</strong><span>Journals, owner exports and ERP sync.</span><button data-manual-setup="accounting" type="button">Accounting</button></article>
+              <article class="market-card enabled"><strong>Spain Guest Register</strong><span>Legal register, signature, SES queue and retention.</span><button data-manual-setup="spain_guest_register" type="button">Spain Guest Register</button></article>
+              <article class="market-card enabled"><strong>Compliance Inbox</strong><span>Urgent missing data, rejected submissions and deadlines.</span><button data-screen-jump="compliance" type="button">Compliance Inbox</button></article>
+              <article class="market-card enabled"><strong>Owner Dashboard</strong><span>Cash, revenue, maintenance, capex and risk summary.</span><button data-screen-jump="owner" type="button">Owner Dashboard</button></article>
+              <article class="market-card enabled"><strong>Developer Platform</strong><span>API apps, webhooks, usage logs and sandbox.</span><button data-screen-jump="manual-setup" type="button">Developer Platform</button></article>
+              <article class="market-card enabled"><strong>AI Governance</strong><span>Policies, prompt versions, tool registry and evaluations.</span><button data-manual-setup="ai_governance" type="button">AI Governance</button></article>
+            </div>
+          </section>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Module Marketplace</h2>
+                <span class="count-pill">31 modules</span>
+              </div>
+              <div class="market-grid">
+                <article class="market-card enabled"><strong>PMS Core</strong><span>Core module enabled</span></article>
+                <article class="market-card enabled"><strong>AI Front Desk</strong><span>Voice, camera and confirmation workflows</span></article>
+                <article class="market-card"><strong>Distribution Hub</strong><span>Rates, restrictions and channel sync</span></article>
+                <article class="market-card"><strong>Payment Vault</strong><span>Payment links, tokens and refunds</span></article>
+                <article class="market-card enabled"><strong>Guest Experience</strong><span>Inbox, AI concierge and service requests</span></article>
+                <article class="market-card"><strong>Outlet POS</strong><span>Restaurant, bar, spa and minibar</span></article>
+                <article class="market-card enabled"><strong>Revenue and Profit</strong><span>Forecasts, dynamic pricing and channel profitability</span></article>
+                <article class="market-card enabled"><strong>CRM and Loyalty</strong><span>Unified guest profiles, segments and campaigns</span></article>
+                <article class="market-card enabled"><strong>Groups and Events</strong><span>Room blocks, BEO, event spaces and group billing</span></article>
+                <article class="market-card enabled"><strong>AI Governance</strong><span>Policies, prompt versions, evals and review queue</span></article>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Integration Marketplace</h2>
+                <span class="count-pill">Grouped</span>
+              </div>
+              <div class="market-grid">
+                <article class="market-card enabled"><strong>Payment Gateways</strong><span>Demo gateway connected</span></article>
+                <article class="market-card"><strong>OTAs</strong><span>Reservation imports</span></article>
+                <article class="market-card"><strong>Guest Messaging</strong><span>WhatsApp, email and web chat</span></article>
+                <article class="market-card"><strong>E-invoicing Providers</strong><span>Status events and structured formats</span></article>
+              </div>
+              <div class="button-row more-actions">
+                <button data-screen-jump="backoffice">Back Office / Configuración</button>
+                <button data-screen-jump="revenue">Revenue Management</button>
+                <button data-screen-jump="guestportal">Open guest portal</button>
+                <button data-screen-jump="chat">Open guest inbox</button>
+                <button data-screen-jump="compliance">Open compliance</button>
+                <button data-screen-jump="owner">Open Owner mode</button>
+              </div>
+            </section>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Advanced HotelOS modules</h2>
+              <span class="status-badge queued">Foundation wired</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Workforce</strong><span>Scheduling, time clock and labor forecast</span></article>
+              <article class="market-card enabled"><strong>Procurement</strong><span>Suppliers, purchase orders and stock control</span></article>
+              <article class="market-card enabled"><strong>Guest Portal</strong><span>Self-service check-in/out, folio, payment and upsells</span></article>
+              <article class="market-card enabled"><strong>Reputation</strong><span>Reviews, surveys, quality cases and recovery</span></article>
+              <article class="market-card enabled"><strong>Energy</strong><span>Meters, readings, anomaly detection and ESG reporting</span></article>
+              <article class="market-card enabled"><strong>Analytics</strong><span>Metrics, snapshots, anomalies and natural-language answers</span></article>
+              <article class="market-card enabled"><strong>Developer</strong><span>API apps, scopes, webhooks and usage logs</span></article>
+              <article class="market-card enabled"><strong>Safety</strong><span>Incident log, evidence, checks and escalation</span></article>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Phase 2 commercial modules</h2>
+              <span class="status-badge review">Seeded behavior</span>
+            </div>
+            <div class="dashboard-grid compact-grid">
+              <article class="market-card enabled">
+                <strong>Review revenue recommendations</strong>
+                <span>Weekend pickup is above pace. Suggested rate: EUR 147, confidence 84%, confirmation required before apply.</span>
+              </article>
+              <article class="market-card enabled">
+                <strong>Review guest duplicate merge</strong>
+                <span>Maria Lopez Garcia has a 91% duplicate candidate, consent is present, and merge needs human confirmation.</span>
+              </article>
+              <article class="market-card enabled">
+                <strong>Review group pickup</strong>
+                <span>Design Co summit blocks 24 room nights, 8 picked up, with BEO draft and master folio ready.</span>
+              </article>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" id="revenue">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">Revenue & Profit Engine</p>
+              <h2>Predict demand, protect profit, control distribution</h2>
+              <p>AI combines PMS pace, future demand, competitor rates, channel costs, parity alerts and sync health before recommending commercial actions.</p>
+              <div class="button-row">
+                <button class="primary-action">Generate recommendations</button>
+                <button>Simulate +8% Saturday</button>
+                <button>Review parity alerts</button>
+              </div>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge review">AI confidence 82%</span>
+              <strong>Commercial brain active</strong>
+              <small>High-risk rate and restriction changes require confirmation.</small>
+            </aside>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Revenue Home</p>
+                <h2>Visible revenue navigation</h2>
+              </div>
+              <span class="status-badge queued">All local demo routes visible</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Overview</strong><span>Commercial command center.</span></article>
+              <article class="market-card enabled"><strong>History & Forecast</strong><span>KPI cards, charts and classic report table.</span></article>
+              <article class="market-card enabled"><strong>Forecast Graphs</strong><span>Demand, ADR, RevPAR and confidence drivers.</span></article>
+              <article class="market-card enabled"><strong>Rate Grid</strong><span>Rates, inventory, stop sell, min stay, CTA and CTD.</span></article>
+              <article class="market-card enabled"><strong>Recommendations</strong><span>Approve, reject, simulate and apply with confirmation.</span></article>
+              <article class="market-card enabled"><strong>Channel Manager</strong><span>Channels, mappings, ARI sync and OTA import.</span></article>
+              <article class="market-card enabled"><strong>Rate Parity</strong><span>Direct versus OTA undercutting alerts.</span></article>
+              <article class="market-card enabled"><strong>Demand Calendar</strong><span>Events, holidays and compression dates.</span></article>
+              <article class="market-card enabled"><strong>Scenario Simulator</strong><span>What-if rate and channel decisions.</span></article>
+              <article class="market-card"><strong>Settings</strong><span>Needs setup: rate plans, snapshots, channel mappings and competitor set.</span></article>
+              <article class="market-card enabled"><strong>Data Quality</strong><span>Snapshots, rate plans, mappings and forecast readiness checks.</span></article>
+            </div>
+          </section>
+
+          <div class="kpis owner">
+            <article><span>Occupancy forecast</span><strong>89%</strong><small>Weekend compression</small></article>
+            <article><span>ADR</span><strong>EUR 142</strong><small>Blended forecast</small></article>
+            <article><span>RevPAR</span><strong>EUR 126</strong><small>Room revenue</small></article>
+            <article><span>TRevPAR</span><strong>EUR 156</strong><small>Total revenue</small></article>
+            <article><span>GOPPAR</span><strong>EUR 72</strong><small>Profit-aware</small></article>
+            <article><span>Net RevPAR</span><strong>EUR 118</strong><small>After channel costs</small></article>
+            <article><span>Pickup 24h</span><strong>+7 RN</strong><small>EUR 1,026 added</small></article>
+            <article><span>Recommendations</span><strong>2</strong><small>Pending approval</small></article>
+          </div>
+
+          <section class="panel revenue-visual-panel" aria-label="History and Forecast visual dashboard">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Revenue Visual Analytics</p>
+                <h2>History & Forecast</h2>
+              </div>
+              <div class="button-row">
+                <button>Saved views</button>
+                <button>AI insight</button>
+                <button class="primary-action">Export PDF/CSV/XLSX/JSON</button>
+              </div>
+            </div>
+            <div class="revenue-filter-bar">
+              <span>2026-05-01 - 2026-05-31</span>
+              <span>Granularity: daily</span>
+              <span>Business date: 2026-05-15</span>
+              <span>Room type: all</span>
+              <span>Revenue: net</span>
+              <span>OOO excluded</span>
+              <span>Comparison: last year</span>
+            </div>
+            <div class="kpis owner revenue-kpis">
+              <article><span>Occupancy %</span><strong>73.33%</strong><small>Weighted total</small></article>
+              <article><span>Occupied rooms</span><strong>220</strong><small>History + forecast</small></article>
+              <article><span>Available rooms</span><strong>300</strong><small>OOO excluded</small></article>
+              <article><span>Total room revenue</span><strong>EUR 28.3k</strong><small>Gross room revenue</small></article>
+              <article><span>Total revenue</span><strong>EUR 36.7k</strong><small>Distributed revenue on</small></article>
+              <article><span>Average Rate</span><strong>EUR 137.52</strong><small>Room revenue / sold rooms</small></article>
+              <article><span>RevPAR</span><strong>EUR 94.33</strong><small>Room revenue / available rooms</small></article>
+              <article><span>Forecast confidence</span><strong>76%</strong><small>Band and drivers visible</small></article>
+            </div>
+            <div class="forecast-boundary"><span>History <= 2026-05-15</span><i></i><span>Forecast > 2026-05-15</span></div>
+            <div class="revenue-chart-grid">
+              <article class="chart-card wide">
+                <div class="panel-head"><h2>Main History vs Forecast graph</h2><span class="ai-chip">solid + dashed</span></div>
+                <div class="mock-chart" aria-label="Composed chart for occupancy ADR RevPAR and total revenue">
+                  <span style="height: 44%" data-label="01/05"></span>
+                  <span style="height: 58%" data-label="14/05"></span>
+                  <span style="height: 66%" data-label="15/05"></span>
+                  <span class="forecast" style="height: 72%" data-label="16/05"></span>
+                  <span class="forecast low" style="height: 28%" data-label="29/05"></span>
+                  <span class="forecast" style="height: 46%" data-label="31/05"></span>
+                </div>
+              </article>
+              <article class="chart-card"><strong>Revenue graph</strong><span>Room revenue + other revenue + forecast total revenue</span><div class="mini-bars"><i></i><i></i><i></i><i></i></div></article>
+              <article class="chart-card"><strong>Occupancy + ADR chart</strong><span>Occupied rooms, available rooms, OOO rooms and ADR</span><div class="mini-line"></div></article>
+              <article class="chart-card"><strong>RevPAR / TRevPAR / GOPPAR graph</strong><span>Profit-aware metrics appear when data exists</span><div class="mini-line profit"></div></article>
+              <article class="chart-card"><strong>Arrivals/departures graph</strong><span>Grouped arrivals, departures and stayovers</span><div class="mini-bars amber"><i></i><i></i><i></i></div></article>
+              <article class="chart-card"><strong>Individual vs group graph</strong><span>Deduct and non-deduct room mix</span><div class="mini-bars violet"><i></i><i></i><i></i></div></article>
+              <article class="chart-card"><strong>Channel mix chart</strong><span>Direct, Booking.com, Expedia, Google, corporate and groups</span><div class="donut"></div></article>
+              <article class="chart-card"><strong>Forecast confidence chart</strong><span>Confidence, data quality and drivers by date</span><div class="confidence-band"></div></article>
+              <article class="chart-card"><strong>Occupancy heatmap</strong><span>High demand, low demand and compression dates</span><div class="heatmap"><i></i><i></i><i></i><i></i><i></i><i></i></div></article>
+            </div>
+            <div class="revenue-alerts">
+              <article class="status-badge review">Warning: Forecast occupancy for 29/05/2026 is 36%, below target. Suggested action: review rate, restrictions and marketing channels.</article>
+              <article class="status-badge failed">Critical: OOO impact high on 29/05/2026. Suggested action: coordinate maintenance blocks with revenue strategy.</article>
+            </div>
+            <div class="table-wrap">
+              <table class="revenue-report-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Total Occ.</th>
+                    <th>Arr. Rooms</th>
+                    <th>Comp. Rooms</th>
+                    <th>House Use</th>
+                    <th>Deduct Indiv.</th>
+                    <th>Non-Ded. Indiv.</th>
+                    <th>Deduct Group</th>
+                    <th>Non-Ded. Group</th>
+                    <th>Occ. %</th>
+                    <th>Total Revenue</th>
+                    <th>Average Rate</th>
+                    <th>Dep. Rooms</th>
+                    <th>Day Use Rooms</th>
+                    <th>No Show Rooms</th>
+                    <th>OOO Rooms</th>
+                    <th>Adl. & Chl.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr class="section-row"><td colspan="17">History</td></tr>
+                  <tr><td>2026-05-01</td><td>38</td><td>12</td><td>1</td><td>1</td><td>31</td><td>2</td><td>4</td><td>1</td><td>76.00%</td><td>EUR 6,280</td><td>EUR 136</td><td>10</td><td>0</td><td>1</td><td>2</td><td>72</td></tr>
+                  <tr><td>2026-05-15</td><td>44</td><td>18</td><td>0</td><td>1</td><td>36</td><td>2</td><td>5</td><td>1</td><td>88.00%</td><td>EUR 7,590</td><td>EUR 143</td><td>14</td><td>1</td><td>1</td><td>2</td><td>84</td></tr>
+                  <tr class="subtotal-row"><td>History subtotal</td><td>125</td><td>46</td><td>1</td><td>3</td><td>102</td><td>7</td><td>13</td><td>3</td><td>83.33%</td><td>EUR 21,220</td><td>EUR 140.18</td><td>37</td><td>2</td><td>2</td><td>6</td><td>237</td></tr>
+                  <tr class="section-row"><td colspan="17">Forecast</td></tr>
+                  <tr><td>2026-05-16</td><td>46</td><td>20</td><td>0</td><td>1</td><td>36</td><td>3</td><td>6</td><td>1</td><td>92.00%</td><td>EUR 8,120</td><td>EUR 146</td><td>11</td><td>1</td><td>1</td><td>2</td><td>89</td></tr>
+                  <tr><td>2026-05-29</td><td>18</td><td>6</td><td>0</td><td>1</td><td>15</td><td>1</td><td>2</td><td>0</td><td>36.00%</td><td>EUR 2,660</td><td>EUR 120</td><td>8</td><td>0</td><td>1</td><td>5</td><td>34</td></tr>
+                  <tr class="subtotal-row"><td>Forecast subtotal</td><td>95</td><td>36</td><td>0</td><td>3</td><td>77</td><td>6</td><td>11</td><td>1</td><td>63.33%</td><td>EUR 15,460</td><td>EUR 134.87</td><td>32</td><td>1</td><td>3</td><td>9</td><td>182</td></tr>
+                  <tr class="total-row"><td>Total</td><td>220</td><td>82</td><td>1</td><td>6</td><td>179</td><td>13</td><td>24</td><td>4</td><td>73.33%</td><td>EUR 36,680</td><td>EUR 137.52</td><td>69</td><td>3</td><td>5</td><td>15</td><td>419</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <div class="dashboard-grid">
+            <section class="confirmation-card">
+              <p class="eyebrow">Explainable recommendation</p>
+              <h2>Increase Double Standard Flexible BAR</h2>
+              <dl>
+                <div><dt>Date</dt><dd>2026-06-12</dd></div>
+                <div><dt>Current</dt><dd>EUR 138</dd></div>
+                <div><dt>Recommended</dt><dd>EUR 154</dd></div>
+                <div><dt>Expected lift</dt><dd>EUR 960 revenue / EUR 710 profit</dd></div>
+                <div><dt>Confidence</dt><dd>87%</dd></div>
+                <div><dt>Risk</dt><dd>High - confirmation required</dd></div>
+              </dl>
+              <ul class="check-list">
+                <li>Occupancy forecast above 85%</li>
+                <li>Pickup above normal pace</li>
+                <li>Competitors 9% higher</li>
+                <li>Only 6 rooms remaining</li>
+                <li>Apply is blocked if channel sync is unhealthy</li>
+              </ul>
+              <div class="button-row">
+                <button>Approve</button>
+                <button>Reject</button>
+                <button>Simulate</button>
+                <button class="primary-action">Apply with confirmation</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Rate grid snapshot</h2>
+                <span class="count-pill">Mobile stacked</span>
+              </div>
+              <div class="guest-task-grid">
+                <article><strong>Fri 2026-06-12</strong><span>EUR 138 - 6 available - min stay 1 - synced</span></article>
+                <article><strong>Sat 2026-06-13</strong><span>EUR 154 - 3 available - AI suggests min stay 2 - pending sync</span></article>
+                <article><strong>Restrictions</strong><span>Stop sell off, CTA off, CTD off, manual override off</span></article>
+                <article><strong>Bulk update</strong><span>Preview, min/max validation, manual override check and confirmation required.</span></article>
+              </div>
+            </section>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Channel Manager</h2>
+                <span class="status-badge review">ARI sync</span>
+              </div>
+              <div class="market-grid">
+                <article class="market-card enabled"><strong>Direct booking engine</strong><span>Open, never auto closed, payment cost 1.2%.</span></article>
+                <article class="market-card enabled"><strong>Booking.com mock</strong><span>Room and rate mappings active. Last rate sync succeeded.</span></article>
+                <article class="market-card"><strong>Expedia mock</strong><span>Restriction sync failed: credential expired. Retry blocked until repaired.</span></article>
+                <article class="market-card enabled"><strong>OTA import</strong><span>External reservation imported with idempotency key, no duplicate risk.</span></article>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Rate shopper and parity</h2>
+                <span class="status-badge failed">Critical alert</span>
+              </div>
+              <div class="arrival-row highlighted">
+                <span class="status-badge failed">Parity</span>
+                <div><strong>Booking.com cheaper than direct by EUR 14</strong><span>Stay date 2026-06-12. Suggested action: check mapping and direct rate plan.</span></div>
+              </div>
+              <div class="import-preview-grid">
+                <article><span>Our rate</span><strong>EUR 154</strong><small>Double Standard</small></article>
+                <article><span>Market median</span><strong>EUR 161</strong><small>2 competitor snapshots</small></article>
+                <article><span>Position</span><strong>Below market</strong><small>AI recommends increase</small></article>
+              </div>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Scenario simulator and automation safety</h2>
+              <span class="ai-chip">AI copilot</span>
+            </div>
+            <div class="dashboard-grid compact-grid">
+              <article class="market-card enabled"><strong>Raise Saturday by 8%</strong><span>ADR +EUR 12.30, RevPAR +EUR 8.80, profit +EUR 710, confidence 79%.</span></article>
+              <article class="market-card enabled"><strong>Automation rule</strong><span>Auto-apply low-risk weekdays only within min/max, max change and healthy sync constraints.</span></article>
+              <article class="market-card"><strong>Blocked automation</strong><span>High-risk recommendation and Expedia error require manager confirmation.</span></article>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" id="guestportal">
+          <section class="guest-preview-hero">
+            <nav aria-label="Guest portal preview steps">
+              <span class="active">Guest Portal Home</span>
+              <span>Online Check-in</span>
+              <span>Guest Folio</span>
+              <span>Mobile Checkout</span>
+              <span>Upsell Store</span>
+              <span>Service Requests</span>
+              <span>Guest Itinerary</span>
+              <span>Concierge Chat</span>
+            </nav>
+            <div>
+              <p class="eyebrow">HotelOS Guest Portal</p>
+              <h2>Welcome, Maria Lopez Garcia</h2>
+              <p>Secure portal token active for RES-18392. Arrival 2026-05-14, departure 2026-05-16, room 432.</p>
+              <div class="button-row">
+                <button class="primary-action">Start online check-in</button>
+                <button>Review folio</button>
+                <button>Request invoice</button>
+              </div>
+            </div>
+          </section>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">OnlineCheckIn</p>
+                  <h2>Pre-arrival tasks</h2>
+                </div>
+                <span class="status-badge review">Signature required</span>
+              </div>
+              <div class="guest-task-grid">
+                <article><strong>Confirm details</strong><span>Phone number missing before check-in.</span></article>
+                <article><strong>Sign guest register</strong><span>Entry form signature required.</span></article>
+                <article><strong>ID image discarded</strong><span>Only required fields are stored.</span></article>
+                <article><strong>Digital key</strong><span>Adapter placeholder ready after check-in.</span></article>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">GuestFolio + MobileCheckout</p>
+                  <h2>Folio review</h2>
+                </div>
+                <span class="status-badge queued">Balance EUR 0</span>
+              </div>
+              <div class="folio-preview-lines">
+                <div><span>Room charge</span><strong>EUR 272</strong></div>
+                <div><span>VAT</span><strong>EUR 27.20</strong></div>
+                <div><span>Deposit paid</span><strong>-EUR 299.20</strong></div>
+              </div>
+              <div class="button-row">
+                <button>Pay outstanding balance</button>
+                <button>Request full invoice</button>
+                <button>Complete mobile checkout</button>
+              </div>
+            </section>
+          </div>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>UpsellStore</h2>
+                <span class="status-badge queued">Creates folio charge or task</span>
+              </div>
+              <div class="guest-offer-grid">
+                <article><strong>Parking</strong><span>EUR 18 / night</span><button>Add to reservation</button></article>
+                <article><strong>Late checkout</strong><span>EUR 35</span><button>Request availability</button></article>
+                <article><strong>Breakfast</strong><span>EUR 14 / person</span><button>Add breakfast</button></article>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <div>
+                  <p class="eyebrow">ConciergeChat</p>
+                  <h2>AI concierge</h2>
+                </div>
+                <span class="ai-chip">AI disclosed</span>
+              </div>
+              <div class="ai-disclosure-preview">
+                Hi, I am the hotel's AI assistant. I can help with availability, bookings, hotel information and service requests. A staff member can take over whenever needed.
+              </div>
+              <div class="message-list compact">
+                <article class="message guest"><strong>Guest</strong><p>Can I get extra towels?</p></article>
+                <article class="message staff"><strong>AI draft</strong><p>I can create a housekeeping request for extra towels in room 432.</p></article>
+              </div>
+              <div class="guest-task-grid one">
+                <article><strong>GuestServiceRequests</strong><span>Extra towels routes to housekeeping. AC complaint routes to urgent maintenance.</span></article>
+                <article><strong>GuestItinerary</strong><span>Check-in, breakfast and checkout steps stay visible.</span></article>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="screen" id="manual-setup">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">Back Office / Manual Setup Center</p>
+              <h2>Every hotel input has a route</h2>
+              <p>Use this hub when the hotel wants to configure HotelOS manually. Each option opens a concrete setup route, lists the required input categories and shows the database/API endpoint used to save configuration.</p>
+              <div class="button-row">
+                <button data-screen-jump="property-setup" type="button">Open Property Setup</button>
+                <button data-manual-setup="category_manager" type="button">Open Category Manager</button>
+                <button data-manual-setup="billing" type="button">Fix Billing</button>
+                <button data-manual-setup="ses_hospedajes" type="button">Fix SES.HOSPEDAJES</button>
+              </div>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge queued">Manual route map</span>
+              <strong>Property, revenue, channel, finance, compliance and AI inputs</strong>
+              <small>No setup-only tool is hidden behind a generic Back Office card.</small>
+            </aside>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Setup coverage</p>
+                <h2>Nothing left unchecked</h2>
+              </div>
+              <span class="status-badge queued" id="manualSetupCoverageUnchecked">0 unchecked blockers</span>
+            </div>
+            <div class="metric-grid">
+              <article class="metric-card">
+                <span>Total setup routes</span>
+                <strong id="manualSetupCoverageTotal">0 setup routes</strong>
+                <small>Every route lists inputs, categories, API endpoints and target tables.</small>
+              </article>
+              <article class="metric-card">
+                <span>Setup groups</span>
+                <strong id="manualSetupCoverageGroups">0 setup groups</strong>
+                <small>Property, configuration, revenue, channel, finance, compliance, AI, guest experience, platform and operations.</small>
+              </article>
+              <article class="metric-card">
+                <span>Validation</span>
+                <strong>Route + input + save check</strong>
+                <small>Each option has required input methods and go-live completion checks.</small>
+              </article>
+            </div>
+          </section>
+          <div id="manualSetupGroups"></div>
+        </section>
+
+        <section class="screen" id="manual-setup-option">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">Back Office / Manual setup route</p>
+              <h2 id="manualSetupOptionTitle">Property Profile</h2>
+              <p>This option has a visible route, permission, read endpoint, save endpoint, target tables and required input fields. In production the form saves to the endpoint below and creates audit events.</p>
+              <div class="button-row">
+                <button class="primary-action" id="manualSetupOptionSaveButton" type="button">Save setup data</button>
+                <button type="button">Save and add another</button>
+                <button data-screen-jump="manual-setup" type="button">Back to Manual Setup Center</button>
+              </div>
+              <p id="manualSetupOptionSaveStatus" class="helper-text">No submission saved in this browser yet.</p>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge queued">Target tables</span>
+              <strong id="manualSetupOptionTarget">properties</strong>
+              <small id="manualSetupOptionPermission">configuration.read</small>
+            </aside>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Route and API</p>
+                <h2>Linked setup route</h2>
+              </div>
+              <span class="status-badge queued">linked</span>
+            </div>
+            <div class="setup-table-wrapper">
+              <table class="setup-table">
+                <tbody>
+                  <tr><td>Admin route</td><td id="manualSetupOptionRoute">/backoffice/property-setup/property-profile</td></tr>
+                  <tr><td>Read endpoint</td><td id="manualSetupOptionEndpoint">/backoffice/properties/prop_123/property-setup/forms/property_profile</td></tr>
+                  <tr><td>Save endpoint</td><td id="manualSetupOptionSaveEndpoint">/backoffice/properties/prop_123/property-setup/forms/property_profile</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Input categories</p>
+                <h2>Categories required by this setup option</h2>
+              </div>
+              <span class="status-badge review">hotel input</span>
+            </div>
+            <div class="button-row" id="manualSetupOptionCategories"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Manual data entry</p>
+                <h2>Required inputs</h2>
+              </div>
+              <span class="status-badge queued">database-backed</span>
+            </div>
+            <div class="form-grid" id="manualSetupOptionFields"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Input methods</p>
+                <h2>Ways the hotel can enter this data</h2>
+              </div>
+              <span class="status-badge queued">nothing unchecked</span>
+            </div>
+            <div class="market-grid" id="manualSetupOptionMethods"></div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Completion checks</p>
+                <h2>What must be true before this setup is complete</h2>
+              </div>
+              <span class="status-badge review">go-live gate</span>
+            </div>
+            <div id="manualSetupOptionChecks"></div>
+          </section>
+        </section>
+
+        <section class="screen" id="property-setup">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">Back Office / Property Setup</p>
+              <h2>Map the property operating model</h2>
+              <p>Capture every input category required to map the hotel correctly: legal profile, buildings, floors, zones, room types, rooms, spaces, resources, departments, housekeeping, maintenance, revenue, finance and compliance.</p>
+              <div class="button-row">
+                <button class="primary-action" type="button">Save property setup</button>
+                <button type="button">Save and add another</button>
+                <button data-screen-jump="backoffice" type="button">Back Office</button>
+              </div>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge review">Mapping review</span>
+              <strong>12 rooms need type review</strong>
+              <small>Go-live checks validate rooms, room types, zones, categories and required custom fields.</small>
+            </aside>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Input categories</p>
+                <h2>Property setup forms</h2>
+              </div>
+              <span class="status-badge queued">All mapped in UI</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Property profile</strong><span>Property name, legal name, tax ID, address, country, region, province, city, postal code, timezone, currency, language, tax region, tourism tax region and business date rules.</span><button data-property-form="property_profile" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Buildings</strong><span>Name, code, description, sort order and active state.</span><button data-property-form="building" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Floors</strong><span>Building, floor name, floor number, code, sort order and active state.</span><button data-property-form="floor" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Zones</strong><span>Building, floor, zone name, zone type, code, housekeeping section, maintenance area, description and active state.</span><button data-property-form="zone" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Room types</strong><span>Name, code, category, base occupancy, max occupancy, default bed setup, features, view type, accessibility, cleaning category, sellable state and display order.</span><button data-property-form="room_type" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Rooms</strong><span>Room number, display name, room type, building, floor, zone, housekeeping section, maintenance area, occupancy, beds, features, view, orientation, square meters, accessibility, sellable, active and status.</span><button data-property-form="room" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Spaces & resources</strong><span>Name, code, resource type, space type, building, floor, zone, capacity, hourly/daily/monthly bookable, sellable, tax code, default rate and active state.</span><button data-property-form="space_resource" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Departments</strong><span>Name, code, description, manager, users and active state.</span><button data-property-form="department" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Housekeeping categories</strong><span>Task types, cleaning schemas, default duration, inspection required, stayover policy, departure policy, deep clean frequency, linen rules and minibar rules.</span><button data-property-form="housekeeping_setup" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Maintenance categories</strong><span>Issue types, priority levels, SLA rules, room blocking rules, asset categories, contractor categories and preventive maintenance categories.</span><button data-property-form="maintenance_setup" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Revenue categories</strong><span>Market segments, source codes, channel categories, rate categories, restriction categories, demand event types, competitor categories and forecast driver categories.</span><button data-property-form="revenue_setup" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Finance & compliance categories</strong><span>Tax codes, payment method categories, invoice sequence types, cost centers, compliance authority types, document template categories, retention rules and legal submission modes.</span><button data-property-form="finance_compliance_setup" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>AI setup</strong><span>Automation level, voice locales, AI disclosure, human review defaults and OCR image retention policy.</span><button data-property-form="ai_setup" type="button">Open form</button></article>
+              <article class="market-card enabled"><strong>Custom fields</strong><span>Entity type, field key, label, data type, required/searchable/list visibility, validation JSON and defaults.</span><button data-property-form="custom_field" type="button">Open form</button></article>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Property mapper inputs</p>
+                <h2>Physical map preview</h2>
+              </div>
+              <span class="count-pill">Tree + grid + visual map</span>
+            </div>
+            <div class="mapper-split">
+              <div class="mapper-tree">
+                <strong>HotelOS Madrid Centro</strong>
+                <span>Main Building</span>
+                <span>Floor 4</span>
+                <span>East Wing</span>
+                <span>Room 432 · Double Standard · Clean inspected</span>
+                <span>Parking P-08 · hourly + daily bookable</span>
+                <span>Meeting Room Sol · capacity 16</span>
+              </div>
+              <div class="mini-map">
+                <span class="map-room">432</span>
+              </div>
+            </div>
+          </section>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Required mapping fields</h2>
+                <span class="status-badge review">validation</span>
+              </div>
+              <table class="setup-table">
+                <thead>
+                  <tr><th>Entity</th><th>Required inputs</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Sellable room</td><td>Room type, building, floor, zone, housekeeping section and maintenance area</td><td><span class="status-badge review">12 missing type</span></td></tr>
+                  <tr><td>Room type</td><td>Code, occupancy, bed setup, cleaning category and sellable default</td><td><span class="status-badge queued">ready</span></td></tr>
+                  <tr><td>Resource</td><td>Resource type, capacity, bookable mode, tax code and default rate</td><td><span class="status-badge queued">ready</span></td></tr>
+                  <tr><td>Compliance</td><td>Tax region, authority type, document types, invoice sequence and retention rule</td><td><span class="status-badge failed">needs SES</span></td></tr>
+                  <tr><td>Revenue</td><td>Market segment, source code, channel category, rate category and forecast driver category</td><td><span class="status-badge queued">ready</span></td></tr>
+                </tbody>
+              </table>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Category controls</h2>
+                <span class="status-badge queued">editable taxonomy</span>
+              </div>
+              <div class="arrival-row"><span class="status-badge queued">Add</span><div><strong>Add option</strong><span>Create room features, bed types, space/resource types, market segments and department categories.</span></div></div>
+              <div class="arrival-row"><span class="status-badge review">Protect</span><div><strong>Prevent deletion if in use</strong><span>Used options can be deactivated, but historical records still show their labels.</span></div></div>
+              <div class="arrival-row"><span class="status-badge queued">AI</span><div><strong>Ask AI Setup Assistant</strong><span>Suggest categories for boutique, resort, aparthotel, urban business or rural hotel templates. Preview required.</span></div></div>
+            </section>
+          </div>
+
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Data quality checks</h2>
+              <span class="status-badge failed">go-live gates</span>
+            </div>
+            <div class="setup-progress-grid">
+              <article class="setup-progress review"><span>Rooms without room type</span><strong>12</strong><small>Assign room type before go-live.</small></article>
+              <article class="setup-progress complete"><span>Zones mapped</span><strong>ready</strong><small>Rooms, spaces and resources can be placed on the map.</small></article>
+              <article class="setup-progress blocked"><span>Invoice sequence</span><strong>missing</strong><small>Required for billing setup.</small></article>
+              <article class="setup-progress blocked"><span>SES.HOSPEDAJES</span><strong>missing</strong><small>Required for Spain guest register compliance.</small></article>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" id="property-form">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">Back Office / Manual setup form</p>
+              <h2 id="propertyFormTitle">Property profile</h2>
+              <p>Each form has its own route, required input categories and database-backed save endpoint. The save action writes to the mapped setup table and also records a property setup form submission for audit and review.</p>
+              <div class="button-row">
+                <button class="primary-action" id="propertyFormSaveButton" type="button">Save to database</button>
+                <button type="button">Save and add another</button>
+                <button data-screen-jump="property-setup" type="button">Back to Property Setup</button>
+              </div>
+              <p class="inline-state" id="propertyFormSaveStatus">No property setup submission saved in this browser yet.</p>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge queued">DB linked</span>
+              <strong id="propertyFormTarget">properties + property_setup_form_submissions</strong>
+              <small>Every form uses validation, audit trail and setup progress updates.</small>
+            </aside>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Route and endpoint</p>
+                <h2>Manual setup route</h2>
+              </div>
+              <span class="status-badge queued">visible route</span>
+            </div>
+            <div class="setup-progress-grid">
+              <article class="setup-progress complete"><span>Admin route</span><strong id="propertyFormRoute">/backoffice/property-setup/property-profile</strong><small>Shown in Back Office sidebar and Property Setup hub.</small></article>
+              <article class="setup-progress complete"><span>Save endpoint</span><strong id="propertyFormEndpoint">/backoffice/properties/prop_123/property-setup/forms/property_profile</strong><small>POST/PATCH endpoint with permission and validation.</small></article>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Input categories</p>
+                <h2>Required categories for this form</h2>
+              </div>
+              <span class="status-badge review">mapped fields</span>
+            </div>
+            <div class="button-row" id="propertyFormCategories"></div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Form inputs</p>
+                <h2>Manual data entry</h2>
+              </div>
+              <span class="status-badge queued">validation-ready</span>
+            </div>
+            <div class="form-grid" id="propertyFormFields"></div>
+          </section>
+        </section>
+
+        <section class="screen" id="reservations">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">PMS Core / Reservations</p>
+              <h2>Reservation workspace with visible creation, billing and reporting routes</h2>
+              <p>Reservations are not just calendar blocks. Each record links guest data, stay dates, source/category fields, room/resource assignment, folio, invoice and reports.</p>
+              <div class="button-row">
+                <button class="primary-action" data-screen-jump="reservation-create" type="button">Create reservation</button>
+                <button data-screen-jump="billing-center" type="button">Open billing center</button>
+                <button data-screen-jump="reports-center" type="button">Open reports</button>
+              </div>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge queued">DB linked</span>
+              <strong>/properties/:propertyId/reservations</strong>
+              <small>Target tables: reservations, reservation_guests, reservation_resources, folios and audit_events.</small>
+            </aside>
+          </section>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Reservation list</h2>
+                <span class="status-badge queued">pms.reservation.read</span>
+              </div>
+              <table class="report-table">
+                <thead><tr><th>Code</th><th>Guest</th><th>Stay</th><th>Categories</th><th>Folio</th></tr></thead>
+                <tbody>
+                  <tr><td>RES-18392</td><td>Maria Lopez Garcia</td><td>2026-05-14 to 2026-05-16</td><td>direct / direct_web / leisure</td><td>paid</td></tr>
+                  <tr><td>RES-DEMO</td><td>Manual input</td><td>pending dates</td><td>source, segment, guarantee and billing instruction required</td><td>open on create</td></tr>
+                </tbody>
+              </table>
+            </section>
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Required input categories</h2>
+                <span class="status-badge review">category manager</span>
+              </div>
+              <div class="button-row">
+                <span class="status-badge queued">Reservation source</span>
+                <span class="status-badge queued">Market segment</span>
+                <span class="status-badge queued">Guarantee policy</span>
+                <span class="status-badge queued">Cancellation policy</span>
+                <span class="status-badge queued">Billing instruction</span>
+              </div>
+              <p>These options are property-configurable in Category Manager and feed reservation creation, billing rules and reports.</p>
+            </section>
+          </div>
+        </section>
+
+        <section class="screen" id="reservation-create">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">PMS Core / Manual reservation</p>
+              <h2>Create reservation</h2>
+              <p>Quote availability, capture guest details, select the reservation categories and create the PMS reservation. The production route opens the folio automatically.</p>
+              <div class="button-row">
+                <button class="primary-action" id="reservationSaveButton" type="button">Confirm and create reservation</button>
+                <button data-screen-jump="reservations" type="button">Back to reservations</button>
+              </div>
+              <p class="inline-state" id="reservationSaveStatus">No manual reservation saved in this browser yet.</p>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge queued">POST</span>
+              <strong>/properties/prop_123/reservations</strong>
+              <small>Creates reservation, primary guest link and open folio.</small>
+            </aside>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Reservation inputs</h2><span class="status-badge queued">validation-ready</span></div>
+            <div class="form-grid">
+              <label class="form-line"><span>Arrival date</span><input id="arrivalDate" type="date" value="2026-05-18" /></label>
+              <label class="form-line"><span>Departure date</span><input id="departureDate" type="date" value="2026-05-20" /></label>
+              <label class="form-line"><span>Guest first name</span><input id="guestFirstName" value="Ana" /></label>
+              <label class="form-line"><span>Guest surname</span><input id="guestSurname" value="Martinez" /></label>
+              <label class="form-line"><span>Channel</span><input id="reservationChannel" value="direct" /></label>
+              <label class="form-line"><span>Source code</span><input id="reservationSource" value="direct_web" /></label>
+              <label class="form-line"><span>Market segment</span><input id="marketSegment" value="leisure" /></label>
+              <label class="form-line"><span>Billing instruction</span><input id="billingInstruction" value="guest_pays_checkout" /></label>
+              <label class="form-line"><span>Total amount</span><input id="reservationAmount" type="number" value="272" /></label>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" id="billing-center">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">Finance / Billing</p>
+              <h2>Billing Center</h2>
+              <p>Folios, charges, payments and invoice drafts are connected to reservations. Issuing invoices is a critical action and uses the invoice lifecycle routes.</p>
+              <div class="button-row">
+                <button class="primary-action" id="invoiceSaveButton" type="button">Create invoice draft</button>
+                <button data-screen-jump="reports-center" type="button">Open billing reports</button>
+              </div>
+              <p class="inline-state" id="invoiceSaveStatus">No invoice draft saved in this browser yet.</p>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge review">critical routes</span>
+              <strong>/invoices/drafts → /invoices/:id/issue</strong>
+              <small>Target tables: folios, folio_lines, payments, invoices, invoice_lines and invoice_sequences.</small>
+            </aside>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Invoice inputs</h2><span class="status-badge queued">billing.configure</span></div>
+            <div class="form-grid">
+              <label class="form-line"><span>Invoice type</span><input id="invoiceType" value="full" /></label>
+              <label class="form-line"><span>Customer type</span><input id="invoiceCustomerType" value="guest" /></label>
+              <label class="form-line"><span>Total</span><input id="invoiceTotal" type="number" value="272" /></label>
+              <label class="form-line"><span>Tax total</span><input id="invoiceTaxTotal" type="number" value="24.73" /></label>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" id="reports-center">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">Hotel Intelligence / Reports</p>
+              <h2>Reports Center</h2>
+              <p>Reservation, billing, revenue and owner reports expose date filters, categories, target tables and export formats. The production API writes export audit events.</p>
+              <div class="button-row">
+                <button class="primary-action" id="reportExportButton" type="button">Generate report export</button>
+                <button data-screen-jump="revenue" type="button">Open Revenue History & Forecast</button>
+              </div>
+              <p class="inline-state" id="reportExportStatus">No report export prepared yet.</p>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge queued">reports</span>
+              <strong>/reports/properties/prop_123/export</strong>
+              <small>Formats: PDF, CSV, XLSX and JSON.</small>
+            </aside>
+          </section>
+          <section class="panel">
+            <div class="panel-head"><h2>Report inputs</h2><span class="status-badge queued">analytics.read</span></div>
+            <div class="form-grid">
+              <label class="form-line"><span>Report type</span><input id="reportType" value="reservation" /></label>
+              <label class="form-line"><span>Format</span><input id="reportFormat" value="pdf" /></label>
+              <label class="form-line"><span>From date</span><input type="date" value="2026-05-01" /></label>
+              <label class="form-line"><span>To date</span><input type="date" value="2026-05-31" /></label>
+            </div>
+          </section>
+        </section>
+
+        <section class="screen" id="backoffice">
+          <section class="bo-preview-hero">
+            <div>
+              <p class="eyebrow">HotelOS Aurora Back Office</p>
+              <h2>Prepare HotelOS Madrid Centro for go-live</h2>
+              <p>Setup is 72% complete. Billing, SES.HOSPEDAJES credentials and AI Check-in OCR setup are the remaining blockers.</p>
+              <div class="button-row">
+                <button data-screen-jump="manual-setup" type="button">Manual Setup Center</button>
+                <button data-screen-jump="property-setup" type="button">Manual Property Setup</button>
+                <button data-screen-jump="reservations" type="button">Reservations</button>
+                <button data-screen-jump="reservation-create" type="button">Create Reservation</button>
+                <button data-screen-jump="billing-center" type="button">Billing Center</button>
+                <button data-screen-jump="reports-center" type="button">Reports Center</button>
+                <button>Setup Center</button>
+                <button class="primary-action">Continue setup checklist</button>
+                <button>Recalculate readiness</button>
+                <button data-screen-jump="ai-setup" type="button">Ask AI Setup Assistant</button>
+              </div>
+            </div>
+            <aside class="go-live-card">
+              <span class="status-badge failed">Go-live blocked</span>
+              <strong>2 blocking checks</strong>
+              <small>Recommended next action: Configure Billing Settings.</small>
+            </aside>
+          </section>
+
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Back Office Dashboard</h2>
+                <span class="status-badge review">72% setup</span>
+              </div>
+              <div class="kpis owner">
+                <article><span>Rooms mapped</span><strong>2</strong><small>Main Building</small></article>
+                <article><span>Active modules</span><strong>13</strong><small>2 need setup</small></article>
+                <article><span>Integrations</span><strong>1</strong><small>Payment gateway</small></article>
+                <article><span>Go-live</span><strong>Blocked</strong><small>2 blockers</small></article>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge failed">Blocking</span>
+                <div><strong>No invoice sequence configured</strong><span>Configure Billing Settings before production.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge failed">Blocking</span>
+                <div><strong>SES.HOSPEDAJES credentials missing</strong><span>Compliance connector must be configured.</span></div>
+              </div>
+              <div class="setup-progress-grid">
+                <article class="setup-progress complete"><span>Organization</span><strong>complete</strong><small>Legal entity configured</small></article>
+                <article class="setup-progress review"><span>Property mapper</span><strong>review</strong><small>12 rooms need type review</small></article>
+                <article class="setup-progress blocked"><span>Billing</span><strong>blocked</strong><small>Invoice sequence missing</small></article>
+                <article class="setup-progress blocked"><span>Compliance</span><strong>blocked</strong><small>SES credentials missing</small></article>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Property Mapper</h2>
+                <span class="count-pill">Tree + grid + map</span>
+              </div>
+              <div class="mapper-split">
+                <div class="mapper-tree">
+                  <strong>HotelOS Madrid Centro</strong>
+                  <span>Main Building</span>
+                  <span>Floor 4 / East Wing / Room 432</span>
+                  <span>Floor 1 / Lobby / Reception</span>
+                </div>
+                <div class="mini-map">
+                  <span class="map-room">432</span>
+                </div>
+              </div>
+              <p>Bulk create rooms, import CSV/XLSX, assign room types, map spaces, generate QR codes and store manual floor-plan positions.</p>
+              <div class="import-preview-grid">
+                <article><span>Will create</span><strong>40 rooms</strong><small>401-440, Floor 4</small></article>
+                <article><span>Will update</span><strong>12 rooms</strong><small>Assign room type after confirmation</small></article>
+                <article><span>Will skip</span><strong>2 rows</strong><small>Duplicate room numbers</small></article>
+              </div>
+              <div class="button-row">
+                <button>Create rooms 401-440</button>
+                <button>Preview import</button>
+                <button>Bulk QR</button>
+              </div>
+            </section>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Visible setup entry points</p>
+                <h2>Back Office setup cards</h2>
+              </div>
+              <span class="status-badge queued">No hidden tools</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Manual Setup Center</strong><span>All hotel-entered setup routes, fields, permissions and endpoints.</span><button data-screen-jump="manual-setup" type="button">Open Manual Setup Center</button></article>
+              <article class="market-card enabled"><strong>Property Setup</strong><span>Setup checklist, legal profile, property mapper, room types, spaces, departments and inventory input categories.</span><button data-screen-jump="property-setup" type="button">Open Property Setup</button></article>
+              <article class="market-card enabled"><strong>Configuration Center</strong><span>Manage categories, custom fields, room types, spaces, departments, revenue segments, housekeeping rules and maintenance categories.</span><div class="button-row"><button data-screen-jump="manual-setup" type="button">Open Configuration Center</button><button data-manual-setup="category_manager" type="button">Category Manager</button><button data-manual-setup="custom_fields" type="button">Custom Fields</button></div></article>
+              <article class="market-card enabled"><strong>Module Setup</strong><span>Module marketplace, active modules, configuration center and health.</span><button data-manual-setup="modules" type="button">Open Modules</button></article>
+              <article class="market-card"><strong>Revenue Setup</strong><span>Status: Needs setup. Missing rate plans, inventory days, forecast snapshots, channel mappings, competitor set or History & Forecast data are shown here.</span><div class="button-row"><button data-screen-jump="revenue" type="button">Open Revenue</button><button data-manual-setup="revenue_settings" type="button">Configure</button><button type="button">Generate Demo Data</button></div></article>
+              <article class="market-card enabled"><strong>AI Setup Wizard</strong><span>Status: Review required. Upload exports, review AI mappings, run dry-run and resolve go-live blockers before migration.</span><div class="button-row"><button data-screen-jump="ai-setup" type="button">Start AI Setup</button><button data-screen-jump="ai-setup" type="button">Continue AI Setup</button></div></article>
+              <article class="market-card"><strong>Channel Manager Setup</strong><span>Channels, mappings, sync health, parity alerts and ARI job visibility.</span><div class="button-row"><button data-manual-setup="channel_connections" type="button">Channels</button><button data-manual-setup="channel_mappings" type="button">Mappings</button></div></article>
+              <article class="market-card"><strong>Compliance Setup</strong><span>Spain Guest Register, SES.HOSPEDAJES, authority routing, retention and compliance inbox.</span><div class="button-row"><button data-manual-setup="spain_guest_register" type="button">Guest Register</button><button data-manual-setup="ses_hospedajes" type="button">SES.HOSPEDAJES</button></div></article>
+              <article class="market-card enabled"><strong>Integration Setup</strong><span>Marketplace connections for payments, OTAs, messaging, government adapters and AI tooling.</span><button data-manual-setup="integrations" type="button">Open Integrations</button></article>
+              <article class="market-card"><strong>AI Governance</strong><span>AI policies, OCR provider, disclosure, tool registry and high-risk confirmation rules.</span><button data-manual-setup="ai_governance" type="button">AI Governance</button></article>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">Property Configuration & Category Manager</p>
+                <h2>Configurable operating taxonomy</h2>
+              </div>
+              <span class="status-badge queued">No code changes</span>
+            </div>
+            <div class="market-grid">
+              <article class="market-card enabled"><strong>Category groups</strong><span>Property, Rooms, Spaces & Resources, Operations, Maintenance, Housekeeping, Revenue, Distribution, Guest Experience, Finance, Compliance, POS, Assets, Safety and AI.</span></article>
+              <article class="market-card enabled"><strong>Room categories</strong><span>Room features, bed types, view types, accessibility features, cleaning categories and maintenance categories.</span></article>
+              <article class="market-card enabled"><strong>Revenue categories</strong><span>Market segments, source codes, channel categories, rate categories, demand event types and forecast driver categories.</span></article>
+              <article class="market-card"><strong>Controlled legal values</strong><span>system_controlled categories such as document types, invoice sequence types and authority types cannot be freely renamed.</span></article>
+              <article class="market-card enabled"><strong>Category options</strong><span>Add, edit, deactivate, reactivate, reorder, set color/icon, parent category, description, default value and usage count.</span></article>
+              <article class="market-card enabled"><strong>Custom fields</strong><span>Text, number, boolean, date, select, multi-select, money, percentage and JSON fields per entity.</span></article>
+              <article class="market-card enabled"><strong>AI category assistant</strong><span>Suggest categories for boutique, urban, resort, rural, aparthotel, hostel, luxury or multi-property templates. Preview and confirmation required.</span></article>
+              <article class="market-card enabled"><strong>Import / export</strong><span>CSV, XLSX and JSON import preview with create/update/skip counts before applying.</span></article>
+            </div>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Module health and recent audit</h2>
+              <span class="status-badge queued">Module Health</span>
+            </div>
+            <div class="dashboard-grid compact-grid">
+              <article class="market-card enabled"><strong>PMS Core</strong><span>Healthy and active for production setup.</span></article>
+              <article class="market-card"><strong>AI Check-in</strong><span>Needs OCR provider, signature template and guest disclosure.</span></article>
+              <article class="market-card"><strong>Compliance Billing</strong><span>Blocked until invoice sequence is configured.</span></article>
+              <article class="market-card enabled"><strong>Recent audit</strong><span>RoomBulkCreated, BackOfficeAiSuggestionCreated, PropertyReadinessRecalculated.</span></article>
+            </div>
+          </section>
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>AI Setup Assistant</h2>
+                <span class="status-badge review">Preview before apply</span>
+              </div>
+              <div class="arrival-row highlighted">
+                <span class="ai-chip">AI</span>
+                <div><strong>Create rooms 401-440</strong><span>Preview: 40 rooms, Double type, Floor 4, existing rooms skipped.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge queued">Ready</span>
+                <div><strong>Suggested setup action</strong><span>Create housekeeping sections by floor after human confirmation.</span></div>
+              </div>
+              <div class="button-row">
+                <button>Preview suggestion</button>
+                <button>Apply after confirmation</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Operations configuration</h2>
+                <span class="count-pill">Housekeeping + maintenance</span>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge queued">HK</span>
+                <div><strong>Housekeeping configuration</strong><span>Sections, room assignments, stayover rules, minibar rules and supervisor approval.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge queued">MT</span>
+                <div><strong>Maintenance configuration</strong><span>Areas, SLA rules, room blocking rules, contractors and warranty tracking.</span></div>
+              </div>
+            </section>
+          </div>
+          <div class="dashboard-grid">
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Room Type Manager</h2>
+                <span class="count-pill">1 active</span>
+              </div>
+              <table class="setup-table">
+                <thead>
+                  <tr><th>Type</th><th>Occupancy</th><th>Linked rooms</th><th>Status</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>Double</td><td>2</td><td>2</td><td><span class="status-badge queued">Active</span></td></tr>
+                </tbody>
+              </table>
+              <div class="button-row">
+                <button>Create room type</button>
+                <button>Merge room types</button>
+                <button>Deactivate</button>
+              </div>
+            </section>
+
+            <section class="panel">
+              <div class="panel-head">
+                <h2>Staff, templates and audit</h2>
+                <span class="count-pill">Permissioned</span>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge queued">Invite</span>
+                <div><strong>Staff roles</strong><span>Invite users, require MFA, assign departments and roles.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge review">Template</span>
+                <div><strong>Guest register signature form</strong><span>Missing template blocks AI Check-in readiness.</span></div>
+              </div>
+              <div class="arrival-row">
+                <span class="status-badge queued">Audit</span>
+                <div><strong>Back Office changes</strong><span>RoomBulkUpdated, UserInvited, TemplateCreated, QRCodeBulkGenerated and BackOfficeAiSuggestionApplied are logged.</span></div>
+              </div>
+            </section>
+          </div>
+        </section>
+
+        <section class="screen" id="compliance">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Spain Guest Register / SES.HOSPEDAJES Compliance</h2>
+              <span class="count-pill">7 issues</span>
+            </div>
+            <p class="eyebrow">Compliance inbox</p>
+            <div class="arrival-row"><span class="status-badge failed">Rejected</span><div><strong>SES submission rejected</strong><span>Invalid document support number. Correct field, keep audit trail and retry.</span></div></div>
+            <div class="arrival-row"><span class="status-badge review">Needs signature</span><div><strong>Guest over 14 in room 432</strong><span>Parte de entrada must be signed before authority submission.</span></div></div>
+            <div class="arrival-row"><span class="status-badge queued">ID_IMAGE_DISCARDED</span><div><strong>Temporary OCR completed</strong><span>DNI/passport/TIE image was discarded immediately; only legal fields are stored.</span></div></div>
+            <div class="arrival-row"><span class="status-badge review">Minor</span><div><strong>Child under 14 linked to adult</strong><span>No signature required; accompanying adult and kinship relation are stored.</span></div></div>
+            <div class="arrival-row"><span class="status-badge queued">Daily batch</span><div><strong>SES.HOSPEDAJES manual export ready</strong><span>Download file, upload to official platform and paste receipt/reference.</span></div></div>
+            <div class="arrival-row"><span class="status-badge queued">Routing</span><div><strong>Authority routing</strong><span>Spain defaults to SES.HOSPEDAJES; Catalonia/Mossos placeholder can be configured in Back Office.</span></div></div>
+            <div class="arrival-row"><span class="status-badge queued">Retention</span><div><strong>3-year retention</strong><span>Guest register data is kept for 3 years from end of service, then deleted/anonymized unless legal hold applies.</span></div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Back Office settings</h2>
+              <span class="ai-chip">Data minimisation</span>
+            </div>
+            <div class="module-grid">
+              <article><strong>GuestRegisterSettingsScreen</strong><span>Required legal fields, minors, signatures and OCR privacy.</span></article>
+              <article><strong>SesHospedajesSettingsScreen</strong><span>Establishment code, landlord code, service-web secret ref, batch export and official schema loader.</span></article>
+              <article><strong>AuthorityRoutingSettingsScreen</strong><span>SES default, Mossos placeholder and regional overrides.</span></article>
+              <article><strong>GuestRegisterRetentionSettingsScreen</strong><span>Three-year retention, sensitive access audit and temporary document artifacts.</span></article>
+            </div>
+          </div>
+        </section>
+
+        <section class="screen" id="owner">
+          <div class="kpis owner">
+            <article><span>Occupancy</span><strong>84%</strong><small>+6 pts week over week</small></article>
+            <article><span>ADR</span><strong>EUR 136</strong><small>Direct leads OTA</small></article>
+            <article><span>RevPAR</span><strong>EUR 114</strong><small>Healthy weekday</small></article>
+            <article><span>Debtors</span><strong>EUR 3,420</strong><small>Overdue watch</small></article>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Recommended action</h2>
+              <span class="ai-chip">AI briefing</span>
+            </div>
+            <p>Room 432 has repeated HVAC notes. Inspect before the weekend and compare renovation ROI against fourth floor capex.</p>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

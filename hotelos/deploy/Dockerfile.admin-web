@@ -1,0 +1,75 @@
+# HotelOS admin-web · Production image (Vite static build behind nginx)
+#
+# Vite outputs a hashed-static bundle that nginx serves directly. The API URL
+# is baked into the build via `VITE_API_URL` (passed as a build-arg from
+# docker-compose.production.yml). For SPA routing, we fall back to index.html
+# on any unknown path.
+
+# ---- stage 1: builder ----
+FROM node:22-alpine AS builder
+
+WORKDIR /repo
+
+# Build arg for the public-facing API URL. Defaults to the production domain
+# but overridable per-environment (staging, on-prem, etc.).
+ARG VITE_API_URL=https://app.hotelos.app/api
+ENV VITE_API_URL=$VITE_API_URL
+
+# Same workspace manifest dance as the API image — see Dockerfile.api.
+COPY package.json package-lock.json* ./
+COPY apps/admin-web/package.json ./apps/admin-web/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/ui/package.json ./packages/ui/
+COPY packages/product/package.json ./packages/product/
+COPY packages/database/package.json ./packages/database/
+COPY packages/ai-tools/package.json ./packages/ai-tools/
+
+RUN npm install --include=dev --ignore-scripts
+
+COPY packages ./packages
+COPY apps/admin-web ./apps/admin-web
+
+# Build the SPA.
+RUN npm --workspace @hotelos/admin-web run build
+
+# ---- stage 2: nginx runtime ----
+FROM nginx:1.27-alpine AS runtime
+
+# Custom config: SPA fallback to index.html, gzip + brotli, cache-bust for
+# hashed assets, no-cache for index.html.
+RUN rm /etc/nginx/conf.d/default.conf
+COPY --from=builder /repo/apps/admin-web/dist /usr/share/nginx/html
+
+RUN cat > /etc/nginx/conf.d/admin-web.conf <<'NGINX'
+server {
+    listen 80 default_server;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Gzip on for text assets; Caddy in front also negotiates brotli upstream.
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript application/xml+rss text/javascript image/svg+xml;
+    gzip_min_length 1024;
+
+    # Long cache for fingerprinted assets, no-cache for index.html so a deploy
+    # is visible immediately on next page load.
+    location /assets/ {
+        access_log off;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        try_files $uri =404;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-store, must-revalidate";
+    }
+
+    # SPA fallback: anything that doesn't match a file falls through to index.
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+NGINX
+
+EXPOSE 80
