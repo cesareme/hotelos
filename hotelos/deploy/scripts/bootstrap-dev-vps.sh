@@ -130,7 +130,11 @@ if ! command -v gh >/dev/null 2>&1; then
     apt-get update && apt-get install -y gh
 fi
 
-log "12/12 · Pre-create tmux config for $DEV_USER"
+log "12/13 · Install Claude Code CLI globally (so 'claude' works in any project)"
+sudo -u "$DEV_USER" bash -lc 'npm install -g @anthropic-ai/claude-code 2>&1 | tail -3' || \
+    warn "Claude Code install failed — run manually as $DEV_USER: npm install -g @anthropic-ai/claude-code"
+
+log "13/13 · Pre-create tmux config for $DEV_USER"
 cat > "/home/$DEV_USER/.tmux.conf" <<'TMUX'
 # HotelOS dev box · sensible tmux defaults
 set -g mouse on
