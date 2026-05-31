@@ -119,7 +119,7 @@ cask "bruno"
 # Browser stack — pick what you like. Arc is the design hot pick of 2024-26.
 cask "arc"                  # opinionated SaaS-grade browser
 cask "google-chrome"        # for compat tests
-cask "firefox@developer-edition"
+cask "firefox"              # add "firefox-developer-edition" later if needed
 
 # Screenshots / screen recording.
 cask "cleanshot"            # paid (€32) but it ALONE earns back the laptop's price
@@ -158,7 +158,10 @@ brew "stow"                 # GNU stow for symlinking dotfiles
 cask "karabiner-elements"
 
 # Tiling window manager (if Rectangle isn't enough).
-cask "aerospace"            # i3-like for macOS, keyboard-only
+# AeroSpace lives in an external tap. If you want it, run AFTER bundle:
+#   brew tap nikitabobko/tap
+#   brew install --cask nikitabobko/tap/aerospace
+# (left out of the bundle so brew doesn't fail on first-time setup)
 
 # Menubar stats (CPU/RAM/network at a glance).
 cask "stats"
