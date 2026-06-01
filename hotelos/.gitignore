@@ -58,3 +58,8 @@ test-results/
 # Worktree scratch
 worktrees/
 
+
+# Chat transcripts crudos (grandes) — solo la versión readable va a git
+**/chat-transcript-raw.jsonl
+**/chat-transcript-raw.jsonl.gz
+**/chat-macpro-raw.jsonl
