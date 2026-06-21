@@ -2,7 +2,7 @@ import type { GuestIdentityFields } from "@hotelos/shared";
 import type { ReservationStatus } from "@hotelos/shared";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
-import { BadRequestError } from "../../lib/http-error.js";
+import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
 import {
   demoStore,
   type GuestRecord,
@@ -342,6 +342,38 @@ export async function createReservation(input: {
   }
 
   const reservation = await prisma.$transaction(async (tx) => {
+    // SECURITY (audit 2026-06 · NUEVO-1): block cross-tenant writes (IDOR).
+    // propertyId arrives from the URL path; verify it belongs to the caller's
+    // organization before creating reservations/folios under it. Returning 404
+    // (not 403) avoids leaking the existence of other tenants' properties.
+    const property = await tx.property.findUnique({
+      where: { id: input.propertyId },
+      select: { organizationId: true }
+    });
+    if (!property || property.organizationId !== input.context.organizationId) {
+      throw new NotFoundError(`Property ${input.propertyId} not found.`);
+    }
+    // roomType / ratePlan must belong to the same property (and therefore the
+    // same tenant) — prevents grafting another property's inventory/pricing.
+    if (input.roomTypeId) {
+      const rt = await tx.roomType.findUnique({
+        where: { id: input.roomTypeId },
+        select: { propertyId: true }
+      });
+      if (!rt || rt.propertyId !== input.propertyId) {
+        throw new BadRequestError("Room type does not belong to this property.");
+      }
+    }
+    if (input.ratePlanId) {
+      const rp = await tx.ratePlan.findUnique({
+        where: { id: input.ratePlanId },
+        select: { propertyId: true }
+      });
+      if (!rp || rp.propertyId !== input.propertyId) {
+        throw new BadRequestError("Rate plan does not belong to this property.");
+      }
+    }
+
     let guestId: string | undefined;
 
     if (input.primaryGuest?.documentNumber) {

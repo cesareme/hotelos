@@ -839,12 +839,20 @@ export function buildApiServer() {
   // Anti-bruteforce + protección contra abuso. Usa memoria local (suficiente
   // para single-node piloto); en cluster usaríamos Redis.
   app.register(fastifyRateLimit, {
-    global: false,                       // se activa por ruta con `config.rateLimit`
+    // SECURITY (audit 2026-06 · H3): default-on. Every route gets a baseline
+    // limit; auth/critical routes harden it further via `config.rateLimit`.
+    global: true,
     max: 200,
     timeWindow: "1 minute",
     keyGenerator: (req) => {
-      const xff = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
-      return xff || req.ip;
+      // Only trust x-forwarded-for behind a known proxy (TRUST_PROXY=1, e.g.
+      // Caddy in prod). Otherwise the header is client-spoofable and lets an
+      // attacker dodge the limit by rotating it — fall back to the socket IP.
+      if (process.env.TRUST_PROXY === "1") {
+        const xff = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
+        if (xff) return xff;
+      }
+      return req.ip;
     },
     errorResponseBuilder: () => ({
       statusCode: 429,
@@ -882,7 +890,11 @@ export function buildApiServer() {
     assertRoutePermission({
       method: request.method,
       path: request.routeOptions.url ?? request.url.split("?")[0],
-      userPermissions: request.userContext?.permissions ?? demoStore.userContext.permissions
+      // SECURITY (audit 2026-06 · NUEVO-2): default-deny. If no userContext is
+      // present, evaluate against an EMPTY permission set — never the demoStore
+      // super-user (which holds every permission). Defense in depth behind the
+      // auth-context production gate.
+      userPermissions: request.userContext?.permissions ?? []
     });
   });
 

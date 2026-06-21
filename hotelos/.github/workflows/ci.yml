@@ -4,6 +4,10 @@ name: CI
 # every PR. All three workspaces typecheck cleanly: packages/ui,
 # apps/admin-web and apps/api. The build, env validation, contract tests,
 # smoke test and Docker image builds are the production gates.
+#
+# This is a pnpm monorepo (pnpm-lock.yaml v9 + workspace:* protocol). Using
+# `npm ci` here aborted with EUNSUPPORTEDPROTOCOL, so the gate never ran green.
+# pnpm/action-setup reads the version from the root packageManager field.
 
 on:
   push:
@@ -17,41 +21,44 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-      - run: npm ci
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
       - name: Build admin-web (production)
-        run: npm run -w @hotelos/admin-web build
+        run: pnpm --filter @hotelos/admin-web build
 
   typecheck-strict:
     name: Typecheck (strict packages)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-      - run: npm ci
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
       - name: Typecheck @hotelos/ui
-        run: npm run -w @hotelos/ui typecheck
+        run: pnpm --filter @hotelos/ui typecheck
       - name: Typecheck admin-web
-        run: npm run -w @hotelos/admin-web typecheck
+        run: pnpm --filter @hotelos/admin-web typecheck
       - name: Typecheck API
-        run: npm run -w @hotelos/api typecheck
+        run: pnpm --filter @hotelos/api typecheck
 
   validate-env:
     name: Validate deployment env contract
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-      - run: npm ci
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
       - name: Validate required environment variables
         env:
           # Provide dummy values so the validator can confirm every required
@@ -65,33 +72,35 @@ jobs:
           SES_HOSPEDAJES_CLIENT_SECRET: ci-ses-secret
           APP_PUBLIC_API_URL: https://api.example.com
           SENTRY_DSN: https://example@sentry.example.com/0
-        run: npm run validate:env
+        run: pnpm validate:env
 
   contract-tests:
     name: Contract tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-      - run: npm ci
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
       - name: Run contract tests
-        run: npm run test
+        run: pnpm test
 
   smoke-demo:
     name: Smoke test demo preview
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
-      - run: npm ci
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
       - name: Smoke test the demo preview
-        run: npm run smoke:demo
+        run: pnpm smoke:demo
 
   docker-images:
     name: Build Docker images
