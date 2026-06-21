@@ -102,6 +102,39 @@ jobs:
       - name: Smoke test the demo preview
         run: pnpm smoke:demo
 
+  integration-tests:
+    name: Integration tests (app.inject + Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      JWT_SECRET: ci-jwt-secret-32-chars-min-aaaaaaaa
+      ENCRYPTION_KEY: ci-encryption-key-32-chars-min-aaaa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm --filter @hotelos/database db:generate
+      - name: Push schema to the test database
+        run: pnpm --filter @hotelos/database exec prisma db push --skip-generate
+      - name: Run integration tests (app.inject)
+        run: pnpm test:integration
+
   docker-images:
     name: Build Docker images
     runs-on: ubuntu-latest

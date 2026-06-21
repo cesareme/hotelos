@@ -19,6 +19,7 @@
     "db:push": "pnpm --filter @hotelos/database exec prisma db push --skip-generate",
     "db:seed:commercial": "pnpm --filter @hotelos/database db:seed:commercial",
     "test": "node --test tests/*.test.mjs",
+    "test:integration": "cd apps/api && node --import tsx --test \"../../tests/integration/*.test.mts\"",
     "smoke:demo": "node scripts/smoke-demo.mjs",
     "validate:env": "node scripts/validate-env.mjs",
     "backup:check": "node scripts/backup-restore-check.mjs",
