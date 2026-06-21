@@ -84,7 +84,8 @@ Pre-commit hook activo en `.husky/pre-commit`:
    - `check-sidebar-coverage.mjs` — orphan screens
    - `check-route-validity.mjs` — broken sidebar links
    - `check-placeholder-budget.mjs` — cap 80 placeholders
-2. `npm --workspace @hotelos/admin-web run typecheck`
+2. typecheck de admin-web (usa `pnpm --filter @hotelos/admin-web
+   typecheck` si pnpm existe, si no cae a npm — hook agnóstico)
 
 Estado verificado:
 - 197 screens, 200 sidebar entries, 56 whitelisted
@@ -113,17 +114,21 @@ detail, sub-forms de wizards, auth, dev tools).
 ## Comandos frecuentes
 
 ```bash
+# IMPORTANTE: el proyecto usa pnpm (pnpm-lock.yaml v9 + workspace:*).
+# NUNCA npm install (rompe con EUNSUPPORTEDPROTOCOL 'workspace:').
+
 # Levantar dev
 cd /home/cesareme/projects/hotelos/hotelos
-npm install
-npm --workspace @hotelos/database run prisma:generate
-npm --workspace @hotelos/database run db:push
+pnpm install
+pnpm db:generate            # prisma generate (atajo root)
+pnpm db:push                # prisma db push --skip-generate (crea tablas)
 tmux new -s dev
-# pane 1: npm --workspace @hotelos/api run dev
-# pane 2: npm --workspace @hotelos/admin-web run dev
+# pane 1: pnpm dev:api       (API en :3000)
+# pane 2: pnpm dev:web       (admin-web en :5173)
 
-# Seed demo data
-node packages/database/seeds/demo-pre-demo-enrichment.mjs
+# Seed demo data (ORDEN: base primero, luego avanzados)
+cd packages/database && node --env-file=../../.env --import tsx prisma/seed.ts && cd ../..
+pnpm db:seed:commercial     # añade room types, rooms, tarifas sobre prop_123
 
 # Verificación completa antes de commit
 bash .husky/pre-commit

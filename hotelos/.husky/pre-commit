@@ -24,7 +24,13 @@ node scripts/check-discoverability.mjs
 
 echo ""
 echo "🧪 Pre-commit: typecheck admin-web..."
-npm --workspace @hotelos/admin-web run typecheck --silent
+# Package-manager-agnostic: pnpm on the VPS (pnpm-installed node_modules),
+# npm on machines without pnpm. Both just run the workspace's typecheck script.
+if command -v pnpm >/dev/null 2>&1; then
+  pnpm --filter @hotelos/admin-web typecheck
+else
+  npm --workspace @hotelos/admin-web run typecheck --silent
+fi
 
 echo ""
 echo "✅ Pre-commit checks passed."
