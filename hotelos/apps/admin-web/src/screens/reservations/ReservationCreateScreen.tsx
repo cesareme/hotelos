@@ -256,9 +256,22 @@ function updateField(setForm: Dispatch<SetStateAction<typeof defaultForm>>, key:
 
 // Re-usable label wrapper for a Cocoa form row. We keep a thin wrapper so spacing
 // remains consistent without re-implementing every input's chrome.
-function FieldRow({ label, required, hint, children }: { label: string; required?: boolean; hint?: string; children: React.ReactNode }) {
+// A11y (audit 2026-06 · #14): scroll to + focus the first invalid required
+// field so the error is never off-screen. The label wraps its control, so we
+// find the input/select inside the field's container by id.
+function focusInvalidField(id: string) {
+  if (typeof document === "undefined") return;
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const control = el.querySelector("select, input, textarea") as HTMLElement | null;
+  control?.focus({ preventScroll: true });
+}
+
+function FieldRow({ label, required, hint, children, id }: { label: string; required?: boolean; hint?: string; children: React.ReactNode; id?: string }) {
   return (
     <label
+      id={id}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -434,12 +447,14 @@ export function ReservationCreateScreen() {
       const message = "Selecciona un tipo de habitación antes de crear la reserva.";
       setStatus(message);
       showToast(message, { variant: "error" });
+      focusInvalidField("rc-field-roomtype");
       return;
     }
     if (!form.firstName.trim() || !form.surname1.trim()) {
       const message = "Indica al menos el nombre y el primer apellido del huésped.";
       setStatus(message);
       showToast(message, { variant: "error" });
+      focusInvalidField(!form.firstName.trim() ? "rc-field-firstname" : "rc-field-surname1");
       return;
     }
     setStatus("Creando reserva y abriendo folio...");
@@ -668,7 +683,7 @@ export function ReservationCreateScreen() {
             <FieldRow label="ETD (hora estimada de salida)">
               <CocoaInput value={form.etd} onChange={(v) => updateField(setForm, "etd", v)} type="time" />
             </FieldRow>
-            <FieldRow label="Tipo de habitación" required>
+            <FieldRow label="Tipo de habitación" required id="rc-field-roomtype">
               <CocoaSelect
                 value={form.roomTypeId}
                 onChange={(v) => updateField(setForm, "roomTypeId", v)}
@@ -806,13 +821,13 @@ export function ReservationCreateScreen() {
             <FieldRow label="Tratamiento">
               <CocoaSelect value={form.title} onChange={(v) => updateField(setForm, "title", v)} options={TITLE_OPTIONS} />
             </FieldRow>
-            <FieldRow label="Nombre del huésped" required>
+            <FieldRow label="Nombre del huésped" required id="rc-field-firstname">
               <CocoaInput value={form.firstName} onChange={(v) => updateField(setForm, "firstName", v)} />
             </FieldRow>
             <FieldRow label="Segundo nombre">
               <CocoaInput value={form.middleName} onChange={(v) => updateField(setForm, "middleName", v)} />
             </FieldRow>
-            <FieldRow label="Primer apellido" required>
+            <FieldRow label="Primer apellido" required id="rc-field-surname1">
               <CocoaInput value={form.surname1} onChange={(v) => updateField(setForm, "surname1", v)} />
             </FieldRow>
             <FieldRow label="Segundo apellido">
