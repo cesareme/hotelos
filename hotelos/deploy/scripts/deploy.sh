@@ -30,22 +30,39 @@ git reset --hard origin/main
 step "2/6 · Build images (this may take a few minutes the first time)"
 $COMPOSE build --pull
 
-step "3/6 · Ensure DB + Redis are up (no-op if already running)"
+step "3/7 · Ensure DB + Redis are up (no-op if already running)"
 $COMPOSE up -d postgres redis
 
-step "4/6 · Apply Prisma migrations (db push, skip generate — already in image)"
-# We use `prisma db push` rather than `migrate deploy` because the schema is
-# the source of truth in this project (no migration history committed yet).
-# When the team adopts `prisma migrate`, swap this line.
+step "4/7 · Schema-drift guard — block destructive changes (audit 2026-06 · #7)"
+# `db push` is the schema apply (the migration history is not yet the source of
+# truth). Without --accept-data-loss it aborts on destructive ops, but we add an
+# EXPLICIT pre-flight: compute the DB→schema diff and BLOCK the deploy if any
+# change would DROP a table/column, so prod data is never dropped silently.
+# Override a reviewed, known-safe destructive change with ALLOW_DESTRUCTIVE_MIGRATION=1.
+DRIFT_SQL=$($COMPOSE run --rm -T api sh -c \
+  'npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel packages/database/prisma/schema.prisma --script' 2>/dev/null || true)
+if printf '%s' "$DRIFT_SQL" | grep -qiE 'DROP[[:space:]]+(TABLE|COLUMN)'; then
+    echo "Destructive schema changes detected:"
+    printf '%s\n' "$DRIFT_SQL" | grep -iE 'DROP[[:space:]]+(TABLE|COLUMN)' || true
+    if [[ "${ALLOW_DESTRUCTIVE_MIGRATION:-}" == "1" ]]; then
+        echo "ALLOW_DESTRUCTIVE_MIGRATION=1 — proceeding despite destructive changes."
+    else
+        fail "Deploy blocked: back up the DB and review the drops, then re-run with ALLOW_DESTRUCTIVE_MIGRATION=1."
+    fi
+else
+    echo "Schema changes are additive or none — safe to apply."
+fi
+
+step "5/7 · Apply Prisma schema (db push, skip generate — already in image)"
 $COMPOSE run --rm api node -e "
   const { execSync } = require('child_process');
   execSync('npx prisma db push --skip-generate --schema packages/database/prisma/schema.prisma', { stdio: 'inherit' });
 "
 
-step "5/6 · Roll API + admin-web (Compose handles graceful restart)"
+step "6/7 · Roll API + admin-web (Compose handles graceful restart)"
 $COMPOSE up -d --no-deps api admin-web caddy
 
-step "6/6 · Smoke-test /health"
+step "7/7 · Smoke-test /health"
 sleep 8
 HEALTH=$($COMPOSE exec -T api wget -qO- http://localhost:3000/health || true)
 echo "Health response: $HEALTH"

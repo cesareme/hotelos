@@ -139,9 +139,13 @@ The script will:
 1. Build the API + admin-web Docker images (the first build takes ~5 min;
    subsequent ones with cached layers take 30–60 s).
 2. Bring up Postgres + Redis.
-3. Apply the Prisma schema (`db push`).
-4. Roll the API + admin-web containers.
-5. Smoke-test `https://$DOMAIN/health` and bail out on failure.
+3. **Schema-drift guard**: compute the DB→schema diff and **block the deploy**
+   if any change would `DROP` a table/column, so production data is never
+   dropped silently. Override a reviewed, known-safe drop with
+   `ALLOW_DESTRUCTIVE_MIGRATION=1 bash deploy/scripts/deploy.sh`.
+4. Apply the Prisma schema (`db push`).
+5. Roll the API + admin-web containers.
+6. Smoke-test `https://$DOMAIN/health` and bail out on failure.
 
 Caddy will request a Let's Encrypt cert the first time port 443 is hit.
 After ~10 s the cert is live and `https://$DOMAIN/` returns the SPA.
