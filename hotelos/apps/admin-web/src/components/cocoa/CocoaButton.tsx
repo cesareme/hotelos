@@ -69,21 +69,25 @@ const TONE_VARS: Record<CocoaButtonTone, ToneVars> = {
     accentHover: "var(--cocoa-accent-hover)",
     accentPressed: "var(--cocoa-accent-pressed)",
     accentContrast: "var(--cocoa-accent-contrast)",
-    tintedBg: "rgba(0, 122, 255, 0.15)"
+    // Audit 2026-06 · #5: tint now derives from --cocoa-accent (#0064E1), not a
+    // second blue (#007AFF), so filled and tinted share the exact accent hue.
+    tintedBg: "var(--cocoa-accent-bg)"
   },
   neutral: {
     accent: "var(--cocoa-label)",
     accentHover: "var(--cocoa-label)",
     accentPressed: "var(--cocoa-label)",
     accentContrast: "var(--cocoa-label)",
-    tintedBg: "rgba(0, 0, 0, 0.06)"
+    // Audit 2026-06 · #6: dark-safe — derives from --cocoa-label so it stays
+    // visible on #1E1E1E (the literal rgba(0,0,0,…) was invisible in dark).
+    tintedBg: "color-mix(in srgb, var(--cocoa-label) 8%, transparent)"
   },
   destructive: {
     accent: "var(--cocoa-danger)",
     accentHover: "var(--cocoa-danger)",
     accentPressed: "var(--cocoa-danger)",
     accentContrast: "#FFFFFF",
-    tintedBg: "rgba(255, 59, 48, 0.15)"
+    tintedBg: "var(--cocoa-danger-bg)"
   }
 };
 

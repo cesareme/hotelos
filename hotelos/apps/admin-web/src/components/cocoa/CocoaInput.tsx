@@ -106,11 +106,12 @@ export function CocoaInput(props: CocoaInputProps) {
       ? "var(--cocoa-accent)"
       : "var(--cocoa-separator)";
 
-  // 0 0 0 3px <ring> — accent or danger at 0.4 alpha, mirroring the focus ring spec.
+  // Focus ring — consume the shared tokens (audit 2026-06 · #4), never literals.
+  // Danger variant derives from --cocoa-danger so it themes with the palette.
   const focusRing = focused
     ? error
-      ? "0 0 0 3px rgb(255 59 48 / 0.40)"
-      : "0 0 0 3px rgb(0 100 225 / 0.40)"
+      ? "0 0 0 3px color-mix(in srgb, var(--cocoa-danger) 45%, transparent)"
+      : "0 0 0 3px var(--cocoa-focus-ring)"
     : "none";
 
   const wrapperStyle: CSSProperties = {

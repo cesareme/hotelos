@@ -45,7 +45,24 @@
   --cocoa-danger:               #FF3B30;
   --cocoa-info:                 #007AFF;
 
-  /* Focus ring — keyboardFocusIndicatorColor */
+  /* Status surfaces — soft fill + border for badges, banners, callouts.
+     Derived with color-mix from the themeable status hues above, so a single
+     definition here auto-adapts to dark (the inner var() resolves in context).
+     Audit 2026-06 · #3: Cocoa had zero state surfaces, forcing per-component
+     hardcodes. Use these instead of literal rgba() tints. */
+  --cocoa-success-bg:           color-mix(in srgb, var(--cocoa-success) 12%, transparent);
+  --cocoa-success-border:       color-mix(in srgb, var(--cocoa-success) 32%, transparent);
+  --cocoa-warning-bg:           color-mix(in srgb, var(--cocoa-warning) 14%, transparent);
+  --cocoa-warning-border:       color-mix(in srgb, var(--cocoa-warning) 34%, transparent);
+  --cocoa-danger-bg:            color-mix(in srgb, var(--cocoa-danger) 12%, transparent);
+  --cocoa-danger-border:        color-mix(in srgb, var(--cocoa-danger) 32%, transparent);
+  --cocoa-info-bg:              color-mix(in srgb, var(--cocoa-info) 12%, transparent);
+  --cocoa-info-border:          color-mix(in srgb, var(--cocoa-info) 32%, transparent);
+  --cocoa-accent-bg:            color-mix(in srgb, var(--cocoa-accent) 12%, transparent);
+  --cocoa-accent-border:        color-mix(in srgb, var(--cocoa-accent) 32%, transparent);
+
+  /* Focus ring — keyboardFocusIndicatorColor. SINGLE source of truth: every
+     focusable surface must consume var(--cocoa-focus-ring), never a literal. */
   --cocoa-focus-ring:           rgb(0 100 225 / 0.50);
 
   /* Find highlight */

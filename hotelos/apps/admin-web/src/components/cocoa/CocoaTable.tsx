@@ -214,12 +214,14 @@ export function CocoaTable<Row>({
             const isClickable = typeof onSelect === "function";
             const isEven = idx % 2 === 0;
 
+            // Audit 2026-06 · #6: dark-safe zebra + hover. The literal black/blue
+            // rgba() were invisible on #1E1E1E; these derive from theme tokens.
             let background = isEven
               ? "var(--cocoa-background-content)"
-              : "rgba(0, 0, 0, 0.02)";
+              : "color-mix(in srgb, var(--cocoa-label) 3%, transparent)";
             let color: string | undefined;
             if (isHover && !isSelected) {
-              background = "rgba(0, 100, 225, 0.05)";
+              background = "color-mix(in srgb, var(--cocoa-accent) 8%, transparent)";
             }
             if (isSelected) {
               background = "var(--cocoa-background-selection)";

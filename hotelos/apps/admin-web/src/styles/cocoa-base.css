@@ -30,15 +30,11 @@ body {
 
 .cocoa-focus-ring:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(0,122,255,0.4);
+  /* Single source of truth (audit 2026-06 · #4): consume the token, never a
+     literal. The token tracks light/dark in cocoa-tokens.css. */
+  box-shadow: 0 0 0 3px var(--cocoa-focus-ring);
 }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    /* duplica el bloque dark del cocoa-tokens.css o usa cascade */
-  }
 }
