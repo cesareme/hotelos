@@ -24,6 +24,7 @@
     "validate:env": "node scripts/validate-env.mjs",
     "backup:check": "node scripts/backup-restore-check.mjs",
     "discoverability:check": "node scripts/check-discoverability.mjs",
+    "ds:drift": "node scripts/check-design-system-drift.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "prepare": "git config core.hooksPath .husky 2>/dev/null || true"
