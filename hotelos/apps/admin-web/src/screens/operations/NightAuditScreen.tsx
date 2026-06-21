@@ -15,6 +15,7 @@
 
 import { useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { LoadingBlock, ErrorState } from "../../components/States";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
 
@@ -150,7 +151,16 @@ export function NightAuditScreen() {
         </div>
       </div>
 
-      {/* Banner principal */}
+      {/* Banner principal — audit 2026-06 · #10: mientras el primer fetch no
+          tiene datos, mostramos loading/error en vez del banner rojo engañoso
+          ("no puedes cerrar") que aparecía con la API aún cargando. */}
+      {!preflight ? (
+        perror ? (
+          <ErrorState title="No se pudo cargar el cierre del día" message={perror} onRetry={refresh} />
+        ) : (
+          <LoadingBlock label="Cargando el checklist de cierre…" />
+        )
+      ) : (
       <article
         className="bo-card"
         style={{
@@ -198,6 +208,7 @@ export function NightAuditScreen() {
           {busy ? "Procesando…" : "Cerrar día →"}
         </button>
       </article>
+      )}
 
       {/* Resumen */}
       {preflight ? (

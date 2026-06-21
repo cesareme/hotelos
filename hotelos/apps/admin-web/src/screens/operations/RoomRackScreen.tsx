@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { LoadingBlock, ErrorState } from "../../components/States";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
@@ -207,6 +208,30 @@ export function RoomRackScreen() {
     setToast({ kind: result.ok ? "ok" : "warn", text: result.ok ? `Estado HK → ${status}` : (result.message || "Error") });
     setTimeout(() => setToast(null), 3500);
     if (result.ok) refresh();
+  }
+
+  // Audit 2026-06 · #10: first-load guard. Before any data arrives the derived
+  // totals/floors are all zero, so the board rendered as a misleading "empty
+  // hotel". Show a real loading/error state instead (all hooks run above this).
+  if (!data) {
+    return (
+      <>
+        <div className="bo-page-head">
+          <div className="bo-page-head-text">
+            <div className="bo-page-eyebrow">Recepción · Tablero</div>
+            <h1 className="bo-page-title">Habitaciones</h1>
+          </div>
+          <div className="bo-page-head-actions">
+            <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
+          </div>
+        </div>
+        {error ? (
+          <ErrorState title="No se pudo cargar el tablero de habitaciones" message={error} onRetry={refresh} />
+        ) : (
+          <LoadingBlock label="Cargando el tablero de habitaciones…" />
+        )}
+      </>
+    );
   }
 
   return (
