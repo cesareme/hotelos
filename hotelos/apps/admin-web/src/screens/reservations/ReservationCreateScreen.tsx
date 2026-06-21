@@ -67,12 +67,12 @@ const defaultForm = {
   infants: "0",
   childrenAges: "",
   roomsCount: "1",
-  roomTypeId: "rt_double",
+  roomTypeId: "",
   assignedRoomId: "",
   // ── Tarifa ─────────────────────────────────────────────────────────────
-  ratePlanId: "rp_flexible",
+  ratePlanId: "",
   boardType: "BB",
-  totalAmount: "272",
+  totalAmount: "",
   // ── Origen (Channel / Source / Market) ─────────────────────────────────
   bookingSource: "direct",
   channel: "direct",
@@ -83,8 +83,8 @@ const defaultForm = {
   groupCode: "",
   companyName: "",
   travelAgentName: "",
-  bookerName: "Ana Martinez",
-  bookerEmail: "ana@example.com",
+  bookerName: "",
+  bookerEmail: "",
   // ── Pagos ──────────────────────────────────────────────────────────────
   paymentMethod: "credit_card",
   depositAmount: "",
@@ -95,12 +95,12 @@ const defaultForm = {
   billingInstruction: "guest_pays_checkout",
   // ── Primary guest (titular) ────────────────────────────────────────────
   title: "",
-  firstName: "Ana",
+  firstName: "",
   middleName: "",
-  surname1: "Martinez",
+  surname1: "",
   surname2: "",
-  email: "ana@example.com",
-  phone: "+34600000000",
+  email: "",
+  phone: "",
   mobilePhone: "",
   languagePreference: "es",
   guestCompany: "",
@@ -427,6 +427,21 @@ export function ReservationCreateScreen() {
   }
 
   async function handleCreate() {
+    // Required-field guard. Defaults are now intentionally blank (no demo guest
+    // pre-filled), so block submitting without a room type (would 500 on the FK)
+    // or without a guest name (would create a nameless reservation).
+    if (!form.roomTypeId) {
+      const message = "Selecciona un tipo de habitación antes de crear la reserva.";
+      setStatus(message);
+      showToast(message, { variant: "error" });
+      return;
+    }
+    if (!form.firstName.trim() || !form.surname1.trim()) {
+      const message = "Indica al menos el nombre y el primer apellido del huésped.";
+      setStatus(message);
+      showToast(message, { variant: "error" });
+      return;
+    }
     setStatus("Creando reserva y abriendo folio...");
     // PII-safe: no incluimos nombre, email ni documento. Solo datos
     // operacionales que ayudan a diagnosticar errores de creación.
@@ -471,10 +486,10 @@ export function ReservationCreateScreen() {
         infants: Number(form.infants) || 0,
         childrenAges: childrenAges.length ? childrenAges : undefined,
         roomsCount: Number(form.roomsCount) || 1,
-        roomTypeId: form.roomTypeId,
+        roomTypeId: form.roomTypeId || undefined,
         assignedRoomId: form.assignedRoomId || undefined,
         // Tarifa
-        ratePlanId: form.ratePlanId,
+        ratePlanId: form.ratePlanId || undefined,
         boardType: form.boardType || undefined,
         totalAmount: Number(form.totalAmount),
         baseAmount: Number(taxesPreview.base),
