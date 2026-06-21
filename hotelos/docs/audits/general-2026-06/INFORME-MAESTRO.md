@@ -114,3 +114,35 @@ No se compite en quien tiene la API mas abierta — eso es paridad. Se compite e
 7. **`demoStore` (3.894 LOC) en el path de auth de produccion** sin gate de entorno: si `userContext` llega null por cualquier ruta, se evaluan permisos contra el super-usuario demo. (#6)
 
 **Conclusion CTO+CPO:** el producto tiene un foso de dominio real y defendible (compliance ES + ERP + IA) y una artesania de fondo que la mayoria de competidores no tiene. Pero **no es apto para un pilot multi-tenant serio hoy** por seguridad de aislamiento, ausencia de HA, integraciones OTA falsas y un gate de calidad que nunca corrio. Invertir el proximo trimestre en cerrar los 7 riesgos de arriba — empezando por los 6 quick wins de la semana 1 — convierte una base "casi" en una plataforma vendible. La inversion va a **seguridad multi-tenant + HA + 1 OTA real + demostrar el moat fiscal**, no a mas features.
+
+---
+
+## Remediación aplicada · 2026-06-21 (sesión autónoma)
+
+Las 11 acciones ejecutables del roadmap se cerraron, cada una verificada (typecheck/tests) y commiteada. Resumen:
+
+| # Audit | Acción | Estado | Cómo verificar |
+|---|---|---|---|
+| #1 | CI a pnpm (`npm ci` abortaba) | ✅ Hecho | `.github/workflows/ci.yml` |
+| #2 / NUEVO-1 | IDOR escritura cross-tenant → 404 | ✅ Hecho | test integración `pnpm test:integration` |
+| NUEVO-2 | Default-deny permisos (`?? []`) | ✅ Hecho | `server.ts` preHandler |
+| #9 (H3) | Rate limit global + anti-spoof | ✅ Hecho | `server.ts` fastifyRateLimit |
+| H2 | Oversell en escritura (advisory lock) | ✅ Hecho | `pms.service.ts` createReservation |
+| #5 | Datos demo fuera del alta de reserva | ✅ Hecho | `ReservationCreateScreen.tsx` |
+| #15 | Tokens de estado + focus ring único | ✅ Hecho | `cocoa-tokens.css` |
+| #10 | Estados carga/error Room Rack + Night Audit | ✅ Hecho | las 2 pantallas |
+| #13 | HA gate schedulers (`RUN_SCHEDULERS`) | ✅ Hecho | `lib/scheduler-leader.ts` |
+| #7 | Guard de drift destructivo en deploy | ✅ Hecho | `deploy/scripts/deploy.sh` |
+| #3 | RBAC fail-closed opt-in (`RBAC_STRICT`) | ⚙️ Listo, OFF por defecto | activar tras mapear GETs |
+| #8 | Suite integración app.inject | ✅ Hecho | `tests/integration/` |
+| #14 | Scroll-to-first-error en reserva | ✅ Hecho (parcial) | barrido 414 inputs pendiente |
+| #11 | OTAs marcadas mock + CLAUDE.md corregido | ✅ Hecho (honestidad) | adapter real = trabajo externo |
+| #12 | Brief decisión DS + drift report-only | ✅ Hecho | decisión = del fundador |
+
+**Pendiente (requiere decisión humana o sistema externo):**
+- **#3 RBAC_STRICT**: mapear las rutas GET al manifiesto, luego `RBAC_STRICT=true`.
+- **#11 OTA real**: 1 adapter Booking/Channex con credenciales + sandbox.
+- **#12 DS**: elegir Aurora vs Cocoa (ver `docs/design-system/DESIGN-SYSTEM-DECISION.md`), luego `ds:drift --enforce`.
+- **#6 migrate deploy**: regenerar baseline de migraciones (con DB para validar).
+- **#14 a11y**: barrido de los ~414 inputs de toda la app.
+- 1 test preexistente rojo (`ai-onboarding` sidebar label) — decisión de IA del sidebar, ajeno a esta auditoría.
