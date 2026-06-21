@@ -2,7 +2,7 @@ import type { GuestIdentityFields } from "@hotelos/shared";
 import type { ReservationStatus } from "@hotelos/shared";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
-import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import {
   demoStore,
   type GuestRecord,
@@ -371,6 +371,43 @@ export async function createReservation(input: {
       });
       if (!rp || rp.propertyId !== input.propertyId) {
         throw new BadRequestError("Rate plan does not belong to this property.");
+      }
+    }
+
+    // CORRECTNESS (audit 2026-06 · H2): enforce availability on WRITE, not just
+    // on the read-side quote. Without this, two concurrent bookings over full
+    // inventory both confirm. We take a transactional advisory lock keyed by
+    // (property, roomType) so the count below cannot race with a parallel
+    // create; the lock releases automatically when the transaction ends and
+    // only serializes bookings for the SAME room type.
+    if (input.roomTypeId) {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.propertyId}), hashtext(${input.roomTypeId}))`;
+
+      const arrival = dateOnly(input.arrivalDate);
+      const departure = dateOnly(input.departureDate);
+      const totalRooms = await tx.room.count({
+        where: {
+          propertyId: input.propertyId,
+          roomTypeId: input.roomTypeId,
+          sellable: true,
+          maintenanceStatus: { not: "blocked" }
+        }
+      });
+      const overlapping = await tx.reservation.count({
+        where: {
+          propertyId: input.propertyId,
+          roomTypeId: input.roomTypeId,
+          status: { in: ["confirmed", "checked_in"] },
+          arrivalDate: { lt: departure },
+          departureDate: { gt: arrival }
+        }
+      });
+      const requested = input.roomsCount ?? 1;
+      if (overlapping + requested > totalRooms) {
+        throw new ConflictError(
+          `No hay disponibilidad para el tipo de habitación seleccionado en esas fechas ` +
+            `(${totalRooms} habitaciones, ${overlapping} ya reservadas).`
+        );
       }
     }
 
