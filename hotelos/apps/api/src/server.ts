@@ -35,6 +35,7 @@ import { buildHealthResponse, OBSERVABILITY_HEADERS, SERVICE_NAMES } from "@hote
 import { createId } from "./lib/ids.js";
 import { demoStore, type UserContext } from "./lib/demo-store.js";
 import { registerAuthContext } from "./lib/auth-context.js";
+import { isSchedulerLeader } from "./lib/scheduler-leader.js";
 import { BadRequestError, statusCodeForError } from "./lib/http-error.js";
 import { isLlmConfigured, llmComplete, llmExtractDocument } from "./lib/llm.js";
 import { recordToolCall } from "./modules/ai-operations/pipeline.service.js";
@@ -6787,11 +6788,17 @@ if (entryFile === argFile) {
   const app = buildApiServer();
   await app.listen({ port, host });
 
+  // HA gate (audit 2026-06 · #13): the five schedulers below must run on EXACTLY
+  // one instance, or >1 replica would duplicate SES/VeriFactu submissions to the
+  // AEAT (sanctionable). Single switch RUN_SCHEDULERS=false disables them on
+  // non-leader replicas; default true keeps single-node behaviour unchanged.
+  const schedulerLeader = isSchedulerLeader(app.log);
+
   // SES Hospedajes scheduler (RD 933/2021 24h deadline): poll "retrying"
   // submissions whose nextRetryAt elapsed and report overdue ones. In-process
   // for reliability without the separate worker; for multi-instance deployments
   // move this to the pg-boss worker. Disable with SES_SCHEDULER_DISABLED=true.
-  if (process.env.SES_SCHEDULER_DISABLED !== "true") {
+  if (schedulerLeader && process.env.SES_SCHEDULER_DISABLED !== "true") {
     const intervalMs = Number(process.env.SES_SCHEDULER_INTERVAL_MS ?? 5 * 60 * 1000);
     const timer = setInterval(() => {
       void runDueSesSubmissions(demoStore.userContext)
@@ -6808,7 +6815,7 @@ if (entryFile === argFile) {
   // an exact historical baseline over time (live pace already reconstructs from
   // booking dates). Runs once at boot, then daily. Disable with
   // PACE_SCHEDULER_DISABLED=true.
-  if (process.env.PACE_SCHEDULER_DISABLED !== "true") {
+  if (schedulerLeader && process.env.PACE_SCHEDULER_DISABLED !== "true") {
     const dayMs = 24 * 60 * 60 * 1000;
     const runCapture = () =>
       void capturePaceSnapshotsForAllProperties()
@@ -6825,7 +6832,7 @@ if (entryFile === argFile) {
   // general las habitaciones cuyo release period haya vencido sin venderse.
   // Idempotente (sólo libera días con releasedRooms = 0 y dentro del threshold).
   // Disable con ALLOTMENT_RELEASE_SCHEDULER_DISABLED=true.
-  if (process.env.ALLOTMENT_RELEASE_SCHEDULER_DISABLED !== "true") {
+  if (schedulerLeader && process.env.ALLOTMENT_RELEASE_SCHEDULER_DISABLED !== "true") {
     const dayMs = 24 * 60 * 60 * 1000;
     const runRelease = async () => {
       try {
@@ -6863,7 +6870,7 @@ if (entryFile === argFile) {
   // their cutOffDate. Mirrors the allotment release pattern but flips group
   // status to "released" instead of touching day-level inventory. Idempotent.
   // Disable with GROUP_CUTOFF_SCHEDULER_DISABLED=true.
-  if (process.env.GROUP_CUTOFF_SCHEDULER_DISABLED !== "true") {
+  if (schedulerLeader && process.env.GROUP_CUTOFF_SCHEDULER_DISABLED !== "true") {
     const dayMs = 24 * 60 * 60 * 1000;
     const runCutoff = async () => {
       try {
@@ -6888,7 +6895,7 @@ if (entryFile === argFile) {
   // Mailbox poller: read connected Gmail/Microsoft mailboxes, AI-extract bookings
   // and enqueue them for human review. Manual connector is excluded (push-only).
   // Disable with MAILBOX_POLL_DISABLED=true.
-  if (process.env.MAILBOX_POLL_DISABLED !== "true") {
+  if (schedulerLeader && process.env.MAILBOX_POLL_DISABLED !== "true") {
     const intervalMs = Number(process.env.MAILBOX_POLL_INTERVAL_MS ?? 5 * 60 * 1000);
     const mailboxTimer = setInterval(() => {
       void pollAllEmailConnections(demoStore.userContext)
