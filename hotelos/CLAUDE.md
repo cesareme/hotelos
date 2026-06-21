@@ -26,6 +26,24 @@ NOTA estructura: el código real vive bajo `/hotelos/` (subdirectorio
 extra heredado del primer commit · pendiente de aplanar). Si escribes
 paths para CI o referencias, recuerda el prefijo.
 
+## Marca y despliegue (decisión 2026-06-21)
+
+- **Nombre de marca elegido: `Anfitorio`** (raíz clásica de *anfitrión* /
+  Amphitryon = el anfitrión; neutro, no nacionalista español). Dominios
+  `anfitorio.com` (✅ libre, RDAP) + `anfitorio.es` (probable libre). El
+  rebrand *HotelOS → Anfitorio* dentro del código/UI está PENDIENTE; por
+  ahora la app sigue diciendo HotelOS por dentro.
+- **Demo en producción · PENDIENTE de DNS**: el plan es servir
+  `https://demo.anfitorio.es` desde el VPS con **Caddy** (HTTPS Let's Encrypt)
+  sirviendo el build de admin-web + reverse-proxy de la API en el mismo origen
+  (VITE_API_URL al mismo dominio → sin problema de `localhost`/CORS). Pasos:
+  registrar dominios en Hostinger → registro DNS `A demo → 72.61.194.216` →
+  montar Caddy + build + abrir 80/443 + probar. Hoy la app corre en modo dev
+  (vite :5173 + API :3000) y solo es accesible por túnel SSH.
+- **VPS** (72.61.194.216): acceso por **clave SSH** ya autorizado para `root`
+  y `cesareme` (alias `hotelos-dev`). App en tmux sesión `dev`. Credenciales
+  demo: `reception@example.com` / `hotelos-demo`.
+
 ## Métricas (a 2026-05-31)
 
 - 389 archivos / ~108k LOC / 202 pantallas en admin-web (React 19 + Vite)
