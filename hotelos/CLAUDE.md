@@ -10,8 +10,10 @@ sesión de Claude tenga contexto completo sin que el usuario lo explique.
 
 César (cesareme en GitHub · yakutatsa@gmail.com). Empresa: HotelOS.
 Trabaja en español. Prefiere tono directo, profesional sin emojis
-excesivos. Mac Pro como máquina principal, MacBook Neo como portátil
-viajero, VPS Hostinger como entorno dev remoto.
+excesivos. Mac Pro como ÚNICA máquina (casa y viaje — el MacBook Neo se
+retiró). VPS Hostinger como entorno dev remoto: el código, la BD y los
+secretos viven en el VPS, así que viajar con el Pro no añade riesgo de
+perder trabajo.
 
 ## Producto
 
@@ -192,7 +194,7 @@ Antes de tomar decisiones de producto, lee:
 - `docs/rate-manager/DESIGN-PROPOSAL.md` — Rate Manager v2 spec
 - `docs/director-dashboard/DESIGN-PROPOSAL.md`
 - `deploy/README-HOSTINGER.md` — playbook deploy producción
-- `deploy/README-REMOTE-DEV.md` — workflow remoto desde travel laptop
+- `deploy/README-REMOTE-DEV.md` — workflow remoto desde el Mac Pro (cliente único)
 - `deploy/CLAUDE-RESUME-CONTEXT.md` — versión larga de este archivo
 
 ## Primera tarea en cada sesión nueva

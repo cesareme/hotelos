@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # HotelOS · bootstrap a fresh Hostinger VPS into a remote DEV environment.
 #
-# Use this on a VPS where you'll edit code via VS Code Remote-SSH from a
-# travel laptop. Different from `bootstrap-vps.sh` (which is production):
+# Use this on a VPS where you'll edit code via VS Code Remote-SSH from the
+# Mac Pro. Different from `bootstrap-vps.sh` (which is production):
 # this script optimises for developer ergonomics, not container hardening.
 #
 # Run once as root on a fresh Ubuntu 24.04:
@@ -155,7 +155,7 @@ set -g status-right "#[fg=cyan]%H:%M %d-%b "
 TMUX
 chown "$DEV_USER:$DEV_USER" "/home/$DEV_USER/.tmux.conf"
 
-log "✅ Dev VPS ready. Next steps from your travel laptop:"
+log "✅ Dev VPS ready. Next steps from your Mac:"
 cat <<NEXT
 
   1. From your laptop, add this VPS to ~/.ssh/config:

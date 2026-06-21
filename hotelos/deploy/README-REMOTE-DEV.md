@@ -1,9 +1,10 @@
 # HotelOS · Remote development on a Hostinger VPS
 
-Your travel laptop becomes a disposable terminal. The code, the database,
-the build cache, and the secrets all live on a €9/month VPS. Lose the
-laptop on the plane and you lose nothing — buy any laptop, install VS
-Code, SSH in, keep coding.
+Your Mac becomes a thin terminal. The code, the database, the build cache,
+and the secrets all live on a €9/month VPS. This matters even when you
+travel with your main MacBook Pro: lose it on the plane and you lose no
+work — any machine with VS Code can SSH in and keep coding. (Single setup:
+the Mac Pro is the only client; there is no second "travel laptop".)
 
 This guide takes you from a fresh Hostinger VPS to a productive
 remote-dev setup in about 30 minutes.
@@ -13,7 +14,7 @@ remote-dev setup in about 30 minutes.
 ## Quick architecture
 
 ```
-   [ travel laptop · MacBook Neo ]              [ Hostinger VPS · Lisbon ]
+   [ MacBook Pro (home + travel) ]              [ Hostinger VPS · Lisbon ]
      • VS Code + Remote-SSH                       • Ubuntu 24.04 LTS
      • ~/.ssh/id_ed25519                          • Node 22 · pnpm
      • ~/.ssh/config alias                        • Postgres 16 · Redis 7
@@ -79,9 +80,9 @@ After it finishes it prints the next-steps for your laptop — that's
 
 ---
 
-## Step 3 · Configure your travel laptop (~/.ssh/config)
+## Step 3 · Configure your Mac (~/.ssh/config)
 
-On the laptop, add this entry (creates the file if it doesn't exist):
+On the Mac Pro, add this entry (creates the file if it doesn't exist):
 
 ```bash
 mkdir -p ~/.ssh

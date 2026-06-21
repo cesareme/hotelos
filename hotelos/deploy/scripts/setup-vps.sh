@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HotelOS · setup-vps.sh · ORQUESTADOR MAESTRO
 #
-# Corre ESTO desde tu laptop (Mac Pro o Neo). Hace el flujo completo de
+# Corre ESTO desde tu Mac (el Mac Pro, máquina única). Hace el flujo completo de
 # configuración de un VPS dev de cero a "Claude Code listo":
 #
 #   1. Verifica conectividad (ping + puerto 22)

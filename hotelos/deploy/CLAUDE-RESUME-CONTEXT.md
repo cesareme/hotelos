@@ -183,9 +183,7 @@ AI: Claude provider en ai-gateway + OCR + AI booking agent + Property
       Postgres 16, Redis 7, gh, tmux, claude CLI)
     - deploy/scripts/deploy.sh (zero-downtime rolling)
     - deploy/README-HOSTINGER.md (60 min playbook)
-    - deploy/README-REMOTE-DEV.md (workflow con VS Code Remote-SSH)
-    - deploy/scripts/macneo-Brewfile (Brewfile para travel laptop)
-    - deploy/scripts/macneo-postinstall.sh (Starship + aliases + git)
+    - deploy/README-REMOTE-DEV.md (workflow con VS Code Remote-SSH desde el Mac Pro)
     - .github/workflows/ci.yml (guardrails + typecheck + Docker smoke)
     - .github/workflows/deploy.yml (auto-deploy on push to main)
 
@@ -239,7 +237,7 @@ Local Mac Pro (donde estamos hoy):
 
 VPS Hostinger:
   - Recién reinstalado con Ubuntu 24.04 LTS
-  - Acceso SSH via key del MacBook Neo (NO password)
+  - Acceso SSH via key del Mac Pro (NO password)
   - Bootstrap pendiente: bash deploy/scripts/bootstrap-dev-vps.sh
   - User: cesareme (con sudo passwordless dev-only)
   - IP: [PEGAR_IP_DEL_VPS_AQUI]
@@ -327,7 +325,7 @@ Si no quieres leer 300+ KB, prioriza estos:
    resumen del estado actual en 5 bullets cortos.
 
 2. Después léete deploy/README-REMOTE-DEV.md para entender cómo
-   estamos trabajando desde el Neo via SSH.
+   estamos trabajando desde el Mac Pro via SSH.
 
 3. Verifica el árbol y dame un "estado del sistema" actual:
      - typecheck admin-web + api
