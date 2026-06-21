@@ -1,3 +1,19 @@
+/**
+ * Channel-manager adapters · HONEST STATUS (audit 2026-06 · #11).
+ *
+ * Every adapter in CHANNEL_MANAGER_ADAPTERS is a MOCK: booking_com_mock,
+ * expedia_mock, google_hotels_mock, direct_booking_engine and manual_channel.
+ * They exercise the unified interface (push availability/rates/restrictions,
+ * pullReservations, webhook handling) with synthetic data — `pullReservations`
+ * returns a hardcoded "Maria Lopez Garcia" — and warn that provider credentials
+ * and OTA-specific payload mapping are NOT configured.
+ *
+ * There is NO live OTA connection yet. A real PMS does not receive Booking/
+ * Expedia reservations through this code. Shipping a real channel requires one
+ * concrete adapter (Booking XML push/pull or a Channex/aggregator integration)
+ * with credentials, payload mapping and a sandbox round-trip. Do NOT describe
+ * these as "real OTA adapters" in docs or demos.
+ */
 export type ChannelConnectionTestResult = {
   providerCode: string;
   status: "ok" | "warning" | "error";

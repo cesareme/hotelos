@@ -70,8 +70,11 @@ paths para CI o referencias, recuerda el prefijo.
 
 ### OTAs e integraciones (packages/integrations/src)
 
-- `channel-manager.ts` — agregador unificado
-- `adapters/` — Booking, Expedia, Airbnb, Hotelbeds, Vrbo
+- `channel-manager.ts` — agregador unificado con interfaz común. OJO: los 5
+  adapters (`booking_com_mock`, `expedia_mock`, `google_hotels_mock`,
+  `direct_booking_engine`, `manual_channel`) son **MOCK** — datos sintéticos,
+  sin credenciales ni mapeo de payload OTA. NO hay conexión OTA real todavía;
+  `pullReservations` devuelve un huésped hardcodeado. (audit 2026-06 · #11)
 - `messaging.ts` — WhatsApp Business + Email + SMS
 - `bank-reconciliation.ts` — CSB-43 + SEPA Norma 19
 - `einvoice.ts` + `ses-hospedajes.ts`
@@ -166,7 +169,17 @@ node scripts/check-discoverability.mjs
    ESG/ESRS reporting completo, AI Operations Agents/Audit/Costs,
    Marketplace público).
 5. Endpoints TODO: Compliance Exports Hub, Modules Manager.
-6. E2E tests son TODO (Playwright no montado).
+6. E2E tests son TODO (Playwright no montado). Sí hay tests de integración
+   reales con `app.inject` (`pnpm test:integration`, audit #8) además de los
+   contract tests readFileSync.
+7. **OTAs son MOCK** (audit #11): el channel manager no recibe reservas reales
+   de Booking/Expedia. Para un PMS de producción hay que implementar 1 adapter
+   real (Booking XML/push-pull o Channex) con credenciales + sandbox round-trip.
+8. **Seguridad multi-tenant (audit 2026-06):** IDOR de escritura y rate limit
+   ya cerrados; el RBAC fail-open de GET sigue por defecto — actívalo con
+   `RBAC_STRICT=true` una vez mapeadas todas las rutas GET al manifiesto.
+   Schedulers: en multi-réplica usar `RUN_SCHEDULERS=false` salvo en una
+   instancia (evita envíos duplicados a AEAT).
 
 ## Docs prioritarios
 
