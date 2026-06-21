@@ -1,5 +1,10 @@
 import type { PermissionKey } from "@hotelos/shared";
 import { assertPermissions } from "@hotelos/shared";
+import { ForbiddenError } from "../lib/http-error.js";
+
+// Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
+// manifest gaps are auditable in the logs. Logged once per path to avoid spam.
+const loggedUnmappedGets = new Set<string>();
 
 export type ApiRoutePermission = {
   method: "GET" | "POST" | "PATCH" | "DELETE";
@@ -1063,6 +1068,20 @@ export function assertRoutePermission(input: { method: string; path: string; use
   const route = findRoutePermission(input.method, input.path);
   if (!route) {
     if (input.method.toUpperCase() === "GET") {
+      // Historically any unmapped GET was treated as public (fail-open). That is
+      // kept as the DEFAULT so read routes not yet in the manifest don't break,
+      // but: (a) we log every gap so it can be mapped, and (b) we fail CLOSED
+      // when RBAC_STRICT=true — flip that on once the manifest covers all GETs.
+      if (!loggedUnmappedGets.has(input.path)) {
+        loggedUnmappedGets.add(input.path);
+        console.warn(
+          `[rbac] unmapped GET ${input.path} — add it to routePermissionManifest ` +
+            `(fail-open by default; set RBAC_STRICT=true to enforce 403)`
+        );
+      }
+      if (process.env.RBAC_STRICT === "true") {
+        throw new ForbiddenError(`No route permission manifest entry for GET ${input.path}`);
+      }
       return;
     }
     throw new Error(`No route permission manifest entry for ${input.method.toUpperCase()} ${input.path}`);

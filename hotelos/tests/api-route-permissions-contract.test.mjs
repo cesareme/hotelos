@@ -17,10 +17,12 @@ function mutatingRoutesFromServer() {
 }
 
 describe("API route permission manifest", () => {
-  it("is enforced by the API pre-handler", () => {
+  it("is enforced by the API pre-handler with default-deny permissions", () => {
     assert.match(server, /assertRoutePermission/);
     assert.match(server, /app\.addHook\("preHandler"/);
-    assert.match(server, /demoStore\.userContext\.permissions/);
+    // Audit 2026-06 · NUEVO-2: no userContext => empty permission set (deny),
+    // never the demoStore super-user.
+    assert.match(server, /userContext\?\.permissions \?\? \[\]/);
   });
 
   it("lists every mutating API route", () => {
@@ -48,9 +50,13 @@ describe("API route permission manifest", () => {
     }
   });
 
-  it("fails closed for unlisted mutating routes", () => {
+  it("fails closed for unlisted mutating routes and supports RBAC_STRICT for GET", () => {
     assert.match(manifest, /No route permission manifest entry/);
     assert.match(manifest, /input\.method\.toUpperCase\(\) === "GET"/);
+    // Audit 2026-06 · #3: unmapped GETs are logged, and RBAC_STRICT=true makes
+    // them fail closed (403) instead of falling through as public.
+    assert.match(manifest, /RBAC_STRICT/);
+    assert.match(manifest, /ForbiddenError/);
   });
 
   it("documents the route permission policy", () => {

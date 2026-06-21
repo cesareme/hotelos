@@ -26,11 +26,15 @@ describe("Deployment readiness contract", () => {
     }
   });
 
-  it("has conventional GitHub Actions CI with Docker image builds", () => {
+  it("has conventional GitHub Actions CI (pnpm) with Docker image builds", () => {
     const workflow = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
-    assert.match(workflow, /npm run validate:env/);
-    assert.match(workflow, /npm run test/);
-    assert.match(workflow, /npm run smoke:demo/);
+    // Audit 2026-06 · #1: CI runs on pnpm (npm ci aborted with
+    // EUNSUPPORTEDPROTOCOL on this workspace:* monorepo).
+    assert.match(workflow, /pnpm\/action-setup/);
+    assert.match(workflow, /pnpm install --frozen-lockfile/);
+    assert.match(workflow, /pnpm validate:env/);
+    assert.match(workflow, /pnpm test/);
+    assert.match(workflow, /pnpm smoke:demo/);
     assert.match(workflow, /Dockerfile\.api/);
     assert.match(workflow, /Dockerfile\.ai-gateway/);
     assert.match(workflow, /Dockerfile\.worker/);
