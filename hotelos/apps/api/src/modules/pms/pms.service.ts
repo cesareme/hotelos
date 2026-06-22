@@ -206,6 +206,23 @@ export async function listRooms(propertyId: string, options?: { limit?: number }
   return rows.map(mapRoom);
 }
 
+/**
+ * SECURITY (audit 2026-06 R2 · NUEVO-1): centralized tenant-scope guard so the
+ * IDOR check isn't re-implemented (or forgotten) per route. Asserts that a
+ * property belongs to the caller's organization before any write that takes a
+ * propertyId from the request. Returns 404 (not 403) so we don't leak the
+ * existence of another tenant's property.
+ */
+export async function assertPropertyInOrg(propertyId: string, organizationId: string): Promise<void> {
+  const property = await prisma.property.findUnique({
+    where: { id: propertyId },
+    select: { organizationId: true }
+  });
+  if (!property || property.organizationId !== organizationId) {
+    throw new NotFoundError(`Property ${propertyId} not found.`);
+  }
+}
+
 export async function createRoom(input: {
   context: UserContext;
   propertyId: string;
@@ -215,6 +232,12 @@ export async function createRoom(input: {
   correlationId: string;
 }): Promise<RoomRecord> {
   requirePermissions(input.context, ["pms.reservation.modify"]);
+  await assertPropertyInOrg(input.propertyId, input.context.organizationId);
+  // roomType must belong to the same property (and therefore tenant).
+  const rt = await prisma.roomType.findUnique({ where: { id: input.roomTypeId }, select: { propertyId: true } });
+  if (!rt || rt.propertyId !== input.propertyId) {
+    throw new BadRequestError("Room type does not belong to this property.");
+  }
 
   const existing = await prisma.room.findUnique({
     where: { propertyId_number: { propertyId: input.propertyId, number: input.number } }
@@ -594,6 +617,9 @@ export async function patchReservation(input: {
   if (!existing) {
     throw new Error("Reservation was not found.");
   }
+  // SECURITY (audit 2026-06 R2 · NUEVO-1): the reservation's property must belong
+  // to the caller's org, or a user in org A could patch org B's reservation by id.
+  await assertPropertyInOrg(existing.propertyId, input.context.organizationId);
   if (["checked_in", "checked_out", "cancelled", "no_show"].includes(existing.status)) {
     throw new Error(`Reservation ${existing.code} cannot be modified while ${existing.status}.`);
   }
@@ -816,6 +842,13 @@ export async function assignRoom(input: {
   const room = await prisma.room.findUnique({ where: { id: input.roomId } });
   if (!reservation || !room) {
     throw new Error("Reservation or room was not found.");
+  }
+  // SECURITY (audit 2026-06 R2 · NUEVO-1): the reservation must be in the caller's
+  // org, and the room must belong to that same property — otherwise you could
+  // assign another tenant's room (or operate on another tenant's reservation) by id.
+  await assertPropertyInOrg(reservation.propertyId, input.context.organizationId);
+  if (room.propertyId !== reservation.propertyId) {
+    throw new BadRequestError("Room does not belong to the reservation's property.");
   }
 
   const validation = await canAssignRoom({

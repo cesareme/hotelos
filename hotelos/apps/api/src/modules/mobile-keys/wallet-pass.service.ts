@@ -18,7 +18,7 @@
 // certificado, sólo cambiemos el método de firma.
 
 import { prisma } from "@hotelos/database";
-import { createHash, randomBytes, createHmac } from "node:crypto";
+import { createHash, randomBytes, createHmac, timingSafeEqual } from "node:crypto";
 import { NotFoundError, BadRequestError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
@@ -185,7 +185,12 @@ export async function issueWalletPass(input: { context: UserContext; reservation
   // the door is HMAC(propertySecret, serial). The phone sends the unlock
   // payload signed with `secret`; the door verifies by recomputing.
   const secret = randomBytes(32).toString("base64url");
-  const qrPayload = `hotelos://unlock?serial=${serialNumber}&exp=${reservation.departureDate.toISOString()}&sig=${createHmac("sha256", secret).update(serialNumber).digest("hex").slice(0, 16)}`;
+  // Static unlock signature carried in the QR. It is PUBLIC by design (travels in
+  // the QR the guest holds), so we persist it to verify each unlock attempt
+  // (audit 2026-06 R2 · H1). Requiring it means the serial ALONE no longer opens
+  // the door — you need the full QR (serial + sig).
+  const unlockSig = createHmac("sha256", secret).update(serialNumber).digest("hex").slice(0, 16);
+  const qrPayload = `hotelos://unlock?serial=${serialNumber}&exp=${reservation.departureDate.toISOString()}&sig=${unlockSig}`;
   const nfcPayload = qrPayload; // Same payload, different transport.
 
   const validFrom = reservation.arrivalDate.toISOString().slice(0, 10);
@@ -205,6 +210,9 @@ export async function issueWalletPass(input: { context: UserContext; reservation
       reservationId: reservation.id,
       serialNumber,
       qrPayload,
+      // Public unlock signature (also in the QR) — used by verifyUnlock to reject
+      // serial-only attempts. audit 2026-06 R2 · H1.
+      unlockSig,
       // We DO NOT store the secret in plain — only its hash for verification.
       secretHash: createHash("sha256").update(secret).digest("hex"),
       validFrom,
@@ -277,12 +285,20 @@ export async function verifyUnlock(input: {
   const row = rows[0];
   if (!row) return { ok: false, reason: "key_not_found" };
   if (row.status !== "active") return { ok: false, reason: "key_revoked" };
-  const validUntil = (row.payload_json as { validUntil: string }).validUntil;
-  if (new Date(validUntil) < new Date()) return { ok: false, reason: "key_expired" };
-  // Verify signature: we only have a hash of secret, so we trust the phone
-  // signed the payload with the right secret. A proper challenge-response
-  // would require sending a nonce, which is a P2 hardening item.
-  void input.signature;
+  const payload = row.payload_json as { validUntil: string; unlockSig?: string };
+  if (new Date(payload.validUntil) < new Date()) return { ok: false, reason: "key_expired" };
+  // audit 2026-06 R2 · H1 — FIX bypass de cerradura: antes se hacia
+  // `void input.signature` y se devolvia ok:true para cualquier serial activo, asi
+  // que el serial SOLO (legible en el QR) abria la puerta. Ahora exigimos tambien
+  // la firma criptografica del QR, comparada en tiempo constante. (Un challenge-
+  // response con nonce es el siguiente endurecimiento; el secret no se guarda.)
+  const expected = payload.unlockSig;
+  if (!expected) return { ok: false, reason: "key_missing_signature" };
+  const got = Buffer.from(input.signature);
+  const exp = Buffer.from(expected);
+  if (got.length !== exp.length || !timingSafeEqual(got, exp)) {
+    return { ok: false, reason: "bad_signature" };
+  }
   return { ok: true };
 }
 
