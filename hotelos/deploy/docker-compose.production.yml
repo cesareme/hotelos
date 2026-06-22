@@ -90,6 +90,12 @@ services:
       SENTRY_DSN: ${SENTRY_DSN:-}
       VERIFACTU_MODE: ${VERIFACTU_MODE:-sandbox}
       SES_HOSPEDAJES_MODE: ${SES_HOSPEDAJES_MODE:-sandbox}
+      # audit 2026-06 R2 · H2: detras de Caddy hay que confiar en X-Forwarded-For
+      # o el rate-limit colapsa todas las peticiones a la IP de Caddy (DoS auto-infligido).
+      TRUST_PROXY: "1"
+      # audit 2026-06 R2 · H1: esta es la UNICA instancia que corre los 5 schedulers
+      # in-process (SES/pace/allotment/cutoff/mailbox). Con >1 replica pon false en las demas.
+      RUN_SCHEDULERS: ${RUN_SCHEDULERS:-true}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
       interval: 15s
@@ -98,6 +104,34 @@ services:
     networks:
       - internal
       - web
+
+  # Worker · jobs pg-boss (verifactu.retry, webhooks.deliver). audit 2026-06 R2 · H1:
+  # sin este servicio, una factura que falla el 1er envio a la AEAT se queda en
+  # 'retrying' para siempre = incumplimiento fiscal silencioso. Corre los jobs de cola,
+  # NO los schedulers in-process (esos van en la api).
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-hotelos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hotelos}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      VERIFACTU_MODE: ${VERIFACTU_MODE:-sandbox}
+      SES_HOSPEDAJES_MODE: ${SES_HOSPEDAJES_MODE:-sandbox}
+      SENTRY_DSN: ${SENTRY_DSN:-}
+      # El worker no corre los schedulers in-process (evita duplicar con la api).
+      RUN_SCHEDULERS: "false"
+    networks:
+      - internal
 
   admin-web:
     build:

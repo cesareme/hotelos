@@ -39,8 +39,17 @@ step "4/7 · Schema-drift guard — block destructive changes (audit 2026-06 · 
 # EXPLICIT pre-flight: compute the DB→schema diff and BLOCK the deploy if any
 # change would DROP a table/column, so prod data is never dropped silently.
 # Override a reviewed, known-safe destructive change with ALLOW_DESTRUCTIVE_MIGRATION=1.
+# audit 2026-06 R2 · #4: fail CLOSED. Capturamos el exit code; si `migrate diff`
+# falla (prisma error, DB inalcanzable), abortamos en vez de asumir "safe" — antes
+# el `|| true` desactivaba el guardian en silencio y aplicaba el db push igual.
+set +e
 DRIFT_SQL=$($COMPOSE run --rm -T api sh -c \
-  'npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel packages/database/prisma/schema.prisma --script' 2>/dev/null || true)
+  'npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel packages/database/prisma/schema.prisma --script' 2>/dev/null)
+DRIFT_RC=$?
+set -e
+if [[ $DRIFT_RC -ne 0 ]]; then
+    fail "Schema-drift check no pudo ejecutarse (prisma migrate diff salió $DRIFT_RC). Abortado por seguridad: revisa la conexión a la BD / el esquema y reintenta."
+fi
 if printf '%s' "$DRIFT_SQL" | grep -qiE 'DROP[[:space:]]+(TABLE|COLUMN)'; then
     echo "Destructive schema changes detected:"
     printf '%s\n' "$DRIFT_SQL" | grep -iE 'DROP[[:space:]]+(TABLE|COLUMN)' || true

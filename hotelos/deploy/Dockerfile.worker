@@ -1,0 +1,62 @@
+# HotelOS Worker · Production image (pg-boss jobs: verifactu.retry, webhooks.deliver)
+#
+# Mirrors deploy/Dockerfile.api exactly (same proven multi-stage build) but
+# compiles and runs @hotelos/worker instead of the API. audit 2026-06 R2 · H1:
+# this service MUST run in production or fiscal retries (VeriFactu) never execute.
+#
+# NOTE (deuda tecnica, audit R2): estos Dockerfiles de deploy usan `npm` sobre un
+# monorepo pnpm (workspace:*). Verifica el build real en el VPS antes de produccion;
+# si npm no resuelve workspace:*, migra los Dockerfiles a pnpm (corepack).
+
+# ---- stage 1: builder ----
+FROM node:22-alpine AS builder
+
+RUN apk add --no-cache libc6-compat python3 make g++
+
+WORKDIR /repo
+
+# Copy ALL workspace manifests first so install caches when only source changes.
+COPY package.json package-lock.json* ./
+COPY apps/worker/package.json ./apps/worker/
+COPY packages/database/package.json ./packages/database/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/compliance/package.json ./packages/compliance/
+COPY packages/integrations/package.json ./packages/integrations/
+COPY packages/ai-tools/package.json ./packages/ai-tools/
+COPY packages/product/package.json ./packages/product/
+COPY packages/ui/package.json ./packages/ui/
+
+RUN npm install --include=dev --ignore-scripts
+
+# Source.
+COPY packages ./packages
+COPY apps/worker ./apps/worker
+
+# Worker uses @hotelos/database → needs the Prisma client.
+RUN npm --workspace @hotelos/database run prisma:generate || \
+    (cd packages/database && npx prisma generate)
+
+# Compile the worker (TypeScript → dist/).
+RUN npm --workspace @hotelos/worker run build
+
+RUN npm prune --workspaces --omit=dev
+
+# ---- stage 2: runtime ----
+FROM node:22-alpine AS runtime
+
+RUN apk add --no-cache libc6-compat tini
+
+RUN addgroup -S app && adduser -S -G app app
+
+WORKDIR /app
+
+COPY --from=builder --chown=app:app /repo/node_modules ./node_modules
+COPY --from=builder --chown=app:app /repo/packages ./packages
+COPY --from=builder --chown=app:app /repo/apps/worker/dist ./apps/worker/dist
+COPY --from=builder --chown=app:app /repo/apps/worker/package.json ./apps/worker/package.json
+
+USER app
+
+ENTRYPOINT ["/sbin/tini", "--"]
+
+CMD ["node", "apps/worker/dist/index.js"]
