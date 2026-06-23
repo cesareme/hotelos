@@ -1061,27 +1061,27 @@ export const routePermissionManifest: ApiRoutePermission[] = [
 
   // audit 2026-06 R2 · #5: PII / finance / compliance GET routes added to manifest
   // so RBAC_STRICT=true can enforce them without logging them as unmapped.
-  // Risk: HIGH for PII data, CRITICAL for fiscal documents.
-  { method: "GET", path: "/guests", permissions: ["pms.guest.read"], riskLevel: "high" },
-  { method: "GET", path: "/guests/:id", permissions: ["pms.guest.read"], riskLevel: "high" },
-  { method: "GET", path: "/guests/:id/timeline", permissions: ["pms.guest.read"], riskLevel: "high" },
-  { method: "GET", path: "/folios/:id/balance", permissions: ["accounting.read"], riskLevel: "high" },
-  { method: "GET", path: "/invoices/:id", permissions: ["invoice.read"], riskLevel: "critical" },
-  { method: "GET", path: "/invoices/:id/rectifications", permissions: ["invoice.read"], riskLevel: "critical" },
-  { method: "GET", path: "/invoices/:id/verifactu", permissions: ["invoice.read"], riskLevel: "critical" },
-  { method: "GET", path: "/compliance/health", permissions: ["compliance.read"], riskLevel: "low" },
-  { method: "GET", path: "/compliance/properties/:propertyId/center", permissions: ["compliance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/tasks", permissions: ["compliance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/documents", permissions: ["compliance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/alerts", permissions: ["compliance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/inspection-folder", permissions: ["compliance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/properties/:propertyId/assistant", permissions: ["compliance.read"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/spain/properties/:propertyId/guest-register/settings", permissions: ["compliance.ses.submit"], riskLevel: "high" },
+  // Permissions use existing PermissionKey values (no new perms added here).
+  { method: "GET", path: "/guests", permissions: ["pms.checkin.execute"], riskLevel: "high" },
+  { method: "GET", path: "/guests/:id", permissions: ["pms.checkin.execute"], riskLevel: "high" },
+  { method: "GET", path: "/guests/:id/timeline", permissions: ["pms.checkin.execute"], riskLevel: "high" },
+  { method: "GET", path: "/folios/:id/balance", permissions: ["invoice.issue"], riskLevel: "high" },
+  { method: "GET", path: "/invoices/:id", permissions: ["invoice.issue"], riskLevel: "critical" },
+  { method: "GET", path: "/invoices/:id/rectifications", permissions: ["invoice.cancel"], riskLevel: "critical" },
+  { method: "GET", path: "/invoices/:id/verifactu", permissions: ["invoice.issue"], riskLevel: "critical" },
+  { method: "GET", path: "/compliance/health", permissions: ["compliance.configure"], riskLevel: "low" },
+  { method: "GET", path: "/compliance/properties/:propertyId/center", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/tasks", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/documents", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/alerts", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/inspection-folder", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/properties/:propertyId/assistant", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "GET", path: "/compliance/spain/properties/:propertyId/guest-register/settings", permissions: ["compliance.ses.configure"], riskLevel: "high" },
   { method: "GET", path: "/compliance/spain/reservations/:reservationId/guest-register", permissions: ["compliance.ses.submit"], riskLevel: "high" },
   { method: "GET", path: "/compliance/authority/properties/:propertyId/inbox", permissions: ["compliance.ses.submit"], riskLevel: "high" },
   { method: "GET", path: "/compliance/authority/properties/:propertyId/submissions", permissions: ["compliance.ses.submit"], riskLevel: "high" },
   { method: "GET", path: "/compliance/authority/submissions/:submissionId", permissions: ["compliance.ses.submit"], riskLevel: "high" },
-  { method: "GET", path: "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/download", permissions: ["compliance.ses.submit"], riskLevel: "critical" }
+  { method: "GET", path: "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/download", permissions: ["compliance.ses.export"], riskLevel: "critical" }
 ];
 
 export function findRoutePermission(method: string, path: string): ApiRoutePermission | undefined {
