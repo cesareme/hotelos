@@ -83,7 +83,9 @@ export function CocoaSwitch({
       : "color-mix(in srgb, var(--cocoa-separator) 50%, transparent)",
     transition: `background-color var(--cocoa-duration-base) var(--cocoa-ease-out)`,
     opacity: disabled ? 0.5 : 1,
-    outline: "none",
+    // audit 2026-06 R2 · #11 a11y: outline:none with no :focus-visible replacement
+    // was a WCAG 2.4.7 fail. We consume the shared focus-ring token via the class
+    // (cocoa-base.css sets box-shadow on :focus-visible) — no inline override needed.
     WebkitTapHighlightColor: "transparent"
   };
 
@@ -129,6 +131,7 @@ export function CocoaSwitch({
       disabled={disabled}
       onClick={handleToggle}
       onKeyDown={handleKeyDown}
+      className="cocoa-focus-ring"
       style={trackStyle}
     >
       <span style={thumbStyle} aria-hidden="true" />

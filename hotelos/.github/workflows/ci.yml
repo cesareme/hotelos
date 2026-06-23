@@ -74,6 +74,22 @@ jobs:
           SENTRY_DSN: https://example@sentry.example.com/0
         run: pnpm validate:env
 
+  design-system-drift:
+    name: Design-system drift report (report-only)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+      - run: pnpm install --frozen-lockfile
+      - name: Design system drift report (audit 2026-06 R2 · #10)
+        # Report-only until the Aurora/Cocoa decision is finalised. Once a
+        # canonical DS is declared, change to:  pnpm ds:drift --enforce
+        run: pnpm ds:drift || true
+
   contract-tests:
     name: Contract tests
     runs-on: ubuntu-latest

@@ -145,7 +145,11 @@ export const PII_FIELDS: Record<string, readonly string[]> = {
   PaymentProviderConnection: ["credentialsSecretRef"],
   // Stored card tokens (redsys/stripe/adyen) — the tokenRef can be replayed
   // against the PSP to charge the cardholder, so we encrypt it at rest.
-  PaymentToken: ["tokenRef"]
+  PaymentToken: ["tokenRef"],
+  // audit 2026-06 R2 · #9: webhook signing secret. A leaked DB would let an
+  // attacker forge valid HMAC-SHA256 webhook signatures to any endpoint registered
+  // on this platform. Encrypt at rest like other credential references.
+  WebhookSubscription: ["secretRef"]
 };
 
 // Test-only helper: reset the one-time warning latch so unit tests can

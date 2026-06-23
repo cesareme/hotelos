@@ -60,11 +60,13 @@ export function registerAuthContext(app: FastifyInstance): void {
         throw Object.assign(new Error("Invalid or expired token."), { statusCode: 401 });
       }
     }
-    // SECURITY: in production, do NOT fall back to the demoStore super-user for
-    // unauthenticated, non-public requests — require a valid token. In dev we
-    // keep the demo fallback so the local demo (whose admin-web services do not
-    // all send a bearer token) keeps working.
-    if (process.env.NODE_ENV === "production" && !isPublic(request.url)) {
+    // SECURITY (audit R2 · #7): gate on a positive flag instead of NODE_ENV.
+    // If NODE_ENV is misconfigured the whole API was falling back to the demoStore
+    // super-user (82 permissions). Now the demo fallback only activates when
+    // HOTELOS_ALLOW_DEMO_AUTH=true is explicitly set — an intentional, revocable
+    // choice — regardless of NODE_ENV. Production compose never sets this flag.
+    const allowDemoFallback = process.env.HOTELOS_ALLOW_DEMO_AUTH === "true";
+    if (!allowDemoFallback && !isPublic(request.url)) {
       throw Object.assign(new Error("Authentication required."), { statusCode: 401 });
     }
     request.userContext = demoStore.userContext;

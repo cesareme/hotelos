@@ -16,7 +16,10 @@ const containerStyle: CSSProperties = {
   width: "100%"
 };
 
-const inputStyle: CSSProperties = {
+// audit 2026-06 R2 · #11 a11y: outline:none with no focus-visible replacement
+// was WCAG 2.4.7 fail. inputStyle no longer suppresses outline; the container
+// picks up :focus-within and applies the shared focus-ring token instead.
+const inputStyleBase: CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
   borderRadius: "var(--cocoa-radius-full)",
@@ -66,6 +69,11 @@ export function CocoaSearchInput(props: CocoaSearchInputProps) {
   const { value, onChange, placeholder, debounceMs, onClear, autoFocus } = props;
   const inputRef = useRef<HTMLInputElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [focused, setFocused] = useState(false);
+  const inputStyle: CSSProperties = {
+    ...inputStyleBase,
+    boxShadow: focused ? "0 0 0 3px var(--cocoa-focus-ring)" : undefined
+  };
   // Local mirror of the input text so typing feels instant while we debounce the
   // call up to the parent. Sync from `value` only when it changes externally.
   const [local, setLocal] = useState<string>(value);
@@ -141,6 +149,8 @@ export function CocoaSearchInput(props: CocoaSearchInputProps) {
         placeholder={placeholder}
         style={inputStyle}
         onChange={(e) => handleChange(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         autoFocus={autoFocus}
       />
       {local !== "" ? (

@@ -266,11 +266,22 @@ async function stepPostRoomChargesForInHouse(input: {
     );
     const dailyRate = Number(reservation.totalAmount) / nights;
     if (dailyRate <= 0) continue;
+
+    // audit 2026-06 R2 · #6: idempotency guard. A re-run of a failed audit
+    // previously posted duplicate room charges. Skip if today's charge already
+    // exists on this folio (matched by description prefix + today ISO date).
+    const today = new Date().toISOString().slice(0, 10);
+    const chargeKey = `Auto room charge (night audit) for ${reservation.code} [${today}]`;
+    const existing = await prisma.folioLine.findFirst({
+      where: { folioId: folio.id, type: "room", description: chargeKey }
+    });
+    if (existing) continue;
+
     await prisma.folioLine.create({
       data: {
         folioId: folio.id,
         type: "room",
-        description: `Auto room charge (night audit) for ${reservation.code}`,
+        description: chargeKey,
         quantity: 1,
         unitPrice: dailyRate,
         total: dailyRate,
