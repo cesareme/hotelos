@@ -27,17 +27,19 @@
   --cocoa-background-sidebar:   #E8E8E8;
   --cocoa-background-toolbar:   rgb(246 246 246 / 0.72);
   --cocoa-background-control:   #FFFFFF;
-  --cocoa-background-selection: #0064E1;
+  --cocoa-background-selection: var(--accent);
 
   /* Separators */
   --cocoa-separator:            rgb(0 0 0 / 0.10);
   --cocoa-separator-opaque:     #C6C6C8;
 
-  /* Accent — controlAccentColor (Apple Blue / Sequoia) */
-  --cocoa-accent:               #0064E1;
-  --cocoa-accent-hover:         #0055C4;
-  --cocoa-accent-pressed:       #0047A6;
-  --cocoa-accent-contrast:      #FFFFFF;
+  /* Accent — Anfitorio (Fase 2): TOKEN ÚNICO. Cocoa deriva del --accent de Aurora
+     (Esmeralda #0d8a5f) en vez de su antiguo azul Apple, así toda la app usa un
+     solo acento. --accent-ink mantiene el contraste correcto por tema. */
+  --cocoa-accent:               var(--accent);
+  --cocoa-accent-hover:         var(--accent-strong);
+  --cocoa-accent-pressed:       var(--accent-strong);
+  --cocoa-accent-contrast:      var(--accent-ink);
 
   /* Status — Sequoia system tints */
   --cocoa-success:              #28A745;
@@ -249,17 +251,17 @@
   --cocoa-background-sidebar:   #2A2A2A;
   --cocoa-background-toolbar:   rgb(40 40 40 / 0.72);
   --cocoa-background-control:   #3A3A3C;
-  --cocoa-background-selection: #0A84FF;
+  --cocoa-background-selection: var(--accent);
 
   /* Separators */
   --cocoa-separator:            rgb(255 255 255 / 0.10);
   --cocoa-separator-opaque:     #38383A;
 
-  /* Accent */
-  --cocoa-accent:               #0A84FF;
-  --cocoa-accent-hover:         #2E95FF;
-  --cocoa-accent-pressed:       #006FE0;
-  --cocoa-accent-contrast:      #FFFFFF;
+  /* Accent — Anfitorio (Fase 2): deriva del --accent de Aurora (dark: #2bb37f). */
+  --cocoa-accent:               var(--accent);
+  --cocoa-accent-hover:         var(--accent-strong);
+  --cocoa-accent-pressed:       var(--accent-strong);
+  --cocoa-accent-contrast:      var(--accent-ink);
 
   /* Status — dark variants */
   --cocoa-success:              #30D158;
@@ -319,15 +321,16 @@
     --cocoa-background-sidebar:   #2A2A2A;
     --cocoa-background-toolbar:   rgb(40 40 40 / 0.72);
     --cocoa-background-control:   #3A3A3C;
-    --cocoa-background-selection: #0A84FF;
+    --cocoa-background-selection: var(--accent);
 
     --cocoa-separator:            rgb(255 255 255 / 0.10);
     --cocoa-separator-opaque:     #38383A;
 
-    --cocoa-accent:               #0A84FF;
-    --cocoa-accent-hover:         #2E95FF;
-    --cocoa-accent-pressed:       #006FE0;
-    --cocoa-accent-contrast:      #FFFFFF;
+    /* Accent — Anfitorio (Fase 2): deriva del --accent de Aurora (prefers-dark). */
+    --cocoa-accent:               var(--accent);
+    --cocoa-accent-hover:         var(--accent-strong);
+    --cocoa-accent-pressed:       var(--accent-strong);
+    --cocoa-accent-contrast:      var(--accent-ink);
 
     --cocoa-success:              #30D158;
     --cocoa-warning:              #FF9F0A;
