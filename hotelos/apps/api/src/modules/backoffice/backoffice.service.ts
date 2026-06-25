@@ -5,22 +5,7 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { prisma } from "@hotelos/database";
-
-// Fase 0 (Opción B): hybrid-read helper. Merges the in-memory seed (demoStore)
-// with rows persisted in Prisma, deduped by id (a dual-written record lives in
-// both with the same id). Normalizes Prisma Date fields to ISO strings so the
-// merged shape matches the in-memory record the tree builder expects.
-function mergeById<T extends { id: string }>(inMemory: T[], persisted: Array<Record<string, unknown>>): T[] {
-  const seen = new Set(inMemory.map((x) => x.id));
-  const extra = persisted
-    .filter((p) => !seen.has(p.id as string))
-    .map((p) => ({
-      ...p,
-      createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : p.createdAt,
-      updatedAt: p.updatedAt instanceof Date ? p.updatedAt.toISOString() : p.updatedAt
-    })) as unknown as T[];
-  return [...inMemory, ...extra];
-}
+import type { Prisma } from "@hotelos/database";
 import {
   demoStore,
   type AccountingSettingsRecord,
@@ -51,6 +36,63 @@ import {
   type UserRecord,
   type UserContext
 } from "../../lib/demo-store.js";
+
+// Fase 0 (Opción A): mapper Prisma Room row -> RoomRecord. Replica el mapRoom de
+// pms.service.ts (no se importa para evitar acoplar módulos / ciclos). Normaliza
+// nullables a undefined y Decimal squareMeters a number, igual que el mirror del PMS.
+function mapRoomRow(row: {
+  id: string;
+  propertyId: string;
+  roomTypeId: string;
+  buildingId: string | null;
+  floorId: string | null;
+  zoneId: string | null;
+  number: string;
+  floor: string | null;
+  roomCode: string | null;
+  displayName: string | null;
+  maxOccupancy: number | null;
+  standardOccupancy: number | null;
+  bedConfigurationJson: unknown;
+  featuresJson: unknown;
+  accessibilityJson: unknown;
+  viewType: string | null;
+  orientation: string | null;
+  squareMeters: { toString(): string } | number | null;
+  status: RoomRecord["status"];
+  housekeepingStatus: string | null;
+  maintenanceStatus: string | null;
+  sellable: boolean;
+  active: boolean;
+  sortOrder: number;
+}): RoomRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    roomTypeId: row.roomTypeId,
+    buildingId: row.buildingId ?? undefined,
+    floorId: row.floorId ?? undefined,
+    zoneId: row.zoneId ?? undefined,
+    number: row.number,
+    floor: row.floor ?? "",
+    roomCode: row.roomCode ?? undefined,
+    displayName: row.displayName ?? undefined,
+    maxOccupancy: row.maxOccupancy ?? undefined,
+    standardOccupancy: row.standardOccupancy ?? undefined,
+    bedConfigurationJson: (row.bedConfigurationJson as Record<string, unknown> | null) ?? undefined,
+    featuresJson: (row.featuresJson as Record<string, unknown> | null) ?? undefined,
+    accessibilityJson: (row.accessibilityJson as Record<string, unknown> | null) ?? undefined,
+    viewType: row.viewType ?? undefined,
+    orientation: row.orientation ?? undefined,
+    squareMeters: row.squareMeters === null ? undefined : Number(row.squareMeters),
+    status: row.status,
+    housekeepingStatus: (row.housekeepingStatus ?? "clean") as RoomRecord["housekeepingStatus"],
+    maintenanceStatus: (row.maintenanceStatus ?? "ok") as RoomRecord["maintenanceStatus"],
+    sellable: row.sellable,
+    active: row.active,
+    sortOrder: row.sortOrder
+  };
+}
 
 type BackOfficeMutationInput = {
   context: UserContext;
@@ -888,7 +930,7 @@ function validatePropertySetupPayload(definition: PropertySetupFormDefinition, p
     .map((field) => `${field.label} is required.`);
 }
 
-function formExistingData(propertyId: string, formCode: string) {
+async function formExistingData(propertyId: string, formCode: string) {
   switch (formCode) {
     case "property_profile":
       return {
@@ -896,18 +938,19 @@ function formExistingData(propertyId: string, formCode: string) {
         organization: demoStore.organization,
         compliance: getComplianceSettings(propertyId)
       };
+    // Fase 0 (Opción A): estructura de propiedad servida desde Prisma (fuente de verdad).
     case "building":
-      return demoStore.buildings.filter((building) => building.propertyId === propertyId);
+      return prisma.building.findMany({ where: { propertyId } });
     case "floor":
-      return demoStore.floors.filter((floor) => floor.propertyId === propertyId);
+      return prisma.floor.findMany({ where: { propertyId } });
     case "zone":
-      return demoStore.propertyZones.filter((zone) => zone.propertyId === propertyId);
+      return prisma.propertyZone.findMany({ where: { propertyId } });
     case "room_type":
       return listBackOfficeRoomTypes(propertyId);
     case "room":
-      return demoStore.rooms.filter((room) => room.propertyId === propertyId);
+      return (await prisma.room.findMany({ where: { propertyId } })).map(mapRoomRow);
     case "space_resource":
-      return demoStore.propertySpaces.filter((space) => space.propertyId === propertyId);
+      return prisma.propertySpace.findMany({ where: { propertyId } });
     case "department":
       return listDepartments(propertyId);
     case "housekeeping_setup":
@@ -1020,7 +1063,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       return { targetEntityType: "room_type", targetEntityId: roomType.id, result: roomType };
     }
     case "room": {
-      const created = bulkCreateRooms({
+      const created = await bulkCreateRooms({
         ...input,
         roomTypeId: payloadText(payload, "roomTypeId", demoStore.roomTypes.find((roomType) => roomType.propertyId === input.propertyId)?.id),
         roomNumbers: [payloadText(payload, "roomNumber")],
@@ -1030,19 +1073,28 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
         sellable: payloadBoolean(payload, "sellable", true),
         active: payloadBoolean(payload, "active", true)
       });
-      const room = created.rooms[0];
-      Object.assign(room, {
-        displayName: payloadText(payload, "displayName", room.displayName ?? `Room ${room.number}`),
-        maxOccupancy: payloadNumber(payload, "maxOccupancy", room.maxOccupancy),
-        standardOccupancy: payloadNumber(payload, "standardOccupancy", room.standardOccupancy),
-        bedConfigurationJson: { beds: payload.beds ?? {} },
-        featuresJson: { features: payloadArray(payload, "features") },
-        viewType: payloadText(payload, "viewType", room.viewType ?? ""),
-        orientation: payloadText(payload, "orientation", room.orientation ?? ""),
-        squareMeters: payloadNumber(payload, "squareMeters", room.squareMeters),
-        accessibilityJson: { accessibility: payloadArray(payload, "accessibility") },
-        status: payloadText(payload, "status", room.status) as RoomRecord["status"]
+      const baseRoom = created.rooms[0];
+      // Fase 0 (Opción A): los campos de detalle del formulario se persisten a Prisma
+      // (antes solo se hacía Object.assign en memoria y se perdían al reiniciar).
+      const updatedRow = await prisma.room.update({
+        where: { id: baseRoom.id },
+        data: {
+          displayName: payloadText(payload, "displayName", baseRoom.displayName ?? `Room ${baseRoom.number}`),
+          maxOccupancy: payloadNumber(payload, "maxOccupancy", baseRoom.maxOccupancy),
+          standardOccupancy: payloadNumber(payload, "standardOccupancy", baseRoom.standardOccupancy),
+          bedConfigurationJson: { beds: payload.beds ?? {} },
+          featuresJson: { features: payloadArray(payload, "features") },
+          viewType: payloadText(payload, "viewType", baseRoom.viewType ?? ""),
+          orientation: payloadText(payload, "orientation", baseRoom.orientation ?? ""),
+          squareMeters: payloadNumber(payload, "squareMeters", baseRoom.squareMeters) ?? null,
+          accessibilityJson: { accessibility: payloadArray(payload, "accessibility") },
+          status: payloadText(payload, "status", baseRoom.status) as RoomRecord["status"]
+        }
       });
+      const room = mapRoomRow(updatedRow);
+      const idx = demoStore.rooms.findIndex((r) => r.id === room.id);
+      if (idx >= 0) demoStore.rooms[idx] = room;
+      else demoStore.rooms.push(room);
       return { targetEntityType: "room", targetEntityId: room.id, result: room };
     }
     case "space_resource": {
@@ -1328,13 +1380,13 @@ export function saveManualSetupOption(input: BackOfficeMutationInput & {
   };
 }
 
-export function getPropertySetupForm(propertyId: string, formCode: string) {
+export async function getPropertySetupForm(propertyId: string, formCode: string) {
   requireProperty(propertyId);
   const definition = propertySetupFormDefinition(formCode);
   return {
     ...definition,
     propertyId,
-    existingData: formExistingData(propertyId, formCode),
+    existingData: await formExistingData(propertyId, formCode),
     categoryOptions: definition.fields
       .filter((field) => field.categoryCode)
       .map((field) => ({
@@ -1878,7 +1930,7 @@ export function getReadiness(propertyId: string) {
   };
 }
 
-export function recalculateReadiness(input: BackOfficeMutationInput) {
+export async function recalculateReadiness(input: BackOfficeMutationInput) {
   requirePermissions(input.context, ["property.configure"]);
   const property = requireProperty(input.propertyId);
   const modules = enabledModuleCodes(input.propertyId);
@@ -1886,6 +1938,8 @@ export function recalculateReadiness(input: BackOfficeMutationInput) {
   const activeSellableRooms = demoStore.rooms.filter(
     (room) => room.propertyId === input.propertyId && room.active !== false && room.sellable && room.roomTypeId
   );
+  // Fase 0 (Opción A): el check default_building_exists lee de Prisma (fuente de verdad).
+  const hasActiveBuilding = (await prisma.building.count({ where: { propertyId: input.propertyId, active: true } })) > 0;
   const complianceSettings = demoStore.propertyComplianceSettings.find((settings) => settings.propertyId === input.propertyId);
   const hasAdminUser = demoStore.users.some((user) => user.organizationId === property.organizationId && user.status === "active");
   const hasInvoiceSequence = demoStore.invoiceSequences.some((sequence) => sequence.propertyId === input.propertyId && sequence.active);
@@ -1903,7 +1957,7 @@ export function recalculateReadiness(input: BackOfficeMutationInput) {
     },
     {
       checkCode: "default_building_exists",
-      status: demoStore.buildings.some((building) => building.propertyId === input.propertyId && building.active) ? "pass" : "fail",
+      status: hasActiveBuilding ? "pass" : "fail",
       severity: "blocking",
       message: "At least one building or default building is required."
     },
@@ -1970,22 +2024,29 @@ export function approveGoLive(input: BackOfficeMutationInput) {
 
 export async function getPropertyMap(propertyId: string) {
   requireProperty(propertyId);
-  // Fase 0 (Opción B): hybrid-read. Merge the in-memory seed (demoStore) with rows
-  // persisted in Prisma so BOTH seeded demo data AND user-created data (which now
-  // survives restart, thanks to the dual-write in createBuilding/Floor/Zone/Space)
-  // are shown. Rooms/assets/mapPositions stay demoStore-only for now (Opción A
-  // migrará habitaciones; ver docs/strategy/.../PERSIST-BACKOFFICE.md).
-  const [pBuildings, pFloors, pZones, pSpaces] = await Promise.all([
+  // Fase 0 (Opción A): Prisma-only para la estructura de propiedad. buildings/floors/
+  // zones/spaces y rooms se sirven directamente desde Prisma (sembrados en seed.ts y
+  // persistidos por createX/bulkCreateRooms), de modo que el mapa sobrevive al reinicio
+  // sin depender del seed in-memory. assets/mapPositions siguen en demoStore (fuera
+  // de alcance). Ver docs/strategy/.../PERSIST-BACKOFFICE.md.
+  const [pBuildings, pFloors, pZones, pSpaces, pRooms] = await Promise.all([
     prisma.building.findMany({ where: { propertyId } }),
     prisma.floor.findMany({ where: { propertyId } }),
     prisma.propertyZone.findMany({ where: { propertyId } }),
-    prisma.propertySpace.findMany({ where: { propertyId } })
+    prisma.propertySpace.findMany({ where: { propertyId } }),
+    prisma.room.findMany({ where: { propertyId } })
   ]);
-  const buildings = mergeById(demoStore.buildings.filter((building) => building.propertyId === propertyId), pBuildings as Array<Record<string, unknown>>);
-  const floors = mergeById(demoStore.floors.filter((floor) => floor.propertyId === propertyId), pFloors as Array<Record<string, unknown>>);
-  const zones = mergeById(demoStore.propertyZones.filter((zone) => zone.propertyId === propertyId), pZones as Array<Record<string, unknown>>);
-  const spaces = mergeById(demoStore.propertySpaces.filter((space) => space.propertyId === propertyId), pSpaces as Array<Record<string, unknown>>);
-  const rooms = demoStore.rooms.filter((room) => room.propertyId === propertyId);
+  const normalizeDates = <T extends Record<string, unknown>>(rows: Array<Record<string, unknown>>): T[] =>
+    rows.map((row) => ({
+      ...row,
+      createdAt: row.createdAt instanceof Date ? row.createdAt.toISOString() : row.createdAt,
+      updatedAt: row.updatedAt instanceof Date ? row.updatedAt.toISOString() : row.updatedAt
+    })) as unknown as T[];
+  const buildings = normalizeDates<BuildingRecord>(pBuildings as Array<Record<string, unknown>>);
+  const floors = normalizeDates<FloorRecord>(pFloors as Array<Record<string, unknown>>);
+  const zones = normalizeDates<PropertyZoneRecord>(pZones as Array<Record<string, unknown>>);
+  const spaces = normalizeDates<PropertySpaceRecord>(pSpaces as Array<Record<string, unknown>>);
+  const rooms = pRooms.map(mapRoomRow);
   return {
     property: demoStore.properties.find((property) => property.id === propertyId),
     buildings,
@@ -2029,11 +2090,11 @@ export async function createBuilding(input: BackOfficeMutationInput & {
     createdAt: timestamp,
     updatedAt: timestamp
   };
-  // Fase 0 (Opción B): dual-write to Prisma (survives restart) + demoStore (readers).
+  // Fase 0 (Opción A): Prisma-only. getPropertyMap y demás lectores leen de Prisma,
+  // así que ya no se mantiene la copia en demoStore.buildings.
   await prisma.building.create({
     data: { id: record.id, propertyId: record.propertyId, name: record.name, code: record.code ?? null, description: record.description ?? null, sortOrder: record.sortOrder, active: record.active }
   });
-  demoStore.buildings.push(record);
   audit({ ...input, action: "BuildingCreated", entityType: "building", entityId: record.id, afterJson: record });
   return record;
 }
@@ -2055,11 +2116,10 @@ export async function createFloor(input: BackOfficeMutationInput & {
     createdAt: timestamp,
     updatedAt: timestamp
   };
-  // Fase 0 (Opción B): dual-write to Prisma + demoStore.
+  // Fase 0 (Opción A): Prisma-only.
   await prisma.floor.create({
     data: { id: record.id, propertyId: record.propertyId, buildingId: record.buildingId ?? null, name: record.name, floorNumber: record.floorNumber ?? null, code: record.code ?? null, sortOrder: record.sortOrder, active: record.active }
   });
-  demoStore.floors.push(record);
   audit({ ...input, action: "FloorCreated", entityType: "floor", entityId: record.id, afterJson: record });
   return record;
 }
@@ -2083,11 +2143,10 @@ export async function createZone(input: BackOfficeMutationInput & {
     createdAt: timestamp,
     updatedAt: timestamp
   };
-  // Fase 0 (Opción B): dual-write to Prisma + demoStore.
+  // Fase 0 (Opción A): Prisma-only.
   await prisma.propertyZone.create({
     data: { id: record.id, propertyId: record.propertyId, buildingId: record.buildingId ?? null, floorId: record.floorId ?? null, name: record.name, code: record.code ?? null, zoneType: record.zoneType, description: record.description ?? null, sortOrder: record.sortOrder, active: record.active }
   });
-  demoStore.propertyZones.push(record);
   audit({ ...input, action: "ZoneCreated", entityType: "property_zone", entityId: record.id, afterJson: record });
   return record;
 }
@@ -2111,11 +2170,10 @@ export async function createSpace(input: BackOfficeMutationInput & {
     createdAt: timestamp,
     updatedAt: timestamp
   };
-  // Fase 0 (Opción B): dual-write to Prisma + demoStore.
+  // Fase 0 (Opción A): Prisma-only.
   await prisma.propertySpace.create({
     data: { id: record.id, propertyId: record.propertyId, buildingId: record.buildingId ?? null, floorId: record.floorId ?? null, zoneId: record.zoneId ?? null, name: record.name, code: record.code ?? null, spaceType: record.spaceType, description: record.description ?? null, active: record.active }
   });
-  demoStore.propertySpaces.push(record);
   audit({ ...input, action: "SpaceCreated", entityType: "property_space", entityId: record.id, afterJson: record });
   return record;
 }
@@ -2172,7 +2230,7 @@ function roomNumberFromRange(start: string, offset: number): string {
   return String(startNumber + offset);
 }
 
-export function bulkCreateRooms(input: BackOfficeMutationInput & {
+export async function bulkCreateRooms(input: BackOfficeMutationInput & {
   roomTypeId: string;
   roomRangeStart?: string;
   roomRangeEnd?: string;
@@ -2188,6 +2246,12 @@ export function bulkCreateRooms(input: BackOfficeMutationInput & {
   if (sellable && !input.roomTypeId) {
     throw new Error("Sellable rooms must have a room type.");
   }
+  // Fase 0 (Opción A): Room.roomTypeId es NOT NULL en Prisma. Las rooms no vendibles
+  // del demo igualmente traen roomTypeId; si faltara, fallaría el create. No lo
+  // inventamos: lo validamos explícito para dar un error claro en vez de un 500 de Prisma.
+  if (!input.roomTypeId) {
+    throw new Error("A room type is required to create rooms.");
+  }
 
   const roomNumbers =
     input.roomNumbers ??
@@ -2201,68 +2265,106 @@ export function bulkCreateRooms(input: BackOfficeMutationInput & {
     throw new Error("At least one room number is required.");
   }
 
-  const duplicates = roomNumbers.filter((roomNumber) =>
-    demoStore.rooms.some((room) => room.propertyId === input.propertyId && room.number === roomNumber)
-  );
+  // Unicidad por (propertyId, number) contra Prisma (fuente de verdad).
+  const existingRows = await prisma.room.findMany({
+    where: { propertyId: input.propertyId, number: { in: roomNumbers } },
+    select: { number: true }
+  });
+  const duplicates = existingRows.map((row) => row.number);
   if (duplicates.length > 0) {
     throw new Error(`Room number must be unique per property: ${duplicates.join(", ")}`);
   }
 
-  const created = roomNumbers.map((number) => {
-    const record: RoomRecord = {
-      id: createId("room"),
-      propertyId: input.propertyId,
-      roomTypeId: input.roomTypeId,
-      buildingId: input.buildingId,
-      floorId: input.floorId,
-      zoneId: input.zoneId,
-      number,
-      floor: demoStore.floors.find((floor) => floor.id === input.floorId)?.name ?? "",
-      roomCode: `RM${number}`,
-      displayName: `Room ${number}`,
-      status: "clean",
-      housekeepingStatus: "clean",
-      maintenanceStatus: "ok",
-      sellable,
-      active: input.active ?? true,
-      sortOrder: Number(number) || demoStore.rooms.length + 1
-    };
-    demoStore.rooms.push(record);
-    return record;
-  });
+  const floorName = input.floorId
+    ? (await prisma.floor.findUnique({ where: { id: input.floorId }, select: { name: true } }))?.name ?? ""
+    : "";
+
+  const created: RoomRecord[] = [];
+  for (const number of roomNumbers) {
+    // Prisma genera el id (cuid). Se escribe a Prisma y se espeja en demoStore.rooms
+    // porque housekeeping/maintenance/assets/pms leen ese mirror en memoria de forma
+    // síncrona (mismo patrón que pms.service.ts createRoom -> mirrorRoom).
+    const row = await prisma.room.create({
+      data: {
+        propertyId: input.propertyId,
+        roomTypeId: input.roomTypeId,
+        buildingId: input.buildingId ?? null,
+        floorId: input.floorId ?? null,
+        zoneId: input.zoneId ?? null,
+        number,
+        floor: floorName,
+        roomCode: `RM${number}`,
+        displayName: `Room ${number}`,
+        status: "clean",
+        housekeepingStatus: "clean",
+        maintenanceStatus: "ok",
+        sellable,
+        active: input.active ?? true,
+        sortOrder: Number(number) || 0
+      }
+    });
+    const record = mapRoomRow(row);
+    const idx = demoStore.rooms.findIndex((r) => r.id === record.id);
+    if (idx >= 0) demoStore.rooms[idx] = record;
+    else demoStore.rooms.push(record);
+    created.push(record);
+  }
 
   audit({ ...input, action: "RoomBulkCreated", entityType: "room", afterJson: { createdCount: created.length, rooms: created } });
   return { status: "created" as const, createdCount: created.length, rooms: created };
 }
 
-export function bulkUpdateRooms(input: BackOfficeMutationInput & {
+export async function bulkUpdateRooms(input: BackOfficeMutationInput & {
   roomIds: string[];
   patch: Partial<Pick<RoomRecord, "roomTypeId" | "buildingId" | "floorId" | "zoneId" | "sellable" | "active" | "featuresJson" | "bedConfigurationJson" | "housekeepingStatus" | "maintenanceStatus">>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  const rooms = demoStore.rooms.filter((room) => room.propertyId === input.propertyId && input.roomIds.includes(room.id));
-  if (rooms.length !== input.roomIds.length) {
+  // Fase 0 (Opción A): rooms desde Prisma (fuente de verdad) en vez de demoStore.
+  const existingRows = await prisma.room.findMany({ where: { propertyId: input.propertyId, id: { in: input.roomIds } } });
+  if (existingRows.length !== input.roomIds.length) {
     throw new Error("All selected rooms must belong to the property.");
   }
-  if (input.patch.sellable === true && !input.patch.roomTypeId && rooms.some((room) => !room.roomTypeId)) {
+  const before = existingRows.map(mapRoomRow);
+  if (input.patch.sellable === true && !input.patch.roomTypeId && before.some((room) => !room.roomTypeId)) {
     throw new Error("Room cannot be marked sellable if no room type is assigned.");
   }
   if (input.patch.buildingId) {
-    const building = demoStore.buildings.find((candidate) => candidate.id === input.patch.buildingId && candidate.propertyId === input.propertyId);
+    const building = await prisma.building.findFirst({ where: { id: input.patch.buildingId, propertyId: input.propertyId } });
     if (!building?.active) {
       throw new Error("Room cannot be assigned to disabled floor/building.");
     }
   }
   if (input.patch.floorId) {
-    const floor = demoStore.floors.find((candidate) => candidate.id === input.patch.floorId && candidate.propertyId === input.propertyId);
+    const floor = await prisma.floor.findFirst({ where: { id: input.patch.floorId, propertyId: input.propertyId } });
     if (!floor?.active) {
       throw new Error("Room cannot be assigned to disabled floor/building.");
     }
   }
 
-  const before = rooms.map((room) => ({ ...room }));
-  for (const room of rooms) {
-    Object.assign(room, input.patch);
+  // Solo los campos presentes en el patch (todos columnas de Room). Prisma omite los
+  // `undefined`, así que el patch parcial se traduce 1:1. Los JSON van casteados para
+  // encajar con InputJsonValue (RoomRecord los tipa como Record<string, unknown>).
+  const data = {
+    roomTypeId: input.patch.roomTypeId,
+    buildingId: input.patch.buildingId,
+    floorId: input.patch.floorId,
+    zoneId: input.patch.zoneId,
+    sellable: input.patch.sellable,
+    active: input.patch.active,
+    featuresJson: input.patch.featuresJson as Prisma.InputJsonValue | undefined,
+    bedConfigurationJson: input.patch.bedConfigurationJson as Prisma.InputJsonValue | undefined,
+    housekeepingStatus: input.patch.housekeepingStatus,
+    maintenanceStatus: input.patch.maintenanceStatus
+  };
+
+  const rooms: RoomRecord[] = [];
+  for (const id of input.roomIds) {
+    const updatedRow = await prisma.room.update({ where: { id }, data });
+    const record = mapRoomRow(updatedRow);
+    const idx = demoStore.rooms.findIndex((r) => r.id === record.id);
+    if (idx >= 0) demoStore.rooms[idx] = record;
+    else demoStore.rooms.push(record);
+    rooms.push(record);
   }
 
   audit({
@@ -2499,7 +2601,7 @@ export function previewPropertyMapImport(input: BackOfficeMutationInput & { rows
   return importRecord;
 }
 
-export function commitPropertyMapImport(input: BackOfficeMutationInput & { importId: string; createUnknownReferences?: boolean }) {
+export async function commitPropertyMapImport(input: BackOfficeMutationInput & { importId: string; createUnknownReferences?: boolean }) {
   requirePermissions(input.context, ["property.import"]);
   const importRecord = demoStore.propertyImports.find((candidate) => candidate.id === input.importId && candidate.propertyId === input.propertyId);
   if (!importRecord) {
@@ -2535,7 +2637,7 @@ export function commitPropertyMapImport(input: BackOfficeMutationInput & { impor
     if (!roomType) {
       throw new Error(`Unknown room type ${row.roomType ?? "missing"}.`);
     }
-    const created = bulkCreateRooms({
+    const created = await bulkCreateRooms({
       context: input.context,
       propertyId: input.propertyId,
       correlationId: input.correlationId,
@@ -3236,7 +3338,7 @@ export function createBackOfficeAiSuggestion(input: BackOfficeMutationInput & { 
   return suggestion;
 }
 
-export function applyBackOfficeAiSuggestion(input: BackOfficeMutationInput & { suggestionId: string }) {
+export async function applyBackOfficeAiSuggestion(input: BackOfficeMutationInput & { suggestionId: string }) {
   requirePermissions(input.context, ["ai.configure"]);
   const suggestion = demoStore.backOfficeAiSuggestions.find(
     (candidate) => candidate.propertyId === input.propertyId && candidate.id === input.suggestionId
@@ -3260,7 +3362,7 @@ export function applyBackOfficeAiSuggestion(input: BackOfficeMutationInput & { s
     result =
       roomNumbers.length === 0
         ? { status: "skipped", reason: "All room numbers already exist." }
-        : bulkCreateRooms({
+        : await bulkCreateRooms({
             context: input.context,
             propertyId: input.propertyId,
             correlationId: input.correlationId,

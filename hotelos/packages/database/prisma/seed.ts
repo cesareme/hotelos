@@ -383,6 +383,52 @@ async function main() {
     `[seed] Chart of accounts ready: ${accounts.length} accounts seeded/refreshed (${accountsCreated} new, ${accountsExisting} existing).`
   );
 
+  // Fase 0 (Opción A): estructura de propiedad en Prisma. Antes solo vivía en el
+  // seed in-memory de demoStore, por lo que getPropertyMap (ahora Prisma-only para
+  // buildings/floors/zones/spaces) mostraba el mapa vacío. Estos upsert por id fijo
+  // replican apps/api/src/lib/demo-store.ts y son idempotentes.
+  await prisma.building.upsert({
+    where: { id: "bld_main" },
+    update: {},
+    create: {
+      id: "bld_main",
+      propertyId: "prop_123",
+      name: "Main Building",
+      code: "MAIN",
+      description: "Primary guest room building.",
+      sortOrder: 1,
+      active: true
+    }
+  });
+
+  await prisma.floor.upsert({
+    where: { id: "floor_4" },
+    update: {},
+    create: { id: "floor_4", propertyId: "prop_123", buildingId: "bld_main", name: "Floor 4", floorNumber: 4, code: "F4", sortOrder: 4, active: true }
+  });
+  await prisma.floor.upsert({
+    where: { id: "floor_1" },
+    update: {},
+    create: { id: "floor_1", propertyId: "prop_123", buildingId: "bld_main", name: "Floor 1", floorNumber: 1, code: "F1", sortOrder: 1, active: true }
+  });
+
+  await prisma.propertyZone.upsert({
+    where: { id: "zone_f4_east" },
+    update: {},
+    create: { id: "zone_f4_east", propertyId: "prop_123", buildingId: "bld_main", floorId: "floor_4", name: "East Wing", code: "F4E", zoneType: "guest_rooms", sortOrder: 1, active: true }
+  });
+  await prisma.propertyZone.upsert({
+    where: { id: "zone_lobby" },
+    update: {},
+    create: { id: "zone_lobby", propertyId: "prop_123", buildingId: "bld_main", floorId: "floor_1", name: "Lobby", code: "LOB", zoneType: "public_area", sortOrder: 1, active: true }
+  });
+
+  await prisma.propertySpace.upsert({
+    where: { id: "space_reception" },
+    update: {},
+    create: { id: "space_reception", propertyId: "prop_123", buildingId: "bld_main", floorId: "floor_1", zoneId: "zone_lobby", name: "Reception", code: "REC", spaceType: "reception", active: true }
+  });
+
   await prisma.roomType.upsert({
     where: { propertyId_code: { propertyId: "prop_123", code: "DBL" } },
     update: {},
@@ -397,6 +443,9 @@ async function main() {
     }
   });
 
+  // Fase 0 (Opción A): las habitaciones sembradas ahora llevan building/floor/zone y
+  // los campos de detalle (roomCode, displayName, occupancy, JSONs) para que el mapa
+  // Prisma-only reproduzca el árbol anidado que antes daba el seed in-memory.
   await prisma.room.upsert({
     where: { id: "room_432" },
     update: {},
@@ -404,12 +453,24 @@ async function main() {
       id: "room_432",
       propertyId: "prop_123",
       roomTypeId: "rt_double",
+      buildingId: "bld_main",
+      floorId: "floor_4",
+      zoneId: "zone_f4_east",
       number: "432",
       floor: "4",
+      roomCode: "RM432",
+      displayName: "Room 432",
+      maxOccupancy: 2,
+      standardOccupancy: 2,
+      bedConfigurationJson: { queen: 1 },
+      featuresJson: { city_view: true, minibar: true },
+      viewType: "city_view",
+      squareMeters: 22,
       status: "inspected",
       housekeepingStatus: "inspected",
       maintenanceStatus: "ok",
-      sellable: true
+      sellable: true,
+      sortOrder: 432
     }
   });
 
@@ -420,12 +481,20 @@ async function main() {
       id: "room_108",
       propertyId: "prop_123",
       roomTypeId: "rt_double",
+      buildingId: "bld_main",
+      floorId: "floor_1",
       number: "108",
       floor: "1",
+      roomCode: "RM108",
+      displayName: "Room 108",
+      maxOccupancy: 2,
+      standardOccupancy: 2,
+      bedConfigurationJson: { queen: 1 },
       status: "out_of_order",
       housekeepingStatus: "dirty",
       maintenanceStatus: "blocked",
-      sellable: false
+      sellable: false,
+      sortOrder: 108
     }
   });
 
