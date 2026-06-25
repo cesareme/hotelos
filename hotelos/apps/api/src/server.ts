@@ -56,6 +56,7 @@ import {
   pushRateGrid,
   getRateJournal
 } from "./modules/rate-manager/rate-grid.service.js";
+import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
 import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport } from "./modules/revenue/forecast.service.js";
 import { getPeriodMetrics } from "./modules/revenue/comparison.service.js";
 import { getPace, getPickup, capturePaceSnapshot, capturePaceSnapshotsForAllProperties } from "./modules/revenue/pace.service.js";
@@ -1843,6 +1844,18 @@ export function buildApiServer() {
     const params = request.params as { propertyId: string };
     return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "channel_profitability");
   });
+  // Rate Plan CRUD (Fase 0) — backs the admin RatePlansScreen with persisted
+  // data (the screen previously fell back to demo data with a "no implementado"
+  // banner). Tenant scoping + permissions enforced inside the service.
+  app.get("/properties/:propertyId/rate-plans", async (request) =>
+    listRatePlans({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId }));
+  app.post("/properties/:propertyId/rate-plans", async (request) =>
+    createRatePlan({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never }));
+  app.patch("/rate-plans/:id", async (request) =>
+    updateRatePlan({ context: request.userContext, id: (request.params as { id: string }).id, patch: request.body as never }));
+  app.delete("/rate-plans/:id", async (request) =>
+    deleteRatePlan({ context: request.userContext, id: (request.params as { id: string }).id }));
+
   app.get("/revenue/properties/:propertyId/rate-grid", async (request) => {
     const params = request.params as { propertyId: string };
     const q = request.query as { from?: string; to?: string };
