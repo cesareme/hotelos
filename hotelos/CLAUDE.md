@@ -31,8 +31,11 @@ paths para CI o referencias, recuerda el prefijo.
 - **Nombre de marca elegido: `Anfitorio`** (raíz clásica de *anfitrión* /
   Amphitryon = el anfitrión; neutro, no nacionalista español). Dominios
   `anfitorio.com` (✅ libre, RDAP) + `anfitorio.es` (probable libre). El
-  rebrand *HotelOS → Anfitorio* dentro del código/UI está PENDIENTE; por
-  ahora la app sigue diciendo HotelOS por dentro.
+  rebrand *HotelOS → Anfitorio* en código/UI está **HECHO** (Fase 0): 81 strings
+  de admin-web + index.html + nombres demo. Fuente única en
+  `apps/admin-web/src/config/brand.ts`. Preservados a propósito los identificadores
+  `HotelOSTokens`/`HotelOSFlowTokens` y el header `X-HotelOS-Idempotency`. El
+  paquete sigue siendo `@hotelos` (no visible).
 - **Demo en producción · PENDIENTE de DNS**: el plan es servir
   `https://demo.anfitorio.es` desde el VPS con **Caddy** (HTTPS Let's Encrypt)
   sirviendo el build de admin-web + reverse-proxy de la API en el mismo origen
