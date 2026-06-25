@@ -65,6 +65,15 @@
   --line-soft: #f1ede5;
   --line-strong: #d4d0c4;
 
+  /* Bridge (Fase 2): phantom tokens referenced across ~40 files but never
+     defined — caused INVISIBLE borders/surfaces. Mapped to the canonical Aurora
+     tokens above (which themselves flip in dark mode, so these auto-adapt via
+     the var() indirection — no need to redefine in the dark block). */
+  --border: var(--line);
+  --surface-1: var(--surface);
+  --surface-2: var(--surface-elevated);
+  --row-hover: var(--surface-sunken);
+
   /* Single accent — Hospitality deep emerald */
   --accent: #0d8a5f;
   --accent-soft: #e6f4ef;

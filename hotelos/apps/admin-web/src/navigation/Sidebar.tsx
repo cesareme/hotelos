@@ -388,21 +388,14 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           { label: "Cierre de ejercicio", screen: "YearEndCloseScreen", roles: R_ASSET },
           { label: "Facturas rectificativas", screen: "InvoiceRectificationsScreen", roles: R_OPS_ASSET },
           { label: "Folios y enrutamiento", screen: "FolioRouting", roles: R_OPS_ASSET },
-          { label: "Webhooks (developer)", screen: "WebhooksAdmin", roles: R_ASSET },
-          { label: "Catálogo de upsells", screen: "UpsellsSettings", roles: R_OPS_ASSET },
-          { label: "Mensajería omnichannel", screen: "MessagingConnections", roles: R_ASSET },
           { label: "Banca España (CSB-43 + SEPA)", screen: "BankingSpain", roles: R_ASSET },
-          { label: "Marketplace de apps", screen: "MarketplaceCatalog", roles: R_MGMT },
-          { label: "Mis apps (Developer)", screen: "DeveloperApps", roles: R_ASSET },
           { label: "Referencia API (pública)", screen: "ApiReferenceScreen", roles: R_ASSET },
-          { label: "CRM · Segmentos", screen: "GuestSegmentsReal", roles: R_OPS_ASSET },
-          { label: "Programa de fidelización", screen: "LoyaltyProgram", roles: R_OPS_ASSET },
-          { label: "Portal del huésped (ajustes)", screen: "GuestPortalSettingsReal", roles: R_OPS_ASSET },
-          { label: "Contadores energía y agua", screen: "EnergyMetering", roles: R_OPS_ASSET },
-          { label: "Campañas de marketing", screen: "CampaignManagerReal", roles: R_OPS_ASSET },
-          { label: "Kiosco self check-in", screen: "KioskSettingsReal", roles: R_OPS_ASSET },
           { label: "Compras y proveedores", screen: "ProcurementDashboard", roles: R_OPS_ASSET },
           { label: "Inventario operativo", screen: "InventoryDashboard", roles: R_OPS_ASSET }
+          // Fase 2: retirados de este cajón de sastre los 11 items que YA viven en
+          // su grupo propio (Webhooks/Marketplace/DeveloperApps en Desarrollador;
+          // Mensajería/Upsells/CRM-Segmentos/Fidelización/Portal/Campañas/Kiosco/
+          // Energía en Comercial/Operaciones) → cada pantalla en un único grupo.
         ]
       },
       {
