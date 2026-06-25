@@ -1,4 +1,4 @@
-// Persona Guide Screen — instrucciones de uso de HotelOS según el rol.
+// Persona Guide Screen — instrucciones de uso de Anfitorio según el rol.
 //
 // Una sola fuente de verdad sobre cómo trabaja cada perfil con la app:
 // qué pantalla es su home, las 5-7 acciones más frecuentes, qué pantallas
@@ -327,10 +327,10 @@ export function PersonaGuideScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Guía · Cómo usar HotelOS</div>
+          <div className="bo-page-eyebrow">Guía · Cómo usar Anfitorio</div>
           <h1 className="bo-page-title">Instrucciones por perfil</h1>
           <p className="bo-page-subtitle">
-            HotelOS tiene una vista pensada para cada rol del hotel. Elige el tuyo abajo y verás
+            Anfitorio tiene una vista pensada para cada rol del hotel. Elige el tuyo abajo y verás
             qué pantalla es tu home, qué acciones son las más frecuentes y cuándo cambiar de vista.
           </p>
         </div>

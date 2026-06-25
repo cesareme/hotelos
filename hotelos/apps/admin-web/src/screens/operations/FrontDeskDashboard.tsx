@@ -208,7 +208,7 @@ function FirstRunWelcomeCard() {
             textTransform: "uppercase"
           }}
         >
-          Bienvenido a HotelOS
+          Bienvenido a Anfitorio
         </div>
         <h2
           style={{

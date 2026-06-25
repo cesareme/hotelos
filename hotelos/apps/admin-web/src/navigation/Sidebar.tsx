@@ -215,7 +215,7 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
       { label: "Mi día (recepción)", screen: "FrontDeskDashboard", roles: R_RECEPTION },
       { label: "Mi día (operaciones)", screen: "OperationsHome", roles: R_OPS },
       { label: "Resumen del propietario", screen: "OwnerHome", roles: ["owner"] },
-      { label: "Asistente IA (Ask HotelOS)", screen: "AssistantChat", roles: R_MGMT },
+      { label: "Asistente IA (Ask Anfitorio)", screen: "AssistantChat", roles: R_MGMT },
       { label: "Copiloto operativo (IA)", screen: "FrontDeskCopilotScreen", roles: R_FRONT },
       { label: "Night audit (cierre del día)", screen: "NightAuditScreen", roles: R_FRONT },
       { label: "Supervisión del turno", screen: "ShiftManagerScreen", roles: R_FRONT },
@@ -693,7 +693,7 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
     ],
     // CONSOLIDATED AI block: only 3 surfaces are real and ready to use today —
     // the conversational assistant (which already lives in Operaciones as
-    // "Asistente IA (Ask HotelOS)"), AI Governance and AI Settings. Everything
+    // "Asistente IA (Ask Anfitorio)"), AI Governance and AI Settings. Everything
     // else (owner summary, pipeline status, tool registry, HITL queue, mapping
     // & extraction screens, etc.) is wired but not yet production-grade UX, so
     // we tuck it behind a "Próximamente Q4 2026" subgroup with placeholder=true
@@ -850,7 +850,7 @@ export function Sidebar(props: {
       <div className="bo-brand">
         <span>H</span>
         <div>
-          <strong>HotelOS</strong>
+          <strong>Anfitorio</strong>
           <small>Back Office</small>
         </div>
       </div>

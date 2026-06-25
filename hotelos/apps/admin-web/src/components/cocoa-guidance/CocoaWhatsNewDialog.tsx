@@ -1,4 +1,4 @@
-// CocoaWhatsNewDialog — Release notes modal for HotelOS.
+// CocoaWhatsNewDialog — Release notes modal for Anfitorio.
 //
 // A 720x560 modal that surfaces the contents of a product release to users.
 // It is meant to be shown on the first session after a new version ships, and

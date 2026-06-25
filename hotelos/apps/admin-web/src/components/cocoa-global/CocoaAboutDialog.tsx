@@ -1,14 +1,14 @@
-// CocoaAboutDialog — NSApplicationAboutWindow-style modal for HotelOS.
+// CocoaAboutDialog — NSApplicationAboutWindow-style modal for Anfitorio.
 //
 // Renders a small, centered modal (width 380px) that surfaces brand,
 // version, edition, and quick legal links. Layout, top-to-bottom:
 //   - Large app icon (64x64 rounded square with accent → success gradient)
-//   - 'HotelOS' large-title heading
+//   - 'Anfitorio' large-title heading
 //   - 'Aurora Cocoa Edition' italic subtitle
 //   - 'Version 3.0.0' caption
 //   - 'PMS + ERP nativo espanol con IA' description
 //   - Inline links row: Help center · Keyboard shortcuts · Privacy · Terms
-//   - 'Copyright 2026 HotelOS. All rights reserved.' footnote
+//   - 'Copyright 2026 Anfitorio. All rights reserved.' footnote
 //   - Filled CocoaButton 'OK' aligned at the bottom
 //
 // Visuals: blurred backdrop with fade, dialog container with
@@ -377,7 +377,7 @@ export function CocoaAboutDialog({ open, onClose }: CocoaAboutDialogProps) {
         <div style={appIconStyle} aria-hidden="true" />
 
         <h1 id={titleId} style={titleStyle}>
-          HotelOS
+          Anfitorio
         </h1>
 
         <p style={subtitleStyle}>Aurora Cocoa Edition</p>
@@ -413,7 +413,7 @@ export function CocoaAboutDialog({ open, onClose }: CocoaAboutDialogProps) {
           ))}
         </div>
 
-        <p style={footnoteStyle}>Copyright 2026 HotelOS. All rights reserved.</p>
+        <p style={footnoteStyle}>Copyright 2026 Anfitorio. All rights reserved.</p>
 
         <div style={actionsRowStyle}>
           <CocoaButton

@@ -1,6 +1,6 @@
 // Guest Timeline Screen — vista única cronológica del huésped.
 //
-// Directriz HotelOS (Nov 2026):
+// Directriz Anfitorio (Nov 2026):
 //   "Cada huésped debe tener una vista tipo timeline, no una ficha fragmentada.
 //    Cualquier recepcionista debe entender al huésped en menos de 10 segundos."
 //

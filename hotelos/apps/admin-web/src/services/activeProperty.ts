@@ -18,7 +18,7 @@ const NAME_KEY = "hotelos-active-property-name";
 
 export const DEFAULT_PROPERTY_ID = "prop_123";
 export const DEFAULT_ORGANIZATION_ID = "org_123";
-export const DEFAULT_PROPERTY_NAME = "HotelOS Madrid Centro";
+export const DEFAULT_PROPERTY_NAME = "Anfitorio Madrid Centro";
 
 export const ACTIVE_PROPERTY_EVENT = "hotelos-active-property-changed";
 

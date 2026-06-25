@@ -106,8 +106,8 @@ async function main() {
     create: {
       id: "prop_123",
       organizationId: "org_123",
-      name: "HotelOS Madrid Centro",
-      legalName: "HotelOS Madrid Centro SL",
+      name: "Anfitorio Madrid Centro",
+      legalName: "Anfitorio Madrid Centro SL",
       country: "ES",
       taxRegion: "Madrid",
       timezone: "Europe/Madrid",
@@ -192,8 +192,8 @@ async function main() {
     create: {
       id: "prop_canary",
       organizationId: "org_123",
-      name: "HotelOS Tenerife Sur",
-      legalName: "HotelOS Tenerife Sur SL",
+      name: "Anfitorio Tenerife Sur",
+      legalName: "Anfitorio Tenerife Sur SL",
       country: "ES",
       taxRegion: "canary",
       timezone: "Atlantic/Canary",

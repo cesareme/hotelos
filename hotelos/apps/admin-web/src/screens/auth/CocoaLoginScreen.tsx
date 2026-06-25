@@ -410,7 +410,7 @@ export function CocoaLoginScreen(props: CocoaLoginScreenProps) {
           </>
         ) : null}
         <div style={brandBlockStyle}>
-          <h1 style={brandMarkStyle}>HotelOS</h1>
+          <h1 style={brandMarkStyle}>Anfitorio</h1>
           <p style={subtitleStyle}>
             Aurora Cocoa Edition · PMS+ERP nativo español
           </p>

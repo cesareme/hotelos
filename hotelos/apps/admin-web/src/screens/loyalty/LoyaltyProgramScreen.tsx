@@ -66,7 +66,7 @@ const INITIAL_TIERS: LoyaltyTier[] = [
 ];
 
 const INITIAL_CONFIG: LoyaltyConfig = {
-  programName: "HotelOS Stays Club",
+  programName: "Anfitorio Stays Club",
   pointsPerEur: 10,
   pointValueEur: 0.01,
   pointsExpiryMonths: 24,

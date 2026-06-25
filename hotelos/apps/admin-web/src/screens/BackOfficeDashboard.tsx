@@ -70,7 +70,7 @@ export function BackOfficeDashboard() {
   return (
     <>
       <CocoaPageHeader
-        eyebrow="HotelOS Aurora · Back Office"
+        eyebrow="Anfitorio Aurora · Back Office"
         title="Back Office"
         subtitle="Configura, gobierna y supervisa tu hotel desde un solo lugar."
         actions={

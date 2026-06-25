@@ -28,7 +28,7 @@ const CHANNELS: ChannelConfig[] = [
       { key: "webhookSecret", label: "Webhook Verify Token", type: "password" }
     ],
     mode: "stub",
-    testMessage: "Hola, soy HotelOS — mensaje de prueba para verificar la conexión."
+    testMessage: "Hola, soy Anfitorio — mensaje de prueba para verificar la conexión."
   },
   {
     channel: "sms",
@@ -41,7 +41,7 @@ const CHANNELS: ChannelConfig[] = [
       { key: "fromNumber", label: "Número de origen (E.164)", type: "phone" }
     ],
     mode: "stub",
-    testMessage: "HotelOS · prueba SMS"
+    testMessage: "Anfitorio · prueba SMS"
   },
   {
     channel: "email",
@@ -54,7 +54,7 @@ const CHANNELS: ChannelConfig[] = [
       { key: "fromName", label: "Nombre remitente", type: "text" }
     ],
     mode: "stub",
-    testMessage: "Prueba — HotelOS está conectado."
+    testMessage: "Prueba — Anfitorio está conectado."
   }
 ];
 

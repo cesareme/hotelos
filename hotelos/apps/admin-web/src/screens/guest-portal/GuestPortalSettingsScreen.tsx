@@ -24,7 +24,7 @@ type PortalConfig = {
 };
 
 const INITIAL_CONFIG: PortalConfig = {
-  brandName: "HotelOS Madrid Centro",
+  brandName: "Anfitorio Madrid Centro",
   primaryColor: "#4ee0a3",
   logoUrl: "",
   languages: ["es", "en", "fr", "de"],

@@ -43,7 +43,7 @@ export function AISetupCenterScreen() {
       summary="Start or continue AI-powered implementation projects: source PMS connection, uploads, extraction, mapping, review, dry-run, migration batches and go-live readiness."
       cards={[
         {
-          title: "HotelOS Demo Onboarding Project",
+          title: "Anfitorio Demo Onboarding Project",
           metric: "62%",
           status: "warn",
           body: "Source: Generic PMS exports. Next action: review revenue history totals and approve low-risk room mappings.",
@@ -142,7 +142,7 @@ export function RatePlanMappingReviewScreen() {
   return (
     <OnboardingScreen
       title="Rate Plan Mapping Review"
-      summary="Map old PMS rate codes to HotelOS rate plans, restrictions, derivations and min/max rules."
+      summary="Map old PMS rate codes to Anfitorio rate plans, restrictions, derivations and min/max rules."
       nav={[
         { label: "Next: channel mapping review", screen: "ChannelMappingReview" },
         { label: "Back to room mapping", screen: "RoomMappingReview" }
@@ -186,7 +186,7 @@ export function ChannelMappingReviewScreen() {
   return (
     <OnboardingScreen
       title="Channel Mapping Review"
-      summary="Map source channel room/rate codes to HotelOS channels, room types, rate plans and ARI sync readiness."
+      summary="Map source channel room/rate codes to Anfitorio channels, room types, rate plans and ARI sync readiness."
       nav={[
         { label: "Next: revenue history import", screen: "RevenueHistoryImportReview" },
         { label: "Back to rate plan mapping", screen: "RatePlanMappingReview" }

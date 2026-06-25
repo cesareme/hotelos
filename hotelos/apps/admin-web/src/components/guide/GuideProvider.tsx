@@ -52,7 +52,7 @@ export function GuideProvider() {
         () =>
           setWelcome({
             tourId: WELCOME_TOUR_ID,
-            title: "Te damos la bienvenida a HotelOS",
+            title: "Te damos la bienvenida a Anfitorio",
             body: "¿Hacemos un recorrido rápido de un minuto para empezar?"
           }),
         900

@@ -1,7 +1,7 @@
 // API Reference Screen — documentación pública navegable de la API.
 //
-// Directriz HotelOS (Nov 2026):
-//   "Integraciones abiertas. HotelOS debe diseñarse como plataforma API-first."
+// Directriz Anfitorio (Nov 2026):
+//   "Integraciones abiertas. Anfitorio debe diseñarse como plataforma API-first."
 
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
@@ -80,7 +80,7 @@ export function ApiReferenceScreen() {
       <div className="bo-page-head">
         <div className="bo-page-head-text">
           <div className="bo-page-eyebrow">Developer · API reference</div>
-          <h1 className="bo-page-title">API HotelOS</h1>
+          <h1 className="bo-page-title">API Anfitorio</h1>
           <p className="bo-page-subtitle">
             Generado automáticamente desde el route permission manifest — siempre sincronizado con el código en producción.
             {data ? ` ${data.totalEndpoints} endpoints en ${data.categories.length} categorías.` : null}

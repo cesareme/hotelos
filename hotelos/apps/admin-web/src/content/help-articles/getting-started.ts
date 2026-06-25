@@ -15,7 +15,7 @@ export const GETTING_STARTED_ARTICLES: readonly HelpArticle[] = [
     tags: ['check-in', 'front-desk', 'recepcion', 'reservas', 'huespedes'],
     bodyMd: `# Como hacer mi primer check-in
 
-El check-in es el primer punto de contacto operativo con el huesped. En HotelOS esta optimizado para completarse en menos de 90 segundos por reserva estandar, manteniendo el cumplimiento del parte de viajeros y la captura del medio de pago.
+El check-in es el primer punto de contacto operativo con el huesped. En Anfitorio esta optimizado para completarse en menos de 90 segundos por reserva estandar, manteniendo el cumplimiento del parte de viajeros y la captura del medio de pago.
 
 ## Paso a paso
 
@@ -41,7 +41,7 @@ El check-in es el primer punto de contacto operativo con el huesped. En HotelOS 
     tags: ['reservas', 'booking', 'walk-in', 'front-desk', 'tarifas'],
     bodyMd: `# Como crear una reserva nueva
 
-Crear una reserva manualmente es una tarea cotidiana cuando recibes una llamada directa, un email del huesped o un walk-in sin reserva previa. HotelOS te permite hacerlo desde cualquier pantalla con un atajo unico.
+Crear una reserva manualmente es una tarea cotidiana cuando recibes una llamada directa, un email del huesped o un walk-in sin reserva previa. Anfitorio te permite hacerlo desde cualquier pantalla con un atajo unico.
 
 ## Paso a paso
 
@@ -123,22 +123,22 @@ Dividir un folio (split folio) es habitual cuando dos huespedes comparten habita
     tags: ['booking', 'channels', 'ota', 'integraciones', 'channel-manager'],
     bodyMd: `# Como conectar Booking.com
 
-Conectar Booking.com con HotelOS sincroniza disponibilidad, tarifas, restricciones y reservas en ambos sentidos. La conexion se hace via Booking Connectivity API y tarda en estar operativa entre 24 y 72 horas tras la solicitud.
+Conectar Booking.com con Anfitorio sincroniza disponibilidad, tarifas, restricciones y reservas en ambos sentidos. La conexion se hace via Booking Connectivity API y tarda en estar operativa entre 24 y 72 horas tras la solicitud.
 
 ## Paso a paso
 
 1. **Ve a Integraciones > Canales > Booking.com** y pulsa "Conectar". Necesitaras a mano el Hotel ID de Booking (lo encuentras en tu extranet, esquina superior derecha).
-2. **Introduce el Hotel ID** y el correo de contacto del responsable de canales. HotelOS enviara la solicitud de pairing a Booking Connectivity.
-3. **Acepta el pairing desde la extranet de Booking**: ve a Cuenta > Conectividad > Proveedor > acepta a HotelOS como tu channel manager. Este paso lo debes hacer tu desde el extranet.
-4. **Mapea las habitaciones**: cada room type de Booking debe corresponder a un tipo de habitacion de HotelOS. El sistema sugiere matches automaticos por nombre que debes validar.
-5. **Mapea los planes de tarifa**: relaciona los rate plans de Booking (BAR, no reembolsable, desayuno incluido) con los de HotelOS. Confirma reglas de derivacion si aplicas un porcentaje al BAR.
+2. **Introduce el Hotel ID** y el correo de contacto del responsable de canales. Anfitorio enviara la solicitud de pairing a Booking Connectivity.
+3. **Acepta el pairing desde la extranet de Booking**: ve a Cuenta > Conectividad > Proveedor > acepta a Anfitorio como tu channel manager. Este paso lo debes hacer tu desde el extranet.
+4. **Mapea las habitaciones**: cada room type de Booking debe corresponder a un tipo de habitacion de Anfitorio. El sistema sugiere matches automaticos por nombre que debes validar.
+5. **Mapea los planes de tarifa**: relaciona los rate plans de Booking (BAR, no reembolsable, desayuno incluido) con los de Anfitorio. Confirma reglas de derivacion si aplicas un porcentaje al BAR.
 6. **Activa la sincronizacion** de disponibilidad, tarifas, restricciones (MinLOS, MaxLOS, CTA, CTD) y reservas. La primera sincronizacion completa puede tardar hasta 2 horas.
-7. **Verifica con una reserva de prueba** desde la extranet en modo test. Confirma que entra en HotelOS en menos de 60 segundos y se descuenta inventario.
+7. **Verifica con una reserva de prueba** desde la extranet en modo test. Confirma que entra en Anfitorio en menos de 60 segundos y se descuenta inventario.
 
 ## Buenas practicas
 
 - Antes de activar, audita que tus tipos de habitacion en ambas plataformas estan alineados; mismatches generan overbookings.
-- Define una estrategia de derivacion de tarifas centralizada en HotelOS y deja Booking como pure distribution channel.
+- Define una estrategia de derivacion de tarifas centralizada en Anfitorio y deja Booking como pure distribution channel.
 - Activa las alertas de fallo de sincronizacion en el Channel Performance Dashboard para reaccionar en menos de 10 minutos.
 - Manten la commission de Booking actualizada en tu setup para que el revenue dashboard muestre net ADR real.`,
     updatedAt: '2026-05-30',
@@ -150,13 +150,13 @@ Conectar Booking.com con HotelOS sincroniza disponibilidad, tarifas, restriccion
     tags: ['verifactu', 'compliance', 'facturacion', 'aeat', 'fiscal', 'espana'],
     bodyMd: `# Como activar VeriFactu
 
-VeriFactu es el sistema de facturacion verificable de la AEAT obligatorio en Espana desde 2026 para empresas no acogidas a SII. Activarlo en HotelOS implica configurar el certificado digital, los datos fiscales y las series de facturacion.
+VeriFactu es el sistema de facturacion verificable de la AEAT obligatorio en Espana desde 2026 para empresas no acogidas a SII. Activarlo en Anfitorio implica configurar el certificado digital, los datos fiscales y las series de facturacion.
 
 ## Paso a paso
 
 1. **Ve a Compliance > VeriFactu** desde el menu lateral. Veras el wizard de activacion con cuatro bloques: datos fiscales, certificado, series y entorno.
 2. **Verifica los datos fiscales del hotel**: razon social, NIF, domicilio fiscal y epigrafe IAE. Estos datos viajan en cada factura firmada hacia la AEAT, asi que cualquier error invalida los envios.
-3. **Sube el certificado digital** de representante de persona juridica en formato .p12 o .pfx con su clave. HotelOS lo almacena cifrado y solo lo usa para firmar los registros de facturacion.
+3. **Sube el certificado digital** de representante de persona juridica en formato .p12 o .pfx con su clave. Anfitorio lo almacena cifrado y solo lo usa para firmar los registros de facturacion.
 4. **Configura las series de facturacion**: serie general, serie rectificativa y serie simplificada si emites tickets. Define el formato del numero y el contador inicial (debe coincidir con el ultimo numero emitido en tu sistema anterior).
 5. **Selecciona el entorno**: empieza siempre en pruebas (preproduccion AEAT) para validar el flujo end-to-end con facturas de prueba durante 48-72 horas antes de pasar a produccion.
 6. **Activa la generacion automatica** de hash encadenado y QR en factura. Cada factura emitida desde el folio se firma, se anade al registro de facturacion y se envia a la AEAT en tiempo real.
@@ -167,7 +167,7 @@ VeriFactu es el sistema de facturacion verificable de la AEAT obligatorio en Esp
 - Renueva el certificado digital al menos 30 dias antes de su caducidad; un certificado expirado bloquea toda la facturacion.
 - Revisa diariamente el panel de envios fallidos durante las primeras dos semanas; los rechazos suelen ser por datos fiscales del cliente mal capturados.
 - Forma a recepcion en capturar correctamente NIF y razon social en el check-in para evitar facturas rechazadas.
-- Mantienes los registros de facturacion 4 anos minimo por exigencia AEAT; HotelOS los archiva automaticamente.`,
+- Mantienes los registros de facturacion 4 anos minimo por exigencia AEAT; Anfitorio los archiva automaticamente.`,
     updatedAt: '2026-05-30',
   },
 ] as const;

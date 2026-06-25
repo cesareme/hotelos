@@ -1,7 +1,7 @@
 // Housekeeping Mobile Screen — vista táctil para personal de pisos.
 //
-// Directriz HotelOS (Nov 2026):
-//   "Housekeeping debe ser tiempo real, no módulo secundario. HotelOS debe
+// Directriz Anfitorio (Nov 2026):
+//   "Housekeeping debe ser tiempo real, no módulo secundario. Anfitorio debe
 //    eliminar WhatsApp, llamadas y Excel como herramientas de coordinación.
 //    Mobile-first para operación."
 //

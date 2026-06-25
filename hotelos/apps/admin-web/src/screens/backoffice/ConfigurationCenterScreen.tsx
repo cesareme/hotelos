@@ -26,7 +26,7 @@ const AREAS: Area[] = [
 type CategoryMode = { label: string; code: string; tag: string; cls: "ok" | "warn" | "info"; detail: string };
 const CATEGORY_MODES: CategoryMode[] = [
   { label: "Property-editable", code: "property_editable", tag: "Full control", cls: "ok", detail: "The property fully manages these options — add, rename and remove freely." },
-  { label: "Property-extendable", code: "property_extendable", tag: "Extendable", cls: "info", detail: "HotelOS provides defaults; the property can add its own custom options." },
+  { label: "Property-extendable", code: "property_extendable", tag: "Extendable", cls: "info", detail: "Anfitorio provides defaults; the property can add its own custom options." },
   { label: "System-controlled", code: "system_controlled", tag: "Restricted", cls: "warn", detail: "Legal/compliance values can be configured but not freely renamed or deleted." },
   { label: "Read-only", code: "read_only", tag: "Locked", cls: "info", detail: "Fixed internal states stay visible but cannot be changed." }
 ];

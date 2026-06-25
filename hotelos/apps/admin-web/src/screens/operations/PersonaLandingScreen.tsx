@@ -1,7 +1,7 @@
 // Persona Landing Screen — selector de "qué pantalla es mi home" según rol.
 //
-// Directriz HotelOS (Nov 2026):
-//   "Diseñar por rol. HotelOS no debe mostrar lo mismo a todos."
+// Directriz Anfitorio (Nov 2026):
+//   "Diseñar por rol. Anfitorio no debe mostrar lo mismo a todos."
 //
 // Esta pantalla ayuda al usuario a:
 //   1. Ver todos los homes de rol disponibles (8 personas operativas)
@@ -130,12 +130,12 @@ export function PersonaLandingScreen() {
           <div className="bo-page-eyebrow">Personas · Rol activo: {activeRoleLabel}</div>
           <h1 className="bo-page-title">¿Quién eres hoy?</h1>
           <p className="bo-page-subtitle">
-            HotelOS se adapta a tu rol. Elige tu home preferido — el sidebar y los atajos se reorganizan en consecuencia.
+            Anfitorio se adapta a tu rol. Elige tu home preferido — el sidebar y los atajos se reorganizan en consecuencia.
           </p>
         </div>
         <div className="bo-page-head-actions">
           <button type="button" className="ghost" onClick={() => navigateTo("PersonaGuideScreen")}>
-            📖 Cómo usar HotelOS por persona
+            📖 Cómo usar Anfitorio por persona
           </button>
         </div>
       </div>

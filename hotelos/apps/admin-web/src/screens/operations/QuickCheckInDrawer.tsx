@@ -1,6 +1,6 @@
 // Quick Check-in Drawer — flujo guiado de ≤ 90 segundos en una sola pantalla.
 //
-// Directriz HotelOS (Nov 2026):
+// Directriz Anfitorio (Nov 2026):
 //   "Diseñar check-in/check-out de 90 segundos. Buscar reserva, validar
 //    identidad, confirmar datos, ver alertas importantes, asignar habitación
 //    limpia, cobrar o preautorizar, firmar digitalmente, emitir llave, enviar

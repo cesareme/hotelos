@@ -1,6 +1,6 @@
 // Quick Check-out Drawer — flujo guiado de ≤ 60 segundos en una sola pantalla.
 //
-// Directriz HotelOS:
+// Directriz Anfitorio:
 //   Para check-out — Abrir folio, validar cargos, detectar pagos pendientes,
 //   dividir cuenta si hace falta, cobrar, emitir factura, cambiar habitación a
 //   salida/sucia, notificar housekeeping, enviar despedida o solicitud de reseña.

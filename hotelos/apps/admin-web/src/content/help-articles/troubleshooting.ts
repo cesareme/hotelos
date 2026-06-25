@@ -77,7 +77,7 @@ export const TROUBLESHOOTING_ARTICLES: readonly CocoaHelpArticle[] = [
 
 ## Causa probable
 1. **Credenciales caducadas**: el token OAuth o las credenciales API expiraron y requieren renovacion.
-2. **Cambio de password en el OTA**: el partner cambio su clave en el extranet sin actualizar HotelOS.
+2. **Cambio de password en el OTA**: el partner cambio su clave en el extranet sin actualizar Anfitorio.
 3. **Rate limit excedido**: se hicieron demasiadas llamadas en poco tiempo y el OTA bloqueo temporalmente la cuenta.
 4. **Mantenimiento del OTA**: el partner esta en ventana de mantenimiento programado.
 5. **IP no whitelisted**: el OTA exige whitelisting y la IP de salida del channel manager cambio.

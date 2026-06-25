@@ -755,7 +755,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
     <div className="cocoa-shell" data-route-base="/backoffice">
       <CocoaToolbar
         showTrafficLights
-        title="HotelOS"
+        title="Anfitorio"
         leftSlot={<PropertySwitcher />}
         rightSlot={
           <>

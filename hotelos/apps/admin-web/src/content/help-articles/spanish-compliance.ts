@@ -48,7 +48,7 @@ export const SPANISH_COMPLIANCE_ARTICLES: readonly CocoaHelpArticle[] = [
 - **Entrada en vigor**: 1 enero 2026 para grandes empresas y 1 julio 2026 para PYMES y autonomos.
 - Los SIF deben estar **certificados** y declarar conformidad mediante **declaracion responsable**.
 
-## Que hace HotelOS
+## Que hace Anfitorio
 
 - Genera el hash encadenado y firma cada factura emitida desde Billing.
 - Envia en tiempo real a la AEAT cuando el establecimiento esta en modo VeriFactu.
@@ -98,7 +98,7 @@ Para cada viajero mayor de 14 anos:
 - Maximo **24 horas** desde el check-in.
 - Conservacion en BBDD del establecimiento: **3 anos** desde el check-out.
 
-## Como funciona el envio en HotelOS
+## Como funciona el envio en Anfitorio
 
 1. En el check-in, Front Desk captura los datos exigidos via scanner DNI/pasaporte o entrada manual.
 2. Se valida formato (NIF, MRZ pasaporte) en tiempo real.
@@ -172,7 +172,7 @@ Para cada viajero mayor de 14 anos:
 - **Encadenamiento por hash** con la factura anterior.
 - Codigo TBAI y QR impresos en la factura.
 
-## Que hace HotelOS
+## Que hace Anfitorio
 
 - Detecta la **jurisdiccion** a partir del CIF y la direccion fiscal del establecimiento.
 - Aplica el esquema XML y la plataforma de envio correspondientes.
@@ -236,7 +236,7 @@ El Regimen Economico y Fiscal de Canarias incluye otros mecanismos a tener en cu
 - **ZEC** (Zona Especial Canaria) con IS reducido al 4%.
 - **DIC** (Deduccion por Inversiones en Canarias).
 
-## Que hace HotelOS
+## Que hace Anfitorio
 
 - Detecta el **codigo postal** y la provincia del establecimiento (35 Las Palmas, 38 Santa Cruz de Tenerife) y conmuta automaticamente a IGIC.
 - Aplica el tipo correcto por concepto (alojamiento, F&B, parking, etc.).
@@ -271,9 +271,9 @@ El Regimen Economico y Fiscal de Canarias incluye otros mecanismos a tener en cu
     ],
     bodyMd: `# GDPR PII encrypted fields
 
-El **RGPD** (Reglamento UE 2016/679) y la **LOPDGDD** (Ley Organica 3/2018) exigen aplicar **medidas tecnicas y organizativas** apropiadas para proteger los datos personales. En HotelOS, los campos **PII** (Personally Identifiable Information) se almacenan cifrados en reposo y se desencriptan unicamente cuando un usuario autorizado los consulta.
+El **RGPD** (Reglamento UE 2016/679) y la **LOPDGDD** (Ley Organica 3/2018) exigen aplicar **medidas tecnicas y organizativas** apropiadas para proteger los datos personales. En Anfitorio, los campos **PII** (Personally Identifiable Information) se almacenan cifrados en reposo y se desencriptan unicamente cuando un usuario autorizado los consulta.
 
-## Campos PII cifrados en HotelOS
+## Campos PII cifrados en Anfitorio
 
 Cifrado obligatorio (AES-256-GCM con clave por tenant):
 
@@ -321,7 +321,7 @@ Los huespedes pueden ejercer:
 - **A**cceso, **R**ectificacion, **S**upresion (derecho al olvido).
 - **L**imitacion, **P**ortabilidad, **O**posicion.
 
-HotelOS automatiza estos flujos desde Compliance > Solicitudes RGPD. El plazo de respuesta es de **1 mes** prorrogable a 3.
+Anfitorio automatiza estos flujos desde Compliance > Solicitudes RGPD. El plazo de respuesta es de **1 mes** prorrogable a 3.
 
 ## Sanciones AEPD
 
@@ -384,7 +384,7 @@ Para cubrir reembolsos y repatriaciones en caso de insolvencia:
 - Cuantia minima: tipicamente entre 100.000 EUR y el 5% del volumen de negocio del ejercicio anterior, segun CCAA.
 - Renovacion anual con prueba documental.
 
-## Que hace HotelOS
+## Que hace Anfitorio
 
 - Detecta cuando una reserva contiene **dos o mas servicios** (alojamiento + traslado, alojamiento + experiencia) y la marca como **viaje combinado**.
 - Aplica las clausulas obligatorias del RD-ley 23/2018 (informacion precontractual, formulario de informacion normalizado).

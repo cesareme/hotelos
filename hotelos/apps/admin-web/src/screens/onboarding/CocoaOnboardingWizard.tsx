@@ -1,6 +1,6 @@
 // CocoaOnboardingWizard — macOS Setup Assistant inspired 5-step wizard.
 //
-// Welcomes a new admin into HotelOS, captures the property profile, lets the
+// Welcomes a new admin into Anfitorio, captures the property profile, lets the
 // operator pick a theme + accent (applied live), seeds the first user, and
 // shows a confirmation card at the end. Layout mirrors NSAssistant: a top
 // progress bar ("Paso N de 5"), a centered card body (max-width 560px), and a
@@ -331,7 +331,7 @@ function StepWelcome({
   return (
     <div style={wrapStyle}>
       <BrandMark accent={data.appearance.accent} />
-      <h1 style={heroTitleStyle}>Te damos la bienvenida a HotelOS</h1>
+      <h1 style={heroTitleStyle}>Te damos la bienvenida a Anfitorio</h1>
       <p style={heroSubtitleStyle}>
         5 pasos para empezar. Configura tu propiedad, elige cómo se ve la
         aplicación y crea el primer usuario.
@@ -463,7 +463,7 @@ function StepAppearance({ data, setData }: StepProps) {
   return (
     <CocoaFormFieldset
       title="Tema y apariencia"
-      description="Tus cambios se aplican al instante para que veas cómo lucirá HotelOS."
+      description="Tus cambios se aplican al instante para que veas cómo lucirá Anfitorio."
     >
       <div style={rowStyle}>
         <div style={blockStyle}>

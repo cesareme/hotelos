@@ -144,7 +144,7 @@ export function LoginScreen(props: LoginScreenProps) {
         }}
       >
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          <h1 style={{ margin: 0, color: "var(--ink)", fontSize: 22 }}>HotelOS</h1>
+          <h1 style={{ margin: 0, color: "var(--ink)", fontSize: 22 }}>Anfitorio</h1>
           <p style={{ margin: 0, color: "var(--ink-soft)" }}>Inicia sesión para continuar</p>
         </div>
 

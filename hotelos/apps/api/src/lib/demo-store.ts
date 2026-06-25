@@ -1716,8 +1716,8 @@ export const demoStore: DemoStore = {
   property: {
     id: "prop_123",
     organizationId: "org_123",
-    name: "HotelOS Madrid Centro",
-    legalName: "HotelOS Madrid Centro SL",
+    name: "Anfitorio Madrid Centro",
+    legalName: "Anfitorio Madrid Centro SL",
     address: "Calle Demo 12",
     municipality: "Madrid",
     province: "Madrid",
@@ -1731,8 +1731,8 @@ export const demoStore: DemoStore = {
     {
       id: "prop_123",
       organizationId: "org_123",
-      name: "HotelOS Madrid Centro",
-      legalName: "HotelOS Madrid Centro SL",
+      name: "Anfitorio Madrid Centro",
+      legalName: "Anfitorio Madrid Centro SL",
       address: "Calle Demo 12",
       municipality: "Madrid",
       province: "Madrid",
@@ -2201,7 +2201,7 @@ export const demoStore: DemoStore = {
       channel: "whatsapp",
       language: "es",
       subject: "Bienvenido",
-      body: "Bienvenido a HotelOS Madrid Centro. Recepcion esta disponible si necesita ayuda.",
+      body: "Bienvenido a Anfitorio Madrid Centro. Recepcion esta disponible si necesita ayuda.",
       variablesJson: { variables: ["guest_name", "room_number"] },
       active: true,
       updatedAt: "2026-05-14T08:00:00.000Z"
@@ -3771,7 +3771,7 @@ export const demoStore: DemoStore = {
     {
       id: "llp_prop_123",
       propertyId: "prop_123",
-      legalName: "HotelOS Madrid Centro SL",
+      legalName: "Anfitorio Madrid Centro SL",
       taxId: "B12345678",
       municipality: "Madrid",
       province: "Madrid",
@@ -3779,7 +3779,7 @@ export const demoStore: DemoStore = {
       email: "compliance@hotelos.example",
       website: "https://hotelos.example",
       establishmentType: "hotel",
-      establishmentName: "HotelOS Madrid Centro",
+      establishmentName: "Anfitorio Madrid Centro",
       fullAddress: "Calle Demo 12, Madrid",
       postalCode: "28013",
       locality: "Madrid",

@@ -1,7 +1,7 @@
 // keyboard-shortcuts — Help article: full keyboard shortcut reference.
 //
 // Single, comprehensive article that lists every keyboard combination
-// available across HotelOS admin-web, grouped by category and rendered
+// available across Anfitorio admin-web, grouped by category and rendered
 // as a markdown table per category. The article shape matches the
 // `CocoaHelpArticle` interface defined in
 // `components/cocoa-guidance/CocoaSearchableHelpModal.tsx`, so it can be
@@ -36,7 +36,7 @@ export const KEYBOARD_SHORTCUTS_ARTICLE: CocoaHelpArticle = {
     'ayuda',
   ],
   bodyMd: [
-    'Referencia completa de combinaciones de teclado disponibles en HotelOS. Los atajos estan agrupados por categoria y ordenados de mayor a menor uso dentro de cada bloque. En Windows/Linux sustituye `Cmd` por `Ctrl`.',
+    'Referencia completa de combinaciones de teclado disponibles en Anfitorio. Los atajos estan agrupados por categoria y ordenados de mayor a menor uso dentro de cada bloque. En Windows/Linux sustituye `Cmd` por `Ctrl`.',
     '',
     '## Navigation',
     '',

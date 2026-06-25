@@ -3249,7 +3249,7 @@ export function applyBackOfficeAiSuggestion(input: BackOfficeMutationInput & { s
         name: "AI drafted welcome message",
         channel: "email",
         language: "es",
-        subject: "Bienvenida a HotelOS Madrid Centro",
+        subject: "Bienvenida a Anfitorio Madrid Centro",
         body: "Hola {{guest_name}}, soy el asistente AI del hotel. Recepcion puede ayudarte en cualquier momento.",
         variablesJson: { guest_name: "Guest name" },
         active: false

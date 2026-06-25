@@ -1,6 +1,6 @@
 // Front Desk Copilot Screen — IA operativa para recepción.
 //
-// Directriz HotelOS (Nov 2026):
+// Directriz Anfitorio (Nov 2026):
 //   "La IA debe responder + recomendar + actuar. Más allá de Ask Signals:
 //    no solo mostrar 'habitación no lista' sino proponer 'la 402 sí, ¿reasignar?'"
 //

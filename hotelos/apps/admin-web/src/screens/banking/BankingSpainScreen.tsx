@@ -191,7 +191,7 @@ type Debtor = {
 };
 
 function SepaTab() {
-  const [creditorName, setCreditorName] = useState("HotelOS Madrid Centro SL");
+  const [creditorName, setCreditorName] = useState("Anfitorio Madrid Centro SL");
   const [creditorId, setCreditorId] = useState("ES12345A12345678");
   const [creditorIban, setCreditorIban] = useState("ES7620770024003102575766");
   const [collectionDate, setCollectionDate] = useState(new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10));

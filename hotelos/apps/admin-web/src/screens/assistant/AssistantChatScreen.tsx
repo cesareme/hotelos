@@ -62,7 +62,7 @@ export function AssistantChatScreen() {
       <header className="bo-card-head">
         <div>
           <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>IA · Asistente conversacional</p>
-          <h2 style={{ color: "var(--ink)" }}>Pregunta a HotelOS</h2>
+          <h2 style={{ color: "var(--ink)" }}>Pregunta a Anfitorio</h2>
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             Pregunta en lenguaje natural sobre tu hotel. Las respuestas se basan en datos reales de Prisma y citan la fuente.
             Modo actual: <strong>{mode === "llm" ? "LLM activo" : "Determinista (sin LLM configurado)"}</strong>.
@@ -114,7 +114,7 @@ export function AssistantChatScreen() {
             {/* Assistant turn */}
             <article className="bo-card" style={{ background: "var(--surface)" }}>
               <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 10, margin: 0 }}>
-                HotelOS Assistant · {turn.mode === "llm" ? "LLM" : "Determinista"}
+                Anfitorio Assistant · {turn.mode === "llm" ? "LLM" : "Determinista"}
               </p>
               <pre style={{
                 whiteSpace: "pre-wrap",

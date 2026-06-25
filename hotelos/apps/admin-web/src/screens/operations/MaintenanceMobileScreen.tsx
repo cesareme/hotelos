@@ -1,6 +1,6 @@
 // Maintenance Mobile Screen — vista táctil para el técnico de mantenimiento.
 //
-// Directriz HotelOS (Nov 2026):
+// Directriz Anfitorio (Nov 2026):
 //   "Mantenimiento mobile-first. Vista del técnico que carga tablet/móvil.
 //    Averías, habitaciones bloqueadas, SLA, prioridad, fotos, estado."
 

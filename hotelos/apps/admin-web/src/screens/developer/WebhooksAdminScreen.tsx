@@ -182,7 +182,7 @@ export function WebhooksAdminScreen() {
             <button type="button" onClick={() => setCreatedSecret(null)}>Cerrar</button>
           </div>
           <p className="bo-muted" style={{ textTransform: "none" }}>
-            Cópialo ahora — no se mostrará de nuevo. El partner lo necesita para verificar la firma <code>X-HotelOS-Signature</code>.
+            Cópialo ahora — no se mostrará de nuevo. El partner lo necesita para verificar la firma <code>X-Anfitorio-Signature</code>.
           </p>
           <pre className="mono" style={{ background: "var(--surface-2)", padding: 10, borderRadius: 6, overflowX: "auto", margin: "8px 0 0" }}>
             {createdSecret}

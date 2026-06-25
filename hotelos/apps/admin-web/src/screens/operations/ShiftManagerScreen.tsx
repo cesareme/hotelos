@@ -1,6 +1,6 @@
 // Shift Manager Screen — vista del Jefe de Recepción.
 //
-// Directriz HotelOS (Nov 2026):
+// Directriz Anfitorio (Nov 2026):
 //   "Jefe de recepción: turno, productividad, incidencias críticas, caja,
 //    no-shows, upgrades, conflictos."
 
