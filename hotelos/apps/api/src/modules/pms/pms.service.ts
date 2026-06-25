@@ -966,7 +966,14 @@ export async function checkInReservation(input: {
     }),
     prisma.room.update({
       where: { id: room.id },
-      data: { status: "occupied", housekeepingStatus: "clean" }
+      // Fase 0: do NOT force housekeepingStatus:"clean" — preserve the room's
+      // prior state. The room is now occupied; housekeeping state is owned by HK.
+      data: { status: "occupied" }
+    }),
+    // Fase 0: persist the Stay so ShiftManager.checkInsToday (which counts Stays
+    // with checkinAt today, shift-manager.service.ts:83) stops always showing 0.
+    prisma.stay.create({
+      data: { reservationId: reservation.id, roomId: room.id, checkinAt: new Date(), status: "in_house" }
     })
   ]);
 
@@ -1036,6 +1043,14 @@ export async function checkOutReservation(input: {
       prisma.room.update({ where: { id: room.id }, data: { status: "dirty", housekeepingStatus: "dirty" } })
     );
   }
+  // Fase 0: close the open Stay so ShiftManager.checkOutsToday (Stays with
+  // checkoutAt today, shift-manager.service.ts:91) reflects real check-outs.
+  operations.push(
+    prisma.stay.updateMany({
+      where: { reservationId: reservation.id, checkoutAt: null },
+      data: { checkoutAt: new Date(), status: "checked_out" }
+    })
+  );
   const results = await prisma.$transaction(operations);
   const updatedReservation = results[0] as NonNullable<Awaited<ReturnType<typeof prisma.reservation.findUnique>>>;
   const updatedRoom = (room && results.length > 1
