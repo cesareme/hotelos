@@ -4,6 +4,23 @@ import { PERMISSIONS, ROLE_PERMISSION_MAP, type PermissionKey } from "@hotelos/s
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
+import { prisma } from "@hotelos/database";
+
+// Fase 0 (Opción B): hybrid-read helper. Merges the in-memory seed (demoStore)
+// with rows persisted in Prisma, deduped by id (a dual-written record lives in
+// both with the same id). Normalizes Prisma Date fields to ISO strings so the
+// merged shape matches the in-memory record the tree builder expects.
+function mergeById<T extends { id: string }>(inMemory: T[], persisted: Array<Record<string, unknown>>): T[] {
+  const seen = new Set(inMemory.map((x) => x.id));
+  const extra = persisted
+    .filter((p) => !seen.has(p.id as string))
+    .map((p) => ({
+      ...p,
+      createdAt: p.createdAt instanceof Date ? p.createdAt.toISOString() : p.createdAt,
+      updatedAt: p.updatedAt instanceof Date ? p.updatedAt.toISOString() : p.updatedAt
+    })) as unknown as T[];
+  return [...inMemory, ...extra];
+}
 import {
   demoStore,
   type AccountingSettingsRecord,
@@ -914,7 +931,7 @@ type PropertySetupTarget = {
   result: unknown;
 };
 
-function applyPropertySetupForm(input: BackOfficeMutationInput, definition: PropertySetupFormDefinition, payload: Record<string, unknown>): PropertySetupTarget {
+async function applyPropertySetupForm(input: BackOfficeMutationInput, definition: PropertySetupFormDefinition, payload: Record<string, unknown>): Promise<PropertySetupTarget> {
   switch (definition.code) {
     case "property_profile": {
       const property = requireProperty(input.propertyId);
@@ -940,7 +957,7 @@ function applyPropertySetupForm(input: BackOfficeMutationInput, definition: Prop
       return { targetEntityType: "property", targetEntityId: property.id, result: property };
     }
     case "building": {
-      const building = createBuilding({
+      const building = await createBuilding({
         ...input,
         building: {
           name: payloadText(payload, "name"),
@@ -953,7 +970,7 @@ function applyPropertySetupForm(input: BackOfficeMutationInput, definition: Prop
       return { targetEntityType: "building", targetEntityId: building.id, result: building };
     }
     case "floor": {
-      const floor = createFloor({
+      const floor = await createFloor({
         ...input,
         floor: {
           buildingId: payloadText(payload, "buildingId", demoStore.buildings.find((building) => building.propertyId === input.propertyId)?.id),
@@ -967,7 +984,7 @@ function applyPropertySetupForm(input: BackOfficeMutationInput, definition: Prop
       return { targetEntityType: "floor", targetEntityId: floor.id, result: floor };
     }
     case "zone": {
-      const zone = createZone({
+      const zone = await createZone({
         ...input,
         zone: {
           buildingId: payloadText(payload, "buildingId", demoStore.buildings.find((building) => building.propertyId === input.propertyId)?.id),
@@ -1029,7 +1046,7 @@ function applyPropertySetupForm(input: BackOfficeMutationInput, definition: Prop
       return { targetEntityType: "room", targetEntityId: room.id, result: room };
     }
     case "space_resource": {
-      const space = createSpace({
+      const space = await createSpace({
         ...input,
         space: {
           name: payloadText(payload, "name"),
@@ -1332,7 +1349,7 @@ export function getPropertySetupForm(propertyId: string, formCode: string) {
   };
 }
 
-export function savePropertySetupForm(input: BackOfficeMutationInput & {
+export async function savePropertySetupForm(input: BackOfficeMutationInput & {
   formCode: string;
   payload: Record<string, unknown>;
 }) {
@@ -1357,7 +1374,7 @@ export function savePropertySetupForm(input: BackOfficeMutationInput & {
     throw new Error(validationErrors.join(" "));
   }
 
-  const target = applyPropertySetupForm(input, definition, input.payload);
+  const target = await applyPropertySetupForm(input, definition, input.payload);
   const submission: PropertySetupFormSubmissionRecord = {
     id: createId("psfs"),
     propertyId: input.propertyId,
@@ -1951,39 +1968,52 @@ export function approveGoLive(input: BackOfficeMutationInput) {
   return { status: "approved" as const, propertyId: input.propertyId, approvedAt: nowIso() };
 }
 
-export function getPropertyMap(propertyId: string) {
+export async function getPropertyMap(propertyId: string) {
   requireProperty(propertyId);
+  // Fase 0 (Opción B): hybrid-read. Merge the in-memory seed (demoStore) with rows
+  // persisted in Prisma so BOTH seeded demo data AND user-created data (which now
+  // survives restart, thanks to the dual-write in createBuilding/Floor/Zone/Space)
+  // are shown. Rooms/assets/mapPositions stay demoStore-only for now (Opción A
+  // migrará habitaciones; ver docs/strategy/.../PERSIST-BACKOFFICE.md).
+  const [pBuildings, pFloors, pZones, pSpaces] = await Promise.all([
+    prisma.building.findMany({ where: { propertyId } }),
+    prisma.floor.findMany({ where: { propertyId } }),
+    prisma.propertyZone.findMany({ where: { propertyId } }),
+    prisma.propertySpace.findMany({ where: { propertyId } })
+  ]);
+  const buildings = mergeById(demoStore.buildings.filter((building) => building.propertyId === propertyId), pBuildings as Array<Record<string, unknown>>);
+  const floors = mergeById(demoStore.floors.filter((floor) => floor.propertyId === propertyId), pFloors as Array<Record<string, unknown>>);
+  const zones = mergeById(demoStore.propertyZones.filter((zone) => zone.propertyId === propertyId), pZones as Array<Record<string, unknown>>);
+  const spaces = mergeById(demoStore.propertySpaces.filter((space) => space.propertyId === propertyId), pSpaces as Array<Record<string, unknown>>);
   const rooms = demoStore.rooms.filter((room) => room.propertyId === propertyId);
   return {
     property: demoStore.properties.find((property) => property.id === propertyId),
-    buildings: demoStore.buildings.filter((building) => building.propertyId === propertyId),
-    floors: demoStore.floors.filter((floor) => floor.propertyId === propertyId),
-    zones: demoStore.propertyZones.filter((zone) => zone.propertyId === propertyId),
-    spaces: demoStore.propertySpaces.filter((space) => space.propertyId === propertyId),
+    buildings,
+    floors,
+    zones,
+    spaces,
     rooms,
     assets: demoStore.assets.filter((asset) => asset.propertyId === propertyId),
     mapPositions: demoStore.propertyMapPositions.filter((position) => position.propertyId === propertyId),
-    tree: demoStore.buildings
-      .filter((building) => building.propertyId === propertyId)
-      .map((building) => ({
-        ...building,
-        floors: demoStore.floors
-          .filter((floor) => floor.buildingId === building.id)
-          .map((floor) => ({
-            ...floor,
-            zones: demoStore.propertyZones
-              .filter((zone) => zone.floorId === floor.id)
-              .map((zone) => ({
-                ...zone,
-                rooms: rooms.filter((room) => room.zoneId === zone.id),
-                spaces: demoStore.propertySpaces.filter((space) => space.zoneId === zone.id)
-              }))
-          }))
-      }))
+    tree: buildings.map((building) => ({
+      ...building,
+      floors: floors
+        .filter((floor) => floor.buildingId === building.id)
+        .map((floor) => ({
+          ...floor,
+          zones: zones
+            .filter((zone) => zone.floorId === floor.id)
+            .map((zone) => ({
+              ...zone,
+              rooms: rooms.filter((room) => room.zoneId === zone.id),
+              spaces: spaces.filter((space) => space.zoneId === zone.id)
+            }))
+        }))
+    }))
   };
 }
 
-export function createBuilding(input: BackOfficeMutationInput & {
+export async function createBuilding(input: BackOfficeMutationInput & {
   building: Pick<BuildingRecord, "name"> & Partial<BuildingRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
@@ -1999,12 +2029,16 @@ export function createBuilding(input: BackOfficeMutationInput & {
     createdAt: timestamp,
     updatedAt: timestamp
   };
+  // Fase 0 (Opción B): dual-write to Prisma (survives restart) + demoStore (readers).
+  await prisma.building.create({
+    data: { id: record.id, propertyId: record.propertyId, name: record.name, code: record.code ?? null, description: record.description ?? null, sortOrder: record.sortOrder, active: record.active }
+  });
   demoStore.buildings.push(record);
   audit({ ...input, action: "BuildingCreated", entityType: "building", entityId: record.id, afterJson: record });
   return record;
 }
 
-export function createFloor(input: BackOfficeMutationInput & {
+export async function createFloor(input: BackOfficeMutationInput & {
   floor: Pick<FloorRecord, "name"> & Partial<FloorRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
@@ -2021,12 +2055,16 @@ export function createFloor(input: BackOfficeMutationInput & {
     createdAt: timestamp,
     updatedAt: timestamp
   };
+  // Fase 0 (Opción B): dual-write to Prisma + demoStore.
+  await prisma.floor.create({
+    data: { id: record.id, propertyId: record.propertyId, buildingId: record.buildingId ?? null, name: record.name, floorNumber: record.floorNumber ?? null, code: record.code ?? null, sortOrder: record.sortOrder, active: record.active }
+  });
   demoStore.floors.push(record);
   audit({ ...input, action: "FloorCreated", entityType: "floor", entityId: record.id, afterJson: record });
   return record;
 }
 
-export function createZone(input: BackOfficeMutationInput & {
+export async function createZone(input: BackOfficeMutationInput & {
   zone: Pick<PropertyZoneRecord, "name" | "zoneType"> & Partial<PropertyZoneRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
@@ -2045,12 +2083,16 @@ export function createZone(input: BackOfficeMutationInput & {
     createdAt: timestamp,
     updatedAt: timestamp
   };
+  // Fase 0 (Opción B): dual-write to Prisma + demoStore.
+  await prisma.propertyZone.create({
+    data: { id: record.id, propertyId: record.propertyId, buildingId: record.buildingId ?? null, floorId: record.floorId ?? null, name: record.name, code: record.code ?? null, zoneType: record.zoneType, description: record.description ?? null, sortOrder: record.sortOrder, active: record.active }
+  });
   demoStore.propertyZones.push(record);
   audit({ ...input, action: "ZoneCreated", entityType: "property_zone", entityId: record.id, afterJson: record });
   return record;
 }
 
-export function createSpace(input: BackOfficeMutationInput & {
+export async function createSpace(input: BackOfficeMutationInput & {
   space: Pick<PropertySpaceRecord, "name" | "spaceType"> & Partial<PropertySpaceRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
@@ -2069,6 +2111,10 @@ export function createSpace(input: BackOfficeMutationInput & {
     createdAt: timestamp,
     updatedAt: timestamp
   };
+  // Fase 0 (Opción B): dual-write to Prisma + demoStore.
+  await prisma.propertySpace.create({
+    data: { id: record.id, propertyId: record.propertyId, buildingId: record.buildingId ?? null, floorId: record.floorId ?? null, zoneId: record.zoneId ?? null, name: record.name, code: record.code ?? null, spaceType: record.spaceType, description: record.description ?? null, active: record.active }
+  });
   demoStore.propertySpaces.push(record);
   audit({ ...input, action: "SpaceCreated", entityType: "property_space", entityId: record.id, afterJson: record });
   return record;
