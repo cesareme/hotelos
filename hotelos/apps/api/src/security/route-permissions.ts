@@ -1081,7 +1081,14 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/compliance/authority/properties/:propertyId/inbox", permissions: ["compliance.ses.submit"], riskLevel: "high" },
   { method: "GET", path: "/compliance/authority/properties/:propertyId/submissions", permissions: ["compliance.ses.submit"], riskLevel: "high" },
   { method: "GET", path: "/compliance/authority/submissions/:submissionId", permissions: ["compliance.ses.submit"], riskLevel: "high" },
-  { method: "GET", path: "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/download", permissions: ["compliance.ses.export"], riskLevel: "critical" }
+  { method: "GET", path: "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/download", permissions: ["compliance.ses.export"], riskLevel: "critical" },
+
+  // Fase 0: Rate Plan CRUD. Mutations are FAIL-CLOSED without a manifest entry
+  // (they throw 500), so these are required for the endpoints to work at all.
+  { method: "GET", path: "/properties/:propertyId/rate-plans", permissions: ["revenue.read"], riskLevel: "low" },
+  { method: "POST", path: "/properties/:propertyId/rate-plans", permissions: ["revenue.manage_rates"], riskLevel: "medium" },
+  { method: "PATCH", path: "/rate-plans/:id", permissions: ["revenue.manage_rates"], riskLevel: "medium" },
+  { method: "DELETE", path: "/rate-plans/:id", permissions: ["revenue.manage_rates"], riskLevel: "medium" }
 ];
 
 export function findRoutePermission(method: string, path: string): ApiRoutePermission | undefined {
