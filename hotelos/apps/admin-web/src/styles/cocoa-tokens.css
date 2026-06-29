@@ -78,17 +78,19 @@
      ============================================================ */
 
   /* Family stacks */
+  /* Inter Variable leads (loaded webfont, consistent on Windows reception PCs);
+     SF Pro stays as the Apple fallback if the webfont ever fails to load. */
   --cocoa-font:
-    "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont,
-    "Helvetica Neue", "Inter", "Segoe UI", Roboto, sans-serif;
+    "Inter Variable", "Inter", system-ui, -apple-system, BlinkMacSystemFont,
+    "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
 
   --cocoa-font-family:
-    "SF Pro Text", system-ui, -apple-system, BlinkMacSystemFont,
-    "Helvetica Neue", "Inter", "Segoe UI", Roboto, sans-serif;
+    "Inter Variable", "Inter", system-ui, -apple-system, BlinkMacSystemFont,
+    "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
 
   --cocoa-font-display:
-    "SF Pro Display", system-ui, -apple-system, BlinkMacSystemFont,
-    "Helvetica Neue", "Inter", "Segoe UI", Roboto, sans-serif;
+    "Inter Variable", "Inter", system-ui, -apple-system, BlinkMacSystemFont,
+    "SF Pro Display", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
 
   --cocoa-font-mono:
     "SF Mono", ui-monospace, "Menlo", "Monaco",

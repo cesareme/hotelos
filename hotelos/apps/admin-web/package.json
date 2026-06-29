@@ -12,6 +12,7 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@fontsource-variable/inter": "^5.0.0",
     "@hotelos/product": "workspace:*",
     "@hotelos/shared": "workspace:*",
     "@sentry/react": "^10.55.0",

@@ -1,3 +1,7 @@
+// Inter Variable — the brand UI typeface. Loaded as a real webfont (the CSS
+// stacks named "Inter" but it was never bundled → faux-bold on non-Apple OSes,
+// and reception runs on Windows). Variable axis 100–900 = true weights, no synth.
+import "@fontsource-variable/inter";
 import { createRoot } from "react-dom/client";
 import * as Sentry from "@sentry/react";
 import { App } from "./App";
