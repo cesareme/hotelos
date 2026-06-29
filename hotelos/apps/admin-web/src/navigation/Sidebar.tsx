@@ -207,8 +207,9 @@ function dedupe(items: BackOfficeNavItem[]): BackOfficeNavItem[] {
 }
 
 export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
+  // ===== 1 · HOY — tu día según rol (landings, copilotos, dirección) =====
   {
-    title: "Operaciones",
+    title: "Hoy",
     badge: "daily",
     items: [
       { label: "Copiloto de recepción", screen: "ReceptionCopilotScreen", roles: R_RECEPTION },
@@ -221,62 +222,31 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
       { label: "Supervisión del turno", screen: "ShiftManagerScreen", roles: R_FRONT },
       { label: "Dashboard del director (GM)", screen: "GeneralManagerScreen", roles: R_MGMT },
       { label: "Director de operaciones", screen: "OperationsDirectorScreen", roles: R_OPS },
+      { label: "Cartera (todas las propiedades)", screen: "PortfolioDashboard", roles: R_MGMT },
+      { label: "Detalle de propiedad (cartera)", screen: "PropertyDetailScreen", roles: R_MGMT },
       { label: "Selector de personas", screen: "PersonaLandingScreen" },
-      { label: "📖 Guía de uso por persona", screen: "PersonaGuideScreen" },
+      { label: "📖 Guía de uso por persona", screen: "PersonaGuideScreen" }
+    ]
+  },
+  // ===== 2 · RESERVAS & HUÉSPEDES — front-of-house diario =====
+  {
+    title: "Reservas & Huéspedes",
+    badge: "daily",
+    roles: R_FRONT,
+    items: dedupe([
+      { label: "Espacio de reservas", screen: "ReservationWorkspace" },
+      { label: "Lista de reservas", screen: "ReservationsListScreen", roles: R_MGMT },
+      { label: "Crear reserva", screen: "ReservationCreate" },
+      { label: "Agente de reservas (IA)", screen: "ReservationAgent" },
+      { label: "Huéspedes", screen: "GuestsList" },
+      { label: "Timeline del huésped", screen: "GuestTimelineScreen" },
+      { label: "Recorrido del huésped", screen: "GuestJourneyWorkspace" },
       { label: "Tablero de habitaciones", screen: "RoomRackScreen", roles: R_FRONT },
       { label: "Live Timeline", screen: "LiveTimelineWorkspace", roles: R_FRONT },
-      // NOTE: "Bandeja de cumplimiento" y "Centro de cumplimiento" migraron al
-      // nuevo grupo top-level "Cumplimiento" (subgrupos Fiscal / ESG). Ya no se
-      // listan aquí para evitar duplicados.
-      { label: "Cartera (todas las propiedades)", screen: "PortfolioDashboard", roles: R_MGMT },
-      // Per-property drill-down sibling to PortfolioDashboard. Lives at top
-      // level so cluster directors can pin a single property's deep view.
-      { label: "Detalle de propiedad (cartera)", screen: "PropertyDetailScreen", roles: R_MGMT }
-    ],
+      ...pmsNavigationItems
+    ]),
     subgroups: [
       {
-        title: "Reservas y huéspedes",
-        roles: R_FRONT,
-        items: dedupe([
-          { label: "Espacio de reservas", screen: "ReservationWorkspace" },
-          { label: "Lista de reservas", screen: "ReservationsListScreen", roles: R_MGMT },
-          { label: "Crear reserva", screen: "ReservationCreate" },
-          { label: "Agente de reservas (IA)", screen: "ReservationAgent" },
-          { label: "Huéspedes", screen: "GuestsList" },
-          { label: "Timeline del huésped", screen: "GuestTimelineScreen" },
-          { label: "Recorrido del huésped", screen: "GuestJourneyWorkspace" },
-          ...pmsNavigationItems
-        ])
-      },
-      {
-        title: "Tableros operativos",
-        roles: R_OPS,
-        items: [
-          { label: "Mi turno (HK móvil)", screen: "HousekeepingMobileScreen" },
-          { label: "Mis averías (Mant. móvil)", screen: "MaintenanceMobileScreen" },
-          { label: "Tablero de pisos", screen: "HousekeepingDashboard" },
-          { label: "Tablero de mantenimiento", screen: "MaintenanceDashboard" },
-          { label: "Personal y turnos", screen: "WorkforceDashboard" },
-          { label: "Seguridad e incidentes", screen: "SafetyDashboard" },
-          { label: "Punto de venta (TPV)", screen: "PosDashboard" },
-          // ----- Followups migrados desde whitelist (settings-hub) -----
-          // Contadores energía/agua — operativa diaria de lecturas y umbrales.
-          // TODO: mover a subgrupo Sostenibilidad cuando exista (hoy se anida
-          // en Tableros operativos por proximidad funcional con HK/mant.).
-          // TODO: mover a subgrupo Sostenibilidad cuando exista
-          { label: "Contadores energía y agua", screen: "EnergyMetering", roles: R_OPS_ASSET },
-          // Kiosco self check-in — configuración operativa del hardware de
-          // recepción; encaja en tableros operativos junto a HK/mant.
-          { label: "Kiosco self check-in", screen: "KioskSettingsReal", roles: R_OPS_ASSET }
-        ]
-      },
-      {
-        // Grupos & eventos — dedicated subgroup so the full suite (dashboard,
-        // calendar, new-group/new-event/import-rooming dialogs, allotments and
-        // events spaces) is discoverable instead of buried inside "Comercial".
-        // The dashboard is the entry point: it hosts the dialogs directly via
-        // hash deep-links (#nuevo-grupo, #nuevo-evento, #importar-rooming) so
-        // sidebar clicks land on the right modal without router rewrites.
         title: "Grupos y eventos",
         roles: R_OPS_ASSET,
         items: [
@@ -289,129 +259,97 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           { label: "Pipeline de ventas (B2B)", screen: "SalesPipelineDashboard" },
           { label: "Espacios para eventos", screen: "EventSpacesSettings" }
         ]
-      },
-      {
-        title: "Comercial",
-        roles: R_MGMT,
-        items: dedupe([
-          { label: "Channel Manager (agregador OTA)", screen: "ChannelAggregatorHub", roles: R_OPS_ASSET },
-          { label: "Inicio de revenue", screen: "RevenueHomeDashboard", roles: R_MGMT },
-          { label: "Panel de reunión de revenue", screen: "RevenueMeeting", roles: R_ASSET_OWNER },
-          { label: "Histórico y previsión", screen: "RevenueHistoryForecastDashboard", roles: R_ASSET },
-          // Static, owner-friendly version of the histórico/forecast dashboard
-          // for board reviews — lives next to its interactive counterpart.
-          { label: "Informe histórico/forecast (board)", screen: "RevenueHistoryForecastReport", roles: R_ASSET_OWNER },
-          // Cross-period export pipeline for revenue snapshots; consumed by
-          // accountants (R_ASSET) feeding external BI / month-end packs.
-          { label: "Centro de exportaciones de revenue", screen: "RevenueExportCenter", roles: R_ASSET },
-          { label: "Comparación de revenue", screen: "RevenueComparisonDashboard", roles: R_ASSET_OWNER },
-          { label: "Rendimiento de canales", screen: "ChannelPerformanceDashboard", roles: R_OPS_ASSET },
-          { label: "Rate shopper (comp-set)", screen: "RateShopperSettings", roles: R_ASSET },
-          // Pipeline de ventas, Grupos y eventos, Calendario de grupos and
-          // Allotments now live in the dedicated "Grupos y eventos" subgroup
-          // above so the full suite is discoverable in one place.
-          { label: "Planes tarifarios (BAR + variantes)", screen: "RatePlans", roles: R_MGMT },
-          { label: "Editor de tarifas (Rate Grid)", screen: "RateGridEditorScreen", roles: R_ASSET_OWNER },
-          { label: "Historial de tarifas", screen: "RateJournalScreen", roles: R_ASSET_OWNER },
-          { label: "Políticas de cancelación", screen: "CancellationPolicies", roles: R_MGMT },
-          { label: "Cartas de Restauración (F&B)", screen: "FnbMenu", roles: R_OPS_ASSET },
-          { label: "Inventario F&B (stock + recetas)", screen: "FnbInventory", roles: R_OPS_ASSET },
-          { label: "Tasa turística por CCAA", screen: "TouristTax", roles: R_MGMT },
-          // ----- Followups migrados desde whitelist (settings-hub) -----
-          // "Ajustes de IA" antes vivía aquí como atajo admin; tras consolidar
-          // el bloque de IA queda visible como item de primer nivel en
-          // "Operaciones de IA" para R_ASSET, así que se ha retirado de la
-          // navegación comercial para evitar la entrada duplicada.
-          // Banca España queda como atajo comercial para asset/owner que pilotan
-          // tesorería desde el cuadro de mando de revenue. TBAI e Informes ESRS
-          // han migrado al grupo top-level "Cumplimiento" (Fiscal / ESG) para
-          // evitar duplicados.
-          { label: "Banca España (CSB-43 + SEPA)", screen: "BankingSpain", roles: R_ASSET_OWNER }
-        ])
-      },
-      {
-        title: "Experiencia del huésped",
-        roles: ["reception", "operations", "asset", "owner"],
-        items: [
-          { label: "Bandeja de concierge", screen: "ConciergeInboxDashboard", roles: R_FRONT },
-          { label: "Reputación", screen: "ReputationDashboard", roles: R_MGMT },
-          { label: "Upsells", screen: "UpsellsDashboard", roles: ["reception", "operations", "asset"] },
-          { label: "Encuestas / NPS", screen: "SurveysDashboard", roles: R_MGMT },
-          { label: "Casos de calidad", screen: "QualityDashboard", roles: R_OPS_ASSET },
-          { label: "CRM", screen: "CrmDashboard", roles: R_OPS_ASSET },
-          { label: "Fidelización", screen: "LoyaltyDashboard", roles: R_OPS_ASSET },
-          // ----- Followups migrados desde whitelist (settings-hub) -----
-          // Pantalla real de ajustes del portal del huésped (no el placeholder
-          // del settings hub). Visible para operations/asset que pilotan la
-          // experiencia digital.
-          { label: "Portal del huésped (ajustes)", screen: "GuestPortalSettingsReal", roles: R_OPS_ASSET },
-          // Segmentos CRM — destino real (componente GuestSegmentsScreen) que
-          // los equipos de experiencia usan al diseñar campañas y journeys.
-          { label: "Segmentos de huéspedes", screen: "GuestSegmentsReal", roles: R_OPS_ASSET },
-          // Programa de fidelización — destino real, complementa el dashboard
-          // "Fidelización" de arriba con la gestión de tiers y reglas.
-          { label: "Programa de fidelización", screen: "LoyaltyProgram", roles: R_OPS_ASSET },
-          // Casos de calidad — pantalla real de gestión de incidencias QA
-          // separada del dashboard agregado "QualityDashboard".
-          { label: "Casos de calidad", screen: "QualityCasesReal", roles: R_OPS_ASSET },
-          // Encuestas NPS — destino real para configurar encuestas y revisar
-          // resultados detallados (distinto del dashboard agregado).
-          { label: "Encuestas NPS", screen: "SurveysNps", roles: R_OPS_ASSET },
-          // Ajustes upsells — pantalla real, sustituye al placeholder del
-          // settings hub para los equipos que mantienen el catálogo.
-          { label: "Ajustes upsells", screen: "UpsellsSettings", roles: R_OPS_ASSET },
-          // Campañas de marketing — destino real. TODO: mover a subgrupo
-          // "Marketing" cuando exista (hoy se anida bajo Experiencia, que es
-          // el grupo natural más cercano para CRM/campañas).
-          // TODO: mover a subgrupo Marketing cuando exista
-          { label: "Campañas de marketing", screen: "CampaignManagerReal", roles: R_OPS_ASSET }
-        ]
-      },
-      {
-        // NOTE: el bloque fiscal/compliance (Centro fiscal, Envíos fiscales,
-        // Modelos AEAT 303/111/115/180/390, TicketBAI, Informe CSRD/ESRS) ha
-        // migrado al grupo top-level "Cumplimiento" → subgrupos Fiscal / ESG
-        // para consolidar la información regulatoria en un solo lugar. Aquí se
-        // mantiene solo el bloque puramente financiero (tesorería, contabilidad,
-        // nóminas, etc.).
-        title: "Finanzas y fiscal",
-        roles: R_MGMT,
-        items: [
-          { label: "Cobros · Pagos · Tesorería", screen: "FinancePositionDashboard", roles: R_ASSET_OWNER },
-          { label: "Conciliación bancaria", screen: "BankReconciliationScreen", roles: R_ASSET },
-          { label: "Balance de comprobación", screen: "TrialBalanceScreen", roles: R_ASSET },
-          { label: "Balance de situación", screen: "BalanceSheetScreen", roles: R_ASSET_OWNER },
-          { label: "Estado de flujos de efectivo", screen: "CashFlowScreen", roles: R_ASSET_OWNER },
-          { label: "Comisiones (OTA)", screen: "CommissionsScreen", roles: R_OPS_ASSET },
-          { label: "Nóminas", screen: "PayrollScreen", roles: R_OPS_ASSET },
-          { label: "Tipos de cambio", screen: "ExchangeRatesScreen", roles: R_ASSET },
-          { label: "Cierre de ejercicio", screen: "YearEndCloseScreen", roles: R_ASSET },
-          { label: "Facturas rectificativas", screen: "InvoiceRectificationsScreen", roles: R_OPS_ASSET },
-          { label: "Folios y enrutamiento", screen: "FolioRouting", roles: R_OPS_ASSET },
-          { label: "Banca España (CSB-43 + SEPA)", screen: "BankingSpain", roles: R_ASSET },
-          { label: "Referencia API (pública)", screen: "ApiReferenceScreen", roles: R_ASSET },
-          { label: "Compras y proveedores", screen: "ProcurementDashboard", roles: R_OPS_ASSET },
-          { label: "Inventario operativo", screen: "InventoryDashboard", roles: R_OPS_ASSET }
-          // Fase 2: retirados de este cajón de sastre los 11 items que YA viven en
-          // su grupo propio (Webhooks/Marketplace/DeveloperApps en Desarrollador;
-          // Mensajería/Upsells/CRM-Segmentos/Fidelización/Portal/Campañas/Kiosco/
-          // Energía en Comercial/Operaciones) → cada pantalla en un único grupo.
-        ]
-      },
-      {
-        title: "Métricas de plataforma",
-        roles: R_MGMT,
-        items: dedupe([
-          { label: "Centro de analítica", screen: "AnalyticsCenterDashboard", roles: R_MGMT },
-          ...reportsNavigationItems,
-          { label: "Registro de activos", screen: "AssetsDashboard", roles: R_OPS_ASSET },
-          { label: "Rentabilidad por habitación", screen: "RoomProfitabilityDashboard", roles: R_MGMT },
-          { label: "Consumo energético", screen: "EnergyDashboard", roles: R_OPS_ASSET }
-          // "Sostenibilidad" (SustainabilityDashboard) migró al grupo top-level
-          // "Cumplimiento" → subgrupo ESG, donde convive con ESRS dashboard y
-          // ESRS evidence.
-        ])
       }
+    ]
+  },
+  // ===== 3 · OPERACIONES — back-of-house (HK, mantenimiento, turnos, activos) =====
+  {
+    title: "Operaciones",
+    badge: "daily",
+    roles: R_OPS,
+    items: [
+      { label: "Mi turno (HK móvil)", screen: "HousekeepingMobileScreen" },
+      { label: "Mis averías (Mant. móvil)", screen: "MaintenanceMobileScreen" },
+      { label: "Tablero de pisos", screen: "HousekeepingDashboard" },
+      { label: "Tablero de mantenimiento", screen: "MaintenanceDashboard" },
+      { label: "Personal y turnos", screen: "WorkforceDashboard" },
+      { label: "Seguridad e incidentes", screen: "SafetyDashboard" },
+      { label: "Punto de venta (TPV)", screen: "PosDashboard" },
+      { label: "Compras y proveedores", screen: "ProcurementDashboard", roles: R_OPS_ASSET },
+      { label: "Inventario operativo", screen: "InventoryDashboard", roles: R_OPS_ASSET },
+      { label: "Registro de activos", screen: "AssetsDashboard", roles: R_OPS_ASSET },
+      { label: "Consumo energético", screen: "EnergyDashboard", roles: R_OPS_ASSET },
+      { label: "Contadores energía y agua", screen: "EnergyMetering", roles: R_OPS_ASSET },
+      { label: "Kiosco self check-in", screen: "KioskSettingsReal", roles: R_OPS_ASSET }
+    ]
+  },
+  // ===== 4 · COMERCIAL / CRM — canales, CRM, experiencia, F&B =====
+  {
+    title: "Comercial / CRM",
+    badge: "commercial",
+    roles: R_MGMT,
+    items: dedupe([
+      { label: "Channel Manager (agregador OTA)", screen: "ChannelAggregatorHub", roles: R_OPS_ASSET },
+      { label: "Rendimiento de canales", screen: "ChannelPerformanceDashboard", roles: R_OPS_ASSET },
+      { label: "CRM", screen: "CrmDashboard", roles: R_OPS_ASSET },
+      { label: "Segmentos de huéspedes", screen: "GuestSegmentsReal", roles: R_OPS_ASSET },
+      { label: "Fidelización", screen: "LoyaltyDashboard", roles: R_OPS_ASSET },
+      { label: "Programa de fidelización", screen: "LoyaltyProgram", roles: R_OPS_ASSET },
+      { label: "Campañas de marketing", screen: "CampaignManagerReal", roles: R_OPS_ASSET },
+      { label: "Upsells", screen: "UpsellsDashboard", roles: ["reception", "operations", "asset"] },
+      { label: "Ajustes upsells", screen: "UpsellsSettings", roles: R_OPS_ASSET },
+      { label: "Reputación", screen: "ReputationDashboard", roles: R_MGMT },
+      { label: "Encuestas / NPS", screen: "SurveysDashboard", roles: R_MGMT },
+      { label: "Encuestas NPS", screen: "SurveysNps", roles: R_OPS_ASSET },
+      { label: "Casos de calidad", screen: "QualityDashboard", roles: R_OPS_ASSET },
+      { label: "Gestión de calidad", screen: "QualityCasesReal", roles: R_OPS_ASSET },
+      { label: "Bandeja de concierge", screen: "ConciergeInboxDashboard", roles: R_FRONT },
+      { label: "Portal del huésped (ajustes)", screen: "GuestPortalSettingsReal", roles: R_OPS_ASSET },
+      { label: "Cartas de Restauración (F&B)", screen: "FnbMenu", roles: R_OPS_ASSET },
+      { label: "Inventario F&B (stock + recetas)", screen: "FnbInventory", roles: R_OPS_ASSET }
+    ])
+  },
+  // ===== 5 · REVENUE / TARIFAS — pricing, forecast, analítica =====
+  {
+    title: "Revenue / Tarifas",
+    badge: "commercial",
+    roles: R_MGMT,
+    items: dedupe([
+      { label: "Inicio de revenue", screen: "RevenueHomeDashboard", roles: R_MGMT },
+      { label: "Panel de reunión de revenue", screen: "RevenueMeeting", roles: R_ASSET_OWNER },
+      { label: "Histórico y previsión", screen: "RevenueHistoryForecastDashboard", roles: R_ASSET },
+      { label: "Informe histórico/forecast (board)", screen: "RevenueHistoryForecastReport", roles: R_ASSET_OWNER },
+      { label: "Centro de exportaciones de revenue", screen: "RevenueExportCenter", roles: R_ASSET },
+      { label: "Comparación de revenue", screen: "RevenueComparisonDashboard", roles: R_ASSET_OWNER },
+      { label: "Rate shopper (comp-set)", screen: "RateShopperSettings", roles: R_ASSET },
+      { label: "Planes tarifarios (BAR + variantes)", screen: "RatePlans", roles: R_MGMT },
+      { label: "Editor de tarifas (Rate Grid)", screen: "RateGridEditorScreen", roles: R_ASSET_OWNER },
+      { label: "Historial de tarifas", screen: "RateJournalScreen", roles: R_ASSET_OWNER },
+      { label: "Políticas de cancelación", screen: "CancellationPolicies", roles: R_MGMT },
+      { label: "Tasa turística por CCAA", screen: "TouristTax", roles: R_MGMT },
+      { label: "Centro de analítica", screen: "AnalyticsCenterDashboard", roles: R_MGMT },
+      { label: "Rentabilidad por habitación", screen: "RoomProfitabilityDashboard", roles: R_MGMT },
+      ...reportsNavigationItems
+    ])
+  },
+  // ===== 6 · FACTURACIÓN & FINANZAS — facturas, folios, tesorería, contabilidad =====
+  {
+    title: "Facturación & Finanzas",
+    badge: "finance",
+    roles: R_MGMT,
+    items: [
+      { label: "Facturas rectificativas", screen: "InvoiceRectificationsScreen", roles: R_OPS_ASSET },
+      { label: "Folios y enrutamiento", screen: "FolioRouting", roles: R_OPS_ASSET },
+      { label: "Cobros · Pagos · Tesorería", screen: "FinancePositionDashboard", roles: R_ASSET_OWNER },
+      { label: "Conciliación bancaria", screen: "BankReconciliationScreen", roles: R_ASSET },
+      { label: "Balance de comprobación", screen: "TrialBalanceScreen", roles: R_ASSET },
+      { label: "Balance de situación", screen: "BalanceSheetScreen", roles: R_ASSET_OWNER },
+      { label: "Estado de flujos de efectivo", screen: "CashFlowScreen", roles: R_ASSET_OWNER },
+      { label: "Comisiones (OTA)", screen: "CommissionsScreen", roles: R_OPS_ASSET },
+      { label: "Nóminas", screen: "PayrollScreen", roles: R_OPS_ASSET },
+      { label: "Tipos de cambio", screen: "ExchangeRatesScreen", roles: R_ASSET },
+      { label: "Cierre de ejercicio", screen: "YearEndCloseScreen", roles: R_ASSET },
+      { label: "Banca España (CSB-43 + SEPA)", screen: "BankingSpain", roles: R_ASSET }
     ]
   },
   {
@@ -480,7 +418,7 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
     ]
   },
   {
-    title: "Back Office",
+    title: "Configuración",
     badge: "settings",
     roles: R_OPS_ASSET,
     items: [
@@ -619,6 +557,7 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           // exponen en su hogar natural (zona admin / developer).
           { label: "Webhooks", screen: "WebhooksAdmin" },
           { label: "Mis apps (Developer)", screen: "DeveloperApps" },
+          { label: "Referencia API (pública)", screen: "ApiReferenceScreen", roles: R_ASSET },
           // Conector de correo entrante (IA) — gestiona buzones que alimentan
           // el agente de reservas. Replica el atajo del grupo IA.
           { label: "Conectores de correo", screen: "EmailConnectors" },
@@ -671,7 +610,7 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
     ]
   },
   {
-    title: "Operaciones de IA",
+    title: "Inteligencia artificial",
     badge: "IA",
     // Engineer/management zone — hidden from front-desk roles. Visible to anyone
     // with an AI permission or to owners/directors with the dashboard permission.
