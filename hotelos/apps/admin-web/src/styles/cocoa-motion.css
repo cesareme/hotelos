@@ -82,3 +82,37 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ============================================================
+   Entrance utilities — opt-in, compositor-only (opacity + transform).
+   .cocoa-enter      → element fades + rises in once on mount.
+   .cocoa-stagger>*  → direct children cascade in with a small offset
+                        (the signature dashboard "KPIs settle in" feel).
+   ============================================================ */
+.cocoa-enter {
+  animation: cocoa-slide-in-up 200ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+
+.cocoa-stagger > * {
+  animation: cocoa-slide-in-up 220ms cubic-bezier(0.2, 0, 0, 1) both;
+}
+.cocoa-stagger > *:nth-child(2) { animation-delay: 40ms; }
+.cocoa-stagger > *:nth-child(3) { animation-delay: 80ms; }
+.cocoa-stagger > *:nth-child(4) { animation-delay: 120ms; }
+.cocoa-stagger > *:nth-child(5) { animation-delay: 160ms; }
+.cocoa-stagger > *:nth-child(6) { animation-delay: 200ms; }
+.cocoa-stagger > *:nth-child(7) { animation-delay: 240ms; }
+.cocoa-stagger > *:nth-child(8) { animation-delay: 280ms; }
+
+/* Reduced motion: kill the animation entirely (not just duration) so the
+   stagger DELAY can't leave content invisible/`both`-held for a beat. */
+@media (prefers-reduced-motion: reduce) {
+  .cocoa-enter,
+  .cocoa-stagger > * {
+    animation: none !important;
+  }
+}
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .cocoa-enter,
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .cocoa-stagger > * {
+  animation: none !important;
+}

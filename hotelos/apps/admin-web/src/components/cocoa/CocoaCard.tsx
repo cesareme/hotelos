@@ -21,15 +21,20 @@ const PADDING_MAP: Record<CocoaCardPadding, string> = {
 function getVariantStyle(variant: CocoaCardVariant): CSSProperties {
   switch (variant) {
     case "elevated":
+      // Real canvas→card lift (was --cocoa-shadow-control, a control-sized
+      // shadow that's imperceptible on a full card → the whole app read flat).
       return {
         background: "var(--cocoa-background-content)",
-        boxShadow: "var(--cocoa-shadow-control)",
+        boxShadow: "var(--cocoa-shadow-card)",
         borderRadius: "var(--cocoa-radius-lg)"
       };
     case "bordered":
+      // Keep the hairline border but add the minimal control shadow so even
+      // secondary cards detach from the canvas instead of being mere outlines.
       return {
         background: "var(--cocoa-background-content)",
         border: "1px solid var(--cocoa-separator)",
+        boxShadow: "var(--cocoa-shadow-control)",
         borderRadius: "var(--cocoa-radius-lg)"
       };
     case "plain":
@@ -49,6 +54,15 @@ export function CocoaCard({
 }: CocoaCardProps) {
   const isInteractive = typeof onClick === "function";
 
+  // The shadow this variant rests at, so hover can escalate and mouse-leave can
+  // restore it. Empty for plain (no shadow to manage).
+  const baseShadow =
+    variant === "elevated"
+      ? "var(--cocoa-shadow-card)"
+      : variant === "bordered"
+        ? "var(--cocoa-shadow-control)"
+        : "";
+
   const style: CSSProperties = {
     ...getVariantStyle(variant),
     padding: PADDING_MAP[padding],
@@ -56,7 +70,7 @@ export function CocoaCard({
       ? {
           cursor: "pointer",
           transition:
-            "transform var(--cocoa-duration-fast) var(--cocoa-ease-out)"
+            "transform var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-base) var(--cocoa-ease-out)"
         }
       : {})
   };
@@ -64,7 +78,10 @@ export function CocoaCard({
   const handleMouseEnter: MouseEventHandler<HTMLDivElement> | undefined =
     isInteractive
       ? (event) => {
-          event.currentTarget.style.transform = "translateY(-1px)";
+          event.currentTarget.style.transform = "translateY(-2px)";
+          if (baseShadow) {
+            event.currentTarget.style.boxShadow = "var(--cocoa-shadow-window)";
+          }
         }
       : undefined;
 
@@ -72,6 +89,9 @@ export function CocoaCard({
     isInteractive
       ? (event) => {
           event.currentTarget.style.transform = "translateY(0)";
+          if (baseShadow) {
+            event.currentTarget.style.boxShadow = baseShadow;
+          }
         }
       : undefined;
 

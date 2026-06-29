@@ -39,6 +39,20 @@ import {
 
 const PROPERTY_ID = getActivePropertyId();
 
+// Spanish money formatting — "272,00 €", never the Anglo "272.00 EUR".
+// This is a VeriFactu product; the numbers must read as Spanish invoices.
+function fmtMoney(value: number | string | null | undefined, currency = "EUR"): string {
+  const n = typeof value === "string" ? Number(value) : value;
+  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+  return new Intl.NumberFormat("es-ES", {
+    style: "currency",
+    currency: currency || "EUR",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(n);
+}
+const fmtEur = (value: number | string | null | undefined): string => fmtMoney(value, "EUR");
+
 type InvoiceTab = "draft" | "issued" | "pending" | "paid" | "cancelled";
 
 const TAB_DEFS: Array<{ key: InvoiceTab; label: string }> = [
@@ -241,7 +255,7 @@ export function BillingCenterScreen() {
       invoiceId: invoice.id,
       to: "",
       subject: `Factura ${number}`,
-      body: `Estimado cliente,\n\nAdjuntamos la factura ${number} por importe de ${invoice.total} EUR.\n\nGracias por su confianza.`
+      body: `Estimado cliente,\n\nAdjuntamos la factura ${number} por importe de ${fmtEur(invoice.total)}.\n\nGracias por su confianza.`
     });
   }
 
@@ -390,7 +404,7 @@ export function BillingCenterScreen() {
         key: "total",
         label: "Total",
         align: "right",
-        render: (row) => `${Number(row.total).toFixed(2)} EUR`
+        render: (row) => fmtEur(row.total)
       },
       {
         key: "status",
@@ -683,7 +697,7 @@ export function BillingCenterScreen() {
                         <strong>{line.description}</strong>
                         <small>{line.type} · {line.quantity} × {line.unitPrice}{line.taxCode ? ` · ${line.taxCode}` : ""}</small>
                       </span>
-                      <strong>{line.total} {folio.folio.currency}</strong>
+                      <strong>{fmtMoney(line.total, folio.folio.currency)}</strong>
                     </div>
                   )) : <p className="bo-muted">Sin cargos registrados.</p>}
                 </div>
@@ -698,7 +712,7 @@ export function BillingCenterScreen() {
                         <strong>{payment.method}</strong>
                         <small>{payment.status}{payment.pspReference ? ` · ref ${payment.pspReference}` : ""}</small>
                       </span>
-                      <strong>{payment.amount} {payment.currency}</strong>
+                      <strong>{fmtMoney(payment.amount, payment.currency)}</strong>
                     </div>
                   )) : <p className="bo-muted">Sin pagos registrados.</p>}
                 </div>
@@ -930,7 +944,7 @@ export function BillingCenterScreen() {
               {kpis.counts.draft}
             </div>
             <p style={{ marginTop: "var(--cocoa-space-1)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-caption)" }}>
-              {kpis.totals.draft.toFixed(2)} EUR
+              {fmtEur(kpis.totals.draft)}
             </p>
           </CocoaCard>
           <CocoaCard variant="elevated" padding="md">
@@ -954,7 +968,7 @@ export function BillingCenterScreen() {
               {kpis.counts.issued}
             </div>
             <p style={{ marginTop: "var(--cocoa-space-1)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-caption)" }}>
-              {kpis.totals.issued.toFixed(2)} EUR
+              {fmtEur(kpis.totals.issued)}
             </p>
           </CocoaCard>
           <CocoaCard variant="elevated" padding="md">
@@ -978,7 +992,7 @@ export function BillingCenterScreen() {
               {kpis.counts.pending}
             </div>
             <p style={{ marginTop: "var(--cocoa-space-1)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-caption)" }}>
-              {kpis.totals.pending.toFixed(2)} EUR
+              {fmtEur(kpis.totals.pending)}
             </p>
           </CocoaCard>
           <CocoaCard variant="elevated" padding="md">
@@ -1002,7 +1016,7 @@ export function BillingCenterScreen() {
               {kpis.counts.paid}
             </div>
             <p style={{ marginTop: "var(--cocoa-space-1)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-caption)" }}>
-              {kpis.totals.paid.toFixed(2)} EUR
+              {fmtEur(kpis.totals.paid)}
             </p>
           </CocoaCard>
           <CocoaCard variant="elevated" padding="md">
@@ -1026,7 +1040,7 @@ export function BillingCenterScreen() {
               {kpis.counts.cancelled}
             </div>
             <p style={{ marginTop: "var(--cocoa-space-1)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-caption)" }}>
-              {kpis.totals.cancelled.toFixed(2)} EUR
+              {fmtEur(kpis.totals.cancelled)}
             </p>
           </CocoaCard>
         </div>
@@ -1215,8 +1229,8 @@ export function BillingCenterScreen() {
             </tbody>
           </table>
           <div style={{ textAlign: "right", marginTop: "var(--cocoa-space-2)" }}>
-            <div className="bo-muted">IVA: {preview.taxTotal} EUR</div>
-            <div><strong>Total: {preview.total} EUR</strong></div>
+            <div className="bo-muted">IVA: {fmtEur(preview.taxTotal)}</div>
+            <div><strong>Total: {fmtEur(preview.total)}</strong></div>
           </div>
 
           {preview.verifactuHash ? (

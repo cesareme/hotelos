@@ -116,7 +116,11 @@ export function CocoaTable<Row>({
     position: "sticky",
     top: 0,
     background: "var(--cocoa-background-sidebar)",
-    zIndex: 1
+    zIndex: 1,
+    // Subtle downward shadow so the header floats over scrolled rows. A solid
+    // fill + 1px line, NOT backdrop blur (blur would smear the figures passing
+    // underneath and cost GPU on iPad — reviewers rejected it).
+    boxShadow: "0 1px 0 var(--cocoa-separator), 0 2px 6px rgb(0 0 0 / 0.04)"
   };
 
   const handleSortClick = (col: CocoaTableColumn<Row>) => {
@@ -220,17 +224,23 @@ export function CocoaTable<Row>({
               ? "var(--cocoa-background-content)"
               : "color-mix(in srgb, var(--cocoa-label) 3%, transparent)";
             let color: string | undefined;
+            let boxShadow: string | undefined;
             if (isHover && !isSelected) {
               background = "color-mix(in srgb, var(--cocoa-accent) 8%, transparent)";
             }
             if (isSelected) {
-              background = "var(--cocoa-background-selection)";
-              color = "var(--cocoa-accent-contrast, #FFFFFF)";
+              // A 100% accent fill is too loud for a financial table. Use a 15%
+              // wash + the normal dark label (keeps text contrast) and an inset
+              // accent bar as a second, non-colour selection cue (WCAG 1.4.1).
+              background = "color-mix(in srgb, var(--cocoa-accent) 15%, transparent)";
+              color = "var(--cocoa-label)";
+              boxShadow = "inset 3px 0 0 var(--cocoa-accent)";
             }
 
             const trStyle: CSSProperties = {
               background,
               color,
+              boxShadow,
               cursor: isClickable ? "pointer" : "default",
               transition:
                 "background var(--cocoa-duration-fast, 100ms) var(--cocoa-ease-out)"
@@ -256,7 +266,15 @@ export function CocoaTable<Row>({
                     verticalAlign: "middle",
                     fontSize: "var(--cocoa-fs-body)",
                     width: col.width,
-                    color: "inherit"
+                    color: "inherit",
+                    // Right-aligned columns are numeric (amounts, counts) → tabular
+                    // + lining figures so digits line up column-wise.
+                    ...(align === "right"
+                      ? {
+                          fontVariantNumeric: "tabular-nums lining-nums",
+                          fontFeatureSettings: '"tnum" 1, "lnum" 1'
+                        }
+                      : {})
                   };
                   const content = col.render
                     ? col.render(row)

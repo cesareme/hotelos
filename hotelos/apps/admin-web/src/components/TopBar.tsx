@@ -290,7 +290,7 @@ export function TopBar(props: TopBarProps) {
                 background: "var(--surface-1)",
                 border: "1px solid var(--line, rgba(0,0,0,0.08))",
                 borderRadius: "var(--radius-md)",
-                boxShadow: "0 8px 24px rgba(0,0,0,0.12)",
+                boxShadow: "var(--shadow-lg)",
                 zIndex: 60
               }}
             >

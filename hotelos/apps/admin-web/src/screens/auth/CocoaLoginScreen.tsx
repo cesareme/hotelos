@@ -187,7 +187,7 @@ export function CocoaLoginScreen(props: CocoaLoginScreenProps) {
       padding: narrow ? "24px" : "48px",
       overflow: "hidden",
       backgroundImage:
-        "linear-gradient(135deg, rgba(0, 100, 225, 0.08) 0%, rgba(40, 167, 69, 0.08) 100%)",
+        "linear-gradient(135deg, color-mix(in srgb, var(--cocoa-accent) 10%, transparent) 0%, color-mix(in srgb, var(--cocoa-accent) 4%, transparent) 100%)",
       backdropFilter: "blur(12px) saturate(160%)",
       WebkitBackdropFilter: "blur(12px) saturate(160%)",
       borderRight: narrow
@@ -353,7 +353,7 @@ export function CocoaLoginScreen(props: CocoaLoginScreenProps) {
     height: 96,
     borderRadius: "50%",
     background:
-      "radial-gradient(circle at 30% 30%, rgba(0, 100, 225, 0.35), rgba(0, 100, 225, 0.10) 70%)",
+      "radial-gradient(circle at 30% 30%, color-mix(in srgb, var(--cocoa-accent) 35%, transparent), color-mix(in srgb, var(--cocoa-accent) 10%, transparent) 70%)",
     animation: "cocoa-float-a 7s ease-in-out infinite"
   };
 
@@ -365,7 +365,7 @@ export function CocoaLoginScreen(props: CocoaLoginScreenProps) {
     height: 0,
     borderLeft: "44px solid transparent",
     borderRight: "44px solid transparent",
-    borderBottom: "76px solid rgba(40, 167, 69, 0.30)",
+    borderBottom: "76px solid color-mix(in srgb, var(--cocoa-accent) 30%, transparent)",
     animation: "cocoa-float-b 9s ease-in-out infinite"
   };
 
@@ -377,7 +377,7 @@ export function CocoaLoginScreen(props: CocoaLoginScreenProps) {
     height: 80,
     borderRadius: 18,
     background:
-      "linear-gradient(135deg, rgba(0, 100, 225, 0.28), rgba(40, 167, 69, 0.22))",
+      "linear-gradient(135deg, color-mix(in srgb, var(--cocoa-accent) 28%, transparent), color-mix(in srgb, var(--cocoa-accent) 18%, transparent))",
     animation: "cocoa-float-c 11s ease-in-out infinite"
   };
 

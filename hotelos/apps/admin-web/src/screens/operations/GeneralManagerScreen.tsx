@@ -477,7 +477,7 @@ export function GeneralManagerScreen() {
       />
 
       {/* Row 1 — Today snapshot strip */}
-      <div style={kpiStripStyle}>
+      <div className="cocoa-stagger" style={kpiStripStyle}>
         <DirectorKpiTile
           label="Ocupación"
           value={fmtPct(k.occupancy.today.value)}

@@ -130,10 +130,12 @@ function todayLabel(): string {
 // por eso usamos un span con tokens `--cocoa-*` para conservar la apariencia
 // de pill semántica (success / warning / danger / info).
 const STATUS_COLOR_BY_KIND: Record<StatusKind, { bg: string; fg: string }> = {
-  ok: { bg: "rgba(40, 167, 69, 0.12)", fg: "var(--cocoa-success)" },
-  warn: { bg: "rgba(255, 149, 0, 0.14)", fg: "var(--cocoa-warning)" },
-  error: { bg: "rgba(255, 59, 48, 0.14)", fg: "var(--cocoa-danger)" },
-  info: { bg: "rgba(0, 100, 225, 0.10)", fg: "var(--cocoa-accent)" }
+  ok: { bg: "var(--cocoa-success-bg)", fg: "var(--cocoa-success)" },
+  warn: { bg: "var(--cocoa-warning-bg)", fg: "var(--cocoa-warning)" },
+  error: { bg: "var(--cocoa-danger-bg)", fg: "var(--cocoa-danger)" },
+  // info was a literal Apple-blue rgba; use the Esmeralda accent surface so the
+  // pill matches the brand and adapts to dark automatically.
+  info: { bg: "var(--cocoa-accent-bg)", fg: "var(--cocoa-accent)" }
 };
 
 function pill(kind: StatusKind, label: string) {
@@ -281,7 +283,12 @@ const kpiValueStyle: CSSProperties = {
   fontSize: "var(--cocoa-fs-large-title)",
   fontWeight: 700,
   marginTop: "var(--cocoa-space-2)",
-  lineHeight: 1.1
+  lineHeight: 1.1,
+  // Fintech soul: tabular + lining figures so digits keep a fixed width and
+  // KPIs don't jitter on the 30s refresh; tighter tracking at large size.
+  fontVariantNumeric: "tabular-nums lining-nums",
+  fontFeatureSettings: '"tnum" 1, "lnum" 1',
+  letterSpacing: "-0.022em"
 };
 
 const kpiGridStyle: CSSProperties = {
@@ -711,7 +718,7 @@ export function FrontDeskDashboard() {
       {/* Cola de acciones priorizada — la vista que dice qué hacer ahora. */}
       <FrontDeskActionQueue />
 
-      <div style={kpiGridStyle}>
+      <div className="cocoa-stagger" style={kpiGridStyle}>
         <CocoaCard variant="elevated" padding="md">
           <div style={kpiHeadStyle}>
             <span style={kpiLabelStyle}>Llegadas hoy</span>
@@ -772,7 +779,7 @@ export function FrontDeskDashboard() {
       </div>
 
       {showRiskKpis ? (
-        <div style={kpiGridStyle}>
+        <div className="cocoa-stagger" style={kpiGridStyle}>
           <CocoaCard variant="elevated" padding="md">
             <div style={kpiHeadStyle}>
               <span style={kpiLabelStyle}>Sin habitación</span>

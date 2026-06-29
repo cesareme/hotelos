@@ -91,6 +91,17 @@ const TONE_VARS: Record<CocoaButtonTone, ToneVars> = {
   }
 };
 
+// Respect the user's motion preference before applying the imperative press
+// transform: the CSS transition collapses its DURATION to 0 under reduce, but
+// the inline value would still snap. Gate it here so reduced-motion is honoured.
+function prefersReducedMotion(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches
+  );
+}
+
 function Spinner({ size, color }: { size: number; color: string }) {
   const stroke = Math.max(1.5, Math.round(size / 8));
   return (
@@ -210,46 +221,45 @@ export function CocoaButton({
     style
   ]);
 
-  const handleMouseEnter = (event: React.MouseEvent<HTMLButtonElement>) => {
-    if (isDisabled) return;
-    const target = event.currentTarget;
+  // Hover: filled brightens (light moves toward the cursor — premium), tinted
+  // deepens slightly, ghost variants gain a control fill.
+  const applyHover = (target: HTMLButtonElement) => {
     if (variant === "filled") {
-      target.style.filter = "brightness(0.95)";
-    } else if (variant === "bordered" || variant === "plain") {
-      target.style.backgroundColor = "var(--cocoa-background-control)";
+      target.style.filter = "brightness(1.04)";
     } else if (variant === "tinted") {
       target.style.filter = "brightness(0.97)";
+    } else if (variant === "bordered" || variant === "plain") {
+      target.style.backgroundColor = "var(--cocoa-background-control)";
     }
+  };
+
+  const handleMouseEnter = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (isDisabled) return;
+    applyHover(event.currentTarget);
   };
 
   const handleMouseLeave = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (isDisabled) return;
     const target = event.currentTarget;
     target.style.filter = "";
+    target.style.transform = "";
     if (variant === "bordered" || variant === "plain") {
       target.style.backgroundColor = "transparent";
     }
-    target.style.transform = "";
   };
 
+  // Press: physical scale on EVERY variant (compositor-only, no repaint / no
+  // stacking context — unlike the old brightness(0.85)). Gated on reduced-motion.
   const handleMouseDown = (event: React.MouseEvent<HTMLButtonElement>) => {
-    if (isDisabled) return;
-    const target = event.currentTarget;
-    if (variant === "filled" || variant === "tinted") {
-      target.style.filter = "brightness(0.85)";
-    } else {
-      target.style.transform = "scale(0.98)";
-    }
+    if (isDisabled || prefersReducedMotion()) return;
+    event.currentTarget.style.transform = "scale(0.97)";
   };
 
   const handleMouseUp = (event: React.MouseEvent<HTMLButtonElement>) => {
     if (isDisabled) return;
     const target = event.currentTarget;
-    if (variant === "filled" || variant === "tinted") {
-      target.style.filter = "brightness(0.95)";
-    } else {
-      target.style.transform = "";
-    }
+    target.style.transform = "";
+    applyHover(target); // cursor is still over the button
   };
 
   const iconNode = icon ? (

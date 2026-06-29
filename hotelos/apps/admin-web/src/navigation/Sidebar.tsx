@@ -780,7 +780,7 @@ export function Sidebar(props: {
         </svg>
       </button>
       <div className="bo-brand">
-        <span>H</span>
+        <span>A</span>
         <div>
           <strong>Anfitorio</strong>
           <small>Back Office</small>

@@ -64,8 +64,11 @@
   --cocoa-accent-border:        color-mix(in srgb, var(--cocoa-accent) 32%, transparent);
 
   /* Focus ring — keyboardFocusIndicatorColor. SINGLE source of truth: every
-     focusable surface must consume var(--cocoa-focus-ring), never a literal. */
-  --cocoa-focus-ring:           rgb(0 100 225 / 0.50);
+     focusable surface must consume var(--cocoa-focus-ring), never a literal.
+     Audit 2026-06 (look&feel #1): derive from the single brand accent (Esmeralda)
+     so every CocoaButton/Input/Switch/Segmented focus matches Aurora — one
+     interaction colour across the whole app, no leftover Apple blue. */
+  --cocoa-focus-ring:           color-mix(in srgb, var(--accent) 50%, transparent);
 
   /* Find highlight */
   --cocoa-find-highlight:       #FFFF00;
@@ -178,6 +181,22 @@
     0 48px 96px rgb(0 0 0 / 0.28),
     0 8px 16px rgb(0 0 0 / 0.14);
 
+  /* Card — the canvas→card lift (look&feel audit: depth scored 4/10 because
+     CocoaCard variant="elevated" used --cocoa-shadow-control, imperceptible on
+     a full-size card). Ambient + soft cast, never heavy. */
+  --cocoa-shadow-card:
+    0 0 0 1px rgb(0 0 0 / 0.06),
+    0 1px 2px rgb(0 0 0 / 0.04),
+    0 4px 12px rgb(0 0 0 / 0.06);
+
+  /* Floating — FABs / overlay buttons. Was referenced by CocoaHelpButton but
+     never defined (dead var → FAB rendered flat). NEUTRAL ring on purpose:
+     reviewers rejected an accent halo as gaudy. */
+  --cocoa-shadow-floating:
+    0 0 0 1px rgb(0 0 0 / 0.08),
+    0 8px 24px rgb(0 0 0 / 0.14),
+    0 2px 6px rgb(0 0 0 / 0.08);
+
   /* ============================================================
      6. MOTION
      ============================================================ */
@@ -269,31 +288,43 @@
   --cocoa-danger:               #FF453A;
   --cocoa-info:                 #0A84FF;
 
-  /* Focus */
-  --cocoa-focus-ring:           rgb(10 132 255 / 0.60);
+  /* Focus — Esmeralda (look&feel audit #1), slightly higher alpha for dark. */
+  --cocoa-focus-ring:           color-mix(in srgb, var(--accent) 60%, transparent);
 
   /* Find highlight */
   --cocoa-find-highlight:       #FFCC00;
 
-  /* Shadows — dark mode multiplies opacity (~3-4x) */
+  /* Shadows — dark mode. Edge ring is a translucent WHITE highlight (reflected
+     light), not black: a black 1px ring on a dark card over dark canvas reads as
+     a clip error, not elevation (look&feel audit). Casts stay dark + softened. */
   --cocoa-shadow-control:
     0 1px 0 rgb(0 0 0 / 0.40),
     0 1px 2px rgb(0 0 0 / 0.50);
 
   --cocoa-shadow-popover:
-    0 0 0 1px rgb(0 0 0 / 0.60),
+    0 0 0 1px rgb(255 255 255 / 0.07),
     0 8px 16px rgb(0 0 0 / 0.45),
     0 2px 4px rgb(0 0 0 / 0.30);
 
   --cocoa-shadow-window:
-    0 0 0 1px rgb(0 0 0 / 0.70),
-    0 24px 48px rgb(0 0 0 / 0.55),
+    0 0 0 1px rgb(255 255 255 / 0.08),
+    0 24px 48px rgb(0 0 0 / 0.50),
     0 2px 6px rgb(0 0 0 / 0.40);
 
   --cocoa-shadow-modal:
-    0 0 0 1px rgb(0 0 0 / 0.80),
-    0 48px 96px rgb(0 0 0 / 0.70),
+    0 0 0 1px rgb(255 255 255 / 0.08),
+    0 48px 96px rgb(0 0 0 / 0.55),
     0 8px 16px rgb(0 0 0 / 0.45);
+
+  --cocoa-shadow-card:
+    0 0 0 1px rgb(255 255 255 / 0.05),
+    0 1px 2px rgb(0 0 0 / 0.30),
+    0 4px 12px rgb(0 0 0 / 0.40);
+
+  --cocoa-shadow-floating:
+    0 0 0 1px rgb(255 255 255 / 0.08),
+    0 8px 24px rgb(0 0 0 / 0.50),
+    0 2px 6px rgb(0 0 0 / 0.35);
 
   /* Materials — dark tints */
   --cocoa-material-toolbar-bg:  rgb(40 40 40 / 0.72);
@@ -337,7 +368,7 @@
     --cocoa-danger:               #FF453A;
     --cocoa-info:                 #0A84FF;
 
-    --cocoa-focus-ring:           rgb(10 132 255 / 0.60);
+    --cocoa-focus-ring:           color-mix(in srgb, var(--accent) 60%, transparent);
     --cocoa-find-highlight:       #FFCC00;
 
     --cocoa-shadow-control:
@@ -345,19 +376,29 @@
       0 1px 2px rgb(0 0 0 / 0.50);
 
     --cocoa-shadow-popover:
-      0 0 0 1px rgb(0 0 0 / 0.60),
+      0 0 0 1px rgb(255 255 255 / 0.07),
       0 8px 16px rgb(0 0 0 / 0.45),
       0 2px 4px rgb(0 0 0 / 0.30);
 
     --cocoa-shadow-window:
-      0 0 0 1px rgb(0 0 0 / 0.70),
-      0 24px 48px rgb(0 0 0 / 0.55),
+      0 0 0 1px rgb(255 255 255 / 0.08),
+      0 24px 48px rgb(0 0 0 / 0.50),
       0 2px 6px rgb(0 0 0 / 0.40);
 
     --cocoa-shadow-modal:
-      0 0 0 1px rgb(0 0 0 / 0.80),
-      0 48px 96px rgb(0 0 0 / 0.70),
+      0 0 0 1px rgb(255 255 255 / 0.08),
+      0 48px 96px rgb(0 0 0 / 0.55),
       0 8px 16px rgb(0 0 0 / 0.45);
+
+    --cocoa-shadow-card:
+      0 0 0 1px rgb(255 255 255 / 0.05),
+      0 1px 2px rgb(0 0 0 / 0.30),
+      0 4px 12px rgb(0 0 0 / 0.40);
+
+    --cocoa-shadow-floating:
+      0 0 0 1px rgb(255 255 255 / 0.08),
+      0 8px 24px rgb(0 0 0 / 0.50),
+      0 2px 6px rgb(0 0 0 / 0.35);
 
     --cocoa-material-toolbar-bg:  rgb(40 40 40 / 0.72);
     --cocoa-material-sidebar-bg:  rgb(42 42 42 / 0.78);

@@ -121,10 +121,10 @@ export function HousekeepingDashboard() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <style>{`
         .hk-room { position: relative; transition: box-shadow .15s ease, transform .15s ease; }
-        .hk-room:hover { box-shadow: 0 10px 28px rgba(2,6,23,.22); transform: translateY(-2px); z-index: 6; }
+        .hk-room:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); z-index: 6; }
         .hk-hovercard { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 20;
           background: var(--surface, #fff); border: 1px solid var(--line-soft, #e2e8f0); border-radius: 12px;
-          box-shadow: 0 12px 32px rgba(2,6,23,.28); padding: 10px 12px; opacity: 0; transform: translateY(6px);
+          box-shadow: var(--shadow-lg); padding: 10px 12px; opacity: 0; transform: translateY(6px);
           pointer-events: none; transition: opacity .12s ease, transform .12s ease; }
         .hk-room:hover .hk-hovercard { opacity: 1; transform: translateY(0); }
         .hk-hovercard::after { content: ""; position: absolute; top: 100%; left: 24px; border: 7px solid transparent; border-top-color: var(--surface, #fff); }
