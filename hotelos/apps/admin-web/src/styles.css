@@ -2236,13 +2236,15 @@ table tbody tr:hover td { background: var(--surface-soft); }
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-md);
-  border: 1px solid transparent;
-  background: transparent;
-  color: var(--ink-soft);
+  /* Visible by design: hairline border + surface fill + strong icon so the
+     theme switch reads as a real control, not a faint floating icon. */
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
   cursor: pointer;
   transition: all var(--duration) var(--ease);
 }
-.bo-theme-toggle:hover { background: var(--surface-soft); color: var(--ink); }
+.bo-theme-toggle:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-strong); }
 
 /* === Mobile nav toggle (hamburger) — hidden on desktop === */
 .bo-nav-toggle {
