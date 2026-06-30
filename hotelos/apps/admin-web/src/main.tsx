@@ -108,3 +108,13 @@ createRoot(root).render(
     <App />
   </Sentry.ErrorBoundary>
 );
+
+// PWA: register the service worker in production only (it gives installability
+// + an offline app shell). The worker never caches /api — see public/sw.js.
+if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {
+      // Registration failure must never break the app — fail silently.
+    });
+  });
+}
