@@ -561,7 +561,7 @@ export function GeneralManagerScreen() {
       </div>
 
       {/* Row 2 — Forward pace + Pickup + Cancellation risk (8/2/2) */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(8, 480)}>
           <DirectorForwardPaceChart
             data={buildPacePoints(pace)}
@@ -586,7 +586,7 @@ export function GeneralManagerScreen() {
       </div>
 
       {/* Row 3 — Segments + Comp-set + Channel mix + BAR recs (4/4/2/2) */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(4, 320)}>
           <DirectorSegmentBars
             segments={buildSegmentBars(k)}
@@ -661,7 +661,7 @@ export function GeneralManagerScreen() {
       </div>
 
       {/* Row 5 — Guest experience: NPS, Reviews, Service requests, VIPs */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(3, 240)}>
           <CocoaCard variant="bordered" padding="md">
             <div style={cardHeadStyle}>
@@ -709,7 +709,7 @@ export function GeneralManagerScreen() {
       </div>
 
       {/* Row 6 — Compliance widgets (VeriFactu · SES · TBAI · GDPR) */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(3, 240)}>
           <DirectorComplianceWidget
             authority="verifactu"
@@ -747,7 +747,7 @@ export function GeneralManagerScreen() {
       </div>
 
       {/* Row 7 — AI insights: anomalies, top 3 actions, demand spikes (5/4/3) */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(5, 320)}>
           <CocoaCard variant="bordered" padding="md">
             <div style={cardHeadStyle}>
@@ -1084,13 +1084,13 @@ function DashboardSkeleton() {
         ))}
       </div>
       {/* Row 2: 8/2/2 */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(8, 480)}>{tall}</div>
         <div style={spanStyle(2, 200)}>{tall}</div>
         <div style={spanStyle(2, 200)}>{tall}</div>
       </div>
       {/* Row 3: 4/4/2/2 */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(4, 320)}>{tall}</div>
         <div style={spanStyle(4, 320)}>{tall}</div>
         <div style={spanStyle(2, 240)}>{tall}</div>
@@ -1103,21 +1103,21 @@ function DashboardSkeleton() {
         ))}
       </div>
       {/* Row 5: 4 cards */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(3, 240)}>{tile}</div>
         <div style={spanStyle(3, 240)}>{tile}</div>
         <div style={spanStyle(3, 240)}>{tile}</div>
         <div style={spanStyle(3, 240)}>{tile}</div>
       </div>
       {/* Row 6: 4 compliance */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(3, 240)}>{tile}</div>
         <div style={spanStyle(3, 240)}>{tile}</div>
         <div style={spanStyle(3, 240)}>{tile}</div>
         <div style={spanStyle(3, 240)}>{tile}</div>
       </div>
       {/* Row 7: 5/4/3 */}
-      <div style={gridRowStyle}>
+      <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(5, 320)}>{tall}</div>
         <div style={spanStyle(4, 320)}>{tall}</div>
         <div style={spanStyle(3, 240)}>{tall}</div>

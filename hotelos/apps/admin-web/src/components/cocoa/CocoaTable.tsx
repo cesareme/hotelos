@@ -9,8 +9,31 @@
 //
 // Uses --cocoa-* design tokens for theme parity (light/dark).
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { LoadingBlock } from "../States";
+
+// Below this width a data table is unreadable; we render stacked label/value
+// cards instead (the standard mobile pattern). Touch/phone only — desktop and
+// tablet landscape keep the real table.
+function useIsNarrow(breakpoint = 600): boolean {
+  const query = `(max-width: ${breakpoint - 1}px)`;
+  const get = (): boolean =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia(query).matches
+      : false;
+  const [narrow, setNarrow] = useState<boolean>(get);
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") {
+      return undefined;
+    }
+    const mql = window.matchMedia(query);
+    const handler = () => setNarrow(mql.matches);
+    handler();
+    mql.addEventListener?.("change", handler);
+    return () => mql.removeEventListener?.("change", handler);
+  }, [query]);
+  return narrow;
+}
 
 export type CocoaTableSortDirection = "asc" | "desc";
 
@@ -102,6 +125,7 @@ export function CocoaTable<Row>({
   loading = false
 }: CocoaTableProps<Row>) {
   const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const isNarrow = useIsNarrow();
 
   const tableStyle: CSSProperties = {
     width: "100%",
@@ -132,6 +156,93 @@ export function CocoaTable<Row>({
 
   if (loading) {
     return <LoadingBlock label="Cargando…" />;
+  }
+
+  // ── Phone: stacked label/value cards instead of an unreadable wide table ──
+  if (isNarrow && rows.length > 0) {
+    const isClickable = typeof onSelect === "function";
+    return (
+      <div
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: "var(--cocoa-space-2, 8px)",
+          fontFamily: "var(--cocoa-font)"
+        }}
+      >
+        {rows.map((row, idx) => {
+          const key = resolveRowKey(row, rowKey, idx);
+          const isSelected = selectedKey !== undefined && selectedKey === key;
+          const cardStyle: CSSProperties = {
+            display: "flex",
+            flexDirection: "column",
+            gap: 6,
+            padding: "12px 14px",
+            borderRadius: "var(--cocoa-radius-lg)",
+            border: "1px solid var(--cocoa-separator)",
+            background: isSelected
+              ? "color-mix(in srgb, var(--cocoa-accent) 8%, transparent)"
+              : "var(--cocoa-background-content)",
+            boxShadow: isSelected
+              ? "inset 3px 0 0 var(--cocoa-accent), var(--cocoa-shadow-card)"
+              : "var(--cocoa-shadow-control)",
+            cursor: isClickable ? "pointer" : "default"
+          };
+          return (
+            <div
+              key={key}
+              style={cardStyle}
+              onClick={isClickable ? () => onSelect?.(row) : undefined}
+              role={isClickable ? "button" : undefined}
+              tabIndex={isClickable ? 0 : undefined}
+              aria-selected={isSelected || undefined}
+            >
+              {columns.map((col) => {
+                const content = col.render
+                  ? col.render(row)
+                  : defaultRender(row, col.key);
+                return (
+                  <div
+                    key={col.key}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "baseline",
+                      gap: 12
+                    }}
+                  >
+                    {col.label ? (
+                      <span
+                        style={{
+                          fontSize: "var(--cocoa-fs-caption)",
+                          textTransform: "uppercase",
+                          letterSpacing: "var(--cocoa-tracking-wide)",
+                          color: "var(--cocoa-label-secondary)",
+                          flexShrink: 0
+                        }}
+                      >
+                        {col.label}
+                      </span>
+                    ) : null}
+                    <span
+                      style={{
+                        fontSize: "var(--cocoa-fs-body)",
+                        color: "var(--cocoa-label)",
+                        textAlign: "right",
+                        marginLeft: "auto",
+                        fontVariantNumeric: "tabular-nums lining-nums"
+                      }}
+                    >
+                      {content}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })}
+      </div>
+    );
   }
 
   return (

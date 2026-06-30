@@ -6,6 +6,7 @@
 @import './styles/cocoa-tokens.css';
 @import './styles/cocoa-base.css';
 @import './styles/cocoa-motion.css'; /* keyframes were defined but never bundled → motion was dead */
+@import './styles/mobile.css'; /* touch / iOS Safari layer — must come last to win the cascade */
 
 :root {
   /* === Spacing scale (4px base) === */
@@ -1893,6 +1894,7 @@ table tbody tr:hover td { background: var(--surface-soft); }
   position: fixed;
   inset: 0;
   background: rgba(26, 26, 26, 0.35);
+  -webkit-backdrop-filter: blur(6px);
   backdrop-filter: blur(6px);
   z-index: 100;
   display: flex;
@@ -2274,6 +2276,7 @@ table tbody tr:hover td { background: var(--surface-soft); }
   inset: 0;
   z-index: 40;
   background: rgba(20, 19, 14, 0.45);
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
   animation: bo-fade-in var(--duration) var(--ease);
 }
@@ -2411,6 +2414,7 @@ table tbody tr:hover td { background: var(--surface-soft); }
 }
 .guide-clickguard.dim {
   background: rgba(10, 12, 16, 0.55);
+  -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
 }
 .guide-spotlight {
@@ -2493,6 +2497,7 @@ table tbody tr:hover td { background: var(--surface-soft); }
   position: fixed;
   inset: 0;
   background: rgba(10, 12, 16, 0.4);
+  -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
   animation: guide-fade 0.18s ease;
 }

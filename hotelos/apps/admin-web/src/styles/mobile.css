@@ -1,0 +1,63 @@
+/* ============================================================
+   Anfitorio — Mobile / touch / iOS Safari layer
+   Imported LAST from styles.css so it wins the cascade. Everything
+   here is additive and scoped to touch or small viewports; the
+   desktop experience is untouched.
+   ============================================================ */
+
+/* ---- iOS: remove the grey tap-flash on every interactive element ---- */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ---- Dynamic viewport height ----
+   The Safari address bar shrinks 100vh, so the shell and the sidebar
+   overflow / get cut off. dvh excludes the chrome. Browsers without dvh
+   simply ignore these and keep the base 100vh rule. */
+.bo-shell { min-height: 100dvh; }
+.bo-sidebar { height: 100dvh; -webkit-overflow-scrolling: touch; }
+
+/* ---- Safe-area (notch / home indicator) ----
+   viewport-fit=cover (in index.html) makes env() non-zero. Let the sticky
+   top bar clear the notch and the sidebar/workspace clear the home bar. */
+.bo-topbar {
+  padding-top: env(safe-area-inset-top);
+  height: calc(var(--topbar-h) + env(safe-area-inset-top));
+}
+.bo-sidebar { padding-bottom: env(safe-area-inset-bottom); }
+.bo-workspace { padding-bottom: max(var(--space-6), env(safe-area-inset-bottom)); }
+
+/* ============================================================
+   COARSE POINTER (finger) — phones & tablets, any width.
+   ============================================================ */
+@media (pointer: coarse) {
+  /* iOS auto-zooms when a focused control has font-size < 16px. Force 16px
+     on every form control (!important beats the 13px inline Cocoa tokens). */
+  input,
+  select,
+  textarea {
+    font-size: 16px !important;
+  }
+
+  /* Momentum scrolling inside scrollable regions. */
+  .bo-table-wrap,
+  .bo-sidebar,
+  .bo-workspace {
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ============================================================
+   NARROW (phone, < 600px) — stack rigid multi-column grids.
+   ============================================================ */
+@media (max-width: 599px) {
+  /* The director dashboard's 12-column rows squish to ~28px columns on a
+     phone. Collapse to a single column and let every span-N child take the
+     full width (overrides the inline grid-column: span N). */
+  .gm-grid {
+    grid-template-columns: 1fr !important;
+  }
+  .gm-grid > * {
+    grid-column: 1 / -1 !important;
+  }
+}
