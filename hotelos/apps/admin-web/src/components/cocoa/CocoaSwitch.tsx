@@ -131,7 +131,7 @@ export function CocoaSwitch({
       disabled={disabled}
       onClick={handleToggle}
       onKeyDown={handleKeyDown}
-      className="cocoa-focus-ring"
+      className="cocoa-focus-ring cocoa-switch"
       style={trackStyle}
     >
       <span style={thumbStyle} aria-hidden="true" />

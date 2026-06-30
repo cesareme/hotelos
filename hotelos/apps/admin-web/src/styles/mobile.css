@@ -45,6 +45,24 @@
   .bo-workspace {
     -webkit-overflow-scrolling: touch;
   }
+
+  /* Switch track is only 32×20 / 52×32. Expand the TAP area with an invisible
+     ::before (the track stays its visual size — no distortion). */
+  .cocoa-switch {
+    position: relative;
+  }
+  .cocoa-switch::before {
+    content: "";
+    position: absolute;
+    inset: -12px;
+  }
+
+  /* Icon buttons ship at 36px → bump to a 44px target on touch. */
+  .bo-icon-button,
+  .bo-nav-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 /* ============================================================

@@ -126,7 +126,9 @@ export function HousekeepingDashboard() {
           background: var(--surface, #fff); border: 1px solid var(--line-soft, #e2e8f0); border-radius: 12px;
           box-shadow: var(--shadow-lg); padding: 10px 12px; opacity: 0; transform: translateY(6px);
           pointer-events: none; transition: opacity .12s ease, transform .12s ease; }
-        .hk-room:hover .hk-hovercard { opacity: 1; transform: translateY(0); }
+        .hk-room:hover .hk-hovercard,
+        .hk-room:focus-within .hk-hovercard,
+        .hk-room:active .hk-hovercard { opacity: 1; transform: translateY(0); }
         .hk-hovercard::after { content: ""; position: absolute; top: 100%; left: 24px; border: 7px solid transparent; border-top-color: var(--surface, #fff); }
         .hk-hc-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 2px 0; }
         .hk-hc-row span:first-child { color: var(--ink-soft, #64748b); }

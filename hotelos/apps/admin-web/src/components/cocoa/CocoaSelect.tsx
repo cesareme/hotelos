@@ -10,6 +10,7 @@
 // selects.
 
 import { useState, type CSSProperties } from "react";
+import { useCoarsePointer, TAP_TARGET_PX } from "../../lib/useCoarsePointer";
 
 export interface CocoaSelectOption {
   value: string;
@@ -62,6 +63,7 @@ export function CocoaSelect({
   disabled = false,
 }: CocoaSelectProps) {
   const [focused, setFocused] = useState(false);
+  const coarse = useCoarsePointer();
   const metrics = SIZE_METRICS[size];
 
   const wrapperStyle: CSSProperties = {
@@ -73,7 +75,8 @@ export function CocoaSelect({
 
   const selectStyle: CSSProperties = {
     width: "100%",
-    height: metrics.height,
+    // Touch: a real 44px control (desktop keeps the dense 22–34px height).
+    height: coarse ? TAP_TARGET_PX : metrics.height,
     padding: `${metrics.padY}px 28px ${metrics.padY}px ${metrics.padL}px`,
     fontFamily: "var(--cocoa-font)",
     fontSize: metrics.fontSize,

@@ -4,6 +4,7 @@ import {
   type MouseEventHandler,
   type ReactNode
 } from "react";
+import { useCoarsePointer, TAP_TARGET_PX } from "../../lib/useCoarsePointer";
 
 export type CocoaButtonVariant = "filled" | "tinted" | "bordered" | "plain";
 export type CocoaButtonSize = "small" | "regular" | "large";
@@ -139,6 +140,7 @@ export function CocoaButton({
   "aria-label": ariaLabel
 }: CocoaButtonProps) {
   const isDisabled = disabled || loading;
+  const coarse = useCoarsePointer();
   const height = HEIGHT_BY_SIZE[size];
   const paddingX = PADDING_X_BY_SIZE[size];
   const fontSize = FONT_SIZE_BY_SIZE[size];
@@ -157,7 +159,11 @@ export function CocoaButton({
       justifyContent: "center",
       gap,
       height,
-      minHeight: height,
+      // Touch: grow to a ≥44px tap target (the dense desktop heights are
+      // 22–32px). minHeight/minWidth win over `height`, so the control reflows
+      // taller on a finger without changing the mouse experience.
+      minHeight: coarse ? TAP_TARGET_PX : height,
+      minWidth: coarse ? TAP_TARGET_PX : undefined,
       paddingInline: paddingX,
       paddingBlock: 0,
       borderRadius: radius,
@@ -218,6 +224,7 @@ export function CocoaButton({
     fontSize,
     gap,
     isDisabled,
+    coarse,
     style
   ]);
 
