@@ -66,6 +66,24 @@ function loadKey(): Buffer | null {
   return buf;
 }
 
+/**
+ * SECURITY (audit 2026-06): fail CLOSED in production. encrypt/decryptField are
+ * intentionally no-ops (plaintext passthrough) when the key is missing so local
+ * dev works — but shipping that to production would silently store guest PII
+ * (DNI, email, phone, address) and email refresh-tokens in the clear. Call this
+ * once at server startup, like the JWT_SECRET guard, to abort boot instead.
+ */
+export function assertEncryptionKeyForProduction(): void {
+  if (process.env.NODE_ENV !== "production") return;
+  if (loadKey() === null) {
+    throw new Error(
+      "[crypto-fields] HOTELOS_FIELD_KEY (or ENCRYPTION_KEY) is required in production: " +
+        "a valid 32-byte base64 key. Refusing to start with guest PII in plaintext. " +
+        "Generate one with: openssl rand -base64 32"
+    );
+  }
+}
+
 export function isCiphertext(value: unknown): value is string {
   return typeof value === "string" && value.startsWith(`${VERSION_PREFIX}.`);
 }

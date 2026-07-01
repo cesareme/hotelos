@@ -275,6 +275,13 @@ export async function resetPassword(input: { token: string; newPassword: string 
     prisma.passwordResetToken.update({
       where: { id: tokenRow.id },
       data: { usedAt: new Date() }
+    }),
+    // SECURITY (audit 2026-06): a reset usually follows account compromise —
+    // revoke every active session so the attacker's JWTs die at once
+    // (loadUserContext validates the session row in the DB on each request).
+    prisma.session.updateMany({
+      where: { userId: tokenRow.userId, status: "active" },
+      data: { status: "revoked", revokedAt: new Date() }
     })
   ]);
 
@@ -320,6 +327,13 @@ export async function changeOwnPassword(input: {
       passwordHash: newHash,
       passwordChangedAt: new Date()
     }
+  });
+  // SECURITY (audit 2026-06): invalidate all existing sessions on password
+  // change so any other logged-in device is signed out (defense against a
+  // lingering compromised session). The user re-authenticates once.
+  await prisma.session.updateMany({
+    where: { userId: input.userId, status: "active" },
+    data: { status: "revoked", revokedAt: new Date() }
   });
   recordAuditEvent({
     organizationId: user.organizationId,

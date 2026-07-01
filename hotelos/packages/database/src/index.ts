@@ -6,6 +6,7 @@ export {
   encryptField,
   decryptField,
   isCiphertext,
+  assertEncryptionKeyForProduction,
   PII_FIELDS,
   LOOKUP_HASH_FIELDS,
   computeLookupHash,

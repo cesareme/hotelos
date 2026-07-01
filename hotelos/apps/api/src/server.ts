@@ -36,7 +36,7 @@ import { createId } from "./lib/ids.js";
 import { demoStore, type UserContext } from "./lib/demo-store.js";
 import { registerAuthContext } from "./lib/auth-context.js";
 import { isSchedulerLeader } from "./lib/scheduler-leader.js";
-import { BadRequestError, statusCodeForError } from "./lib/http-error.js";
+import { BadRequestError, NotFoundError, statusCodeForError } from "./lib/http-error.js";
 import { isLlmConfigured, llmComplete, llmExtractDocument } from "./lib/llm.js";
 import { recordToolCall } from "./modules/ai-operations/pipeline.service.js";
 import { MAPPING_CATALOGS } from "@hotelos/ai-tools";
@@ -319,6 +319,7 @@ import {
   validateSpainGuestRegisterRecordApi
 } from "./modules/compliance/compliance.service.js";
 import {
+  assertPropertyInOrg,
   assignRoom,
   assignRoomByNumber,
   checkInReservation,
@@ -899,6 +900,60 @@ export function buildApiServer() {
       userPermissions: request.userContext?.permissions ?? []
     });
   });
+
+  // ── Tenant-scope guards (audit 2026-06 · IDOR cross-tenant) ────────────────
+  // Read-by-:id routes fetch rows by primary key. Without these, an authenticated
+  // user of one hotel could read another hotel's reservation, invoice, folio,
+  // guest PII (DNI) or SES register. Each resolves the row's owning property/org
+  // and throws 404 (not 403) on mismatch so we never leak another tenant's
+  // existence. Single-org demo (org_123) is unaffected — every row matches.
+  async function assertReservationInOrg(reservationId: string, organizationId: string) {
+    const { prisma: db } = await import("@hotelos/database");
+    const row = await db.reservation.findUnique({
+      where: { id: reservationId },
+      select: { propertyId: true }
+    });
+    if (!row) throw new NotFoundError(`Reservation ${reservationId} not found.`);
+    await assertPropertyInOrg(row.propertyId, organizationId);
+  }
+  async function assertInvoiceInOrg(invoiceId: string, organizationId: string) {
+    const { prisma: db } = await import("@hotelos/database");
+    const row = await db.invoice.findUnique({
+      where: { id: invoiceId },
+      select: { propertyId: true }
+    });
+    if (!row) throw new NotFoundError(`Invoice ${invoiceId} not found.`);
+    await assertPropertyInOrg(row.propertyId, organizationId);
+  }
+  async function assertFolioInOrg(folioId: string, organizationId: string) {
+    const { prisma: db } = await import("@hotelos/database");
+    const row = await db.folio.findUnique({
+      where: { id: folioId },
+      select: { reservation: { select: { propertyId: true } } }
+    });
+    if (!row) throw new NotFoundError(`Folio ${folioId} not found.`);
+    await assertPropertyInOrg(row.reservation.propertyId, organizationId);
+  }
+  async function assertGuestInOrg(guestId: string, organizationId: string) {
+    const { prisma: db } = await import("@hotelos/database");
+    const row = await db.guest.findUnique({
+      where: { id: guestId },
+      select: { organizationId: true }
+    });
+    if (!row || row.organizationId !== organizationId) {
+      throw new NotFoundError(`Guest ${guestId} not found.`);
+    }
+  }
+  // GDPR requests carry PII dossiers and trigger destructive erasure — scope
+  // every read/action to the caller's org (the list route additionally must
+  // never trust an organizationId from the query string).
+  async function assertGdprRequestInOrg(requestId: string, organizationId: string) {
+    const found = await gdprGetRequest(requestId);
+    if (!found || (found as { organizationId?: string }).organizationId !== organizationId) {
+      throw new NotFoundError(`GDPR request ${requestId} not found.`);
+    }
+    return found;
+  }
 
   app.get("/health", async () => {
     // Production-grade health: ejecuta sub-checks reales y combina su estado.
@@ -3514,6 +3569,7 @@ export function buildApiServer() {
 
   app.get("/properties/:propertyId/reservations", async (request) => {
     const params = request.params as { propertyId: string };
+    await assertPropertyInOrg(params.propertyId, request.userContext.organizationId);
     const query = request.query as { limit?: string };
     const limit = query?.limit ? Number(query.limit) : undefined;
     return listReservations(params.propertyId, { limit });
@@ -3618,6 +3674,7 @@ export function buildApiServer() {
 
   app.get("/reservations/:id", async (request) => {
     const params = request.params as { id: string };
+    await assertReservationInOrg(params.id, request.userContext.organizationId);
     const reservation = await getReservation(params.id);
     // Enriquecemos con el huésped principal — sin pasar por el endpoint público
     // /guests/:id que aplica scope por organizationId del context (la cadena
@@ -3838,6 +3895,7 @@ export function buildApiServer() {
 
   app.get("/guests/:id/timeline", async (request) => {
     const params = request.params as { id: string };
+    await assertGuestInOrg(params.id, request.userContext.organizationId);
     const { buildGuestTimeline } = await import("./modules/guests/guest-timeline.service.js");
     return buildGuestTimeline({ guestId: params.id });
   });
@@ -3871,7 +3929,9 @@ export function buildApiServer() {
   });
 
   app.get("/folios/:id/balance", async (request) => {
-    return getFolioBalance((request.params as { id: string }).id);
+    const folioId = (request.params as { id: string }).id;
+    await assertFolioInOrg(folioId, request.userContext.organizationId);
+    return getFolioBalance(folioId);
   });
   app.post("/folios/:id/lines", async (request) => {
     const params = request.params as { id: string };
@@ -3946,6 +4006,7 @@ export function buildApiServer() {
 
   app.get("/invoices/:id", async (request) => {
     const params = request.params as { id: string };
+    await assertInvoiceInOrg(params.id, request.userContext.organizationId);
     return getInvoice(params.id);
   });
 
@@ -4894,6 +4955,7 @@ export function buildApiServer() {
 
   app.get("/compliance/spain/reservations/:reservationId/guest-register", async (request) => {
     const params = request.params as { reservationId: string };
+    await assertReservationInOrg(params.reservationId, request.userContext.organizationId);
     return listReservationGuestRegisterRecords(params.reservationId);
   });
 
@@ -5052,6 +5114,7 @@ export function buildApiServer() {
 
   app.get("/properties/:propertyId/guest-register-records", async (request) => {
     const params = request.params as { propertyId: string };
+    await assertPropertyInOrg(params.propertyId, request.userContext.organizationId);
     return listGuestRegisterRecords(params.propertyId);
   });
 
@@ -5126,9 +5189,11 @@ export function buildApiServer() {
   });
 
   app.get("/gdpr/requests", async (request) => {
-    const query = (request.query ?? {}) as { organizationId?: string; status?: string; requestType?: string };
+    const query = (request.query ?? {}) as { status?: string; requestType?: string };
+    // SECURITY (audit 2026-06 · IDOR): the org is ALWAYS the caller's — never a
+    // query param, which previously let one tenant list another's DSAR requests.
     return gdprListRequests({
-      organizationId: query.organizationId ?? request.userContext.organizationId,
+      organizationId: request.userContext.organizationId,
       status: query.status,
       requestType: query.requestType
     });
@@ -5136,25 +5201,25 @@ export function buildApiServer() {
 
   app.get("/gdpr/requests/:id", async (request) => {
     const params = request.params as { id: string };
-    const found = await gdprGetRequest(params.id);
-    if (!found) {
-      return { error: "GDPR request not found" };
-    }
+    const found = await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
     return found;
   });
 
   app.post("/gdpr/requests/:id/acknowledge", async (request) => {
     const params = request.params as { id: string };
+    await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
     return gdprAcknowledgeRequest(params.id, request.userContext.userId);
   });
 
   app.post("/gdpr/requests/:id/fulfill-dsar", async (request) => {
     const params = request.params as { id: string };
+    await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
     return gdprFulfillDsar(params.id, request.userContext.userId);
   });
 
   app.post("/gdpr/requests/:id/execute-erasure", async (request) => {
     const params = request.params as { id: string };
+    await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
     const body = parse(ExecuteErasureSchema, request.body ?? {});
     return gdprExecuteErasure(params.id, request.userContext.userId, {
       confirmRetentionOverride: Boolean(body.confirmRetentionOverride)
@@ -5163,6 +5228,7 @@ export function buildApiServer() {
 
   app.post("/gdpr/requests/:id/reject", async (request) => {
     const params = request.params as { id: string };
+    await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
     const body = parse(RejectGdprRequestSchema, request.body ?? {});
     return gdprRejectRequest(params.id, body.reason, request.userContext.userId);
   });
@@ -6796,6 +6862,10 @@ const argFile = process.argv[1] ? resolvePath(process.argv[1]) : "";
 if (entryFile === argFile) {
   const port = Number(process.env.PORT ?? 3000);
   const host = process.env.HOST ?? "0.0.0.0";
+  // SECURITY (audit 2026-06): abort boot in production if the PII encryption key
+  // is missing/invalid — never run with guest DNIs stored in plaintext.
+  const { assertEncryptionKeyForProduction } = await import("@hotelos/database");
+  assertEncryptionKeyForProduction();
   const tips = await hydrateAuditChainFromPostgres();
   console.log(`[audit] hydrated chain tips: audit=${tips.auditTail?.slice(0, 12) ?? "<empty>"} event=${tips.eventTail?.slice(0, 12) ?? "<empty>"}`);
   const app = buildApiServer();
