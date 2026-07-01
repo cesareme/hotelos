@@ -45,8 +45,8 @@ export const SPANISH_COMPLIANCE_ARTICLES: readonly CocoaHelpArticle[] = [
 
 ## Plazos clave
 
-- **Entrada en vigor**: 1 enero 2026 para grandes empresas y 1 julio 2026 para PYMES y autonomos.
-- Los SIF deben estar **certificados** y declarar conformidad mediante **declaracion responsable**.
+- **Entrada en vigor** (tras el RDL 15/2025, que aplazo el calendario): **1 enero 2027** para sociedades y **1 julio 2027** para autonomos y demas obligados. Durante **2026 el uso es voluntario**.
+- Los SIF deben estar **certificados** y su fabricante declarar conformidad mediante **declaracion responsable** (RD 1007/2023) — obligacion vigente para los fabricantes desde el **29 de julio de 2025**.
 
 ## Que hace Anfitorio
 

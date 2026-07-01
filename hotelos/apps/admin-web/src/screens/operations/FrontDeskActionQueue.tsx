@@ -193,10 +193,10 @@ async function executeAction(
       case "mark_no_show": {
         const reservationId = payload?.reservationId;
         if (!reservationId) return { ok: false, message: "Falta reservationId" };
-        const res = await fetch(`${base}/reservations/${reservationId}/transition`, {
+        const res = await fetch(`${base}/reservations/${reservationId}/no-show`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: "no_show" })
+          body: JSON.stringify({})
         });
         if (!res.ok) {
           navigateTo("ReservationDetailWorkspace");

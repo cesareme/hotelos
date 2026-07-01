@@ -238,7 +238,7 @@ export function FolioDetailScreen({ folioId: folioIdProp }: FolioDetailScreenPro
     });
     try {
       await apiRequest<MoveChargesResponse>(`/folios/${folioId}/move-charges`, {
-        method: "PATCH",
+        method: "POST",
         body: { chargeIds, targetFolioId }
       });
       showToast(`Movidos ${chargeIds.length} cargo(s) al folio destino`, { variant: "success" });

@@ -181,7 +181,7 @@ export function BillingCenterScreen() {
     try {
       const issued = await issueInvoice(invoiceId);
       setInvoices((current) => current.map((invoice) => (invoice.id === issued.id ? issued : invoice)));
-      setStatus(`Factura ${issued.invoiceNumber ?? issued.id} emitida con huella VERI*FACTU placeholder.`);
+      setStatus(`Factura ${issued.invoiceNumber ?? issued.id} emitida con huella VeriFactu.`);
       showToast(`Factura ${issued.invoiceNumber ?? issued.id} emitida`, { variant: "success" });
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo emitir la factura.";

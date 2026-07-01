@@ -41,10 +41,40 @@ Reset y cambio de contraseña revocan todas las sesiones activas (los JWT del at
 5. **PII/tokens en logs**: DNIs por query string y token de portal de huésped en la ruta →
    mover a headers/body y redactar en pino/Caddy.
 
-## Ángulo de marketing (del auditor de mensaje)
-La mejor frase del producto ya está escrita en el código (`ReservationCreateScreen.tsx:813`:
-"Escanea el DNI, la IA rellena el parte, tú revisas y confirmas. Nada se guarda sin tu
-confirmación") — sacarla al one-pager. Ángulo nº1: **cumplimiento con fecha** — "desde el
-1-7-2026 tu facturación debe ser VeriFactu; la nuestra ya lo es, te lo demuestro escaneando el
-QR AEAT". Regla anti-humo: toda afirmación de producto con `file:line` detrás; lo sandbox/mock,
-etiquetado como tal.
+## 🚨 CORRECCIÓN CRÍTICA DE LA SÍNTESIS CEO — la fecha del pitch era FALSA
+El **RDL 15/2025 aplazó VeriFactu**: obligatorio **1-1-2027 (sociedades)** y **1-7-2027
+(autónomos)**; **2026 es voluntario**. El material que decía "obligatorio 1-7-2026" (incluido
+`spanish-compliance.ts:48`, ya corregido) quemaría el canal de gestorías a la primera. Mensaje
+correcto: **"SES le sanciona HOY (601–30.000€); llegue a 2027 ya certificado"**.
+
+### Corregido en este pase (commit siguiente)
+- Fecha VeriFactu en el artículo de ayuda (`spanish-compliance.ts`).
+- Identidad del SIF ante AEAT: `name` "HotelOS"→"Anfitorio", id, version desde env
+  (`verifactu-submission.service.ts`). ⚠️ El **NIF del productor** (`VERIFACTU_SOFTWARE_NIF`) sigue
+  con placeholder `B00000000` — **César debe poner su NIF real** vía env antes de enviar a AEAT.
+- 2 endpoints rotos: no-show (`/transition`→`/no-show`), move-charges (PATCH→POST).
+- Toast "huella VeriFactu placeholder" → texto limpio.
+
+## ⚠️ Críticos de dinero/cumplimiento (NO tocados — necesitan BD/tests, decisión de César)
+- **Riesgo legal PROPIO (bloqueante)**: como fabricante de SIF, falta la **declaración responsable
+  RD 1007/2023** (vigente desde 29-7-2025) y el software se identifica con NIF placeholder →
+  exposición hasta 150.000€/ejercicio. **Solo César** puede firmarla y poner su NIF real.
+- **Parte SES del check-in falla el 100%** (POST a endpoint inexistente; solo hay GET) con UI de
+  éxito → incumplimiento RD 933/2021 (la única norma vigente HOY). Cablear al pipeline SES Prisma.
+- **Registro de viajeros + envíos en RAM (demoStore)** → se pierden en cada deploy (retención 3 años).
+- **`markInvoicePaid` asigna el pago a un folio arbitrario** + sin idempotencia (doble clic = doble
+  cobro) + Invoice sin `folioId` (misma factura N veces). Necesita columna nueva + migración.
+- **NIF emisor por regex del nombre legal** con fallback `B00000000` (`invoice.service.ts:285`) →
+  usar `organization.taxId` y FALLAR si falta. (No lo toqué sin poder testear el camino del dinero.)
+- **VPS en `NODE_ENV=dev`** → desactiva los fail-closed de crypto/JWT (incl. mi guard nuevo). Quick
+  win de 10 min: poner `NODE_ENV=production` + `APP_VERSION` en el unit systemd.
+
+## Puntuaciones CEO
+Producto **5**, Técnica **4**, Mercado **7**, Go-to-market **3**. Veredicto: **no cobrar hoy**;
+primer piloto de pago alcanzable **sep–oct** con alcance pactado + cuña SES como producto de entrada.
+Plan 30/60/90 completo en el `.output` del workflow `w5ghkx1ob`.
+
+## Ángulo de marketing
+La mejor frase del producto ya está escrita (`ReservationCreateScreen.tsx:813`: "Escanea el DNI, la
+IA rellena el parte, tú revisas y confirmas. Nada se guarda sin tu confirmación") — sacarla al
+one-pager. Regla anti-humo: toda afirmación con `file:line` detrás; lo sandbox/mock, etiquetado.

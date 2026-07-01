@@ -12,10 +12,13 @@ import { queueTbaiSubmission } from "./tbai-submission.service.js";
 import { queueIgicSubmission } from "./igic-submission.service.js";
 
 const SOFTWARE = {
+  // NIF del PRODUCTOR del software (el titular legal de Anfitorio). DEBE venir de
+  // env con un NIF real antes de enviar a AEAT — el placeholder B00000000 solo es
+  // válido en desarrollo. (Revisión 360º: identidad de SIF ante AEAT.)
   nif: process.env.VERIFACTU_SOFTWARE_NIF ?? "B00000000",
-  name: "HotelOS",
-  id: "HOTELOS-VRF-01",
-  version: "0.1.0",
+  name: "Anfitorio",
+  id: "ANFITORIO-VRF-01",
+  version: process.env.APP_VERSION ?? "0.1.0",
   installNumber: process.env.VERIFACTU_INSTALL_NUMBER ?? "DEV-001"
 };
 
@@ -72,7 +75,7 @@ async function submitForInvoice(invoiceId: string, organizationId: string, actor
   const property = await prisma.property.findUnique({ where: { id: invoice.propertyId } });
   const lines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
   const emitterTaxId = property?.legalName?.match(/[A-Z]?\d{8}[A-Z]?/i)?.[0] ?? "B00000000";
-  const emitterName = property?.legalName ?? property?.name ?? "HotelOS Demo";
+  const emitterName = property?.legalName ?? property?.name ?? "Establecimiento";
 
   let previousInvoiceNumber: string | null = null;
   let previousIssuedAt: string | null = null;
