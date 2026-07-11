@@ -2,6 +2,7 @@ import { useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { useToast } from "../../components/Toast";
+import { toArray } from "../../utils/toArray";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -45,10 +46,15 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
   // pasan a tabs internos. Solo una sección visible a la vez.
   const [activeSection, setActiveSection] = useState<FiscalSection>("authorities");
 
-  const v = countByStatus(verifactu.data);
-  const t = countByStatus(tbai.data);
-  const i = countByStatus(igic.data);
-  const s = countByStatus(ses.data);
+  // toArray() normaliza cualquier forma de respuesta (array plano, `{ items }` o
+  // null) a un array. /tbai/submissions devuelve `{ items }` mientras que los
+  // otros tres devuelven array plano; sin esto, `countByStatus` hacía
+  // `for..of` sobre un objeto no iterable y tumbaba la pantalla con el
+  // ErrorBoundary (visible sobre todo como admin, que sí recibe 200 de TBAI).
+  const v = countByStatus(toArray<SubmissionLite>(verifactu.data));
+  const t = countByStatus(toArray<SubmissionLite>(tbai.data));
+  const i = countByStatus(toArray<SubmissionLite>(igic.data));
+  const s = countByStatus(toArray<SubmissionLite>(ses.data));
   const failures = v.rejected + t.rejected + i.rejected + s.rejected;
   const retrying = v.retrying + t.retrying + i.retrying + s.retrying;
   const totalAccepted = v.accepted + t.accepted + i.accepted + s.accepted;
