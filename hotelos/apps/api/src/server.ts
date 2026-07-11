@@ -5640,6 +5640,37 @@ export function buildApiServer() {
     return listSesSubmissions(params.propertyId);
   });
 
+  // Parte de viajeros SES.HOSPEDAJES: encola el envío del registro de una reserva
+  // por el pipeline real (persiste en Prisma `SesHospedajesSubmission`). Antes esta
+  // ruta NO existía — el check-in (QuickCheckInDrawer) hacía POST aquí y recibía un
+  // 404 tragado en silencio, con UI de éxito falsa (auditoría 2026-06 · crítico SES).
+  // Encola los registros ya creados de la reserva; si aún no hay ninguno, devuelve
+  // estado claro en vez de fallar. El envío real al MIR requiere además
+  // SES_HOSPEDAJES_MODE=production + certificado (hoy stub sandbox).
+  app.post("/properties/:propertyId/ses/submissions", async (request) => {
+    const params = request.params as { propertyId: string };
+    const body = (request.body ?? {}) as { reservationId?: string };
+    await assertPropertyInOrg(params.propertyId, request.userContext.organizationId);
+    if (!body.reservationId) {
+      throw new BadRequestError("reservationId es obligatorio para el parte de viajeros.");
+    }
+    await assertReservationInOrg(body.reservationId, request.userContext.organizationId);
+    const records = listReservationGuestRegisterRecords(body.reservationId);
+    const submissions = records.map((record) =>
+      queueSesHospedajesSubmission({
+        context: request.userContext,
+        guestRegisterRecordId: record.id,
+        submissionType: "checkin",
+        correlationId: createId("corr")
+      })
+    );
+    return {
+      status: submissions.length > 0 ? "queued" : "no_records",
+      queued: submissions.length,
+      submissions
+    };
+  });
+
   // Single-submission detail endpoints (full XML + response ACK + history)
   app.get("/verifactu/submissions/:id", async (request) => {
     const params = request.params as { id: string };

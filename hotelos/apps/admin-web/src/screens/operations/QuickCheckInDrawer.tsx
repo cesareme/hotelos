@@ -263,11 +263,17 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
         method: "POST",
         body: { roomId: selectedRoomId, signatureObjectKey: "sig_drawer_checkin" }
       });
-      // 4) Parte viajeros (background, no bloqueante).
+      // 4) Parte de viajeros SES (no bloqueante, pero YA no silencioso): si el
+      // envío no se puede encolar, se avisa al operador en vez de fingir éxito.
       void apiRequest(`/properties/${reservation.propertyId}/ses/submissions`, {
         method: "POST",
         body: { reservationId: reservation.id }
-      }).catch(() => undefined);
+      }).catch(() => {
+        showToast(
+          "Check-in hecho, pero el parte de viajeros (SES) no se pudo enviar. Revísalo en Cumplimiento.",
+          { variant: "error" }
+        );
+      });
 
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
       setCompleted({ elapsedSeconds: elapsed });

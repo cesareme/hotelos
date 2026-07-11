@@ -721,6 +721,7 @@ export const routePermissionManifest: ApiRoutePermission[] = [
     riskLevel: "high"
   },
   { method: "PATCH", path: "/compliance/spain/guest-register/:recordId", permissions: ["guest_register.edit"], riskLevel: "high" },
+  { method: "POST", path: "/properties/:propertyId/ses/submissions", permissions: ["compliance.ses.submit"], riskLevel: "high" },
   {
     method: "POST",
     path: "/compliance/spain/guest-register/:recordId/validate",
