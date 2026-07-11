@@ -291,6 +291,7 @@ import { createCheckInFromScanConfirmation, executeConfirmation } from "./module
 import {
   annulAuthorityCommunication,
   createSpainGuestRegisterRecord,
+  ensureReservationGuestRegisterRecords,
   correctGuestRegisterRecord,
   correctSpainGuestRegisterRecord,
   downloadSesHospedajesBatch,
@@ -3773,13 +3774,33 @@ export function buildApiServer() {
   app.post("/reservations/:id/check-in", async (request) => {
     const params = request.params as { id: string };
     const body = parse(CheckInSchema, request.body);
-    return checkInReservation({
+    const reservation = await checkInReservation({
       context: request.userContext,
       reservationId: params.id,
       roomId: body.roomId,
       signatureObjectKey: body.signatureObjectKey ?? "sig_manual_checkin",
       correlationId: createId("corr")
     });
+    // Punto 1 (informe SES): al hacer check-in, crear el parte de viajeros de
+    // cada huésped con sus datos, para que el envío SES tenga registros reales
+    // que encolar. Best-effort: si falla, el check-in se completa igualmente y se
+    // reporta el motivo (no se rompe la operación de recepción ni se finge éxito).
+    let guestRegister: { created: number; existing: number; error?: string };
+    try {
+      const outcome = await ensureReservationGuestRegisterRecords({
+        context: request.userContext,
+        reservationId: params.id,
+        correlationId: createId("corr")
+      });
+      guestRegister = { created: outcome.created.length, existing: outcome.existing };
+    } catch (error) {
+      guestRegister = {
+        created: 0,
+        existing: 0,
+        error: error instanceof Error ? error.message : "No se pudo crear el parte de viajeros (SES)."
+      };
+    }
+    return { ...reservation, guestRegister };
   });
 
   app.post("/reservations/:id/check-out", async (request) => {

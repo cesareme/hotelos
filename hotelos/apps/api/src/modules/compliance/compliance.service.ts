@@ -542,6 +542,76 @@ export function createSpainGuestRegisterRecord(input: {
   return record;
 }
 
+/**
+ * Punto 1 del informe SES: al hacer check-in, garantizar que existe el parte de
+ * viajeros (guest-register-record) de cada huésped de la reserva, con sus datos
+ * de identidad tomados de la ficha del huésped en Prisma. Así el envío SES tiene
+ * registros REALES que encolar (de principio a fin) en vez de "no_records".
+ *
+ * - Idempotente: si la reserva ya tiene partes, no crea duplicados.
+ * - Crea un parte por cada huésped enlazado; si un huésped no tiene datos
+ *   completos, el registro se crea igualmente con estado "missing_data" (la
+ *   validación no lanza), reflejando la realidad SES.
+ */
+export async function ensureReservationGuestRegisterRecords(input: {
+  context: UserContext;
+  reservationId: string;
+  correlationId: string;
+}): Promise<{ created: GuestRegisterRecord[]; existing: number }> {
+  const already = listReservationGuestRegisterRecords(input.reservationId);
+  if (already.length > 0) {
+    return { created: [], existing: already.length };
+  }
+  const { prisma } = await import("@hotelos/database");
+  const reservation = await prisma.reservation.findUnique({
+    where: { id: input.reservationId },
+    select: { id: true, propertyId: true }
+  });
+  if (!reservation) {
+    return { created: [], existing: 0 };
+  }
+  const links = await prisma.reservationGuest.findMany({
+    where: { reservationId: input.reservationId },
+    include: { guest: true }
+  });
+  const guests = links
+    .map((link) => link.guest)
+    .filter((guest): guest is NonNullable<typeof guest> => Boolean(guest));
+  const checkinAt = nowIso();
+  const created: GuestRegisterRecord[] = [];
+  for (const guest of guests) {
+    const record = createSpainGuestRegisterRecord({
+      context: input.context,
+      propertyId: reservation.propertyId,
+      reservationId: input.reservationId,
+      correlationId: input.correlationId,
+      payload: {
+        guestId: guest.id,
+        recordType: "checkin",
+        firstName: guest.firstName,
+        surname1: guest.surname1 ?? undefined,
+        surname2: guest.surname2 ?? undefined,
+        sex: guest.sex ?? undefined,
+        nationality: guest.nationality ?? undefined,
+        dateOfBirth: guest.dateOfBirth ? guest.dateOfBirth.toISOString().slice(0, 10) : undefined,
+        documentType: guest.documentType ?? undefined,
+        documentNumber: guest.documentNumber ?? undefined,
+        documentSupportNumber: guest.documentSupportNumber ?? undefined,
+        residenceFullAddress: guest.residenceAddress ?? undefined,
+        residenceLocality: guest.residenceLocality ?? undefined,
+        residenceCountry: guest.residenceCountry ?? undefined,
+        phoneLandline: guest.phone ?? undefined,
+        phoneMobile: guest.mobilePhone ?? undefined,
+        email: guest.email ?? undefined,
+        travellerCount: 1,
+        checkinAt
+      }
+    });
+    created.push(record);
+  }
+  return { created, existing: 0 };
+}
+
 export function patchSpainGuestRegisterRecord(input: {
   context: UserContext;
   recordId: string;
