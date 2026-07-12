@@ -1089,7 +1089,24 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/properties/:propertyId/rate-plans", permissions: ["revenue.read"], riskLevel: "low" },
   { method: "POST", path: "/properties/:propertyId/rate-plans", permissions: ["revenue.manage_rates"], riskLevel: "medium" },
   { method: "PATCH", path: "/rate-plans/:id", permissions: ["revenue.manage_rates"], riskLevel: "medium" },
-  { method: "DELETE", path: "/rate-plans/:id", permissions: ["revenue.manage_rates"], riskLevel: "medium" }
+  { method: "DELETE", path: "/rate-plans/:id", permissions: ["revenue.manage_rates"], riskLevel: "medium" },
+
+  // ── Auditoría 2026-07: mutaciones que EXISTÍAN sin entrada => fail-closed
+  // => 500 en cada uso. Consola Tenant-Admin (onboarding de clientes) y Rate
+  // Grid V2 (editor de tarifas). El gate real de tenants es admin.tenants.manage
+  // (admin-console/tenant-admin.service.ts:27, cast igual que allí porque aún no
+  // está en la unión canónica de PermissionKey).
+  { method: "GET", path: "/admin/tenants", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "high" },
+  { method: "GET", path: "/admin/tenants/:orgId", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "high" },
+  { method: "GET", path: "/admin/tenants/:orgId/audit-log", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "high" },
+  { method: "POST", path: "/admin/tenants", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
+  { method: "POST", path: "/admin/tenants/:orgId/users/:userId/reset-password", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
+  { method: "PATCH", path: "/admin/tenants/:orgId/modules/:moduleCode", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
+  // Rate Grid V2 (rutas sin prefijo /revenue que usa RateGridEditorScreen).
+  { method: "GET", path: "/properties/:propertyId/rate-grid", permissions: ["revenue.read"], riskLevel: "medium" },
+  { method: "GET", path: "/properties/:propertyId/rate-journal", permissions: ["revenue.read"], riskLevel: "medium" },
+  { method: "POST", path: "/properties/:propertyId/rate-grid/bulk-update", permissions: ["revenue.manage_rates"], riskLevel: "critical" },
+  { method: "POST", path: "/properties/:propertyId/rate-grid/push", permissions: ["distribution.sync"], riskLevel: "critical" }
 ];
 
 export function findRoutePermission(method: string, path: string): ApiRoutePermission | undefined {

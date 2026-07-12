@@ -71,8 +71,10 @@ export function createTenant(payload: CreateTenantPayload): Promise<CreateTenant
 
 /** Reset (re-issue) the one-time temp password for a tenant user. */
 export function resetTempPassword(orgId: string, userId: string): Promise<ResetTempPasswordResponse> {
+  // Auditoría 2026-07: el backend registra `.../reset-password` (server.ts);
+  // este cliente llamaba a `.../reset-temp-password` → 404 silencioso.
   return apiRequest<ResetTempPasswordResponse>(
-    `/admin/tenants/${orgId}/users/${userId}/reset-temp-password`,
+    `/admin/tenants/${orgId}/users/${userId}/reset-password`,
     { method: "POST" }
   );
 }

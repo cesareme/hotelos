@@ -247,16 +247,27 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
         });
       }
       // 2) Cobro previo si capture/preauth con saldo.
+      // Auditoría 2026-07: antes `.catch(()=>undefined)` — si el cobro fallaba se
+      // tragaba el error y el check-in seguía como si se hubiera cobrado. Ahora
+      // un fallo de cobro ABORTA el check-in con error visible; el recepcionista
+      // puede reintentar o elegir explícitamente "Sin cobro".
       if (paymentMode !== "none" && folio && balanceDue > 0) {
-        await apiRequest(`/folios/${folio.folio.id}/payments`, {
-          method: "POST",
-          body: {
-            amount: paymentMode === "capture" ? balanceDue : preauthAmount,
-            currency: reservation.currency || "EUR",
-            method: paymentMethod,
-            status: paymentMode === "capture" ? "captured" : "pending"
-          }
-        }).catch(() => undefined);
+        try {
+          await apiRequest(`/folios/${folio.folio.id}/payments`, {
+            method: "POST",
+            body: {
+              amount: paymentMode === "capture" ? balanceDue : preauthAmount,
+              currency: reservation.currency || "EUR",
+              method: paymentMethod,
+              status: paymentMode === "capture" ? "captured" : "pending"
+            }
+          });
+        } catch (err) {
+          throw new Error(
+            `No se pudo registrar el cobro (${err instanceof Error ? err.message : "error"}). ` +
+              `El check-in NO se ha realizado. Reintenta o selecciona "Sin cobro".`
+          );
+        }
       }
       // 3) Check-in.
       await apiRequest(`/reservations/${reservation.id}/check-in`, {

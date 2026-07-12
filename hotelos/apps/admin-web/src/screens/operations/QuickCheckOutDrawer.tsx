@@ -140,30 +140,47 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
     });
     try {
       // 1) Cobrar saldo si > 0.
+      // Auditoría 2026-07: antes `.catch(()=>undefined)` — si el cobro fallaba se
+      // tragaba el error, el check-out CERRABA el folio igualmente y mostraba
+      // "completado" con saldo sin cobrar. Un fallo de cobro ahora ABORTA el
+      // check-out con error visible; el folio sigue abierto.
       if (balanceDue > 0.01) {
-        await apiRequest(`/folios/${folio.folio.id}/payments`, {
-          method: "POST",
-          body: {
-            amount: balanceDue,
-            currency: reservation.currency || "EUR",
-            method: paymentMethod,
-            status: "captured"
-          }
-        }).catch(() => undefined);
+        try {
+          await apiRequest(`/folios/${folio.folio.id}/payments`, {
+            method: "POST",
+            body: {
+              amount: balanceDue,
+              currency: reservation.currency || "EUR",
+              method: paymentMethod,
+              status: "captured"
+            }
+          });
+        } catch (err) {
+          throw new Error(
+            `No se pudo registrar el cobro del saldo (${err instanceof Error ? err.message : "error"}). ` +
+              `El check-out NO se ha realizado; el folio sigue abierto.`
+          );
+        }
       }
       // 2) Check-out (el endpoint cierra el folio + crea tarea departure HK).
       await apiRequest(`/reservations/${reservation.id}/check-out`, {
         method: "POST",
         body: {}
       });
-      // 3) Emitir factura (background, best-effort).
+      // 3) Emitir factura (background). Ya no silencioso: si falla, se avisa
+      // para que el operador la emita desde Facturación.
       if (issueInvoice) {
         void apiRequest(`/folios/${folio.folio.id}/invoice`, {
           method: "POST",
           body: { customerType: "guest" }
         })
           .then(() => showToast("Factura solicitada", { variant: "info" }))
-          .catch(() => undefined);
+          .catch(() => {
+            showToast(
+              "Check-out hecho, pero la factura NO se pudo emitir. Emítela desde Facturación.",
+              { variant: "error" }
+            );
+          });
       }
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
       setCompleted({ elapsedSeconds: elapsed });

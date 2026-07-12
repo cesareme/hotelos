@@ -18,6 +18,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { apiRequest } from "../../services/api-client";
 import { LoadingBlock, ErrorState } from "../../components/States";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
@@ -125,12 +126,11 @@ function fmtEur(value: number | undefined | null): string {
   return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 }
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
-
-async function postAction(url: string, body?: unknown): Promise<{ ok: boolean; message?: string }> {
+// SECURITY (auditoría 2026-07): antes era `fetch` crudo sin Authorization → 401
+// en producción. Ahora va por apiRequest (JWT + manejo de sesión).
+async function postAction(path: string, body?: unknown): Promise<{ ok: boolean; message?: string }> {
   try {
-    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
-    if (!res.ok) return { ok: false, message: `${res.status} ${await res.text().catch(() => "")}` };
+    await apiRequest(path, { method: "POST", body });
     return { ok: true };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : "Error" };
@@ -194,7 +194,7 @@ export function RoomRackScreen() {
 
   async function handleBlockRoom(roomId: string, sellable: boolean) {
     setBusy(true);
-    const result = await postAction(`${API_BASE}/rooms/${roomId}/sellable`, { sellable });
+    const result = await postAction(`/rooms/${roomId}/sellable`, { sellable });
     setBusy(false);
     setToast({ kind: result.ok ? "ok" : "warn", text: result.ok ? (sellable ? "Habitación desbloqueada" : "Habitación bloqueada") : (result.message || "Error") });
     setTimeout(() => setToast(null), 3500);
@@ -203,7 +203,7 @@ export function RoomRackScreen() {
 
   async function handleHkStatus(roomId: string, status: string) {
     setBusy(true);
-    const result = await postAction(`${API_BASE}/rooms/${roomId}/housekeeping-status`, { status });
+    const result = await postAction(`/rooms/${roomId}/housekeeping-status`, { status });
     setBusy(false);
     setToast({ kind: result.ok ? "ok" : "warn", text: result.ok ? `Estado HK → ${status}` : (result.message || "Error") });
     setTimeout(() => setToast(null), 3500);

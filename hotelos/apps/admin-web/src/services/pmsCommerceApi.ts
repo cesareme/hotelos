@@ -1,4 +1,12 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+// PMS commerce client (reservations, folios, invoices, reports).
+//
+// SECURITY (auditoría 2026-07): este módulo usaba `fetch` crudo SIN cabecera
+// Authorization. Bajo el gate de auth de producción (sin HOTELOS_ALLOW_DEMO_AUTH)
+// todas sus llamadas devolvían 401 — crear reserva, check-in/out, cancelar…— y,
+// con el gate abierto, se ejecutaban como el super-usuario demo (traza de
+// auditoría corrupta). Ahora TODO pasa por `apiRequest` (JWT + manejo de 401 +
+// extracción de mensaje de error). No añadir `fetch` crudo aquí.
+import { apiRequest } from "./api-client";
 
 export type AdminReservation = {
   id: string;
@@ -81,32 +89,20 @@ export type InvoiceDraft = {
   qrPayload?: string;
 };
 
-export async function fetchReservations(propertyId: string): Promise<AdminReservation[]> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/reservations`);
-  if (!response.ok) throw new Error("Unable to load reservations.");
-  return response.json() as Promise<AdminReservation[]>;
+export function fetchReservations(propertyId: string): Promise<AdminReservation[]> {
+  return apiRequest<AdminReservation[]>(`/properties/${propertyId}/reservations`);
 }
 
-export async function fetchReservation(reservationId: string): Promise<AdminReservation> {
-  const response = await fetch(`${API_BASE_URL}/reservations/${reservationId}`);
-  if (!response.ok) throw new Error("Unable to load reservation.");
-  return response.json() as Promise<AdminReservation>;
+export function fetchReservation(reservationId: string): Promise<AdminReservation> {
+  return apiRequest<AdminReservation>(`/reservations/${reservationId}`);
 }
 
-export async function fetchRoomTypes(propertyId: string): Promise<AdminRoomType[]> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/room-types`);
-  if (!response.ok) throw new Error("Unable to load room types.");
-  return response.json() as Promise<AdminRoomType[]>;
+export function fetchRoomTypes(propertyId: string): Promise<AdminRoomType[]> {
+  return apiRequest<AdminRoomType[]>(`/properties/${propertyId}/room-types`);
 }
 
-export async function quoteAvailability(propertyId: string, payload: Record<string, unknown>): Promise<AvailabilityQuote[]> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/availability/quote`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) throw new Error("Unable to quote availability.");
-  return response.json() as Promise<AvailabilityQuote[]>;
+export function quoteAvailability(propertyId: string, payload: Record<string, unknown>): Promise<AvailabilityQuote[]> {
+  return apiRequest<AvailabilityQuote[]>(`/properties/${propertyId}/availability/quote`, { method: "POST", body: payload });
 }
 
 export type ReservationDraft = {
@@ -154,36 +150,20 @@ export type GuestActivity = {
   counts: { messages: number; housekeeping: number; maintenance: number; serviceRequests: number; openTotal: number; unreadGuest: number };
 };
 
-export async function fetchGuestActivity(reservationId: string): Promise<GuestActivity> {
-  const response = await fetch(`${API_BASE_URL}/reservations/${reservationId}/activity`);
-  if (!response.ok) throw new Error("Unable to load guest activity.");
-  return response.json() as Promise<GuestActivity>;
+export function fetchGuestActivity(reservationId: string): Promise<GuestActivity> {
+  return apiRequest<GuestActivity>(`/reservations/${reservationId}/activity`);
 }
 
-export async function aiParseReservation(propertyId: string, text: string): Promise<ReservationParseResult> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/reservations/ai-parse`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text })
-  });
-  if (!response.ok) throw new Error("Unable to parse the request.");
-  return response.json() as Promise<ReservationParseResult>;
+export function aiParseReservation(propertyId: string, text: string): Promise<ReservationParseResult> {
+  return apiRequest<ReservationParseResult>(`/properties/${propertyId}/reservations/ai-parse`, { method: "POST", body: { text } });
 }
 
-export async function createReservation(propertyId: string, payload: Record<string, unknown>): Promise<AdminReservation> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/reservations`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) throw new Error("Unable to create reservation.");
-  return response.json() as Promise<AdminReservation>;
+export function createReservation(propertyId: string, payload: Record<string, unknown>): Promise<AdminReservation> {
+  return apiRequest<AdminReservation>(`/properties/${propertyId}/reservations`, { method: "POST", body: payload });
 }
 
-export async function fetchReservationFolio(reservationId: string): Promise<FolioBalance> {
-  const response = await fetch(`${API_BASE_URL}/reservations/${reservationId}/folio`);
-  if (!response.ok) throw new Error("Unable to load folio.");
-  return response.json() as Promise<FolioBalance>;
+export function fetchReservationFolio(reservationId: string): Promise<FolioBalance> {
+  return apiRequest<FolioBalance>(`/reservations/${reservationId}/folio`);
 }
 
 // --- Front-desk actions (P1.10) -------------------------------------------
@@ -199,96 +179,60 @@ export type AdminRoom = {
   sellable: boolean;
 };
 
-export async function fetchRooms(propertyId: string): Promise<AdminRoom[]> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/rooms`);
-  if (!response.ok) throw new Error("Unable to load rooms.");
-  return response.json() as Promise<AdminRoom[]>;
-}
-
-async function postAction<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    // Only set a JSON content-type when there's actually a body — Fastify rejects
-    // an empty body when Content-Type is application/json (e.g. check-out).
-    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    let message = text;
-    try {
-      message = (JSON.parse(text) as { message?: string }).message ?? text;
-    } catch {
-      /* keep raw */
-    }
-    throw new Error(message || `HTTP ${response.status}`);
-  }
-  return response.json() as Promise<T>;
+export function fetchRooms(propertyId: string): Promise<AdminRoom[]> {
+  return apiRequest<AdminRoom[]>(`/properties/${propertyId}/rooms`);
 }
 
 export function assignReservationRoom(
   reservationId: string,
   body: { roomId?: string; roomNumber?: string }
 ): Promise<AdminReservation> {
-  return postAction<AdminReservation>(`/reservations/${reservationId}/assign-room`, body);
+  return apiRequest<AdminReservation>(`/reservations/${reservationId}/assign-room`, { method: "POST", body });
 }
 
 // PATCH /reservations/:id — server accepts arrivalDate/departureDate/adults/
 // children/roomTypeId/totalAmount/status and runs availability/overlap checks.
 // Used by the Live Timeline for drag-to-resize (change dates).
-export async function updateReservation(
+export function updateReservation(
   reservationId: string,
   patch: Partial<{ arrivalDate: string; departureDate: string; status: string; adults: number; children: number; roomTypeId: string; totalAmount: number }>
 ): Promise<AdminReservation> {
-  const response = await fetch(`${API_BASE_URL}/reservations/${reservationId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(patch)
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    let message = text;
-    try {
-      message = (JSON.parse(text) as { message?: string }).message ?? text;
-    } catch {
-      /* keep raw */
-    }
-    throw new Error(message || `HTTP ${response.status}`);
-  }
-  return response.json() as Promise<AdminReservation>;
+  return apiRequest<AdminReservation>(`/reservations/${reservationId}`, { method: "PATCH", body: patch });
 }
 
 export function checkInReservation(
   reservationId: string,
   body: { roomId: string; signatureObjectKey?: string }
 ): Promise<AdminReservation> {
-  return postAction<AdminReservation>(`/reservations/${reservationId}/check-in`, body);
+  return apiRequest<AdminReservation>(`/reservations/${reservationId}/check-in`, { method: "POST", body });
 }
 
 export function checkOutReservation(reservationId: string): Promise<{ reservation: AdminReservation }> {
-  return postAction<{ reservation: AdminReservation }>(`/reservations/${reservationId}/check-out`);
+  // Nota: body {} explícito — el endpoint valida `request.body ?? {}` y apiRequest
+  // solo fija Content-Type JSON cuando hay body.
+  return apiRequest<{ reservation: AdminReservation }>(`/reservations/${reservationId}/check-out`, { method: "POST", body: {} });
 }
 
 export function cancelReservation(reservationId: string, reason?: string): Promise<AdminReservation> {
-  return postAction<AdminReservation>(`/reservations/${reservationId}/cancel`, { reason });
+  return apiRequest<AdminReservation>(`/reservations/${reservationId}/cancel`, { method: "POST", body: { reason } });
 }
 
 export function noShowReservation(reservationId: string, reason?: string): Promise<AdminReservation> {
-  return postAction<AdminReservation>(`/reservations/${reservationId}/no-show`, { reason });
+  return apiRequest<AdminReservation>(`/reservations/${reservationId}/no-show`, { method: "POST", body: { reason } });
 }
 
 export function postFolioLine(
   folioId: string,
   body: { type: string; description: string; quantity: number; unitPrice: number; taxCode?: string }
 ): Promise<unknown> {
-  return postAction(`/folios/${folioId}/lines`, body);
+  return apiRequest<unknown>(`/folios/${folioId}/lines`, { method: "POST", body });
 }
 
 export function postFolioPayment(
   folioId: string,
   body: { amount: number; currency?: string; method: string; pspReference?: string }
 ): Promise<unknown> {
-  return postAction(`/folios/${folioId}/payments`, body);
+  return apiRequest<unknown>(`/folios/${folioId}/payments`, { method: "POST", body });
 }
 
 export type ScanIdResult = {
@@ -308,39 +252,20 @@ export type ScanIdResult = {
   };
 };
 
-export async function scanIdDocument(imageDataUrl: string): Promise<ScanIdResult> {
-  const response = await fetch(`${API_BASE_URL}/ai/commands/scan-id-document`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ imageDataUrl })
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(text || "No se pudo escanear el documento.");
-  }
-  return response.json() as Promise<ScanIdResult>;
+export function scanIdDocument(imageDataUrl: string): Promise<ScanIdResult> {
+  return apiRequest<ScanIdResult>(`/ai/commands/scan-id-document`, { method: "POST", body: { imageDataUrl } });
 }
 
-export async function fetchInvoices(propertyId: string): Promise<InvoiceDraft[]> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/invoices`);
-  if (!response.ok) throw new Error("Unable to load invoices.");
-  return response.json() as Promise<InvoiceDraft[]>;
+export function fetchInvoices(propertyId: string): Promise<InvoiceDraft[]> {
+  return apiRequest<InvoiceDraft[]>(`/properties/${propertyId}/invoices`);
 }
 
-export async function createInvoiceDraft(payload: Omit<InvoiceDraft, "id" | "status">): Promise<InvoiceDraft> {
-  const response = await fetch(`${API_BASE_URL}/invoices/drafts`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) throw new Error("Unable to create invoice draft.");
-  return response.json() as Promise<InvoiceDraft>;
+export function createInvoiceDraft(payload: Omit<InvoiceDraft, "id" | "status">): Promise<InvoiceDraft> {
+  return apiRequest<InvoiceDraft>(`/invoices/drafts`, { method: "POST", body: payload });
 }
 
-export async function issueInvoice(invoiceId: string): Promise<InvoiceDraft> {
-  const response = await fetch(`${API_BASE_URL}/invoices/${invoiceId}/issue`, { method: "POST" });
-  if (!response.ok) throw new Error("Unable to issue invoice.");
-  return response.json() as Promise<InvoiceDraft>;
+export function issueInvoice(invoiceId: string): Promise<InvoiceDraft> {
+  return apiRequest<InvoiceDraft>(`/invoices/${invoiceId}/issue`, { method: "POST", body: {} });
 }
 
 export type RectifyingReasonCode = "R1" | "R2" | "R3" | "R4" | "R5";
@@ -354,26 +279,15 @@ export type InvoiceIssuer = {
   legalFooter?: string;
 };
 
-export async function fetchInvoiceBranding(propertyId: string): Promise<InvoiceIssuer> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/invoice-branding`);
-  if (!response.ok) throw new Error("Unable to load invoice branding.");
-  return response.json() as Promise<InvoiceIssuer>;
+export function fetchInvoiceBranding(propertyId: string): Promise<InvoiceIssuer> {
+  return apiRequest<InvoiceIssuer>(`/properties/${propertyId}/invoice-branding`);
 }
 
-export async function saveInvoiceBranding(
+export function saveInvoiceBranding(
   propertyId: string,
   body: { logoUrl?: string | null; legalFooter?: string | null }
 ): Promise<InvoiceIssuer> {
-  const response = await fetch(`${API_BASE_URL}/properties/${propertyId}/invoice-branding`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body)
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(text || "Unable to save invoice branding.");
-  }
-  return response.json() as Promise<InvoiceIssuer>;
+  return apiRequest<InvoiceIssuer>(`/properties/${propertyId}/invoice-branding`, { method: "PATCH", body });
 }
 
 export type InvoiceFull = InvoiceDraft & {
@@ -393,23 +307,15 @@ export type InvoiceFull = InvoiceDraft & {
   }>;
 };
 
-export async function fetchInvoice(invoiceId: string): Promise<InvoiceFull> {
-  const response = await fetch(`${API_BASE_URL}/invoices/${invoiceId}`);
-  if (!response.ok) throw new Error("Unable to load invoice.");
-  return response.json() as Promise<InvoiceFull>;
+export function fetchInvoice(invoiceId: string): Promise<InvoiceFull> {
+  return apiRequest<InvoiceFull>(`/invoices/${invoiceId}`);
 }
 
-export async function cancelInvoice(invoiceId: string, reason?: string): Promise<InvoiceFull> {
-  const response = await fetch(`${API_BASE_URL}/invoices/${invoiceId}/cancel`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ reason })
-  });
-  if (!response.ok) throw new Error("Unable to cancel invoice.");
-  return response.json() as Promise<InvoiceFull>;
+export function cancelInvoice(invoiceId: string, reason?: string): Promise<InvoiceFull> {
+  return apiRequest<InvoiceFull>(`/invoices/${invoiceId}/cancel`, { method: "POST", body: { reason } });
 }
 
-export async function rectifyInvoice(
+export function rectifyInvoice(
   invoiceId: string,
   payload: {
     reasonCode: RectifyingReasonCode;
@@ -417,22 +323,11 @@ export async function rectifyInvoice(
     fullReversal?: boolean;
   }
 ): Promise<InvoiceFull> {
-  const response = await fetch(`${API_BASE_URL}/invoices/${invoiceId}/rectify`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(text || "Unable to create rectifying invoice.");
-  }
-  return response.json() as Promise<InvoiceFull>;
+  return apiRequest<InvoiceFull>(`/invoices/${invoiceId}/rectify`, { method: "POST", body: payload });
 }
 
-export async function fetchInvoiceRectifications(invoiceId: string): Promise<InvoiceFull[]> {
-  const response = await fetch(`${API_BASE_URL}/invoices/${invoiceId}/rectifications`);
-  if (!response.ok) throw new Error("Unable to load rectifications.");
-  return response.json() as Promise<InvoiceFull[]>;
+export function fetchInvoiceRectifications(invoiceId: string): Promise<InvoiceFull[]> {
+  return apiRequest<InvoiceFull[]>(`/invoices/${invoiceId}/rectifications`);
 }
 
 // --- invoice actions (mark paid / send by email) ---------------------------
@@ -453,17 +348,8 @@ export type MarkInvoicePaidResponse = {
   alreadyPaid: boolean;
 };
 
-export async function markInvoicePaid(invoiceId: string, payload: MarkInvoicePaidPayload = {}): Promise<MarkInvoicePaidResponse> {
-  const response = await fetch(`${API_BASE_URL}/invoices/${invoiceId}/mark-paid`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(text || "Unable to mark invoice as paid.");
-  }
-  return response.json() as Promise<MarkInvoicePaidResponse>;
+export function markInvoicePaid(invoiceId: string, payload: MarkInvoicePaidPayload = {}): Promise<MarkInvoicePaidResponse> {
+  return apiRequest<MarkInvoicePaidResponse>(`/invoices/${invoiceId}/mark-paid`, { method: "POST", body: payload });
 }
 
 export type SendInvoiceEmailPayload = {
@@ -479,43 +365,22 @@ export type SendInvoiceEmailResponse = {
   sentAt: string;
 };
 
-export async function sendInvoiceEmail(invoiceId: string, payload: SendInvoiceEmailPayload): Promise<SendInvoiceEmailResponse> {
-  const response = await fetch(`${API_BASE_URL}/invoices/${invoiceId}/send-email`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(text || "Unable to send invoice email.");
-  }
-  return response.json() as Promise<SendInvoiceEmailResponse>;
+export function sendInvoiceEmail(invoiceId: string, payload: SendInvoiceEmailPayload): Promise<SendInvoiceEmailResponse> {
+  return apiRequest<SendInvoiceEmailResponse>(`/invoices/${invoiceId}/send-email`, { method: "POST", body: payload });
 }
 
-export async function fetchReportCatalog(propertyId: string) {
-  const response = await fetch(`${API_BASE_URL}/reports/properties/${propertyId}/catalog`);
-  if (!response.ok) throw new Error("Unable to load report catalog.");
-  return response.json();
+export function fetchReportCatalog(propertyId: string) {
+  return apiRequest<unknown>(`/reports/properties/${propertyId}/catalog`);
 }
 
-export async function fetchReservationReport(propertyId: string) {
-  const response = await fetch(`${API_BASE_URL}/reports/properties/${propertyId}/reservations`);
-  if (!response.ok) throw new Error("Unable to load reservation report.");
-  return response.json();
+export function fetchReservationReport(propertyId: string) {
+  return apiRequest<unknown>(`/reports/properties/${propertyId}/reservations`);
 }
 
-export async function fetchBillingReport(propertyId: string) {
-  const response = await fetch(`${API_BASE_URL}/reports/properties/${propertyId}/billing`);
-  if (!response.ok) throw new Error("Unable to load billing report.");
-  return response.json();
+export function fetchBillingReport(propertyId: string) {
+  return apiRequest<unknown>(`/reports/properties/${propertyId}/billing`);
 }
 
-export async function exportOperationalReport(propertyId: string, payload: Record<string, unknown>) {
-  const response = await fetch(`${API_BASE_URL}/reports/properties/${propertyId}/export`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  if (!response.ok) throw new Error("Unable to export report.");
-  return response.json();
+export function exportOperationalReport(propertyId: string, payload: Record<string, unknown>) {
+  return apiRequest<unknown>(`/reports/properties/${propertyId}/export`, { method: "POST", body: payload });
 }

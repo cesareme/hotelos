@@ -6,13 +6,13 @@
 
 import { useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { apiRequest } from "../../services/api-client";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
 import { MAINT_INSTRUCTIONS } from "../../content/screen-instructions/maintenance";
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
 type Priority = "urgent" | "high" | "normal" | "low";
 
@@ -49,14 +49,11 @@ const PRIORITY_STYLE: Record<Priority, { label: string; bg: string; ink: string;
   low: { label: "BAJA", bg: "#e5e7eb", ink: "#374151", border: "#6b7280" }
 };
 
-async function postAction(url: string, body?: unknown): Promise<{ ok: boolean; message?: string }> {
+// Auditoría 2026-07: antes `fetch` crudo sin Authorization → 401 en producción.
+// Ahora todas las mutaciones van por apiRequest (JWT + manejo de sesión).
+async function mutate(path: string, method: "POST" | "PATCH", body?: unknown): Promise<{ ok: boolean; message?: string }> {
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined
-    });
-    if (!res.ok) return { ok: false, message: `${res.status}` };
+    await apiRequest(path, { method, body });
     return { ok: true };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : "Error" };
@@ -91,13 +88,8 @@ export function MaintenanceMobileScreen() {
     setToast(null);
     // Si status === resolved, usa el endpoint dedicado; si no, PATCH genérico.
     const result = status === "resolved"
-      ? await postAction(`${API_BASE}/work-orders/${item.workOrderId}/resolve`, { releaseRoom: item.blocksRoom })
-      : await fetch(`${API_BASE}/work-orders/${item.workOrderId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status })
-        }).then((r) => ({ ok: r.ok, message: r.ok ? undefined : `${r.status}` }))
-          .catch((err: unknown) => ({ ok: false, message: err instanceof Error ? err.message : "Error" }));
+      ? await mutate(`/work-orders/${item.workOrderId}/resolve`, "POST", { releaseRoom: item.blocksRoom })
+      : await mutate(`/work-orders/${item.workOrderId}`, "PATCH", { status });
     setBusy(null);
     setToast(
       result.ok
@@ -119,13 +111,9 @@ export function MaintenanceMobileScreen() {
     setBusy(item.workOrderId);
     // Guarda como descripción anexada (concat con la existente).
     const newDescription = item.description ? `${item.description}\n\n[${new Date().toLocaleString("es-ES")}] ${note}` : note;
-    const res = await fetch(`${API_BASE}/work-orders/${item.workOrderId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ description: newDescription })
-    }).catch(() => null);
+    const res = await mutate(`/work-orders/${item.workOrderId}`, "PATCH", { description: newDescription });
     setBusy(null);
-    const ok = res?.ok ?? false;
+    const ok = res.ok;
     setToast({ kind: ok ? "ok" : "warn", text: ok ? "Nota guardada" : "Error guardando nota" });
     setTimeout(() => setToast(null), 3000);
     if (ok) {

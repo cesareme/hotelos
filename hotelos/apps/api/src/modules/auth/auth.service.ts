@@ -46,9 +46,17 @@ export async function loadPermissionsForUserProperty(userId: string, propertyId:
 }
 
 function unionPermissions(prismaPerms: PermissionKey[]): PermissionKey[] {
-  // SECURITY: in production, NEVER escalate a real user to the demoStore
-  // super-user baseline — return only their actual role-derived permissions.
-  if (process.env.NODE_ENV === "production") {
+  // SECURITY (auditoría 2026-07): FAIL-SECURE. Antes el gate era
+  // `NODE_ENV !== "production"` → un deploy que OLVIDARA fijar NODE_ENV le daba
+  // a cualquier usuario TODOS los permisos del super-usuario demo. Ahora la
+  // escalada solo se activa con un opt-in EXPLÍCITO: NODE_ENV=development|dev
+  // (entorno local/demo declarado) o HOTELOS_ALLOW_DEMO_AUTH=true (mismo flag
+  // que habilita el fallback de auth demo). Con NODE_ENV ausente o cualquier
+  // otro valor → solo permisos reales derivados de roles.
+  const env = process.env.NODE_ENV;
+  const demoMode =
+    env === "development" || env === "dev" || process.env.HOTELOS_ALLOW_DEMO_AUTH === "true";
+  if (!demoMode) {
     return prismaPerms;
   }
   // Dev/demo only: union with the legacy demoStore baseline so route-permission

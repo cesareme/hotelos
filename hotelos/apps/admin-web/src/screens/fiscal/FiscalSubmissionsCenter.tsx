@@ -28,11 +28,21 @@ type SubmissionRow = {
   submissionType?: string;
 };
 
-function statusToClass(status: string): string {
-  if (status === "accepted" || status === "accepted_with_warnings") return "ok";
+function statusToClass(status: string, simulated = false): string {
+  // Honestidad (auditoría 2026-07): un "accepted" SIMULADO (sandbox/stub, sin
+  // envío real a la Administración) no debe pintarse en verde como si fuera un
+  // acuse real de AEAT/MIR/Hacienda foral.
+  if (status === "accepted" || status === "accepted_with_warnings") return simulated ? "warn" : "ok";
   if (status === "rejected") return "error";
   if (status === "retrying" || status === "queued" || status === "submitting" || status === "pending" || status === "network_error") return "warn";
   return "info";
+}
+
+/** Envío simulado: el submitter por defecto (sin VERIFACTU_MODE/SES_HOSPEDAJES_MODE
+ *  de producción) persiste acuses con endpoint `stub://…` sin contactar a la
+ *  Administración. Detectarlo para etiquetarlo SANDBOX en la UI. */
+function isSimulated(row: SubmissionRow): boolean {
+  return typeof row.endpoint === "string" && row.endpoint.startsWith("stub://");
 }
 
 function listPath(tab: AuthorityKind): string {
@@ -173,6 +183,18 @@ export function FiscalSubmissionsCenter() {
         </div>
       ) : null}
 
+      {rows.some(isSimulated) ? (
+        <div
+          className="bo-card"
+          role="status"
+          style={{ borderLeft: "3px solid var(--warn-ink, #a16207)", padding: 12, fontSize: 13 }}
+        >
+          <strong>Modo sandbox:</strong> los envíos marcados como SANDBOX son simulados —{" "}
+          <strong>no se han remitido a la Administración</strong>. El envío real requiere
+          configurar el modo producción y el certificado del establecimiento.
+        </div>
+      ) : null}
+
       {loading && rows.length === 0 ? (
         <div className="bo-card" style={{ textAlign: "center", padding: 48, color: "var(--ink-muted)" }}>Loading submissions...</div>
       ) : error ? (
@@ -205,7 +227,14 @@ export function FiscalSubmissionsCenter() {
                   onClick={() => setSelected(row.id)}
                   style={{ cursor: "pointer", background: row.id === selected ? "var(--accent-soft)" : undefined }}
                 >
-                  <td><span className={`bo-status ${statusToClass(row.status)}`}>{row.status}</span></td>
+                  <td>
+                    <span className={`bo-status ${statusToClass(row.status, isSimulated(row))}`}>{row.status}</span>
+                    {isSimulated(row) ? (
+                      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, color: "var(--warn-ink, #a16207)", marginTop: 2 }}>
+                        SANDBOX · no enviado
+                      </div>
+                    ) : null}
+                  </td>
                   <td>
                     <strong>{row.invoiceNumber ?? row.externalReference ?? "—"}</strong>
                     {row.submissionType ? <div style={{ fontSize: 11, color: "var(--ink-muted)" }}>{row.submissionType}</div> : null}

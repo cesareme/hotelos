@@ -5268,7 +5268,41 @@ export function buildApiServer() {
   // apps/admin-web/src/services/tenantAdminApi.ts.
   app.get('/admin/tenants', async (request) => listTenants({ context: request.userContext }));
   app.get('/admin/tenants/:orgId', async (request) => getTenantDetail({ context: request.userContext, orgId: (request.params as any).orgId }));
-  app.post('/admin/tenants', async (request) => createTenant({ context: request.userContext, ...request.body as any }));
+  app.post('/admin/tenants', async (request) => {
+    // Auditoría 2026-07: el front (tenantAdminApi.CreateTenantPayload) envía el
+    // payload PLANO { name, country, plan, ownerEmail, ownerFullName, propertyName };
+    // el servicio espera el DTO anidado (CreateTenantInput). Sin este puente el
+    // alta fallaba con "organizationName is required" aunque RBAC estuviera bien.
+    // Se aceptan AMBAS formas (anidada tiene prioridad) para no romper API clients.
+    const body = (request.body ?? {}) as {
+      name?: string; country?: string; plan?: string;
+      ownerEmail?: string; ownerFullName?: string; propertyName?: string; propertyType?: string;
+      organizationName?: string; organizationCountry?: string;
+      property?: { name?: string; type?: string; municipality?: string; province?: string };
+      ownerUser?: { email?: string; fullName?: string; phone?: string };
+      modulesEnabled?: string[];
+    };
+    const ownerEmail = body.ownerUser?.email ?? body.ownerEmail ?? "";
+    return createTenant({
+      context: request.userContext,
+      organizationName: body.organizationName ?? body.name ?? "",
+      organizationCountry: body.organizationCountry ?? body.country ?? "ES",
+      property: {
+        name: body.property?.name ?? body.propertyName ?? body.name ?? "",
+        type: body.property?.type ?? body.propertyType ?? "hotel",
+        municipality: body.property?.municipality,
+        province: body.property?.province
+      },
+      ownerUser: {
+        email: ownerEmail,
+        // fallback: si no llega nombre, usar el local-part del email (mejor que romper el alta)
+        fullName: body.ownerUser?.fullName ?? body.ownerFullName ?? ownerEmail.split("@")[0] ?? "",
+        phone: body.ownerUser?.phone
+      },
+      modulesEnabled: body.modulesEnabled ?? [],
+      plan: body.plan === "pro" || body.plan === "enterprise" ? body.plan : "starter"
+    });
+  });
   app.post('/admin/tenants/:orgId/users/:userId/reset-password', async (request) => regenerateTempPassword({ context: request.userContext, userId: (request.params as any).userId }));
   app.patch('/admin/tenants/:orgId/modules/:moduleCode', async (request) => toggleTenantModule({ context: request.userContext, orgId: (request.params as any).orgId, moduleCode: (request.params as any).moduleCode, enabled: ((request.body as any).enabled === true) }));
   app.get('/admin/tenants/:orgId/audit-log', async (request) => getTenantAuditLog({ context: request.userContext, orgId: (request.params as any).orgId, limit: Number((request.query as any).limit ?? 50) }));

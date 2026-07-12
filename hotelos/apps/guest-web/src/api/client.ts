@@ -196,15 +196,16 @@ export async function signOut(): Promise<void> {
 
 // ---- Reservation summary --------------------------------------------------
 export async function getReservation(reservationId: string): Promise<ReservationSummary> {
+  // Sin API configurada (demo pura sin backend) el stub es legítimo.
   if (!baseUrl) return stubReservation(reservationId);
-  try {
-    const raw = await request<Record<string, unknown>>("/guest-portal/reservation", {
-      headers: guestHeaders()
-    });
-    return normaliseReservation(raw, reservationId);
-  } catch {
-    return stubReservation(reservationId);
-  }
+  // Auditoría 2026-07: con API real, un error NO debe degradar a la reserva
+  // falsa de demostración (Maria Lopez / RES-2026-00042) — el huésped vería
+  // datos inventados como si fueran suyos. Propagar para que la UI muestre
+  // "no pudimos cargar tu reserva" y permita reintentar.
+  const raw = await request<Record<string, unknown>>("/guest-portal/reservation", {
+    headers: guestHeaders()
+  });
+  return normaliseReservation(raw, reservationId);
 }
 
 function normaliseReservation(raw: Record<string, unknown>, id: string): ReservationSummary {

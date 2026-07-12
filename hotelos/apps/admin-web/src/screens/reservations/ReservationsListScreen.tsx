@@ -125,128 +125,6 @@ function navTo(screen: string) {
   window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
 }
 
-// Demo data so the screen renders in offline / fresh environments without the
-// API. The structure mirrors the API contract from `pmsCommerceApi.ts`.
-function buildMockReservations(): AdminReservation[] {
-  const today = todayIso();
-  const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
-  const inFive = new Date(Date.now() + 5 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
-  const inTen = new Date(Date.now() + 10 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 10);
-
-  return [
-    {
-      id: "res_mock_001",
-      propertyId: PROPERTY_ID,
-      code: "HTL-10245",
-      channel: "direct",
-      status: "confirmed",
-      arrivalDate: today,
-      departureDate: tomorrow,
-      adults: 2,
-      children: 0,
-      roomTypeId: "rt_double",
-      ratePlanId: "rp_flexible",
-      sourceCode: "Web directa",
-      totalAmount: 245,
-      currency: "EUR",
-      bookerName: "Ana Martínez"
-    },
-    {
-      id: "res_mock_002",
-      propertyId: PROPERTY_ID,
-      code: "HTL-10246",
-      channel: "booking_com_mock",
-      status: "checked_in",
-      arrivalDate: yesterday,
-      departureDate: today,
-      adults: 2,
-      children: 1,
-      roomTypeId: "rt_suite",
-      ratePlanId: "rp_bb",
-      sourceCode: "Booking.com",
-      totalAmount: 540,
-      currency: "EUR",
-      bookerName: "Pedro Sánchez"
-    },
-    {
-      id: "res_mock_003",
-      propertyId: PROPERTY_ID,
-      code: "HTL-10247",
-      channel: "expedia_mock",
-      status: "confirmed",
-      arrivalDate: tomorrow,
-      departureDate: inFive,
-      adults: 1,
-      children: 0,
-      roomTypeId: "rt_single",
-      ratePlanId: "rp_nonref",
-      sourceCode: "Expedia",
-      totalAmount: 320,
-      currency: "EUR",
-      bookerName: "Laura García"
-    },
-    {
-      id: "res_mock_004",
-      propertyId: PROPERTY_ID,
-      code: "HTL-10248",
-      channel: "corporate",
-      status: "confirmed",
-      arrivalDate: inFive,
-      departureDate: inTen,
-      adults: 1,
-      children: 0,
-      roomTypeId: "rt_double",
-      ratePlanId: "rp_corp",
-      sourceCode: "Corporate",
-      totalAmount: 720,
-      currency: "EUR",
-      bookerName: "ACME Corp"
-    },
-    {
-      id: "res_mock_005",
-      propertyId: PROPERTY_ID,
-      code: "HTL-10240",
-      channel: "direct",
-      status: "cancelled",
-      arrivalDate: tomorrow,
-      departureDate: inFive,
-      adults: 2,
-      children: 0,
-      roomTypeId: "rt_double",
-      ratePlanId: "rp_flexible",
-      sourceCode: "Web directa",
-      totalAmount: 0,
-      currency: "EUR",
-      bookerName: "Marta López"
-    },
-    {
-      id: "res_mock_006",
-      propertyId: PROPERTY_ID,
-      code: "HTL-10249",
-      channel: "direct",
-      status: "checked_in",
-      arrivalDate: yesterday,
-      departureDate: tomorrow,
-      adults: 2,
-      children: 0,
-      roomTypeId: "rt_suite",
-      ratePlanId: "rp_flexible",
-      sourceCode: "Phone",
-      totalAmount: 460,
-      currency: "EUR",
-      bookerName: "Carlos Ruiz"
-    }
-  ];
-}
 
 interface ReservationRow extends AdminReservation {
   // Derived display helpers so DataTable columns can sort cleanly without
@@ -275,11 +153,13 @@ export function ReservationsListScreen() {
         setReservations(list);
         setRoomTypes(types);
       })
-      .catch(() => {
-        // Fall back to in-memory mock data so the screen remains usable when
-        // the API is offline or the property has no records yet.
-        setReservations(buildMockReservations());
+      .catch((err: unknown) => {
+        // Auditoría 2026-07: NUNCA fabricar reservas mock ante un fallo de API.
+        // Bajo el gate de auth de producción esto pintaba reservas inventadas
+        // (res_mock_*) como si fueran reales delante del usuario/inversor.
+        setReservations([]);
         setRoomTypes([]);
+        setError(err instanceof Error ? err.message : "No se pudieron cargar las reservas.");
       })
       .finally(() => setLoading(false));
   }
@@ -523,10 +403,6 @@ export function ReservationsListScreen() {
     gap: "var(--space-4, 16px)"
   };
 
-  // `error` state is currently unreachable because the catch() falls back to
-  // mock data, but we keep the branch so a future "no-mock" mode can surface
-  // the failure without changes to the render tree.
-  void error;
 
   return (
     <section style={wrapperStyle}>
@@ -610,6 +486,13 @@ export function ReservationsListScreen() {
 
       {loading ? (
         <LoadingBlock label="Cargando reservas…" />
+      ) : error ? (
+        <ErrorState
+          title="No se pudieron cargar las reservas"
+          message={error}
+          onRetry={load}
+          retryLabel="Reintentar"
+        />
       ) : (
         <DataTable<ReservationRow>
           columns={columns}

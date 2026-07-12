@@ -6,6 +6,7 @@
 // el `paths` de `tsconfig.base.json` solo mapea `@hotelos/shared` raíz, no
 // subpaths como `@hotelos/shared/rate-manager-types`.
 import { apiRequest } from "./api-client";
+import { toArray } from "../utils/toArray";
 import type {
   RateGridCell,
   RateGridBulkUpdateRequest,
@@ -32,11 +33,14 @@ export async function fetchRateGrid(input: FetchRateGridInput): Promise<RateGrid
   const query: Record<string, string | number | undefined> = { from, to };
   if (roomTypeIds && roomTypeIds.length > 0) query.roomTypeIds = roomTypeIds.join(",");
   if (channelId) query.channelId = channelId;
-  const res = await apiRequest<{ items: RateGridCell[] }>(
+  // Auditoría 2026-07: el backend devuelve el ARRAY pelado (getRateGrid →
+  // RateGridCell[]), no `{items}` — el `res.items` anterior dejaba `cells`
+  // undefined y la rejilla crasheaba. toArray tolera ambas formas.
+  const res = await apiRequest<RateGridCell[] | { items: RateGridCell[] }>(
     `/properties/${propertyId}/rate-grid`,
     { query }
   );
-  return res.items;
+  return toArray<RateGridCell>(res);
 }
 
 /**
@@ -71,8 +75,10 @@ export function pushRateGrid(
 }
 
 /**
- * GET /properties/:propertyId/rate-grid/journal?limit
+ * GET /properties/:propertyId/rate-journal?limit
  * Historial de cambios (quién, cuándo, cuántas celdas, estado de push).
+ * Auditoría 2026-07: el path era `/rate-grid/journal` (inexistente → 404) y se
+ * desempaquetaba `{items}` cuando el backend devuelve el array pelado.
  */
 export async function fetchRateJournal(
   propertyId: string,
@@ -80,9 +86,9 @@ export async function fetchRateJournal(
 ): Promise<RateChangeJournalEntry[]> {
   const query: Record<string, string | number | undefined> = {};
   if (limit !== undefined) query.limit = limit;
-  const res = await apiRequest<{ items: RateChangeJournalEntry[] }>(
-    `/properties/${propertyId}/rate-grid/journal`,
+  const res = await apiRequest<RateChangeJournalEntry[] | { items: RateChangeJournalEntry[] }>(
+    `/properties/${propertyId}/rate-journal`,
     { query }
   );
-  return res.items;
+  return toArray<RateChangeJournalEntry>(res);
 }
