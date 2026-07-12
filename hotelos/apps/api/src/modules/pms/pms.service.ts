@@ -404,7 +404,9 @@ export async function createReservation(input: {
     // create; the lock releases automatically when the transaction ends and
     // only serializes bookings for the SAME room type.
     if (input.roomTypeId) {
-      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${input.propertyId}), hashtext(${input.roomTypeId}))`;
+      // Prisma ≥6.19 no puede deserializar el `void` que devuelve
+      // pg_advisory_xact_lock vía $queryRaw → $executeRaw (no deserializa filas).
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.propertyId}), hashtext(${input.roomTypeId}))`;
 
       const arrival = dateOnly(input.arrivalDate);
       const departure = dateOnly(input.departureDate);

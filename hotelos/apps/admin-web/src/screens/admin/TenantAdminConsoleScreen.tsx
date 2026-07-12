@@ -47,6 +47,7 @@ import {
   type TenantStatus,
   type TenantSummary
 } from "../../services/tenantAdminApi";
+import { NewTenantWizardDialog } from "./NewTenantWizardDialog";
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -753,56 +754,16 @@ export function TenantAdminConsoleScreen() {
         {tabBody}
       </CocoaCard>
 
-      {/* "Nuevo cliente" sheet — provisioning wizard goes here. */}
-      <CocoaSheet
+      {/* "Nuevo cliente" — wizard real de provisioning (auditoría 2026-07: este
+          bloque era un sheet placeholder cuyo "Continuar" solo cerraba, dejando
+          NewTenantWizardDialog huérfano y el alta de clientes inalcanzable). */}
+      <NewTenantWizardDialog
         open={newTenantOpen}
         onClose={() => setNewTenantOpen(false)}
-        size="md"
-        title="Nuevo cliente"
-        footer={
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "flex-end",
-              gap: "var(--cocoa-space-2)"
-            }}
-          >
-            <CocoaButton
-              variant="bordered"
-              tone="neutral"
-              onClick={() => setNewTenantOpen(false)}
-            >
-              Cancelar
-            </CocoaButton>
-            <CocoaButton
-              variant="filled"
-              tone="accent"
-              onClick={() => setNewTenantOpen(false)}
-            >
-              Continuar
-            </CocoaButton>
-          </div>
-        }
-      >
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            gap: "var(--cocoa-space-3)",
-            color: "var(--cocoa-label-secondary)",
-            fontSize: "var(--cocoa-fs-body)"
-          }}
-        >
-          <p style={{ margin: 0 }}>
-            Provisiona una organización completa: cuenta, primera propiedad y
-            usuario owner. El asistente recibirá un email con credenciales
-            temporales.
-          </p>
-          <p style={{ margin: 0, color: "var(--cocoa-label-tertiary)" }}>
-            Asistente de onboarding pendiente.
-          </p>
-        </div>
-      </CocoaSheet>
+        onCompleted={() => {
+          refresh();
+        }}
+      />
 
       {/* Tenant detail drawer */}
       <CocoaSheet

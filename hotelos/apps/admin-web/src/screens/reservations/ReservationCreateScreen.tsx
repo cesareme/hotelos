@@ -327,12 +327,16 @@ export function ReservationCreateScreen() {
   const [status, setStatus] = useState("Listo para consultar disponibilidad y crear una reserva.");
 
   useEffect(() => {
-    void Promise.all([fetchRoomTypes(PROPERTY_ID), fetchConfigurationCategories(PROPERTY_ID)])
-      .then(([roomTypeResponse, categoryResponse]) => {
-        setRoomTypes(roomTypeResponse);
-        setCategoryGroups(categoryResponse.groups);
-      })
-      .catch(() => setStatus("Usando datos de demo. La API no está accesible."));
+    // Auditoría 2026-07: cargas INDEPENDIENTES. Antes un Promise.all descartaba
+    // los tipos de habitación reales si fallaba la llamada de categorías, y el
+    // selector caía a un mock hardcodeado ("Double"/rt_double) → reservas con
+    // roomTypeId inexistente.
+    void fetchRoomTypes(PROPERTY_ID)
+      .then(setRoomTypes)
+      .catch(() => setStatus("No se pudieron cargar los tipos de habitación. Reintenta."));
+    void fetchConfigurationCategories(PROPERTY_ID)
+      .then((categoryResponse) => setCategoryGroups(categoryResponse.groups))
+      .catch(() => undefined); // opcional: los selects usan sus defaults locales
     void fetchRooms(PROPERTY_ID).then(setRooms).catch(() => setRooms([]));
   }, []);
 
@@ -349,7 +353,9 @@ export function ReservationCreateScreen() {
     () =>
       roomTypes.length
         ? roomTypes.map((roomType) => ({ value: roomType.id, label: roomType.name }))
-        : [{ value: "rt_double", label: "Double" }],
+        : // Auditoría 2026-07: sin mock "Double"/rt_double — un placeholder
+          // deshabilitado honesto en vez de un id inexistente que rompe el alta.
+          [{ value: "", label: "Sin tipos de habitación — configúralos primero" }],
     [roomTypes]
   );
 
