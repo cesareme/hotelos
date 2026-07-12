@@ -2251,6 +2251,10 @@ export const demoStore: DemoStore = {
     fullName: "Reception Demo",
     deviceId: "dev_reception_1",
     permissions: [
+      // Consola Super-Admin (alta de tenants). Solo efectivo en modo demo
+      // (unionPermissions exige NODE_ENV=development|dev o HOTELOS_ALLOW_DEMO_AUTH);
+      // sin esta clave el onboarding de clientes daba 403 incluso en demo.
+      "admin.tenants.manage" as PermissionKey,
       "pms.reservation.read",
       "pms.reservation.create",
       "pms.reservation.modify",

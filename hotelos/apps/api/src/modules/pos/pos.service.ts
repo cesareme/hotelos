@@ -1,5 +1,10 @@
 // Point-of-sale (TPV) — outlets + tickets with charge-to-room.
-// Tickets are held in-memory for the demo (same lifetime as the demo store).
+// Every ticket is persisted to Prisma as a PosOrder (+ PosOrderLine rows) with
+// the SAME id as the in-memory ticket, so POS sales survive restarts and feed
+// the read-only /dashboards/pos read model (modules/dashboards/pos.service.ts).
+// The in-memory array is kept as a mirror cache: it is what the interactive
+// board reads (it carries UI-only fields the schema does not have: outletName,
+// roomNumber, settlement, closedAt) — see apps/admin-web/src/services/posApi.ts.
 // Closing a ticket "to room" posts a real folio line on the in-house guest's
 // reservation, integrating POS with the existing billing/folio system.
 import { prisma } from "@hotelos/database";
@@ -36,7 +41,9 @@ const tickets: PosTicket[] = [];
 
 // Demo tickets are seeded lazily the first time a property's board is opened, so
 // the POS board is never empty on a fresh demo. Seeding only runs once per
-// property per process and never blocks real ticket creation.
+// property per process and never blocks real ticket creation. Seeded tickets
+// live in memory only; they are materialised into Prisma the first time they
+// are touched (line added / closed) via ensurePosOrderRow.
 const seededProperties = new Set<string>();
 function seedDemoTickets(propertyId: string): void {
   if (seededProperties.has(propertyId)) return;
@@ -68,6 +75,70 @@ function recompute(ticket: PosTicket) {
 function outletName(outletId: string): string {
   return OUTLET_DEFS.find((o) => `out_${o.code}` === outletId)?.name ?? outletId;
 }
+function outletCode(posOutletId: string): string {
+  return posOutletId.startsWith("out_") ? posOutletId.slice("out_".length) : posOutletId;
+}
+
+// PosOrder.outletId must reference a real Outlet row so the POS dashboard can
+// label revenue per outlet. The board uses synthetic ids (out_restaurant, …)
+// shared across properties, while Outlet.id is a global PK — so we resolve (or
+// lazily create) one Outlet row per property+outletType and cache the mapping.
+const outletRowIdCache = new Map<string, string>();
+async function resolveOutletRowId(propertyId: string, posOutletId: string): Promise<string> {
+  const code = outletCode(posOutletId);
+  const cacheKey = `${propertyId}:${code}`;
+  const cached = outletRowIdCache.get(cacheKey);
+  if (cached) return cached;
+  const existing = await prisma.outlet.findFirst({ where: { propertyId, outletType: code } });
+  const outlet =
+    existing ??
+    (await prisma.outlet.create({
+      data: { propertyId, name: outletName(posOutletId), outletType: code, status: "active" }
+    }));
+  outletRowIdCache.set(cacheKey, outlet.id);
+  return outlet.id;
+}
+
+/** Best-effort room lookup — a ticket may carry a free-text room number. */
+async function findRoomId(propertyId: string, roomNumber: string | undefined): Promise<string | null> {
+  if (!roomNumber) return null;
+  const room = await prisma.room.findFirst({ where: { propertyId, number: roomNumber }, select: { id: true } });
+  return room?.id ?? null;
+}
+
+/**
+ * Guarantees the PosOrder row behind a ticket exists (same id). New tickets
+ * are persisted at open; seeded demo tickets are materialised here (order +
+ * their current lines) the first time they are written to.
+ */
+async function ensurePosOrderRow(ticket: PosTicket): Promise<void> {
+  const existing = await prisma.posOrder.findUnique({ where: { id: ticket.id }, select: { id: true } });
+  if (existing) return;
+  const outletRowId = await resolveOutletRowId(ticket.propertyId, ticket.outletId);
+  const roomId = await findRoomId(ticket.propertyId, ticket.roomNumber);
+  await prisma.posOrder.create({
+    data: {
+      id: ticket.id,
+      propertyId: ticket.propertyId,
+      outletId: outletRowId,
+      roomId,
+      status: ticket.status,
+      total: ticket.total,
+      createdAt: new Date(ticket.createdAt)
+    }
+  });
+  if (ticket.lines.length > 0) {
+    await prisma.posOrderLine.createMany({
+      data: ticket.lines.map((line) => ({
+        posOrderId: ticket.id,
+        description: line.name,
+        quantity: line.quantity,
+        unitPrice: line.unitPrice,
+        total: line.total
+      }))
+    });
+  }
+}
 
 export function listPosOutlets(_propertyId: string): PosOutlet[] {
   return OUTLET_DEFS.map((o) => ({ id: `out_${o.code}`, name: o.name, category: o.code }));
@@ -80,7 +151,7 @@ export function listPosTickets(propertyId: string): PosTicket[] {
     .sort((a, b) => (a.status === b.status ? b.createdAt.localeCompare(a.createdAt) : a.status === "open" ? -1 : 1));
 }
 
-export function openPosTicket(input: { propertyId: string; outletId: string; roomNumber?: string }): PosTicket {
+export async function openPosTicket(input: { propertyId: string; outletId: string; roomNumber?: string }): Promise<PosTicket> {
   const ticket: PosTicket = {
     id: createId("pos"),
     propertyId: input.propertyId,
@@ -92,17 +163,42 @@ export function openPosTicket(input: { propertyId: string; outletId: string; roo
     total: 0,
     createdAt: nowIso()
   };
+  // Persist first (PosOrder shares the ticket id); mirror in memory only once
+  // the DB write succeeded so both stores stay consistent.
+  await ensurePosOrderRow(ticket);
   tickets.push(ticket);
   return ticket;
 }
 
-export function addPosLine(input: { ticketId: string; name: string; quantity: number; unitPrice: number }): PosTicket {
+export async function addPosLine(input: { ticketId: string; name: string; quantity: number; unitPrice: number }): Promise<PosTicket> {
   const ticket = tickets.find((t) => t.id === input.ticketId);
   if (!ticket) throw new NotFoundError("Comanda no encontrada.");
   if (ticket.status !== "open") throw new BadRequestError("La comanda ya está cerrada.");
   const qty = Math.max(1, Math.round(input.quantity || 1));
   const unit = round2(input.unitPrice || 0);
-  ticket.lines.push({ name: input.name.trim() || "Consumo", quantity: qty, unitPrice: unit, total: round2(qty * unit) });
+  const line: PosLine = { name: input.name.trim() || "Consumo", quantity: qty, unitPrice: unit, total: round2(qty * unit) };
+  const newTotal = round2([...ticket.lines, line].reduce((s, l) => s + l.total, 0));
+
+  await ensurePosOrderRow(ticket);
+  // Best-effort product link so the dashboard's "top products" can attribute
+  // the sale when a configured PosProduct matches the free-text line name.
+  const product = await prisma.posProduct.findFirst({
+    where: { propertyId: ticket.propertyId, name: { equals: line.name, mode: "insensitive" } },
+    select: { id: true }
+  });
+  await prisma.posOrderLine.create({
+    data: {
+      posOrderId: ticket.id,
+      productId: product?.id ?? null,
+      description: line.name,
+      quantity: line.quantity,
+      unitPrice: line.unitPrice,
+      total: line.total
+    }
+  });
+  await prisma.posOrder.update({ where: { id: ticket.id }, data: { total: newTotal } });
+
+  ticket.lines.push(line);
   recompute(ticket);
   return ticket;
 }
@@ -117,6 +213,9 @@ export async function closePosTicket(input: {
   if (!ticket) throw new NotFoundError("Comanda no encontrada.");
   if (ticket.status !== "open") throw new BadRequestError("La comanda ya está cerrada.");
   if (ticket.lines.length === 0) throw new BadRequestError("Añade al menos un consumo antes de cerrar.");
+
+  let chargedRoomId: string | null = null;
+  let chargedReservationId: string | null = null;
 
   if (input.settlement === "room") {
     if (!ticket.roomNumber) throw new BadRequestError("Indica la habitación para cargar el consumo.");
@@ -137,7 +236,24 @@ export async function closePosTicket(input: {
       unitPrice: ticket.total,
       correlationId: input.correlationId
     });
+    chargedRoomId = room.id;
+    chargedReservationId = reservation.id;
   }
+
+  // Persist the close before mutating the in-memory mirror. PosOrder has no
+  // settlement/closedAt columns (schema is out of scope here), so the DB keeps
+  // status/total/room/reservation; settlement details stay on the ticket
+  // mirror and — for room charges — on the posted folio line.
+  await ensurePosOrderRow(ticket);
+  await prisma.posOrder.update({
+    where: { id: ticket.id },
+    data: {
+      status: "closed",
+      total: ticket.total,
+      ...(chargedRoomId ? { roomId: chargedRoomId } : {}),
+      ...(chargedReservationId ? { reservationId: chargedReservationId } : {})
+    }
+  });
 
   ticket.status = "closed";
   ticket.settlement = input.settlement;
@@ -146,7 +262,7 @@ export async function closePosTicket(input: {
   // F&B inventory consumption: try to decrement stock for any ticket lines
   // that match a configured MenuItem (case-insensitive). Best-effort — a
   // failure here must not block the ticket close (POS revenue is the
-  // priority, not inventory bookkeeping).
+  // priority, not inventory bookkeeping), but it must leave a trace.
   try {
     const { consumeStockForPosTicket } = await import("../fnb-inventory/fnb-inventory.service.js");
     await consumeStockForPosTicket({
@@ -155,8 +271,11 @@ export async function closePosTicket(input: {
       outletId: ticket.outletId,
       lines: ticket.lines.map((l) => ({ name: l.name, quantity: l.quantity }))
     });
-  } catch {
-    // swallow — inventory is observability, not a hard requirement
+  } catch (error) {
+    console.warn(
+      `[pos] Stock consumption failed for ticket ${ticket.id} (property ${ticket.propertyId}, outlet ${ticket.outletId}); ticket closed but inventory was not decremented.`,
+      error
+    );
   }
 
   return ticket;

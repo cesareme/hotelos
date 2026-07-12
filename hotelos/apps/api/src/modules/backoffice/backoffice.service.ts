@@ -19,8 +19,10 @@ import {
   type HousekeepingSectionRecord,
   type MaintenanceAreaRecord,
   type ManualSetupSubmissionRecord,
+  type OrganizationRecord,
   type PropertyAiSettingsRecord,
   type PropertyComplianceSettingsRecord,
+  type PropertyRecord,
   type PropertyImportRecord,
   type PropertyMapPositionRecord,
   type PropertyReadinessCheckRecord,
@@ -92,6 +94,258 @@ function mapRoomRow(row: {
     active: row.active,
     sortOrder: row.sortOrder
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fase 0 (persistencia Back Office, tanda 2): dual-write Prisma + demoStore para
+// la configuración del hotel (room types, perfil, fiscal/facturación, usuarios,
+// departamentos, HK/mantenimiento, plantillas, QR, AI). Regla:
+//   · Escritura: Prisma PRIMERO (fuente durable; si falla no se toca memoria),
+//     después espejo demoStore con el MISMO id — los lectores legacy síncronos
+//     (readiness, validadores de módulos, export/preview) siguen funcionando.
+//   · Lectura (GETs de confirmación): Prisma primero, merge con los registros
+//     que solo existen en el seed in-memory (p.ej. hk_f4, tpl_welcome_es) para
+//     no regresionar la demo sembrada; de paso se refresca el espejo.
+// Ver docs/strategy/anfitorio-equipo-2026-06/PERSIST-BACKOFFICE.md.
+
+type PropertyRow = NonNullable<Awaited<ReturnType<typeof prisma.property.findFirst>>>;
+type OrganizationRow = NonNullable<Awaited<ReturnType<typeof prisma.organization.findFirst>>>;
+type UserRow = NonNullable<Awaited<ReturnType<typeof prisma.user.findFirst>>>;
+type RoomTypeRow = NonNullable<Awaited<ReturnType<typeof prisma.roomType.findFirst>>>;
+type RoomFeatureRow = NonNullable<Awaited<ReturnType<typeof prisma.roomFeature.findFirst>>>;
+type BedTypeRow = NonNullable<Awaited<ReturnType<typeof prisma.bedType.findFirst>>>;
+type DepartmentRow = NonNullable<Awaited<ReturnType<typeof prisma.department.findFirst>>>;
+type UserDepartmentRow = NonNullable<Awaited<ReturnType<typeof prisma.userDepartment.findFirst>>>;
+type HousekeepingSectionRow = NonNullable<Awaited<ReturnType<typeof prisma.housekeepingSection.findFirst>>>;
+type HousekeepingRuleRow = NonNullable<Awaited<ReturnType<typeof prisma.housekeepingRule.findFirst>>>;
+type MaintenanceAreaRow = NonNullable<Awaited<ReturnType<typeof prisma.maintenanceArea.findFirst>>>;
+type MaintenanceRuleRow = NonNullable<Awaited<ReturnType<typeof prisma.maintenanceRule.findFirst>>>;
+type ComplianceSettingsRow = NonNullable<Awaited<ReturnType<typeof prisma.propertyComplianceSetting.findFirst>>>;
+type InvoiceSequenceRow = NonNullable<Awaited<ReturnType<typeof prisma.invoiceSequence.findFirst>>>;
+type AccountingSettingsRow = NonNullable<Awaited<ReturnType<typeof prisma.accountingSetting.findFirst>>>;
+type AiSettingsRow = NonNullable<Awaited<ReturnType<typeof prisma.propertyAiSetting.findFirst>>>;
+type DocumentTemplateRow = NonNullable<Awaited<ReturnType<typeof prisma.documentTemplate.findFirst>>>;
+type QrCodeRow = NonNullable<Awaited<ReturnType<typeof prisma.qrCode.findFirst>>>;
+
+const asJson = (value: Record<string, unknown> | undefined): Prisma.InputJsonValue => (value ?? {}) as Prisma.InputJsonValue;
+
+const jsonRecord = (value: unknown): Record<string, unknown> => (value as Record<string, unknown> | null) ?? {};
+
+const isoDate = (value: Date | string | null | undefined): string => (value instanceof Date ? value.toISOString() : value ?? nowIso());
+
+/** Une filas Prisma (prioritarias) con registros que solo viven en demoStore (dedup por id). */
+function mergeById<T extends { id: string }>(primary: T[], secondary: T[]): T[] {
+  const seen = new Set(primary.map((record) => record.id));
+  return [...primary, ...secondary.filter((record) => !seen.has(record.id))];
+}
+
+/** Actualiza in place (conserva identidad de objeto) o inserta el registro espejo en demoStore. */
+function mirrorRecord<T extends { id: string }>(collection: T[], record: T, match?: (candidate: T) => boolean): T {
+  const existing = collection.find(match ?? ((candidate) => candidate.id === record.id));
+  if (existing) {
+    Object.assign(existing, record);
+    return existing;
+  }
+  collection.push(record);
+  return record;
+}
+
+function mapPropertyRow(row: PropertyRow): PropertyRecord {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    name: row.name,
+    legalName: row.legalName ?? undefined,
+    address: row.address ?? undefined,
+    municipality: row.municipality ?? undefined,
+    province: row.province ?? undefined,
+    timezone: row.timezone,
+    country: row.country,
+    taxRegion: row.taxRegion ?? undefined,
+    sesHospedajesEnabled: row.sesHospedajesEnabled,
+    verifactuEnabled: row.verifactuEnabled
+  };
+}
+
+/** Property para lecturas de confirmación: Prisma primero, fallback al seed in-memory (p.ej. prop_456). */
+async function resolveProperty(propertyId: string): Promise<PropertyRecord | undefined> {
+  const row = await prisma.property.findUnique({ where: { id: propertyId } });
+  if (row) return mapPropertyRow(row);
+  return demoStore.properties.find((candidate) => candidate.id === propertyId);
+}
+
+async function resolveOrganization(organizationId: string): Promise<OrganizationRecord> {
+  const memory = demoStore.organization;
+  const row: OrganizationRow | null = await prisma.organization.findUnique({ where: { id: organizationId } });
+  if (!row) return memory;
+  return { id: row.id, name: row.name, legalName: row.legalName ?? memory.legalName, taxId: row.taxId ?? memory.taxId };
+}
+
+function mapUserRow(row: UserRow): UserRecord {
+  // Mapeo explícito: NUNCA propagar passwordHash/lockout al shape de la API.
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    email: row.email,
+    phone: row.phone ?? undefined,
+    fullName: row.fullName,
+    status: row.status as UserRecord["status"],
+    mfaEnabled: row.mfaEnabled
+  };
+}
+
+function mapRoomTypeRow(row: RoomTypeRow): RoomTypeRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    name: row.name,
+    code: row.code,
+    maxOccupancy: row.maxOccupancy,
+    baseCapacity: row.baseCapacity,
+    description: row.description ?? undefined,
+    defaultBedConfigurationJson: jsonRecord(row.defaultBedConfigurationJson),
+    defaultAmenitiesJson: jsonRecord(row.defaultAmenitiesJson),
+    defaultPhotosJson: jsonRecord(row.defaultPhotosJson),
+    defaultRateCategory: row.defaultRateCategory ?? undefined,
+    sellable: row.sellable,
+    displayOrder: row.displayOrder,
+    active: row.active
+  };
+}
+
+function mapRoomFeatureRow(row: RoomFeatureRow): RoomFeatureRecord {
+  return { id: row.id, propertyId: row.propertyId, code: row.code, name: row.name, category: row.category ?? undefined, active: row.active };
+}
+
+function mapBedTypeRow(row: BedTypeRow): BedTypeRecord {
+  return { id: row.id, propertyId: row.propertyId, code: row.code, name: row.name, capacity: row.capacity, active: row.active };
+}
+
+function mapDepartmentRow(row: DepartmentRow): DepartmentRecord {
+  return { id: row.id, propertyId: row.propertyId, name: row.name, code: row.code, description: row.description ?? undefined, active: row.active };
+}
+
+function mapUserDepartmentRow(row: UserDepartmentRow): UserDepartmentRecord {
+  return { id: row.id, userId: row.userId, departmentId: row.departmentId, roleLabel: row.roleLabel ?? undefined, active: row.active };
+}
+
+function mapHousekeepingSectionRow(row: HousekeepingSectionRow): HousekeepingSectionRecord {
+  return { id: row.id, propertyId: row.propertyId, name: row.name, code: row.code ?? undefined, description: row.description ?? undefined, active: row.active };
+}
+
+function mapMaintenanceAreaRow(row: MaintenanceAreaRow): MaintenanceAreaRecord {
+  return { id: row.id, propertyId: row.propertyId, name: row.name, code: row.code ?? undefined, description: row.description ?? undefined, active: row.active };
+}
+
+function mapConfigRuleRow(row: HousekeepingRuleRow | MaintenanceRuleRow): { id: string; propertyId: string; ruleCode: string; configurationJson: Record<string, unknown>; active: boolean } {
+  return { id: row.id, propertyId: row.propertyId, ruleCode: row.ruleCode, configurationJson: jsonRecord(row.configurationJson), active: row.active };
+}
+
+function mapComplianceRow(row: ComplianceSettingsRow): PropertyComplianceSettingsRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    country: row.country,
+    taxRegion: row.taxRegion ?? undefined,
+    vatRegime: row.vatRegime ?? undefined,
+    tourismTaxRegion: row.tourismTaxRegion ?? undefined,
+    sesHospedajesEnabled: row.sesHospedajesEnabled,
+    verifactuEnabled: row.verifactuEnabled,
+    ticketbaiEnabled: row.ticketbaiEnabled,
+    siiEnabled: row.siiEnabled,
+    b2bEinvoiceEnabled: row.b2bEinvoiceEnabled,
+    configurationJson: jsonRecord(row.configurationJson),
+    updatedAt: isoDate(row.updatedAt)
+  };
+}
+
+function mapInvoiceSequenceRow(row: InvoiceSequenceRow): InvoiceSequenceRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    sequenceCode: row.sequenceCode,
+    prefix: row.prefix ?? undefined,
+    nextNumber: row.nextNumber,
+    padding: row.padding,
+    invoiceType: row.invoiceType as InvoiceSequenceRecord["invoiceType"],
+    active: row.active
+  };
+}
+
+function mapAccountingRow(row: AccountingSettingsRow): AccountingSettingsRecord {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    propertyId: row.propertyId ?? undefined,
+    chartTemplate: row.chartTemplate ?? undefined,
+    fiscalYearStartMonth: row.fiscalYearStartMonth,
+    configurationJson: jsonRecord(row.configurationJson),
+    updatedAt: isoDate(row.updatedAt)
+  };
+}
+
+function mapAiSettingsRow(row: AiSettingsRow): PropertyAiSettingsRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    aiEnabled: row.aiEnabled,
+    defaultAutomationLevel: row.defaultAutomationLevel as PropertyAiSettingsRecord["defaultAutomationLevel"],
+    guestFacingDisclosure: row.guestFacingDisclosure ?? undefined,
+    voiceLocales: row.voiceLocales,
+    configurationJson: jsonRecord(row.configurationJson),
+    updatedAt: isoDate(row.updatedAt)
+  };
+}
+
+function mapDocumentTemplateRow(row: DocumentTemplateRow): DocumentTemplateRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    templateCode: row.templateCode,
+    name: row.name,
+    channel: row.channel as DocumentTemplateRecord["channel"],
+    language: row.language,
+    subject: row.subject ?? undefined,
+    body: row.body,
+    variablesJson: jsonRecord(row.variablesJson),
+    active: row.active,
+    updatedAt: isoDate(row.updatedAt)
+  };
+}
+
+function mapQrCodeRow(row: QrCodeRow): QrCodeRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    entityType: row.entityType as QrCodeRecord["entityType"],
+    entityId: row.entityId,
+    qrValue: row.qrValue,
+    purpose: row.purpose as QrCodeRecord["purpose"],
+    active: row.active,
+    createdAt: isoDate(row.createdAt)
+  };
+}
+
+/** Upsert de PropertyComplianceSetting (unique propertyId) desde el shape en memoria. */
+async function persistComplianceSettings(next: PropertyComplianceSettingsRecord): Promise<PropertyComplianceSettingsRecord> {
+  const data = {
+    country: next.country,
+    taxRegion: next.taxRegion ?? null,
+    vatRegime: next.vatRegime ?? null,
+    tourismTaxRegion: next.tourismTaxRegion ?? null,
+    sesHospedajesEnabled: next.sesHospedajesEnabled,
+    verifactuEnabled: next.verifactuEnabled,
+    ticketbaiEnabled: next.ticketbaiEnabled,
+    siiEnabled: next.siiEnabled,
+    b2bEinvoiceEnabled: next.b2bEinvoiceEnabled,
+    configurationJson: asJson(next.configurationJson)
+  };
+  const row = await prisma.propertyComplianceSetting.upsert({
+    where: { propertyId: next.propertyId },
+    update: data,
+    create: { id: next.id, propertyId: next.propertyId, ...data }
+  });
+  return mapComplianceRow(row);
 }
 
 type BackOfficeMutationInput = {
@@ -932,12 +1186,17 @@ function validatePropertySetupPayload(definition: PropertySetupFormDefinition, p
 
 async function formExistingData(propertyId: string, formCode: string) {
   switch (formCode) {
-    case "property_profile":
+    case "property_profile": {
+      // Persistencia tanda 2: la vista de "datos existentes" confirma el guardado →
+      // lee Prisma (fallback in-memory) para que sobreviva al reinicio.
+      requireProperty(propertyId);
+      const property = await resolveProperty(propertyId);
       return {
-        property: requireProperty(propertyId),
-        organization: demoStore.organization,
-        compliance: getComplianceSettings(propertyId)
+        property,
+        organization: await resolveOrganization(property?.organizationId ?? demoStore.organization.id),
+        compliance: await getComplianceSettings(propertyId)
       };
+    }
     // Fase 0 (Opción A): estructura de propiedad servida desde Prisma (fuente de verdad).
     case "building":
       return prisma.building.findMany({ where: { propertyId } });
@@ -958,9 +1217,10 @@ async function formExistingData(propertyId: string, formCode: string) {
     case "maintenance_setup":
       return getMaintenanceConfiguration(propertyId);
     case "finance_compliance_setup":
-      return { compliance: getComplianceSettings(propertyId), billing: getBillingSettings(propertyId) };
+      return { compliance: await getComplianceSettings(propertyId), billing: await getBillingSettings(propertyId) };
     case "ai_setup":
       return getAiSettings(propertyId);
+
     case "custom_field":
       return listCustomFields(propertyId);
     default:
@@ -979,22 +1239,63 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
     case "property_profile": {
       const property = requireProperty(input.propertyId);
       const before = { property: { ...property }, organization: { ...demoStore.organization } };
-      property.name = payloadText(payload, "name", property.name);
-      property.legalName = payloadText(payload, "legalName", property.legalName ?? property.name);
-      property.address = payloadText(payload, "address", property.address ?? "");
-      property.country = payloadText(payload, "country", property.country);
-      property.municipality = payloadText(payload, "city", property.municipality ?? "");
-      property.province = payloadText(payload, "province", property.province ?? "");
-      property.timezone = payloadText(payload, "timezone", property.timezone);
-      property.taxRegion = payloadText(payload, "taxRegion", payloadText(payload, "region", property.taxRegion ?? ""));
+      // Persistencia tanda 2: Prisma primero (Property + Organization), después espejo.
+      const nextProperty: PropertyRecord = {
+        ...property,
+        name: payloadText(payload, "name", property.name),
+        legalName: payloadText(payload, "legalName", property.legalName ?? property.name),
+        address: payloadText(payload, "address", property.address ?? ""),
+        country: payloadText(payload, "country", property.country),
+        municipality: payloadText(payload, "city", property.municipality ?? ""),
+        province: payloadText(payload, "province", property.province ?? ""),
+        timezone: payloadText(payload, "timezone", property.timezone),
+        taxRegion: payloadText(payload, "taxRegion", payloadText(payload, "region", property.taxRegion ?? ""))
+      };
+      const nextOrganization: OrganizationRecord = {
+        ...demoStore.organization,
+        legalName: payloadText(payload, "legalName", demoStore.organization.legalName),
+        taxId: payloadText(payload, "taxId", demoStore.organization.taxId)
+      };
+      const propertyData = {
+        name: nextProperty.name,
+        legalName: nextProperty.legalName ?? null,
+        address: nextProperty.address ?? null,
+        municipality: nextProperty.municipality ?? null,
+        province: nextProperty.province ?? null,
+        country: nextProperty.country,
+        taxRegion: nextProperty.taxRegion ?? null,
+        timezone: nextProperty.timezone
+      };
+      // upsert: tolera properties que solo existen en el seed in-memory (p.ej. prop_456).
+      await prisma.property.upsert({
+        where: { id: property.id },
+        update: propertyData,
+        create: {
+          id: property.id,
+          organizationId: property.organizationId,
+          ...propertyData,
+          sesHospedajesEnabled: property.sesHospedajesEnabled,
+          verifactuEnabled: property.verifactuEnabled
+        }
+      });
+      await prisma.organization.upsert({
+        where: { id: nextOrganization.id },
+        update: { legalName: nextOrganization.legalName, taxId: nextOrganization.taxId },
+        create: { id: nextOrganization.id, name: nextOrganization.name, legalName: nextOrganization.legalName, taxId: nextOrganization.taxId }
+      });
+      Object.assign(property, nextProperty);
       if (demoStore.property.id === property.id) Object.assign(demoStore.property, property);
-      demoStore.organization.legalName = payloadText(payload, "legalName", demoStore.organization.legalName);
-      demoStore.organization.taxId = payloadText(payload, "taxId", demoStore.organization.taxId);
-      const compliance = getComplianceSettings(input.propertyId);
+      Object.assign(demoStore.organization, nextOrganization);
+      const compliance = demoStore.propertyComplianceSettings.find((candidate) => candidate.propertyId === input.propertyId);
       if (compliance) {
-        compliance.taxRegion = payloadText(payload, "taxRegion", compliance.taxRegion ?? "");
-        compliance.tourismTaxRegion = payloadText(payload, "tourismTaxRegion", compliance.tourismTaxRegion ?? "");
-        compliance.updatedAt = nowIso();
+        const nextCompliance: PropertyComplianceSettingsRecord = {
+          ...compliance,
+          taxRegion: payloadText(payload, "taxRegion", compliance.taxRegion ?? ""),
+          tourismTaxRegion: payloadText(payload, "tourismTaxRegion", compliance.tourismTaxRegion ?? ""),
+          updatedAt: nowIso()
+        };
+        const persisted = await persistComplianceSettings(nextCompliance);
+        Object.assign(compliance, persisted);
       }
       audit({ ...input, action: "PropertyProfileUpdated", entityType: "property", entityId: property.id, beforeJson: before, afterJson: { property, organization: demoStore.organization, compliance } });
       return { targetEntityType: "property", targetEntityId: property.id, result: property };
@@ -1042,7 +1343,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       return { targetEntityType: "property_zone", targetEntityId: zone.id, result: zone };
     }
     case "room_type": {
-      const roomType = createBackOfficeRoomType({
+      const roomType = await createBackOfficeRoomType({
         ...input,
         roomType: {
           name: payloadText(payload, "name"),
@@ -1123,7 +1424,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       return { targetEntityType: "property_space", targetEntityId: space.id, result: space };
     }
     case "department": {
-      const department = createDepartment({
+      const department = await createDepartment({
         ...input,
         department: {
           name: payloadText(payload, "name"),
@@ -1134,12 +1435,12 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       });
       const managerUserId = payloadText(payload, "managerUserId");
       if (managerUserId) {
-        assignUserToDepartment({ ...input, departmentId: department.id, userId: managerUserId, roleLabel: "Manager" });
+        await assignUserToDepartment({ ...input, departmentId: department.id, userId: managerUserId, roleLabel: "Manager" });
       }
       return { targetEntityType: "department", targetEntityId: department.id, result: department };
     }
     case "housekeeping_setup": {
-      const section = createHousekeepingSection({
+      const section = await createHousekeepingSection({
         ...input,
         section: {
           name: payloadText(payload, "sectionName"),
@@ -1147,7 +1448,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
           active: true
         }
       });
-      const rule = upsertHousekeepingRule({
+      const rule = await upsertHousekeepingRule({
         ...input,
         ruleCode: "housekeeping_operating_policy",
         configurationJson: payload,
@@ -1156,7 +1457,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       return { targetEntityType: "housekeeping_rule", targetEntityId: rule.id, result: { section, rule } };
     }
     case "maintenance_setup": {
-      const area = createMaintenanceArea({
+      const area = await createMaintenanceArea({
         ...input,
         area: {
           name: payloadText(payload, "areaName"),
@@ -1164,7 +1465,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
           active: true
         }
       });
-      const rule = upsertMaintenanceRule({
+      const rule = await upsertMaintenanceRule({
         ...input,
         ruleCode: "maintenance_operating_policy",
         configurationJson: payload,
@@ -1181,7 +1482,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       return { targetEntityType: "revenue_category_setup", result: { createdOptions, payload } };
     }
     case "finance_compliance_setup": {
-      const compliance = patchComplianceSettings({
+      const compliance = await patchComplianceSettings({
         ...input,
         patch: {
           taxRegion: payloadText(payload, "taxRegion"),
@@ -1192,7 +1493,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
           }
         }
       });
-      const billing = patchBillingSettings({
+      const billing = await patchBillingSettings({
         ...input,
         invoiceSequence: {
           sequenceCode: payloadText(payload, "invoiceSequenceCode"),
@@ -1205,7 +1506,7 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       return { targetEntityType: "property_compliance_settings", targetEntityId: compliance.id, result: { compliance, billing } };
     }
     case "ai_setup": {
-      const settings = patchAiSettings({
+      const settings = await patchAiSettings({
         ...input,
         patch: {
           aiEnabled: payloadBoolean(payload, "aiEnabled", true),
@@ -2029,12 +2330,15 @@ export async function getPropertyMap(propertyId: string) {
   // persistidos por createX/bulkCreateRooms), de modo que el mapa sobrevive al reinicio
   // sin depender del seed in-memory. assets/mapPositions siguen en demoStore (fuera
   // de alcance). Ver docs/strategy/.../PERSIST-BACKOFFICE.md.
-  const [pBuildings, pFloors, pZones, pSpaces, pRooms] = await Promise.all([
+  const [pBuildings, pFloors, pZones, pSpaces, pRooms, property] = await Promise.all([
     prisma.building.findMany({ where: { propertyId } }),
     prisma.floor.findMany({ where: { propertyId } }),
     prisma.propertyZone.findMany({ where: { propertyId } }),
     prisma.propertySpace.findMany({ where: { propertyId } }),
-    prisma.room.findMany({ where: { propertyId } })
+    prisma.room.findMany({ where: { propertyId } }),
+    // Persistencia tanda 2: el perfil editado (nombre/dirección/región fiscal) se
+    // confirma desde Prisma; fallback al seed in-memory para properties sin fila.
+    resolveProperty(propertyId)
   ]);
   const normalizeDates = <T extends Record<string, unknown>>(rows: Array<Record<string, unknown>>): T[] =>
     rows.map((row) => ({
@@ -2048,7 +2352,7 @@ export async function getPropertyMap(propertyId: string) {
   const spaces = normalizeDates<PropertySpaceRecord>(pSpaces as Array<Record<string, unknown>>);
   const rooms = pRooms.map(mapRoomRow);
   return {
-    property: demoStore.properties.find((property) => property.id === propertyId),
+    property,
     buildings,
     floors,
     zones,
@@ -2400,21 +2704,38 @@ export function exportPropertyMap(propertyId: string) {
     }));
 }
 
-export function listBackOfficeRoomTypes(propertyId: string) {
-  return demoStore.roomTypes
-    .filter((roomType) => roomType.propertyId === propertyId)
-    .map((roomType) => ({
-      ...roomType,
-      linkedRoomCount: demoStore.rooms.filter((room) => room.roomTypeId === roomType.id).length,
-      futureReservationCount: demoStore.reservations.filter((reservation) => reservation.roomTypeId === roomType.id && reservation.status !== "cancelled").length
-    }));
+export async function listBackOfficeRoomTypes(propertyId: string) {
+  // Persistencia tanda 2: la lista lee Prisma (fuente durable) y se une con los
+  // room types que solo existan en el seed in-memory; el espejo se refresca para
+  // los lectores legacy síncronos (export/preview/proposals).
+  const [rows, roomRows, reservationRows] = await Promise.all([
+    prisma.roomType.findMany({ where: { propertyId }, orderBy: [{ displayOrder: "asc" }, { code: "asc" }] }),
+    prisma.room.findMany({ where: { propertyId }, select: { roomTypeId: true } }),
+    prisma.reservation.findMany({ where: { propertyId, status: { not: "cancelled" } }, select: { roomTypeId: true } })
+  ]);
+  const mapped = rows.map(mapRoomTypeRow);
+  for (const roomType of mapped) mirrorRecord(demoStore.roomTypes, roomType);
+  const merged = mergeById(mapped, demoStore.roomTypes.filter((roomType) => roomType.propertyId === propertyId));
+  return merged.map((roomType) => ({
+    ...roomType,
+    linkedRoomCount:
+      roomRows.filter((room) => room.roomTypeId === roomType.id).length ||
+      demoStore.rooms.filter((room) => room.roomTypeId === roomType.id).length,
+    futureReservationCount:
+      reservationRows.filter((reservation) => reservation.roomTypeId === roomType.id).length ||
+      demoStore.reservations.filter((reservation) => reservation.roomTypeId === roomType.id && reservation.status !== "cancelled").length
+  }));
 }
 
-export function createBackOfficeRoomType(input: BackOfficeMutationInput & {
+export async function createBackOfficeRoomType(input: BackOfficeMutationInput & {
   roomType: Pick<RoomTypeRecord, "name" | "code" | "maxOccupancy" | "baseCapacity"> & Partial<RoomTypeRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  if (demoStore.roomTypes.some((roomType) => roomType.propertyId === input.propertyId && roomType.code === input.roomType.code)) {
+  const duplicateInPrisma = await prisma.roomType.findUnique({
+    where: { propertyId_code: { propertyId: input.propertyId, code: input.roomType.code } },
+    select: { id: true }
+  });
+  if (duplicateInPrisma || demoStore.roomTypes.some((roomType) => roomType.propertyId === input.propertyId && roomType.code === input.roomType.code)) {
     throw new Error("Room type code must be unique per property.");
   }
   const record: RoomTypeRecord = {
@@ -2433,12 +2754,35 @@ export function createBackOfficeRoomType(input: BackOfficeMutationInput & {
     displayOrder: input.roomType.displayOrder ?? demoStore.roomTypes.length + 1,
     active: input.roomType.active ?? true
   };
+  // Persistencia tanda 2: Prisma primero (mismo id), después espejo demoStore.
+  await prisma.roomType.create({
+    data: {
+      id: record.id,
+      propertyId: record.propertyId,
+      name: record.name,
+      code: record.code,
+      maxOccupancy: record.maxOccupancy,
+      baseCapacity: record.baseCapacity,
+      description: record.description ?? null,
+      defaultBedConfigurationJson: asJson(record.defaultBedConfigurationJson),
+      defaultAmenitiesJson: asJson(record.defaultAmenitiesJson),
+      defaultPhotosJson: asJson(record.defaultPhotosJson),
+      defaultRateCategory: record.defaultRateCategory ?? null,
+      sellable: record.sellable ?? true,
+      displayOrder: record.displayOrder ?? 0,
+      active: record.active ?? true
+    }
+  });
   demoStore.roomTypes.push(record);
   audit({ ...input, action: "RoomTypeCreated", entityType: "room_type", entityId: record.id, afterJson: record });
   return record;
 }
 
-function requireRoomType(roomTypeId: string): RoomTypeRecord {
+// Persistencia tanda 2: Prisma primero; fallback al espejo para room types que solo
+// existan en el seed in-memory (se persistirán en su primera edición vía upsert).
+async function requireRoomType(roomTypeId: string): Promise<RoomTypeRecord> {
+  const row = await prisma.roomType.findUnique({ where: { id: roomTypeId } });
+  if (row) return mirrorRecord(demoStore.roomTypes, mapRoomTypeRow(row));
   const roomType = demoStore.roomTypes.find((candidate) => candidate.id === roomTypeId);
   if (!roomType) {
     throw new Error("Room type was not found.");
@@ -2446,49 +2790,85 @@ function requireRoomType(roomTypeId: string): RoomTypeRecord {
   return roomType;
 }
 
-export function patchBackOfficeRoomType(input: BackOfficeMutationInput & {
+/** Upsert por id desde el shape en memoria: crea la fila si el registro venía del seed in-memory. */
+async function persistRoomType(record: RoomTypeRecord): Promise<RoomTypeRecord> {
+  const data = {
+    propertyId: record.propertyId,
+    name: record.name,
+    code: record.code,
+    maxOccupancy: record.maxOccupancy,
+    baseCapacity: record.baseCapacity,
+    description: record.description ?? null,
+    defaultBedConfigurationJson: asJson(record.defaultBedConfigurationJson),
+    defaultAmenitiesJson: asJson(record.defaultAmenitiesJson),
+    defaultPhotosJson: asJson(record.defaultPhotosJson),
+    defaultRateCategory: record.defaultRateCategory ?? null,
+    sellable: record.sellable ?? true,
+    displayOrder: record.displayOrder ?? 0,
+    active: record.active ?? true
+  };
+  const row = await prisma.roomType.upsert({
+    where: { id: record.id },
+    update: data,
+    create: { id: record.id, ...data }
+  });
+  return mapRoomTypeRow(row);
+}
+
+export async function patchBackOfficeRoomType(input: BackOfficeMutationInput & {
   roomTypeId: string;
   patch: Partial<RoomTypeRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  const roomType = requireRoomType(input.roomTypeId);
+  const roomType = await requireRoomType(input.roomTypeId);
   if (roomType.propertyId !== input.propertyId) {
     throw new Error("Room type does not belong to the property.");
   }
   if (input.patch.maxOccupancy !== undefined) {
-    const conflictingReservation = demoStore.reservations.find(
-      (reservation) =>
-        reservation.propertyId === input.propertyId &&
-        reservation.roomTypeId === input.roomTypeId &&
-        reservation.status !== "cancelled" &&
-        reservation.adults + reservation.children > input.patch.maxOccupancy!
-    );
+    // Valida contra Prisma (reservas persistidas) y contra el espejo legacy.
+    const reservationRows = await prisma.reservation.findMany({
+      where: { propertyId: input.propertyId, roomTypeId: input.roomTypeId, status: { not: "cancelled" } },
+      select: { adults: true, children: true }
+    });
+    const conflictingReservation =
+      reservationRows.some((reservation) => reservation.adults + reservation.children > input.patch.maxOccupancy!) ||
+      demoStore.reservations.some(
+        (reservation) =>
+          reservation.propertyId === input.propertyId &&
+          reservation.roomTypeId === input.roomTypeId &&
+          reservation.status !== "cancelled" &&
+          reservation.adults + reservation.children > input.patch.maxOccupancy!
+      );
     if (conflictingReservation) {
       throw new Error("Changing max occupancy must validate future reservations.");
     }
   }
   const before = { ...roomType };
-  Object.assign(roomType, input.patch);
+  // Prisma primero: el id y propertyId no son parcheables (evita divergencia con el espejo).
+  const { id: _ignoredId, propertyId: _ignoredPropertyId, ...patch } = input.patch;
+  const persisted = await persistRoomType({ ...roomType, ...patch, id: roomType.id, propertyId: roomType.propertyId });
+  Object.assign(roomType, persisted);
   audit({ ...input, action: "RoomTypeUpdated", entityType: "room_type", entityId: roomType.id, beforeJson: before, afterJson: roomType });
   return roomType;
 }
 
-export function deactivateBackOfficeRoomType(input: BackOfficeMutationInput & { roomTypeId: string }) {
+export async function deactivateBackOfficeRoomType(input: BackOfficeMutationInput & { roomTypeId: string }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  const roomType = requireRoomType(input.roomTypeId);
+  const roomType = await requireRoomType(input.roomTypeId);
   const before = { ...roomType };
-  roomType.active = false;
+  const persisted = await persistRoomType({ ...roomType, active: false });
+  Object.assign(roomType, persisted);
   audit({ ...input, action: "RoomTypeDeactivated", entityType: "room_type", entityId: roomType.id, beforeJson: before, afterJson: roomType });
   return roomType;
 }
 
-export function mergeBackOfficeRoomTypes(input: BackOfficeMutationInput & {
+export async function mergeBackOfficeRoomTypes(input: BackOfficeMutationInput & {
   sourceRoomTypeId: string;
   targetRoomTypeId: string;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  const source = requireRoomType(input.sourceRoomTypeId);
-  const target = requireRoomType(input.targetRoomTypeId);
+  const source = await requireRoomType(input.sourceRoomTypeId);
+  const target = await requireRoomType(input.targetRoomTypeId);
   if (source.propertyId !== input.propertyId || target.propertyId !== input.propertyId) {
     throw new Error("Both room types must belong to the property.");
   }
@@ -2500,30 +2880,45 @@ export function mergeBackOfficeRoomTypes(input: BackOfficeMutationInput & {
     rooms: demoStore.rooms.filter((room) => room.roomTypeId === source.id).map((room) => ({ ...room })),
     reservations: demoStore.reservations.filter((reservation) => reservation.roomTypeId === source.id).map((reservation) => ({ ...reservation }))
   };
+  // Prisma primero: reasignación persistida de rooms y reservas + desactivación del origen.
+  await prisma.room.updateMany({ where: { propertyId: input.propertyId, roomTypeId: source.id }, data: { roomTypeId: target.id } });
+  await prisma.reservation.updateMany({ where: { propertyId: input.propertyId, roomTypeId: source.id }, data: { roomTypeId: target.id } });
+  const persistedSource = await persistRoomType({ ...source, active: false });
+  // Espejo demoStore (lectores legacy síncronos).
   for (const room of demoStore.rooms.filter((candidate) => candidate.roomTypeId === source.id)) {
     room.roomTypeId = target.id;
   }
   for (const reservation of demoStore.reservations.filter((candidate) => candidate.roomTypeId === source.id)) {
     reservation.roomTypeId = target.id;
   }
-  source.active = false;
+  Object.assign(source, persistedSource);
   audit({ ...input, action: "RoomTypeMerged", entityType: "room_type", entityId: source.id, beforeJson: before, afterJson: { source, target } });
   return { status: "merged" as const, source, target };
 }
 
-export function listRoomsForRoomType(roomTypeId: string) {
-  return demoStore.rooms.filter((room) => room.roomTypeId === roomTypeId);
+export async function listRoomsForRoomType(roomTypeId: string) {
+  // Persistencia tanda 2: rooms viven en Prisma (Fase 0); la lista confirma merges/altas.
+  const rows = await prisma.room.findMany({ where: { roomTypeId } });
+  const mapped = rows.map(mapRoomRow);
+  return mergeById(mapped, demoStore.rooms.filter((room) => room.roomTypeId === roomTypeId));
 }
 
-export function listRoomFeatures(propertyId: string) {
-  return demoStore.roomFeatures.filter((feature) => feature.propertyId === propertyId);
+export async function listRoomFeatures(propertyId: string) {
+  const rows = await prisma.roomFeature.findMany({ where: { propertyId } });
+  const mapped = rows.map(mapRoomFeatureRow);
+  for (const feature of mapped) mirrorRecord(demoStore.roomFeatures, feature);
+  return mergeById(mapped, demoStore.roomFeatures.filter((feature) => feature.propertyId === propertyId));
 }
 
-export function createRoomFeature(input: BackOfficeMutationInput & {
+export async function createRoomFeature(input: BackOfficeMutationInput & {
   feature: Pick<RoomFeatureRecord, "code" | "name"> & Partial<RoomFeatureRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  if (demoStore.roomFeatures.some((feature) => feature.propertyId === input.propertyId && feature.code === input.feature.code)) {
+  const duplicateInPrisma = await prisma.roomFeature.findUnique({
+    where: { propertyId_code: { propertyId: input.propertyId, code: input.feature.code } },
+    select: { id: true }
+  });
+  if (duplicateInPrisma || demoStore.roomFeatures.some((feature) => feature.propertyId === input.propertyId && feature.code === input.feature.code)) {
     throw new Error("Room feature code must be unique per property.");
   }
   const record: RoomFeatureRecord = {
@@ -2534,20 +2929,31 @@ export function createRoomFeature(input: BackOfficeMutationInput & {
     category: input.feature.category,
     active: input.feature.active ?? true
   };
+  // Persistencia tanda 2: Prisma primero (mismo id), después espejo.
+  await prisma.roomFeature.create({
+    data: { id: record.id, propertyId: record.propertyId, code: record.code, name: record.name, category: record.category ?? null, active: record.active }
+  });
   demoStore.roomFeatures.push(record);
   audit({ ...input, action: "RoomFeatureCreated", entityType: "room_feature", entityId: record.id, afterJson: record });
   return record;
 }
 
-export function listBedTypes(propertyId: string) {
-  return demoStore.bedTypes.filter((bedType) => bedType.propertyId === propertyId);
+export async function listBedTypes(propertyId: string) {
+  const rows = await prisma.bedType.findMany({ where: { propertyId } });
+  const mapped = rows.map(mapBedTypeRow);
+  for (const bedType of mapped) mirrorRecord(demoStore.bedTypes, bedType);
+  return mergeById(mapped, demoStore.bedTypes.filter((bedType) => bedType.propertyId === propertyId));
 }
 
-export function createBedType(input: BackOfficeMutationInput & {
+export async function createBedType(input: BackOfficeMutationInput & {
   bedType: Pick<BedTypeRecord, "code" | "name"> & Partial<BedTypeRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  if (demoStore.bedTypes.some((bedType) => bedType.propertyId === input.propertyId && bedType.code === input.bedType.code)) {
+  const duplicateInPrisma = await prisma.bedType.findUnique({
+    where: { propertyId_code: { propertyId: input.propertyId, code: input.bedType.code } },
+    select: { id: true }
+  });
+  if (duplicateInPrisma || demoStore.bedTypes.some((bedType) => bedType.propertyId === input.propertyId && bedType.code === input.bedType.code)) {
     throw new Error("Bed type code must be unique per property.");
   }
   const record: BedTypeRecord = {
@@ -2558,6 +2964,10 @@ export function createBedType(input: BackOfficeMutationInput & {
     capacity: input.bedType.capacity ?? 1,
     active: input.bedType.active ?? true
   };
+  // Persistencia tanda 2: Prisma primero (mismo id), después espejo.
+  await prisma.bedType.create({
+    data: { id: record.id, propertyId: record.propertyId, code: record.code, name: record.name, capacity: record.capacity, active: record.active }
+  });
   demoStore.bedTypes.push(record);
   audit({ ...input, action: "BedTypeCreated", entityType: "bed_type", entityId: record.id, afterJson: record });
   return record;

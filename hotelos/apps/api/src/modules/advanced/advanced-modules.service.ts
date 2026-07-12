@@ -7,6 +7,8 @@ import {
   type HistoryForecastGranularity,
   type HistoryForecastSnapshot
 } from "@hotelos/revenue";
+import { prisma } from "@hotelos/database";
+import type { Prisma } from "@hotelos/database";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { getEnabledModuleCodes } from "../product-modules/product-modules.service.js";
@@ -978,7 +980,30 @@ export function getAdvancedModuleDashboard(propertyId: string, moduleCode: Hotel
   };
 }
 
-export function listAdvancedRecords(propertyId: string, moduleCode: HotelModuleCode, recordType: string) {
+type AdvancedRecordList = {
+  propertyId: string;
+  moduleCode: HotelModuleCode;
+  recordType: string;
+  items: unknown[];
+  nextAction: string;
+};
+
+/**
+ * Lists advanced-module records.
+ *
+ * Returns a hybrid value: a synchronous snapshot (legacy demoStore view, kept
+ * for the few call sites that read `.items` without awaiting — e.g. the
+ * channel sync-jobs route and getAdvancedRecord, both on non-migrated types)
+ * that is ALSO a promise resolving to the Prisma-backed result for migrated
+ * record types (workforce/safety/quality/surveys/CRM/loyalty/events). Fastify
+ * handlers `return listAdvancedRecords(...)` from async functions, which
+ * awaits the promise, so HTTP responses always serve the Prisma-backed data.
+ */
+export function listAdvancedRecords(
+  propertyId: string,
+  moduleCode: HotelModuleCode,
+  recordType: string
+): AdvancedRecordList & Promise<AdvancedRecordList> {
   requirePropertyAccess(propertyId);
   requireAdvancedModuleEnabled(propertyId, moduleCode);
   const groupIds = demoStore.groupBookings.filter((group) => group.propertyId === propertyId).map((group) => group.id);
@@ -1122,7 +1147,7 @@ export function listAdvancedRecords(propertyId: string, moduleCode: HotelModuleC
     .slice()
     .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 
-  return phaseRecordResponse({
+  const base = phaseRecordResponse({
     propertyId,
     moduleCode,
     recordType,
@@ -1132,9 +1157,26 @@ export function listAdvancedRecords(propertyId: string, moduleCode: HotelModuleC
         ? `Review ${recordType} in the Phase 2 demo workspace.`
         : `Configure ${recordType} in Back Office before production use.`
   });
+
+  // Prisma-backed view for migrated record types; resolves to the demoStore
+  // snapshot for everything else. Awaited by the HTTP handlers.
+  const prismaBacked = (async (): Promise<AdvancedRecordList> => {
+    const migratedItems = await listMigratedRecordsFromPrisma(propertyId, moduleCode, recordType);
+    if (migratedItems === null) {
+      return base;
+    }
+    return { ...base, items: migratedItems };
+  })();
+  // Mark potential rejections as handled for the sync-only consumers (they
+  // never await); awaiting callers still observe the rejection normally.
+  prismaBacked.catch(() => undefined);
+
+  return Object.assign(prismaBacked, base);
 }
 
 export function getAdvancedRecord(propertyId: string, moduleCode: HotelModuleCode, recordType: string, recordId: string) {
+  // Reads the synchronous snapshot; its only routes serve non-migrated record
+  // types (revenue_scenarios, guest_profiles), which live in the demoStore.
   const records = listAdvancedRecords(propertyId, moduleCode, recordType).items;
   const record = records.find((candidate) => {
     if (typeof candidate !== "object" || candidate === null || !("id" in candidate)) {
@@ -1148,7 +1190,7 @@ export function getAdvancedRecord(propertyId: string, moduleCode: HotelModuleCod
   return record;
 }
 
-export function createAdvancedRecord(input: AdvancedMutationInput) {
+export async function createAdvancedRecord(input: AdvancedMutationInput) {
   requirePermissions(input.context, input.requiredPermissions);
   requireAdvancedModuleEnabled(input.propertyId, input.moduleCode);
   const record = {
@@ -1159,6 +1201,21 @@ export function createAdvancedRecord(input: AdvancedMutationInput) {
     payload: input.payload ?? {},
     createdAt: nowIso()
   };
+
+  // Honest stub: this endpoint never materialised reservations — do not fake
+  // success by persisting a record. The rooming-list import is the real flow.
+  if (input.moduleCode === "groups_events_sales" && input.entityType === "group_reservation_batch") {
+    return {
+      status: "not_implemented",
+      message: "Usa la importación de rooming-list para materializar reservas.",
+      groupId: typeof input.payload?.groupId === "string" ? input.payload.groupId : undefined
+    };
+  }
+
+  // Dual-write: Prisma first (await — a Prisma failure aborts the request),
+  // then the demoStore mirror below keeps the legacy synchronous reads alive.
+  await persistAdvancedCreateToPrisma(input, record.id, record.createdAt);
+
   if (input.moduleCode === "revenue_profit_engine" && input.entityType === "revenue_forecast") {
     const forecast = {
       id: record.id,
@@ -1694,9 +1751,795 @@ function genericAdvancedRecords(propertyId: string, moduleCode: string, recordTy
   );
 }
 
-export function transitionAdvancedRecord(input: AdvancedMutationInput & { entityId: string; status: string }) {
+// ---------------------------------------------------------------------------
+// Prisma persistence for the operations + CRM entity types.
+//
+// Strategy: dual-write. Prisma is written FIRST (await; a Prisma failure
+// aborts the request), then the legacy demoStore mirror is updated so the
+// synchronous/legacy readers keep working. Creates use the SAME id in Prisma
+// and demoStore (explicit `id` on create) so transitions can find the row in
+// both stores. Lists for the migrated record types read from Prisma so the
+// records survive restarts and show up in the Prisma-backed dashboards
+// (workforce/safety/quality/surveys/crm/loyalty services).
+// ---------------------------------------------------------------------------
+
+function toJson(value: unknown): Prisma.InputJsonValue {
+  return (value ?? {}) as Prisma.InputJsonValue;
+}
+
+function optStr(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function toDateOrNull(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function toDate(value: unknown, fallback: Date): Date {
+  return toDateOrNull(value) ?? fallback;
+}
+
+function utcDayStart(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+const CLOSED_OPERATIONAL_STATUSES = new Set(["resolved", "closed"]);
+
+/**
+ * Resolve the StaffProfile id for workforce writes. The demo UI sends a free
+ * text `staffName` (there is no staff picker), so we try, in order:
+ * payload.staffProfileId → User.fullName lookup → StaffProfile.employeeCode.
+ * Callers fall back to the raw staffName when nothing matches — the schema
+ * has no FK on staffProfileId, and using a stable string keeps clock-in/out
+ * pairing consistent in the workforce dashboard.
+ */
+async function resolveStaffProfileId(propertyId: string, payload: Record<string, unknown>): Promise<string | undefined> {
+  const direct = optStr(payload.staffProfileId);
+  if (direct) return direct;
+  const staffName = optStr(payload.staffName)?.trim();
+  if (!staffName) return undefined;
+  const user = await prisma.user.findFirst({ where: { fullName: staffName }, select: { id: true } });
+  if (user) {
+    const profile = await prisma.staffProfile.findFirst({ where: { propertyId, userId: user.id }, select: { id: true } });
+    if (profile) return profile.id;
+  }
+  const byCode = await prisma.staffProfile.findFirst({
+    where: { propertyId, employeeCode: staffName.toUpperCase() },
+    select: { id: true }
+  });
+  return byCode?.id;
+}
+
+async function staffDisplayNamesByProfileId(profileIds: Array<string | null | undefined>): Promise<Map<string, string>> {
+  const unique = Array.from(new Set(profileIds.filter((id): id is string => typeof id === "string" && id.length > 0)));
+  if (unique.length === 0) return new Map();
+  const profiles = await prisma.staffProfile.findMany({
+    where: { id: { in: unique } },
+    select: { id: true, userId: true, employeeCode: true }
+  });
+  const userIds = Array.from(new Set(profiles.map((profile) => profile.userId)));
+  const users = userIds.length === 0
+    ? []
+    : await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, fullName: true } });
+  const nameByUserId = new Map(users.map((user) => [user.id, user.fullName]));
+  const out = new Map<string, string>();
+  for (const profile of profiles) {
+    out.set(profile.id, nameByUserId.get(profile.userId) ?? profile.employeeCode ?? profile.userId);
+  }
+  return out;
+}
+
+/**
+ * Prisma leg of the dual-write for createAdvancedRecord. No-op for entity
+ * types that are not (yet) migrated. Throws on Prisma failure so the caller
+ * aborts before touching the demoStore mirror.
+ */
+async function persistAdvancedCreateToPrisma(input: AdvancedMutationInput, recordId: string, createdAtIso: string): Promise<void> {
+  const payload = input.payload ?? {};
+  const createdAt = toDate(createdAtIso, new Date());
+  const key = `${input.moduleCode}:${input.entityType}`;
+
+  switch (key) {
+    case "workforce_labor:shift": {
+      const startAt = toDate(payload.startAt, createdAt);
+      const endAt = toDate(payload.endAt, new Date(startAt.getTime() + 8 * 3_600_000));
+      const staffProfileId = (await resolveStaffProfileId(input.propertyId, payload)) ?? optStr(payload.staffName) ?? null;
+      await prisma.shift.create({
+        data: {
+          id: recordId,
+          propertyId: input.propertyId,
+          staffProfileId,
+          departmentId: optStr(payload.departmentId) ?? null,
+          shiftDate: utcDayStart(startAt),
+          startAt,
+          endAt,
+          status: optStr(payload.status) ?? "scheduled",
+          roleLabel: optStr(payload.role) ?? optStr(payload.roleLabel) ?? null
+        }
+      });
+      return;
+    }
+    case "workforce_labor:time_clock_entry": {
+      // Clock-in and clock-out are BOTH creates (each clock event is a row;
+      // the workforce dashboard pairs consecutive in/out rows per staff
+      // profile). The audit action tells us which side this is.
+      const action = optStr(payload.action) ?? (input.auditAction === "StaffClockedOut" ? "out" : "in");
+      const staffProfileId = (await resolveStaffProfileId(input.propertyId, payload)) ?? optStr(payload.staffName) ?? "unknown";
+      await prisma.timeClockEntry.create({
+        data: {
+          id: recordId,
+          propertyId: input.propertyId,
+          staffProfileId,
+          clockType: action === "out" ? "out" : "in",
+          clockAt: toDate(payload.at ?? payload.clockAt, createdAt),
+          source: optStr(payload.source) ?? "api",
+          deviceId: input.context.deviceId,
+          metadataJson: toJson(payload)
+        }
+      });
+      return;
+    }
+    case "workforce_labor:absence_request": {
+      const staffProfileId = (await resolveStaffProfileId(input.propertyId, payload)) ?? optStr(payload.staffName) ?? "unknown";
+      const startDate = toDate(payload.startDate ?? payload.from, utcDayStart(createdAt));
+      await prisma.absenceRequest.create({
+        data: {
+          id: recordId,
+          propertyId: input.propertyId,
+          staffProfileId,
+          absenceType: optStr(payload.absenceType) ?? optStr(payload.type) ?? "personal",
+          startDate,
+          endDate: toDate(payload.endDate ?? payload.to, startDate),
+          status: optStr(payload.status) ?? "pending"
+        }
+      });
+      return;
+    }
+    case "safety_incident_management:safety_incident": {
+      const location = optStr(payload.location);
+      await prisma.safetyIncident.create({
+        data: {
+          id: recordId,
+          propertyId: input.propertyId,
+          incidentType: optStr(payload.incidentType) ?? optStr(payload.type) ?? "general",
+          severity: optStr(payload.severity) ?? "medium",
+          status: optStr(payload.status) ?? "open",
+          title: optStr(payload.title) ?? "Incidente",
+          description: optStr(payload.description) ?? null,
+          // The UI sends `location` as free text; the schema models locations
+          // as entityType/entityId, so we store the label under a "label" kind.
+          locationEntityType: location ? "label" : optStr(payload.locationEntityType) ?? null,
+          locationEntityId: location ?? optStr(payload.locationEntityId) ?? null,
+          guestId: optStr(payload.guestId) ?? null,
+          reservationId: optStr(payload.reservationId) ?? null,
+          reportedBy: optStr(payload.reportedBy) ?? input.context.userId,
+          assignedTo: optStr(payload.assignedTo) ?? null,
+          occurredAt: toDateOrNull(payload.occurredAt) ?? createdAt
+        }
+      });
+      return;
+    }
+    case "safety_incident_management:incident_evidence": {
+      // Route quirk: POST /safety/incidents/:id/evidence does not spread the
+      // :id param into the payload, so we accept the common body aliases.
+      await prisma.incidentEvidence.create({
+        data: {
+          id: recordId,
+          incidentId: optStr(payload.incidentId) ?? optStr(payload.safetyIncidentId) ?? "unknown",
+          evidenceType: optStr(payload.evidenceType) ?? optStr(payload.type) ?? "note",
+          objectKey: optStr(payload.objectKey) ?? optStr(payload.url) ?? null,
+          notes: optStr(payload.notes) ?? optStr(payload.description) ?? null,
+          createdBy: optStr(payload.createdBy) ?? input.context.userId
+        }
+      });
+      return;
+    }
+    case "safety_incident_management:safety_check": {
+      await prisma.safetyCheck.create({
+        data: {
+          id: recordId,
+          propertyId: input.propertyId,
+          checkType: optStr(payload.checkType) ?? optStr(payload.type) ?? "general",
+          title: optStr(payload.title) ?? optStr(payload.name) ?? "Inspección de seguridad",
+          frequency: optStr(payload.frequency) ?? null,
+          locationEntityType: optStr(payload.locationEntityType) ?? null,
+          locationEntityId: optStr(payload.locationEntityId) ?? optStr(payload.location) ?? null,
+          assignedTo: optStr(payload.assignedTo) ?? null,
+          nextDueDate: toDateOrNull(payload.nextDueDate ?? payload.dueAt ?? payload.dueDate),
+          active: payload.active !== false
+        }
+      });
+      return;
+    }
+    case "safety_incident_management:safety_check_result": {
+      await prisma.safetyCheckResult.create({
+        data: {
+          id: recordId,
+          safetyCheckId: optStr(payload.safetyCheckId) ?? optStr(payload.checkId) ?? "unknown",
+          status: optStr(payload.status) ?? optStr(payload.result) ?? "passed",
+          notes: optStr(payload.notes) ?? null,
+          completedBy: optStr(payload.completedBy) ?? input.context.userId,
+          completedAt: toDate(payload.completedAt, createdAt)
+        }
+      });
+      return;
+    }
+    case "reputation_quality:quality_case": {
+      await prisma.qualityCase.create({
+        data: {
+          id: recordId,
+          propertyId: input.propertyId,
+          reservationId: optStr(payload.reservationId) ?? null,
+          guestId: optStr(payload.guestId) ?? null,
+          roomId: optStr(payload.roomId) ?? null,
+          caseType: optStr(payload.caseType) ?? optStr(payload.type) ?? "complaint",
+          priority: optStr(payload.priority) ?? optStr(payload.severity) ?? "normal",
+          status: optStr(payload.status) ?? "open",
+          title: optStr(payload.title) ?? optStr(payload.name) ?? "Caso de calidad",
+          description: optStr(payload.description) ?? null,
+          ownerUserId: optStr(payload.ownerUserId) ?? input.context.userId,
+          slaTargetAt: toDateOrNull(payload.slaTargetAt),
+          rootCause: optStr(payload.rootCause) ?? null
+        }
+      });
+      return;
+    }
+    case "reputation_quality:survey": {
+      await prisma.survey.create({
+        data: {
+          id: recordId,
+          propertyId: input.propertyId,
+          name: optStr(payload.name) ?? optStr(payload.title) ?? "Encuesta",
+          surveyType: optStr(payload.surveyType) ?? optStr(payload.type) ?? "post_stay",
+          questionsJson: toJson(payload.questionsJson ?? payload.questions ?? []),
+          active: payload.active !== false
+        }
+      });
+      return;
+    }
+    case "reputation_quality:survey_response": {
+      // Route quirk: POST /surveys/:id/responses does not spread the :id param
+      // into the payload, so the body must carry surveyId.
+      const rawScore = payload.score ?? payload.nps ?? payload.rating;
+      const score = typeof rawScore === "number" && Number.isFinite(rawScore) ? rawScore : null;
+      await prisma.surveyResponse.create({
+        data: {
+          id: recordId,
+          surveyId: optStr(payload.surveyId) ?? optStr(payload.survey_id) ?? "unknown",
+          reservationId: optStr(payload.reservationId) ?? null,
+          guestId: optStr(payload.guestId) ?? null,
+          responsesJson: toJson(payload),
+          score
+        }
+      });
+      return;
+    }
+    case "guest_data_crm_loyalty:crm_segment": {
+      await prisma.crmSegment.create({
+        data: {
+          id: recordId,
+          organizationId: input.context.organizationId,
+          name: String(payload.name ?? "New segment"),
+          description: optStr(payload.description) ?? null,
+          rulesJson: toJson(payload.rulesJson),
+          active: true
+        }
+      });
+      return;
+    }
+    case "guest_data_crm_loyalty:crm_campaign": {
+      await prisma.crmCampaign.create({
+        data: {
+          id: recordId,
+          organizationId: input.context.organizationId,
+          name: String(payload.name ?? "New campaign"),
+          campaignType: String(payload.campaignType ?? "email"),
+          segmentId: optStr(payload.segmentId) ?? null,
+          channel: String(payload.channel ?? "email"),
+          status: "draft",
+          scheduleJson: toJson(payload.scheduleJson),
+          contentJson: toJson({ ...(payload.contentJson as Record<string, unknown> | undefined), consentRequired: true })
+        }
+      });
+      return;
+    }
+    case "guest_data_crm_loyalty:loyalty_program": {
+      await prisma.loyaltyProgram.create({
+        data: {
+          id: recordId,
+          organizationId: input.context.organizationId,
+          name: String(payload.name ?? "New loyalty program"),
+          configurationJson: toJson(payload.configurationJson),
+          active: true
+        }
+      });
+      return;
+    }
+    case "groups_events_sales:event_order": {
+      await prisma.eventOrder.create({
+        data: {
+          id: recordId,
+          eventId: String(payload.eventId),
+          orderType: "beo",
+          contentJson: toJson({ ...payload, requiresConfirmation: true }),
+          status: "draft"
+        }
+      });
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/**
+ * Prisma leg of the dual-write for transitionAdvancedRecord. Uses updateMany
+ * (id-scoped) so a record that only exists in the demoStore (legacy seeds)
+ * does not make the request fail — the in-memory mutation still applies.
+ */
+async function persistAdvancedTransitionToPrisma(input: AdvancedMutationInput & { entityId: string; status: string }): Promise<void> {
+  const payload = input.payload ?? {};
+  const key = `${input.moduleCode}:${input.entityType}`;
+  const now = new Date();
+
+  switch (key) {
+    case "workforce_labor:shift": {
+      const data: Prisma.ShiftUpdateManyMutationInput = {};
+      const startAt = toDateOrNull(payload.startAt);
+      if (startAt) {
+        data.startAt = startAt;
+        data.shiftDate = utcDayStart(startAt);
+      }
+      const endAt = toDateOrNull(payload.endAt);
+      if (endAt) data.endAt = endAt;
+      const roleLabel = optStr(payload.role) ?? optStr(payload.roleLabel);
+      if (roleLabel) data.roleLabel = roleLabel;
+      const status = optStr(payload.status);
+      if (status) data.status = status;
+      const staffProfileId = optStr(payload.staffProfileId);
+      if (staffProfileId) data.staffProfileId = staffProfileId;
+      if (Object.keys(data).length > 0) {
+        await prisma.shift.updateMany({ where: { id: input.entityId }, data });
+      }
+      return;
+    }
+    case "workforce_labor:absence_request": {
+      const status = optStr(payload.status) ?? input.status;
+      await prisma.absenceRequest.updateMany({
+        where: { id: input.entityId },
+        data: {
+          status,
+          ...(status === "approved" ? { approvedBy: input.context.userId } : {})
+        }
+      });
+      return;
+    }
+    case "safety_incident_management:safety_incident": {
+      const status = optStr(payload.status) ?? input.status;
+      const data: Prisma.SafetyIncidentUpdateManyMutationInput = { status };
+      const severity = optStr(payload.severity);
+      if (severity) data.severity = severity;
+      const title = optStr(payload.title);
+      if (title) data.title = title;
+      const description = optStr(payload.description);
+      if (description) data.description = description;
+      const assignedTo = optStr(payload.assignedTo);
+      if (assignedTo) data.assignedTo = assignedTo;
+      if (CLOSED_OPERATIONAL_STATUSES.has(status)) {
+        data.resolvedAt = toDateOrNull(payload.resolvedAt ?? payload.handledAt) ?? now;
+      }
+      await prisma.safetyIncident.updateMany({ where: { id: input.entityId }, data });
+      return;
+    }
+    case "reputation_quality:quality_case": {
+      const status = optStr(payload.status) ?? input.status;
+      const data: Prisma.QualityCaseUpdateManyMutationInput = { status };
+      const priority = optStr(payload.priority) ?? optStr(payload.severity);
+      if (priority) data.priority = priority;
+      const title = optStr(payload.title);
+      if (title) data.title = title;
+      const description = optStr(payload.description);
+      if (description) data.description = description;
+      const rootCause = optStr(payload.rootCause);
+      if (rootCause) data.rootCause = rootCause;
+      const ownerUserId = optStr(payload.ownerUserId);
+      if (ownerUserId) data.ownerUserId = ownerUserId;
+      if (CLOSED_OPERATIONAL_STATUSES.has(status)) {
+        data.resolvedAt = toDateOrNull(payload.resolvedAt) ?? now;
+      }
+      await prisma.qualityCase.updateMany({ where: { id: input.entityId }, data });
+      return;
+    }
+    case "guest_data_crm_loyalty:crm_segment": {
+      const data: Prisma.CrmSegmentUpdateManyMutationInput = {};
+      const name = optStr(payload.name);
+      if (name) data.name = name;
+      const description = optStr(payload.description);
+      if (description) data.description = description;
+      if (typeof payload.active === "boolean") data.active = payload.active;
+      if (payload.rulesJson !== undefined) data.rulesJson = toJson(payload.rulesJson);
+      if (Object.keys(data).length > 0) {
+        await prisma.crmSegment.updateMany({ where: { id: input.entityId }, data });
+      }
+      return;
+    }
+    case "guest_data_crm_loyalty:crm_campaign": {
+      const data: Prisma.CrmCampaignUpdateManyMutationInput = {};
+      const name = optStr(payload.name);
+      if (name) data.name = name;
+      const campaignType = optStr(payload.campaignType);
+      if (campaignType) data.campaignType = campaignType;
+      const channel = optStr(payload.channel);
+      if (channel) data.channel = channel;
+      const segmentId = optStr(payload.segmentId);
+      if (segmentId) data.segmentId = segmentId;
+      // Mirror of the demoStore rule: the route always sends status "updated",
+      // which means "keep"; an explicit payload.status wins.
+      const status = optStr(payload.status) ?? (input.status !== "updated" ? input.status : undefined);
+      if (status) data.status = status;
+      if (payload.scheduleJson !== undefined) data.scheduleJson = toJson(payload.scheduleJson);
+      if (payload.contentJson !== undefined) data.contentJson = toJson(payload.contentJson);
+      if (Object.keys(data).length > 0) {
+        await prisma.crmCampaign.updateMany({ where: { id: input.entityId }, data });
+      }
+      return;
+    }
+    case "guest_data_crm_loyalty:loyalty_membership": {
+      const data: Prisma.LoyaltyMembershipUpdateManyMutationInput = {};
+      const tier = optStr(payload.tier);
+      if (tier) data.tier = tier;
+      if (typeof payload.pointsBalance === "number" && Number.isFinite(payload.pointsBalance)) {
+        data.pointsBalance = Math.round(payload.pointsBalance);
+      }
+      const status = optStr(payload.status);
+      if (status) data.status = status;
+      if (Object.keys(data).length > 0) {
+        await prisma.loyaltyMembership.updateMany({ where: { id: input.entityId }, data });
+      }
+      return;
+    }
+    case "guest_data_crm_loyalty:guest_profile": {
+      // Profile merge. Only runs the Prisma leg when both profiles exist in
+      // the database (demo-only seed ids are skipped silently — the demoStore
+      // branch still merges them in memory).
+      const sourceProfileId = optStr(payload.sourceProfileId);
+      if (!sourceProfileId) return;
+      const [target, source] = await Promise.all([
+        prisma.guestProfile.findUnique({ where: { id: input.entityId } }),
+        prisma.guestProfile.findUnique({ where: { id: sourceProfileId } })
+      ]);
+      if (!target || !source) return;
+      const sourcePreferences = (source.preferencesJson ?? {}) as Record<string, unknown>;
+      const targetPreferences = (target.preferencesJson ?? {}) as Record<string, unknown>;
+      await prisma.guestProfile.update({
+        where: { id: target.id },
+        data: {
+          lifetimeValue: { increment: source.lifetimeValue },
+          totalStays: { increment: source.totalStays },
+          totalNights: { increment: source.totalNights },
+          totalSpend: { increment: source.totalSpend },
+          preferencesJson: toJson({ ...sourcePreferences, ...targetPreferences, mergedProfileIds: [source.id] })
+        }
+      });
+      await prisma.guestProfile.update({
+        where: { id: source.id },
+        data: { preferencesJson: toJson({ ...sourcePreferences, mergedInto: target.id }) }
+      });
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+type GenericAdvancedItem = {
+  id: string;
+  propertyId: string;
+  moduleCode: string;
+  entityType: string;
+  status: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+};
+
+function prismaGenericItem(input: {
+  id: string;
+  propertyId: string;
+  moduleCode: HotelModuleCode;
+  entityType: string;
+  status: string;
+  payload: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt?: Date | null;
+}): GenericAdvancedItem {
+  return {
+    id: input.id,
+    propertyId: input.propertyId,
+    moduleCode: input.moduleCode,
+    entityType: input.entityType,
+    status: input.status,
+    payload: input.payload,
+    createdAt: input.createdAt.toISOString(),
+    updatedAt: (input.updatedAt ?? input.createdAt).toISOString()
+  };
+}
+
+/**
+ * Prisma-backed reads for the migrated record types. Returns null for record
+ * types that keep the legacy demoStore behaviour. Items are mapped to the
+ * exact shapes the callers already consume: the generic
+ * `{ id, status, payload, createdAt }` wrapper for the operations boards, and
+ * the typed demoStore record shapes for the CRM/loyalty/events lists.
+ */
+async function listMigratedRecordsFromPrisma(
+  propertyId: string,
+  moduleCode: HotelModuleCode,
+  recordType: string
+): Promise<unknown[] | null> {
+  const key = `${moduleCode}:${recordType}`;
+
+  switch (key) {
+    case "workforce_labor:schedule": {
+      const rows = await prisma.shift.findMany({ where: { propertyId }, orderBy: { startAt: "asc" } });
+      const names = await staffDisplayNamesByProfileId(rows.map((row) => row.staffProfileId));
+      return rows.map((row) =>
+        prismaGenericItem({
+          id: row.id,
+          propertyId: row.propertyId,
+          moduleCode,
+          entityType: "shift",
+          status: row.status,
+          payload: {
+            staffProfileId: row.staffProfileId ?? undefined,
+            staffName: row.staffProfileId ? names.get(row.staffProfileId) ?? row.staffProfileId : undefined,
+            departmentId: row.departmentId ?? undefined,
+            role: row.roleLabel ?? undefined,
+            roleLabel: row.roleLabel ?? undefined,
+            shiftDate: row.shiftDate.toISOString().slice(0, 10),
+            startAt: row.startAt.toISOString(),
+            endAt: row.endAt.toISOString(),
+            status: row.status
+          },
+          createdAt: row.createdAt
+        })
+      );
+    }
+    case "workforce_labor:time_clock_entries": {
+      const rows = await prisma.timeClockEntry.findMany({
+        where: { propertyId },
+        orderBy: { clockAt: "desc" },
+        take: 500
+      });
+      const missingNames = rows
+        .filter((row) => {
+          const meta = row.metadataJson as Record<string, unknown> | null;
+          return !(meta && typeof meta.staffName === "string");
+        })
+        .map((row) => row.staffProfileId);
+      const names = await staffDisplayNamesByProfileId(missingNames);
+      return rows.map((row) => {
+        const meta = (row.metadataJson ?? {}) as Record<string, unknown>;
+        const action = optStr(meta.action) ?? (row.clockType === "out" || row.clockType === "clock_out" || row.clockType === "end" ? "out" : "in");
+        return prismaGenericItem({
+          id: row.id,
+          propertyId: row.propertyId,
+          moduleCode,
+          entityType: "time_clock_entry",
+          status: action,
+          payload: {
+            ...meta,
+            staffName: optStr(meta.staffName) ?? names.get(row.staffProfileId) ?? row.staffProfileId,
+            action,
+            at: row.clockAt.toISOString(),
+            staffProfileId: row.staffProfileId,
+            clockType: row.clockType,
+            source: row.source ?? undefined
+          },
+          createdAt: row.createdAt
+        });
+      });
+    }
+    case "safety_incident_management:safety_incidents": {
+      const rows = await prisma.safetyIncident.findMany({ where: { propertyId }, orderBy: { createdAt: "desc" } });
+      return rows.map((row) =>
+        prismaGenericItem({
+          id: row.id,
+          propertyId: row.propertyId,
+          moduleCode,
+          entityType: "safety_incident",
+          status: row.status,
+          payload: {
+            title: row.title,
+            severity: row.severity,
+            incidentType: row.incidentType,
+            description: row.description ?? undefined,
+            location: row.locationEntityType === "label" ? row.locationEntityId ?? undefined : undefined,
+            locationEntityType: row.locationEntityType ?? undefined,
+            locationEntityId: row.locationEntityId ?? undefined,
+            guestId: row.guestId ?? undefined,
+            reservationId: row.reservationId ?? undefined,
+            reportedBy: row.reportedBy ?? undefined,
+            assignedTo: row.assignedTo ?? undefined,
+            occurredAt: row.occurredAt ? row.occurredAt.toISOString() : undefined,
+            resolvedAt: row.resolvedAt ? row.resolvedAt.toISOString() : undefined,
+            status: row.status
+          },
+          createdAt: row.createdAt,
+          updatedAt: row.resolvedAt
+        })
+      );
+    }
+    case "safety_incident_management:safety_checks": {
+      const rows = await prisma.safetyCheck.findMany({
+        where: { propertyId },
+        orderBy: [{ nextDueDate: "asc" }, { createdAt: "desc" }]
+      });
+      return rows.map((row) =>
+        prismaGenericItem({
+          id: row.id,
+          propertyId: row.propertyId,
+          moduleCode,
+          entityType: "safety_check",
+          status: row.active ? "active" : "inactive",
+          payload: {
+            title: row.title,
+            name: row.title,
+            checkType: row.checkType,
+            frequency: row.frequency ?? undefined,
+            locationEntityType: row.locationEntityType ?? undefined,
+            locationEntityId: row.locationEntityId ?? undefined,
+            assignedTo: row.assignedTo ?? undefined,
+            nextDueDate: row.nextDueDate ? row.nextDueDate.toISOString() : undefined,
+            active: row.active
+          },
+          createdAt: row.createdAt
+        })
+      );
+    }
+    case "reputation_quality:quality_cases": {
+      const rows = await prisma.qualityCase.findMany({ where: { propertyId }, orderBy: { createdAt: "desc" } });
+      return rows.map((row) =>
+        prismaGenericItem({
+          id: row.id,
+          propertyId: row.propertyId,
+          moduleCode,
+          entityType: "quality_case",
+          status: row.status,
+          payload: {
+            title: row.title,
+            caseType: row.caseType,
+            priority: row.priority,
+            severity: row.priority,
+            description: row.description ?? undefined,
+            rootCause: row.rootCause ?? undefined,
+            reservationId: row.reservationId ?? undefined,
+            guestId: row.guestId ?? undefined,
+            roomId: row.roomId ?? undefined,
+            ownerUserId: row.ownerUserId ?? undefined,
+            slaTargetAt: row.slaTargetAt ? row.slaTargetAt.toISOString() : undefined,
+            resolvedAt: row.resolvedAt ? row.resolvedAt.toISOString() : undefined,
+            status: row.status
+          },
+          createdAt: row.createdAt,
+          updatedAt: row.resolvedAt
+        })
+      );
+    }
+    case "reputation_quality:surveys": {
+      const rows = await prisma.survey.findMany({ where: { propertyId }, orderBy: { createdAt: "desc" } });
+      return rows.map((row) =>
+        prismaGenericItem({
+          id: row.id,
+          propertyId: row.propertyId,
+          moduleCode,
+          entityType: "survey",
+          status: row.active ? "active" : "archived",
+          payload: {
+            name: row.name,
+            surveyType: row.surveyType,
+            questionsJson: (row.questionsJson ?? []) as unknown as Record<string, unknown>,
+            active: row.active
+          },
+          createdAt: row.createdAt
+        })
+      );
+    }
+    case "guest_data_crm_loyalty:crm_segments": {
+      const rows = await prisma.crmSegment.findMany({
+        where: { organizationId: demoStore.userContext.organizationId },
+        orderBy: { createdAt: "desc" }
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        organizationId: row.organizationId,
+        name: row.name,
+        description: row.description ?? undefined,
+        rulesJson: (row.rulesJson ?? {}) as Record<string, unknown>,
+        active: row.active,
+        createdAt: row.createdAt.toISOString()
+      }));
+    }
+    case "guest_data_crm_loyalty:crm_campaigns": {
+      const rows = await prisma.crmCampaign.findMany({
+        where: { organizationId: demoStore.userContext.organizationId },
+        orderBy: { createdAt: "desc" }
+      });
+      return rows.map((row) => ({
+        id: row.id,
+        organizationId: row.organizationId,
+        name: row.name,
+        campaignType: row.campaignType,
+        segmentId: row.segmentId ?? undefined,
+        channel: row.channel,
+        status: row.status,
+        scheduleJson: (row.scheduleJson ?? {}) as Record<string, unknown>,
+        contentJson: (row.contentJson ?? {}) as Record<string, unknown>,
+        createdAt: row.createdAt.toISOString()
+      }));
+    }
+    case "guest_data_crm_loyalty:loyalty": {
+      const programs = await prisma.loyaltyProgram.findMany({
+        where: { organizationId: demoStore.userContext.organizationId },
+        orderBy: { createdAt: "desc" }
+      });
+      const memberships = programs.length === 0
+        ? []
+        : await prisma.loyaltyMembership.findMany({ where: { loyaltyProgramId: { in: programs.map((program) => program.id) } } });
+      return programs.map((program) => ({
+        id: program.id,
+        organizationId: program.organizationId,
+        name: program.name,
+        configurationJson: (program.configurationJson ?? {}) as Record<string, unknown>,
+        active: program.active,
+        createdAt: program.createdAt.toISOString(),
+        memberships: memberships
+          .filter((membership) => membership.loyaltyProgramId === program.id)
+          .map((membership) => ({
+            id: membership.id,
+            loyaltyProgramId: membership.loyaltyProgramId,
+            guestProfileId: membership.guestProfileId,
+            tier: membership.tier ?? undefined,
+            pointsBalance: membership.pointsBalance,
+            status: membership.status,
+            joinedAt: membership.joinedAt.toISOString()
+          }))
+      }));
+    }
+    case "groups_events_sales:events_calendar": {
+      const rows = await prisma.event.findMany({ where: { propertyId }, orderBy: { startAt: "asc" } });
+      return rows.map((row) => ({
+        id: row.id,
+        propertyId: row.propertyId,
+        groupBookingId: row.groupBookingId ?? undefined,
+        eventSpaceId: row.eventSpaceId ?? undefined,
+        name: row.name,
+        eventType: row.eventType ?? undefined,
+        startAt: row.startAt.toISOString(),
+        endAt: row.endAt.toISOString(),
+        status: row.status,
+        setupJson: (row.setupJson ?? {}) as Record<string, unknown>,
+        cateringJson: (row.cateringJson ?? {}) as Record<string, unknown>,
+        createdAt: row.createdAt.toISOString()
+      }));
+    }
+    default:
+      return null;
+  }
+}
+
+export async function transitionAdvancedRecord(input: AdvancedMutationInput & { entityId: string; status: string }) {
   requirePermissions(input.context, input.requiredPermissions);
   requireAdvancedModuleEnabled(input.propertyId, input.moduleCode);
+
+  // Dual-write: apply the transition to Prisma first (shift updates, absence
+  // approvals, incident/quality resolutions, CRM updates, profile merges…),
+  // then run the legacy in-memory mutation below so both views stay in sync.
+  await persistAdvancedTransitionToPrisma(input);
+
   const record = {
     id: input.entityId,
     propertyId: input.propertyId,
