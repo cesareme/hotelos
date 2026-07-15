@@ -3,7 +3,9 @@ import { getHotelModuleManifest, getManualSetupOption, HOTEL_MODULES, MANUAL_SET
 import { PERMISSIONS, ROLE_PERMISSION_MAP, type PermissionKey } from "@hotelos/shared";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { ensurePropertyModulePersisted } from "../product-modules/product-modules.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
+import { ConflictError } from "../../lib/http-error.js";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import {
@@ -346,6 +348,199 @@ async function persistComplianceSettings(next: PropertyComplianceSettingsRecord)
     create: { id: next.id, propertyId: next.propertyId, ...data }
   });
   return mapComplianceRow(row);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Persistencia tanda 2 (continuación): helpers de materialización para
+// departamentos, usuarios, HK/mantenimiento, secuencias, plantillas y settings.
+// Regla común: lookup Prisma-first (refresca espejo); los registros que solo
+// viven en el seed in-memory se materializan (createMany + skipDuplicates,
+// mismo id) para que la siguiente edición ya persista.
+
+function departmentToDbRow(record: DepartmentRecord) {
+  return {
+    id: record.id,
+    propertyId: record.propertyId,
+    name: record.name,
+    code: record.code,
+    description: record.description ?? null,
+    active: record.active
+  };
+}
+
+async function requireDepartment(propertyId: string, departmentId: string): Promise<DepartmentRecord> {
+  const row = await prisma.department.findFirst({ where: { id: departmentId, propertyId } });
+  if (row) return mirrorRecord(demoStore.departments, mapDepartmentRow(row));
+  const legacy = demoStore.departments.find((candidate) => candidate.propertyId === propertyId && candidate.id === departmentId);
+  if (!legacy) {
+    throw new Error("Department was not found.");
+  }
+  await prisma.department.createMany({ data: [departmentToDbRow(legacy)], skipDuplicates: true });
+  return legacy;
+}
+
+function housekeepingSectionToDbRow(record: HousekeepingSectionRecord) {
+  return {
+    id: record.id,
+    propertyId: record.propertyId,
+    name: record.name,
+    code: record.code ?? null,
+    description: record.description ?? null,
+    active: record.active
+  };
+}
+
+async function requireHousekeepingSection(propertyId: string, sectionId: string): Promise<HousekeepingSectionRecord> {
+  const row = await prisma.housekeepingSection.findFirst({ where: { id: sectionId, propertyId } });
+  if (row) return mirrorRecord(demoStore.housekeepingSections, mapHousekeepingSectionRow(row));
+  const legacy = demoStore.housekeepingSections.find((candidate) => candidate.propertyId === propertyId && candidate.id === sectionId);
+  if (!legacy) {
+    throw new Error("Housekeeping section was not found.");
+  }
+  await prisma.housekeepingSection.createMany({ data: [housekeepingSectionToDbRow(legacy)], skipDuplicates: true });
+  return legacy;
+}
+
+function maintenanceAreaToDbRow(record: MaintenanceAreaRecord) {
+  return {
+    id: record.id,
+    propertyId: record.propertyId,
+    name: record.name,
+    code: record.code ?? null,
+    description: record.description ?? null,
+    active: record.active
+  };
+}
+
+async function requireMaintenanceArea(propertyId: string, areaId: string): Promise<MaintenanceAreaRecord> {
+  const row = await prisma.maintenanceArea.findFirst({ where: { id: areaId, propertyId } });
+  if (row) return mirrorRecord(demoStore.maintenanceAreas, mapMaintenanceAreaRow(row));
+  const legacy = demoStore.maintenanceAreas.find((candidate) => candidate.propertyId === propertyId && candidate.id === areaId);
+  if (!legacy) {
+    throw new Error("Maintenance area was not found.");
+  }
+  await prisma.maintenanceArea.createMany({ data: [maintenanceAreaToDbRow(legacy)], skipDuplicates: true });
+  return legacy;
+}
+
+/** Valida que todos los roomIds pertenezcan a la propiedad (Prisma o espejo legacy). */
+async function assertRoomsBelongToProperty(propertyId: string, roomIds: string[]): Promise<void> {
+  const rows = roomIds.length > 0
+    ? await prisma.room.findMany({ where: { id: { in: roomIds }, propertyId }, select: { id: true } })
+    : [];
+  const persistedIds = new Set(rows.map((room) => room.id));
+  for (const roomId of roomIds) {
+    const known = persistedIds.has(roomId) || demoStore.rooms.some((candidate) => candidate.id === roomId && candidate.propertyId === propertyId);
+    if (!known) {
+      throw new Error("All assigned rooms must belong to the property.");
+    }
+  }
+}
+
+function userToDbRow(record: UserRecord) {
+  return {
+    id: record.id,
+    organizationId: record.organizationId,
+    email: record.email,
+    phone: record.phone ?? null,
+    fullName: record.fullName,
+    status: record.status,
+    mfaEnabled: record.mfaEnabled
+  };
+}
+
+/**
+ * Usuario para mutaciones: Prisma primero; un usuario solo-seed se materializa
+ * (skipDuplicates protege contra el unique de email). `persisted` indica si la
+ * fila existe en la BD tras el intento — si no, se muta solo el espejo.
+ */
+async function requireBackOfficeUser(userId: string): Promise<{ user: UserRecord; persisted: boolean }> {
+  const row = await prisma.user.findUnique({ where: { id: userId } });
+  if (row) return { user: mirrorRecord(demoStore.users, mapUserRow(row)), persisted: true };
+  const legacy = demoStore.users.find((candidate) => candidate.id === userId);
+  if (!legacy) {
+    throw new Error("User was not found.");
+  }
+  await prisma.user.createMany({ data: [userToDbRow(legacy)], skipDuplicates: true });
+  const persistedRow = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
+  return { user: legacy, persisted: Boolean(persistedRow) };
+}
+
+async function requireAccountingSettings(propertyId: string): Promise<AccountingSettingsRecord> {
+  const row = await prisma.accountingSetting.findFirst({ where: { propertyId } });
+  if (row) {
+    return mirrorRecord(demoStore.accountingSettings, mapAccountingRow(row), (candidate) => candidate.propertyId === row.propertyId);
+  }
+  const legacy = demoStore.accountingSettings.find((candidate) => candidate.propertyId === propertyId);
+  if (!legacy) {
+    throw new Error("Accounting settings were not found.");
+  }
+  await prisma.accountingSetting.createMany({
+    data: [
+      {
+        id: legacy.id,
+        organizationId: legacy.organizationId,
+        propertyId: legacy.propertyId ?? null,
+        chartTemplate: legacy.chartTemplate ?? null,
+        fiscalYearStartMonth: legacy.fiscalYearStartMonth,
+        configurationJson: asJson(legacy.configurationJson)
+      }
+    ],
+    skipDuplicates: true
+  });
+  return legacy;
+}
+
+async function requireAiSettings(propertyId: string): Promise<PropertyAiSettingsRecord> {
+  const row = await prisma.propertyAiSetting.findUnique({ where: { propertyId } });
+  if (row) {
+    return mirrorRecord(demoStore.propertyAiSettings, mapAiSettingsRow(row), (candidate) => candidate.propertyId === row.propertyId);
+  }
+  const legacy = demoStore.propertyAiSettings.find((candidate) => candidate.propertyId === propertyId);
+  if (!legacy) {
+    throw new Error("AI settings were not found.");
+  }
+  await prisma.propertyAiSetting.createMany({
+    data: [
+      {
+        id: legacy.id,
+        propertyId: legacy.propertyId,
+        aiEnabled: legacy.aiEnabled,
+        defaultAutomationLevel: legacy.defaultAutomationLevel,
+        guestFacingDisclosure: legacy.guestFacingDisclosure ?? null,
+        voiceLocales: legacy.voiceLocales,
+        configurationJson: asJson(legacy.configurationJson)
+      }
+    ],
+    skipDuplicates: true
+  });
+  return legacy;
+}
+
+function documentTemplateToDbRow(record: DocumentTemplateRecord) {
+  return {
+    id: record.id,
+    propertyId: record.propertyId,
+    templateCode: record.templateCode,
+    name: record.name,
+    channel: record.channel,
+    language: record.language,
+    subject: record.subject ?? null,
+    body: record.body,
+    variablesJson: asJson(record.variablesJson),
+    active: record.active
+  };
+}
+
+async function requireDocumentTemplate(propertyId: string, templateId: string): Promise<DocumentTemplateRecord> {
+  const row = await prisma.documentTemplate.findFirst({ where: { id: templateId, propertyId } });
+  if (row) return mirrorRecord(demoStore.documentTemplates, mapDocumentTemplateRow(row));
+  const legacy = demoStore.documentTemplates.find((candidate) => candidate.propertyId === propertyId && candidate.id === templateId);
+  if (!legacy) {
+    throw new Error("Template was not found.");
+  }
+  await prisma.documentTemplate.createMany({ data: [documentTemplateToDbRow(legacy)], skipDuplicates: true });
+  return legacy;
 }
 
 type BackOfficeMutationInput = {
@@ -3092,28 +3287,22 @@ export function listBackOfficeModules(propertyId: string) {
   });
 }
 
-export function configureModule(input: BackOfficeMutationInput & { moduleCode: HotelModuleCode; configurationJson: Record<string, unknown> }) {
+export async function configureModule(input: BackOfficeMutationInput & { moduleCode: HotelModuleCode; configurationJson: Record<string, unknown> }) {
   requirePermissions(input.context, ["modules.configure"]);
   const moduleRecord = demoStore.modules.find((module) => module.code === input.moduleCode);
   if (!moduleRecord) {
     throw new Error("Module was not found.");
   }
-  let propertyModule = demoStore.propertyModules.find(
-    (candidate) => candidate.propertyId === input.propertyId && candidate.moduleId === moduleRecord.id
-  );
-  if (!propertyModule) {
-    propertyModule = {
-      id: createId("pm"),
-      propertyId: input.propertyId,
-      moduleId: moduleRecord.id,
-      status: moduleRecord.isCore ? "enabled" : "disabled",
-      configurationJson: {},
-      createdAt: nowIso()
-    };
-    demoStore.propertyModules.push(propertyModule);
-  }
+  // Persistencia tanda 2: el estado PropertyModule vive en Prisma (misma fila
+  // que usan enable/disable en product-modules.service); Prisma primero, espejo después.
+  const propertyModule = await ensurePropertyModulePersisted(input.propertyId, input.moduleCode);
   const before = { ...propertyModule };
-  propertyModule.configurationJson = { ...propertyModule.configurationJson, ...input.configurationJson };
+  const mergedConfiguration = { ...propertyModule.configurationJson, ...input.configurationJson };
+  const row = await prisma.propertyModule.update({
+    where: { id: propertyModule.id },
+    data: { configurationJson: asJson(mergedConfiguration) }
+  });
+  propertyModule.configurationJson = jsonRecord(row.configurationJson);
   audit({ ...input, action: "ModuleConfigured", entityType: "property_module", entityId: propertyModule.id, beforeJson: before, afterJson: propertyModule });
   return { module: getHotelModuleManifest(input.moduleCode), propertyModule };
 }
@@ -3185,13 +3374,21 @@ function getModuleSetupRequirements(moduleCode: HotelModuleCode) {
   ];
 }
 
-export function listDepartments(propertyId: string) {
-  return demoStore.departments.filter((department) => department.propertyId === propertyId);
+export async function listDepartments(propertyId: string) {
+  // Persistencia tanda 2: Prisma primero, merge con los registros solo-seed.
+  const rows = await prisma.department.findMany({ where: { propertyId } });
+  const mapped = rows.map(mapDepartmentRow);
+  for (const department of mapped) mirrorRecord(demoStore.departments, department);
+  return mergeById(mapped, demoStore.departments.filter((department) => department.propertyId === propertyId));
 }
 
-export function createDepartment(input: BackOfficeMutationInput & { department: Pick<DepartmentRecord, "name" | "code"> & Partial<DepartmentRecord> }) {
+export async function createDepartment(input: BackOfficeMutationInput & { department: Pick<DepartmentRecord, "name" | "code"> & Partial<DepartmentRecord> }) {
   requirePermissions(input.context, ["property.configure"]);
-  if (demoStore.departments.some((department) => department.propertyId === input.propertyId && department.code === input.department.code)) {
+  const duplicateInPrisma = await prisma.department.findUnique({
+    where: { propertyId_code: { propertyId: input.propertyId, code: input.department.code } },
+    select: { id: true }
+  });
+  if (duplicateInPrisma || demoStore.departments.some((department) => department.propertyId === input.propertyId && department.code === input.department.code)) {
     throw new Error("Department code must be unique per property.");
   }
   const record: DepartmentRecord = {
@@ -3202,27 +3399,48 @@ export function createDepartment(input: BackOfficeMutationInput & { department: 
     description: input.department.description,
     active: input.department.active ?? true
   };
+  // Persistencia tanda 2: Prisma primero (mismo id), después espejo.
+  await prisma.department.create({ data: departmentToDbRow(record) });
   demoStore.departments.push(record);
   audit({ ...input, action: "DepartmentCreated", entityType: "department", entityId: record.id, afterJson: record });
   return record;
 }
 
-export function getHousekeepingConfiguration(propertyId: string) {
+export async function getHousekeepingConfiguration(propertyId: string) {
+  // Persistencia tanda 2: Prisma primero (secciones, reglas y asignaciones),
+  // merge con los registros solo-seed y refresco del espejo.
+  const [sectionRows, ruleRows] = await Promise.all([
+    prisma.housekeepingSection.findMany({ where: { propertyId } }),
+    prisma.housekeepingRule.findMany({ where: { propertyId } })
+  ]);
+  for (const row of sectionRows) mirrorRecord(demoStore.housekeepingSections, mapHousekeepingSectionRow(row));
+  for (const row of ruleRows) {
+    mirrorRecord(demoStore.housekeepingRules, mapConfigRuleRow(row), (candidate) => candidate.propertyId === row.propertyId && candidate.ruleCode === row.ruleCode);
+  }
+  const sections = demoStore.housekeepingSections.filter((section) => section.propertyId === propertyId);
+  const assignmentRows = sections.length > 0
+    ? await prisma.housekeepingSectionRoom.findMany({ where: { housekeepingSectionId: { in: sections.map((section) => section.id) } } })
+    : [];
+  for (const row of assignmentRows) {
+    mirrorRecord(
+      demoStore.housekeepingSectionRooms,
+      { id: row.id, housekeepingSectionId: row.housekeepingSectionId, roomId: row.roomId },
+      (candidate) => candidate.housekeepingSectionId === row.housekeepingSectionId && candidate.roomId === row.roomId
+    );
+  }
   return {
-    sections: demoStore.housekeepingSections
-      .filter((section) => section.propertyId === propertyId)
-      .map((section) => ({
-        ...section,
-        rooms: demoStore.housekeepingSectionRooms
-          .filter((assignment) => assignment.housekeepingSectionId === section.id)
-          .map((assignment) => demoStore.rooms.find((room) => room.id === assignment.roomId))
-          .filter(Boolean)
-      })),
+    sections: sections.map((section) => ({
+      ...section,
+      rooms: demoStore.housekeepingSectionRooms
+        .filter((assignment) => assignment.housekeepingSectionId === section.id)
+        .map((assignment) => demoStore.rooms.find((room) => room.id === assignment.roomId))
+        .filter(Boolean)
+    })),
     rules: demoStore.housekeepingRules.filter((rule) => rule.propertyId === propertyId)
   };
 }
 
-export function createHousekeepingSection(input: BackOfficeMutationInput & {
+export async function createHousekeepingSection(input: BackOfficeMutationInput & {
   section: Pick<HousekeepingSectionRecord, "name"> & Partial<HousekeepingSectionRecord>;
 }) {
   requirePermissions(input.context, ["property.configure"]);
@@ -3234,84 +3452,109 @@ export function createHousekeepingSection(input: BackOfficeMutationInput & {
     description: input.section.description,
     active: input.section.active ?? true
   };
+  // Persistencia tanda 2: Prisma primero (mismo id), después espejo.
+  await prisma.housekeepingSection.create({ data: housekeepingSectionToDbRow(section) });
   demoStore.housekeepingSections.push(section);
   audit({ ...input, action: "HousekeepingSectionCreated", entityType: "housekeeping_section", entityId: section.id, afterJson: section });
   return section;
 }
 
-export function assignRoomsToHousekeepingSection(input: BackOfficeMutationInput & {
+export async function assignRoomsToHousekeepingSection(input: BackOfficeMutationInput & {
   sectionId: string;
   roomIds: string[];
 }) {
   requirePermissions(input.context, ["property.configure"]);
-  const section = demoStore.housekeepingSections.find(
-    (candidate) => candidate.id === input.sectionId && candidate.propertyId === input.propertyId
-  );
-  if (!section) {
-    throw new Error("Housekeeping section was not found.");
+  const section = await requireHousekeepingSection(input.propertyId, input.sectionId);
+  await assertRoomsBelongToProperty(input.propertyId, input.roomIds);
+  // Persistencia tanda 2: Prisma primero; el unique (sectionId, roomId) hace la
+  // asignación idempotente. Después se sincroniza el espejo desde la BD.
+  if (input.roomIds.length > 0) {
+    await prisma.housekeepingSectionRoom.createMany({
+      data: input.roomIds.map((roomId) => ({ id: createId("hksr"), housekeepingSectionId: section.id, roomId })),
+      skipDuplicates: true
+    });
   }
-  for (const roomId of input.roomIds) {
-    const room = demoStore.rooms.find((candidate) => candidate.id === roomId && candidate.propertyId === input.propertyId);
-    if (!room) {
-      throw new Error("All assigned rooms must belong to the property.");
-    }
-    const exists = demoStore.housekeepingSectionRooms.some(
-      (assignment) => assignment.housekeepingSectionId === section.id && assignment.roomId === room.id
+  const assignmentRows = await prisma.housekeepingSectionRoom.findMany({ where: { housekeepingSectionId: section.id } });
+  for (const row of assignmentRows) {
+    mirrorRecord(
+      demoStore.housekeepingSectionRooms,
+      { id: row.id, housekeepingSectionId: row.housekeepingSectionId, roomId: row.roomId },
+      (candidate) => candidate.housekeepingSectionId === row.housekeepingSectionId && candidate.roomId === row.roomId
     );
-    if (!exists) {
-      demoStore.housekeepingSectionRooms.push({
-        id: createId("hksr"),
-        housekeepingSectionId: section.id,
-        roomId: room.id
-      });
-    }
   }
   const assignments = demoStore.housekeepingSectionRooms.filter((assignment) => assignment.housekeepingSectionId === section.id);
   audit({ ...input, action: "HousekeepingSectionRoomsAssigned", entityType: "housekeeping_section", entityId: section.id, afterJson: assignments });
   return { section, assignments };
 }
 
-export function upsertHousekeepingRule(input: BackOfficeMutationInput & {
+export async function upsertHousekeepingRule(input: BackOfficeMutationInput & {
   ruleCode: string;
   configurationJson: Record<string, unknown>;
   active?: boolean;
 }) {
   requirePermissions(input.context, ["property.configure"]);
-  let rule = demoStore.housekeepingRules.find((candidate) => candidate.propertyId === input.propertyId && candidate.ruleCode === input.ruleCode);
-  const before = rule ? { ...rule } : undefined;
-  if (!rule) {
-    rule = {
-      id: createId("hkr"),
+  const existing = demoStore.housekeepingRules.find((candidate) => candidate.propertyId === input.propertyId && candidate.ruleCode === input.ruleCode);
+  const before = existing ? { ...existing } : undefined;
+  // Persistencia tanda 2: upsert por (propertyId, ruleCode) — Prisma primero,
+  // conservando el id del registro seed si la fila aún no existía en la BD.
+  const row = await prisma.housekeepingRule.upsert({
+    where: { propertyId_ruleCode: { propertyId: input.propertyId, ruleCode: input.ruleCode } },
+    update: {
+      configurationJson: asJson(input.configurationJson),
+      ...(input.active !== undefined ? { active: input.active } : {})
+    },
+    create: {
+      id: existing?.id ?? createId("hkr"),
       propertyId: input.propertyId,
       ruleCode: input.ruleCode,
-      configurationJson: input.configurationJson,
-      active: input.active ?? true
-    };
-    demoStore.housekeepingRules.push(rule);
-  } else {
-    rule.configurationJson = input.configurationJson;
-    rule.active = input.active ?? rule.active;
-  }
+      configurationJson: asJson(input.configurationJson),
+      active: input.active ?? existing?.active ?? true
+    }
+  });
+  const rule = mirrorRecord(
+    demoStore.housekeepingRules,
+    mapConfigRuleRow(row),
+    (candidate) => candidate.propertyId === input.propertyId && candidate.ruleCode === input.ruleCode
+  );
   audit({ ...input, action: "HousekeepingRuleUpdated", entityType: "housekeeping_rule", entityId: rule.id, beforeJson: before, afterJson: rule });
   return rule;
 }
 
-export function getMaintenanceConfiguration(propertyId: string) {
+export async function getMaintenanceConfiguration(propertyId: string) {
+  // Persistencia tanda 2: Prisma primero (áreas, reglas y asignaciones),
+  // merge con los registros solo-seed y refresco del espejo.
+  const [areaRows, ruleRows] = await Promise.all([
+    prisma.maintenanceArea.findMany({ where: { propertyId } }),
+    prisma.maintenanceRule.findMany({ where: { propertyId } })
+  ]);
+  for (const row of areaRows) mirrorRecord(demoStore.maintenanceAreas, mapMaintenanceAreaRow(row));
+  for (const row of ruleRows) {
+    mirrorRecord(demoStore.maintenanceRules, mapConfigRuleRow(row), (candidate) => candidate.propertyId === row.propertyId && candidate.ruleCode === row.ruleCode);
+  }
+  const areas = demoStore.maintenanceAreas.filter((area) => area.propertyId === propertyId);
+  const assignmentRows = areas.length > 0
+    ? await prisma.maintenanceAreaRoom.findMany({ where: { maintenanceAreaId: { in: areas.map((area) => area.id) } } })
+    : [];
+  for (const row of assignmentRows) {
+    mirrorRecord(
+      demoStore.maintenanceAreaRooms,
+      { id: row.id, maintenanceAreaId: row.maintenanceAreaId, roomId: row.roomId },
+      (candidate) => candidate.maintenanceAreaId === row.maintenanceAreaId && candidate.roomId === row.roomId
+    );
+  }
   return {
-    areas: demoStore.maintenanceAreas
-      .filter((area) => area.propertyId === propertyId)
-      .map((area) => ({
-        ...area,
-        rooms: demoStore.maintenanceAreaRooms
-          .filter((assignment) => assignment.maintenanceAreaId === area.id)
-          .map((assignment) => demoStore.rooms.find((room) => room.id === assignment.roomId))
-          .filter(Boolean)
-      })),
+    areas: areas.map((area) => ({
+      ...area,
+      rooms: demoStore.maintenanceAreaRooms
+        .filter((assignment) => assignment.maintenanceAreaId === area.id)
+        .map((assignment) => demoStore.rooms.find((room) => room.id === assignment.roomId))
+        .filter(Boolean)
+    })),
     rules: demoStore.maintenanceRules.filter((rule) => rule.propertyId === propertyId)
   };
 }
 
-export function createMaintenanceArea(input: BackOfficeMutationInput & {
+export async function createMaintenanceArea(input: BackOfficeMutationInput & {
   area: Pick<MaintenanceAreaRecord, "name"> & Partial<MaintenanceAreaRecord>;
 }) {
   requirePermissions(input.context, ["property.configure"]);
@@ -3323,119 +3566,150 @@ export function createMaintenanceArea(input: BackOfficeMutationInput & {
     description: input.area.description,
     active: input.area.active ?? true
   };
+  // Persistencia tanda 2: Prisma primero (mismo id), después espejo.
+  await prisma.maintenanceArea.create({ data: maintenanceAreaToDbRow(area) });
   demoStore.maintenanceAreas.push(area);
   audit({ ...input, action: "MaintenanceAreaCreated", entityType: "maintenance_area", entityId: area.id, afterJson: area });
   return area;
 }
 
-export function assignRoomsToMaintenanceArea(input: BackOfficeMutationInput & {
+export async function assignRoomsToMaintenanceArea(input: BackOfficeMutationInput & {
   areaId: string;
   roomIds: string[];
 }) {
   requirePermissions(input.context, ["property.configure"]);
-  const area = demoStore.maintenanceAreas.find((candidate) => candidate.id === input.areaId && candidate.propertyId === input.propertyId);
-  if (!area) {
-    throw new Error("Maintenance area was not found.");
+  const area = await requireMaintenanceArea(input.propertyId, input.areaId);
+  await assertRoomsBelongToProperty(input.propertyId, input.roomIds);
+  // Persistencia tanda 2: Prisma primero; el unique (areaId, roomId) hace la
+  // asignación idempotente. Después se sincroniza el espejo desde la BD.
+  if (input.roomIds.length > 0) {
+    await prisma.maintenanceAreaRoom.createMany({
+      data: input.roomIds.map((roomId) => ({ id: createId("mar"), maintenanceAreaId: area.id, roomId })),
+      skipDuplicates: true
+    });
   }
-  for (const roomId of input.roomIds) {
-    const room = demoStore.rooms.find((candidate) => candidate.id === roomId && candidate.propertyId === input.propertyId);
-    if (!room) {
-      throw new Error("All assigned rooms must belong to the property.");
-    }
-    const exists = demoStore.maintenanceAreaRooms.some(
-      (assignment) => assignment.maintenanceAreaId === area.id && assignment.roomId === room.id
+  const assignmentRows = await prisma.maintenanceAreaRoom.findMany({ where: { maintenanceAreaId: area.id } });
+  for (const row of assignmentRows) {
+    mirrorRecord(
+      demoStore.maintenanceAreaRooms,
+      { id: row.id, maintenanceAreaId: row.maintenanceAreaId, roomId: row.roomId },
+      (candidate) => candidate.maintenanceAreaId === row.maintenanceAreaId && candidate.roomId === row.roomId
     );
-    if (!exists) {
-      demoStore.maintenanceAreaRooms.push({
-        id: createId("mar"),
-        maintenanceAreaId: area.id,
-        roomId: room.id
-      });
-    }
   }
   const assignments = demoStore.maintenanceAreaRooms.filter((assignment) => assignment.maintenanceAreaId === area.id);
   audit({ ...input, action: "MaintenanceAreaRoomsAssigned", entityType: "maintenance_area", entityId: area.id, afterJson: assignments });
   return { area, assignments };
 }
 
-export function upsertMaintenanceRule(input: BackOfficeMutationInput & {
+export async function upsertMaintenanceRule(input: BackOfficeMutationInput & {
   ruleCode: string;
   configurationJson: Record<string, unknown>;
   active?: boolean;
 }) {
   requirePermissions(input.context, ["property.configure"]);
-  let rule = demoStore.maintenanceRules.find((candidate) => candidate.propertyId === input.propertyId && candidate.ruleCode === input.ruleCode);
-  const before = rule ? { ...rule } : undefined;
-  if (!rule) {
-    rule = {
-      id: createId("mr"),
+  const existing = demoStore.maintenanceRules.find((candidate) => candidate.propertyId === input.propertyId && candidate.ruleCode === input.ruleCode);
+  const before = existing ? { ...existing } : undefined;
+  // Persistencia tanda 2: upsert por (propertyId, ruleCode) — Prisma primero,
+  // conservando el id del registro seed si la fila aún no existía en la BD.
+  const row = await prisma.maintenanceRule.upsert({
+    where: { propertyId_ruleCode: { propertyId: input.propertyId, ruleCode: input.ruleCode } },
+    update: {
+      configurationJson: asJson(input.configurationJson),
+      ...(input.active !== undefined ? { active: input.active } : {})
+    },
+    create: {
+      id: existing?.id ?? createId("mr"),
       propertyId: input.propertyId,
       ruleCode: input.ruleCode,
-      configurationJson: input.configurationJson,
-      active: input.active ?? true
-    };
-    demoStore.maintenanceRules.push(rule);
-  } else {
-    rule.configurationJson = input.configurationJson;
-    rule.active = input.active ?? rule.active;
-  }
+      configurationJson: asJson(input.configurationJson),
+      active: input.active ?? existing?.active ?? true
+    }
+  });
+  const rule = mirrorRecord(
+    demoStore.maintenanceRules,
+    mapConfigRuleRow(row),
+    (candidate) => candidate.propertyId === input.propertyId && candidate.ruleCode === input.ruleCode
+  );
   audit({ ...input, action: "MaintenanceRuleUpdated", entityType: "maintenance_rule", entityId: rule.id, beforeJson: before, afterJson: rule });
   return rule;
 }
 
-export function assignUserToDepartment(input: BackOfficeMutationInput & {
+export async function assignUserToDepartment(input: BackOfficeMutationInput & {
   departmentId: string;
   userId: string;
   roleLabel?: string;
 }) {
   requirePermissions(input.context, ["users.invite"]);
-  const department = demoStore.departments.find(
-    (candidate) => candidate.propertyId === input.propertyId && candidate.id === input.departmentId
-  );
-  if (!department) {
-    throw new Error("Department was not found.");
-  }
-  const user = demoStore.users.find((candidate) => candidate.id === input.userId);
+  const department = await requireDepartment(input.propertyId, input.departmentId);
+  const userRow = await prisma.user.findUnique({ where: { id: input.userId } });
+  const user = userRow
+    ? mirrorRecord(demoStore.users, mapUserRow(userRow))
+    : demoStore.users.find((candidate) => candidate.id === input.userId);
   if (!user) {
     throw new Error("User was not found.");
   }
-  let assignment = demoStore.userDepartments.find(
+  const existing = demoStore.userDepartments.find(
     (candidate) => candidate.departmentId === department.id && candidate.userId === user.id
   );
-  const before = assignment ? { ...assignment } : undefined;
-  if (!assignment) {
-    assignment = {
-      id: createId("ud"),
+  const before = existing ? { ...existing } : undefined;
+  // Persistencia tanda 2: upsert por (userId, departmentId) — Prisma primero,
+  // conservando el id del registro seed si la fila aún no existía en la BD.
+  const row = await prisma.userDepartment.upsert({
+    where: { userId_departmentId: { userId: user.id, departmentId: department.id } },
+    update: {
+      active: true,
+      ...(input.roleLabel !== undefined ? { roleLabel: input.roleLabel } : {})
+    },
+    create: {
+      id: existing?.id ?? createId("ud"),
       userId: user.id,
       departmentId: department.id,
-      roleLabel: input.roleLabel,
+      roleLabel: input.roleLabel ?? existing?.roleLabel ?? null,
       active: true
-    };
-    demoStore.userDepartments.push(assignment);
-  } else {
-    assignment.roleLabel = input.roleLabel ?? assignment.roleLabel;
-    assignment.active = true;
-  }
+    }
+  });
+  const assignment = mirrorRecord(
+    demoStore.userDepartments,
+    mapUserDepartmentRow(row),
+    (candidate) => candidate.userId === user.id && candidate.departmentId === department.id
+  );
   audit({ ...input, action: "UserDepartmentAssigned", entityType: "user_department", entityId: assignment.id, beforeJson: before, afterJson: assignment });
   return assignment;
 }
 
-export function listBackOfficeUsers(propertyId: string) {
+export async function listBackOfficeUsers(propertyId: string) {
   const property = requireProperty(propertyId);
-  return demoStore.users
-    .filter((user) => user.organizationId === property.organizationId)
-    .map((user) => ({
-      ...user,
-      departments: demoStore.userDepartments
-        .filter((assignment) => assignment.userId === user.id && assignment.active)
-        .map((assignment) => ({
-          ...assignment,
-          department: demoStore.departments.find((department) => department.id === assignment.departmentId)
-        }))
-    }));
+  // Persistencia tanda 2: Prisma primero (usuarios, departamentos y
+  // asignaciones), merge con los registros solo-seed y refresco del espejo.
+  const [userRows, departmentRows] = await Promise.all([
+    prisma.user.findMany({ where: { organizationId: property.organizationId }, orderBy: { createdAt: "asc" } }),
+    prisma.department.findMany({ where: { propertyId } })
+  ]);
+  for (const row of userRows) mirrorRecord(demoStore.users, mapUserRow(row));
+  for (const row of departmentRows) mirrorRecord(demoStore.departments, mapDepartmentRow(row));
+  const users = demoStore.users.filter((user) => user.organizationId === property.organizationId);
+  const assignmentRows = users.length > 0
+    ? await prisma.userDepartment.findMany({ where: { userId: { in: users.map((user) => user.id) } } })
+    : [];
+  for (const row of assignmentRows) {
+    mirrorRecord(
+      demoStore.userDepartments,
+      mapUserDepartmentRow(row),
+      (candidate) => candidate.userId === row.userId && candidate.departmentId === row.departmentId
+    );
+  }
+  return users.map((user) => ({
+    ...user,
+    departments: demoStore.userDepartments
+      .filter((assignment) => assignment.userId === user.id && assignment.active)
+      .map((assignment) => ({
+        ...assignment,
+        department: demoStore.departments.find((department) => department.id === assignment.departmentId)
+      }))
+  }));
 }
 
-export function inviteBackOfficeUser(input: BackOfficeMutationInput & {
+export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
   email: string;
   fullName: string;
   phone?: string;
@@ -3443,8 +3717,10 @@ export function inviteBackOfficeUser(input: BackOfficeMutationInput & {
 }) {
   requirePermissions(input.context, ["users.invite"]);
   const property = requireProperty(input.propertyId);
-  if (demoStore.users.some((user) => user.email === input.email)) {
-    throw new Error("User email must be unique.");
+  // User.email es unique en la BD: 409 explícito en vez de un P2002 opaco.
+  const duplicateInPrisma = await prisma.user.findUnique({ where: { email: input.email }, select: { id: true } });
+  if (duplicateInPrisma || demoStore.users.some((user) => user.email === input.email)) {
+    throw new ConflictError("User email must be unique.");
   }
   const user: UserRecord = {
     id: createId("usr"),
@@ -3455,19 +3731,26 @@ export function inviteBackOfficeUser(input: BackOfficeMutationInput & {
     status: "invited",
     mfaEnabled: input.mfaRequired ?? true
   };
+  // Persistencia tanda 2: Prisma primero (mismo id, sin passwordHash — se fija
+  // al aceptar la invitación), después espejo.
+  await prisma.user.create({ data: userToDbRow(user) });
   demoStore.users.push(user);
   audit({ ...input, action: "UserInvited", entityType: "user", entityId: user.id, afterJson: user });
   return user;
 }
 
-export function disableBackOfficeUser(input: BackOfficeMutationInput & { userId: string }) {
+export async function disableBackOfficeUser(input: BackOfficeMutationInput & { userId: string }) {
   requirePermissions(input.context, ["users.disable"]);
-  const user = demoStore.users.find((candidate) => candidate.id === input.userId);
-  if (!user) {
-    throw new Error("User was not found.");
-  }
+  const { user, persisted } = await requireBackOfficeUser(input.userId);
   const before = { ...user };
-  user.status = "disabled";
+  if (persisted) {
+    // Persistencia tanda 2: Prisma primero, después espejo.
+    const row = await prisma.user.update({ where: { id: user.id }, data: { status: "disabled" } });
+    Object.assign(user, mapUserRow(row));
+  } else {
+    // Usuario seed cuyo email ya pertenece a otra fila en la BD: solo espejo.
+    user.status = "disabled";
+  }
   audit({ ...input, action: "UserDisabled", entityType: "user", entityId: user.id, beforeJson: before, afterJson: user });
   return user;
 }
@@ -3499,91 +3782,144 @@ export function patchComplianceSettings(input: BackOfficeMutationInput & { patch
   return settings;
 }
 
-export function getBillingSettings(propertyId: string) {
+export async function getBillingSettings(propertyId: string) {
+  // Persistencia tanda 2: Prisma primero, merge con los registros solo-seed.
+  const rows = await prisma.invoiceSequence.findMany({ where: { propertyId } });
+  const mapped = rows.map(mapInvoiceSequenceRow);
+  for (const sequence of mapped) mirrorRecord(demoStore.invoiceSequences, sequence);
   return {
-    invoiceSequences: demoStore.invoiceSequences.filter((sequence) => sequence.propertyId === propertyId),
+    invoiceSequences: mergeById(mapped, demoStore.invoiceSequences.filter((sequence) => sequence.propertyId === propertyId)),
     complianceBilling: getModuleConfiguration(propertyId, "compliance_billing")
   };
 }
 
-export function patchBillingSettings(input: BackOfficeMutationInput & { invoiceSequence?: Partial<InvoiceSequenceRecord> }) {
+export async function patchBillingSettings(input: BackOfficeMutationInput & { invoiceSequence?: Partial<InvoiceSequenceRecord> }) {
   requirePermissions(input.context, ["billing.configure"]);
   if (!input.invoiceSequence?.sequenceCode || !input.invoiceSequence.invoiceType) {
     throw new Error("Invoice sequence code and invoice type are required.");
   }
-  let sequence = demoStore.invoiceSequences.find(
-    (candidate) => candidate.propertyId === input.propertyId && candidate.sequenceCode === input.invoiceSequence!.sequenceCode
+  const patch = input.invoiceSequence;
+  const existing = demoStore.invoiceSequences.find(
+    (candidate) => candidate.propertyId === input.propertyId && candidate.sequenceCode === patch.sequenceCode
   );
-  const before = sequence ? { ...sequence } : undefined;
-  if (!sequence) {
-    sequence = {
-      id: createId("seq"),
+  const before = existing ? { ...existing } : undefined;
+  // Persistencia tanda 2: upsert por (propertyId, sequenceCode) — Prisma
+  // primero, conservando el id del registro seed si la fila no existía en la BD.
+  const update: Prisma.InvoiceSequenceUncheckedUpdateInput = {};
+  if (patch.prefix !== undefined) update.prefix = patch.prefix;
+  if (patch.nextNumber !== undefined) update.nextNumber = patch.nextNumber;
+  if (patch.padding !== undefined) update.padding = patch.padding;
+  if (patch.invoiceType !== undefined) update.invoiceType = patch.invoiceType;
+  if (patch.active !== undefined) update.active = patch.active;
+  const row = await prisma.invoiceSequence.upsert({
+    where: { propertyId_sequenceCode: { propertyId: input.propertyId, sequenceCode: patch.sequenceCode! } },
+    update,
+    create: {
+      id: existing?.id ?? createId("seq"),
       propertyId: input.propertyId,
-      sequenceCode: input.invoiceSequence.sequenceCode,
-      prefix: input.invoiceSequence.prefix,
-      nextNumber: input.invoiceSequence.nextNumber ?? 1,
-      padding: input.invoiceSequence.padding ?? 6,
-      invoiceType: input.invoiceSequence.invoiceType,
-      active: input.invoiceSequence.active ?? true
-    };
-    demoStore.invoiceSequences.push(sequence);
-  } else {
-    Object.assign(sequence, input.invoiceSequence);
-  }
+      sequenceCode: patch.sequenceCode!,
+      prefix: patch.prefix ?? null,
+      nextNumber: patch.nextNumber ?? 1,
+      padding: patch.padding ?? 6,
+      invoiceType: patch.invoiceType!,
+      active: patch.active ?? true
+    }
+  });
+  const sequence = mirrorRecord(
+    demoStore.invoiceSequences,
+    mapInvoiceSequenceRow(row),
+    (candidate) => candidate.propertyId === input.propertyId && candidate.sequenceCode === patch.sequenceCode
+  );
   audit({ ...input, action: before ? "InvoiceSequenceUpdated" : "InvoiceSequenceCreated", entityType: "invoice_sequence", entityId: sequence.id, beforeJson: before, afterJson: sequence });
   return getBillingSettings(input.propertyId);
 }
 
-export function getAccountingSettings(propertyId: string) {
+export async function getAccountingSettings(propertyId: string) {
+  // Persistencia tanda 2: Prisma primero, fallback al registro solo-seed.
+  const row = await prisma.accountingSetting.findFirst({ where: { propertyId } });
+  const settings = row
+    ? mirrorRecord(demoStore.accountingSettings, mapAccountingRow(row), (candidate) => candidate.propertyId === row.propertyId)
+    : demoStore.accountingSettings.find((candidate) => candidate.propertyId === propertyId);
   return {
-    settings: demoStore.accountingSettings.find((settings) => settings.propertyId === propertyId),
+    settings,
     costCenters: demoStore.costCenters.filter((costCenter) => costCenter.propertyId === propertyId)
   };
 }
 
-export function patchAccountingSettings(input: BackOfficeMutationInput & { patch: Partial<AccountingSettingsRecord> }) {
+export async function patchAccountingSettings(input: BackOfficeMutationInput & { patch: Partial<AccountingSettingsRecord> }) {
   requirePermissions(input.context, ["accounting.configure"]);
-  const settings = demoStore.accountingSettings.find((candidate) => candidate.propertyId === input.propertyId);
-  if (!settings) {
-    throw new Error("Accounting settings were not found.");
-  }
+  const settings = await requireAccountingSettings(input.propertyId);
   const before = { ...settings };
-  Object.assign(settings, input.patch, { updatedAt: nowIso() });
+  // Persistencia tanda 2: Prisma primero (id/organizationId/propertyId no son
+  // parcheables), después espejo con la fila mapeada.
+  const data: Prisma.AccountingSettingUncheckedUpdateInput = {};
+  if (input.patch.chartTemplate !== undefined) data.chartTemplate = input.patch.chartTemplate;
+  if (input.patch.fiscalYearStartMonth !== undefined) data.fiscalYearStartMonth = input.patch.fiscalYearStartMonth;
+  if (input.patch.configurationJson !== undefined) data.configurationJson = asJson(input.patch.configurationJson);
+  const row = await prisma.accountingSetting.update({ where: { id: settings.id }, data });
+  Object.assign(settings, mapAccountingRow(row));
   audit({ ...input, action: "AccountingSettingsUpdated", entityType: "accounting_settings", entityId: settings.id, beforeJson: before, afterJson: settings });
   return settings;
 }
 
-export function getAiSettings(propertyId: string) {
+export async function getAiSettings(propertyId: string) {
+  // Persistencia tanda 2: Prisma primero, fallback al registro solo-seed.
+  // Los toolSettings siguen en memoria (fuera del alcance de esta tanda).
+  const row = await prisma.propertyAiSetting.findUnique({ where: { propertyId } });
+  const settings = row
+    ? mirrorRecord(demoStore.propertyAiSettings, mapAiSettingsRow(row), (candidate) => candidate.propertyId === row.propertyId)
+    : demoStore.propertyAiSettings.find((candidate) => candidate.propertyId === propertyId);
   return {
-    settings: demoStore.propertyAiSettings.find((settings) => settings.propertyId === propertyId),
+    settings,
     toolSettings: demoStore.propertyAiToolSettings.filter((tool) => tool.propertyId === propertyId)
   };
 }
 
-export function patchAiSettings(input: BackOfficeMutationInput & { patch: Partial<PropertyAiSettingsRecord> }) {
+export async function patchAiSettings(input: BackOfficeMutationInput & { patch: Partial<PropertyAiSettingsRecord> }) {
   requirePermissions(input.context, ["ai.configure"]);
-  const settings = demoStore.propertyAiSettings.find((candidate) => candidate.propertyId === input.propertyId);
-  if (!settings) {
-    throw new Error("AI settings were not found.");
-  }
   if (input.patch.configurationJson?.documentImageRetentionPolicy === "store_by_default") {
     throw new Error("AI settings cannot allow ID image storage by default.");
   }
+  const settings = await requireAiSettings(input.propertyId);
   const before = { ...settings };
-  Object.assign(settings, input.patch, { updatedAt: nowIso() });
+  // Persistencia tanda 2: Prisma primero, después espejo con la fila mapeada.
+  const data: Prisma.PropertyAiSettingUncheckedUpdateInput = {};
+  if (input.patch.aiEnabled !== undefined) data.aiEnabled = input.patch.aiEnabled;
+  if (input.patch.defaultAutomationLevel !== undefined) data.defaultAutomationLevel = input.patch.defaultAutomationLevel;
+  if (input.patch.guestFacingDisclosure !== undefined) data.guestFacingDisclosure = input.patch.guestFacingDisclosure;
+  if (input.patch.voiceLocales !== undefined) data.voiceLocales = input.patch.voiceLocales;
+  if (input.patch.configurationJson !== undefined) data.configurationJson = asJson(input.patch.configurationJson);
+  const row = await prisma.propertyAiSetting.update({ where: { id: settings.id }, data });
+  Object.assign(settings, mapAiSettingsRow(row));
   audit({ ...input, action: "AISettingsUpdated", entityType: "property_ai_settings", entityId: settings.id, beforeJson: before, afterJson: settings });
   return settings;
 }
 
-export function listDocumentTemplates(propertyId: string) {
-  return demoStore.documentTemplates.filter((template) => template.propertyId === propertyId);
+export async function listDocumentTemplates(propertyId: string) {
+  // Persistencia tanda 2: Prisma primero, merge con los registros solo-seed
+  // (p.ej. tpl_welcome_es) y refresco del espejo.
+  const rows = await prisma.documentTemplate.findMany({ where: { propertyId } });
+  const mapped = rows.map(mapDocumentTemplateRow);
+  for (const template of mapped) mirrorRecord(demoStore.documentTemplates, template);
+  return mergeById(mapped, demoStore.documentTemplates.filter((template) => template.propertyId === propertyId));
 }
 
-export function createDocumentTemplate(input: BackOfficeMutationInput & {
+export async function createDocumentTemplate(input: BackOfficeMutationInput & {
   template: Pick<DocumentTemplateRecord, "templateCode" | "name" | "channel" | "language" | "body"> & Partial<DocumentTemplateRecord>;
 }) {
   requirePermissions(input.context, ["templates.manage"]);
+  const duplicateInPrisma = await prisma.documentTemplate.findUnique({
+    where: {
+      propertyId_templateCode_language: {
+        propertyId: input.propertyId,
+        templateCode: input.template.templateCode,
+        language: input.template.language
+      }
+    },
+    select: { id: true }
+  });
   if (
+    duplicateInPrisma ||
     demoStore.documentTemplates.some(
       (template) =>
         template.propertyId === input.propertyId &&
@@ -3606,22 +3942,29 @@ export function createDocumentTemplate(input: BackOfficeMutationInput & {
     active: input.template.active ?? true,
     updatedAt: nowIso()
   };
+  // Persistencia tanda 2: Prisma primero (mismo id), después espejo (updatedAt
+  // de la fila para no divergir del @updatedAt de la BD).
+  const row = await prisma.documentTemplate.create({ data: documentTemplateToDbRow(record) });
+  Object.assign(record, mapDocumentTemplateRow(row));
   demoStore.documentTemplates.push(record);
   audit({ ...input, action: "TemplateCreated", entityType: "document_template", entityId: record.id, afterJson: record });
   return record;
 }
 
-export function updateDocumentTemplate(input: BackOfficeMutationInput & {
+export async function updateDocumentTemplate(input: BackOfficeMutationInput & {
   templateId: string;
   patch: { subject?: string; body?: string; active?: boolean };
 }) {
   requirePermissions(input.context, ["templates.manage"]);
-  const template = demoStore.documentTemplates.find((candidate) => candidate.propertyId === input.propertyId && candidate.id === input.templateId);
-  if (!template) {
-    throw new Error("Template was not found.");
-  }
+  const template = await requireDocumentTemplate(input.propertyId, input.templateId);
   const before = { ...template };
-  Object.assign(template, input.patch, { updatedAt: nowIso() });
+  // Persistencia tanda 2: Prisma primero, después espejo con la fila mapeada.
+  const data: Prisma.DocumentTemplateUncheckedUpdateInput = {};
+  if (input.patch.subject !== undefined) data.subject = input.patch.subject;
+  if (input.patch.body !== undefined) data.body = input.patch.body;
+  if (input.patch.active !== undefined) data.active = input.patch.active;
+  const row = await prisma.documentTemplate.update({ where: { id: template.id }, data });
+  Object.assign(template, mapDocumentTemplateRow(row));
   audit({ ...input, action: "TemplateUpdated", entityType: "document_template", entityId: template.id, beforeJson: before, afterJson: template });
   return template;
 }
@@ -3785,20 +4128,23 @@ export async function applyBackOfficeAiSuggestion(input: BackOfficeMutationInput
             active: true
           });
   } else if (action === "create_housekeeping_sections_by_floor") {
-    const created = demoStore.floors
+    const floors = demoStore.floors
       .filter((floor) => floor.propertyId === input.propertyId && floor.active)
-      .filter((floor) => !demoStore.housekeepingSections.some((section) => section.propertyId === input.propertyId && section.code === `HK_${floor.code ?? floor.id}`))
-      .map((floor) =>
-        createHousekeepingSection({
+      .filter((floor) => !demoStore.housekeepingSections.some((section) => section.propertyId === input.propertyId && section.code === `HK_${floor.code ?? floor.id}`));
+    const created: HousekeepingSectionRecord[] = [];
+    for (const floor of floors) {
+      created.push(
+        await createHousekeepingSection({
           context: input.context,
           propertyId: input.propertyId,
           correlationId: input.correlationId,
           section: { name: `${floor.name} housekeeping`, code: `HK_${floor.code ?? floor.id}`, active: true }
         })
       );
+    }
     result = { status: "created", createdCount: created.length, sections: created };
   } else if (action === "create_template") {
-    result = createDocumentTemplate({
+    result = await createDocumentTemplate({
       context: input.context,
       propertyId: input.propertyId,
       correlationId: input.correlationId,
