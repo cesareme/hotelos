@@ -13,6 +13,7 @@
 
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { prisma, hashPassword } from "@hotelos/database";
+import { HOTEL_MODULES } from "@hotelos/product";
 import type { PermissionKey } from "@hotelos/shared";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
@@ -553,8 +554,26 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
   // Seed module entitlements (best-effort: any unknown moduleCode is skipped
   // rather than failing the entire creation flow).
   for (const moduleCode of input.modulesEnabled) {
-    const moduleRow = await prisma.module.findUnique({ where: { code: moduleCode } });
-    if (!moduleRow) continue;
+    let moduleRow = await prisma.module.findUnique({ where: { code: moduleCode } });
+    // Auditoría 2026-07: la tabla `modules` puede estar vacía (el catálogo vive
+    // en @hotelos/product y el seed base no lo puebla) — antes el `continue`
+    // descartaba TODOS los módulos del alta en silencio. Materializar la fila
+    // desde el manifest canónico cuando el código exista allí.
+    if (!moduleRow) {
+      const manifest = HOTEL_MODULES.find((m) => m.code === moduleCode);
+      if (!manifest) continue; // código desconocido: no inventar filas
+      moduleRow = await prisma.module.upsert({
+        where: { code: moduleCode },
+        update: {},
+        create: {
+          code: manifest.code,
+          name: manifest.name,
+          description: manifest.description,
+          category: manifest.category,
+          isCore: manifest.isCore
+        }
+      });
+    }
     await prisma.propertyModule.upsert({
       where: { propertyId_moduleId: { propertyId: persisted.property.id, moduleId: moduleRow.id } },
       update: { status: "enabled", enabledAt: new Date(), disabledAt: null },

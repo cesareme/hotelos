@@ -5276,7 +5276,9 @@ export function buildApiServer() {
     // Se aceptan AMBAS formas (anidada tiene prioridad) para no romper API clients.
     const body = (request.body ?? {}) as {
       name?: string; country?: string; plan?: string;
-      ownerEmail?: string; ownerFullName?: string; propertyName?: string; propertyType?: string;
+      ownerEmail?: string; ownerFullName?: string; ownerPhone?: string;
+      propertyName?: string; propertyType?: string;
+      municipality?: string; province?: string;
       organizationName?: string; organizationCountry?: string;
       property?: { name?: string; type?: string; municipality?: string; province?: string };
       ownerUser?: { email?: string; fullName?: string; phone?: string };
@@ -5290,14 +5292,15 @@ export function buildApiServer() {
       property: {
         name: body.property?.name ?? body.propertyName ?? body.name ?? "",
         type: body.property?.type ?? body.propertyType ?? "hotel",
-        municipality: body.property?.municipality,
-        province: body.property?.province
+        // el wizard (NewTenantWizardDialog) envía municipality/province PLANOS
+        municipality: body.property?.municipality ?? body.municipality,
+        province: body.property?.province ?? body.province
       },
       ownerUser: {
         email: ownerEmail,
         // fallback: si no llega nombre, usar el local-part del email (mejor que romper el alta)
         fullName: body.ownerUser?.fullName ?? body.ownerFullName ?? ownerEmail.split("@")[0] ?? "",
-        phone: body.ownerUser?.phone
+        phone: body.ownerUser?.phone ?? body.ownerPhone
       },
       modulesEnabled: body.modulesEnabled ?? [],
       plan: body.plan === "pro" || body.plan === "enterprise" ? body.plan : "starter"

@@ -83,21 +83,25 @@ const PLAN_OPTIONS: Array<{ value: Plan; label: string }> = [
   { value: "enterprise", label: "Enterprise" },
 ];
 
+// Auditoría 2026-07: los codes deben coincidir con el manifest canónico de
+// @hotelos/product (module-manifest.ts) — antes usaba codes inventados
+// (channel_manager, fnb, spa…) que el backend descartaba en silencio y el
+// tenant nacía sin módulos.
 const MODULES: ModuleDef[] = [
   { code: "pms_core", label: "PMS Core", description: "Reservas, rooming, folios", alwaysOn: true },
-  { code: "channel_manager", label: "Channel Manager", description: "OTAs y distribución" },
-  { code: "revenue_manager", label: "Revenue Manager", description: "Pricing y forecasting" },
-  { code: "fnb", label: "F&B", description: "Restaurante, bar, room service" },
-  { code: "spa", label: "Spa", description: "Citas y tratamientos" },
-  { code: "compliance_es", label: "Compliance ES", description: "SES Hospedajes, AEAT" },
-  { code: "ai_operations", label: "AI Operations", description: "Copilot operativo" },
-  { code: "esrs", label: "ESRS", description: "Sostenibilidad y reporting" },
-  { code: "marketplace", label: "Marketplace", description: "Extensiones de partners" },
+  { code: "distribution_hub", label: "Channel Manager", description: "OTAs y distribución" },
+  { code: "revenue_profit_engine", label: "Revenue Manager", description: "Pricing y forecasting" },
+  { code: "outlet_pos", label: "F&B / TPV", description: "Restaurante, bar, room service" },
+  { code: "guest_experience", label: "Guest Experience", description: "Upsells, peticiones, bienestar" },
+  { code: "compliance_hub", label: "Compliance ES", description: "SES Hospedajes, AEAT" },
+  { code: "ai_front_desk", label: "AI Operations", description: "Copilot operativo" },
+  { code: "energy_sustainability", label: "ESRS", description: "Sostenibilidad y reporting" },
+  { code: "integration_marketplace", label: "Marketplace", description: "Extensiones de partners" },
 ];
 
 const PLAN_MODULES: Record<Plan, string[]> = {
-  starter: ["pms_core", "channel_manager"],
-  pro: ["pms_core", "channel_manager", "revenue_manager", "fnb", "spa", "compliance_es"],
+  starter: ["pms_core", "distribution_hub"],
+  pro: ["pms_core", "distribution_hub", "revenue_profit_engine", "outlet_pos", "guest_experience", "compliance_hub"],
   enterprise: MODULES.map((m) => m.code),
 };
 
