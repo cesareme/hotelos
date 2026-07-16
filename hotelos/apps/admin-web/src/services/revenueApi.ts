@@ -1,4 +1,5 @@
 // Frontend client for the REAL revenue endpoints (Fase B/C backend).
+import { apiRequest } from "./api-client";
 import { getActivePropertyId } from "./activeProperty";
 
 const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
@@ -182,6 +183,116 @@ export type PeriodMetrics = {
 
 export function fetchPeriodMetrics(from: string, to: string, propertyId = getActivePropertyId()) {
   return get<PeriodMetrics>(`/revenue/properties/${propertyId}/period-metrics?from=${from}&to=${to}`);
+}
+
+// ---- History & Forecast BOARD (contract frozen 2026-07-15) ----------------
+// Canonical Opera-style board computed server-side from Prisma (reservations +
+// RevenueDailySnapshot + RevenueForecast + Budget + RevenuePaceSnapshot).
+// Uses apiRequest (JWT-attached) because the board is permission-gated.
+export type BoardRowType = "data" | "weekSubtotal" | "monthSubtotal" | "total";
+export type BoardRow = {
+  rowType: BoardRowType;
+  label?: string;
+  date?: string;
+  dow?: string;
+  isPast?: boolean;
+  isToday?: boolean;
+  // Actual (past, audited) / OTB (today+future) block
+  roomsSold: number;
+  occPct: number;
+  adr: number | null;
+  revpar: number | null;
+  roomRevenue: number;
+  arrivals: number;
+  departures: number;
+  noShows: number;
+  ooo: number;
+  // Forecast block (future only; null in the past)
+  fcRooms: number | null;
+  fcOccPct: number | null;
+  fcAdr: number | null;
+  fcRevenue: number | null;
+  fcConfidence: number | null;
+  // STLY block (audited close of date−364)
+  stlyRooms: number | null;
+  stlyOccPct: number | null;
+  stlyAdr: number | null;
+  stlyRevenue: number | null;
+  deltaRoomsVsStly: number | null;
+  deltaRevVsStly: number | null;
+  // Budget (monthly figure prorated per day)
+  budgetRevenue: number | null;
+  deltaRevVsBudget: number | null;
+  // Pickup (Δ rooms OTB; future dates only)
+  pickup1: number | null;
+  pickup7: number | null;
+  pickup28: number | null;
+  pickupAdr7: number | null;
+};
+export type MonthOutlook = {
+  month: string;
+  label: string;
+  daysElapsed: number;
+  daysTotal: number;
+  actualRevenue: number;
+  otbRevenue: number;
+  forecastRevenue: number | null;
+  projectedRevenue: number;
+  projectedOccPct: number | null;
+  projectedAdr: number | null;
+  budgetRevenue: number | null;
+  gapToBudget: number | null;
+  gapPct: number | null;
+  status: "ok" | "warn" | "risk" | "no_budget";
+  lyRevenue: number | null;
+  lyOccPct: number | null;
+  lyAdr: number | null;
+};
+export type CriticalDate = {
+  date: string;
+  dow: string;
+  daysOut: number;
+  severity: "high" | "medium";
+  reason: string;
+  occPct: number;
+  fcOccPct: number | null;
+  stlyOccPct: number | null;
+  pickup7: number | null;
+  recommendation: string | null;
+  compsetMedian: number | null;
+};
+export type BoardKpiBlock = { roomsSold: number; occPct: number; adr: number | null; revenue: number };
+export type BoardKpis = {
+  next7: BoardKpiBlock & { pickup7: number | null };
+  next30: BoardKpiBlock & { pickup7: number | null };
+  mtd: BoardKpiBlock & { vsStlyRevenuePct: number | null };
+  forecastConfidenceAvg: number | null;
+};
+export type HistoryForecastBoard = {
+  propertyId: string;
+  propertyName: string;
+  businessDate: string;
+  generatedAt: string;
+  from: string;
+  to: string;
+  totalRooms: number;
+  forecastMissing: boolean;
+  budgetMissing: boolean;
+  metricNotes: string[];
+  sources: Record<string, string>;
+  rows: BoardRow[];
+  months: MonthOutlook[];
+  criticalDates: CriticalDate[];
+  kpis: BoardKpis;
+};
+
+export function fetchHistoryForecastBoard(
+  opts: { from?: string; to?: string } = {},
+  propertyId = getActivePropertyId()
+) {
+  return apiRequest<HistoryForecastBoard>(`/revenue/properties/${propertyId}/history-forecast/board`, {
+    query: { from: opts.from, to: opts.to }
+  });
 }
 
 // ---- shared format helper -------------------------------------------------

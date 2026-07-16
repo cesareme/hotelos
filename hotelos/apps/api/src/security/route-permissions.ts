@@ -119,6 +119,10 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/revenue/properties/:propertyId/history-forecast/charts", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
   { method: "GET", path: "/revenue/properties/:propertyId/history-forecast/kpis", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
   { method: "POST", path: "/revenue/properties/:propertyId/history-forecast/export", permissions: ["revenue.history_forecast.export"], riskLevel: "high" },
+  // H&F board + Export Center (contract 2026-07-15).
+  { method: "GET", path: "/revenue/properties/:propertyId/history-forecast/board", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
+  { method: "GET", path: "/revenue/properties/:propertyId/export-center/catalog", permissions: ["revenue.history_forecast.read"], riskLevel: "medium" },
+  { method: "POST", path: "/revenue/properties/:propertyId/export-center/generate", permissions: ["revenue.history_forecast.export"], riskLevel: "high" },
   {
     method: "POST",
     path: "/revenue/properties/:propertyId/history-forecast/saved-views",

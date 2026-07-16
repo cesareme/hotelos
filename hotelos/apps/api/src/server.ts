@@ -58,6 +58,8 @@ import {
 } from "./modules/rate-manager/rate-grid.service.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
 import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport } from "./modules/revenue/forecast.service.js";
+import { getHistoryForecastBoard, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
+import { getExportCatalog, generateExport } from "./modules/revenue/export-center.service.js";
 import { getPeriodMetrics } from "./modules/revenue/comparison.service.js";
 import { getPace, getPickup, capturePaceSnapshot, capturePaceSnapshotsForAllProperties } from "./modules/revenue/pace.service.js";
 import { listCompetitors, createCompetitor, listCompetitorRates, runRateShop, listParityAlerts } from "./modules/revenue/rate-shop.service.js";
@@ -662,13 +664,9 @@ import {
 } from "./modules/admin-console/tenant-admin.service.js";
 import {
   createAdvancedRecord,
-  exportHistoryForecastReport,
   getAdvancedModuleDashboard,
   getAdvancedModuleHealth,
   getAdvancedRecord,
-  getHistoryForecastCharts,
-  getHistoryForecastKpis,
-  getHistoryForecastReport,
   listAdvancedRecords,
   transitionAdvancedRecord,
   validateAdvancedAiTool
@@ -1730,24 +1728,73 @@ export function buildApiServer() {
     const params = request.params as { propertyId: string };
     return getAdvancedModuleDashboard(params.propertyId, "revenue_profit_engine");
   });
+  // History & Forecast BOARD (contract 2026-07-15): canonical Opera-style board
+  // computed from Prisma (reservations + RevenueDailySnapshot + RevenueForecast
+  // + Budget + RevenuePaceSnapshot).
+  app.get("/revenue/properties/:propertyId/history-forecast/board", async (request) => {
+    const params = request.params as { propertyId: string };
+    const q = request.query as { from?: string; to?: string };
+    return getHistoryForecastBoard(params.propertyId, { from: q.from, to: q.to });
+  });
+  // Legacy alias: these three used to read the in-memory demoStore (prop_123
+  // only; 500 for real properties). They now serve the same real board.
   app.get("/revenue/properties/:propertyId/history-forecast", async (request) => {
     const params = request.params as { propertyId: string };
-    return getHistoryForecastReport(params.propertyId, request.query as never);
+    const q = request.query as { from?: string; to?: string };
+    return getHistoryForecastBoard(params.propertyId, { from: q.from, to: q.to });
   });
   app.get("/revenue/properties/:propertyId/history-forecast/charts", async (request) => {
     const params = request.params as { propertyId: string };
-    return getHistoryForecastCharts(params.propertyId, request.query as never);
+    const q = request.query as { from?: string; to?: string };
+    return getHistoryForecastBoard(params.propertyId, { from: q.from, to: q.to });
   });
   app.get("/revenue/properties/:propertyId/history-forecast/kpis", async (request) => {
     const params = request.params as { propertyId: string };
-    return getHistoryForecastKpis(params.propertyId, request.query as never);
+    const q = request.query as { from?: string; to?: string };
+    return getHistoryForecastBoard(params.propertyId, { from: q.from, to: q.to });
   });
+  // Legacy alias: repointed to the Export Center generator (hf_daily) — the old
+  // demoStore export read `report.rows` (key was `report.table`) → empty CSV.
+  // Same path + permission; keeps its historical audit action.
   app.post("/revenue/properties/:propertyId/history-forecast/export", async (request) => {
     const params = request.params as { propertyId: string };
-    return exportHistoryForecastReport({
+    const b = (request.body ?? {}) as { format?: string; from?: string; to?: string; fromDate?: string; toDate?: string };
+    return generateExport({
       context: request.userContext,
       propertyId: params.propertyId,
-      payload: request.body as never,
+      exportCode: "hf_daily",
+      format: b.format === "xls" || b.format === "xlsx" ? "xls" : "csv",
+      from: b.from ?? b.fromDate,
+      to: b.to ?? b.toDate,
+      auditAction: "RevenueHistoryForecastExported",
+      correlationId: createId("corr")
+    });
+  });
+  // Export Center (contract 2026-07-15): catalog + generator.
+  app.get("/revenue/properties/:propertyId/export-center/catalog", async (request) => {
+    const params = request.params as { propertyId: string };
+    return getExportCatalog(params.propertyId);
+  });
+  app.post("/revenue/properties/:propertyId/export-center/generate", async (request) => {
+    const params = request.params as { propertyId: string };
+    const body = parse(
+      z.object({
+        exportCode: z.enum(["hf_daily", "pickup_daily", "flash_direccion", "pace_segmento", "meeting_pack", "cierre_mensual"]),
+        format: z.enum(["csv", "xls", "pdf"]),
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        month: z.string().regex(/^\d{4}-\d{2}$/).optional()
+      }),
+      request.body
+    );
+    return generateExport({
+      context: request.userContext,
+      propertyId: params.propertyId,
+      exportCode: body.exportCode,
+      format: body.format,
+      from: body.from,
+      to: body.to,
+      month: body.month,
       correlationId: createId("corr")
     });
   });
@@ -6992,11 +7039,17 @@ if (entryFile === argFile) {
     const runCapture = () =>
       void capturePaceSnapshotsForAllProperties()
         .then((r) => app.log.info({ pace: r }, "[pace.scheduler] tick"))
+        // Night-audit writer (H&F contract §5): after the OTB capture, upsert
+        // yesterday's top-level RevenueDailySnapshot per property from real
+        // reservations (dataSource "night_audit") so the audited history feeds
+        // itself without the seed. Idempotent per (property, date).
+        .then(() => writeYesterdayDailySnapshotsForAllProperties())
+        .then((s) => app.log.info({ nightAudit: s }, "[pace.scheduler] daily snapshot upsert"))
         .catch((error) => app.log.error({ err: error }, "[pace.scheduler] failed"));
     runCapture();
     const paceTimer = setInterval(runCapture, dayMs);
     paceTimer.unref();
-    app.log.info("[pace.scheduler] enabled (daily)");
+    app.log.info("[pace.scheduler] enabled (daily · pace + night-audit snapshot)");
   }
 
   // Allotment release scheduler · industry-standard End-of-Day routine.

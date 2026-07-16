@@ -40,13 +40,17 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-type ResRow = { arrivalDate: Date; departureDate: Date; roomsCount: number; totalAmount: Prisma.Decimal; createdAt: Date };
+export type ResRow = { arrivalDate: Date; departureDate: Date; roomsCount: number; totalAmount: Prisma.Decimal; createdAt: Date };
 
-type Bucket = { rooms: number; revenue: number; reservations: number };
+export type OtbBucket = { rooms: number; revenue: number; reservations: number };
 
-/** Expand reservations into per-stay-date OTB (rooms + revenue) clipped to [from, to). */
-function expand(rows: ResRow[], from: Date, to: Date): Map<string, Bucket> {
-  const byDate = new Map<string, Bucket>();
+/**
+ * Expand reservations into per-stay-date OTB (rooms + revenue) clipped to [from, to).
+ * Exported so the History & Forecast board can reconstruct historical OTB (pickup
+ * fallback by `createdAt`) with the exact same semantics as live pace.
+ */
+export function expand(rows: ResRow[], from: Date, to: Date): Map<string, OtbBucket> {
+  const byDate = new Map<string, OtbBucket>();
   for (const r of rows) {
     const arr = dayUtc(r.arrivalDate);
     const dep = dayUtc(r.departureDate);
@@ -66,7 +70,7 @@ function expand(rows: ResRow[], from: Date, to: Date): Map<string, Bucket> {
   return byDate;
 }
 
-function sumWindow(byDate: Map<string, Bucket>, from: Date, to: Date): Bucket {
+function sumWindow(byDate: Map<string, OtbBucket>, from: Date, to: Date): OtbBucket {
   let rooms = 0;
   let revenue = 0;
   let reservations = 0;
