@@ -154,6 +154,20 @@ export async function syncToolRegistry(context?: UserContext): Promise<ToolRegis
 // ---------------------------------------------------------------------------
 // listTools
 // ---------------------------------------------------------------------------
+/**
+ * PropertyAiToolSetting has no relation to Property, so tenant scoping goes
+ * through the organization's property ids. Without a context (internal
+ * callers) nothing is filtered.
+ */
+async function organizationPropertyScope(context?: UserContext): Promise<{ propertyId?: { in: string[] } }> {
+  if (!context) return {};
+  const properties = await prisma.property.findMany({
+    where: { organizationId: context.organizationId },
+    select: { id: true }
+  });
+  return { propertyId: { in: properties.map((property) => property.id) } };
+}
+
 export async function listTools(input: {
   context?: UserContext;
   moduleCode?: string;
@@ -170,14 +184,18 @@ export async function listTools(input: {
     orderBy: [{ moduleCode: "asc" }, { toolName: "asc" }]
   });
 
-  // Per-property setting summary in one grouped query (avoids N+1).
+  // Per-property setting summary in one grouped query (avoids N+1), scoped to
+  // the caller's organization: settings of other tenants must not leak into
+  // the counts.
+  const tenantScope = await organizationPropertyScope(input.context);
   const settingGroups = await prisma.propertyAiToolSetting.groupBy({
     by: ["toolName"],
+    where: { ...tenantScope },
     _count: { _all: true }
   });
   const enabledGroups = await prisma.propertyAiToolSetting.groupBy({
     by: ["toolName"],
-    where: { enabled: true },
+    where: { ...tenantScope, enabled: true },
     _count: { _all: true }
   });
   const settingCountByTool = new Map(settingGroups.map((g) => [g.toolName, g._count._all]));
@@ -230,7 +248,7 @@ export async function getTool(input: { context?: UserContext; toolName: string }
 
   const definition = DEFINITION_BY_NAME.get(row.toolName);
   const settingRows = await prisma.propertyAiToolSetting.findMany({
-    where: { toolName: input.toolName },
+    where: { ...(await organizationPropertyScope(input.context)), toolName: input.toolName },
     orderBy: { propertyId: "asc" }
   });
 

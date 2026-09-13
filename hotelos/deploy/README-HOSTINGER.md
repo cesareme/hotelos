@@ -127,11 +127,18 @@ Fill in:
 | `OBJECT_STORAGE_*`   | Hostinger Object Storage or AWS S3 / Cloudflare R2 creds   |
 | `VERIFACTU_MODE`     | Leave `sandbox` until you have AEAT prod certs             |
 | `SENTRY_DSN`         | Optional — your Sentry project DSN                         |
+| `RBAC_STRICT`        | Leave `true` (already the default with `NODE_ENV=production`): GET routes missing from the permission manifest get 403 instead of being served as public |
 
 The table is a summary; `deploy/.env.production.example` documents every
-variable the compose interpolates (17) with its purpose and how to generate
-it. Never add `HOTELOS_ALLOW_DEMO_AUTH=true` to a production env: it disables
-authentication (see the header of the example file).
+variable the compose interpolates (18) with its purpose and how to generate
+it. Check the filled-in file with
+`node scripts/validate-env.mjs deploy/.env.production` before the first
+deploy. Never add `HOTELOS_ALLOW_DEMO_AUTH=true` to a production env: it
+disables authentication (see the header of the example file), and since the
+2026-09-13 audit the API **refuses to boot** with it under
+`NODE_ENV=production`. The only escape hatch,
+`HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true`, exists for a public demo box
+with no real tenant data — never for a customer-facing deployment.
 
 ### 5 · First deploy
 

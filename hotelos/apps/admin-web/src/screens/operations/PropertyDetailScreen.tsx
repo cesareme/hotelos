@@ -3,8 +3,6 @@ import { useMemo } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
 
-const DEFAULT_PROPERTY_ID = getActivePropertyId();
-
 type StatusKind = "ok" | "warn" | "error" | "info";
 
 type PropertyOverview = {
@@ -141,17 +139,11 @@ function navToReservation(reservationId: string) {
   window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "ReservationDetailWorkspace" }));
 }
 
-function readActivePropertyId(): string {
-  if (typeof window === "undefined") return DEFAULT_PROPERTY_ID;
-  try {
-    return window.localStorage?.getItem("hotelos-active-property") || DEFAULT_PROPERTY_ID;
-  } catch {
-    return DEFAULT_PROPERTY_ID;
-  }
-}
-
 export function PropertyDetailScreen() {
-  const propertyId = useMemo(() => readActivePropertyId(), []);
+  // Read through the shared service (single owner of the storage key) at mount
+  // time: PortfolioDashboard repoints the active property before navigating
+  // here, reloading when the scope changes.
+  const propertyId = useMemo(() => getActivePropertyId(), []);
 
   const { data, loading, error, refresh } = useApiData<PropertyOverview>(
     "/dashboards/property-overview",

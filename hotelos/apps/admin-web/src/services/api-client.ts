@@ -75,6 +75,24 @@ export type RequestOptions = {
   signal?: AbortSignal;
 };
 
+/**
+ * Error thrown by apiRequest for non-2xx responses. Carries the HTTP status
+ * (and the API correlationId when the body is the errorHandler envelope) so
+ * callers can branch on it — e.g. useApiData distinguishes the opaque tenancy
+ * 404 "Propiedad no encontrada." from any other failure without regexes.
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly correlationId?: string;
+
+  constructor(message: string, status: number, correlationId?: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.correlationId = correlationId;
+  }
+}
+
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const token = await getToken();
   const url = new URL(path.startsWith("http") ? path : `${API_BASE}${path}`);
@@ -103,13 +121,20 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     inFlightLogin = null;
     // Clear stored session + notify listeners so AuthGate redirects to login.
     clearSession();
-    throw new Error("Authentication expired. Refresh the page.");
+    throw new ApiError("Authentication expired. Refresh the page.", 401);
   }
   if (!response.ok) {
     const text = await response.text();
     let message = text;
-    try { message = (JSON.parse(text) as { message?: string }).message ?? text; } catch { /* keep raw */ }
-    throw new Error(message || `HTTP ${response.status}`);
+    let correlationId: string | undefined;
+    try {
+      const parsed = JSON.parse(text) as { message?: string; correlationId?: string };
+      message = parsed.message ?? text;
+      correlationId = parsed.correlationId;
+    } catch {
+      /* keep raw body as the message */
+    }
+    throw new ApiError(message || `HTTP ${response.status}`, response.status, correlationId);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

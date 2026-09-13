@@ -347,7 +347,9 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
       id: p.id,
       title: p.name,
       subtitle: [p.legalName, p.municipality, p.province].filter(Boolean).join(" · ") || undefined,
-      screen: "PropertyDetail",
+      // Must be a key of SCREEN_COMPONENTS (apps/admin-web/src/App.tsx):
+      // resolveScreenTarget drops unknown screens silently.
+      screen: "PropertyDetailScreen",
       params: { propertyId: p.id }
     });
   }
@@ -358,7 +360,8 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
       id: r.id,
       title: r.name,
       subtitle: [r.code, r.mealPlan, r.ratePlanType].filter(Boolean).join(" · ") || undefined,
-      screen: "RatePlanManager",
+      // Registered screen key for the rate plan manager (Sidebar: "Planes tarifarios").
+      screen: "RatePlans",
       params: { ratePlanId: r.id }
     });
   }

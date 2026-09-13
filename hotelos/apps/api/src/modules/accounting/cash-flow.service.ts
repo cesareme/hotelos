@@ -1,6 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { requireDateRange } from "../../lib/query-dates.js";
 
 export type CashFlowItem = { description: string; amount: number };
 export type WorkingCapitalChange = { category: string; amount: number };
@@ -314,10 +315,7 @@ export async function buildCashFlow(input: {
   toDate: string;
 }): Promise<CashFlowStatement> {
   requirePermissions(input.context, ["analytics.read"]);
-
-  if (input.fromDate >= input.toDate) {
-    throw new Error("fromDate must be before toDate.");
-  }
+  requireDateRange(input.fromDate, input.toDate);
 
   const start = dateOnly(input.fromDate);
   const end = dateOnly(input.toDate);

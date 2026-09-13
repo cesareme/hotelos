@@ -20,11 +20,16 @@ import { useSidebarRecent } from "../hooks/useSidebarRecent";
 import { useSidebarRoleFilter } from "../hooks/useSidebarRoleFilter";
 import { CocoaSplitView } from "../components/cocoa/CocoaSplitView";
 import { CocoaToolbarSearchField } from "../components/cocoa-extras/CocoaToolbarSearchField";
-import { apiRequest } from "../services/api-client";
 import {
+  ACTIVE_PROPERTY_INVALID_EVENT,
+  OPEN_PROPERTY_SWITCHER_EVENT,
+  ensureActiveProperty,
   getActiveProperty,
+  loadSwitchableProperties,
+  openPropertySwitcher,
   setActiveProperty,
-  type ActiveProperty
+  type ActiveProperty,
+  type SwitchableProperty
 } from "../services/activeProperty";
 import {
   clearSession,
@@ -75,20 +80,11 @@ function buildHitPath(hit: SearchHit): string | null {
 
 // --- Cocoa right-slot inline components ------------------------------------
 
-type SwitchableProperty = {
-  id: string;
-  name: string;
-  organizationId: string;
-  organizationName?: string;
-  municipality?: string | null;
-  province?: string | null;
-  status?: string | null;
-};
-
 function PropertySwitcher() {
   // Mirrors the property dropdown in the legacy TopBar but rendered inside the
-  // CocoaToolbar leftSlot. We talk to /properties directly (same as TopBar) and
-  // persist via setActiveProperty, which already triggers a reload on change.
+  // CocoaToolbar leftSlot. The list comes from the memoized
+  // loadSwitchableProperties() (shared with AuthGate and TopBar, one request
+  // per session) and we persist via setActiveProperty, which reloads on change.
   const active = getActiveProperty();
   const [open, setOpen] = useState(false);
   const [properties, setProperties] = useState<SwitchableProperty[]>([]);
@@ -100,7 +96,7 @@ function PropertySwitcher() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    apiRequest<SwitchableProperty[]>("/properties")
+    loadSwitchableProperties()
       .then((list) => {
         if (!cancelled) setProperties(list);
       })
@@ -113,6 +109,16 @@ function PropertySwitcher() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // The active-property banner asks us to open so the user can pick another
+  // property without hunting for the toolbar control.
+  useEffect(() => {
+    function onOpenRequest() {
+      setOpen(true);
+    }
+    window.addEventListener(OPEN_PROPERTY_SWITCHER_EVENT, onOpenRequest);
+    return () => window.removeEventListener(OPEN_PROPERTY_SWITCHER_EVENT, onOpenRequest);
   }, []);
 
   useEffect(() => {
@@ -398,6 +404,116 @@ function ResumeOnboardingBanner() {
       >
         Continuar configuración
       </button>
+    </div>
+  );
+}
+
+// --- Active property safety net ----------------------------------------------
+// useApiData reports the opaque tenancy 404 ("Propiedad no encontrada.")
+// through ACTIVE_PROPERTY_INVALID_EVENT. We re-validate the stored selection
+// against the user's real list: if it was repointed we reload (screens read
+// the id at module-evaluation time), if the user has no property left we say
+// so, and if the API still lists it we surface an actionable notice that opens
+// the switcher instead of leaving N cryptic red cards on the screen.
+const REVALIDATE_THROTTLE_MS = 30_000;
+
+function ActivePropertyInvalidBanner() {
+  const [notice, setNotice] = useState<"unavailable" | "empty" | null>(null);
+  const busyRef = useRef(false);
+  const lastCheckRef = useRef(0);
+
+  useEffect(() => {
+    function onInvalid() {
+      const now = Date.now();
+      if (busyRef.current || now - lastCheckRef.current < REVALIDATE_THROTTLE_MS) return;
+      const user = getUser();
+      if (!user) return;
+      busyRef.current = true;
+      lastCheckRef.current = now;
+      ensureActiveProperty(user, { refresh: true })
+        .then((result) => {
+          if (result.changed) {
+            window.location.reload();
+            return;
+          }
+          setNotice(result.empty ? "empty" : "unavailable");
+        })
+        .catch(() => setNotice("unavailable"))
+        .finally(() => {
+          busyRef.current = false;
+        });
+    }
+    window.addEventListener(ACTIVE_PROPERTY_INVALID_EVENT, onInvalid);
+    return () => window.removeEventListener(ACTIVE_PROPERTY_INVALID_EVENT, onInvalid);
+  }, []);
+
+  if (!notice) return null;
+
+  const message =
+    notice === "empty"
+      ? "Tu usuario ya no tiene propiedades asignadas. Contacta con un administrador."
+      : "La propiedad activa no está disponible para tu usuario. Selecciona otra propiedad.";
+
+  const actionButtonStyle = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 6,
+    height: 28,
+    padding: "0 12px",
+    border: "none",
+    borderRadius: "var(--cocoa-radius-md)",
+    font: "inherit",
+    fontSize: 12,
+    fontWeight: 600,
+    cursor: "pointer",
+    whiteSpace: "nowrap"
+  } as const;
+
+  return (
+    <div
+      role="alert"
+      aria-label="Propiedad activa no disponible"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "8px 16px",
+        background: "var(--cocoa-warning-soft, rgba(255, 159, 10, 0.14))",
+        borderBottom: "1px solid var(--cocoa-separator)",
+        color: "var(--cocoa-label)",
+        font: "inherit",
+        fontSize: "var(--cocoa-fs-body)"
+      }}
+    >
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{message}</span>
+      <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+        {notice === "unavailable" ? (
+          <button
+            type="button"
+            onClick={() => openPropertySwitcher()}
+            style={{
+              ...actionButtonStyle,
+              background: "var(--cocoa-accent)",
+              color: "var(--cocoa-accent-contrast)"
+            }}
+          >
+            Cambiar propiedad
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => setNotice(null)}
+          style={{
+            ...actionButtonStyle,
+            background: "transparent",
+            border: "1px solid var(--cocoa-separator)",
+            color: "var(--cocoa-label)"
+          }}
+        >
+          Cerrar
+        </button>
+      </div>
     </div>
   );
 }
@@ -716,6 +832,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
           aria-hidden
         />
         <TopBar onOpenCommandPalette={() => setCmdkOpen(true)} onOpenNav={() => setNavOpen(true)} />
+        <ActivePropertyInvalidBanner />
         <ResumeOnboardingBanner />
         <section className="bo-workspace">{props.children}</section>
         <CommandPalette
@@ -801,6 +918,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
           </>
         }
       />
+      <ActivePropertyInvalidBanner />
       <ResumeOnboardingBanner />
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <CocoaSplitView

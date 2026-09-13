@@ -6,6 +6,14 @@ import { TOOL_DEFINITIONS } from "../../ai-tools/src/registry.js";
 
 const prisma = new PrismaClient();
 
+// Local demo grants for the "Local Super Admin" role (org_123). This list is
+// NOT the permission catalog: the API converges `permissions` to PERMISSIONS
+// (@hotelos/shared) at boot (syncPermissionCatalog + backfillTemplateRoles in
+// apps/api/src/lib/rbac-catalog.ts, also `pnpm --filter @hotelos/api rbac:sync`).
+// Keep the platform key (admin.tenants.manage) and the Tanda 0 additions
+// (folio.charge.post, payment.capture, payment.refund, asset.capex.approve)
+// here so the local super admin keeps its console + billing surfaces without
+// the demo permission union.
 const DEMO_PERMISSIONS = [
   "admin.tenants.manage",
   "backoffice.access",

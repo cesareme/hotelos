@@ -289,9 +289,11 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "PATCH", path: "/analytics/anomalies/:id", permissions: ["analytics.configure"], riskLevel: "medium" },
   { method: "POST", path: "/analytics/properties/:propertyId/reports", permissions: ["analytics.configure"], riskLevel: "medium" },
   { method: "POST", path: "/analytics/query", permissions: ["analytics.ai_ask"], riskLevel: "low" },
-  { method: "POST", path: "/developer/apps", permissions: ["developer.manage_apps"], riskLevel: "high" },
-  { method: "PATCH", path: "/developer/apps/:id", permissions: ["developer.manage_apps"], riskLevel: "high" },
-  { method: "POST", path: "/developer/apps/:id/rotate-secret", permissions: ["developer.manage_apps"], riskLevel: "critical" },
+  // POST /developer/apps and POST /developer/apps/:appId/rotate-secret are
+  // declared once, above (developer.manage_webhooks): findRoutePermission is an
+  // exact first-wins match, so the second /developer/apps entry and the
+  // `:id`-named rotate-secret variant here were dead code. PATCH
+  // /developer/apps/:id is not registered anywhere (audit 2026-09-13).
   { method: "POST", path: "/developer/webhooks", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
   { method: "PATCH", path: "/developer/webhooks/:id", permissions: ["developer.manage_webhooks"], riskLevel: "high" },
   { method: "POST", path: "/developer/webhooks/:id/test", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
@@ -599,7 +601,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/properties/:propertyId/invoice-branding", permissions: ["billing.compliance.view"], riskLevel: "low" },
   { method: "PATCH", path: "/properties/:propertyId/invoice-branding", permissions: ["property.configure"], riskLevel: "high" },
   { method: "POST", path: "/invoices/drafts", permissions: ["invoice.issue"], riskLevel: "high" },
-  { method: "PATCH", path: "/invoices/:id", permissions: ["invoice.issue"], riskLevel: "high" },
+  // PATCH /invoices/:id is not registered (issued invoices are immutable; drafts
+  // go through /invoices/drafts). Orphan entry removed, audit 2026-09-13.
   { method: "POST", path: "/invoices/:id/issue", permissions: ["invoice.issue"], riskLevel: "critical" },
   { method: "POST", path: "/invoices/:id/cancel", permissions: ["invoice.cancel"], riskLevel: "critical" },
   { method: "POST", path: "/invoices/:id/rectify", permissions: ["invoice.issue"], riskLevel: "high" },
@@ -1066,29 +1069,18 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // Auto-generated OpenAPI spec — public so external tooling can fetch the schema.
   { method: "GET", path: "/developer/openapi.yaml", permissions: [], riskLevel: "public" },
 
-  // audit 2026-06 R2 · #5: PII / finance / compliance GET routes added to manifest
-  // so RBAC_STRICT=true can enforce them without logging them as unmapped.
-  // Permissions use existing PermissionKey values (no new perms added here).
-  { method: "GET", path: "/guests", permissions: ["pms.checkin.execute"], riskLevel: "high" },
-  { method: "GET", path: "/guests/:id", permissions: ["pms.checkin.execute"], riskLevel: "high" },
-  { method: "GET", path: "/guests/:id/timeline", permissions: ["pms.checkin.execute"], riskLevel: "high" },
-  { method: "GET", path: "/folios/:id/balance", permissions: ["invoice.issue"], riskLevel: "high" },
-  { method: "GET", path: "/invoices/:id", permissions: ["invoice.issue"], riskLevel: "critical" },
-  { method: "GET", path: "/invoices/:id/rectifications", permissions: ["invoice.cancel"], riskLevel: "critical" },
-  { method: "GET", path: "/invoices/:id/verifactu", permissions: ["invoice.issue"], riskLevel: "critical" },
-  { method: "GET", path: "/compliance/health", permissions: ["compliance.configure"], riskLevel: "low" },
+  // audit 2026-06 R2 · #5: compliance center GET routes. The rest of that block
+  // (guests, folio balance, invoices, compliance/health, guest-register and SES
+  // authority reads) duplicated entries declared earlier in this array; since
+  // findRoutePermission is first-wins they never applied at runtime and were
+  // removed in the 2026-09-13 audit (0 duplicates is now enforced by CI, see
+  // tests/api-route-permissions-contract.test.mjs).
   { method: "GET", path: "/compliance/properties/:propertyId/center", permissions: ["compliance.configure"], riskLevel: "medium" },
   { method: "GET", path: "/compliance/properties/:propertyId/tasks", permissions: ["compliance.configure"], riskLevel: "medium" },
   { method: "GET", path: "/compliance/properties/:propertyId/documents", permissions: ["compliance.configure"], riskLevel: "medium" },
   { method: "GET", path: "/compliance/properties/:propertyId/alerts", permissions: ["compliance.configure"], riskLevel: "medium" },
   { method: "GET", path: "/compliance/properties/:propertyId/inspection-folder", permissions: ["compliance.configure"], riskLevel: "medium" },
   { method: "GET", path: "/compliance/properties/:propertyId/assistant", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "GET", path: "/compliance/spain/properties/:propertyId/guest-register/settings", permissions: ["compliance.ses.configure"], riskLevel: "high" },
-  { method: "GET", path: "/compliance/spain/reservations/:reservationId/guest-register", permissions: ["compliance.ses.submit"], riskLevel: "high" },
-  { method: "GET", path: "/compliance/authority/properties/:propertyId/inbox", permissions: ["compliance.ses.submit"], riskLevel: "high" },
-  { method: "GET", path: "/compliance/authority/properties/:propertyId/submissions", permissions: ["compliance.ses.submit"], riskLevel: "high" },
-  { method: "GET", path: "/compliance/authority/submissions/:submissionId", permissions: ["compliance.ses.submit"], riskLevel: "high" },
-  { method: "GET", path: "/compliance/ses-hospedajes/properties/:propertyId/batches/:batchId/download", permissions: ["compliance.ses.export"], riskLevel: "critical" },
 
   // Fase 0: Rate Plan CRUD. Mutations are FAIL-CLOSED without a manifest entry
   // (they throw 500), so these are required for the endpoints to work at all.
@@ -1112,36 +1104,162 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/properties/:propertyId/rate-grid", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/rate-journal", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "POST", path: "/properties/:propertyId/rate-grid/bulk-update", permissions: ["revenue.manage_rates"], riskLevel: "critical" },
-  { method: "POST", path: "/properties/:propertyId/rate-grid/push", permissions: ["distribution.sync"], riskLevel: "critical" }
+  { method: "POST", path: "/properties/:propertyId/rate-grid/push", permissions: ["distribution.sync"], riskLevel: "critical" },
+
+  // ── AUTH-03 (auditoría 360 · 2026-09-13): the 62 GET routes that were
+  // registered without a manifest entry and therefore ran fail-open. Keys reuse
+  // existing PermissionKey values, aligned with the sibling entries of each
+  // family (the POST/PATCH of the same resource, or the equivalent read route).
+  // Advanced modules health (mirrors /backoffice/.../modules/:moduleCode/health).
+  { method: "GET", path: "/advanced/properties/:propertyId/modules/:moduleCode/health", permissions: ["modules.read"], riskLevel: "low" },
+  // Revenue strategy reads.
+  { method: "GET", path: "/revenue/properties/:propertyId/period-metrics", permissions: ["revenue.read"], riskLevel: "medium" },
+  { method: "GET", path: "/revenue/properties/:propertyId/pricing-rules", permissions: ["revenue.read"], riskLevel: "medium" },
+  { method: "GET", path: "/revenue/properties/:propertyId/bar-levels", permissions: ["revenue.read"], riskLevel: "medium" },
+  { method: "GET", path: "/revenue/properties/:propertyId/budget", permissions: ["revenue.read"], riskLevel: "medium" },
+  { method: "GET", path: "/revenue/properties/:propertyId/budget/variance", permissions: ["revenue.read"], riskLevel: "medium" },
+  { method: "GET", path: "/revenue/properties/:propertyId/market-segments", permissions: ["revenue.read"], riskLevel: "medium" },
+  { method: "GET", path: "/revenue/properties/:propertyId/meeting-pack", permissions: ["revenue.read"], riskLevel: "medium" },
+  // Email connectors. The OAuth callback is the browser redirect coming back
+  // from Google/Microsoft: it carries no bearer token, its CSRF protection is
+  // the `state` parameter consumed by handleEmailOAuthCallback. It is public
+  // here AND listed in PUBLIC_PREFIXES (lib/auth-context.ts) so the staff auth
+  // hook lets it through.
+  { method: "GET", path: "/integrations/email/providers", permissions: ["integrations.read"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/email/connections", permissions: ["integrations.read"], riskLevel: "medium" },
+  { method: "GET", path: "/email/connections/:id/authorize-url", permissions: ["integrations.connect"], riskLevel: "medium" },
+  { method: "GET", path: "/integrations/email/oauth/callback", permissions: [], riskLevel: "public" },
+  { method: "GET", path: "/properties/:propertyId/email/inbound", permissions: ["pms.reservation.read"], riskLevel: "medium" },
+  // Groups & events.
+  { method: "GET", path: "/groups/properties/:propertyId", permissions: ["groups.read"], riskLevel: "medium" },
+  { method: "GET", path: "/events/properties/:propertyId/calendar", permissions: ["events.read"], riskLevel: "low" },
+  // Workforce (labor costs are payroll data: dedicated key).
+  { method: "GET", path: "/workforce/properties/:propertyId/schedule", permissions: ["workforce.read"], riskLevel: "medium" },
+  { method: "GET", path: "/workforce/properties/:propertyId/time-clock", permissions: ["workforce.read"], riskLevel: "medium" },
+  { method: "GET", path: "/workforce/properties/:propertyId/labor-forecast", permissions: ["workforce.read"], riskLevel: "medium" },
+  { method: "GET", path: "/workforce/properties/:propertyId/labor-costs", permissions: ["workforce.labor_cost.view"], riskLevel: "high" },
+  // Procurement & inventory (advanced modules).
+  { method: "GET", path: "/procurement/suppliers", permissions: ["procurement.read"], riskLevel: "medium" },
+  { method: "GET", path: "/inventory/properties/:propertyId/items", permissions: ["inventory.read"], riskLevel: "low" },
+  { method: "GET", path: "/inventory/properties/:propertyId/stock", permissions: ["inventory.read"], riskLevel: "medium" },
+  { method: "GET", path: "/procurement/properties/:propertyId/purchase-orders", permissions: ["procurement.read"], riskLevel: "medium" },
+  // Guest self-service, reputation, quality, surveys.
+  { method: "GET", path: "/guest-self-service/properties/:propertyId/settings", permissions: ["guest_self_service.read"], riskLevel: "low" },
+  { method: "GET", path: "/reputation/properties/:propertyId/dashboard", permissions: ["reputation.read"], riskLevel: "low" },
+  { method: "GET", path: "/reputation/properties/:propertyId/reviews", permissions: ["reputation.read"], riskLevel: "medium" },
+  { method: "GET", path: "/quality/properties/:propertyId/cases", permissions: ["quality_cases.read"], riskLevel: "medium" },
+  { method: "GET", path: "/surveys/properties/:propertyId", permissions: ["surveys.read"], riskLevel: "low" },
+  // Energy, sustainability, safety.
+  { method: "GET", path: "/energy/properties/:propertyId/dashboard", permissions: ["energy.read"], riskLevel: "low" },
+  { method: "GET", path: "/energy/properties/:propertyId/meters", permissions: ["energy.read"], riskLevel: "low" },
+  { method: "GET", path: "/sustainability/properties/:propertyId/dashboard", permissions: ["sustainability.read"], riskLevel: "low" },
+  { method: "GET", path: "/sustainability/properties/:propertyId/report", permissions: ["sustainability.read"], riskLevel: "low" },
+  { method: "GET", path: "/safety/properties/:propertyId/incidents", permissions: ["incidents.read"], riskLevel: "medium" },
+  { method: "GET", path: "/safety/properties/:propertyId/checks", permissions: ["safety_checks.read"], riskLevel: "low" },
+  // Analytics.
+  { method: "GET", path: "/analytics/properties/:propertyId/dashboard", permissions: ["analytics.read"], riskLevel: "low" },
+  { method: "GET", path: "/analytics/properties/:propertyId/metrics", permissions: ["analytics.read"], riskLevel: "low" },
+  { method: "GET", path: "/analytics/properties/:propertyId/anomalies", permissions: ["analytics.read"], riskLevel: "medium" },
+  { method: "GET", path: "/analytics/properties/:propertyId/reports", permissions: ["analytics.read"], riskLevel: "medium" },
+  // Developer portal.
+  { method: "GET", path: "/developer/apps/:id/usage", permissions: ["developer.manage_apps"], riskLevel: "medium" },
+  { method: "GET", path: "/developer/webhooks", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
+  { method: "GET", path: "/developer/webhooks/:id/deliveries", permissions: ["developer.manage_webhooks"], riskLevel: "medium" },
+  // AI governance (legacy prefix; mirrors /ai-operations/governance/*).
+  { method: "GET", path: "/ai-governance/policies", permissions: ["ai_governance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/ai-governance/tools", permissions: ["ai_governance.read"], riskLevel: "low" },
+  { method: "GET", path: "/ai-governance/prompts", permissions: ["ai_governance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/ai-governance/evaluations", permissions: ["ai_governance.read"], riskLevel: "medium" },
+  { method: "GET", path: "/ai-governance/incidents", permissions: ["ai_incidents.read"], riskLevel: "medium" },
+  { method: "GET", path: "/ai-governance/human-review", permissions: ["ai_governance.read"], riskLevel: "medium" },
+  // Reservation sub-resources.
+  { method: "GET", path: "/reservations/:id/audit-events", permissions: ["pms.reservation.read"], riskLevel: "medium" },
+  { method: "GET", path: "/reservations/:id/documents", permissions: ["pms.reservation.read"], riskLevel: "low" },
+  // F&B stock, menu engineering and POS.
+  { method: "GET", path: "/properties/:propertyId/stock-locations", permissions: ["inventory.read"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/inventory-items", permissions: ["inventory.read"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/stock-balances", permissions: ["inventory.read"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/stock-balances/low-stock", permissions: ["inventory.read"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/menu-items", permissions: ["inventory.read"], riskLevel: "low" },
+  { method: "GET", path: "/menu-items/:id", permissions: ["inventory.read"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/pos/outlets", permissions: ["folio.charge.post"], riskLevel: "low" },
+  { method: "GET", path: "/properties/:propertyId/pos/tickets", permissions: ["folio.charge.post"], riskLevel: "low" },
+  // Accounting & fiscal reports (modelo-303/390 also enforce analytics.read in
+  // their service; the entry makes the edge gate explicit and uniform).
+  { method: "GET", path: "/accounting/journal-entries/recent", permissions: ["accounting.journal.post"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/fiscal-periods", permissions: ["analytics.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/modelo-303", permissions: ["analytics.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/modelo-390", permissions: ["analytics.read"], riskLevel: "medium" },
+  // SES submissions (legacy path; mirrors /properties/:propertyId/ses-hospedajes/submissions).
+  { method: "GET", path: "/properties/:propertyId/ses/submissions", permissions: ["compliance.ses.submit"], riskLevel: "medium" }
 ];
 
 export function findRoutePermission(method: string, path: string): ApiRoutePermission | undefined {
   return routePermissionManifest.find((route) => route.method === method.toUpperCase() && route.path === path);
 }
 
+// AUTH-03: strict mode means a GET without a manifest entry is refused (403)
+// instead of falling through as public. Resolution order:
+//   1. RBAC_STRICT set (non-empty) → "true" enables, anything else disables.
+//   2. Otherwise NODE_ENV=production → strict. Production is fail-closed by
+//      default; RBAC_STRICT=false is an explicit, auditable opt-out.
+//   3. Otherwise (dev/test/demo) → fail-open, with a deduplicated warning.
+// The value is resolved once, lazily on the first check, and memoized — not
+// re-read per request. Lazy rather than at module load because server.ts
+// loads .env at import time and ESM import hoisting evaluates this module
+// before that loader runs, so an eager read would miss a RBAC_STRICT from .env.
+let rbacStrictMode: boolean | null = null;
+
+function resolveRbacStrictMode(): boolean {
+  const explicit = process.env.RBAC_STRICT?.trim();
+  if (explicit !== undefined && explicit !== "") {
+    return explicit === "true";
+  }
+  return process.env.NODE_ENV === "production";
+}
+
+export function isRbacStrictMode(): boolean {
+  if (rbacStrictMode === null) {
+    rbacStrictMode = resolveRbacStrictMode();
+  }
+  return rbacStrictMode;
+}
+
+/**
+ * Test-only: forget the memoized mode so the next check re-reads the env.
+ * Lets integration tests flip RBAC_STRICT / NODE_ENV with `withEnv` on a
+ * server that is already booted.
+ */
+export function resetRbacStrictModeForTests(): void {
+  rbacStrictMode = null;
+}
+
+function unmappedRouteError(method: string, path: string): ForbiddenError {
+  return new ForbiddenError(
+    `Acción no permitida: la ruta ${method} ${path} no está registrada en el manifiesto de permisos.`
+  );
+}
+
 export function assertRoutePermission(input: { method: string; path: string; userPermissions: PermissionKey[] }): void {
-  const route = findRoutePermission(input.method, input.path);
+  const method = input.method.toUpperCase();
+  const route = findRoutePermission(method, input.path);
   if (!route) {
-    if (input.method.toUpperCase() === "GET") {
-      // Historically any unmapped GET was treated as public (fail-open). That is
-      // kept as the DEFAULT so read routes not yet in the manifest don't break,
-      // but: (a) we log every gap so it can be mapped, and (b) we fail CLOSED
-      // when RBAC_STRICT=true — flip that on once the manifest covers all GETs.
+    if (method === "GET") {
+      if (isRbacStrictMode()) {
+        throw unmappedRouteError(method, input.path);
+      }
+      // Fail-open only outside strict mode (dev/test/demo). Every gap is logged
+      // once so it can be mapped; CI (contract test) rejects unmapped routes.
       if (!loggedUnmappedGets.has(input.path)) {
         loggedUnmappedGets.add(input.path);
         console.warn(
           `[rbac] unmapped GET ${input.path} — add it to routePermissionManifest ` +
-            `(fail-open by default; set RBAC_STRICT=true to enforce 403)`
+            `(fail-open in this environment; NODE_ENV=production or RBAC_STRICT=true enforce 403)`
         );
-      }
-      if (process.env.RBAC_STRICT === "true") {
-        throw new ForbiddenError(`No route permission manifest entry for GET ${input.path}`);
       }
       return;
     }
-    throw new ForbiddenError(
-      `Acción no permitida: la ruta ${input.method.toUpperCase()} ${input.path} no está registrada en el manifiesto de permisos.`
-    );
+    throw unmappedRouteError(method, input.path);
   }
 
   assertPermissions(input.userPermissions, route.permissions);

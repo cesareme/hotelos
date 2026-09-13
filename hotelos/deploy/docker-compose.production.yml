@@ -96,6 +96,11 @@ services:
       # audit 2026-06 R2 · H1: esta es la UNICA instancia que corre los 5 schedulers
       # in-process (SES/pace/allotment/cutoff/mailbox). Con >1 replica pon false en las demas.
       RUN_SCHEDULERS: ${RUN_SCHEDULERS:-true}
+      # audit 2026-09-13 · AUTH-03: RBAC estricto (GET sin entrada en el manifiesto
+      # → 403). Ya es el default con NODE_ENV=production; se reenvia para que quede
+      # visible en el entorno del contenedor. AUTH-04: HOTELOS_ALLOW_DEMO_AUTH NUNCA
+      # se reenvia aqui — con NODE_ENV=production el API se niega a arrancar con el.
+      RBAC_STRICT: ${RBAC_STRICT:-true}
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
       interval: 15s

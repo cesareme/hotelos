@@ -44,6 +44,7 @@ import {
   type CocoaNotification,
 } from "../components/cocoa-global";
 import { apiRequest } from "../services/api-client";
+import { navigateTo } from "../lib/navigate";
 
 // ---------------------------------------------------------------------------
 // Preference shape — mirrors the CocoaPreferencesSheet contract so consumers
@@ -206,16 +207,12 @@ function eventMatchesCombo(event: KeyboardEvent, combo: ParsedCombo): boolean {
 
 // ---------------------------------------------------------------------------
 // Default command palette items. Each entry dispatches a `hotelos-nav`
-// CustomEvent — the same channel App.tsx already listens on for routing — so
-// the provider doesn't need to know the screen graph or import App.tsx.
+// CustomEvent through the typed `navigateTo` helper (lib/navigate.ts) — the
+// same channel App.tsx already listens on for routing — so the provider only
+// depends on the ScreenKey type, never on the screen graph itself.
 // Entries for Preferences / Help / About open the corresponding overlay
 // directly via the bound handler injected at render time.
 // ---------------------------------------------------------------------------
-function navigateTo(screen: string): void {
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent<string>("hotelos-nav", { detail: screen }));
-}
-
 interface DefaultCommandBindings {
   openPreferences: () => void;
   openShortcuts: () => void;
@@ -228,7 +225,7 @@ function buildDefaultCommands(bindings: DefaultCommandBindings): CocoaCommandPal
       id: "nav.reservations",
       label: "Reservaciones",
       category: "Navegacion",
-      onSelect: () => navigateTo("ReservationWorkspaceScreen"),
+      onSelect: () => navigateTo("ReservationWorkspace"),
     },
     {
       id: "nav.frontdesk",
@@ -246,19 +243,19 @@ function buildDefaultCommands(bindings: DefaultCommandBindings): CocoaCommandPal
       id: "nav.allotments",
       label: "Allotments",
       category: "Navegacion",
-      onSelect: () => navigateTo("AllotmentsScreen"),
+      onSelect: () => navigateTo("Allotments"),
     },
     {
       id: "nav.rates",
       label: "Tarifas",
       category: "Navegacion",
-      onSelect: () => navigateTo("RatePlansScreen"),
+      onSelect: () => navigateTo("RatePlans"),
     },
     {
       id: "nav.compliance",
       label: "Compliance",
       category: "Navegacion",
-      onSelect: () => navigateTo("ComplianceCenterScreen"),
+      onSelect: () => navigateTo("ComplianceCenter"),
     },
     {
       id: "nav.setup",

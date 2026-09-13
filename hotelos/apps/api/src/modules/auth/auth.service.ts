@@ -1,4 +1,4 @@
-import { assertPermissions, ROLE_PERMISSION_MAP } from "@hotelos/shared";
+import { assertPermissions } from "@hotelos/shared";
 import type { PermissionKey, RoleKey } from "@hotelos/shared";
 import { prisma, signJwt, verifyPassword, type JwtClaims } from "@hotelos/database";
 import {
@@ -234,9 +234,8 @@ export async function loginWithEmailPassword(input: { email: string; password: s
   };
 }
 
-export function permissionsForRoles(roles: RoleKey[]): PermissionKey[] {
-  return Array.from(new Set(roles.flatMap((role) => ROLE_PERMISSION_MAP[role])));
-}
+// permissionsForRoles(ROLE_PERMISSION_MAP) was removed in Tanda 1: it had no
+// callers. Role templates are now applied to DB rows by lib/rbac-catalog.ts.
 
 export function requirePermissions(context: UserContext, required: PermissionKey[]): void {
   assertPermissions(context.permissions, required);
@@ -246,7 +245,8 @@ export function listPropertiesForUser(context: UserContext): PropertyRecord[] {
   return demoStore.properties.filter((property) => property.organizationId === context.organizationId);
 }
 
-export const PLATFORM_ADMIN_PERMISSION = "admin.tenants.manage" as PermissionKey;
+// Part of the canonical catalog since Tanda 1 (PLATFORM_PERMISSION_KEYS): no cast.
+export const PLATFORM_ADMIN_PERMISSION: PermissionKey = "admin.tenants.manage";
 
 /** True when the REAL (pre-demo-union) role grants include admin.tenants.manage. */
 export function hasPlatformAdminGrant(realPermissions: PermissionKey[]): boolean {

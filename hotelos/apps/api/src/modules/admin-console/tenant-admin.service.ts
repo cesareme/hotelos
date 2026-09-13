@@ -6,10 +6,10 @@
 // trail, regenerate temporary credentials, and toggle module entitlements.
 //
 // All mutating operations are gated by the `admin.tenants.manage` permission
-// (cast to PermissionKey because the canonical union has not been widened yet;
-// the permission is granted to platform admins via custom roles seeded outside
-// the canonical RBAC catalog). Every successful action emits an AuditEvent so
-// the platform admin console keeps a tamper-evident trail.
+// (platform scope: part of PLATFORM_PERMISSION_KEYS in @hotelos/shared, never
+// included in an organization role template — see lib/rbac-catalog.ts).
+// Every successful action emits an AuditEvent so the platform admin console
+// keeps a tamper-evident trail.
 
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { prisma, hashPassword } from "@hotelos/database";
@@ -19,13 +19,15 @@ import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
+import { applyRoleTemplate } from "../../lib/rbac-catalog.js";
+import { ensurePropertySettings, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
+import { listPropertyModules } from "../product-modules/product-modules.service.js";
 
 // ────────────────────────────────────────────────────────────── permissions
 
-// Platform-admin permission. Not part of the canonical PermissionKey union
-// (tenant administration is a HotelOS-staff capability, not a hotel role), so
-// we widen via cast at the single boundary where the guard is evaluated.
-const TENANTS_MANAGE = ["admin.tenants.manage" as PermissionKey] as const;
+// Platform-admin permission (HotelOS staff): the only key that turns a user
+// into a platform admin, so it is evaluated against REAL grants only.
+const TENANTS_MANAGE: readonly PermissionKey[] = ["admin.tenants.manage"];
 
 function guard(context: UserContext): void {
   requirePermissions(context, [...TENANTS_MANAGE]);
@@ -127,6 +129,8 @@ export type CreateTenantResult = {
   organizationId: string;
   propertyId: string;
   ownerUserId: string;
+  /** role_permissions rows granted to the Owner role from the shared "owner" template. */
+  ownerPermissionsGranted: number;
   tempPassword: string;
   inviteLink: string;
 };
@@ -505,14 +509,17 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       }
     });
 
-    // Owner role per organization; permissions are seeded via the bootstrap /
-    // role-management surface — here we ensure the role exists so the owner
-    // user has a stable role assignment.
+    // Owner role per organization with the shared "owner" template applied in
+    // the same transaction (AUTH-07: before Tanda 1 the role was created with
+    // ZERO role_permissions, so in production — no demo permission union — the
+    // owner got 403 on every route). Additive + idempotent; the template never
+    // carries platform keys, so a hotel owner is never a platform admin.
     const ownerRole = await tx.role.upsert({
       where: { organizationId_name: { organizationId: organization.id, name: "Owner" } },
       update: {},
       create: { organizationId: organization.id, name: "Owner" }
     });
+    const ownerTemplate = await applyRoleTemplate(ownerRole.id, "owner", { db: tx });
 
     const user = await tx.user.create({
       data: {
@@ -548,7 +555,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       create: { userId: user.id, departmentId: department.id, roleLabel: "owner", active: true }
     });
 
-    return { organization, property, user };
+    return { organization, property, user, ownerPermissionsGranted: ownerTemplate.granted };
   });
 
   // Seed module entitlements (best-effort: any unknown moduleCode is skipped
@@ -586,6 +593,15 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
     });
   }
 
+  // Per-property settings (PropertyAiSetting + PropertyComplianceSetting,
+  // CFG-P1-4) and in-memory mirrors (organization, property, module state) so
+  // the new tenant is usable by the synchronous demoStore-backed guards without
+  // restarting the API. Idempotent: a retry after a crash here converges.
+  await ensurePropertySettings(persisted.property.id);
+  mirrorOrganization(persisted.organization);
+  mirrorProperty(persisted.property);
+  await listPropertyModules(persisted.property.id);
+
   // Seed tenant metadata.
   const meta = ensureMetadata(persisted.organization.id, {
     status: "active",
@@ -615,6 +631,8 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       ownerEmail,
       plan: input.plan,
       modulesEnabled: input.modulesEnabled,
+      ownerRoleTemplate: "owner",
+      ownerPermissionsGranted: persisted.ownerPermissionsGranted,
       inviteExpiresAt: new Date(invite.expiresAt).toISOString()
     }
   });
@@ -623,6 +641,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
     organizationId: persisted.organization.id,
     propertyId: persisted.property.id,
     ownerUserId: persisted.user.id,
+    ownerPermissionsGranted: persisted.ownerPermissionsGranted,
     tempPassword,
     inviteLink
   };

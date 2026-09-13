@@ -50,6 +50,11 @@ declare module "fastify" {
 //     The staff hook can't verify it, so it must let the request through and let
 //     each handler call `verifyGuestToken`. NOTE: `/guest-portal/session/...`
 //     routes are deliberately excluded — those are staff-authenticated.
+//   - `/integrations/email/oauth/callback` (AUTH-03, audit 2026-09-13): the
+//     browser redirect back from Google/Microsoft after the mailbox OAuth
+//     consent. It carries no bearer token; its CSRF protection is the `state`
+//     parameter that handleEmailOAuthCallback validates. Mapped as public in
+//     routePermissionManifest as well.
 const PUBLIC_PREFIXES = [
   "/auth/login",
   "/health",
@@ -58,7 +63,8 @@ const PUBLIC_PREFIXES = [
   "/guest-portal/sign-out",
   "/guest-portal/reservation",
   "/guest-portal/pre-check-in",
-  "/guest-portal/service-request"
+  "/guest-portal/service-request",
+  "/integrations/email/oauth/callback"
 ];
 
 /**
@@ -73,7 +79,40 @@ export function isPublicRoute(url: string): boolean {
   return PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 }
 
+/**
+ * AUTH-04 (audit 2026-09-13): the demo fallback (no bearer → demoStore
+ * super-user with ~200 permissions, platform-admin resolved from the DB) must
+ * never run in production. With NODE_ENV=production and
+ * HOTELOS_ALLOW_DEMO_AUTH=true the API refuses to boot, unless the operator
+ * explicitly acknowledges the risk with HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE
+ * =true — a public demo box with no real tenant data, never a customer-facing
+ * deployment; that path is logged as an error on every boot. Called from
+ * registerAuthContext so buildApiServer (and therefore app.inject in tests)
+ * enforces it, not only the listen path in server.ts.
+ */
+export function assertDemoAuthPolicy(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.NODE_ENV !== "production" || env.HOTELOS_ALLOW_DEMO_AUTH !== "true") {
+    return;
+  }
+  if (env.HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE === "true") {
+    console.error(
+      "[auth] PELIGRO: HOTELOS_ALLOW_DEMO_AUTH=true en producción con " +
+        "HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true. Toda petición sin token recibe el " +
+        "super-usuario demo. Solo aceptable en una demo pública sin datos reales de clientes."
+    );
+    return;
+  }
+  throw new Error(
+    "HOTELOS_ALLOW_DEMO_AUTH no puede estar activo en producción: elimínalo del entorno " +
+      "(NODE_ENV=production). Solo una demo pública sin datos reales puede forzarlo con " +
+      "HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true (peligroso: cualquier petición sin token " +
+      "obtiene el super-usuario demo)."
+  );
+}
+
 export function registerAuthContext(app: FastifyInstance): void {
+  assertDemoAuthPolicy();
+
   app.decorateRequest("userContext", null as unknown as UserContext);
   app.decorateRequest("isAuthenticated", false);
 

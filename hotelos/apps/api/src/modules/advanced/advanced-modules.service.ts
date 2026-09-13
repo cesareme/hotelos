@@ -13,7 +13,38 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { getEnabledModuleCodes } from "../product-modules/product-modules.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
+import { ForbiddenError, NotFoundError } from "../../lib/http-error.js";
 import { demoStore, type UserContext } from "../../lib/demo-store.js";
+
+// Parent ids arrive in the BODY (incidentId, safetyCheckId, surveyId, eventId)
+// and are never the :id of the route, so the tenancy guard on the path cannot
+// vouch for them: the parent must hang from the property the caller acts in,
+// otherwise a child row could be attached to another tenant's parent. Missing
+// and foreign parents are one opaque 404 (SEC-2).
+const PARENT_NOT_FOUND = {
+  safetyIncident: "Incidencia no encontrada.",
+  safetyCheck: "Control de seguridad no encontrado.",
+  survey: "Encuesta no encontrada.",
+  event: "Evento no encontrado."
+} as const;
+
+async function assertParentInProperty(
+  kind: keyof typeof PARENT_NOT_FOUND,
+  id: string,
+  propertyId: string
+): Promise<void> {
+  const where = { id, propertyId };
+  const select = { id: true } as const;
+  const row =
+    kind === "safetyIncident"
+      ? await prisma.safetyIncident.findFirst({ where, select })
+      : kind === "safetyCheck"
+        ? await prisma.safetyCheck.findFirst({ where, select })
+        : kind === "survey"
+          ? await prisma.survey.findFirst({ where, select })
+          : await prisma.event.findFirst({ where, select });
+  if (!row) throw new NotFoundError(PARENT_NOT_FOUND[kind]);
+}
 
 export const ADVANCED_MODULE_HEALTH_CHECKS: Record<HotelModuleCode, string[]> = {
   pms_core: [],
@@ -294,7 +325,8 @@ type AdvancedMutationInput = {
 
 function requireAdvancedModuleEnabled(propertyId: string, moduleCode: HotelModuleCode) {
   if (!getEnabledModuleCodes(propertyId).includes(moduleCode)) {
-    throw new Error(`Module ${moduleCode} is disabled.`);
+    // A property without the module is a business condition, not a crash.
+    throw new ForbiddenError(`El módulo ${moduleCode} no está activado en esta propiedad.`);
   }
 }
 
@@ -335,8 +367,10 @@ function phaseRecordResponse(input: {
 }
 
 function requirePropertyAccess(propertyId: string) {
+  // demoStore.properties is hydrated from Prisma at boot and on tenant
+  // creation (lib/tenant-hydration.ts); a miss here is a genuine unknown id.
   if (!demoStore.properties.some((property) => property.id === propertyId)) {
-    throw new Error("Property was not found.");
+    throw new NotFoundError("Propiedad no encontrada.");
   }
 }
 
@@ -789,7 +823,7 @@ function applyRevenueRecommendationToRateGrid(input: AdvancedMutationInput & { e
     (candidate) => candidate.id === input.entityId && candidate.propertyId === input.propertyId
   );
   if (!recommendation) {
-    throw new Error("Revenue recommendation was not found.");
+    throw new NotFoundError("Recomendación de revenue no encontrada.");
   }
   if (recommendation.status !== "approved" && input.payload?.forceApply !== true) {
     return {
@@ -1185,7 +1219,7 @@ export function getAdvancedRecord(propertyId: string, moduleCode: HotelModuleCod
     return (candidate as { id?: string }).id === recordId;
   });
   if (!record) {
-    throw new Error(`${recordType} record was not found.`);
+    throw new NotFoundError(`Registro ${recordType} no encontrado.`);
   }
   return record;
 }
@@ -1925,10 +1959,12 @@ async function persistAdvancedCreateToPrisma(input: AdvancedMutationInput, recor
     case "safety_incident_management:incident_evidence": {
       // Route quirk: POST /safety/incidents/:id/evidence does not spread the
       // :id param into the payload, so we accept the common body aliases.
+      const incidentId = optStr(payload.incidentId) ?? optStr(payload.safetyIncidentId) ?? "unknown";
+      await assertParentInProperty("safetyIncident", incidentId, input.propertyId);
       await prisma.incidentEvidence.create({
         data: {
           id: recordId,
-          incidentId: optStr(payload.incidentId) ?? optStr(payload.safetyIncidentId) ?? "unknown",
+          incidentId,
           evidenceType: optStr(payload.evidenceType) ?? optStr(payload.type) ?? "note",
           objectKey: optStr(payload.objectKey) ?? optStr(payload.url) ?? null,
           notes: optStr(payload.notes) ?? optStr(payload.description) ?? null,
@@ -1955,10 +1991,12 @@ async function persistAdvancedCreateToPrisma(input: AdvancedMutationInput, recor
       return;
     }
     case "safety_incident_management:safety_check_result": {
+      const safetyCheckId = optStr(payload.safetyCheckId) ?? optStr(payload.checkId) ?? "unknown";
+      await assertParentInProperty("safetyCheck", safetyCheckId, input.propertyId);
       await prisma.safetyCheckResult.create({
         data: {
           id: recordId,
-          safetyCheckId: optStr(payload.safetyCheckId) ?? optStr(payload.checkId) ?? "unknown",
+          safetyCheckId,
           status: optStr(payload.status) ?? optStr(payload.result) ?? "passed",
           notes: optStr(payload.notes) ?? null,
           completedBy: optStr(payload.completedBy) ?? input.context.userId,
@@ -2005,10 +2043,12 @@ async function persistAdvancedCreateToPrisma(input: AdvancedMutationInput, recor
       // into the payload, so the body must carry surveyId.
       const rawScore = payload.score ?? payload.nps ?? payload.rating;
       const score = typeof rawScore === "number" && Number.isFinite(rawScore) ? rawScore : null;
+      const surveyId = optStr(payload.surveyId) ?? optStr(payload.survey_id) ?? "unknown";
+      await assertParentInProperty("survey", surveyId, input.propertyId);
       await prisma.surveyResponse.create({
         data: {
           id: recordId,
-          surveyId: optStr(payload.surveyId) ?? optStr(payload.survey_id) ?? "unknown",
+          surveyId,
           reservationId: optStr(payload.reservationId) ?? null,
           guestId: optStr(payload.guestId) ?? null,
           responsesJson: toJson(payload),
@@ -2059,10 +2099,12 @@ async function persistAdvancedCreateToPrisma(input: AdvancedMutationInput, recor
       return;
     }
     case "groups_events_sales:event_order": {
+      const eventId = String(payload.eventId);
+      await assertParentInProperty("event", eventId, input.propertyId);
       await prisma.eventOrder.create({
         data: {
           id: recordId,
-          eventId: String(payload.eventId),
+          eventId,
           orderType: "beo",
           contentJson: toJson({ ...payload, requiresConfirmation: true }),
           status: "draft"
@@ -2102,14 +2144,15 @@ async function persistAdvancedTransitionToPrisma(input: AdvancedMutationInput & 
       const staffProfileId = optStr(payload.staffProfileId);
       if (staffProfileId) data.staffProfileId = staffProfileId;
       if (Object.keys(data).length > 0) {
-        await prisma.shift.updateMany({ where: { id: input.entityId }, data });
+        // Tenant scope (Tanda 1 · F6): the id alone would update another property's row.
+        await prisma.shift.updateMany({ where: { id: input.entityId, propertyId: input.propertyId }, data });
       }
       return;
     }
     case "workforce_labor:absence_request": {
       const status = optStr(payload.status) ?? input.status;
       await prisma.absenceRequest.updateMany({
-        where: { id: input.entityId },
+        where: { id: input.entityId, propertyId: input.propertyId },
         data: {
           status,
           ...(status === "approved" ? { approvedBy: input.context.userId } : {})
@@ -2131,7 +2174,7 @@ async function persistAdvancedTransitionToPrisma(input: AdvancedMutationInput & 
       if (CLOSED_OPERATIONAL_STATUSES.has(status)) {
         data.resolvedAt = toDateOrNull(payload.resolvedAt ?? payload.handledAt) ?? now;
       }
-      await prisma.safetyIncident.updateMany({ where: { id: input.entityId }, data });
+      await prisma.safetyIncident.updateMany({ where: { id: input.entityId, propertyId: input.propertyId }, data });
       return;
     }
     case "reputation_quality:quality_case": {
@@ -2150,7 +2193,7 @@ async function persistAdvancedTransitionToPrisma(input: AdvancedMutationInput & 
       if (CLOSED_OPERATIONAL_STATUSES.has(status)) {
         data.resolvedAt = toDateOrNull(payload.resolvedAt) ?? now;
       }
-      await prisma.qualityCase.updateMany({ where: { id: input.entityId }, data });
+      await prisma.qualityCase.updateMany({ where: { id: input.entityId, propertyId: input.propertyId }, data });
       return;
     }
     case "guest_data_crm_loyalty:crm_segment": {
@@ -2162,7 +2205,7 @@ async function persistAdvancedTransitionToPrisma(input: AdvancedMutationInput & 
       if (typeof payload.active === "boolean") data.active = payload.active;
       if (payload.rulesJson !== undefined) data.rulesJson = toJson(payload.rulesJson);
       if (Object.keys(data).length > 0) {
-        await prisma.crmSegment.updateMany({ where: { id: input.entityId }, data });
+        await prisma.crmSegment.updateMany({ where: { id: input.entityId, organizationId: input.context.organizationId }, data });
       }
       return;
     }
@@ -2183,7 +2226,7 @@ async function persistAdvancedTransitionToPrisma(input: AdvancedMutationInput & 
       if (payload.scheduleJson !== undefined) data.scheduleJson = toJson(payload.scheduleJson);
       if (payload.contentJson !== undefined) data.contentJson = toJson(payload.contentJson);
       if (Object.keys(data).length > 0) {
-        await prisma.crmCampaign.updateMany({ where: { id: input.entityId }, data });
+        await prisma.crmCampaign.updateMany({ where: { id: input.entityId, organizationId: input.context.organizationId }, data });
       }
       return;
     }
@@ -2197,6 +2240,22 @@ async function persistAdvancedTransitionToPrisma(input: AdvancedMutationInput & 
       const status = optStr(payload.status);
       if (status) data.status = status;
       if (Object.keys(data).length > 0) {
+        // No Prisma relation from membership to program: resolve the owning
+        // organization in two steps (a demo-only membership has no DB row and
+        // the updateMany below is then a no-op).
+        const membership = await prisma.loyaltyMembership.findUnique({
+          where: { id: input.entityId },
+          select: { loyaltyProgramId: true }
+        });
+        if (membership) {
+          const program = await prisma.loyaltyProgram.findUnique({
+            where: { id: membership.loyaltyProgramId },
+            select: { organizationId: true }
+          });
+          if (!program || program.organizationId !== input.context.organizationId) {
+            throw new NotFoundError("Membresía no encontrada.");
+          }
+        }
         await prisma.loyaltyMembership.updateMany({ where: { id: input.entityId }, data });
       }
       return;
@@ -2212,6 +2271,14 @@ async function persistAdvancedTransitionToPrisma(input: AdvancedMutationInput & 
         prisma.guestProfile.findUnique({ where: { id: sourceProfileId } })
       ]);
       if (!target || !source) return;
+      // Both profiles must belong to the caller's organization (the source id
+      // comes from the body): a foreign profile is an opaque 404, never merged.
+      if (
+        target.organizationId !== input.context.organizationId ||
+        source.organizationId !== input.context.organizationId
+      ) {
+        throw new NotFoundError("Perfil no encontrado.");
+      }
       const sourcePreferences = (source.preferencesJson ?? {}) as Record<string, unknown>;
       const targetPreferences = (target.preferencesJson ?? {}) as Record<string, unknown>;
       await prisma.guestProfile.update({
@@ -2555,7 +2622,7 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
       (candidate) => candidate.id === input.entityId && candidate.propertyId === input.propertyId
     );
     if (!recommendation) {
-      throw new Error("Revenue recommendation was not found.");
+      throw new NotFoundError("Recomendación de revenue no encontrada.");
     }
     const previousStatus = recommendation.status;
     if (input.status === "applied") {
@@ -2590,7 +2657,7 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
   if (input.moduleCode === "revenue_profit_engine" && input.entityType === "revenue_automation_rule") {
     const rule = demoStore.revenueAutomationRules.find((candidate) => candidate.id === input.entityId && candidate.propertyId === input.propertyId);
     if (!rule) {
-      throw new Error("Revenue automation rule was not found.");
+      throw new NotFoundError("Regla de automatización de revenue no encontrada.");
     }
     if (input.status === "enabled") {
       rule.active = true;
@@ -2609,7 +2676,7 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
   if (input.moduleCode === "revenue_profit_engine" && input.entityType === "channel") {
     const channel = demoStore.channels.find((candidate) => candidate.id === input.entityId && candidate.propertyId === input.propertyId);
     if (!channel) {
-      throw new Error("Channel was not found.");
+      throw new NotFoundError("Canal no encontrado.");
     }
     channel.status = input.status === "disabled" ? "inactive" : channel.status;
     channel.configurationJson = {
@@ -2623,7 +2690,7 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
   if (input.moduleCode === "revenue_profit_engine" && input.entityType === "demand_calendar_event") {
     const event = demoStore.demandCalendarEvents.find((candidate) => candidate.id === input.entityId && candidate.propertyId === input.propertyId);
     if (!event) {
-      throw new Error("Demand calendar event was not found.");
+      throw new NotFoundError("Evento del calendario de demanda no encontrado.");
     }
     event.metadataJson = { ...event.metadataJson, status: input.status, ...(input.payload ?? {}) };
     audit(input, input.entityId, event);
@@ -2635,7 +2702,7 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
     const sourceProfileId = typeof input.payload?.sourceProfileId === "string" ? input.payload.sourceProfileId : undefined;
     const sourceProfile = demoStore.guestProfiles.find((profile) => profile.id === sourceProfileId);
     if (!targetProfile) {
-      throw new Error("Guest profile was not found.");
+      throw new NotFoundError("Perfil de huésped no encontrado.");
     }
     if (sourceProfile) {
       targetProfile.lifetimeValue += sourceProfile.lifetimeValue;
@@ -2657,7 +2724,7 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
   if (input.moduleCode === "groups_events_sales" && input.entityType === "group_booking") {
     const group = demoStore.groupBookings.find((candidate) => candidate.id === input.entityId);
     if (!group) {
-      throw new Error("Group booking was not found.");
+      throw new NotFoundError("Reserva de grupo no encontrada.");
     }
     group.status = input.status as typeof group.status;
     if (input.status === "released") {
@@ -2674,7 +2741,7 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
   if (input.moduleCode === "groups_events_sales" && input.entityType === "event") {
     const event = demoStore.hotelEvents.find((candidate) => candidate.id === input.entityId);
     if (!event) {
-      throw new Error("Event was not found.");
+      throw new NotFoundError("Evento no encontrado.");
     }
     event.status = input.status === "updated" ? event.status : (input.status as typeof event.status);
     event.setupJson = { ...event.setupJson, ...(input.payload?.setupJson as Record<string, unknown> | undefined) };
@@ -2686,7 +2753,7 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
   if (input.moduleCode === "guest_data_crm_loyalty" && input.entityType === "crm_campaign") {
     const campaign = demoStore.crmCampaigns.find((candidate) => candidate.id === input.entityId);
     if (!campaign) {
-      throw new Error("CRM campaign was not found.");
+      throw new NotFoundError("Campaña CRM no encontrada.");
     }
     campaign.status = input.status === "updated" ? campaign.status : (input.status as typeof campaign.status);
     audit(input, input.entityId, campaign);
@@ -2695,7 +2762,9 @@ export async function transitionAdvancedRecord(input: AdvancedMutationInput & { 
 
   // Generic transition: update the persisted advanced record so the change
   // round-trips to the boards (e.g. resolve a safety incident, approve an absence).
-  const existing = demoStore.advancedRecords.find((r) => r.id === input.entityId);
+  // Tenant scope (Tanda 1 · F6 generic leg): the in-memory record must belong
+  // to the property the caller acts in, never matched by id alone.
+  const existing = demoStore.advancedRecords.find((r) => r.id === input.entityId && r.propertyId === input.propertyId);
   if (existing) {
     existing.status = input.status;
     existing.payload = { ...existing.payload, ...(input.payload ?? {}) };

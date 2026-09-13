@@ -24,15 +24,31 @@ process.env.ENCRYPTION_KEY ??= "integration-test-enckey-32chars-min-aaaa";
 // process. Tests that depend on the auth gate pin the env explicitly instead
 // of trusting whatever the ambient .env / CI shell provides.
 const { buildApiServer } = await import("../../apps/api/src/server.js");
+// Imported dynamically for the same reason (env defaults above must win before
+// @hotelos/database is evaluated through these modules' import graphs).
+const { assertRoutePermission, resetRbacStrictModeForTests } = await import(
+  "../../apps/api/src/security/route-permissions.js"
+);
+const { assertDemoAuthPolicy } = await import("../../apps/api/src/lib/auth-context.js");
 
-function withEnv<T>(overrides: Record<string, string>, run: () => Promise<T>): Promise<T> {
+function applyEnv(entries: Record<string, string | undefined>): void {
+  for (const [key, value] of Object.entries(entries)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+}
+
+// `undefined` unsets a variable for the duration of `run`. RBAC strict mode is
+// memoized on first use (route-permissions.ts); the memo is dropped on entry so
+// the override is honoured on an already-booted server, and on exit so it does
+// not leak into the next test.
+function withEnv<T>(overrides: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
   const previous = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
-  Object.assign(process.env, overrides);
+  applyEnv(overrides);
+  resetRbacStrictModeForTests();
   return run().finally(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
+    applyEnv(previous);
+    resetRbacStrictModeForTests();
   });
 }
 
@@ -80,6 +96,74 @@ describe("API integration (app.inject)", () => {
         }
       });
       assert.equal(res.statusCode, 404);
+    });
+  });
+
+  it("RBAC_STRICT=true: mapped GET routes never hit the manifest 403 (AUTH-03)", async () => {
+    // Caller: the demo super-user (union of real + demo permissions). These
+    // five routes were among the 62 GETs mapped in the 2026-09-13 audit and
+    // take no :propertyId, so the check does not depend on seeded data. A 403
+    // here would mean the manifest gate (or a permission key) is wrong.
+    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", RBAC_STRICT: "true" }, async () => {
+      for (const url of [
+        "/integrations/email/providers",
+        "/procurement/suppliers",
+        "/developer/webhooks",
+        "/ai-governance/policies",
+        "/accounting/fiscal-periods"
+      ]) {
+        const res = await app.inject({ method: "GET", url });
+        assert.notEqual(res.statusCode, 403, `${url} → ${res.statusCode} ${res.body}`);
+        assert.doesNotMatch(res.body, /manifiesto de permisos|manifest entry/i, `${url} rejected by the manifest gate: ${res.body}`);
+      }
+    });
+  });
+
+  it("RBAC strict mode: an unmapped GET is refused when RBAC_STRICT=true and, by default, in production", async () => {
+    const unmapped = { method: "GET", path: "/__not_in_manifest__", userPermissions: [] };
+    const isManifest403 = (err: unknown) =>
+      (err as { statusCode?: number }).statusCode === 403 && /manifiesto de permisos/.test((err as Error).message);
+
+    await withEnv({ RBAC_STRICT: "true", NODE_ENV: "development" }, async () => {
+      assert.throws(() => assertRoutePermission(unmapped), isManifest403);
+    });
+    await withEnv({ RBAC_STRICT: undefined, NODE_ENV: "production" }, async () => {
+      assert.throws(() => assertRoutePermission(unmapped), isManifest403, "production must be strict by default");
+    });
+    await withEnv({ RBAC_STRICT: "false", NODE_ENV: "production" }, async () => {
+      assert.doesNotThrow(() => assertRoutePermission(unmapped), "RBAC_STRICT=false is the explicit opt-out");
+    });
+    await withEnv({ RBAC_STRICT: undefined, NODE_ENV: "development" }, async () => {
+      assert.doesNotThrow(() => assertRoutePermission(unmapped), "dev/demo stays fail-open (logged) without the flag");
+    });
+    // Mutations are fail-closed regardless of mode.
+    await withEnv({ RBAC_STRICT: "false", NODE_ENV: "development" }, async () => {
+      assert.throws(() => assertRoutePermission({ ...unmapped, method: "POST" }), isManifest403);
+    });
+  });
+
+  it("refuses to boot with HOTELOS_ALLOW_DEMO_AUTH=true in production (AUTH-04)", async () => {
+    const forbidden = /HOTELOS_ALLOW_DEMO_AUTH no puede estar activo en producción/;
+    await withEnv(
+      { NODE_ENV: "production", HOTELOS_ALLOW_DEMO_AUTH: "true", HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE: undefined },
+      async () => {
+        assert.throws(() => assertDemoAuthPolicy(), forbidden);
+        // Real boot path: registerAuthContext (inside buildApiServer) enforces it.
+        assert.throws(() => buildApiServer(), forbidden);
+      }
+    );
+    await withEnv(
+      { NODE_ENV: "production", HOTELOS_ALLOW_DEMO_AUTH: "true", HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE: "true" },
+      async () => {
+        // Documented, dangerous override: boots, logs an error.
+        assert.doesNotThrow(() => assertDemoAuthPolicy());
+      }
+    );
+    await withEnv({ NODE_ENV: "production", HOTELOS_ALLOW_DEMO_AUTH: "false" }, async () => {
+      assert.doesNotThrow(() => assertDemoAuthPolicy());
+    });
+    await withEnv({ NODE_ENV: "development", HOTELOS_ALLOW_DEMO_AUTH: "true" }, async () => {
+      assert.doesNotThrow(() => assertDemoAuthPolicy());
     });
   });
 });

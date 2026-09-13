@@ -20,6 +20,7 @@
 import { type CSSProperties, type ReactNode } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { navigateTo } from "../../lib/navigate";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
@@ -139,12 +140,6 @@ function fmtPct(value: number | undefined | null): string {
 
 function fmtNumber(value: number): string {
   return new Intl.NumberFormat("es-ES").format(value);
-}
-
-function navigateTo(screen: string) {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-  }
 }
 
 function asoFLabel(asOf?: string): string {
@@ -580,7 +575,7 @@ export function GeneralManagerScreen() {
           <DirectorCancellationRiskGauge
             score={k.cancellationRiskScore}
             reservationsAtRisk={Math.round((k.cancellationRiskScore / 100) * 20)}
-            onReview={() => navigateTo("ReservationsScreen")}
+            onReview={() => navigateTo("ReservationsListScreen")}
           />
         </div>
       </div>
@@ -605,8 +600,8 @@ export function GeneralManagerScreen() {
         <div style={spanStyle(2, 240)}>
           <DirectorBarRecommendations
             recommendations={buildBarRecs(k, k.asOf)}
-            onApply={() => navigateTo("RevenueDashboard")}
-            onViewAll={() => navigateTo("RevenueDashboard")}
+            onApply={() => navigateTo("RevenueHomeDashboard")}
+            onViewAll={() => navigateTo("RevenueHomeDashboard")}
           />
         </div>
       </div>
@@ -619,7 +614,7 @@ export function GeneralManagerScreen() {
           primaryCount={k.alerts.blockedRooms}
           primaryLabel="OOO"
           status={statusFromCount(k.alerts.blockedRooms, 1, 5)}
-          onDrillDown={() => navigateTo("HousekeepingScreen")}
+          onDrillDown={() => navigateTo("HousekeepingDashboard")}
         />
         <DirectorOpsHealthMini
           module="maintenance"
@@ -632,7 +627,7 @@ export function GeneralManagerScreen() {
               ? [{ label: "críticas", count: k.alerts.emergencyIncidents, color: "var(--cocoa-danger)" }]
               : undefined
           }
-          onDrillDown={() => navigateTo("MaintenanceScreen")}
+          onDrillDown={() => navigateTo("MaintenanceDashboard")}
         />
         <DirectorOpsHealthMini
           module="workforce"
@@ -648,7 +643,7 @@ export function GeneralManagerScreen() {
           primaryCount={k.alerts.emergencyIncidents}
           primaryLabel="incidentes urgentes"
           status={statusFromCount(k.alerts.emergencyIncidents, 1, 3)}
-          onDrillDown={() => navigateTo("SafetyScreen")}
+          onDrillDown={() => navigateTo("SafetyDashboard")}
         />
         <DirectorOpsHealthMini
           module="pos"
@@ -656,7 +651,7 @@ export function GeneralManagerScreen() {
           primaryCount={Math.round(k.revenue.today.value)}
           primaryLabel="ingresos hoy €"
           status="ok"
-          onDrillDown={() => navigateTo("PosScreen")}
+          onDrillDown={() => navigateTo("PosDashboard")}
         />
       </div>
 
@@ -688,7 +683,7 @@ export function GeneralManagerScreen() {
                 variant="plain"
                 tone="accent"
                 size="small"
-                onClick={() => navigateTo("HousekeepingScreen")}
+                onClick={() => navigateTo("HousekeepingDashboard")}
               >
                 Ver detalle
               </CocoaButton>
@@ -703,7 +698,7 @@ export function GeneralManagerScreen() {
           <DirectorVipList
             vips={vipsList}
             max={5}
-            onSelectGuest={() => navigateTo("ReservationsScreen")}
+            onSelectGuest={() => navigateTo("ReservationsListScreen")}
           />
         </div>
       </div>
@@ -716,7 +711,7 @@ export function GeneralManagerScreen() {
             pendingCount={k.complianceSummary.verifactu.pending}
             status={complianceStatusFor(k.complianceSummary.verifactu)}
             lastSubmission={fmtCompactDateTime(k.complianceSummary.verifactu.last)}
-            onDrillDown={() => navigateTo("ComplianceScreen")}
+            onDrillDown={() => navigateTo("FiscalDashboard")}
           />
         </div>
         <div style={spanStyle(3, 240)}>
@@ -724,7 +719,7 @@ export function GeneralManagerScreen() {
             authority="ses"
             pendingCount={k.complianceSummary.ses.pending}
             status={complianceStatusFor(k.complianceSummary.ses)}
-            onDrillDown={() => navigateTo("ComplianceScreen")}
+            onDrillDown={() => navigateTo("SesHospedajesSettings")}
           />
         </div>
         <div style={spanStyle(3, 240)}>
@@ -733,7 +728,7 @@ export function GeneralManagerScreen() {
             pendingCount={k.complianceSummary.tbai.pending}
             status={complianceStatusFor(k.complianceSummary.tbai)}
             errorsCount={k.complianceSummary.tbai.errors}
-            onDrillDown={() => navigateTo("ComplianceScreen")}
+            onDrillDown={() => navigateTo("TbaiForal")}
           />
         </div>
         <div style={spanStyle(3, 240)}>
@@ -741,7 +736,7 @@ export function GeneralManagerScreen() {
             authority="gdpr"
             pendingCount={k.alerts.complianceFailing}
             status={statusFromCount(k.alerts.complianceFailing, 1, 5)}
-            onDrillDown={() => navigateTo("ComplianceScreen")}
+            onDrillDown={() => navigateTo("ComplianceCenter")}
           />
         </div>
       </div>
@@ -779,7 +774,7 @@ export function GeneralManagerScreen() {
                   description={a.message}
                   recommendedAction={{
                     label: "Aplicar",
-                    onClick: () => navigateTo("RevenueDashboard")
+                    onClick: () => navigateTo("RevenueHomeDashboard")
                   }}
                   onDismiss={() => {}}
                 />

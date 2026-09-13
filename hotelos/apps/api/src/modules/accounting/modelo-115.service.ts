@@ -1,6 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { requireDateRange } from "../../lib/query-dates.js";
 
 // Modelo 115 (AEAT) — declaración trimestral de retenciones e ingresos a cuenta
 // del IRPF correspondientes a rentas o rendimientos procedentes del arrendamiento
@@ -70,10 +71,7 @@ export async function buildModelo115(input: {
   periodType?: "monthly" | "quarterly";
 }): Promise<Modelo115Report> {
   requirePermissions(input.context, ["analytics.read"]);
-
-  if (input.fromDate >= input.toDate) {
-    throw new Error("fromDate must be before toDate.");
-  }
+  requireDateRange(input.fromDate, input.toDate);
 
   const start = dateOnly(input.fromDate);
   const end = dateOnly(nextDay(input.toDate));

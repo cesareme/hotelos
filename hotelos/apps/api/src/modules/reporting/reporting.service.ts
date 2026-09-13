@@ -1,5 +1,6 @@
 import { prisma } from "@hotelos/database";
 import { demoStore, type UserContext } from "../../lib/demo-store.js";
+import { NotFoundError } from "../../lib/http-error.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
@@ -9,9 +10,16 @@ import { listInvoices } from "../invoicing/invoice.service.js";
 export type OperationalReportFormat = "pdf" | "csv" | "xlsx" | "json";
 export type OperationalReportType = "reservation" | "billing" | "revenue" | "owner";
 
-function requireProperty(propertyId: string) {
+/**
+ * Property existence gate (CFG-P0-1): Prisma-first with the in-memory seed as
+ * fallback (seed-only properties), typed 404 instead of a bare 500 so hotels
+ * that only exist in Prisma can open the report catalog.
+ */
+async function requireProperty(propertyId: string): Promise<void> {
+  const row = await prisma.property.findUnique({ where: { id: propertyId }, select: { id: true } });
+  if (row) return;
   if (!demoStore.properties.some((property) => property.id === propertyId)) {
-    throw new Error("Property was not found.");
+    throw new NotFoundError("Propiedad no encontrada.");
   }
 }
 
@@ -39,8 +47,8 @@ function countBy<T extends string>(values: T[]) {
   }, {});
 }
 
-export function getReportCatalog(propertyId: string) {
-  requireProperty(propertyId);
+export async function getReportCatalog(propertyId: string) {
+  await requireProperty(propertyId);
   return {
     propertyId,
     generatedAt: nowIso(),
@@ -219,7 +227,7 @@ export async function exportOperationalReport(input: {
       ? await getBillingReport(input.propertyId, input.query)
       : input.reportType === "reservation"
         ? await getReservationReport(input.propertyId, input.query)
-        : getReportCatalog(input.propertyId);
+        : await getReportCatalog(input.propertyId);
   // Generate a REAL downloadable artifact instead of a placeholder URL: the
   // frontend wraps `content` in a Blob and triggers a download under `filename`.
   // We honour the requested format with a sensible fallback (PDF/XLSX → HTML

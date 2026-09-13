@@ -4,6 +4,7 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { processNoShows } from "../cancellation-policy/cancellation-policy.service.js";
+import { ConflictError, NotFoundError } from "../../lib/http-error.js";
 
 export type NightAuditStatus = "not_started" | "in_progress" | "completed" | "failed";
 
@@ -56,12 +57,50 @@ function mapRun(row: NonNullable<Awaited<ReturnType<typeof prisma.nightAuditRun.
   };
 }
 
+/** `YYYY-MM-DD` of "today" in the property's IANA timezone (UTC when the name is invalid). */
+function todayInTimezone(timezone: string): string {
+  try {
+    // en-CA renders as YYYY-MM-DD; the timeZone option does the offset math.
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: timezone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit"
+    }).format(new Date());
+  } catch {
+    return isoDate(new Date());
+  }
+}
+
+/**
+ * Current business date of a property, lazily initialised to the property's
+ * local "today" on first use. Nothing else creates the `business_dates` row
+ * (no seed, no onboarding step), so before this every property — prop_123
+ * included — answered 500 to GET /night-audit/business-date and could never
+ * run its first night audit (stepAdvanceBusinessDate updates the row). An
+ * unknown property is a 404; a concurrent first call on another replica is
+ * absorbed through the unique(propertyId) constraint.
+ */
 export async function getCurrentBusinessDate(propertyId: string): Promise<string> {
   const row = await prisma.businessDate.findUnique({ where: { propertyId } });
-  if (!row) {
-    throw new Error(`No business date initialized for property ${propertyId}.`);
+  if (row) return isoDate(row.currentDate);
+
+  const property = await prisma.property.findUnique({ where: { id: propertyId }, select: { id: true, timezone: true } });
+  if (!property) {
+    throw new NotFoundError("Propiedad no encontrada.");
   }
-  return isoDate(row.currentDate);
+  const today = todayInTimezone(property.timezone);
+  try {
+    const created = await prisma.businessDate.create({ data: { propertyId, currentDate: dateOnly(today) } });
+    return isoDate(created.currentDate);
+  } catch (error) {
+    // P2002: another replica initialised the row between our read and write.
+    if ((error as { code?: string }).code === "P2002") {
+      const existing = await prisma.businessDate.findUnique({ where: { propertyId } });
+      if (existing) return isoDate(existing.currentDate);
+    }
+    throw error;
+  }
 }
 
 export async function listNightAuditRuns(propertyId: string): Promise<NightAuditRunRecord[]> {
@@ -87,10 +126,10 @@ export async function runNightAudit(input: {
     where: { propertyId_businessDate: { propertyId: input.propertyId, businessDate: businessDateOnly } }
   });
   if (existing && existing.status === "completed") {
-    throw new Error(`Night audit for ${businessDate} is already completed.`);
+    throw new ConflictError(`El cierre nocturno de ${businessDate} ya está completado.`);
   }
   if (existing && existing.status === "in_progress") {
-    throw new Error(`Night audit for ${businessDate} is already in progress (run ${existing.id}).`);
+    throw new ConflictError(`El cierre nocturno de ${businessDate} ya está en curso (ejecución ${existing.id}).`);
   }
 
   const run = await prisma.nightAuditRun.upsert({

@@ -2,6 +2,7 @@ import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { buildModelo303 } from "./modelo-303.service.js";
+import { requireYear } from "../../lib/query-dates.js";
 
 // Modelo 390 — resumen anual del IVA (AEAT). Agrega los 12 modelos 303 mensuales
 // (o 4 trimestrales) y produce la liquidación consolidada. Para hotelos lo
@@ -64,6 +65,7 @@ export async function buildModelo390(input: {
   year: number;
 }): Promise<Modelo390Report> {
   requirePermissions(input.context, ["analytics.read"]);
+  requireYear(input.year);
 
   const ranges = quarterRanges(input.year);
   const quarterReports = await Promise.all(

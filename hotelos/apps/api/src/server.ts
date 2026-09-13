@@ -19,9 +19,11 @@ import { resolve as resolvePath2 } from "node:path";
       if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1);
       }
-      process.env[key] = value;
+      // Never override what the process was started with: an orchestrator
+      // (compose, systemd, CI) must always win over a stray .env on disk.
+      if (process.env[key] === undefined) process.env[key] = value;
     }
-    console.log(`[env] loaded ${candidate} (override mode)`);
+    console.log(`[env] loaded ${candidate} (defaults only; process env wins)`);
     break;
   }
 }
@@ -33,10 +35,16 @@ import type { HotelModuleCode } from "@hotelos/product";
 import type { HotelOsToolName } from "@hotelos/ai-tools";
 import { buildHealthResponse, OBSERVABILITY_HEADERS, SERVICE_NAMES } from "@hotelos/config";
 import { createId } from "./lib/ids.js";
-import { demoStore, type UserContext } from "./lib/demo-store.js";
+import { demoStore, type PropertyRecord, type UserContext } from "./lib/demo-store.js";
 import { isPublicRoute, registerAuthContext } from "./lib/auth-context.js";
 import { isSchedulerLeader } from "./lib/scheduler-leader.js";
-import { BadRequestError, NotFoundError, statusCodeForError } from "./lib/http-error.js";
+import { BadRequestError, ForbiddenError, NotFoundError, statusCodeForError } from "./lib/http-error.js";
+import {
+  assertEntityAccess,
+  assertPropertyEntityAccess,
+  grantPropertyAccess,
+  resolveOrganizationScope
+} from "./lib/tenancy.js";
 import { isLlmConfigured, llmComplete, llmExtractDocument } from "./lib/llm.js";
 import { recordToolCall } from "./modules/ai-operations/pipeline.service.js";
 import { MAPPING_CATALOGS } from "@hotelos/ai-tools";
@@ -939,31 +947,11 @@ export function buildApiServer() {
     return null;
   }
 
-  /**
-   * Resolves `propertyId` and grants the request access to it or throws 404
-   * (`notFoundMessage` is reused for unknown AND foreign properties so the
-   * response is never an oracle). Same org → no-op. Other org → platform
-   * admins get `userContext.organizationId` re-pointed to the property's org
-   * (see the hook comment above); everyone else gets the opaque 404.
-   */
-  async function grantPropertyAccess(
-    request: { userContext: UserContext },
-    propertyId: string,
-    notFoundMessage = "Propiedad no encontrada."
-  ): Promise<void> {
-    const { prisma } = await import("@hotelos/database");
-    const property = await prisma.property.findUnique({
-      where: { id: propertyId },
-      select: { organizationId: true }
-    });
-    if (!property) throw new NotFoundError(notFoundMessage);
-    if (property.organizationId === request.userContext.organizationId) return;
-    if (!(await isPlatformAdmin(request.userContext))) throw new NotFoundError(notFoundMessage);
-    // platform admins act inside the target organization for this request so
-    // every downstream org check stays consistent (propertyId is left as-is).
-    request.userContext.organizationId = property.organizationId;
-  }
-
+  // `grantPropertyAccess` (lib/tenancy.ts) resolves the property and grants
+  // access or throws the opaque 404; platform admins get organizationId
+  // re-pointed to the property's org (see the hook comment above). Routes
+  // addressed by an ENTITY id (no propertyId anywhere) go through
+  // `assertEntityAccess` from the same module with identical semantics.
   app.addHook("preHandler", async (request) => {
     if (!request.userContext || isPublicRoute(request.url)) return;
     const propertyId = pickPropertyId(request);
@@ -980,105 +968,28 @@ export function buildApiServer() {
     return body as T;
   }
 
-  // ── Tenant-scope guards (audit 2026-06 · IDOR cross-tenant) ────────────────
-  // Read-by-:id routes fetch rows by primary key. Without these, an authenticated
-  // user of one hotel could read another hotel's reservation, invoice, folio,
-  // guest PII (DNI) or SES register. Each resolves the row's owning property/org
-  // and throws 404 (not 403) on mismatch so we never leak another tenant's
-  // existence. Single-org demo (org_123) is unaffected — every row matches.
-  async function assertReservationInOrg(reservationId: string, organizationId: string) {
-    const { prisma: db } = await import("@hotelos/database");
-    const row = await db.reservation.findUnique({
-      where: { id: reservationId },
-      select: { propertyId: true }
-    });
-    // Missing and foreign rows must be indistinguishable (no existence oracle).
-    if (!row) throw new NotFoundError("Reserva no encontrada.");
-    await assertPropertyInOrgOpaque(row.propertyId, organizationId, "Reserva no encontrada.");
-  }
-  async function assertInvoiceInOrg(invoiceId: string, organizationId: string) {
-    const { prisma: db } = await import("@hotelos/database");
-    const row = await db.invoice.findUnique({
-      where: { id: invoiceId },
-      select: { propertyId: true }
-    });
-    if (!row) throw new NotFoundError("Factura no encontrada.");
-    await assertPropertyInOrgOpaque(row.propertyId, organizationId, "Factura no encontrada.");
-  }
-  async function assertFolioInOrg(folioId: string, organizationId: string) {
-    const { prisma: db } = await import("@hotelos/database");
-    const row = await db.folio.findUnique({
-      where: { id: folioId },
-      select: { reservation: { select: { propertyId: true } } }
-    });
-    if (!row) throw new NotFoundError("Folio no encontrado.");
-    await assertPropertyInOrgOpaque(row.reservation.propertyId, organizationId, "Folio no encontrado.");
-  }
-  async function assertPropertyInOrgOpaque(propertyId: string, organizationId: string, message: string) {
-    try {
-      await assertPropertyInOrg(propertyId, organizationId);
-    } catch (error) {
-      if (error instanceof NotFoundError) throw new NotFoundError(message);
-      throw error;
-    }
-  }
-  // Billing actions are addressed by invoice/folio id, so the global tenant
-  // guard never sees a propertyId for them (FISC-02: a receptionist of another
-  // org could issue/cancel/rectify invoices by id). Scope them here with the
-  // same platform-admin escape as the hook: on a tenant mismatch a platform
-  // admin gets organizationId re-pointed to the resource's org; a resource
-  // that does not exist stays 404 for everyone.
+  // ── Tenant-scope guards (audit 2026-06 · IDOR cross-tenant / Tanda 1) ──────
+  // Read-by-:id routes fetch rows by primary key. Without a guard, an
+  // authenticated user of one hotel could read another hotel's reservation,
+  // invoice, folio, guest PII (DNI) or SES register. Every by-id route now goes
+  // through `assertEntityAccess` (lib/tenancy.ts): the row's owning property or
+  // organization is resolved through a per-entity table, missing and foreign
+  // rows are one opaque 404, and platform admins get the same re-pointing
+  // escape as the global propertyId hook. The former per-entity helpers
+  // (assertReservationInOrg, assertInvoiceInOrg, assertFolioInOrg,
+  // assertGuestInOrg, assertGdprRequestInOrg, assertRoomInCallerOrg,
+  // assertPropertyInOrgOpaque) were inlined into those calls; only the billing
+  // alias below survives because it is used from a dozen folio/invoice routes.
+  //
+  // Billing actions are addressed by invoice/folio/payment id, so the global
+  // tenant guard never sees a propertyId for them (FISC-02: a receptionist of
+  // another org could issue/cancel/rectify invoices by id).
   async function assertBillingAccess(
     request: { userContext: UserContext },
     kind: "invoice" | "folio" | "payment",
     id: string
   ): Promise<void> {
-    const organizationId = request.userContext.organizationId;
-    if (kind === "payment") {
-      const { prisma: db } = await import("@hotelos/database");
-      const payment = await db.payment.findUnique({ where: { id }, select: { folioId: true } });
-      if (!payment) throw new NotFoundError("Pago no encontrado.");
-      return assertBillingAccess(request, "folio", payment.folioId);
-    }
-    try {
-      if (kind === "invoice") await assertInvoiceInOrg(id, organizationId);
-      else await assertFolioInOrg(id, organizationId);
-    } catch (error) {
-      if (!(error instanceof NotFoundError)) throw error;
-      if (!(await isPlatformAdmin(request.userContext))) throw error;
-      const { prisma: db } = await import("@hotelos/database");
-      const propertyId =
-        kind === "invoice"
-          ? (await db.invoice.findUnique({ where: { id }, select: { propertyId: true } }))?.propertyId
-          : (
-              await db.folio.findUnique({
-                where: { id },
-                select: { reservation: { select: { propertyId: true } } }
-              })
-            )?.reservation.propertyId;
-      if (!propertyId) throw error; // the resource itself does not exist
-      await grantPropertyAccess(request, propertyId, error.message);
-    }
-  }
-  async function assertGuestInOrg(guestId: string, organizationId: string) {
-    const { prisma: db } = await import("@hotelos/database");
-    const row = await db.guest.findUnique({
-      where: { id: guestId },
-      select: { organizationId: true }
-    });
-    if (!row || row.organizationId !== organizationId) {
-      throw new NotFoundError(`Guest ${guestId} not found.`);
-    }
-  }
-  // GDPR requests carry PII dossiers and trigger destructive erasure — scope
-  // every read/action to the caller's org (the list route additionally must
-  // never trust an organizationId from the query string).
-  async function assertGdprRequestInOrg(requestId: string, organizationId: string) {
-    const found = await gdprGetRequest(requestId);
-    if (!found || (found as { organizationId?: string }).organizationId !== organizationId) {
-      throw new NotFoundError(`GDPR request ${requestId} not found.`);
-    }
-    return found;
+    await assertEntityAccess(request, { entity: kind, id });
   }
 
   app.get("/health", async () => {
@@ -1217,9 +1128,38 @@ export function buildApiServer() {
       token: result.token,
       sessionId: result.sessionId,
       user: result.user,
-      property: demoStore.property
+      property: await resolveSessionProperty(result.user.propertyId)
     };
   });
+
+  /**
+   * The property the new session acts in (the login service resolves it from
+   * the user's property assignment): the Prisma row first, then the in-memory
+   * mirror for demo-only properties — never the hard-coded demo property.
+   */
+  async function resolveSessionProperty(propertyId: string): Promise<PropertyRecord> {
+    const { prisma } = await import("@hotelos/database");
+    const row = await prisma.property.findUnique({ where: { id: propertyId } });
+    if (row) {
+      return {
+        id: row.id,
+        organizationId: row.organizationId,
+        name: row.name,
+        legalName: row.legalName ?? undefined,
+        address: row.address ?? undefined,
+        municipality: row.municipality ?? undefined,
+        province: row.province ?? undefined,
+        timezone: row.timezone,
+        country: row.country,
+        taxRegion: row.taxRegion ?? undefined,
+        sesHospedajesEnabled: row.sesHospedajesEnabled,
+        verifactuEnabled: row.verifactuEnabled
+      };
+    }
+    const mirror = demoStore.properties.find((candidate) => candidate.id === propertyId);
+    if (!mirror) throw new NotFoundError("Propiedad no encontrada.");
+    return mirror;
+  }
 
   // PILOT-D1 · Crear usuario (onboarding inicial del cliente)
   app.post("/users", async (request) => {
@@ -1227,7 +1167,8 @@ export function buildApiServer() {
     const { createUser } = await import("./modules/auth/auth-pilot.service.js");
     return createUser({
       ...body,
-      createdByUserId: request.userContext?.userId
+      createdByUserId: request.userContext?.userId,
+      actorContext: request.userContext
     });
   });
 
@@ -1485,12 +1426,14 @@ export function buildApiServer() {
   app.register(touristTaxRoutes);
   // --- Mobile keys / Wallet passes (P1-5) ----------------------------------
   app.post("/reservations/:id/wallet-pass", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     return issueWalletPass({
       context: request.userContext,
       reservationId: (request.params as { id: string }).id
     });
   });
   app.post("/mobile-keys/:serial/verify", async (request) => {
+    await assertEntityAccess(request, { entity: "mobileKey", id: (request.params as { serial: string }).serial });
     const body = (request.body ?? {}) as { signature: string; timestamp: number };
     return verifyWalletUnlock({
       context: request.userContext,
@@ -1544,6 +1487,7 @@ export function buildApiServer() {
   // --- CSRD / ESRS reporting (P2-2) ---------------------------------------
   app.get("/esrs/catalog", async () => ({ items: await esrsCatalog() }));
   app.get("/organizations/:orgId/esrs/:year/indicators", async (request) => {
+    await assertEntityAccess(request, { entity: "organization", id: (request.params as { orgId: string }).orgId });
     const params = request.params as { orgId: string; year: string };
     return { items: await esrsList({ context: request.userContext, organizationId: params.orgId, fiscalYear: params.year }) };
   });
@@ -1551,10 +1495,12 @@ export function buildApiServer() {
     return esrsUpsert({ context: request.userContext, payload: request.body as never });
   });
   app.post("/organizations/:orgId/esrs/:year/generate", async (request) => {
+    await assertEntityAccess(request, { entity: "organization", id: (request.params as { orgId: string }).orgId });
     const params = request.params as { orgId: string; year: string };
     return esrsGenerate({ context: request.userContext, organizationId: params.orgId, fiscalYear: params.year });
   });
   app.get("/organizations/:orgId/esrs/:year/report", async (request) => {
+    await assertEntityAccess(request, { entity: "organization", id: (request.params as { orgId: string }).orgId });
     const params = request.params as { orgId: string; year: string };
     return esrsGet({ context: request.userContext, organizationId: params.orgId, fiscalYear: params.year });
   });
@@ -1601,6 +1547,7 @@ export function buildApiServer() {
     return createDeveloperApp({ context: request.userContext, payload: request.body as never });
   });
   app.post("/developer/apps/:appId/rotate-secret", async (request) => {
+    await assertEntityAccess(request, { entity: "developerApp", id: (request.params as { appId: string }).appId });
     return rotateClientSecret({ context: request.userContext, appId: (request.params as { appId: string }).appId });
   });
 
@@ -1662,6 +1609,7 @@ export function buildApiServer() {
   });
 
   app.post("/mobile-keys/:serial/revoke", async (request) => {
+    await assertEntityAccess(request, { entity: "mobileKey", id: (request.params as { serial: string }).serial });
     return revokeWalletPass({
       context: request.userContext,
       serialNumber: (request.params as { serial: string }).serial
@@ -1707,149 +1655,185 @@ export function buildApiServer() {
   app.post("/onboarding/projects", async (request) =>
     createOnboardingProject({ context: request.userContext, payload: request.body as never })
   );
-  app.get("/onboarding/projects", async (request) => listOnboardingProjects(request.userContext));
-  app.get("/onboarding/projects/:projectId", async (request) =>
-    getOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId })
-  );
-  app.patch("/onboarding/projects/:projectId", async (request) =>
-    patchOnboardingProject({
+  app.get("/onboarding/projects", async (request) => {
+    // Tenant scope: the in-memory service holds every organization's projects.
+    const result = listOnboardingProjects(request.userContext);
+    return {
+      ...result,
+      items: result.items.filter((project) => project.organizationId === request.userContext.organizationId)
+    };
+  });
+  app.get("/onboarding/projects/:projectId", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return getOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId });
+  });
+  app.patch("/onboarding/projects/:projectId", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return patchOnboardingProject({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
-  app.post("/onboarding/projects/:projectId/source-connections", async (request) =>
-    createSourceConnection({
+    });
+  });
+  app.post("/onboarding/projects/:projectId/source-connections", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return createSourceConnection({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
-  app.post("/onboarding/source-connections/:connectionId/test", async (request) =>
-    testSourceConnection({ context: request.userContext, connectionId: (request.params as { connectionId: string }).connectionId })
-  );
-  app.post("/onboarding/source-connections/:connectionId/sync", async (request) =>
-    syncSourceConnection({ context: request.userContext, connectionId: (request.params as { connectionId: string }).connectionId })
-  );
-  app.post("/onboarding/projects/:projectId/files", async (request) =>
-    uploadOnboardingFile({
+    });
+  });
+  app.post("/onboarding/source-connections/:connectionId/test", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingSourceConnection", id: (request.params as { connectionId: string }).connectionId });
+    return testSourceConnection({ context: request.userContext, connectionId: (request.params as { connectionId: string }).connectionId });
+  });
+  app.post("/onboarding/source-connections/:connectionId/sync", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingSourceConnection", id: (request.params as { connectionId: string }).connectionId });
+    return syncSourceConnection({ context: request.userContext, connectionId: (request.params as { connectionId: string }).connectionId });
+  });
+  app.post("/onboarding/projects/:projectId/files", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return uploadOnboardingFile({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
-  app.get("/onboarding/projects/:projectId/files", async (request) =>
-    listOnboardingFiles({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId })
-  );
-  app.post("/onboarding/files/:fileId/classify", async (request) =>
-    classifyOnboardingFileApi({ context: request.userContext, fileId: (request.params as { fileId: string }).fileId })
-  );
-  app.post("/onboarding/files/:fileId/extract", async (request) =>
-    extractOnboardingFileApi({ context: request.userContext, fileId: (request.params as { fileId: string }).fileId })
-  );
-  app.post("/onboarding/projects/:projectId/ai/analyze", async (request) =>
-    analyzeOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId, mode: "analyze" })
-  );
-  app.post("/onboarding/projects/:projectId/ai/generate-blueprint", async (request) =>
-    analyzeOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId, mode: "generate_blueprint" })
-  );
-  app.post("/onboarding/projects/:projectId/ai/generate-mappings", async (request) =>
-    analyzeOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId, mode: "generate_mappings" })
-  );
-  app.post("/onboarding/projects/:projectId/room-walk/parse", async (request) =>
-    parseRoomWalkSetup({
+    });
+  });
+  app.get("/onboarding/projects/:projectId/files", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return listOnboardingFiles({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId });
+  });
+  app.post("/onboarding/files/:fileId/classify", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingFile", id: (request.params as { fileId: string }).fileId });
+    return classifyOnboardingFileApi({ context: request.userContext, fileId: (request.params as { fileId: string }).fileId });
+  });
+  app.post("/onboarding/files/:fileId/extract", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingFile", id: (request.params as { fileId: string }).fileId });
+    return extractOnboardingFileApi({ context: request.userContext, fileId: (request.params as { fileId: string }).fileId });
+  });
+  app.post("/onboarding/projects/:projectId/ai/analyze", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return analyzeOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId, mode: "analyze" });
+  });
+  app.post("/onboarding/projects/:projectId/ai/generate-blueprint", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return analyzeOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId, mode: "generate_blueprint" });
+  });
+  app.post("/onboarding/projects/:projectId/ai/generate-mappings", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return analyzeOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId, mode: "generate_mappings" });
+  });
+  app.post("/onboarding/projects/:projectId/room-walk/parse", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return parseRoomWalkSetup({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
-  app.post("/onboarding/files/:fileId/floor-plan/map", async (request) =>
-    mapFloorPlanFile({
+    });
+  });
+  app.post("/onboarding/files/:fileId/floor-plan/map", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingFile", id: (request.params as { fileId: string }).fileId });
+    return mapFloorPlanFile({
       context: request.userContext,
       fileId: (request.params as { fileId: string }).fileId,
       payload: request.body as never
-    })
-  );
-  app.post("/onboarding/projects/:projectId/ai/data-quality", async (request) =>
-    analyzeOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId, mode: "data_quality" })
-  );
-  app.get("/onboarding/projects/:projectId/extracted-entities", async (request) =>
-    listExtractedEntities({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId })
-  );
-  app.get("/onboarding/projects/:projectId/mapping-suggestions", async (request) =>
-    listMappingSuggestions({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId })
-  );
-  app.get("/onboarding/projects/:projectId/human-review-queue", async (request) =>
-    getHumanReviewQueue({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId })
-  );
-  app.patch("/onboarding/mapping-suggestions/:suggestionId/approve", async (request) =>
-    reviewMappingSuggestion({
+    });
+  });
+  app.post("/onboarding/projects/:projectId/ai/data-quality", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return analyzeOnboardingProject({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId, mode: "data_quality" });
+  });
+  app.get("/onboarding/projects/:projectId/extracted-entities", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return listExtractedEntities({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId });
+  });
+  app.get("/onboarding/projects/:projectId/mapping-suggestions", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return listMappingSuggestions({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId });
+  });
+  app.get("/onboarding/projects/:projectId/human-review-queue", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return getHumanReviewQueue({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId });
+  });
+  app.patch("/onboarding/mapping-suggestions/:suggestionId/approve", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingMappingSuggestion", id: (request.params as { suggestionId: string }).suggestionId });
+    return reviewMappingSuggestion({
       context: request.userContext,
       suggestionId: (request.params as { suggestionId: string }).suggestionId,
       decision: "approved",
       payload: request.body as never
-    })
-  );
-  app.patch("/onboarding/mapping-suggestions/:suggestionId/reject", async (request) =>
-    reviewMappingSuggestion({
+    });
+  });
+  app.patch("/onboarding/mapping-suggestions/:suggestionId/reject", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingMappingSuggestion", id: (request.params as { suggestionId: string }).suggestionId });
+    return reviewMappingSuggestion({
       context: request.userContext,
       suggestionId: (request.params as { suggestionId: string }).suggestionId,
       decision: "rejected",
       payload: request.body as never
-    })
-  );
-  app.patch("/onboarding/mapping-suggestions/:suggestionId/edit", async (request) =>
-    reviewMappingSuggestion({
+    });
+  });
+  app.patch("/onboarding/mapping-suggestions/:suggestionId/edit", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingMappingSuggestion", id: (request.params as { suggestionId: string }).suggestionId });
+    return reviewMappingSuggestion({
       context: request.userContext,
       suggestionId: (request.params as { suggestionId: string }).suggestionId,
       decision: "edited",
       payload: request.body as never
-    })
-  );
-  app.post("/onboarding/projects/:projectId/dry-run", async (request) =>
-    runMigrationDryRun({
+    });
+  });
+  app.post("/onboarding/projects/:projectId/dry-run", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return runMigrationDryRun({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
-  app.get("/onboarding/projects/:projectId/dry-run-result", async (request) =>
-    getDryRunResult({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId })
-  );
-  app.post("/onboarding/projects/:projectId/apply", async (request) =>
-    applyMigration({
+    });
+  });
+  app.get("/onboarding/projects/:projectId/dry-run-result", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return getDryRunResult({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId });
+  });
+  app.post("/onboarding/projects/:projectId/apply", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return applyMigration({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
-  app.post("/onboarding/projects/:projectId/rollback", async (request) =>
-    rollbackMigration({
+    });
+  });
+  app.post("/onboarding/projects/:projectId/rollback", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return rollbackMigration({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
-  app.get("/onboarding/projects/:projectId/readiness", async (request) =>
-    getGoLiveReadiness({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId })
-  );
-  app.get("/onboarding/projects/:projectId/cutover-plan", async (request) =>
-    getCutoverPlan({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId })
-  );
-  app.post("/onboarding/projects/:projectId/cutover/delta-import/dry-run", async (request) =>
-    runCutoverDeltaImportDryRun({
+    });
+  });
+  app.get("/onboarding/projects/:projectId/readiness", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return getGoLiveReadiness({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId });
+  });
+  app.get("/onboarding/projects/:projectId/cutover-plan", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return getCutoverPlan({ context: request.userContext, projectId: (request.params as { projectId: string }).projectId });
+  });
+  app.post("/onboarding/projects/:projectId/cutover/delta-import/dry-run", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return runCutoverDeltaImportDryRun({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
-  app.post("/onboarding/projects/:projectId/go-live", async (request) =>
-    approveOnboardingGoLive({
+    });
+  });
+  app.post("/onboarding/projects/:projectId/go-live", async (request) => {
+    await assertEntityAccess(request, { entity: "onboardingProject", id: (request.params as { projectId: string }).projectId });
+    return approveOnboardingGoLive({
       context: request.userContext,
       projectId: (request.params as { projectId: string }).projectId,
       payload: request.body as never
-    })
-  );
+    });
+  });
 
   app.get("/advanced/properties/:propertyId/modules/:moduleCode/health", async (request) => {
     const params = request.params as { propertyId: string; moduleCode: HotelModuleCode };
@@ -2002,33 +1986,42 @@ export function buildApiServer() {
     return generateRecommendations({ context: request.userContext, propertyId: params.propertyId, from: body.from, to: body.to, correlationId: createId("corr") });
   });
   app.post("/revenue/properties/:propertyId/recommendations/:id/approve", async (request) => {
+    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { id: string }).id, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; id: string };
     return decideRecommendation({ context: request.userContext, id: params.id, decision: "approved", correlationId: createId("corr") });
   });
   app.post("/revenue/properties/:propertyId/recommendations/:id/apply", async (request) => {
+    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { id: string }).id, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; id: string };
     return decideRecommendation({ context: request.userContext, id: params.id, decision: "applied", correlationId: createId("corr") });
   });
   app.post("/revenue/properties/:propertyId/recommendations/:id/reject", async (request) => {
+    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { id: string }).id, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; id: string };
     return decideRecommendation({ context: request.userContext, id: params.id, decision: "rejected", correlationId: createId("corr") });
   });
   app.post("/revenue/recommendations/:recommendationId/approve", async (request) => {
+    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { recommendationId: string }).recommendationId });
     const params = request.params as { recommendationId: string };
     return decideRecommendation({ context: request.userContext, id: params.recommendationId, decision: "approved", correlationId: createId("corr") });
   });
   app.post("/revenue/recommendations/:recommendationId/apply", async (request) => {
+    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { recommendationId: string }).recommendationId });
     const params = request.params as { recommendationId: string };
     return decideRecommendation({ context: request.userContext, id: params.recommendationId, decision: "applied", correlationId: createId("corr") });
   });
   app.post("/revenue/recommendations/:recommendationId/reject", async (request) => {
+    await assertEntityAccess(request, { entity: "revenueRecommendation", id: (request.params as { recommendationId: string }).recommendationId });
     const params = request.params as { recommendationId: string };
     return decideRecommendation({ context: request.userContext, id: params.recommendationId, decision: "rejected", correlationId: createId("corr") });
   });
   // Pricing rules + BAR levels (Fase C2)
   app.get("/revenue/properties/:propertyId/pricing-rules", async (request) => listPricingRules((request.params as { propertyId: string }).propertyId));
   app.post("/revenue/properties/:propertyId/pricing-rules", async (request) => createPricingRule({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/revenue/pricing-rules/:id", async (request) => updatePricingRule({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/revenue/pricing-rules/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "pricingRule", id: (request.params as { id: string }).id });
+    return updatePricingRule({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/revenue/properties/:propertyId/bar-levels", async (request) => listBarLevels((request.params as { propertyId: string }).propertyId));
   app.post("/revenue/properties/:propertyId/bar-levels", async (request) => createBarLevel({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
   // Strategy (Fase D): budget, market segments, displacement, meeting pack
@@ -2049,11 +2042,17 @@ export function buildApiServer() {
   app.get("/integrations/email/providers", async () => emailProvidersStatus());
   app.get("/properties/:propertyId/email/connections", async (request) => listEmailConnections((request.params as { propertyId: string }).propertyId));
   app.post("/properties/:propertyId/email/connections", async (request) => createEmailConnection({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
-  app.delete("/email/connections/:id", async (request) => disconnectEmailConnection({ context: request.userContext, connectionId: (request.params as { id: string }).id, correlationId: createId("corr") }));
+  app.delete("/email/connections/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "emailConnection", id: (request.params as { id: string }).id });
+    return disconnectEmailConnection({ context: request.userContext, connectionId: (request.params as { id: string }).id, correlationId: createId("corr") });
+  });
   app.get("/email/connections/:id/authorize-url", async (request) => {
     const id = (request.params as { id: string }).id;
-    const conn = (await listEmailConnections(request.userContext.propertyId)).find((c) => c.id === id);
-    if (!conn) throw new BadRequestError("Conexión no encontrada.");
+    // Same guard as DELETE/poll; the connection is looked up in ITS property
+    // (not the caller's active one) so unknown/foreign ids are an opaque 404.
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "emailConnection", id });
+    const conn = (await listEmailConnections(propertyId)).find((c) => c.id === id);
+    if (!conn) throw new NotFoundError("Conexión de correo no encontrada.");
     return { url: getEmailAuthorizeUrl(conn.provider as "gmail" | "microsoft", id) };
   });
   app.get("/integrations/email/oauth/callback", async (request, reply) => {
@@ -2071,14 +2070,23 @@ export function buildApiServer() {
       return `<html><body style="font-family:sans-serif;padding:40px"><h2>Error al conectar</h2><p>${err instanceof Error ? err.message : "Error"}</p></body></html>`;
     }
   });
-  app.post("/email/connections/:id/poll", async (request) => pollEmailConnection({ context: request.userContext, connectionId: (request.params as { id: string }).id, correlationId: createId("corr") }));
+  app.post("/email/connections/:id/poll", async (request) => {
+    await assertEntityAccess(request, { entity: "emailConnection", id: (request.params as { id: string }).id });
+    return pollEmailConnection({ context: request.userContext, connectionId: (request.params as { id: string }).id, correlationId: createId("corr") });
+  });
   app.post("/properties/:propertyId/email/ingest", async (request) => {
     const b = (request.body ?? {}) as { connectionId?: string; from?: string; subject?: string; body?: string };
     return ingestManualEmail({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, connectionId: b.connectionId, from: b.from, subject: b.subject, body: String(b.body ?? ""), correlationId: createId("corr") });
   });
   app.get("/properties/:propertyId/email/inbound", async (request) => listInboundEmails((request.params as { propertyId: string }).propertyId, (request.query as { status?: string }).status));
-  app.post("/email/inbound/:id/approve", async (request) => approveEmailReservation({ context: request.userContext, inboundEmailId: (request.params as { id: string }).id, overrides: (request.body ?? {}) as never, correlationId: createId("corr") }));
-  app.post("/email/inbound/:id/reject", async (request) => rejectEmailReservation({ context: request.userContext, inboundEmailId: (request.params as { id: string }).id, reason: ((request.body ?? {}) as { reason?: string }).reason, correlationId: createId("corr") }));
+  app.post("/email/inbound/:id/approve", async (request) => {
+    await assertEntityAccess(request, { entity: "inboundEmail", id: (request.params as { id: string }).id });
+    return approveEmailReservation({ context: request.userContext, inboundEmailId: (request.params as { id: string }).id, overrides: (request.body ?? {}) as never, correlationId: createId("corr") });
+  });
+  app.post("/email/inbound/:id/reject", async (request) => {
+    await assertEntityAccess(request, { entity: "inboundEmail", id: (request.params as { id: string }).id });
+    return rejectEmailReservation({ context: request.userContext, inboundEmailId: (request.params as { id: string }).id, reason: ((request.body ?? {}) as { reason?: string }).reason, correlationId: createId("corr") });
+  });
   app.get("/revenue/properties/:propertyId/channel-profitability", async (request) => {
     const params = request.params as { propertyId: string };
     return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "channel_profitability");
@@ -2090,10 +2098,17 @@ export function buildApiServer() {
     listRatePlans({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId }));
   app.post("/properties/:propertyId/rate-plans", async (request) =>
     createRatePlan({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never }));
-  app.patch("/rate-plans/:id", async (request) =>
-    updateRatePlan({ context: request.userContext, id: (request.params as { id: string }).id, patch: request.body as never }));
-  app.delete("/rate-plans/:id", async (request) =>
-    deleteRatePlan({ context: request.userContext, id: (request.params as { id: string }).id }));
+  // By-id legs: the service's assertPropertyInOrg is strict (no platform-admin
+  // escape), so the tenant guard runs first — foreign/missing → one opaque
+  // 404, platform admins get re-pointed and the service check then passes.
+  app.patch("/rate-plans/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "ratePlan", id: (request.params as { id: string }).id });
+    return updateRatePlan({ context: request.userContext, id: (request.params as { id: string }).id, patch: request.body as never });
+  });
+  app.delete("/rate-plans/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "ratePlan", id: (request.params as { id: string }).id });
+    return deleteRatePlan({ context: request.userContext, id: (request.params as { id: string }).id });
+  });
 
   app.get("/revenue/properties/:propertyId/rate-grid", async (request) => {
     const params = request.params as { propertyId: string };
@@ -2195,13 +2210,18 @@ export function buildApiServer() {
     const params = request.params as { propertyId: string };
     return createAdvancedRecord({ context: request.userContext, propertyId: params.propertyId, moduleCode: "revenue_profit_engine", entityType: "demand_calendar_event", auditAction: "DemandCalendarEventCreated", requiredPermissions: ["revenue.recommend"], payload: request.body as never, correlationId: createId("corr") });
   });
+  // Legacy revenue legs addressed by id (Tanda 1 · tenancy by id): the tenant
+  // guard resolves the row's property (unknown/foreign → opaque 404 instead of
+  // the service's 500) and the transition runs in THAT property.
   app.patch("/revenue/demand-calendar/:eventId", async (request) => {
     const params = request.params as { eventId: string };
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "demand_calendar_event", entityId: params.eventId, status: "updated", auditAction: "DemandCalendarEventCreated", requiredPermissions: ["revenue.recommend"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "demandCalendarEvent", id: params.eventId });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "demand_calendar_event", entityId: params.eventId, status: "updated", auditAction: "DemandCalendarEventCreated", requiredPermissions: ["revenue.recommend"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.delete("/revenue/demand-calendar/:eventId", async (request) => {
     const params = request.params as { eventId: string };
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "demand_calendar_event", entityId: params.eventId, status: "deleted", auditAction: "DemandCalendarEventCreated", requiredPermissions: ["revenue.recommend"], payload: {}, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "demandCalendarEvent", id: params.eventId });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "demand_calendar_event", entityId: params.eventId, status: "deleted", auditAction: "DemandCalendarEventCreated", requiredPermissions: ["revenue.recommend"], payload: {}, correlationId: createId("corr") });
   });
   app.post("/revenue/properties/:propertyId/scenarios/simulate", async (request) => {
     const params = request.params as { propertyId: string };
@@ -2211,9 +2231,11 @@ export function buildApiServer() {
     const params = request.params as { propertyId: string };
     return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "revenue_scenarios");
   });
-  app.get("/revenue/scenarios/:scenarioId", async (request) =>
-    getAdvancedRecord(request.userContext.propertyId, "revenue_profit_engine", "revenue_scenarios", (request.params as { scenarioId: string }).scenarioId)
-  );
+  app.get("/revenue/scenarios/:scenarioId", async (request) => {
+    const params = request.params as { scenarioId: string };
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueScenario", id: params.scenarioId });
+    return getAdvancedRecord(propertyId, "revenue_profit_engine", "revenue_scenarios", params.scenarioId);
+  });
   app.get("/revenue/properties/:propertyId/automation-rules", async (request) => {
     const params = request.params as { propertyId: string };
     return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "automation_rules");
@@ -2224,15 +2246,18 @@ export function buildApiServer() {
   });
   app.patch("/revenue/automation-rules/:ruleId", async (request) => {
     const params = request.params as { ruleId: string };
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "updated", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueAutomationRule", id: params.ruleId });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "updated", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.post("/revenue/automation-rules/:ruleId/enable", async (request) => {
     const params = request.params as { ruleId: string };
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "enabled", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueAutomationRule", id: params.ruleId });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "enabled", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.post("/revenue/automation-rules/:ruleId/disable", async (request) => {
     const params = request.params as { ruleId: string };
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "disabled", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueAutomationRule", id: params.ruleId });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "disabled", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
 
   app.get("/channel-manager/properties/:propertyId/channels", async (request) => {
@@ -2243,19 +2268,24 @@ export function buildApiServer() {
     const params = request.params as { propertyId: string };
     return createAdvancedRecord({ context: request.userContext, propertyId: params.propertyId, moduleCode: "revenue_profit_engine", entityType: "channel", auditAction: "ChannelConnected", requiredPermissions: ["channel_manager.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
+  // Legacy channel legs (in-memory board): `revenueChannel` = Prisma channel
+  // first, then the demoStore mirror (strict) — see lib/tenancy.ts.
   app.patch("/channel-manager/channels/:channelId", async (request) => {
     const params = request.params as { channelId: string };
-    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "channel", entityId: params.channelId, status: "updated", auditAction: "ChannelConnected", requiredPermissions: ["channel_manager.manage"], payload: request.body as never, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueChannel", id: params.channelId });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "channel", entityId: params.channelId, status: "updated", auditAction: "ChannelConnected", requiredPermissions: ["channel_manager.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to
   // the aggregator's push paths (which read ChannelRoomMapping / ChannelRateMapping).
   app.get("/channel-manager/channels/:channelId/room-mappings", async (request) => {
+    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     return { mappings: await listChannelRoomMappings(params.channelId) };
   });
   app.post("/channel-manager/channels/:channelId/room-mappings", async (request) => {
+    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     const body = (request.body ?? {}) as { roomTypeId?: string; externalRoomId?: string | null; externalRoomCode?: string };
     if (!body.roomTypeId) throw new BadRequestError("roomTypeId is required.");
@@ -2268,14 +2298,17 @@ export function buildApiServer() {
     });
   });
   app.delete("/channel-manager/room-mappings/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "channelRoomMapping", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return deleteChannelRoomMapping(params.id);
   });
   app.get("/channel-manager/channels/:channelId/rate-mappings", async (request) => {
+    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     return { mappings: await listChannelRateMappings(params.channelId) };
   });
   app.post("/channel-manager/channels/:channelId/rate-mappings", async (request) => {
+    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     const body = (request.body ?? {}) as { ratePlanId?: string; externalRateId?: string | null; externalRateCode?: string };
     if (!body.ratePlanId) throw new BadRequestError("ratePlanId is required.");
@@ -2288,14 +2321,17 @@ export function buildApiServer() {
     });
   });
   app.delete("/channel-manager/rate-mappings/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "channelRateMapping", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return deleteChannelRateMapping(params.id);
   });
   app.get("/channel-manager/channels/:channelId/mapping-coverage", async (request) => {
+    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     return channelMappingCoverage(params.channelId);
   });
   app.get("/channel-manager/channels/:channelId/readiness", async (request) => {
+    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     return channelReadinessChecklist(params.channelId);
   });
@@ -2314,19 +2350,25 @@ export function buildApiServer() {
   }
   app.get("/channel-manager/channels/:channelId/sync-jobs", async (request) => {
     const params = request.params as { channelId: string };
-    return (listAdvancedRecords(request.userContext.propertyId, "revenue_profit_engine", "channel_sync_jobs").items as Array<Record<string, unknown>>).filter((record) => record.channelId === params.channelId);
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueChannel", id: params.channelId });
+    return (listAdvancedRecords(propertyId, "revenue_profit_engine", "channel_sync_jobs").items as Array<Record<string, unknown>>).filter((record) => record.channelId === params.channelId);
   });
   app.get("/channel-manager/properties/:propertyId/sync-health", async (request) => {
     const params = request.params as { propertyId: string };
     return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "sync_health");
   });
+  // The channel id used to be taken on faith (any string created an
+  // external_reservation under the caller's property): it is now resolved and
+  // tenant-checked, and the import lands in the CHANNEL's property.
   app.post("/channel-manager/channels/:channelId/reservations/import", async (request) => {
     const params = request.params as { channelId: string };
-    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "external_reservation", auditAction: "ExternalReservationImported", requiredPermissions: ["channel_manager.sync"], payload: { channelId: params.channelId, ...(request.body as Record<string, unknown>) }, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueChannel", id: params.channelId });
+    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "external_reservation", auditAction: "ExternalReservationImported", requiredPermissions: ["channel_manager.sync"], payload: { channelId: params.channelId, ...((request.body ?? {}) as Record<string, unknown>) }, correlationId: createId("corr") });
   });
   app.post("/channel-manager/channels/:channelId/webhook", async (request) => {
     const params = request.params as { channelId: string };
-    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "external_reservation", auditAction: "ExternalReservationImported", requiredPermissions: ["channel_manager.sync"], payload: { channelId: params.channelId, payload: request.body }, correlationId: createId("corr") });
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueChannel", id: params.channelId });
+    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "external_reservation", auditAction: "ExternalReservationImported", requiredPermissions: ["channel_manager.sync"], payload: { channelId: params.channelId, payload: request.body }, correlationId: createId("corr") });
   });
   app.get("/channel-manager/properties/:propertyId/external-reservations", async (request) => {
     const params = request.params as { propertyId: string };
@@ -2359,36 +2401,78 @@ export function buildApiServer() {
     getAdvancedRecord(request.userContext.propertyId, "guest_data_crm_loyalty", "guest_profiles", (request.params as { id: string }).id)
   );
   app.post("/crm/profiles/:id/merge", async (request) => {
+    await assertEntityAccess(request, { entity: "guestProfile", id: (request.params as { id: string }).id });
+    // The source profile comes in the body and is merged INTO the target: same tenant rule.
+    const sourceProfileId = (request.body as { sourceProfileId?: string } | null)?.sourceProfileId;
+    if (typeof sourceProfileId === "string" && sourceProfileId.length > 0) {
+      await assertEntityAccess(request, { entity: "guestProfile", id: sourceProfileId });
+    }
     const params = request.params as { id: string };
     return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "guest_profile", entityId: params.id, status: "merged", auditAction: "GuestProfileMerged", requiredPermissions: ["crm.manage_profiles"], payload: request.body as never, correlationId: createId("corr") });
   });
   app.get("/crm/duplicates", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "duplicate_guests"));
   app.get("/crm/segments", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "crm_segments"));
   app.post("/crm/segments", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_segment", auditAction: "GuestSegmentCreated", requiredPermissions: ["crm.manage_profiles"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/crm/segments/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_segment", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "GuestSegmentCreated", requiredPermissions: ["crm.manage_profiles"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/crm/segments/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "crmSegment", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_segment", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "GuestSegmentCreated", requiredPermissions: ["crm.manage_profiles"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/crm/campaigns", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "crm_campaigns"));
   app.post("/crm/campaigns", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_campaign", auditAction: "CampaignCreated", requiredPermissions: ["crm.manage_campaigns"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/crm/campaigns/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_campaign", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "CampaignCreated", requiredPermissions: ["crm.manage_campaigns"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/crm/campaigns/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "crmCampaign", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "crm_campaign", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "CampaignCreated", requiredPermissions: ["crm.manage_campaigns"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/crm/loyalty", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_data_crm_loyalty", "loyalty"));
   app.post("/crm/loyalty/programs", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "loyalty_program", auditAction: "LoyaltyMembershipCreated", requiredPermissions: ["crm.manage_loyalty"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/crm/loyalty/memberships/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "loyalty_membership", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "LoyaltyMembershipCreated", requiredPermissions: ["crm.manage_loyalty"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/crm/loyalty/memberships/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "loyaltyMembership", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_data_crm_loyalty", entityType: "loyalty_membership", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "LoyaltyMembershipCreated", requiredPermissions: ["crm.manage_loyalty"], payload: request.body as never, correlationId: createId("corr") });
+  });
 
   app.get("/sales/accounts", async (request) => listSalesAccounts(request.userContext.organizationId));
   app.post("/sales/accounts", async (request) => createSalesAccount({ context: request.userContext, payload: request.body as never, correlationId: createId("corr") }));
   app.get("/sales/opportunities", async (request) => listSalesOpportunities(request.userContext.propertyId));
   app.post("/sales/opportunities", async (request) => createSalesOpportunity({ context: request.userContext, propertyId: request.userContext.propertyId, payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/sales/opportunities/:id", async (request) => updateSalesOpportunity({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/sales/opportunities/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "salesOpportunity", id: (request.params as { id: string }).id });
+    return updateSalesOpportunity({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/groups/properties/:propertyId", async (request) => listGroupBookings((request.params as { propertyId: string }).propertyId));
   app.post("/groups/properties/:propertyId", async (request) => createGroupBooking({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/groups/:id", async (request) => getGroupBooking((request.params as { id: string }).id));
-  app.patch("/groups/:id", async (request) => updateGroupBooking({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/groups/:id/room-blocks", async (request) => createGroupRoomBlock({ context: request.userContext, groupId: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/groups/:id/room-blocks/bulk", async (request) => bulkCreateGroupRoomBlocks({ context: request.userContext, groupId: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/groups/:id/events", async (request) => createGroupEvent({ context: request.userContext, groupId: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/groups/:id/rooming-list/import", async (request) => importRoomingList({ context: request.userContext, groupId: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") }));
+  app.get("/groups/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "groupBooking", id: (request.params as { id: string }).id });
+    return getGroupBooking((request.params as { id: string }).id);
+  });
+  app.patch("/groups/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "groupBooking", id: (request.params as { id: string }).id });
+    return updateGroupBooking({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.post("/groups/:id/room-blocks", async (request) => {
+    await assertEntityAccess(request, { entity: "groupBooking", id: (request.params as { id: string }).id });
+    return createGroupRoomBlock({ context: request.userContext, groupId: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.post("/groups/:id/room-blocks/bulk", async (request) => {
+    await assertEntityAccess(request, { entity: "groupBooking", id: (request.params as { id: string }).id });
+    return bulkCreateGroupRoomBlocks({ context: request.userContext, groupId: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.post("/groups/:id/events", async (request) => {
+    await assertEntityAccess(request, { entity: "groupBooking", id: (request.params as { id: string }).id });
+    return createGroupEvent({ context: request.userContext, groupId: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.post("/groups/:id/rooming-list/import", async (request) => {
+    await assertEntityAccess(request, { entity: "groupBooking", id: (request.params as { id: string }).id });
+    return importRoomingList({ context: request.userContext, groupId: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/properties/:propertyId/event-spaces", async (request) => listPropertyEventSpaces((request.params as { propertyId: string }).propertyId));
-  app.post("/groups/:id/release-unsold", async (request) => releaseGroupUnsold({ context: request.userContext, groupId: (request.params as { id: string }).id, correlationId: createId("corr") }));
-  app.post("/groups/:id/master-folio", async (request) => createGroupMasterFolio({ context: request.userContext, groupId: (request.params as { id: string }).id, correlationId: createId("corr") }));
+  app.post("/groups/:id/release-unsold", async (request) => {
+    await assertEntityAccess(request, { entity: "groupBooking", id: (request.params as { id: string }).id });
+    return releaseGroupUnsold({ context: request.userContext, groupId: (request.params as { id: string }).id, correlationId: createId("corr") });
+  });
+  app.post("/groups/:id/master-folio", async (request) => {
+    await assertEntityAccess(request, { entity: "groupBooking", id: (request.params as { id: string }).id });
+    return createGroupMasterFolio({ context: request.userContext, groupId: (request.params as { id: string }).id, correlationId: createId("corr") });
+  });
   // Pickup summary del bloque grupal (next N días) para el dashboard de grupos.
   app.get("/properties/:propertyId/groups/pickup-summary", async (request) => {
     const params = request.params as { propertyId: string };
@@ -2408,17 +2492,29 @@ export function buildApiServer() {
   app.get("/events/properties/:propertyId/calendar", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "groups_events_sales", "events_calendar"));
   app.post("/events/properties/:propertyId/spaces", async (request) => createEventSpace({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
   app.post("/events/properties/:propertyId/events", async (request) => createEvent({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/events/:id", async (request) => updateEvent({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/events/:id/generate-beo", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "groups_events_sales", entityType: "event_order", auditAction: "BEOCreated", requiredPermissions: ["events.manage"], payload: { eventId: (request.params as { id: string }).id, ...(request.body as Record<string, unknown>) }, correlationId: createId("corr") }));
+  app.patch("/events/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "event", id: (request.params as { id: string }).id });
+    return updateEvent({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.post("/events/:id/generate-beo", async (request) => {
+    await assertEntityAccess(request, { entity: "event", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "groups_events_sales", entityType: "event_order", auditAction: "BEOCreated", requiredPermissions: ["events.manage"], payload: { eventId: (request.params as { id: string }).id, ...(request.body as Record<string, unknown>) }, correlationId: createId("corr") });
+  });
 
   app.get("/workforce/properties/:propertyId/schedule", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "schedule"));
   app.post("/workforce/properties/:propertyId/shifts", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "workforce_labor", entityType: "shift", auditAction: "ShiftCreated", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/workforce/shifts/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "shift", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "ShiftUpdated", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/workforce/shifts/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "shift", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "shift", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "ShiftUpdated", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.post("/workforce/time-clock/clock-in", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "time_clock_entry", auditAction: "StaffClockedIn", requiredPermissions: ["workforce.timeclock.use"], payload: request.body as never, correlationId: createId("corr") }));
   app.post("/workforce/time-clock/clock-out", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "time_clock_entry", auditAction: "StaffClockedOut", requiredPermissions: ["workforce.timeclock.use"], payload: request.body as never, correlationId: createId("corr") }));
   app.get("/workforce/properties/:propertyId/time-clock", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "time_clock_entries"));
   app.post("/workforce/absences", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "absence_request", auditAction: "AbsenceRequested", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/workforce/absences/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "absence_request", entityId: (request.params as { id: string }).id, status: "approved", auditAction: "AbsenceApproved", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/workforce/absences/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "absenceRequest", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "workforce_labor", entityType: "absence_request", entityId: (request.params as { id: string }).id, status: "approved", auditAction: "AbsenceApproved", requiredPermissions: ["workforce.schedule.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/workforce/properties/:propertyId/labor-forecast", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "labor_forecast"));
   app.get("/workforce/properties/:propertyId/labor-costs", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "workforce_labor", "labor_costs"));
 
@@ -2431,8 +2527,19 @@ export function buildApiServer() {
   app.post("/inventory/properties/:propertyId/stock-counts", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "procurement_inventory", entityType: "stock_count", auditAction: "StockCountCompleted", requiredPermissions: ["inventory.stock_count"], payload: request.body as never, correlationId: createId("corr") }));
   app.get("/procurement/properties/:propertyId/purchase-orders", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "procurement_inventory", "purchase_orders"));
   app.post("/procurement/properties/:propertyId/purchase-orders", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", auditAction: "PurchaseOrderCreated", requiredPermissions: ["purchase_orders.create"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/procurement/purchase-orders/:id/approve", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", entityId: (request.params as { id: string }).id, status: "approved", auditAction: "PurchaseOrderApproved", requiredPermissions: ["purchase_orders.approve"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/procurement/purchase-orders/:id/receive", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", entityId: (request.params as { id: string }).id, status: "received", auditAction: "PurchaseOrderReceived", requiredPermissions: ["purchase_orders.receive"], payload: request.body as never, correlationId: createId("corr") }));
+  // Generic advanced-record legs by id (procurement, anomalies, developer
+  // webhooks, legacy AI governance): the rows only exist in
+  // demoStore.advancedRecords, so `advancedRecord` (strict, same org) is the
+  // guard — an unknown id is a 404 instead of a phantom 200 + audit event,
+  // and the transition runs in the row's property.
+  app.post("/procurement/purchase-orders/:id/approve", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", entityId: (request.params as { id: string }).id, status: "approved", auditAction: "PurchaseOrderApproved", requiredPermissions: ["purchase_orders.approve"], payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.post("/procurement/purchase-orders/:id/receive", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "procurement_inventory", entityType: "purchase_order", entityId: (request.params as { id: string }).id, status: "received", auditAction: "PurchaseOrderReceived", requiredPermissions: ["purchase_orders.receive"], payload: request.body as never, correlationId: createId("corr") });
+  });
 
   app.get("/guest-portal/session/:token", async (request) => ({ token: (request.params as { token: string }).token, status: "active" }));
   app.post("/guest-portal/session/:token/check-in", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_portal_action", auditAction: "GuestOnlineCheckInCompleted", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
@@ -2535,10 +2642,16 @@ export function buildApiServer() {
   app.post("/reputation/reviews/:id/respond", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "guest_review", entityId: (request.params as { id: string }).id, status: "responded", auditAction: "ReviewResponseSent", requiredPermissions: ["reputation.respond"], payload: request.body as never, correlationId: createId("corr") }));
   app.get("/quality/properties/:propertyId/cases", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "reputation_quality", "quality_cases"));
   app.post("/quality/properties/:propertyId/cases", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "reputation_quality", entityType: "quality_case", auditAction: "QualityCaseCreated", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/quality/cases/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "quality_case", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "QualityCaseResolved", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/quality/cases/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "qualityCase", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "quality_case", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "QualityCaseResolved", requiredPermissions: ["quality_cases.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/surveys/properties/:propertyId", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "reputation_quality", "surveys"));
   app.post("/surveys/properties/:propertyId", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "reputation_quality", entityType: "survey", auditAction: "SurveyCreated", requiredPermissions: ["surveys.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/surveys/:id/responses", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "survey_response", auditAction: "SurveyResponseReceived", requiredPermissions: ["surveys.read"], payload: request.body as never, correlationId: createId("corr") }));
+  app.post("/surveys/:id/responses", async (request) => {
+    await assertEntityAccess(request, { entity: "survey", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "reputation_quality", entityType: "survey_response", auditAction: "SurveyResponseReceived", requiredPermissions: ["surveys.read"], payload: request.body as never, correlationId: createId("corr") });
+  });
 
   app.get("/energy/properties/:propertyId/dashboard", async (request) => getAdvancedModuleDashboard((request.params as { propertyId: string }).propertyId, "energy_sustainability"));
   app.get("/energy/properties/:propertyId/meters", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "energy_sustainability", "utility_meters"));
@@ -2550,29 +2663,55 @@ export function buildApiServer() {
 
   app.get("/safety/properties/:propertyId/incidents", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "safety_incident_management", "safety_incidents"));
   app.post("/safety/properties/:propertyId/incidents", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "safety_incident_management", entityType: "safety_incident", auditAction: "SafetyIncidentCreated", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/safety/incidents/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "safety_incident", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "SafetyIncidentUpdated", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/safety/incidents/:id/evidence", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "incident_evidence", auditAction: "IncidentEvidenceAdded", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/safety/incidents/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "safetyIncident", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "safety_incident", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "SafetyIncidentUpdated", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.post("/safety/incidents/:id/evidence", async (request) => {
+    await assertEntityAccess(request, { entity: "safetyIncident", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "incident_evidence", auditAction: "IncidentEvidenceAdded", requiredPermissions: ["incidents.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/safety/properties/:propertyId/checks", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "safety_incident_management", "safety_checks"));
   app.post("/safety/properties/:propertyId/checks", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "safety_incident_management", entityType: "safety_check", auditAction: "SafetyCheckCreated", requiredPermissions: ["safety_checks.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/safety/checks/:id/results", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "safety_check_result", auditAction: "SafetyCheckCompleted", requiredPermissions: ["safety_checks.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  app.post("/safety/checks/:id/results", async (request) => {
+    await assertEntityAccess(request, { entity: "safetyCheck", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "safety_incident_management", entityType: "safety_check_result", auditAction: "SafetyCheckCompleted", requiredPermissions: ["safety_checks.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
 
   app.get("/analytics/properties/:propertyId/dashboard", async (request) => getAdvancedModuleDashboard((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform"));
   app.get("/analytics/properties/:propertyId/metrics", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "metrics"));
   app.post("/analytics/metrics", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "hotel_intelligence_platform", entityType: "metric_definition", auditAction: "MetricDefinitionCreated", requiredPermissions: ["metrics.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.get("/analytics/properties/:propertyId/anomalies", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "anomalies"));
-  app.patch("/analytics/anomalies/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "hotel_intelligence_platform", entityType: "anomaly_event", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AnomalyDetected", requiredPermissions: ["analytics.configure"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/analytics/anomalies/:id", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "hotel_intelligence_platform", entityType: "anomaly_event", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AnomalyDetected", requiredPermissions: ["analytics.configure"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/analytics/properties/:propertyId/reports", async (request) => listAdvancedRecords((request.params as { propertyId: string }).propertyId, "hotel_intelligence_platform", "scheduled_reports"));
   app.post("/analytics/properties/:propertyId/reports", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, moduleCode: "hotel_intelligence_platform", entityType: "scheduled_report", auditAction: "ScheduledReportGenerated", requiredPermissions: ["analytics.configure"], payload: request.body as never, correlationId: createId("corr") }));
   app.post("/analytics/query", async (request) => ({ status: "answered_from_approved_metrics", input: request.body, moduleCode: "hotel_intelligence_platform" }));
 
   // /developer/apps + rotate-secret movidos a marketplace.service en P2-1.
   // Legacy usage logs siguen aquí hasta que se migren.
-  app.get("/developer/apps/:id/usage", async (request) => listAdvancedRecords(request.userContext.propertyId, "developer_platform", "api_usage_logs"));
+  app.get("/developer/apps/:id/usage", async (request) => {
+    // The app id only gates access (org-owned Prisma row); usage logs are
+    // still the per-property stub list.
+    await assertEntityAccess(request, { entity: "developerApp", id: (request.params as { id: string }).id });
+    return listAdvancedRecords(request.userContext.propertyId, "developer_platform", "api_usage_logs");
+  });
   app.get("/developer/webhooks", async (request) => listAdvancedRecords(request.userContext.propertyId, "developer_platform", "webhooks"));
   app.post("/developer/webhooks", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "developer_platform", entityType: "webhook_subscription", auditAction: "WebhookSubscriptionCreated", requiredPermissions: ["developer.manage_webhooks"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/developer/webhooks/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "developer_platform", entityType: "webhook_subscription", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "WebhookSubscriptionCreated", requiredPermissions: ["developer.manage_webhooks"], payload: request.body as never, correlationId: createId("corr") }));
-  app.post("/developer/webhooks/:id/test", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "developer_platform", entityType: "webhook_delivery", auditAction: "WebhookDeliveryFailed", requiredPermissions: ["developer.manage_webhooks"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/developer/webhooks/:id/deliveries", async (request) => listAdvancedRecords(request.userContext.propertyId, "developer_platform", "webhook_deliveries"));
+  app.patch("/developer/webhooks/:id", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "developer_platform", entityType: "webhook_subscription", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "WebhookSubscriptionCreated", requiredPermissions: ["developer.manage_webhooks"], payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.post("/developer/webhooks/:id/test", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "developer_platform", entityType: "webhook_delivery", auditAction: "WebhookDeliveryFailed", requiredPermissions: ["developer.manage_webhooks"], payload: request.body as never, correlationId: createId("corr") });
+  });
+  app.get("/developer/webhooks/:id/deliveries", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return listAdvancedRecords(propertyId, "developer_platform", "webhook_deliveries");
+  });
 
   // Auto-generated OpenAPI spec served from apps/api/docs/openapi.yaml.
   // Regenerate via `node apps/api/scripts/generate-openapi.mjs`.
@@ -2594,7 +2733,10 @@ export function buildApiServer() {
 
   app.get("/ai-governance/policies", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_policies"));
   app.post("/ai-governance/policies", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_policy", auditAction: "AIPolicyUpdated", requiredPermissions: ["ai_governance.configure"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/ai-governance/policies/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_policy", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AIPolicyUpdated", requiredPermissions: ["ai_governance.configure"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/ai-governance/policies/:id", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_policy", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AIPolicyUpdated", requiredPermissions: ["ai_governance.configure"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/ai-governance/tools", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_tool_registry"));
   app.patch("/ai-governance/tools/:toolName", async (request) => {
     const params = request.params as { toolName: string };
@@ -2603,19 +2745,31 @@ export function buildApiServer() {
   });
   app.get("/ai-governance/prompts", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_prompt_versions"));
   app.post("/ai-governance/prompts", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_prompt_version", auditAction: "AIPromptVersionCreated", requiredPermissions: ["ai_prompts.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/ai-governance/prompts/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_prompt_version", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AIPromptVersionCreated", requiredPermissions: ["ai_prompts.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/ai-governance/prompts/:id", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_prompt_version", entityId: (request.params as { id: string }).id, status: "updated", auditAction: "AIPromptVersionCreated", requiredPermissions: ["ai_prompts.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/ai-governance/evaluations", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_evaluations"));
-  app.post("/ai-governance/evaluations/:id/run", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_evaluation", entityId: (request.params as { id: string }).id, status: "run", auditAction: "AIEvaluationRun", requiredPermissions: ["ai_evals.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  app.post("/ai-governance/evaluations/:id/run", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_evaluation", entityId: (request.params as { id: string }).id, status: "run", auditAction: "AIEvaluationRun", requiredPermissions: ["ai_evals.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/ai-governance/incidents", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_incidents"));
   app.post("/ai-governance/incidents", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_incident", auditAction: "AIIncidentCreated", requiredPermissions: ["ai_incidents.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.patch("/ai-governance/incidents/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_incident", entityId: (request.params as { id: string }).id, status: "resolved", auditAction: "AIIncidentCreated", requiredPermissions: ["ai_incidents.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/ai-governance/incidents/:id", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_incident", entityId: (request.params as { id: string }).id, status: "resolved", auditAction: "AIIncidentCreated", requiredPermissions: ["ai_incidents.manage"], payload: request.body as never, correlationId: createId("corr") });
+  });
   app.get("/ai-governance/human-review", async (request) => listAdvancedRecords(request.userContext.propertyId, "ai_governance", "ai_human_review"));
-  app.patch("/ai-governance/human-review/:id", async (request) => transitionAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "ai_governance", entityType: "ai_human_review_item", entityId: (request.params as { id: string }).id, status: "resolved", auditAction: "AIHumanReviewResolved", requiredPermissions: ["ai_governance.configure"], payload: request.body as never, correlationId: createId("corr") }));
+  app.patch("/ai-governance/human-review/:id", async (request) => {
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "advancedRecord", id: (request.params as { id: string }).id });
+    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "ai_governance", entityType: "ai_human_review_item", entityId: (request.params as { id: string }).id, status: "resolved", auditAction: "AIHumanReviewResolved", requiredPermissions: ["ai_governance.configure"], payload: request.body as never, correlationId: createId("corr") });
+  });
 
   // AI Operations — pipeline status (Sprint 48, tool-call telemetry)
   app.get("/ai-operations/pipeline/dashboard", async (request) => {
     const q = request.query as { organizationId?: string; propertyId?: string; days?: string };
-    const organizationId = q.organizationId ?? request.userContext?.organizationId ?? "org_123";
+    const organizationId = await resolveOrganizationScope(request, q.organizationId);
     return buildPipelineDashboard({
       organizationId,
       propertyId: q.propertyId,
@@ -2623,6 +2777,7 @@ export function buildApiServer() {
     });
   });
   app.get("/ai-operations/pipeline/calls/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "aiToolCall", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const call = await getToolCall(params.id);
     if (!call) {
@@ -2689,7 +2844,7 @@ export function buildApiServer() {
   // AI Operations — per-property AI settings (Sprint 51)
   app.get("/ai-operations/property/settings", async (request) => {
     const q = request.query as { propertyId?: string };
-    const propertyId = q.propertyId ?? request.userContext?.propertyId ?? "prop_123";
+    const propertyId = q.propertyId ?? request.userContext.propertyId;
     return getPropertyAiSettings(propertyId);
   });
   app.post("/ai-operations/property/settings", async (request) => {
@@ -2701,7 +2856,7 @@ export function buildApiServer() {
       voiceLocales?: string[];
       configurationJson?: Record<string, unknown>;
     };
-    const propertyId = body.propertyId ?? request.userContext?.propertyId ?? "prop_123";
+    const propertyId = body.propertyId ?? request.userContext.propertyId;
     return updatePropertyAiSettings({
       propertyId,
       aiEnabled: body.aiEnabled,
@@ -2715,12 +2870,12 @@ export function buildApiServer() {
   });
   app.get("/ai-operations/property/readiness", async (request) => {
     const q = request.query as { propertyId?: string };
-    const propertyId = q.propertyId ?? request.userContext?.propertyId ?? "prop_123";
+    const propertyId = q.propertyId ?? request.userContext.propertyId;
     return aiReadiness(propertyId);
   });
   app.get("/ai-operations/property/configured", async (request) => {
     const q = request.query as { organizationId?: string };
-    const organizationId = q.organizationId ?? request.userContext?.organizationId ?? "org_123";
+    const organizationId = await resolveOrganizationScope(request, q.organizationId);
     return listConfiguredProperties(organizationId);
   });
 
@@ -3106,6 +3261,7 @@ export function buildApiServer() {
   });
 
   app.patch("/backoffice/properties/:propertyId/room-types/:roomTypeId", async (request) => {
+    await assertEntityAccess(request, { entity: "roomType", id: (request.params as { roomTypeId: string }).roomTypeId, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; roomTypeId: string };
     return patchBackOfficeRoomType({
       context: request.userContext,
@@ -3117,6 +3273,7 @@ export function buildApiServer() {
   });
 
   app.post("/backoffice/properties/:propertyId/room-types/:roomTypeId/deactivate", async (request) => {
+    await assertEntityAccess(request, { entity: "roomType", id: (request.params as { roomTypeId: string }).roomTypeId, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; roomTypeId: string };
     return deactivateBackOfficeRoomType({
       context: request.userContext,
@@ -3127,8 +3284,13 @@ export function buildApiServer() {
   });
 
   app.post("/backoffice/properties/:propertyId/room-types/:roomTypeId/merge", async (request) => {
+    await assertEntityAccess(request, { entity: "roomType", id: (request.params as { roomTypeId: string }).roomTypeId, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; roomTypeId: string };
     const body = request.body as { targetRoomTypeId: string };
+    // Both room types must hang from the path property (confused-deputy check).
+    if (typeof body.targetRoomTypeId === "string" && body.targetRoomTypeId.length > 0) {
+      await assertEntityAccess(request, { entity: "roomType", id: body.targetRoomTypeId, propertyId: params.propertyId });
+    }
     return mergeBackOfficeRoomTypes({
       context: request.userContext,
       propertyId: params.propertyId,
@@ -3638,18 +3800,22 @@ export function buildApiServer() {
 
   app.patch("/properties/:propertyId/integrations/:connectionId", async (request) => {
     const params = request.params as { propertyId: string; connectionId: string };
-    const body = request.body as { status?: "connected" | "disconnected" | "error" };
+    // Same confused-deputy guard as the sibling routes (connection must hang
+    // from the path property); the mirror miss below is a 404, never a 500.
+    await assertEntityAccess(request, { entity: "integrationConnection", id: params.connectionId, propertyId: params.propertyId });
+    const body = (request.body ?? {}) as { status?: "connected" | "disconnected" | "error" };
     const connection = demoStore.integrationConnections.find(
       (candidate) => candidate.propertyId === params.propertyId && candidate.id === params.connectionId
     );
     if (!connection) {
-      throw new Error("Integration connection was not found.");
+      throw new NotFoundError("Integración no encontrada.");
     }
     connection.status = body.status ?? connection.status;
     return connection;
   });
 
   app.delete("/properties/:propertyId/integrations/:connectionId", async (request) => {
+    await assertEntityAccess(request, { entity: "integrationConnection", id: (request.params as { connectionId: string }).connectionId, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; connectionId: string };
     return disconnectIntegration({
       context: request.userContext,
@@ -3660,6 +3826,7 @@ export function buildApiServer() {
   });
 
   app.post("/properties/:propertyId/integrations/:connectionId/test", async (request) => {
+    await assertEntityAccess(request, { entity: "integrationConnection", id: (request.params as { connectionId: string }).connectionId, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { propertyId: string; connectionId: string };
     return testIntegrationConnection({
       context: request.userContext,
@@ -3670,6 +3837,7 @@ export function buildApiServer() {
   });
 
   app.get("/properties/:propertyId/integrations/:connectionId/events", async (request) => {
+    await assertEntityAccess(request, { entity: "integrationConnection", id: (request.params as { connectionId: string }).connectionId, propertyId: (request.params as { propertyId: string }).propertyId });
     const params = request.params as { connectionId: string };
     return listIntegrationEvents(params.connectionId);
   });
@@ -3878,7 +4046,7 @@ export function buildApiServer() {
 
   app.get("/reservations/:id", async (request) => {
     const params = request.params as { id: string };
-    await assertReservationInOrg(params.id, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "reservation", id: params.id });
     const reservation = await getReservation(params.id);
     // Enriquecemos con el huésped principal — sin pasar por el endpoint público
     // /guests/:id que aplica scope por organizationId del context (la cadena
@@ -3912,6 +4080,10 @@ export function buildApiServer() {
 
   app.patch("/reservations/:id", async (request) => {
     const params = request.params as { id: string };
+    // Guard first: the service's assertPropertyInOrg answered 'Propiedad no
+    // encontrada.' for a foreign reservation vs 'Reserva no encontrada.' for a
+    // missing one (existence oracle) and had no platform-admin escape.
+    await assertEntityAccess(request, { entity: "reservation", id: params.id });
     parse(UpdateReservationSchema, request.body);
     return patchReservation({
       context: request.userContext,
@@ -3930,10 +4102,11 @@ export function buildApiServer() {
   // further down. The two endpoints serve different feeds (system changelog
   // vs. guest journey) and the frontend currently consumes the guest one.
   app.get("/reservations/:id/audit-events", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const { prisma: db } = await import("@hotelos/database");
     const events = await db.auditEvent.findMany({
-      where: { entityType: "reservation", entityId: params.id },
+      where: { organizationId: request.userContext.organizationId, entityType: "reservation", entityId: params.id },
       orderBy: { createdAt: "desc" },
       take: 200
     });
@@ -3945,13 +4118,15 @@ export function buildApiServer() {
   // contracts). For now we return an empty list with a stable shape so the
   // front-end can wire its loading / empty states.
   app.get("/reservations/:id/documents", async (request) => {
-    const _params = request.params as { id: string };
-    void _params;
+    // Still a stub, but scoped like every other reservation leg (unknown or
+    // foreign id → 404, not an empty 200).
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     return { documents: [] as unknown[] };
   });
 
   app.post("/reservations/:id/assign-room", async (request) => {
     const params = request.params as { id: string };
+    await assertEntityAccess(request, { entity: "reservation", id: params.id });
     const body = parse(AssignRoomSchema, request.body);
     if (body.roomId) {
       return assignRoom({
@@ -3975,6 +4150,7 @@ export function buildApiServer() {
   });
 
   app.post("/reservations/:id/check-in", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = parse(CheckInSchema, request.body);
     const reservation = await checkInReservation({
@@ -4007,6 +4183,7 @@ export function buildApiServer() {
   });
 
   app.post("/reservations/:id/check-out", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     parse(CheckOutSchema, request.body ?? {});
     const reservation = await checkOutReservation({
@@ -4035,6 +4212,7 @@ export function buildApiServer() {
   });
 
   app.post("/reservations/:id/cancel", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = parse(CancelReservationSchema, request.body ?? {});
     return transitionReservation({
@@ -4047,6 +4225,7 @@ export function buildApiServer() {
   });
 
   app.post("/reservations/:id/no-show", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = parse(NoShowReservationSchema, request.body ?? {});
     return transitionReservation({
@@ -4059,12 +4238,14 @@ export function buildApiServer() {
   });
 
   app.get("/reservations/:id/folio", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return getReservationFolio(params.id);
   });
 
   // Guest journey activity feed — chat + housekeeping + maintenance + requests.
   app.get("/reservations/:id/activity", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return getGuestActivity({ context: request.userContext, reservationId: params.id });
   });
@@ -4114,12 +4295,13 @@ export function buildApiServer() {
 
   app.get("/guests/:id", async (request) => {
     const params = request.params as { id: string };
+    await assertEntityAccess(request, { entity: "guest", id: params.id });
     return getGuest({ context: request.userContext, id: params.id });
   });
 
   app.get("/guests/:id/timeline", async (request) => {
     const params = request.params as { id: string };
-    await assertGuestInOrg(params.id, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "guest", id: params.id });
     const { buildGuestTimeline } = await import("./modules/guests/guest-timeline.service.js");
     return buildGuestTimeline({ guestId: params.id });
   });
@@ -4140,6 +4322,8 @@ export function buildApiServer() {
 
   app.patch("/guests/:id", async (request) => {
     const params = request.params as { id: string };
+    // loadGuestRow in the service is strict (no platform-admin escape).
+    await assertEntityAccess(request, { entity: "guest", id: params.id });
     const raw = (request.body ?? {}) as Record<string, unknown>;
     const candidate = (raw.guest as Record<string, unknown> | undefined) ?? raw;
     parse(UpdateGuestSchema, candidate);
@@ -4154,7 +4338,7 @@ export function buildApiServer() {
 
   app.get("/folios/:id/balance", async (request) => {
     const folioId = (request.params as { id: string }).id;
-    await assertFolioInOrg(folioId, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "folio", id: folioId });
     return getFolioBalance(folioId);
   });
   app.post("/folios/:id/lines", async (request) => {
@@ -4234,7 +4418,7 @@ export function buildApiServer() {
 
   app.get("/invoices/:id", async (request) => {
     const params = request.params as { id: string };
-    await assertInvoiceInOrg(params.id, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "invoice", id: params.id });
     return getInvoice(params.id);
   });
 
@@ -4301,6 +4485,7 @@ export function buildApiServer() {
   });
 
   app.get("/invoices/:id/rectifications", async (request) => {
+    await assertEntityAccess(request, { entity: "invoice", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return listRectifyingInvoices(params.id);
   });
@@ -4418,6 +4603,7 @@ export function buildApiServer() {
   });
 
   app.get("/organizations/:organizationId/accounts", async (request) => {
+    await assertEntityAccess(request, { entity: "organization", id: (request.params as { organizationId: string }).organizationId });
     // Serve the real seeded chart of accounts (Sprint 36 — 77 PGC accounts) for
     // this org. Fall back to the static template when the org has no rows yet so
     // the chart-of-accounts picker still renders during fresh setup.
@@ -4432,6 +4618,7 @@ export function buildApiServer() {
   });
 
   app.get("/organizations/:organizationId/journal-entries", async (request) => {
+    await assertEntityAccess(request, { entity: "organization", id: (request.params as { organizationId: string }).organizationId });
     const params = request.params as { organizationId: string };
     return listJournalEntries(params.organizationId);
   });
@@ -4441,8 +4628,8 @@ export function buildApiServer() {
       organizationId?: string;
     };
     return createJournalEntryDraft({
-      organizationId: body.organizationId ?? demoStore.organization.id,
-      propertyId: body.propertyId ?? demoStore.property.id,
+      organizationId: await resolveOrganizationScope(request, body.organizationId),
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       sourceType: body.sourceType,
       sourceId: body.sourceId,
       lines: body.lines
@@ -4450,6 +4637,7 @@ export function buildApiServer() {
   });
 
   app.post("/journal-entries/:id/post", async (request) => {
+    await assertEntityAccess(request, { entity: "journalEntry", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return postJournalEntry({
       context: request.userContext,
@@ -4508,17 +4696,20 @@ export function buildApiServer() {
   });
 
   app.get("/banking/accounts/:id/balance", async (request) => {
+    await assertEntityAccess(request, { entity: "bankAccount", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const query = request.query as { asOf?: string };
     return getBankAccountBalance(params.id, query.asOf);
   });
 
   app.get("/banking/accounts/:id/statements", async (request) => {
+    await assertEntityAccess(request, { entity: "bankAccount", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return listStatements(params.id);
   });
 
   app.post("/banking/accounts/:id/statements/import-csv", async (request) => {
+    await assertEntityAccess(request, { entity: "bankAccount", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as { csv: string; source?: string };
     if (!body?.csv) throw new BadRequestError("`csv` is required.");
@@ -4530,16 +4721,19 @@ export function buildApiServer() {
   });
 
   app.get("/banking/statements/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "bankStatement", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return getStatement(params.id);
   });
 
   app.post("/banking/statements/:id/auto-match", async (request) => {
+    await assertEntityAccess(request, { entity: "bankStatement", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return autoMatchStatement(params.id);
   });
 
   app.post("/banking/lines/:bankLineId/match", async (request) => {
+    await assertEntityAccess(request, { entity: "bankStatementLine", id: (request.params as { bankLineId: string }).bankLineId });
     const params = request.params as { bankLineId: string };
     const body = request.body as {
       matchType: "payment" | "supplier_bill" | "manual";
@@ -4559,11 +4753,13 @@ export function buildApiServer() {
   });
 
   app.delete("/banking/lines/:bankLineId/match", async (request) => {
+    await assertEntityAccess(request, { entity: "bankStatementLine", id: (request.params as { bankLineId: string }).bankLineId });
     const params = request.params as { bankLineId: string };
     return unmatch(params.bankLineId);
   });
 
   app.get("/banking/accounts/:id/reconciliation-status", async (request) => {
+    await assertEntityAccess(request, { entity: "bankAccount", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return reconciliationStatus(params.id);
   });
@@ -4585,7 +4781,7 @@ export function buildApiServer() {
 
     return createHousekeepingTask({
       context: request.userContext,
-      propertyId: body.propertyId ?? demoStore.property.id,
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       roomId: body.roomId,
       taskType: body.taskType,
       priority: body.priority,
@@ -4655,12 +4851,7 @@ export function buildApiServer() {
   // resolve the owning property and apply the same rule (platform admins get
   // organizationId re-pointed to the room's org; everyone else — and any
   // unknown room/property — gets the same opaque 404).
-  const assertRoomInCallerOrg = async (request: { userContext: UserContext }, roomId: string) => {
-    const { prisma: db } = await import("@hotelos/database");
-    const room = await db.room.findUnique({ where: { id: roomId }, select: { propertyId: true } });
-    if (!room) throw new NotFoundError("Habitación no encontrada.");
-    await grantPropertyAccess(request, room.propertyId, "Habitación no encontrada.");
-  };
+  // (Implemented by `assertEntityAccess(request, { entity: "room", id })` below.)
 
   app.post("/rooms/:id/housekeeping-status", async (request) => {
     const params = request.params as { id: string };
@@ -4669,7 +4860,7 @@ export function buildApiServer() {
     const status = body.status.toLowerCase();
     if (!status) throw new BadRequestError("status is required");
     if (!/^[a-z_]{2,32}$/.test(status)) throw new BadRequestError("Estado de limpieza no válido.");
-    await assertRoomInCallerOrg(request, params.id);
+    await assertEntityAccess(request, { entity: "room", id: params.id });
     const { prisma: db } = await import("@hotelos/database");
     // Mapeamos a RoomStatus si encaja, además de housekeepingStatus libre.
     const isClean = status === "clean" || status === "inspected" || status === "ready";
@@ -4688,7 +4879,7 @@ export function buildApiServer() {
     const params = request.params as { id: string };
     const body = (request.body ?? {}) as { sellable?: boolean };
     if (typeof body.sellable !== "boolean") throw new BadRequestError("sellable boolean is required");
-    await assertRoomInCallerOrg(request, params.id);
+    await assertEntityAccess(request, { entity: "room", id: params.id });
     const { prisma: db } = await import("@hotelos/database");
     return db.room.update({
       where: { id: params.id },
@@ -4774,9 +4965,9 @@ export function buildApiServer() {
   // PILOT-D4 · Salud agregada de las integraciones ES (VeriFactu/SES/TBAI/IGIC).
   // Devuelve modo (sandbox/preprod/prod), estado de certificados y stats 24h.
   // Útil para que el cliente piloto verifique su entorno antes de go-live.
-  app.get("/compliance/health", async () => {
+  app.get("/compliance/health", async (request) => {
     const { getComplianceHealth } = await import("./modules/compliance/compliance-health.service.js");
-    return getComplianceHealth();
+    return getComplianceHealth(request.userContext.organizationId);
   });
 
   app.get("/compliance/properties/:propertyId/center", async (request) => {
@@ -4799,9 +4990,11 @@ export function buildApiServer() {
     return createComplianceTask({ context: request.userContext, propertyId: params.propertyId, ...body });
   });
   app.patch("/compliance/tasks/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "complianceTask", id: (request.params as { id: string }).id });
     return updateComplianceTask({ context: request.userContext, taskId: (request.params as { id: string }).id, patch: request.body as never });
   });
   app.delete("/compliance/tasks/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "complianceTask", id: (request.params as { id: string }).id });
     return deleteComplianceTask({ context: request.userContext, taskId: (request.params as { id: string }).id });
   });
   app.get("/compliance/properties/:propertyId/documents", async (request) => {
@@ -4815,6 +5008,7 @@ export function buildApiServer() {
     return createComplianceDocument({ context: request.userContext, propertyId: params.propertyId, ...body } as Parameters<typeof createComplianceDocument>[0]);
   });
   app.delete("/compliance/documents/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "complianceDocument", id: (request.params as { id: string }).id });
     return deleteComplianceDocument({ context: request.userContext, documentId: (request.params as { id: string }).id });
   });
   app.get("/compliance/properties/:propertyId/alerts", async (request) => {
@@ -4839,6 +5033,7 @@ export function buildApiServer() {
     return { items: await listCancellationPolicies((request.params as { propertyId: string }).propertyId) };
   });
   app.get("/cancellation-policies/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "cancellationPolicy", id: (request.params as { id: string }).id });
     return getCancellationPolicy((request.params as { id: string }).id);
   });
   app.post("/properties/:propertyId/cancellation-policies", async (request) => {
@@ -4846,44 +5041,55 @@ export function buildApiServer() {
     return createCancellationPolicy({ context: request.userContext, propertyId: params.propertyId, payload: request.body as never });
   });
   app.patch("/cancellation-policies/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "cancellationPolicy", id: (request.params as { id: string }).id });
     return updateCancellationPolicy({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never });
   });
   app.delete("/cancellation-policies/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "cancellationPolicy", id: (request.params as { id: string }).id });
     return deleteCancellationPolicy((request.params as { id: string }).id);
   });
   app.get("/reservations/:id/cancellation-charge", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     return computeCancellationCharge({ reservationId: (request.params as { id: string }).id });
   });
   app.post("/reservations/:id/apply-cancellation-fee", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const id = (request.params as { id: string }).id;
     return applyCancellationFee({ context: request.userContext, reservationId: id, correlationId: createId("corr") });
   });
   app.post("/reservations/:id/apply-no-show-fee", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const id = (request.params as { id: string }).id;
     return applyNoShowFee({ context: request.userContext, reservationId: id, correlationId: createId("corr") });
   });
 
   // --- Tour operators (B2B partners) + Allotments (contracted room blocks) ---
   app.get("/organizations/:organizationId/tour-operators", async (request) => {
+    await assertEntityAccess(request, { entity: "organization", id: (request.params as { organizationId: string }).organizationId });
     return { items: await listTourOperators((request.params as { organizationId: string }).organizationId) };
   });
   app.get("/tour-operators/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "tourOperator", id: (request.params as { id: string }).id });
     return getTourOperator((request.params as { id: string }).id);
   });
   app.post("/organizations/:organizationId/tour-operators", async (request) => {
+    await assertEntityAccess(request, { entity: "organization", id: (request.params as { organizationId: string }).organizationId });
     const params = request.params as { organizationId: string };
     return createTourOperator({ context: request.userContext, organizationId: params.organizationId, payload: request.body as never });
   });
   app.patch("/tour-operators/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "tourOperator", id: (request.params as { id: string }).id });
     return updateTourOperator({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never });
   });
   app.get("/properties/:propertyId/allotments", async (request) => {
     return { items: await listAllotments((request.params as { propertyId: string }).propertyId) };
   });
   app.get("/allotments/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "allotment", id: (request.params as { id: string }).id });
     return getAllotment((request.params as { id: string }).id);
   });
   app.get("/allotments/:id/remaining", async (request) => {
+    await assertEntityAccess(request, { entity: "allotment", id: (request.params as { id: string }).id });
     const id = (request.params as { id: string }).id;
     const query = request.query as { from?: string; to?: string };
     if (!query.from || !query.to) throw new BadRequestError("from y to son obligatorios (YYYY-MM-DD).");
@@ -4900,9 +5106,11 @@ export function buildApiServer() {
     return createAllotment({ context: request.userContext, propertyId: params.propertyId, payload: request.body as never });
   });
   app.patch("/allotments/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "allotment", id: (request.params as { id: string }).id });
     return updateAllotment({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never });
   });
   app.delete("/allotments/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "allotment", id: (request.params as { id: string }).id });
     return deleteAllotment((request.params as { id: string }).id);
   });
   app.post("/properties/:propertyId/allotments/release-expired", async (request) => {
@@ -4924,29 +5132,37 @@ export function buildApiServer() {
 
   // --- Folio routing / split folios ---
   app.get("/reservations/:id/folios", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     return { items: await listReservationFolios((request.params as { id: string }).id) };
   });
   app.post("/reservations/:id/folios", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const id = (request.params as { id: string }).id;
     return createSecondaryFolio({ context: request.userContext, reservationId: id, payload: request.body as never });
   });
   app.get("/reservations/:id/routing-rules", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     return { items: await listRoutingRules((request.params as { id: string }).id) };
   });
   app.post("/reservations/:id/routing-rules", async (request) => {
+    await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const id = (request.params as { id: string }).id;
     return createRoutingRule({ context: request.userContext, reservationId: id, payload: request.body as never });
   });
   app.patch("/routing-rules/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "folioRoutingRule", id: (request.params as { id: string }).id });
     return updateRoutingRule({ context: request.userContext, id: (request.params as { id: string }).id, payload: request.body as never });
   });
   app.delete("/routing-rules/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "folioRoutingRule", id: (request.params as { id: string }).id });
     return deleteRoutingRule((request.params as { id: string }).id);
   });
   app.post("/folio-lines/:lineId/transfer", async (request) => {
+    await assertEntityAccess(request, { entity: "folioLine", id: (request.params as { lineId: string }).lineId });
     const lineId = (request.params as { lineId: string }).lineId;
     const body = request.body as { targetFolioId?: string };
     if (!body.targetFolioId) throw new BadRequestError("targetFolioId es obligatorio.");
+    await assertEntityAccess(request, { entity: "folio", id: body.targetFolioId });
     return transferFolioLine({ context: request.userContext, lineId, targetFolioId: body.targetFolioId });
   });
 
@@ -4982,6 +5198,7 @@ export function buildApiServer() {
     return { items: await listMenuItems(params.propertyId, query.outletId) };
   });
   app.get("/menu-items/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "menuItem", id: (request.params as { id: string }).id });
     return getMenuItemWithRecipe((request.params as { id: string }).id);
   });
   app.post("/properties/:propertyId/menu-items", async (request) => {
@@ -4989,10 +5206,12 @@ export function buildApiServer() {
     return createMenuItem({ context: request.userContext, propertyId: params.propertyId, payload: request.body as never });
   });
   app.post("/menu-items/:id/recipes", async (request) => {
+    await assertEntityAccess(request, { entity: "menuItem", id: (request.params as { id: string }).id });
     const id = (request.params as { id: string }).id;
     return addMenuRecipe({ context: request.userContext, menuItemId: id, payload: request.body as never });
   });
   app.delete("/menu-recipes/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "menuRecipe", id: (request.params as { id: string }).id });
     return deleteMenuRecipe((request.params as { id: string }).id);
   });
 
@@ -5005,13 +5224,15 @@ export function buildApiServer() {
   });
   app.post("/pos/tickets", async (request) => {
     const body = request.body as { propertyId?: string; outletId: string; roomNumber?: string };
-    return openPosTicket({ propertyId: body.propertyId ?? demoStore.property.id, outletId: body.outletId, roomNumber: body.roomNumber });
+    return openPosTicket({ propertyId: body.propertyId ?? request.userContext.propertyId, outletId: body.outletId, roomNumber: body.roomNumber });
   });
   app.post("/pos/tickets/:id/lines", async (request) => {
+    await assertEntityAccess(request, { entity: "posTicket", id: (request.params as { id: string }).id });
     const body = request.body as { name: string; quantity?: number; unitPrice: number };
     return addPosLine({ ticketId: (request.params as { id: string }).id, name: body.name, quantity: body.quantity ?? 1, unitPrice: body.unitPrice });
   });
   app.post("/pos/tickets/:id/close", async (request) => {
+    await assertEntityAccess(request, { entity: "posTicket", id: (request.params as { id: string }).id });
     const body = request.body as { settlement: "room" | "cash" | "card" };
     return closePosTicket({ context: request.userContext, ticketId: (request.params as { id: string }).id, settlement: body.settlement, correlationId: createId("corr") });
   });
@@ -5038,7 +5259,7 @@ export function buildApiServer() {
     };
     return createAsset({
       context: request.userContext,
-      propertyId: body.propertyId ?? demoStore.property.id,
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       roomId: body.roomId,
       assetType: body.assetType,
       name: body.name,
@@ -5050,6 +5271,7 @@ export function buildApiServer() {
   });
 
   app.patch("/assets/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "asset", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return updateAsset({
       context: request.userContext,
@@ -5085,7 +5307,7 @@ export function buildApiServer() {
     };
     return createCapexProject({
       context: request.userContext,
-      propertyId: body.propertyId ?? demoStore.property.id,
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       name: body.name,
       description: body.description,
       budget: body.budget,
@@ -5096,6 +5318,7 @@ export function buildApiServer() {
   });
 
   app.patch("/capex-projects/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "capexProject", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return updateCapexProject({
       context: request.userContext,
@@ -5106,6 +5329,7 @@ export function buildApiServer() {
   });
 
   app.post("/capex-projects/:id/items", async (request) => {
+    await assertEntityAccess(request, { entity: "capexProject", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as {
       roomId?: string;
@@ -5132,11 +5356,13 @@ export function buildApiServer() {
   });
 
   app.get("/conversations/:id/messages", async (request) => {
+    await assertEntityAccess(request, { entity: "conversation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return listMessages(params.id);
   });
 
   app.post("/conversations/:id/messages", async (request) => {
+    await assertEntityAccess(request, { entity: "conversation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as {
       body?: string;
@@ -5157,6 +5383,7 @@ export function buildApiServer() {
 
   app.post("/conversations/:id/ai-draft", async (request) => {
     const params = request.params as { id: string };
+    await assertEntityAccess(request, { entity: "conversation", id: params.id });
     const body = request.body as { guestQuestion: string; tone?: string; language?: string };
     return createAiReplyDraft({
       context: request.userContext,
@@ -5178,7 +5405,7 @@ export function buildApiServer() {
     };
     return createServiceRequest({
       context: request.userContext,
-      propertyId: body.propertyId ?? demoStore.property.id,
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       reservationId: body.reservationId,
       guestId: body.guestId,
       requestType: body.requestType,
@@ -5188,6 +5415,7 @@ export function buildApiServer() {
   });
 
   app.patch("/service-requests/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "serviceRequest", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as Parameters<typeof updateServiceRequest>[0]["patch"];
     return updateServiceRequest({
@@ -5220,16 +5448,20 @@ export function buildApiServer() {
 
   app.get("/compliance/spain/reservations/:reservationId/guest-register", async (request) => {
     const params = request.params as { reservationId: string };
-    await assertReservationInOrg(params.reservationId, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "reservation", id: params.reservationId });
     return listReservationGuestRegisterRecords(params.reservationId);
   });
 
   app.post("/compliance/spain/reservations/:reservationId/guest-register", async (request) => {
     const params = request.params as { reservationId: string };
     const body = request.body as Parameters<typeof createSpainGuestRegisterRecord>[0]["payload"] & { propertyId?: string };
+    const propertyId = body.propertyId ?? request.userContext.propertyId;
+    // The register hangs from the reservation, which must belong to that
+    // property (a body propertyId is already validated by the global hook).
+    await assertEntityAccess(request, { entity: "reservation", id: params.reservationId, propertyId });
     return createSpainGuestRegisterRecord({
       context: request.userContext,
-      propertyId: body.propertyId ?? request.userContext.propertyId,
+      propertyId,
       reservationId: params.reservationId,
       payload: body,
       correlationId: createId("corr")
@@ -5237,6 +5469,7 @@ export function buildApiServer() {
   });
 
   app.patch("/compliance/spain/guest-register/:recordId", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { recordId: string }).recordId });
     const params = request.params as { recordId: string };
     return patchSpainGuestRegisterRecord({
       context: request.userContext,
@@ -5247,11 +5480,13 @@ export function buildApiServer() {
   });
 
   app.post("/compliance/spain/guest-register/:recordId/validate", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { recordId: string }).recordId });
     const params = request.params as { recordId: string };
     return validateSpainGuestRegisterRecordApi({ context: request.userContext, recordId: params.recordId, correlationId: createId("corr") });
   });
 
   app.post("/compliance/spain/guest-register/:recordId/sign", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { recordId: string }).recordId });
     const params = request.params as { recordId: string };
     const body = request.body as { signatureObjectKey?: string };
     return markGuestRegisterSigned({
@@ -5263,6 +5498,7 @@ export function buildApiServer() {
   });
 
   app.post("/compliance/spain/guest-register/:recordId/mark-identity-verified", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { recordId: string }).recordId });
     const params = request.params as { recordId: string };
     const body = request.body as { method?: string };
     return markGuestRegisterIdentityVerified({
@@ -5274,6 +5510,7 @@ export function buildApiServer() {
   });
 
   app.post("/compliance/spain/guest-register/:recordId/queue-submission", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { recordId: string }).recordId });
     const params = request.params as { recordId: string };
     const body = request.body as { submissionType?: Parameters<typeof queueGuestAuthoritySubmission>[0]["submissionType"] };
     return queueGuestAuthoritySubmission({
@@ -5285,6 +5522,7 @@ export function buildApiServer() {
   });
 
   app.post("/compliance/spain/guest-register/:recordId/correct", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { recordId: string }).recordId });
     const params = request.params as { recordId: string };
     return correctSpainGuestRegisterRecord({
       context: request.userContext,
@@ -5295,6 +5533,7 @@ export function buildApiServer() {
   });
 
   app.post("/compliance/spain/guest-register/:recordId/annul", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { recordId: string }).recordId });
     const params = request.params as { recordId: string };
     const body = request.body as { reason?: string };
     return annulAuthorityCommunication({
@@ -5336,11 +5575,13 @@ export function buildApiServer() {
   });
 
   app.get("/compliance/authority/submissions/:submissionId", async (request) => {
+    await assertEntityAccess(request, { entity: "authoritySubmission", id: (request.params as { submissionId: string }).submissionId });
     const params = request.params as { submissionId: string };
     return getAuthoritySubmission({ context: request.userContext, submissionId: params.submissionId, correlationId: createId("corr") });
   });
 
   app.post("/compliance/authority/submissions/:submissionId/retry", async (request) => {
+    await assertEntityAccess(request, { entity: "authoritySubmission", id: (request.params as { submissionId: string }).submissionId });
     const params = request.params as { submissionId: string };
     return retryAuthoritySubmission({ context: request.userContext, submissionId: params.submissionId, correlationId: createId("corr") });
   });
@@ -5384,6 +5625,7 @@ export function buildApiServer() {
   });
 
   app.post("/guest-register-records/:id/sign", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as { signatureObjectKey: string };
     return markGuestRegisterSigned({
@@ -5395,6 +5637,7 @@ export function buildApiServer() {
   });
 
   app.patch("/guest-register-records/:id/correct", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return correctGuestRegisterRecord({
       context: request.userContext,
@@ -5405,6 +5648,7 @@ export function buildApiServer() {
   });
 
   app.post("/guest-register-records/:id/queue-ses", async (request) => {
+    await assertEntityAccess(request, { entity: "guestRegisterRecord", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as { submissionType?: "reservation" | "checkin" | "cancellation" };
     return queueSesHospedajesSubmission({
@@ -5421,6 +5665,7 @@ export function buildApiServer() {
   });
 
   app.patch("/ses-hospedajes/submissions/:id/status", async (request) => {
+    await assertEntityAccess(request, { entity: "sesSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as {
       status: Parameters<typeof updateSesHospedajesSubmissionStatus>[0]["status"];
@@ -5466,25 +5711,25 @@ export function buildApiServer() {
 
   app.get("/gdpr/requests/:id", async (request) => {
     const params = request.params as { id: string };
-    const found = await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
-    return found;
+    await assertEntityAccess(request, { entity: "gdprRequest", id: params.id });
+    return gdprGetRequest(params.id);
   });
 
   app.post("/gdpr/requests/:id/acknowledge", async (request) => {
     const params = request.params as { id: string };
-    await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "gdprRequest", id: params.id });
     return gdprAcknowledgeRequest(params.id, request.userContext.userId);
   });
 
   app.post("/gdpr/requests/:id/fulfill-dsar", async (request) => {
     const params = request.params as { id: string };
-    await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "gdprRequest", id: params.id });
     return gdprFulfillDsar(params.id, request.userContext.userId);
   });
 
   app.post("/gdpr/requests/:id/execute-erasure", async (request) => {
     const params = request.params as { id: string };
-    await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "gdprRequest", id: params.id });
     const body = parse(ExecuteErasureSchema, request.body ?? {});
     return gdprExecuteErasure(params.id, request.userContext.userId, {
       confirmRetentionOverride: Boolean(body.confirmRetentionOverride)
@@ -5493,7 +5738,7 @@ export function buildApiServer() {
 
   app.post("/gdpr/requests/:id/reject", async (request) => {
     const params = request.params as { id: string };
-    await assertGdprRequestInOrg(params.id, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "gdprRequest", id: params.id });
     const body = parse(RejectGdprRequestSchema, request.body ?? {});
     return gdprRejectRequest(params.id, body.reason, request.userContext.userId);
   });
@@ -5695,6 +5940,7 @@ export function buildApiServer() {
   });
 
   app.post("/ai/confirmations/:confirmationId/execute", async (request) => {
+    await assertEntityAccess(request, { entity: "pendingConfirmation", id: (request.params as { confirmationId: string }).confirmationId });
     const params = request.params as { confirmationId: string };
     const body = request.body as { signatureObjectKey?: string };
     return executeConfirmation({
@@ -5735,7 +5981,12 @@ export function buildApiServer() {
     const params = (request.query as { propertyId?: string; limit?: string }) ?? {};
     const limit = Math.min(Number(params.limit ?? 50), 200);
     const entries = await (await import("@hotelos/database")).prisma.journalEntry.findMany({
-      where: params.propertyId ? { propertyId: params.propertyId } : undefined,
+      // Tenant scope: without ?propertyId this listed every organization's
+      // journal (AUTH-03); a propertyId in the query is validated by the hook.
+      where: {
+        organizationId: request.userContext.organizationId,
+        ...(params.propertyId ? { propertyId: params.propertyId } : {})
+      },
       orderBy: { postedAt: "desc" },
       take: limit
     });
@@ -5791,6 +6042,7 @@ export function buildApiServer() {
   });
 
   app.post("/accounting/fiscal-periods/:id/close", async (request) => {
+    await assertEntityAccess(request, { entity: "fiscalPeriod", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = (request.body ?? {}) as { closingNotes?: string };
     return closeFiscalPeriod({
@@ -5802,6 +6054,7 @@ export function buildApiServer() {
   });
 
   app.post("/accounting/fiscal-periods/:id/reopen", async (request) => {
+    await assertEntityAccess(request, { entity: "fiscalPeriod", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as { reason: string };
     return reopenFiscalPeriod({
@@ -5836,11 +6089,13 @@ export function buildApiServer() {
   });
 
   app.get("/accounting/fiscal-years/:id/status", async (request) => {
+    await assertEntityAccess(request, { entity: "fiscalYear", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return getFiscalYearStatus({ context: request.userContext, id: params.id });
   });
 
   app.post("/accounting/fiscal-years/:id/close", async (request) => {
+    await assertEntityAccess(request, { entity: "fiscalYear", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = parse(CloseFiscalYearSchema, request.body ?? {});
     return closeFiscalYear({
@@ -5852,6 +6107,7 @@ export function buildApiServer() {
   });
 
   app.post("/accounting/fiscal-years/:id/reopen", async (request) => {
+    await assertEntityAccess(request, { entity: "fiscalYear", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = parse(ReopenFiscalYearSchema, request.body ?? {});
     return reopenFiscalYear({
@@ -5922,6 +6178,7 @@ export function buildApiServer() {
   });
 
   app.get("/invoices/:id/verifactu", async (request) => {
+    await assertEntityAccess(request, { entity: "invoice", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const submission = await getVerifactuSubmission(params.id);
     if (!submission) return { status: "not_submitted" };
@@ -5956,7 +6213,7 @@ export function buildApiServer() {
     if (!body.reservationId) {
       throw new BadRequestError("reservationId es obligatorio para el parte de viajeros.");
     }
-    await assertReservationInOrg(body.reservationId, request.userContext.organizationId);
+    await assertEntityAccess(request, { entity: "reservation", id: body.reservationId });
     const records = listReservationGuestRegisterRecords(body.reservationId);
     const submissions = records.map((record) =>
       queueSesHospedajesSubmission({
@@ -5975,6 +6232,7 @@ export function buildApiServer() {
 
   // Single-submission detail endpoints (full XML + response ACK + history)
   app.get("/verifactu/submissions/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "verifactuSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const sub = await getVerifactuSubmissionById(params.id);
     if (!sub) return { status: "not_found" };
@@ -5982,6 +6240,7 @@ export function buildApiServer() {
   });
 
   app.get("/tbai/submissions/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "tbaiSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const sub = await getTbaiSubmission(params.id);
     if (!sub) return { status: "not_found" };
@@ -5989,6 +6248,7 @@ export function buildApiServer() {
   });
 
   app.get("/igic/submissions/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "igicSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const sub = await getIgicSubmission(params.id);
     if (!sub) return { status: "not_found" };
@@ -5996,6 +6256,7 @@ export function buildApiServer() {
   });
 
   app.get("/ses/submissions/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "sesHospedajesSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const sub = await getSesSubmission(params.id);
     if (!sub) return { status: "not_found" };
@@ -6004,24 +6265,28 @@ export function buildApiServer() {
 
   // Manual retry endpoints (also picked up automatically by pg-boss cron)
   app.post("/verifactu/submissions/:id/retry", async (request) => {
+    await assertEntityAccess(request, { entity: "verifactuSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     await retryVerifactuSubmission(params.id);
     return { status: "queued" };
   });
 
   app.post("/tbai/submissions/:id/retry", async (request) => {
+    await assertEntityAccess(request, { entity: "tbaiSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     await retryTbaiSubmission(params.id);
     return { status: "queued" };
   });
 
   app.post("/igic/submissions/:id/retry", async (request) => {
+    await assertEntityAccess(request, { entity: "igicSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     await retryIgicSubmission(params.id);
     return { status: "queued" };
   });
 
   app.post("/ses/submissions/:id/retry", async (request) => {
+    await assertEntityAccess(request, { entity: "sesHospedajesSubmission", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     await retrySesSubmission(params.id, request.userContext);
     return { status: "queued" };
@@ -6081,7 +6346,7 @@ export function buildApiServer() {
   // Commission engine OTA (Sprint 22 — Track 4)
   app.get("/commissions/rules", async (request) => {
     const query = request.query as { propertyId?: string };
-    const propertyId = query.propertyId ?? "prop_123";
+    const propertyId = query.propertyId ?? request.userContext.propertyId;
     return listCommissionRules(propertyId);
   });
 
@@ -6109,6 +6374,7 @@ export function buildApiServer() {
   });
 
   app.post("/commissions/rules/:id/deactivate", async (request) => {
+    await assertEntityAccess(request, { entity: "commissionRule", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return deactivateCommissionRule(params.id);
   });
@@ -6121,7 +6387,7 @@ export function buildApiServer() {
       status?: string;
       channelId?: string;
     };
-    const propertyId = query.propertyId ?? "prop_123";
+    const propertyId = query.propertyId ?? request.userContext.propertyId;
     return listCommissionAccruals({
       propertyId,
       from: query.from,
@@ -6133,7 +6399,7 @@ export function buildApiServer() {
 
   app.get("/commissions/summary", async (request) => {
     const query = request.query as { propertyId?: string; from?: string; to?: string };
-    const propertyId = query.propertyId ?? "prop_123";
+    const propertyId = query.propertyId ?? request.userContext.propertyId;
     return commissionSummary(propertyId, query.from, query.to);
   });
 
@@ -6176,6 +6442,7 @@ export function buildApiServer() {
   });
 
   app.post("/payroll/contracts/:id/deactivate", async (request) => {
+    await assertEntityAccess(request, { entity: "employmentContract", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return deactivatePayrollContract({
       context: request.userContext,
@@ -6192,7 +6459,7 @@ export function buildApiServer() {
 
   app.post("/payroll/periods", async (request) => {
     const body = request.body as { organizationId?: string; propertyId?: string; periodCode: string };
-    const organizationId = body.organizationId ?? request.userContext.organizationId;
+    const organizationId = await resolveOrganizationScope(request, body.organizationId);
     return createPayrollPeriod({
       context: request.userContext,
       organizationId,
@@ -6203,6 +6470,7 @@ export function buildApiServer() {
   });
 
   app.post("/payroll/periods/:id/calculate", async (request) => {
+    await assertEntityAccess(request, { entity: "payrollPeriod", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return calculatePayrollPeriod({
       context: request.userContext,
@@ -6212,11 +6480,13 @@ export function buildApiServer() {
   });
 
   app.get("/payroll/periods/:id/slips", async (request) => {
+    await assertEntityAccess(request, { entity: "payrollPeriod", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return listPayrollSlipsForPeriod(params.id);
   });
 
   app.get("/payroll/periods/:id/export", async (request) => {
+    await assertEntityAccess(request, { entity: "payrollPeriod", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const query = request.query as { format?: "a3" | "sage" };
     const format = query.format === "sage" ? "sage" : "a3";
@@ -6249,10 +6519,12 @@ export function buildApiServer() {
     // `organizationId` is optional and may be the literal string "null"/"global"
     // when the caller wants to filter to platform-wide rows; treat anything
     // truthy as a tenant filter and an empty value as "no filter".
+    // A specific organization must be the caller's own (or a platform admin's
+    // re-pointed target): a query-string org can never widen a tenant's view.
     const orgFilter = q.organizationId === "global" || q.organizationId === "null"
       ? null
       : q.organizationId && q.organizationId.length > 0
-        ? q.organizationId
+        ? await resolveOrganizationScope(request, q.organizationId)
         : undefined;
     return listExchangeRates({
       base: q.base,
@@ -6278,7 +6550,7 @@ export function buildApiServer() {
     // a platform-wide (organizationId=null) row.
     const orgScope = body.organizationId === null
       ? null
-      : body.organizationId ?? request.userContext.organizationId;
+      : await resolveOrganizationScope(request, body.organizationId);
     return upsertExchangeRate({
       baseCurrency: body.baseCurrency,
       quoteCurrency: body.quoteCurrency,
@@ -6292,48 +6564,48 @@ export function buildApiServer() {
   // Operational dashboards (Sprint 14 — P0)
   app.get("/dashboards/housekeeping", async (request) => {
     const q = request.query as { propertyId?: string; date?: string };
-    return buildHousekeepingDashboard({ propertyId: q.propertyId ?? "prop_123", date: q.date });
+    return buildHousekeepingDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, date: q.date });
   });
   app.get("/dashboards/front-desk", async (request) => {
     const q = request.query as { propertyId?: string; date?: string };
-    return buildFrontDeskDashboard({ propertyId: q.propertyId ?? "prop_123", date: q.date });
+    return buildFrontDeskDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, date: q.date });
   });
   app.get("/dashboards/front-desk-queue", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildFrontDeskQueue({ propertyId: q.propertyId ?? "prop_123" });
+    return buildFrontDeskQueue({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/dashboards/room-rack", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildRoomRack({ propertyId: q.propertyId ?? "prop_123" });
+    return buildRoomRack({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/dashboards/housekeeping-mobile", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildHousekeepingMobile({ propertyId: q.propertyId ?? "prop_123" });
+    return buildHousekeepingMobile({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/dashboards/maintenance-mobile", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildMaintenanceMobile({ propertyId: q.propertyId ?? "prop_123" });
+    return buildMaintenanceMobile({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/dashboards/shift-manager", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildShiftManager({ propertyId: q.propertyId ?? "prop_123" });
+    return buildShiftManager({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/dashboards/general-manager", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildGmDashboard({ propertyId: q.propertyId ?? "prop_123" });
+    return buildGmDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   // Pace de los próximos N días (default 30): OTB vs forecast vs LY por stay date.
   app.get("/general-manager/pace", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
     const days = q.days ? Number.parseInt(q.days, 10) : 30;
     return buildGmPace({
-      propertyId: q.propertyId ?? "prop_123",
+      propertyId: q.propertyId ?? request.userContext.propertyId,
       days: Number.isFinite(days) ? days : 30
     });
   });
   app.get("/dashboards/operations-director", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildOperationsDirector({ propertyId: q.propertyId ?? "prop_123" });
+    return buildOperationsDirector({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/developer/api-reference", async () => buildApiReference());
   app.get("/developer/keyboard-shortcuts", async () => ({
@@ -6388,81 +6660,81 @@ export function buildApiServer() {
   app.post("/copilot/ask", async (request) => {
     const body = (request.body ?? {}) as { propertyId?: string; question?: string };
     return answerCopilot({
-      propertyId: body.propertyId ?? "prop_123",
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       question: (body.question ?? "").trim()
     });
   });
   app.get("/dashboards/maintenance", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildMaintenanceDashboard({ propertyId: q.propertyId ?? "prop_123", from: q.from, to: q.to });
+    return buildMaintenanceDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to });
   });
   app.get("/dashboards/finance-position", async (request) => {
     const q = request.query as { propertyId?: string; asOf?: string };
-    return buildFinancePositionDashboard({ propertyId: q.propertyId ?? "prop_123", asOf: q.asOf ? new Date(q.asOf) : undefined });
+    return buildFinancePositionDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, asOf: q.asOf ? new Date(q.asOf) : undefined });
   });
   app.get("/dashboards/concierge", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildConciergeDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildConciergeDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
   app.get("/dashboards/reputation", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildReputationDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildReputationDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
   app.get("/dashboards/sales-pipeline", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildSalesPipelineDashboard({ propertyId: q.propertyId ?? "prop_123", from: q.from, to: q.to });
+    return buildSalesPipelineDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to });
   });
 
   // Operational dashboards (Sprint 15 — P1.a)
   app.get("/dashboards/workforce", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildWorkforceDashboard({ propertyId: q.propertyId ?? "prop_123", from: q.from, to: q.to });
+    return buildWorkforceDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to });
   });
   app.get("/dashboards/crm", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildCrmDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildCrmDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
   app.get("/dashboards/loyalty", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildLoyaltyDashboard({ propertyId: q.propertyId ?? "prop_123" });
+    return buildLoyaltyDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/dashboards/upsells", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildUpsellsDashboard({ propertyId: q.propertyId ?? "prop_123", from: q.from, to: q.to });
+    return buildUpsellsDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to });
   });
   app.get("/dashboards/surveys", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildSurveysDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildSurveysDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
   app.get("/dashboards/quality", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildQualityDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildQualityDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
 
   // Operational dashboards (Sprint 16 — P1.b + P2.a)
   app.get("/dashboards/safety", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildSafetyDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildSafetyDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
   app.get("/dashboards/inventory", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildInventoryDashboard({ propertyId: q.propertyId ?? "prop_123" });
+    return buildInventoryDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/dashboards/procurement", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildProcurementDashboard({ propertyId: q.propertyId ?? "prop_123", from: q.from ? new Date(q.from) : undefined, to: q.to ? new Date(q.to) : undefined });
+    return buildProcurementDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from ? new Date(q.from) : undefined, to: q.to ? new Date(q.to) : undefined });
   });
   app.get("/dashboards/groups-events", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildGroupsEventsDashboard({ propertyId: q.propertyId ?? "prop_123", from: q.from, to: q.to });
+    return buildGroupsEventsDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to });
   });
   app.get("/dashboards/pos", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildPosDashboard({ propertyId: q.propertyId ?? "prop_123", from: q.from ? new Date(q.from) : undefined, to: q.to ? new Date(q.to) : undefined });
+    return buildPosDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from ? new Date(q.from) : undefined, to: q.to ? new Date(q.to) : undefined });
   });
   app.get("/dashboards/channel-performance", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildChannelPerformanceDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildChannelPerformanceDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
 
   // SiteMinder-style channel manager / OTA aggregator (Sprint 28)
@@ -6470,7 +6742,7 @@ export function buildApiServer() {
     const q = request.query as { propertyId?: string; active?: string };
     return {
       channels: await listChannelManagerChannels({
-        propertyId: q.propertyId ?? "prop_123",
+        propertyId: q.propertyId ?? request.userContext.propertyId,
         active: q.active === undefined ? undefined : q.active === "true"
       })
     };
@@ -6486,17 +6758,19 @@ export function buildApiServer() {
       throw new BadRequestError("providerCode and displayName are required.");
     }
     return createChannelManagerChannel({
-      propertyId: body.propertyId ?? "prop_123",
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       providerCode: body.providerCode,
       displayName: body.displayName,
       credentialsJson: body.credentialsJson ?? null
     });
   });
   app.post("/channel-manager/channels/:channelId/test", async (request) => {
+    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     return testChannelManagerChannel(params.channelId);
   });
   app.post("/channel-manager/channels/:channelId/ingest", async (request) => {
+    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     const body = (request.body ?? {}) as { since?: string };
     return ingestChannelReservations({
@@ -6514,7 +6788,7 @@ export function buildApiServer() {
     };
     if (!body.from || !body.to) throw new BadRequestError("from and to are required.");
     return channelPushRates({
-      propertyId: body.propertyId ?? "prop_123",
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       dateRange: { from: body.from, to: body.to },
       ratePlanIds: body.ratePlanIds,
       channelIds: body.channelIds
@@ -6530,7 +6804,7 @@ export function buildApiServer() {
     };
     if (!body.from || !body.to) throw new BadRequestError("from and to are required.");
     return channelPushAvailability({
-      propertyId: body.propertyId ?? "prop_123",
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       dateRange: { from: body.from, to: body.to },
       roomTypeIds: body.roomTypeIds,
       channelIds: body.channelIds
@@ -6545,7 +6819,7 @@ export function buildApiServer() {
     };
     if (!body.from || !body.to) throw new BadRequestError("from and to are required.");
     return channelPushRestrictions({
-      propertyId: body.propertyId ?? "prop_123",
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       dateRange: { from: body.from, to: body.to },
       channelIds: body.channelIds
     });
@@ -6553,7 +6827,7 @@ export function buildApiServer() {
   app.post("/channel-manager/ingest-all", async (request) => {
     const body = (request.body ?? {}) as { propertyId?: string; since?: string };
     return ingestAllChannelReservations({
-      propertyId: body.propertyId ?? "prop_123",
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       since: body.since ? new Date(body.since) : undefined
     });
   });
@@ -6566,7 +6840,7 @@ export function buildApiServer() {
     };
     return {
       jobs: await listChannelSyncJobs({
-        propertyId: q.propertyId ?? "prop_123",
+        propertyId: q.propertyId ?? request.userContext.propertyId,
         channelId: q.channelId,
         jobType: q.jobType,
         since: q.since ? new Date(q.since) : undefined
@@ -6582,7 +6856,7 @@ export function buildApiServer() {
     };
     if (!body.from || !body.to) throw new BadRequestError("from and to are required.");
     return runChannelParityMonitor({
-      propertyId: body.propertyId ?? "prop_123",
+      propertyId: body.propertyId ?? request.userContext.propertyId,
       dateRange: { from: body.from, to: body.to },
       thresholdPercent: body.thresholdPercent
     });
@@ -6591,13 +6865,14 @@ export function buildApiServer() {
     const q = request.query as { propertyId?: string; status?: string; severity?: string };
     return {
       alerts: await listChannelParityAlerts({
-        propertyId: q.propertyId ?? "prop_123",
+        propertyId: q.propertyId ?? request.userContext.propertyId,
         status: q.status,
         severity: q.severity
       })
     };
   });
   app.post("/channel-manager/parity/alerts/:id/resolve", async (request) => {
+    await assertEntityAccess(request, { entity: "rateParityAlert", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return resolveChannelParityAlert(params.id, request.userContext?.userId ?? "user_demo");
   });
@@ -6637,42 +6912,42 @@ export function buildApiServer() {
   // Operational dashboards (Sprint 17 — P2.b)
   app.get("/dashboards/energy", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildEnergyDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildEnergyDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
   app.get("/dashboards/sustainability", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildSustainabilityDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildSustainabilityDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
   app.get("/dashboards/assets", async (request) => {
     const q = request.query as { propertyId?: string };
-    return buildAssetsDashboard({ propertyId: q.propertyId ?? "prop_123" });
+    return buildAssetsDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/dashboards/room-profitability", async (request) => {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
-    return buildRoomProfitabilityDashboard({ propertyId: q.propertyId ?? "prop_123", from: q.from, to: q.to });
+    return buildRoomProfitabilityDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to });
   });
   app.get("/dashboards/analytics-center", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
-    return buildAnalyticsCenterDashboard({ propertyId: q.propertyId ?? "prop_123", days: q.days ? Number(q.days) : undefined });
+    return buildAnalyticsCenterDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
   });
 
   // Portfolio dashboard (Sprint 38 — multi-property org-level consolidation)
   app.get("/dashboards/portfolio", async (request) => {
     const q = request.query as { organizationId?: string; asOf?: string };
-    const organizationId = q.organizationId ?? request.userContext.organizationId ?? "org_123";
+    const organizationId = await resolveOrganizationScope(request, q.organizationId);
     return buildPortfolioDashboard({ organizationId, asOf: q.asOf });
   });
 
   // Property overview drill-down (Sprint 41 — single-property detail screen)
   app.get("/dashboards/property-overview", async (request) => {
     const q = request.query as { propertyId?: string; asOf?: string };
-    return buildPropertyOverview({ propertyId: q.propertyId ?? "prop_123", asOf: q.asOf });
+    return buildPropertyOverview({ propertyId: q.propertyId ?? request.userContext.propertyId, asOf: q.asOf });
   });
 
   // Notification engine (Sprint 26 — Track: Notifications + document templates)
   app.get("/notifications/templates", async (request) => {
     const q = request.query as { organizationId?: string; propertyId?: string; channel?: string };
-    const organizationId = q.organizationId ?? request.userContext.organizationId;
+    const organizationId = await resolveOrganizationScope(request, q.organizationId);
     return listNotificationTemplates(organizationId, q.propertyId, q.channel);
   });
 
@@ -6692,7 +6967,7 @@ export function buildApiServer() {
       throw new BadRequestError("code, channel and body are required.");
     }
     return createNotificationTemplate({
-      organizationId: body.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, body.organizationId),
       propertyId: body.propertyId,
       code: body.code,
       channel: body.channel,
@@ -6705,6 +6980,7 @@ export function buildApiServer() {
   });
 
   app.post("/notifications/templates/:id/deactivate", async (request) => {
+    await assertEntityAccess(request, { entity: "notificationTemplate", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return deactivateNotificationTemplate(params.id);
   });
@@ -6718,7 +6994,7 @@ export function buildApiServer() {
       days?: string;
       limit?: string;
     };
-    const organizationId = q.organizationId ?? request.userContext.organizationId;
+    const organizationId = await resolveOrganizationScope(request, q.organizationId);
     return listNotificationDeliveries({
       organizationId,
       propertyId: q.propertyId,
@@ -6730,6 +7006,7 @@ export function buildApiServer() {
   });
 
   app.post("/notifications/deliveries/:id/retry", async (request) => {
+    await assertEntityAccess(request, { entity: "notificationDelivery", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return retryNotificationDelivery(params.id);
   });
@@ -6749,7 +7026,7 @@ export function buildApiServer() {
       throw new BadRequestError("templateCode, channel and recipient are required.");
     }
     return dispatchNotification({
-      organizationId: body.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, body.organizationId),
       propertyId: body.propertyId,
       templateCode: body.templateCode,
       channel: body.channel,
@@ -6762,7 +7039,7 @@ export function buildApiServer() {
 
   app.get("/notifications/template-stats", async (request) => {
     const q = request.query as { organizationId?: string; propertyId?: string; days?: string };
-    const organizationId = q.organizationId ?? request.userContext.organizationId;
+    const organizationId = await resolveOrganizationScope(request, q.organizationId);
     return notificationTemplateStats({
       organizationId,
       propertyId: q.propertyId,
@@ -6779,7 +7056,7 @@ export function buildApiServer() {
       assignedTo?: string;
     };
     return listHumanReviewQueue({
-      organizationId: q.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, q.organizationId),
       status: q.status as HumanReviewStatus | undefined,
       reviewType: q.reviewType,
       assignedTo: q.assignedTo
@@ -6789,16 +7066,18 @@ export function buildApiServer() {
   app.get("/ai-operations/review/stats", async (request) => {
     const q = request.query as { organizationId?: string };
     return humanReviewQueueStats({
-      organizationId: q.organizationId ?? request.userContext.organizationId
+      organizationId: await resolveOrganizationScope(request, q.organizationId)
     });
   });
 
   app.get("/ai-operations/review/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "aiHumanReviewItem", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return getHumanReviewItem(params.id);
   });
 
   app.post("/ai-operations/review/:id/assign", async (request) => {
+    await assertEntityAccess(request, { entity: "aiHumanReviewItem", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = (request.body ?? {}) as { userId?: string };
     if (!body.userId) throw new BadRequestError("userId is required.");
@@ -6811,6 +7090,7 @@ export function buildApiServer() {
   });
 
   app.post("/ai-operations/review/:id/approve", async (request) => {
+    await assertEntityAccess(request, { entity: "aiHumanReviewItem", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = (request.body ?? {}) as { notes?: string };
     return approveHumanReview({
@@ -6822,6 +7102,7 @@ export function buildApiServer() {
   });
 
   app.post("/ai-operations/review/:id/reject", async (request) => {
+    await assertEntityAccess(request, { entity: "aiHumanReviewItem", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = (request.body ?? {}) as { reason?: string };
     if (!body.reason) throw new BadRequestError("reason is required.");
@@ -6834,6 +7115,7 @@ export function buildApiServer() {
   });
 
   app.post("/ai-operations/review/:id/escalate", async (request) => {
+    await assertEntityAccess(request, { entity: "aiHumanReviewItem", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = (request.body ?? {}) as { toRole?: string };
     return escalateHumanReview({
@@ -6855,7 +7137,7 @@ export function buildApiServer() {
     };
     if (!body.reviewType) throw new BadRequestError("reviewType is required.");
     return enqueueHumanReview({
-      organizationId: body.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, body.organizationId),
       propertyId: body.propertyId,
       reviewType: body.reviewType,
       relatedEntityType: body.relatedEntityType,
@@ -6875,7 +7157,7 @@ export function buildApiServer() {
   app.get("/ai-operations/governance/policies", async (request) => {
     const q = request.query as { organizationId?: string; propertyId?: string };
     return govListPolicies({
-      organizationId: q.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, q.organizationId),
       propertyId: q.propertyId
     });
   });
@@ -6890,7 +7172,7 @@ export function buildApiServer() {
       active?: boolean;
     };
     return govUpsertPolicy({
-      organizationId: body.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, body.organizationId),
       propertyId: body.propertyId,
       policyCode: body.policyCode,
       name: body.name,
@@ -6900,6 +7182,7 @@ export function buildApiServer() {
   });
 
   app.post("/ai-operations/governance/policies/:id/active", async (request) => {
+    await assertEntityAccess(request, { entity: "aiPolicy", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as { active?: boolean };
     return govSetPolicyActive(params.id, body.active ?? true);
@@ -6923,12 +7206,26 @@ export function buildApiServer() {
     });
   });
 
+  // Prompt versions are PLATFORM-GLOBAL rows: `ai_prompt_versions` carries no
+  // organization/property column, so publishing or archiving one changes the
+  // prompt EVERY tenant runs. There is no tenant to scope to; instead the two
+  // mutations are gated to platform admins (real `admin.tenants.manage` role,
+  // carried as `userContext.isPlatformAdmin`) — a tenant user with
+  // `ai_prompts.manage` may still list, diff and propose versions.
+  async function requirePlatformAdmin(request: { userContext: UserContext }): Promise<void> {
+    if (!(await isPlatformAdmin(request.userContext))) {
+      throw new ForbiddenError("Solo un administrador de plataforma puede publicar o archivar versiones de prompt.");
+    }
+  }
+
   app.post("/ai-operations/governance/prompts/versions/:id/publish", async (request) => {
+    await requirePlatformAdmin(request);
     const params = request.params as { id: string };
     return govPublishPromptVersion(params.id);
   });
 
   app.post("/ai-operations/governance/prompts/versions/:id/archive", async (request) => {
+    await requirePlatformAdmin(request);
     const params = request.params as { id: string };
     return govArchivePromptVersion(params.id);
   });
@@ -6943,7 +7240,7 @@ export function buildApiServer() {
   app.get("/ai-operations/governance/evaluations", async (request) => {
     const q = request.query as { organizationId?: string; status?: string };
     return govListEvaluations({
-      organizationId: q.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, q.organizationId),
       status: q.status
     });
   });
@@ -6957,7 +7254,7 @@ export function buildApiServer() {
       promptCode?: string;
     };
     return govCreateEvaluation({
-      organizationId: body.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, body.organizationId),
       propertyId: body.propertyId,
       evaluationName: body.evaluationName,
       evaluationType: body.evaluationType,
@@ -6966,6 +7263,7 @@ export function buildApiServer() {
   });
 
   app.post("/ai-operations/governance/evaluations/:id/run", async (request) => {
+    await assertEntityAccess(request, { entity: "aiEvaluation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return govRunEvaluation(params.id);
   });
@@ -6974,7 +7272,7 @@ export function buildApiServer() {
   app.get("/ai-operations/governance/incidents", async (request) => {
     const q = request.query as { organizationId?: string; status?: string; severity?: string };
     return govListIncidents({
-      organizationId: q.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, q.organizationId),
       status: q.status,
       severity: q.severity
     });
@@ -6992,7 +7290,7 @@ export function buildApiServer() {
       assignedTo?: string;
     };
     return govCreateIncident({
-      organizationId: body.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, body.organizationId),
       propertyId: body.propertyId,
       incidentType: body.incidentType,
       severity: body.severity,
@@ -7004,18 +7302,21 @@ export function buildApiServer() {
   });
 
   app.post("/ai-operations/governance/incidents/:id/assign", async (request) => {
+    await assertEntityAccess(request, { entity: "aiIncident", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as { userId?: string };
     return govAssignIncident(params.id, body.userId ?? request.userContext.userId);
   });
 
   app.post("/ai-operations/governance/incidents/:id/resolve", async (request) => {
+    await assertEntityAccess(request, { entity: "aiIncident", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = request.body as { rootCause?: string; resolutionNotes?: string };
     return govResolveIncident(params.id, body.rootCause ?? "", body.resolutionNotes ?? "");
   });
 
   app.post("/ai-operations/governance/incidents/:id/reopen", async (request) => {
+    await assertEntityAccess(request, { entity: "aiIncident", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return govReopenIncident(params.id);
   });
@@ -7024,7 +7325,7 @@ export function buildApiServer() {
   app.get("/ai-operations/governance/cost", async (request) => {
     const q = request.query as { organizationId?: string; days?: string };
     return govCostDashboard({
-      organizationId: q.organizationId ?? request.userContext.organizationId,
+      organizationId: await resolveOrganizationScope(request, q.organizationId),
       days: q.days ? Number(q.days) : undefined
     });
   });
@@ -7181,9 +7482,15 @@ export function buildApiServer() {
   });
 
   app.get("/audit-events/integrity", async (request) => verifyAuditIntegrity());
-  app.get("/events", async (request) => demoStore.events);
+  // Tenant scope for the in-memory feeds: only the caller's organization (the
+  // integrity checks stay global by design — they verify the whole hash chain).
+  app.get("/events", async (request) =>
+    demoStore.events.filter((event) => event.organizationId === request.userContext.organizationId)
+  );
   app.get("/events/integrity", async (request) => verifyDomainEventIntegrity());
-  app.get("/ai/tool-calls", async (request) => demoStore.aiToolCalls);
+  app.get("/ai/tool-calls", async (request) =>
+    demoStore.aiToolCalls.filter((call) => call.organizationId === request.userContext.organizationId)
+  );
 
   return app;
 }
@@ -7199,6 +7506,37 @@ if (entryFile === argFile) {
   // is missing/invalid — never run with guest DNIs stored in plaintext.
   const { assertEncryptionKeyForProduction } = await import("@hotelos/database");
   assertEncryptionKeyForProduction();
+  // Tanda 1 · fail-closed tenant bootstrap: the permission catalog must match
+  // PERMISSIONS, template-named roles must carry their grants and the in-memory
+  // tenant mirrors must hold every Prisma property BEFORE the first request. A
+  // failure here aborts the boot (a half-provisioned tenant would answer 403 or
+  // 500 to real users). TENANT_BOOTSTRAP_SKIP=true bypasses it (tests only).
+  if (process.env.TENANT_BOOTSTRAP_SKIP === "true") {
+    console.warn("[tenants] bootstrap skipped (TENANT_BOOTSTRAP_SKIP=true)");
+  } else {
+    try {
+      const { syncPermissionCatalog, backfillTemplateRoles } = await import("./lib/rbac-catalog.js");
+      const { hydrateTenantMirrors } = await import("./lib/tenant-hydration.js");
+      const catalog = await syncPermissionCatalog();
+      console.log(
+        `[rbac] permission catalog synced: created=${catalog.created} updated=${catalog.updated} stale=${catalog.stale.length}`
+      );
+      const backfill = await backfillTemplateRoles();
+      console.log(
+        `[rbac] template roles backfilled: ${backfill.rolesFilled}${backfill.roles.length > 0 ? ` (${backfill.roles.join(", ")})` : ""}`
+      );
+      const mirrors = await hydrateTenantMirrors();
+      console.log(
+        `[tenants] mirrors hydrated: properties=${mirrors.properties} organizations=${mirrors.organizations} modules=${mirrors.modules}`
+      );
+    } catch (error) {
+      console.error(
+        "[tenants] bootstrap failed — aborting start (fail-closed; TENANT_BOOTSTRAP_SKIP=true only for tests):",
+        error
+      );
+      process.exit(1);
+    }
+  }
   const tips = await hydrateAuditChainFromPostgres();
   console.log(`[audit] hydrated chain tips: audit=${tips.auditTail?.slice(0, 12) ?? "<empty>"} event=${tips.eventTail?.slice(0, 12) ?? "<empty>"}`);
   const app = buildApiServer();

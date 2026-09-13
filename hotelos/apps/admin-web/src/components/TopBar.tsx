@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
-import { apiRequest } from "../services/api-client";
 import {
+  OPEN_PROPERTY_SWITCHER_EVENT,
   getActiveProperty,
+  loadSwitchableProperties,
   setActiveProperty,
-  type ActiveProperty
+  type ActiveProperty,
+  type SwitchableProperty
 } from "../services/activeProperty";
 import { clearSession, getUser, onAuthChange, type AuthUser } from "../services/auth-storage";
 import { cycleThemePreference, getThemePreference, type ThemePreference } from "../theme";
@@ -20,16 +22,6 @@ function initials(name: string): string {
 type TopBarProps = {
   onOpenCommandPalette: () => void;
   onOpenNav?: () => void;
-};
-
-type SwitchableProperty = {
-  id: string;
-  name: string;
-  organizationId: string;
-  organizationName?: string;
-  municipality?: string | null;
-  province?: string | null;
-  status?: string | null;
 };
 
 export function TopBar(props: TopBarProps) {
@@ -109,11 +101,13 @@ export function TopBar(props: TopBarProps) {
     }
   };
 
+  // Shared memoized list (one request per session, same promise as AuthGate
+  // and the Cocoa PropertySwitcher).
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    apiRequest<SwitchableProperty[]>("/properties")
+    loadSwitchableProperties()
       .then((list) => {
         if (!cancelled) setProperties(list);
       })
@@ -126,6 +120,14 @@ export function TopBar(props: TopBarProps) {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    function onOpenRequest() {
+      setOpen(true);
+    }
+    window.addEventListener(OPEN_PROPERTY_SWITCHER_EVENT, onOpenRequest);
+    return () => window.removeEventListener(OPEN_PROPERTY_SWITCHER_EVENT, onOpenRequest);
   }, []);
 
   useEffect(() => {

@@ -18,6 +18,10 @@ cd "$(dirname "$0")/../.."
 
 COMPOSE="docker compose -f deploy/docker-compose.production.yml --env-file deploy/.env.production"
 
+# Refuse to deploy an env file that would boot the API in demo mode or with
+# RBAC opted out (AUTH-03/AUTH-04); the same check runs in CI on .env.example.
+node scripts/validate-env.mjs deploy/.env.production || exit 1
+
 step() { printf '\n\033[1;34m▶ %s\033[0m\n' "$*"; }
 fail() { printf '\n\033[1;31m✗ %s\033[0m\n' "$*"; exit 1; }
 
@@ -67,6 +71,18 @@ $COMPOSE run --rm api node -e "
   const { execSync } = require('child_process');
   execSync('npx prisma db push --skip-generate --schema packages/database/prisma/schema.prisma', { stdio: 'inherit' });
 "
+
+# RBAC catalog (apps/api/src/lib/rbac-catalog.ts): at boot the API converges
+# the `permissions` table to the shared catalog and tops up the platform
+# roles, but it NEVER deletes stale keys. Pruning them is OPTIONAL and
+# DESTRUCTIVE, which is why it is deliberately NOT part of this script:
+#   pnpm --filter @hotelos/api rbac:sync -- --dry-run  # lists the stale keys and
+#                                                      # how many grants would be lost
+#   pnpm --filter @hotelos/api rbac:sync -- --prune    # deletes those keys AND
+#                                                      # their role_permissions rows
+# Today the 4 stale keys (pms.reservation.update/cancel/check_in/check_out)
+# still back 4 grants of the super-admin role, so run --prune by hand, after a
+# DB backup, only once nothing depends on those keys any more.
 
 step "6/7 · Roll API + admin-web (Compose handles graceful restart)"
 $COMPOSE up -d --no-deps api admin-web caddy

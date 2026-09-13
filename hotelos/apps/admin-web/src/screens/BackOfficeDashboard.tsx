@@ -19,11 +19,12 @@ import {
   SparkleIcon
 } from "../components/cocoa-icons/NavigationIcons";
 import { CheckCircleIcon } from "../components/cocoa-icons/StatusIcons";
+import { navigateTo, type ScreenKey } from "../lib/navigate";
 
 const ENTRY_CARDS: Array<{
   label: string;
   description: string;
-  screen: string;
+  screen: ScreenKey;
   workspace: "Revenue Management" | "Configuration Center" | "Channel Manager" | "Compliance Hub";
   badge: string;
   icon: ReactNode;
@@ -55,16 +56,12 @@ const ENTRY_CARDS: Array<{
   {
     label: "Centro de cumplimiento",
     description: "VeriFactu, SES Hospedajes, TBAI, IGIC, GDPR y registro de viajeros.",
-    screen: "ComplianceCenterScreen",
+    screen: "ComplianceCenter",
     workspace: "Compliance Hub",
     badge: "Cumplimiento",
     icon: <CheckCircleIcon size={22} />
   }
 ];
-
-function navigate(screen: string): void {
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-}
 
 export function BackOfficeDashboard() {
   return (
@@ -77,7 +74,7 @@ export function BackOfficeDashboard() {
           <CocoaButton
             variant="filled"
             tone="accent"
-            onClick={() => navigate("SetupCenterScreen")}
+            onClick={() => navigateTo("SetupCenterScreen")}
           >
             Continue setup checklist
           </CocoaButton>
@@ -144,14 +141,14 @@ export function BackOfficeDashboard() {
             <CocoaButton
               variant="tinted"
               tone="accent"
-              onClick={() => navigate("OnboardingGoLiveReadiness")}
+              onClick={() => navigateTo("OnboardingGoLiveReadiness")}
             >
               Recalculate readiness
             </CocoaButton>
             <CocoaButton
               variant="bordered"
               tone="neutral"
-              onClick={() => navigate("OnboardingGoLiveReadiness")}
+              onClick={() => navigateTo("OnboardingGoLiveReadiness")}
             >
               Ver detalle
             </CocoaButton>
@@ -172,7 +169,7 @@ export function BackOfficeDashboard() {
             key={card.workspace}
             variant="elevated"
             padding="lg"
-            onClick={() => navigate(card.screen)}
+            onClick={() => navigateTo(card.screen)}
           >
             <div
               aria-label={`Abrir ${card.workspace}`}

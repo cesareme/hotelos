@@ -1,11 +1,11 @@
 import type { HotelModuleCode } from "@hotelos/product";
 import { getHotelModuleManifest, getManualSetupOption, HOTEL_MODULES, MANUAL_SETUP_COVERAGE_SUMMARY, MANUAL_SETUP_OPTIONS } from "@hotelos/product";
-import { PERMISSIONS, ROLE_PERMISSION_MAP, type PermissionKey } from "@hotelos/shared";
+import { PERMISSIONS, ROLE_PERMISSION_MAP, type AuditEvent, type PermissionKey } from "@hotelos/shared";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
-import { ensurePropertyModulePersisted } from "../product-modules/product-modules.service.js";
+import { ensurePropertyModulePersisted, listPropertyModules } from "../product-modules/product-modules.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
-import { ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import {
@@ -128,6 +128,8 @@ type AccountingSettingsRow = NonNullable<Awaited<ReturnType<typeof prisma.accoun
 type AiSettingsRow = NonNullable<Awaited<ReturnType<typeof prisma.propertyAiSetting.findFirst>>>;
 type DocumentTemplateRow = NonNullable<Awaited<ReturnType<typeof prisma.documentTemplate.findFirst>>>;
 type QrCodeRow = NonNullable<Awaited<ReturnType<typeof prisma.qrCode.findFirst>>>;
+type AuditEventRow = NonNullable<Awaited<ReturnType<typeof prisma.auditEvent.findFirst>>>;
+type ReadinessCheckRow = NonNullable<Awaited<ReturnType<typeof prisma.propertyReadinessCheck.findFirst>>>;
 
 const asJson = (value: Record<string, unknown> | undefined): Prisma.InputJsonValue => (value ?? {}) as Prisma.InputJsonValue;
 
@@ -176,11 +178,30 @@ async function resolveProperty(propertyId: string): Promise<PropertyRecord | und
   return demoStore.properties.find((candidate) => candidate.id === propertyId);
 }
 
-async function resolveOrganization(organizationId: string): Promise<OrganizationRecord> {
-  const memory = demoStore.organization;
+function mapOrganizationRow(row: OrganizationRow): OrganizationRecord {
+  // legalName/taxId are nullable in Prisma but required strings in the legacy shape:
+  // an empty string means "not configured" — never borrow the demo organization's values.
+  return { id: row.id, name: row.name, legalName: row.legalName ?? "", taxId: row.taxId ?? "" };
+}
+
+/**
+ * Organization of a property: Prisma-first; the in-memory demo organization is
+ * only a fallback for ITSELF (seed-only tenants), never for another tenant's id.
+ * Missing organization = typed 404 (the property row would be dangling).
+ */
+async function requireOrganization(organizationId: string): Promise<OrganizationRecord> {
   const row: OrganizationRow | null = await prisma.organization.findUnique({ where: { id: organizationId } });
-  if (!row) return memory;
-  return { id: row.id, name: row.name, legalName: row.legalName ?? memory.legalName, taxId: row.taxId ?? memory.taxId };
+  if (row) {
+    const mapped = mapOrganizationRow(row);
+    if (demoStore.organization.id === mapped.id) {
+      // Mirror only the columns that are set in Prisma so a null column never blanks the seed values.
+      Object.assign(demoStore.organization, { name: row.name }, row.legalName ? { legalName: row.legalName } : {}, row.taxId ? { taxId: row.taxId } : {});
+      return demoStore.organization;
+    }
+    return mapped;
+  }
+  if (demoStore.organization.id === organizationId) return demoStore.organization;
+  throw new NotFoundError("Organización no encontrada.");
 }
 
 function mapUserRow(row: UserRow): UserRecord {
@@ -315,6 +336,44 @@ function mapDocumentTemplateRow(row: DocumentTemplateRow): DocumentTemplateRecor
   };
 }
 
+/** Maps a persisted audit_events row to the shared AuditEvent shape (ISO dates, undefined for nulls). */
+function mapAuditEventRow(row: AuditEventRow): AuditEvent {
+  return {
+    id: row.id,
+    organizationId: row.organizationId,
+    propertyId: row.propertyId ?? undefined,
+    actorUserId: row.actorUserId ?? undefined,
+    actorType: row.actorType,
+    action: row.action,
+    entityType: row.entityType,
+    entityId: row.entityId ?? undefined,
+    beforeJson: row.beforeJson ?? undefined,
+    afterJson: row.afterJson ?? undefined,
+    ipAddress: row.ipAddress ?? undefined,
+    deviceId: row.deviceId ?? undefined,
+    correlationId: row.correlationId ?? undefined,
+    hashAlgorithm: "sha256",
+    previousHash: row.previousHash ?? undefined,
+    currentHash: row.currentHash,
+    createdAt: isoDate(row.createdAt)
+  };
+}
+
+function mapReadinessCheckRow(row: ReadinessCheckRow): PropertyReadinessCheckRecord {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    checkCode: row.checkCode,
+    status: row.status as PropertyReadinessCheckRecord["status"],
+    severity: row.severity as PropertyReadinessCheckRecord["severity"],
+    message: row.message,
+    relatedEntityType: row.relatedEntityType ?? undefined,
+    relatedEntityId: row.relatedEntityId ?? undefined,
+    createdAt: isoDate(row.createdAt),
+    updatedAt: isoDate(row.updatedAt)
+  };
+}
+
 function mapQrCodeRow(row: QrCodeRow): QrCodeRecord {
   return {
     id: row.id,
@@ -351,6 +410,85 @@ async function persistComplianceSettings(next: PropertyComplianceSettingsRecord)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// CFG-P1-4: per-property settings are provisioned lazily. A property that only
+// exists in Prisma (created by createTenant/bootstrapPilot) has no
+// PropertyComplianceSetting / PropertyAiSetting row: readers return explicit
+// defaults flagged `provisioned: false`, and the first PATCH upserts the row
+// (defaults + patch). Default ids follow the seed convention (pcs_<id>, ai_<id>)
+// so GET and the subsequent PATCH agree on the identifier.
+
+const byPropertyId = <T extends { propertyId: string }>(propertyId: string) => (candidate: T) => candidate.propertyId === propertyId;
+
+/** Compliance defaults derived from the property row itself (country/tax region/flags), all other integrations off. */
+function defaultComplianceSettings(property: PropertyRecord): PropertyComplianceSettingsRecord {
+  return {
+    id: `pcs_${property.id}`,
+    propertyId: property.id,
+    country: property.country,
+    taxRegion: property.taxRegion,
+    vatRegime: undefined,
+    tourismTaxRegion: undefined,
+    sesHospedajesEnabled: property.sesHospedajesEnabled,
+    verifactuEnabled: property.verifactuEnabled,
+    ticketbaiEnabled: false,
+    siiEnabled: false,
+    b2bEinvoiceEnabled: false,
+    configurationJson: {},
+    updatedAt: nowIso()
+  };
+}
+
+/** Persisted (Prisma, mirrored) or seed-only compliance record; undefined when the property has neither. */
+async function findComplianceSettings(propertyId: string): Promise<{ settings: PropertyComplianceSettingsRecord; provisioned: boolean } | undefined> {
+  const row = await prisma.propertyComplianceSetting.findUnique({ where: { propertyId } });
+  if (row) {
+    return { settings: mirrorRecord(demoStore.propertyComplianceSettings, mapComplianceRow(row), byPropertyId(propertyId)), provisioned: true };
+  }
+  const legacy = demoStore.propertyComplianceSettings.find(byPropertyId(propertyId));
+  return legacy ? { settings: legacy, provisioned: false } : undefined;
+}
+
+/** Compliance settings for any existing property: persisted row, seed record, or defaults (404 if the property does not exist). */
+async function resolveComplianceSettings(propertyId: string): Promise<{ settings: PropertyComplianceSettingsRecord; provisioned: boolean }> {
+  const found = await findComplianceSettings(propertyId);
+  if (found) return found;
+  const property = await requireProperty(propertyId);
+  return { settings: defaultComplianceSettings(property), provisioned: false };
+}
+
+// Keep in sync with ai-operations/property-ai.service.ts defaultSettings(): AI on,
+// safe suggest_and_confirm level, bilingual disclosure. configurationJson adds the
+// privacy-safe ID-image retention default this module's PATCH guard enforces.
+const DEFAULT_AI_GUEST_DISCLOSURE =
+  "Parte de la atención de este establecimiento puede estar gestionada por un asistente de inteligencia artificial. " +
+  "Puede solicitar hablar con una persona del equipo en cualquier momento.\n" +
+  "Some interactions at this property may be handled by an AI assistant. " +
+  "You can ask to speak with a member of staff at any time.";
+
+function defaultAiSettings(propertyId: string): PropertyAiSettingsRecord {
+  return {
+    id: `ai_${propertyId}`,
+    propertyId,
+    aiEnabled: true,
+    defaultAutomationLevel: "suggest_and_confirm",
+    guestFacingDisclosure: DEFAULT_AI_GUEST_DISCLOSURE,
+    voiceLocales: ["es-ES", "en-GB"],
+    configurationJson: { documentImageRetentionPolicy: "discard_after_ocr" },
+    updatedAt: nowIso()
+  };
+}
+
+/** AI settings for any property: persisted row (mirrored), seed record, or defaults. Never throws for a missing row. */
+async function resolveAiSettings(propertyId: string): Promise<{ settings: PropertyAiSettingsRecord; provisioned: boolean }> {
+  const row = await prisma.propertyAiSetting.findUnique({ where: { propertyId } });
+  if (row) {
+    return { settings: mirrorRecord(demoStore.propertyAiSettings, mapAiSettingsRow(row), byPropertyId(propertyId)), provisioned: true };
+  }
+  const legacy = demoStore.propertyAiSettings.find(byPropertyId(propertyId));
+  return { settings: legacy ?? defaultAiSettings(propertyId), provisioned: false };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Persistencia tanda 2 (continuación): helpers de materialización para
 // departamentos, usuarios, HK/mantenimiento, secuencias, plantillas y settings.
 // Regla común: lookup Prisma-first (refresca espejo); los registros que solo
@@ -373,7 +511,7 @@ async function requireDepartment(propertyId: string, departmentId: string): Prom
   if (row) return mirrorRecord(demoStore.departments, mapDepartmentRow(row));
   const legacy = demoStore.departments.find((candidate) => candidate.propertyId === propertyId && candidate.id === departmentId);
   if (!legacy) {
-    throw new Error("Department was not found.");
+    throw new NotFoundError("Departamento no encontrado.");
   }
   await prisma.department.createMany({ data: [departmentToDbRow(legacy)], skipDuplicates: true });
   return legacy;
@@ -395,7 +533,7 @@ async function requireHousekeepingSection(propertyId: string, sectionId: string)
   if (row) return mirrorRecord(demoStore.housekeepingSections, mapHousekeepingSectionRow(row));
   const legacy = demoStore.housekeepingSections.find((candidate) => candidate.propertyId === propertyId && candidate.id === sectionId);
   if (!legacy) {
-    throw new Error("Housekeeping section was not found.");
+    throw new NotFoundError("Sección de pisos no encontrada.");
   }
   await prisma.housekeepingSection.createMany({ data: [housekeepingSectionToDbRow(legacy)], skipDuplicates: true });
   return legacy;
@@ -417,7 +555,7 @@ async function requireMaintenanceArea(propertyId: string, areaId: string): Promi
   if (row) return mirrorRecord(demoStore.maintenanceAreas, mapMaintenanceAreaRow(row));
   const legacy = demoStore.maintenanceAreas.find((candidate) => candidate.propertyId === propertyId && candidate.id === areaId);
   if (!legacy) {
-    throw new Error("Maintenance area was not found.");
+    throw new NotFoundError("Área de mantenimiento no encontrada.");
   }
   await prisma.maintenanceArea.createMany({ data: [maintenanceAreaToDbRow(legacy)], skipDuplicates: true });
   return legacy;
@@ -432,7 +570,7 @@ async function assertRoomsBelongToProperty(propertyId: string, roomIds: string[]
   for (const roomId of roomIds) {
     const known = persistedIds.has(roomId) || demoStore.rooms.some((candidate) => candidate.id === roomId && candidate.propertyId === propertyId);
     if (!known) {
-      throw new Error("All assigned rooms must belong to the property.");
+      throw new BadRequestError("Todas las habitaciones asignadas deben pertenecer a la propiedad.");
     }
   }
 }
@@ -530,7 +668,7 @@ async function requireAccountingSettings(propertyId: string): Promise<Accounting
   }
   const legacy = demoStore.accountingSettings.find((candidate) => candidate.propertyId === propertyId);
   if (!legacy) {
-    throw new Error("Accounting settings were not found.");
+    throw new NotFoundError("Configuración contable no encontrada.");
   }
   await prisma.accountingSetting.createMany({
     data: [
@@ -540,32 +678,6 @@ async function requireAccountingSettings(propertyId: string): Promise<Accounting
         propertyId: legacy.propertyId ?? null,
         chartTemplate: legacy.chartTemplate ?? null,
         fiscalYearStartMonth: legacy.fiscalYearStartMonth,
-        configurationJson: asJson(legacy.configurationJson)
-      }
-    ],
-    skipDuplicates: true
-  });
-  return legacy;
-}
-
-async function requireAiSettings(propertyId: string): Promise<PropertyAiSettingsRecord> {
-  const row = await prisma.propertyAiSetting.findUnique({ where: { propertyId } });
-  if (row) {
-    return mirrorRecord(demoStore.propertyAiSettings, mapAiSettingsRow(row), (candidate) => candidate.propertyId === row.propertyId);
-  }
-  const legacy = demoStore.propertyAiSettings.find((candidate) => candidate.propertyId === propertyId);
-  if (!legacy) {
-    throw new Error("AI settings were not found.");
-  }
-  await prisma.propertyAiSetting.createMany({
-    data: [
-      {
-        id: legacy.id,
-        propertyId: legacy.propertyId,
-        aiEnabled: legacy.aiEnabled,
-        defaultAutomationLevel: legacy.defaultAutomationLevel,
-        guestFacingDisclosure: legacy.guestFacingDisclosure ?? null,
-        voiceLocales: legacy.voiceLocales,
         configurationJson: asJson(legacy.configurationJson)
       }
     ],
@@ -594,7 +706,7 @@ async function requireDocumentTemplate(propertyId: string, templateId: string): 
   if (row) return mirrorRecord(demoStore.documentTemplates, mapDocumentTemplateRow(row));
   const legacy = demoStore.documentTemplates.find((candidate) => candidate.propertyId === propertyId && candidate.id === templateId);
   if (!legacy) {
-    throw new Error("Template was not found.");
+    throw new NotFoundError("Plantilla no encontrada.");
   }
   await prisma.documentTemplate.createMany({ data: [documentTemplateToDbRow(legacy)], skipDuplicates: true });
   return legacy;
@@ -1213,18 +1325,24 @@ function enabledModuleCodes(propertyId: string): HotelModuleCode[] {
     .filter((code): code is HotelModuleCode => Boolean(code));
 }
 
-function requireProperty(propertyId: string) {
-  const property = demoStore.properties.find((candidate) => candidate.id === propertyId);
+/**
+ * Property gate for every back-office read/write (CFG-P0-1): Prisma-first via
+ * resolveProperty, refreshes the demoStore mirror (same object identity for the
+ * legacy in-place mutations) and fails with a typed 404 instead of a bare 500,
+ * so hotels that only exist in Prisma can use the whole back office.
+ */
+async function requireProperty(propertyId: string): Promise<PropertyRecord> {
+  const property = await resolveProperty(propertyId);
   if (!property) {
-    throw new Error("Property was not found.");
+    throw new NotFoundError("Propiedad no encontrada.");
   }
-  return property;
+  return mirrorRecord(demoStore.properties, property);
 }
 
 function requireCategoryDefinition(categoryCode: string) {
   const definition = categoryDefinitions.find((candidate) => candidate.code === categoryCode && candidate.active);
   if (!definition) {
-    throw new Error(`Category definition was not found: ${categoryCode}`);
+    throw new NotFoundError(`Definición de categoría no encontrada: ${categoryCode}`);
   }
   return definition;
 }
@@ -1232,7 +1350,7 @@ function requireCategoryDefinition(categoryCode: string) {
 function requireCategoryOption(propertyId: string, optionId: string) {
   const option = propertyCategoryOptions.find((candidate) => candidate.id === optionId && candidate.propertyId === propertyId);
   if (!option) {
-    throw new Error(`Category option was not found: ${optionId}`);
+    throw new NotFoundError(`Opción de categoría no encontrada: ${optionId}`);
   }
   return option;
 }
@@ -1243,10 +1361,10 @@ function categoryOptionUsage(optionId: string) {
 
 function assertCategoryModeAllowsEdit(definition: CategoryDefinitionRecord, patch?: Record<string, unknown>) {
   if (definition.mode === "read_only") {
-    throw new Error("Read-only categories cannot be edited.");
+    throw new ConflictError("Las categorías de solo lectura no se pueden editar.");
   }
   if (definition.mode === "system_controlled" && (patch?.code !== undefined || patch?.label !== undefined)) {
-    throw new Error("System-controlled legal category codes and labels cannot be renamed.");
+    throw new ConflictError("Los códigos y etiquetas de las categorías legales controladas por el sistema no se pueden renombrar.");
   }
 }
 
@@ -1303,7 +1421,7 @@ function configurationDataQuality(propertyId: string) {
 function propertySetupFormDefinition(formCode: string) {
   const definition = PROPERTY_SETUP_FORM_DEFINITIONS.find((candidate) => candidate.code === formCode);
   if (!definition) {
-    throw new Error(`Property setup form was not found: ${formCode}`);
+    throw new NotFoundError(`Formulario de configuración no encontrado: ${formCode}`);
   }
   return definition;
 }
@@ -1311,7 +1429,7 @@ function propertySetupFormDefinition(formCode: string) {
 function manualSetupOptionDefinition(optionCode: string) {
   const option = getManualSetupOption(optionCode);
   if (!option) {
-    throw new Error(`Manual setup option was not found: ${optionCode}`);
+    throw new NotFoundError(`Opción de configuración manual no encontrada: ${optionCode}`);
   }
   return option;
 }
@@ -1352,7 +1470,7 @@ function validateManualSetupPayload(option: ReturnType<typeof manualSetupOptionD
   const values = manualSetupPayloadValues(payload);
   return option.requiredInputs
     .filter((input) => !manualSetupPayloadHasValue(values, input))
-    .map((input) => `${input} is required for ${option.label}.`);
+    .map((input) => `${input} es obligatorio para ${option.label}.`);
 }
 
 function payloadText(payload: Record<string, unknown>, key: string, fallback?: string) {
@@ -1433,7 +1551,7 @@ function validatePropertySetupPayload(definition: PropertySetupFormDefinition, p
       const value = payload[field.key];
       return value === undefined || value === null || value === "" || (Array.isArray(value) && value.length === 0);
     })
-    .map((field) => `${field.label} is required.`);
+    .map((field) => `${field.label} es obligatorio.`);
 }
 
 async function formExistingData(propertyId: string, formCode: string) {
@@ -1441,11 +1559,10 @@ async function formExistingData(propertyId: string, formCode: string) {
     case "property_profile": {
       // Persistencia tanda 2: la vista de "datos existentes" confirma el guardado →
       // lee Prisma (fallback in-memory) para que sobreviva al reinicio.
-      requireProperty(propertyId);
-      const property = await resolveProperty(propertyId);
+      const property = await requireProperty(propertyId);
       return {
         property,
-        organization: await resolveOrganization(property?.organizationId ?? demoStore.organization.id),
+        organization: await requireOrganization(property.organizationId),
         compliance: await getComplianceSettings(propertyId)
       };
     }
@@ -1489,8 +1606,11 @@ type PropertySetupTarget = {
 async function applyPropertySetupForm(input: BackOfficeMutationInput, definition: PropertySetupFormDefinition, payload: Record<string, unknown>): Promise<PropertySetupTarget> {
   switch (definition.code) {
     case "property_profile": {
-      const property = requireProperty(input.propertyId);
-      const before = { property: { ...property }, organization: { ...demoStore.organization } };
+      const property = await requireProperty(input.propertyId);
+      // The organization is the property's OWN organization (never demoStore.organization /
+      // org_123): writing the legal profile of one tenant must not touch another tenant's row.
+      const organization = await requireOrganization(property.organizationId);
+      const before = { property: { ...property }, organization: { ...organization } };
       // Persistencia tanda 2: Prisma primero (Property + Organization), después espejo.
       const nextProperty: PropertyRecord = {
         ...property,
@@ -1503,11 +1623,17 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
         timezone: payloadText(payload, "timezone", property.timezone),
         taxRegion: payloadText(payload, "taxRegion", payloadText(payload, "region", property.taxRegion ?? ""))
       };
+      const legalNameInput = payloadText(payload, "legalName");
+      const taxIdInput = payloadText(payload, "taxId");
       const nextOrganization: OrganizationRecord = {
-        ...demoStore.organization,
-        legalName: payloadText(payload, "legalName", demoStore.organization.legalName),
-        taxId: payloadText(payload, "taxId", demoStore.organization.taxId)
+        ...organization,
+        legalName: legalNameInput || organization.legalName,
+        taxId: taxIdInput || organization.taxId
       };
+      // Only the fields the form actually supplied reach Prisma; unspecified columns are left untouched.
+      const organizationData: Prisma.OrganizationUncheckedUpdateInput = {};
+      if (legalNameInput) organizationData.legalName = legalNameInput;
+      if (taxIdInput) organizationData.taxId = taxIdInput;
       const propertyData = {
         name: nextProperty.name,
         legalName: nextProperty.legalName ?? null,
@@ -1530,26 +1656,31 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
           verifactuEnabled: property.verifactuEnabled
         }
       });
+      // upsert on the property's own organization id: create only covers the seed-only demo
+      // organization (requireOrganization already 404s for any other missing organization).
       await prisma.organization.upsert({
-        where: { id: nextOrganization.id },
-        update: { legalName: nextOrganization.legalName, taxId: nextOrganization.taxId },
-        create: { id: nextOrganization.id, name: nextOrganization.name, legalName: nextOrganization.legalName, taxId: nextOrganization.taxId }
+        where: { id: organization.id },
+        update: organizationData,
+        create: { id: organization.id, name: organization.name, legalName: nextOrganization.legalName || null, taxId: nextOrganization.taxId || null }
       });
       Object.assign(property, nextProperty);
       if (demoStore.property.id === property.id) Object.assign(demoStore.property, property);
-      Object.assign(demoStore.organization, nextOrganization);
-      const compliance = demoStore.propertyComplianceSettings.find((candidate) => candidate.propertyId === input.propertyId);
-      if (compliance) {
+      if (demoStore.organization.id === organization.id) Object.assign(demoStore.organization, nextOrganization);
+      // Compliance is only re-aligned when the property already has settings (persisted or
+      // seed): the profile form never provisions compliance on its own.
+      const existingCompliance = await findComplianceSettings(input.propertyId);
+      let compliance: PropertyComplianceSettingsRecord | undefined;
+      if (existingCompliance) {
         const nextCompliance: PropertyComplianceSettingsRecord = {
-          ...compliance,
-          taxRegion: payloadText(payload, "taxRegion", compliance.taxRegion ?? ""),
-          tourismTaxRegion: payloadText(payload, "tourismTaxRegion", compliance.tourismTaxRegion ?? ""),
+          ...existingCompliance.settings,
+          taxRegion: payloadText(payload, "taxRegion", existingCompliance.settings.taxRegion ?? ""),
+          tourismTaxRegion: payloadText(payload, "tourismTaxRegion", existingCompliance.settings.tourismTaxRegion ?? ""),
           updatedAt: nowIso()
         };
         const persisted = await persistComplianceSettings(nextCompliance);
-        Object.assign(compliance, persisted);
+        compliance = mirrorRecord(demoStore.propertyComplianceSettings, persisted, byPropertyId(input.propertyId));
       }
-      audit({ ...input, action: "PropertyProfileUpdated", entityType: "property", entityId: property.id, beforeJson: before, afterJson: { property, organization: demoStore.organization, compliance } });
+      audit({ ...input, action: "PropertyProfileUpdated", entityType: "property", entityId: property.id, beforeJson: before, afterJson: { property, organization: nextOrganization, compliance } });
       return { targetEntityType: "property", targetEntityId: property.id, result: property };
     }
     case "building": {
@@ -1796,8 +1927,8 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
   }
 }
 
-export function listPropertySetupForms(propertyId: string) {
-  requireProperty(propertyId);
+export async function listPropertySetupForms(propertyId: string) {
+  await requireProperty(propertyId);
   return {
     propertyId,
     forms: PROPERTY_SETUP_FORM_DEFINITIONS.map((definition) => {
@@ -1814,8 +1945,10 @@ export function listPropertySetupForms(propertyId: string) {
   };
 }
 
-export function listManualSetupOptions(propertyId: string) {
-  requireProperty(propertyId);
+export async function listManualSetupOptions(propertyId: string) {
+  await requireProperty(propertyId);
+  // Hydrate the module mirror from Prisma first: it is empty for Prisma-only hotels at boot.
+  await listPropertyModules(propertyId);
   const enabledModules = new Set(
     demoStore.propertyModules
       .filter((propertyModule) => propertyModule.propertyId === propertyId && propertyModule.status !== "disabled")
@@ -1851,8 +1984,8 @@ export function listManualSetupOptions(propertyId: string) {
   };
 }
 
-export function getManualSetupOptionDetail(propertyId: string, optionCode: string) {
-  requireProperty(propertyId);
+export async function getManualSetupOptionDetail(propertyId: string, optionCode: string) {
+  await requireProperty(propertyId);
   const option = manualSetupOptionDefinition(optionCode);
   const submissions = demoStore.manualSetupSubmissions.filter(
     (submission) => submission.propertyId === propertyId && submission.optionCode === option.code
@@ -1871,12 +2004,12 @@ export function getManualSetupOptionDetail(propertyId: string, optionCode: strin
   };
 }
 
-export function saveManualSetupOption(input: BackOfficeMutationInput & {
+export async function saveManualSetupOption(input: BackOfficeMutationInput & {
   optionCode: string;
   payload: Record<string, unknown>;
 }) {
   const option = manualSetupOptionDefinition(input.optionCode);
-  requireProperty(input.propertyId);
+  await requireProperty(input.propertyId);
   requirePermissions(input.context, [option.permission as PermissionKey]);
   const validationErrors = validateManualSetupPayload(option, input.payload);
   const submission: ManualSetupSubmissionRecord = {
@@ -1903,7 +2036,8 @@ export function saveManualSetupOption(input: BackOfficeMutationInput & {
       entityId: submission.id,
       afterJson: { submission, option }
     });
-    throw new Error(validationErrors.join(" "));
+    // Validation failures are a client error (400), never a generic 500.
+    throw new BadRequestError(validationErrors.join(" "));
   }
 
   audit({
@@ -1934,7 +2068,7 @@ export function saveManualSetupOption(input: BackOfficeMutationInput & {
 }
 
 export async function getPropertySetupForm(propertyId: string, formCode: string) {
-  requireProperty(propertyId);
+  await requireProperty(propertyId);
   const definition = propertySetupFormDefinition(formCode);
   return {
     ...definition,
@@ -1976,7 +2110,8 @@ export async function savePropertySetupForm(input: BackOfficeMutationInput & {
     };
     demoStore.propertySetupFormSubmissions.push(failed);
     audit({ ...input, action: "PropertySetupFormValidationFailed", entityType: "property_setup_form_submission", entityId: failed.id, afterJson: failed });
-    throw new Error(validationErrors.join(" "));
+    // Validation failures are a client error (400), never a generic 500.
+    throw new BadRequestError(validationErrors.join(" "));
   }
 
   const target = await applyPropertySetupForm(input, definition, input.payload);
@@ -2011,41 +2146,65 @@ export async function savePropertySetupForm(input: BackOfficeMutationInput & {
   };
 }
 
-function upsertReadinessCheck(
+/**
+ * Readiness checks are persisted in property_readiness_checks (unique per propertyId +
+ * checkCode) so every API replica reads the same result instead of a per-process memory
+ * copy. The demoStore mirror is refreshed for the legacy in-memory readers.
+ */
+async function upsertReadinessCheck(
   propertyId: string,
   check: Omit<PropertyReadinessCheckRecord, "id" | "propertyId" | "createdAt" | "updatedAt">
-): PropertyReadinessCheckRecord {
-  const existing = demoStore.propertyReadinessChecks.find(
+): Promise<PropertyReadinessCheckRecord> {
+  const data = {
+    status: check.status,
+    severity: check.severity,
+    message: check.message,
+    relatedEntityType: check.relatedEntityType ?? null,
+    relatedEntityId: check.relatedEntityId ?? null
+  };
+  const row = await prisma.propertyReadinessCheck.upsert({
+    where: { propertyId_checkCode: { propertyId, checkCode: check.checkCode } },
+    create: { propertyId, checkCode: check.checkCode, ...data },
+    update: data
+  });
+  return mirrorRecord(
+    demoStore.propertyReadinessChecks,
+    mapReadinessCheckRow(row),
     (candidate) => candidate.propertyId === propertyId && candidate.checkCode === check.checkCode
   );
-  const timestamp = nowIso();
-  if (existing) {
-    Object.assign(existing, check, { updatedAt: timestamp });
-    return existing;
-  }
-
-  const record: PropertyReadinessCheckRecord = {
-    id: createId("ready"),
-    propertyId,
-    ...check,
-    createdAt: timestamp,
-    updatedAt: timestamp
-  };
-  demoStore.propertyReadinessChecks.push(record);
-  return record;
 }
 
-export function getBackOfficeDashboard(propertyId: string) {
-  requireProperty(propertyId);
-  const setup = getSetupProgress(propertyId);
-  const readiness = getReadiness(propertyId);
-  const modules = listBackOfficeModules(propertyId);
+const RECENT_AUDIT_EVENTS_LIMIT = 8;
+
+export async function getBackOfficeDashboard(propertyId: string) {
+  const property = await requireProperty(propertyId);
+  // Tenant-scoped counters read Prisma (source of truth): the demoStore mirrors are hydrated
+  // lazily (room types only after a /room-types call, rooms never) and auditEvents/users hold
+  // every tenant's records, which leaked other organizations' events into this dashboard.
+  const [setup, readiness, modules, ai, usersPendingInvitation, roomsMapped, roomTypesConfigured, auditRows] = await Promise.all([
+    getSetupProgress(propertyId),
+    getReadiness(propertyId),
+    listBackOfficeModules(propertyId),
+    resolveAiSettings(propertyId),
+    prisma.user.count({ where: { organizationId: property.organizationId, status: "invited" } }),
+    prisma.room.count({
+      where: { propertyId, OR: [{ buildingId: { not: null } }, { floorId: { not: null } }, { zoneId: { not: null } }] }
+    }),
+    prisma.roomType.count({ where: { propertyId, active: true } }),
+    prisma.auditEvent.findMany({ where: { propertyId }, orderBy: { createdAt: "desc" }, take: RECENT_AUDIT_EVENTS_LIMIT })
+  ]);
+  // Audit writes reach Postgres through an async queue (audit.service.ts), so events sealed a
+  // moment ago may only exist in the mirror: merge the property-scoped entries and keep the newest.
+  const recentAuditEvents = mergeById(
+    auditRows.map(mapAuditEventRow),
+    demoStore.auditEvents.filter((event) => event.propertyId === propertyId).slice(-RECENT_AUDIT_EVENTS_LIMIT)
+  )
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, RECENT_AUDIT_EVENTS_LIMIT);
   const integrationErrors = demoStore.integrationConnections.filter(
     (connection) => connection.propertyId === propertyId && connection.status === "error"
   );
   const failedIntegrationEvents = demoStore.integrationEvents.filter((event) => event.status === "failed");
-  const rooms = demoStore.rooms.filter((room) => room.propertyId === propertyId);
-  const mappedRooms = rooms.filter((room) => room.buildingId || room.floorId || room.zoneId);
   const paymentProviderConnected = demoStore.integrationConnections.some((connection) => {
     const provider = demoStore.integrationProviders.find((candidate) => candidate.id === connection.providerId);
     return connection.propertyId === propertyId && connection.status === "connected" && provider?.code.includes("payments");
@@ -2061,21 +2220,21 @@ export function getBackOfficeDashboard(propertyId: string) {
     modulesNeedingConfiguration: modules.filter((module) => module.healthStatus !== "ok"),
     integrationErrors: integrationErrors.length + failedIntegrationEvents.length,
     complianceWarnings: readiness.checks.filter((check) => check.severity !== "info").length,
-    usersPendingInvitation: demoStore.users.filter((user) => user.status === "invited").length,
-    roomsMapped: mappedRooms.length,
-    roomTypesConfigured: demoStore.roomTypes.filter((roomType) => roomType.propertyId === propertyId && roomType.active !== false).length,
+    usersPendingInvitation,
+    roomsMapped,
+    roomTypesConfigured,
     invoiceSequenceStatus: demoStore.invoiceSequences.some((sequence) => sequence.propertyId === propertyId && sequence.active)
       ? "configured"
       : "missing",
     paymentProviderStatus: paymentProviderConnected ? "connected" : "missing",
-    aiStatus: demoStore.propertyAiSettings.find((settings) => settings.propertyId === propertyId)?.aiEnabled ? "enabled" : "disabled",
+    aiStatus: ai.settings.aiEnabled ? "enabled" : "disabled",
     recommendedNextAction: blockingIssues[0]?.message ?? "Review go-live checklist.",
-    recentAuditEvents: demoStore.auditEvents.slice(-8).reverse()
+    recentAuditEvents
   };
 }
 
-export function getConfigurationCenter(propertyId: string) {
-  requireProperty(propertyId);
+export async function getConfigurationCenter(propertyId: string) {
+  await requireProperty(propertyId);
   return {
     propertyId,
     title: "Configuration Center",
@@ -2103,9 +2262,10 @@ export function getConfigurationCenter(propertyId: string) {
   };
 }
 
-export function listConfigurationCategories(propertyId: string) {
-  requirePermissions(demoStore.userContext, ["categories.read"]);
-  requireProperty(propertyId);
+// Authorization for these GETs lives in the RBAC route manifest (categories.read); the former
+// requirePermissions(demoStore.userContext) evaluated the demo super-user, not the request.
+export async function listConfigurationCategories(propertyId: string) {
+  await requireProperty(propertyId);
   return {
     propertyId,
     groups: Array.from(new Set(categoryDefinitions.map((definition) => definition.categoryGroup))).map((group) => ({
@@ -2118,9 +2278,8 @@ export function listConfigurationCategories(propertyId: string) {
   };
 }
 
-export function getConfigurationCategory(propertyId: string, categoryCode: string) {
-  requirePermissions(demoStore.userContext, ["categories.read"]);
-  requireProperty(propertyId);
+export async function getConfigurationCategory(propertyId: string, categoryCode: string) {
+  await requireProperty(propertyId);
   return categoryWithOptions(propertyId, requireCategoryDefinition(categoryCode));
 }
 
@@ -2132,10 +2291,10 @@ export function createCategoryOption(input: BackOfficeMutationInput & {
   const definition = requireCategoryDefinition(input.categoryCode);
   assertCategoryModeAllowsEdit(definition);
   if (definition.mode === "system_controlled" && !input.option.isSystemDefault) {
-    throw new Error("System-controlled legal categories can only be extended through controlled defaults.");
+    throw new ConflictError("Las categorías legales controladas por el sistema solo se amplían mediante valores por defecto controlados.");
   }
   if (propertyCategoryOptions.some((option) => option.propertyId === input.propertyId && option.categoryDefinitionId === definition.id && option.code === input.option.code)) {
-    throw new Error("Category option code must be unique per property and category.");
+    throw new ConflictError("El código de la opción debe ser único por propiedad y categoría.");
   }
   const record: PropertyCategoryOptionRecord = {
     id: createId("catopt"),
@@ -2198,7 +2357,7 @@ export function reorderCategoryOptions(input: BackOfficeMutationInput & { catego
   input.optionIds.forEach((optionId, index) => {
     const option = requireCategoryOption(input.propertyId, optionId);
     if (option.categoryDefinitionId !== definition.id) {
-      throw new Error("Cannot reorder options outside the selected category.");
+      throw new BadRequestError("No se pueden reordenar opciones fuera de la categoría seleccionada.");
     }
     option.sortOrder = index + 1;
     option.updatedBy = input.context.userId;
@@ -2208,9 +2367,9 @@ export function reorderCategoryOptions(input: BackOfficeMutationInput & { catego
   return { status: "reordered" as const, options };
 }
 
-export function listCustomFields(propertyId: string) {
-  requirePermissions(demoStore.userContext, ["custom_fields.read"]);
-  requireProperty(propertyId);
+// Authorization for this GET lives in the RBAC route manifest (custom_fields.read).
+export async function listCustomFields(propertyId: string) {
+  await requireProperty(propertyId);
   return { items: customFieldDefinitions.filter((field) => field.propertyId === propertyId) };
 }
 
@@ -2219,7 +2378,7 @@ export function createCustomField(input: BackOfficeMutationInput & {
 }) {
   requirePermissions(input.context, ["custom_fields.manage"]);
   if (customFieldDefinitions.some((field) => field.propertyId === input.propertyId && field.entityType === input.field.entityType && field.fieldKey === input.field.fieldKey)) {
-    throw new Error("Custom field key must be unique per property and entity type.");
+    throw new ConflictError("La clave del campo personalizado debe ser única por propiedad y tipo de entidad.");
   }
   const record: PropertyCustomFieldDefinitionRecord = {
     id: createId("cf"),
@@ -2248,7 +2407,7 @@ export function createCustomField(input: BackOfficeMutationInput & {
 export function patchCustomField(input: BackOfficeMutationInput & { fieldId: string; patch: Partial<PropertyCustomFieldDefinitionRecord> }) {
   requirePermissions(input.context, ["custom_fields.manage"]);
   const field = customFieldDefinitions.find((candidate) => candidate.id === input.fieldId && candidate.propertyId === input.propertyId);
-  if (!field) throw new Error("Custom field was not found.");
+  if (!field) throw new NotFoundError("Campo personalizado no encontrado.");
   const before = { ...field };
   Object.assign(field, input.patch);
   audit({ ...input, action: input.patch.active === false ? "CustomFieldDeactivated" : "CustomFieldUpdated", entityType: "property_custom_field_definition", entityId: field.id, beforeJson: before, afterJson: field });
@@ -2370,7 +2529,7 @@ export function listCategoryTemplates() {
 export function previewCategoryTemplate(input: BackOfficeMutationInput & { templateCode: string }) {
   requirePermissions(input.context, ["categories.manage"]);
   const template = categoryTemplates.find((candidate) => candidate.code === input.templateCode);
-  if (!template) throw new Error("Category template was not found.");
+  if (!template) throw new NotFoundError("Plantilla de categorías no encontrada.");
   const preview = {
     template,
     willCreate: template.creates,
@@ -2418,8 +2577,8 @@ export function suggestPropertyCategories(input: BackOfficeMutationInput & { pro
   return suggestions;
 }
 
-export function getSetupProgress(propertyId: string) {
-  requireProperty(propertyId);
+export async function getSetupProgress(propertyId: string) {
+  await requireProperty(propertyId);
   const steps = SETUP_STEPS.map((stepCode) => {
     const existing = demoStore.propertySetupSteps.find((step) => step.propertyId === propertyId && step.stepCode === stepCode);
     return (
@@ -2475,13 +2634,33 @@ export function updateSetupStep(input: BackOfficeMutationInput & {
   return record;
 }
 
-export function getReadiness(propertyId: string) {
-  requireProperty(propertyId);
-  const checks = demoStore.propertyReadinessChecks.filter((check) => check.propertyId === propertyId);
+export async function getReadiness(propertyId: string) {
+  await requireProperty(propertyId);
+  // Prisma is the source of truth (shared by every replica); the seeded demo checks live only
+  // in memory until the first recalculation persists them, so they fill in by checkCode.
+  const persisted = (
+    await prisma.propertyReadinessCheck.findMany({
+      where: { propertyId },
+      orderBy: [{ createdAt: "asc" }, { checkCode: "asc" }]
+    })
+  ).map(mapReadinessCheckRow);
+  for (const record of persisted) {
+    mirrorRecord(
+      demoStore.propertyReadinessChecks,
+      record,
+      (candidate) => candidate.propertyId === propertyId && candidate.checkCode === record.checkCode
+    );
+  }
+  const persistedCodes = new Set(persisted.map((check) => check.checkCode));
+  const checks = [
+    ...persisted,
+    ...demoStore.propertyReadinessChecks.filter((check) => check.propertyId === propertyId && !persistedCodes.has(check.checkCode))
+  ];
   const blocking = checks.filter((check) => check.severity === "blocking" && check.status !== "pass");
   return {
     propertyId,
-    status: blocking.length === 0 ? "ready" : "blocked",
+    // A property with no computed checks is not "ready": its readiness is simply unknown.
+    status: checks.length === 0 || blocking.length > 0 ? "blocked" : "ready",
     blockingCount: blocking.length,
     checks
   };
@@ -2489,16 +2668,41 @@ export function getReadiness(propertyId: string) {
 
 export async function recalculateReadiness(input: BackOfficeMutationInput) {
   requirePermissions(input.context, ["property.configure"]);
-  const property = requireProperty(input.propertyId);
+  return await computeReadiness(input);
+}
+
+/**
+ * Recomputes and persists every readiness check for the property. Shared by the explicit
+ * recalculation endpoint and by go-live approval, which must never decide on stale or missing
+ * checks. Permission gating stays in the public entry points.
+ */
+async function computeReadiness(input: BackOfficeMutationInput) {
+  const property = await requireProperty(input.propertyId);
+  // Module state: hydrate the mirror from Prisma before reading it (empty for Prisma-only hotels at boot).
+  await listPropertyModules(input.propertyId);
   const modules = enabledModuleCodes(input.propertyId);
-  const roomTypes = demoStore.roomTypes.filter((roomType) => roomType.propertyId === input.propertyId && roomType.active !== false);
-  const activeSellableRooms = demoStore.rooms.filter(
-    (room) => room.propertyId === input.propertyId && room.active !== false && room.sellable && room.roomTypeId
-  );
+  // Room-type and sellable-room checks read Prisma (source of truth): the demoStore mirrors are
+  // hydrated lazily (room types after a /room-types call, rooms never), which made the result
+  // depend on the order of previous calls and blocked go-live for Prisma-only hotels.
+  const [roomTypeCount, sellableRoomCount] = await Promise.all([
+    prisma.roomType.count({ where: { propertyId: input.propertyId, active: true } }),
+    // Room.roomTypeId is non-nullable in Prisma, so active + sellable already implies a room type.
+    prisma.room.count({ where: { propertyId: input.propertyId, active: true, sellable: true } })
+  ]);
   // Fase 0 (Opción A): el check default_building_exists lee de Prisma (fuente de verdad).
   const hasActiveBuilding = (await prisma.building.count({ where: { propertyId: input.propertyId, active: true } })) > 0;
-  const complianceSettings = demoStore.propertyComplianceSettings.find((settings) => settings.propertyId === input.propertyId);
-  const hasAdminUser = demoStore.users.some((user) => user.organizationId === property.organizationId && user.status === "active");
+  // Compliance and admin-user checks read Prisma (CFG-P0-1): the demoStore mirrors only
+  // hold seed data (or users of whichever property was listed last), which made the SES
+  // check pass trivially and the admin check misleading for real hotels.
+  const complianceSettings = (await resolveComplianceSettings(input.propertyId)).settings;
+  const assignedUserIds = (
+    await prisma.userPropertyRole.findMany({ where: { propertyId: input.propertyId }, select: { userId: true } })
+  ).map((assignment) => assignment.userId);
+  const hasAdminUser =
+    assignedUserIds.length > 0 &&
+    (await prisma.user.count({
+      where: { id: { in: assignedUserIds }, organizationId: property.organizationId, status: "active" }
+    })) > 0;
   const hasInvoiceSequence = demoStore.invoiceSequences.some((sequence) => sequence.propertyId === input.propertyId && sequence.active);
   const paymentProviderConnected = demoStore.integrationConnections.some((connection) => {
     const provider = demoStore.integrationProviders.find((candidate) => candidate.id === connection.providerId);
@@ -2520,13 +2724,13 @@ export async function recalculateReadiness(input: BackOfficeMutationInput) {
     },
     {
       checkCode: "room_type_exists",
-      status: roomTypes.length > 0 ? "pass" : "fail",
+      status: roomTypeCount > 0 ? "pass" : "fail",
       severity: "blocking",
       message: "At least one active room type is required."
     },
     {
       checkCode: "sellable_room_exists",
-      status: activeSellableRooms.length > 0 ? "pass" : "fail",
+      status: sellableRoomCount > 0 ? "pass" : "fail",
       severity: "blocking",
       message: "At least one active sellable room with a room type is required."
     },
@@ -2559,15 +2763,21 @@ export async function recalculateReadiness(input: BackOfficeMutationInput) {
     }
   ] as const;
 
-  const records = checks.map((check) => upsertReadinessCheck(input.propertyId, check));
+  // Sequential upserts keep the canonical check order (getReadiness sorts by createdAt).
+  const records: PropertyReadinessCheckRecord[] = [];
+  for (const check of checks) {
+    records.push(await upsertReadinessCheck(input.propertyId, check));
+  }
   audit({ ...input, action: "PropertyReadinessRecalculated", entityType: "property", entityId: input.propertyId, afterJson: records });
-  return getReadiness(input.propertyId);
+  return await getReadiness(input.propertyId);
 }
 
-export function approveGoLive(input: BackOfficeMutationInput) {
+export async function approveGoLive(input: BackOfficeMutationInput) {
   requirePermissions(input.context, ["property.go_live"]);
-  const readiness = getReadiness(input.propertyId);
-  if (readiness.blockingCount > 0) {
+  // Decide on freshly computed checks: a brand-new property has none persisted (which used to
+  // approve go-live with zero checks) and stale checks must not approve or block it either.
+  const readiness = await computeReadiness(input);
+  if (readiness.checks.length === 0 || readiness.blockingCount > 0) {
     return {
       status: "blocked" as const,
       blockers: readiness.checks.filter((check) => check.severity === "blocking" && check.status !== "pass")
@@ -2580,7 +2790,7 @@ export function approveGoLive(input: BackOfficeMutationInput) {
 }
 
 export async function getPropertyMap(propertyId: string) {
-  requireProperty(propertyId);
+  await requireProperty(propertyId);
   // Fase 0 (Opción A): Prisma-only para la estructura de propiedad. buildings/floors/
   // zones/spaces y rooms se sirven directamente desde Prisma (sembrados en seed.ts y
   // persistidos por createX/bulkCreateRooms), de modo que el mapa sobrevive al reinicio
@@ -2788,7 +2998,7 @@ export function upsertMapPosition(input: BackOfficeMutationInput & {
 function roomNumberFromRange(start: string, offset: number): string {
   const startNumber = Number(start);
   if (Number.isNaN(startNumber)) {
-    throw new Error("roomRangeStart must be numeric for range creation.");
+    throw new BadRequestError("roomRangeStart debe ser numérico para crear un rango de habitaciones.");
   }
   return String(startNumber + offset);
 }
@@ -2807,13 +3017,13 @@ export async function bulkCreateRooms(input: BackOfficeMutationInput & {
   requirePermissions(input.context, ["property.map.manage"]);
   const sellable = input.sellable ?? true;
   if (sellable && !input.roomTypeId) {
-    throw new Error("Sellable rooms must have a room type.");
+    throw new BadRequestError("Las habitaciones vendibles deben tener un tipo de habitación.");
   }
   // Fase 0 (Opción A): Room.roomTypeId es NOT NULL en Prisma. Las rooms no vendibles
   // del demo igualmente traen roomTypeId; si faltara, fallaría el create. No lo
   // inventamos: lo validamos explícito para dar un error claro en vez de un 500 de Prisma.
   if (!input.roomTypeId) {
-    throw new Error("A room type is required to create rooms.");
+    throw new BadRequestError("Se requiere un tipo de habitación para crear habitaciones.");
   }
 
   const roomNumbers =
@@ -2825,7 +3035,7 @@ export async function bulkCreateRooms(input: BackOfficeMutationInput & {
       : []);
 
   if (roomNumbers.length === 0) {
-    throw new Error("At least one room number is required.");
+    throw new BadRequestError("Se requiere al menos un número de habitación.");
   }
 
   // Unicidad por (propertyId, number) contra Prisma (fuente de verdad).
@@ -2835,7 +3045,7 @@ export async function bulkCreateRooms(input: BackOfficeMutationInput & {
   });
   const duplicates = existingRows.map((row) => row.number);
   if (duplicates.length > 0) {
-    throw new Error(`Room number must be unique per property: ${duplicates.join(", ")}`);
+    throw new ConflictError(`El número de habitación debe ser único por propiedad: ${duplicates.join(", ")}`);
   }
 
   await requireRoomType(input.propertyId, input.roomTypeId);
@@ -2888,11 +3098,11 @@ export async function bulkUpdateRooms(input: BackOfficeMutationInput & {
   // Fase 0 (Opción A): rooms desde Prisma (fuente de verdad) en vez de demoStore.
   const existingRows = await prisma.room.findMany({ where: { propertyId: input.propertyId, id: { in: input.roomIds } } });
   if (existingRows.length !== input.roomIds.length) {
-    throw new Error("All selected rooms must belong to the property.");
+    throw new BadRequestError("Todas las habitaciones seleccionadas deben pertenecer a la propiedad.");
   }
   const before = existingRows.map(mapRoomRow);
   if (input.patch.sellable === true && !input.patch.roomTypeId && before.some((room) => !room.roomTypeId)) {
-    throw new Error("Room cannot be marked sellable if no room type is assigned.");
+    throw new BadRequestError("Una habitación no puede marcarse como vendible sin un tipo de habitación asignado.");
   }
   if (input.patch.roomTypeId) {
     await requireRoomType(input.propertyId, input.patch.roomTypeId);
@@ -2901,13 +3111,13 @@ export async function bulkUpdateRooms(input: BackOfficeMutationInput & {
   if (input.patch.buildingId) {
     const building = await prisma.building.findFirst({ where: { id: input.patch.buildingId, propertyId: input.propertyId } });
     if (!building?.active) {
-      throw new Error("Room cannot be assigned to disabled floor/building.");
+      throw new BadRequestError("La habitación no puede asignarse a una planta o edificio desactivados.");
     }
   }
   if (input.patch.floorId) {
     const floor = await prisma.floor.findFirst({ where: { id: input.patch.floorId, propertyId: input.propertyId } });
     if (!floor?.active) {
-      throw new Error("Room cannot be assigned to disabled floor/building.");
+      throw new BadRequestError("La habitación no puede asignarse a una planta o edificio desactivados.");
     }
   }
 
@@ -3002,7 +3212,7 @@ export async function createBackOfficeRoomType(input: BackOfficeMutationInput & 
     select: { id: true }
   });
   if (duplicateInPrisma || demoStore.roomTypes.some((roomType) => roomType.propertyId === input.propertyId && roomType.code === input.roomType.code)) {
-    throw new Error("Room type code must be unique per property.");
+    throw new ConflictError("El código del tipo de habitación debe ser único por propiedad.");
   }
   const record: RoomTypeRecord = {
     id: createId("rt"),
@@ -3104,7 +3314,7 @@ export async function patchBackOfficeRoomType(input: BackOfficeMutationInput & {
           reservation.adults + reservation.children > input.patch.maxOccupancy!
       );
     if (conflictingReservation) {
-      throw new Error("Changing max occupancy must validate future reservations.");
+      throw new ConflictError("La nueva ocupación máxima entra en conflicto con reservas futuras del tipo de habitación.");
     }
   }
   const before = { ...roomType };
@@ -3134,7 +3344,7 @@ export async function mergeBackOfficeRoomTypes(input: BackOfficeMutationInput & 
   const source = await requireRoomType(input.propertyId, input.sourceRoomTypeId);
   const target = await requireRoomType(input.propertyId, input.targetRoomTypeId);
   if (source.id === target.id) {
-    throw new Error("Source and target room types must be different.");
+    throw new BadRequestError("Los tipos de habitación origen y destino deben ser distintos.");
   }
   const before = {
     source: { ...source },
@@ -3183,7 +3393,7 @@ export async function createRoomFeature(input: BackOfficeMutationInput & {
     select: { id: true }
   });
   if (duplicateInPrisma || demoStore.roomFeatures.some((feature) => feature.propertyId === input.propertyId && feature.code === input.feature.code)) {
-    throw new Error("Room feature code must be unique per property.");
+    throw new ConflictError("El código de la característica de habitación debe ser único por propiedad.");
   }
   const record: RoomFeatureRecord = {
     id: createId("rf"),
@@ -3218,7 +3428,7 @@ export async function createBedType(input: BackOfficeMutationInput & {
     select: { id: true }
   });
   if (duplicateInPrisma || demoStore.bedTypes.some((bedType) => bedType.propertyId === input.propertyId && bedType.code === input.bedType.code)) {
-    throw new Error("Bed type code must be unique per property.");
+    throw new ConflictError("El código del tipo de cama debe ser único por propiedad.");
   }
   const record: BedTypeRecord = {
     id: createId("bed"),
@@ -3279,10 +3489,10 @@ export async function commitPropertyMapImport(input: BackOfficeMutationInput & {
   requirePermissions(input.context, ["property.import"]);
   const importRecord = demoStore.propertyImports.find((candidate) => candidate.id === input.importId && candidate.propertyId === input.propertyId);
   if (!importRecord) {
-    throw new Error("Import was not found.");
+    throw new NotFoundError("Importación no encontrada.");
   }
   if (importRecord.status !== "previewed") {
-    throw new Error("Only previewed imports can be committed.");
+    throw new ConflictError("Solo se pueden confirmar importaciones previsualizadas.");
   }
 
   const rows = (importRecord.previewJson.rows ?? []) as PropertyMapImportRow[];
@@ -3290,7 +3500,7 @@ export async function commitPropertyMapImport(input: BackOfficeMutationInput & {
   const createdRooms: RoomRecord[] = [];
   for (const row of rows) {
     if (!row.roomNumber) {
-      throw new Error("Import contains a row without room number.");
+      throw new BadRequestError("La importación contiene una fila sin número de habitación.");
     }
     let roomType = row.roomType ? roomTypeByCode.get(row.roomType) : undefined;
     if (!roomType && row.roomType && input.createUnknownReferences) {
@@ -3309,7 +3519,7 @@ export async function commitPropertyMapImport(input: BackOfficeMutationInput & {
       roomTypeByCode.set(row.roomType, roomType);
     }
     if (!roomType) {
-      throw new Error(`Unknown room type ${row.roomType ?? "missing"}.`);
+      throw new BadRequestError(`Tipo de habitación desconocido: ${row.roomType ?? "sin indicar"}.`);
     }
     const created = await bulkCreateRooms({
       context: input.context,
@@ -3334,7 +3544,11 @@ export function getPropertyImport(propertyId: string, importId: string) {
   return demoStore.propertyImports.find((candidate) => candidate.propertyId === propertyId && candidate.id === importId);
 }
 
-export function listBackOfficeModules(propertyId: string) {
+export async function listBackOfficeModules(propertyId: string) {
+  // Prisma is the source of truth for PropertyModule: listPropertyModules re-hydrates the
+  // demoStore mirror (mapping DB module ids to catalog ids), so Prisma-only hotels see
+  // their real module state instead of an empty mirror.
+  await listPropertyModules(propertyId);
   const propertyModules = demoStore.propertyModules.filter((propertyModule) => propertyModule.propertyId === propertyId);
   return HOTEL_MODULES.map((manifest) => {
     const moduleRecord = demoStore.modules.find((module) => module.code === manifest.code);
@@ -3360,7 +3574,7 @@ export async function configureModule(input: BackOfficeMutationInput & { moduleC
   requirePermissions(input.context, ["modules.configure"]);
   const moduleRecord = demoStore.modules.find((module) => module.code === input.moduleCode);
   if (!moduleRecord) {
-    throw new Error("Module was not found.");
+    throw new NotFoundError("Módulo no encontrado.");
   }
   // Persistencia tanda 2: el estado PropertyModule vive en Prisma (misma fila
   // que usan enable/disable en product-modules.service); Prisma primero, espejo después.
@@ -3458,7 +3672,7 @@ export async function createDepartment(input: BackOfficeMutationInput & { depart
     select: { id: true }
   });
   if (duplicateInPrisma || demoStore.departments.some((department) => department.propertyId === input.propertyId && department.code === input.department.code)) {
-    throw new Error("Department code must be unique per property.");
+    throw new ConflictError("El código del departamento debe ser único por propiedad.");
   }
   const record: DepartmentRecord = {
     id: createId("dep"),
@@ -3757,7 +3971,7 @@ export async function assignUserToDepartment(input: BackOfficeMutationInput & {
 }
 
 export async function listBackOfficeUsers(propertyId: string) {
-  const property = requireProperty(propertyId);
+  const property = await requireProperty(propertyId);
   // Persistencia tanda 2: Prisma primero (usuarios, departamentos y
   // asignaciones), merge con los registros solo-seed y refresco del espejo.
   const [userRows, departmentRows] = await Promise.all([
@@ -3795,7 +4009,7 @@ export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
   mfaRequired?: boolean;
 }) {
   requirePermissions(input.context, ["users.invite"]);
-  const property = requireProperty(input.propertyId);
+  const property = await requireProperty(input.propertyId);
   // User.email es unique en la BD: 409 explícito en vez de un P2002 opaco.
   const duplicateInPrisma = await prisma.user.findUnique({ where: { email: input.email }, select: { id: true } });
   if (duplicateInPrisma || demoStore.users.some((user) => user.email === input.email)) {
@@ -3849,20 +4063,35 @@ export function listPermissionCatalog() {
   return Object.entries(PERMISSIONS).map(([key, description]) => ({ key, description }));
 }
 
-export function getComplianceSettings(propertyId: string) {
-  return demoStore.propertyComplianceSettings.find((settings) => settings.propertyId === propertyId);
+/**
+ * CFG-P1-4: Prisma-first compliance settings. Hotels without a row get explicit
+ * defaults derived from the property (flagged `provisioned: false`); the row is
+ * only created by the first PATCH. The demoStore record is a mirror.
+ */
+export async function getComplianceSettings(propertyId: string) {
+  const { settings, provisioned } = await resolveComplianceSettings(propertyId);
+  return { ...settings, provisioned };
 }
 
-export function patchComplianceSettings(input: BackOfficeMutationInput & { patch: Partial<PropertyComplianceSettingsRecord> }) {
+export async function patchComplianceSettings(input: BackOfficeMutationInput & { patch: Partial<PropertyComplianceSettingsRecord> }) {
   requirePermissions(input.context, ["compliance.configure"]);
-  const settings = demoStore.propertyComplianceSettings.find((candidate) => candidate.propertyId === input.propertyId);
-  if (!settings) {
-    throw new Error("Compliance settings were not found.");
-  }
-  const before = { ...settings };
-  Object.assign(settings, input.patch, { updatedAt: nowIso() });
-  audit({ ...input, action: "TaxSettingsUpdated", entityType: "property_compliance_settings", entityId: settings.id, beforeJson: before, afterJson: settings });
-  return settings;
+  const { settings: current, provisioned } = await resolveComplianceSettings(input.propertyId);
+  const before = { ...current };
+  // Identity fields are never patchable; everything else merges over the current values.
+  const { id: _id, propertyId: _propertyId, updatedAt: _updatedAt, ...patch } = input.patch;
+  const next: PropertyComplianceSettingsRecord = { ...current, ...patch, id: current.id, propertyId: input.propertyId, updatedAt: nowIso() };
+  // Prisma first (upsert by propertyId: creates the row with defaults + patch when missing), then mirror.
+  const persisted = await persistComplianceSettings(next);
+  const settings = mirrorRecord(demoStore.propertyComplianceSettings, persisted, byPropertyId(input.propertyId));
+  audit({
+    ...input,
+    action: provisioned ? "TaxSettingsUpdated" : "TaxSettingsProvisioned",
+    entityType: "property_compliance_settings",
+    entityId: settings.id,
+    beforeJson: before,
+    afterJson: settings
+  });
+  return { ...settings, provisioned: true };
 }
 
 export async function getBillingSettings(propertyId: string) {
@@ -3879,7 +4108,7 @@ export async function getBillingSettings(propertyId: string) {
 export async function patchBillingSettings(input: BackOfficeMutationInput & { invoiceSequence?: Partial<InvoiceSequenceRecord> }) {
   requirePermissions(input.context, ["billing.configure"]);
   if (!input.invoiceSequence?.sequenceCode || !input.invoiceSequence.invoiceType) {
-    throw new Error("Invoice sequence code and invoice type are required.");
+    throw new BadRequestError("El código de la serie de facturación y el tipo de factura son obligatorios.");
   }
   const patch = input.invoiceSequence;
   const existing = demoStore.invoiceSequences.find(
@@ -3945,15 +4174,16 @@ export async function patchAccountingSettings(input: BackOfficeMutationInput & {
   return settings;
 }
 
+/**
+ * CFG-P1-4: Prisma-first AI settings. Hotels without a PropertyAiSetting row get
+ * explicit defaults (`provisioned: false`, `settings` is always present); the row
+ * is created by the first PATCH. toolSettings stay in memory (out of scope).
+ */
 export async function getAiSettings(propertyId: string) {
-  // Persistencia tanda 2: Prisma primero, fallback al registro solo-seed.
-  // Los toolSettings siguen en memoria (fuera del alcance de esta tanda).
-  const row = await prisma.propertyAiSetting.findUnique({ where: { propertyId } });
-  const settings = row
-    ? mirrorRecord(demoStore.propertyAiSettings, mapAiSettingsRow(row), (candidate) => candidate.propertyId === row.propertyId)
-    : demoStore.propertyAiSettings.find((candidate) => candidate.propertyId === propertyId);
+  const { settings, provisioned } = await resolveAiSettings(propertyId);
   return {
     settings,
+    provisioned,
     toolSettings: demoStore.propertyAiToolSettings.filter((tool) => tool.propertyId === propertyId)
   };
 }
@@ -3961,20 +4191,40 @@ export async function getAiSettings(propertyId: string) {
 export async function patchAiSettings(input: BackOfficeMutationInput & { patch: Partial<PropertyAiSettingsRecord> }) {
   requirePermissions(input.context, ["ai.configure"]);
   if (input.patch.configurationJson?.documentImageRetentionPolicy === "store_by_default") {
-    throw new Error("AI settings cannot allow ID image storage by default.");
+    throw new BadRequestError("La configuración de IA no puede permitir por defecto el almacenamiento de imágenes de documentos de identidad.");
   }
-  const settings = await requireAiSettings(input.propertyId);
-  const before = { ...settings };
-  // Persistencia tanda 2: Prisma primero, después espejo con la fila mapeada.
+  const { settings: current, provisioned } = await resolveAiSettings(input.propertyId);
+  const before = { ...current };
+  // Prisma first: upsert by propertyId so a missing row is created from the current
+  // values (defaults or seed record) merged with the patch; then mirror the mapped row.
   const data: Prisma.PropertyAiSettingUncheckedUpdateInput = {};
   if (input.patch.aiEnabled !== undefined) data.aiEnabled = input.patch.aiEnabled;
   if (input.patch.defaultAutomationLevel !== undefined) data.defaultAutomationLevel = input.patch.defaultAutomationLevel;
   if (input.patch.guestFacingDisclosure !== undefined) data.guestFacingDisclosure = input.patch.guestFacingDisclosure;
   if (input.patch.voiceLocales !== undefined) data.voiceLocales = input.patch.voiceLocales;
   if (input.patch.configurationJson !== undefined) data.configurationJson = asJson(input.patch.configurationJson);
-  const row = await prisma.propertyAiSetting.update({ where: { id: settings.id }, data });
-  Object.assign(settings, mapAiSettingsRow(row));
-  audit({ ...input, action: "AISettingsUpdated", entityType: "property_ai_settings", entityId: settings.id, beforeJson: before, afterJson: settings });
+  const row = await prisma.propertyAiSetting.upsert({
+    where: { propertyId: input.propertyId },
+    update: data,
+    create: {
+      id: current.id,
+      propertyId: input.propertyId,
+      aiEnabled: input.patch.aiEnabled ?? current.aiEnabled,
+      defaultAutomationLevel: input.patch.defaultAutomationLevel ?? current.defaultAutomationLevel,
+      guestFacingDisclosure: input.patch.guestFacingDisclosure !== undefined ? input.patch.guestFacingDisclosure : current.guestFacingDisclosure ?? null,
+      voiceLocales: input.patch.voiceLocales ?? current.voiceLocales,
+      configurationJson: asJson(input.patch.configurationJson ?? current.configurationJson)
+    }
+  });
+  const settings = mirrorRecord(demoStore.propertyAiSettings, mapAiSettingsRow(row), byPropertyId(input.propertyId));
+  audit({
+    ...input,
+    action: provisioned ? "AISettingsUpdated" : "AISettingsProvisioned",
+    entityType: "property_ai_settings",
+    entityId: settings.id,
+    beforeJson: before,
+    afterJson: settings
+  });
   return settings;
 }
 
@@ -4010,7 +4260,7 @@ export async function createDocumentTemplate(input: BackOfficeMutationInput & {
         template.language === input.template.language
     )
   ) {
-    throw new Error("Template code and language must be unique per property.");
+    throw new ConflictError("El código y el idioma de la plantilla deben ser únicos por propiedad.");
   }
   const record: DocumentTemplateRecord = {
     id: createId("tpl"),
@@ -4180,10 +4430,10 @@ export async function applyBackOfficeAiSuggestion(input: BackOfficeMutationInput
     (candidate) => candidate.propertyId === input.propertyId && candidate.id === input.suggestionId
   );
   if (!suggestion) {
-    throw new Error("Back Office AI suggestion was not found.");
+    throw new NotFoundError("Sugerencia de IA de Back Office no encontrada.");
   }
   if (suggestion.status !== "previewed" || !suggestion.requiresConfirmation) {
-    throw new Error("AI cannot apply Back Office changes without preview and confirmation.");
+    throw new ConflictError("La IA no puede aplicar cambios de Back Office sin previsualización y confirmación.");
   }
 
   const before = { ...suggestion };
@@ -4243,7 +4493,7 @@ export async function applyBackOfficeAiSuggestion(input: BackOfficeMutationInput
       }
     });
   } else {
-    result = getReadiness(input.propertyId);
+    result = await getReadiness(input.propertyId);
   }
 
   suggestion.status = "applied";

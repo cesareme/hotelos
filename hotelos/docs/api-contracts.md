@@ -4,8 +4,10 @@
 
 API edge permissions are declared in `apps/api/src/security/route-permissions.ts` and enforced by a Fastify `preHandler`.
 
-- Every mutating `POST` and `PATCH` route must have a manifest entry.
-- `DELETE` routes are also manifest-protected when used for connection or lifecycle changes.
+- Every registered route — `GET` included — must have an exact `method + path` manifest entry. The `preHandler` runs on public routes too, so those are declared with `permissions: []` and `riskLevel: "public"`.
+- A mutation (`POST`, `PATCH`, `DELETE`) without an entry is always refused with 403.
+- A `GET` without an entry is refused with 403 in strict mode. Strict mode is `RBAC_STRICT=true`, or — when `RBAC_STRICT` is unset — `NODE_ENV=production` (fail-closed by default in production; `RBAC_STRICT=false` is an explicit opt-out). Dev/demo environments stay fail-open with a logged warning per path.
+- `tests/api-route-permissions-contract.test.mjs` (CI, `pnpm test`) asserts set equality between the registered routes (`server.ts`, `routes/*.ts`, template loops) and the manifest: no unmapped route, no orphan entry, no duplicate entry (lookup is first-wins), and every permission key present in `PERMISSIONS` (`packages/shared`).
 - High-risk operational actions name the same permissions as the service layer.
 - Critical actions such as refunds, invoice issue/cancel, journal posting, room blocking, and AI confirmation execution require high-risk or role-specific permissions.
 - The manifest is additive to service-level validation; backend tools still validate business rules, property scope, confirmations, and audit events.
@@ -111,7 +113,6 @@ Refunds require `payment.refund` and `ai.high_risk.confirm`. Closing a folio req
 
 - `GET /properties/:propertyId/invoices`
 - `POST /invoices/drafts`
-- `PATCH /invoices/:id`
 - `POST /invoices/:id/issue`
 - `POST /invoices/:id/cancel`
 - `POST /invoices/:id/rectifying`

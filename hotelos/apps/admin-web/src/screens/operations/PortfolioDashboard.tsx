@@ -1,9 +1,16 @@
-import { getActiveOrganizationId } from "../../services/activeProperty";
+import {
+  getActiveOrganizationId,
+  loadSwitchableProperties,
+  setActiveProperty
+} from "../../services/activeProperty";
+import { navigateTo } from "../../lib/navigate";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
 
 const ORGANIZATION_ID = getActiveOrganizationId();
+// Path registered for PropertyDetailScreen in routes/backoffice.routes.tsx.
+const PROPERTY_DETAIL_PATH = "/backoffice/property-detail";
 
 type PortfolioHealth = "ok" | "warn" | "error";
 type PortfolioPropertyStatus = "open" | "closed" | "maintenance";
@@ -114,16 +121,29 @@ function statusPill(status: PortfolioPropertyStatus) {
   return <span className={`bo-status ${kind}`}>{STATUS_LABEL[status]}</span>;
 }
 
-function navigateToProperty(propertyId: string) {
-  if (typeof window === "undefined") return;
-  // Persist the chosen property scope so the PropertyDetailScreen drill-down
-  // (and other downstream dashboards) can read it from this storage key.
+// Repoint the active property at the chosen row through the shared service
+// (id + organization + name together, taken from the user's switchable list)
+// so the switcher label, the org key and the module-level PROPERTY_ID
+// constants of every screen stay in sync. setActiveProperty reloads when the
+// scope changes, so the detail path is pushed first and survives the reload;
+// when nothing changed we navigate in-app instead. Resolves to a user-facing
+// problem message when the drill-down cannot happen.
+async function openPropertyDetail(propertyId: string): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  let list;
   try {
-    window.localStorage?.setItem("hotelos-active-property", propertyId);
-  } catch {
-    // Best-effort only.
+    list = await loadSwitchableProperties();
+  } catch (err) {
+    return err instanceof Error ? err.message : "No se pudieron cargar las propiedades.";
   }
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "PropertyDetailScreen" }));
+  const row = list.find((property) => property.id === propertyId);
+  if (!row) return "La propiedad seleccionada no está disponible para tu usuario.";
+  if (window.location.pathname !== PROPERTY_DETAIL_PATH) {
+    window.history.pushState(null, "", PROPERTY_DETAIL_PATH);
+  }
+  setActiveProperty({ propertyId: row.id, organizationId: row.organizationId, propertyName: row.name });
+  navigateTo("PropertyDetailScreen");
+  return null;
 }
 
 function compareRows(a: PortfolioPropertyRow, b: PortfolioPropertyRow, key: SortKey, dir: SortDirection): number {
@@ -204,6 +224,11 @@ export function PortfolioDashboard() {
   const alerts = data?.alerts ?? [];
 
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDirection }>({ key: "revenueMtdEur", dir: "desc" });
+  const [drillDownError, setDrillDownError] = useState<string | null>(null);
+
+  function navigateToProperty(propertyId: string) {
+    void openPropertyDetail(propertyId).then((problem) => setDrillDownError(problem));
+  }
 
   function onSort(key: SortKey) {
     setSort((prev) => {
@@ -239,6 +264,7 @@ export function PortfolioDashboard() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {loading ? <span className="bo-status info">cargando</span> : null}
           {error ? <span className="bo-status error">{error}</span> : null}
+          {drillDownError ? <span className="bo-status error" role="alert">{drillDownError}</span> : null}
           {singleProperty ? <span className="bo-chip">organización con una sola propiedad</span> : null}
           <button type="button" onClick={refresh}>Actualizar</button>
         </div>

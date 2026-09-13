@@ -158,7 +158,13 @@ export type ComplianceHealthReport = {
   };
 };
 
-export async function getComplianceHealth(): Promise<ComplianceHealthReport> {
+export async function getComplianceHealth(organizationId?: string): Promise<ComplianceHealthReport> {
+  // Submission tables carry propertyId but no relation to Property: scope the
+  // 24h counters to the caller's organization through its property ids.
+  const orgProperties = organizationId
+    ? await prisma.property.findMany({ where: { organizationId }, select: { id: true } })
+    : null;
+  const tenantScope = orgProperties ? { propertyId: { in: orgProperties.map((p) => p.id) } } : {};
   const integrations = [
     getVerifactuHealth(),
     getSesHospedajesHealth(),
@@ -176,14 +182,18 @@ export async function getComplianceHealth(): Promise<ComplianceHealthReport> {
 
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const [vCount, sCount, tCount, vRejected, sRejected] = await Promise.all([
-    prisma.verifactuSubmission.count({ where: { createdAt: { gte: dayAgo } } }).catch(() => 0),
-    prisma.sesHospedajesSubmission.count({ where: { createdAt: { gte: dayAgo } } }).catch(() => 0),
+    prisma.verifactuSubmission.count({ where: { ...tenantScope, createdAt: { gte: dayAgo } } }).catch(() => 0),
+    prisma.sesHospedajesSubmission.count({ where: { ...tenantScope, createdAt: { gte: dayAgo } } }).catch(() => 0),
     // tbai usa una tabla distinta o reutiliza verifactu — protegemos:
     prisma.verifactuSubmission
-      .count({ where: { createdAt: { gte: dayAgo }, endpoint: { contains: "tbai" } } })
+      .count({ where: { ...tenantScope, createdAt: { gte: dayAgo }, endpoint: { contains: "tbai" } } })
       .catch(() => 0),
-    prisma.verifactuSubmission.count({ where: { status: "rejected", createdAt: { gte: dayAgo } } }).catch(() => 0),
-    prisma.sesHospedajesSubmission.count({ where: { status: "rejected", createdAt: { gte: dayAgo } } }).catch(() => 0)
+    prisma.verifactuSubmission
+      .count({ where: { ...tenantScope, status: "rejected", createdAt: { gte: dayAgo } } })
+      .catch(() => 0),
+    prisma.sesHospedajesSubmission
+      .count({ where: { ...tenantScope, status: "rejected", createdAt: { gte: dayAgo } } })
+      .catch(() => 0)
   ]);
 
   return {

@@ -247,7 +247,10 @@ export type PermissionKey =
   | "onboarding.go_live"
   | "onboarding.view_sensitive"
   | "onboarding.manage_cutover"
-  | "audit.read";
+  | "audit.read"
+  // Platform scope (HotelOS staff). Listed in PLATFORM_PERMISSION_KEYS and
+  // excluded from every organization role template.
+  | "admin.tenants.manage";
 
 export type RoleKey =
   | "owner"
@@ -257,6 +260,7 @@ export type RoleKey =
   | "maintenance"
   | "accountant"
   | "compliance"
+  | "revenue"
   | "admin";
 
 export type ToolContext = {

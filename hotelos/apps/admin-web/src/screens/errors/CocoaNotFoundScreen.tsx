@@ -4,8 +4,8 @@
 // ilustración EmptyStateBox (paquete cocoa-illustrations), un título, una
 // descripción y dos acciones: volver al inicio y abrir la command palette.
 //
-// La navegación se hace mediante el evento global `hotelos-nav` (igual que en
-// BackOfficeDashboard.tsx) y la apertura de la command palette se simula
+// La navegación usa el helper tipado `navigateTo` (lib/navigate.ts) sobre el
+// evento global `hotelos-nav`, y la apertura de la command palette se simula
 // despachando el atajo Cmd+K (Meta+K), que es escuchado por
 // useCocoaCommandPaletteHotkey en la capa de layout.
 
@@ -13,10 +13,7 @@ import type { CSSProperties } from "react";
 
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { EmptyStateBox } from "../../components/cocoa-illustrations";
-
-function navigate(screen: string): void {
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-}
+import { navigateTo } from "../../lib/navigate";
 
 // Simula la pulsación de Cmd+K para abrir la command palette global. El hook
 // `useCocoaCommandPaletteHotkey` escucha este atajo en `document` y abre la
@@ -94,7 +91,7 @@ export function CocoaNotFoundScreen() {
           <CocoaButton
             variant="filled"
             tone="accent"
-            onClick={() => navigate("HomeDashboard")}
+            onClick={() => navigateTo("FrontDeskDashboard")}
           >
             Volver al inicio
           </CocoaButton>

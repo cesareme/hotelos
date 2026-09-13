@@ -199,8 +199,8 @@ describe("Back Office hotel setup layer", () => {
 
   it("implements Back Office validation, audit, imports and go-live blockers", () => {
     for (const marker of [
-      "Room number must be unique per property",
-      "Sellable rooms must have a room type",
+      "El número de habitación debe ser único por propiedad",
+      "Las habitaciones vendibles deben tener un tipo de habitación",
       "PropertyImportPreviewed",
       "PropertyImportCommitted",
       "PropertyGoLiveApproved",
@@ -209,13 +209,13 @@ describe("Back Office hotel setup layer", () => {
       "RoomTypeDeactivated",
       "RoomTypeMerged",
       "RoomBulkUpdated",
-      "Changing max occupancy must validate future reservations",
-      "Room cannot be marked sellable if no room type is assigned",
+      "La nueva ocupación máxima entra en conflicto con reservas futuras",
+      "Una habitación no puede marcarse como vendible sin un tipo de habitación asignado",
       "UserInvited",
       "UserDisabled",
       "TemplateCreated",
       "blockingCount",
-      "AI settings cannot allow ID image storage by default",
+      "La configuración de IA no puede permitir por defecto el almacenamiento de imágenes de documentos de identidad",
       "QRCodeGenerated",
       "QRCodeBulkGenerated",
       "PropertyMapPositionCreated",
@@ -223,7 +223,7 @@ describe("Back Office hotel setup layer", () => {
       "MaintenanceAreaCreated",
       "BackOfficeAiSuggestionCreated",
       "BackOfficeAiSuggestionApplied",
-      "AI cannot apply Back Office changes without preview and confirmation",
+      "La IA no puede aplicar cambios de Back Office sin previsualización y confirmación",
       "ModuleConfigured"
     ]) {
       assert.match(backofficeService, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));

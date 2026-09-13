@@ -13,6 +13,7 @@
 //     sin pisarse en merges.
 
 import type { FastifyPluginAsync } from "fastify";
+import { assertEntityAccess } from "../lib/tenancy.js";
 import {
   listSubscriptions,
   createSubscription,
@@ -36,6 +37,7 @@ export const webhooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.patch("/webhooks/subscriptions/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "webhookSubscription", id: (request.params as { id: string }).id });
     return updateSubscription({
       context: request.userContext,
       id: (request.params as { id: string }).id,
@@ -44,6 +46,7 @@ export const webhooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.delete("/webhooks/subscriptions/:id", async (request) => {
+    await assertEntityAccess(request, { entity: "webhookSubscription", id: (request.params as { id: string }).id });
     return deleteSubscription({
       context: request.userContext,
       id: (request.params as { id: string }).id
@@ -51,6 +54,7 @@ export const webhooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.get("/webhooks/subscriptions/:id/deliveries", async (request) => {
+    await assertEntityAccess(request, { entity: "webhookSubscription", id: (request.params as { id: string }).id });
     const limit = Number((request.query as { limit?: string })?.limit ?? 50);
     return {
       items: await listDeliveries({
@@ -62,6 +66,7 @@ export const webhooksRoutes: FastifyPluginAsync = async (app) => {
   });
 
   app.post("/webhooks/subscriptions/:id/test", async (request) => {
+    await assertEntityAccess(request, { entity: "webhookSubscription", id: (request.params as { id: string }).id });
     return testSubscription({
       context: request.userContext,
       id: (request.params as { id: string }).id

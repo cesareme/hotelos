@@ -1,6 +1,9 @@
 // Tourist tax bounded context — tercer plugin Fastify (P1-16).
 
 import type { FastifyPluginAsync } from "fastify";
+import { BadRequestError } from "../lib/http-error.js";
+import { requireDateRange } from "../lib/query-dates.js";
+import { assertEntityAccess } from "../lib/tenancy.js";
 import {
   computeTouristTax,
   applyTouristTaxToFolio,
@@ -31,6 +34,11 @@ export const touristTaxRoutes: FastifyPluginAsync = async (app) => {
       municipality?: string | null;
       establishmentClass?: string;
     };
+    if (typeof body.reservationId !== "string" || body.reservationId.length === 0) {
+      throw new BadRequestError("reservationId es obligatorio.");
+    }
+    // The charge lands on the reservation's folio: same tenant rule as /reservations/:id.
+    await assertEntityAccess(request, { entity: "reservation", id: body.reservationId });
     return applyTouristTaxToFolio({
       context: request.userContext,
       reservationId: body.reservationId,
@@ -42,12 +50,15 @@ export const touristTaxRoutes: FastifyPluginAsync = async (app) => {
 
   app.get("/properties/:propertyId/tourist-tax/applications", async (request) => {
     const params = request.params as { propertyId: string };
-    const q = (request.query ?? {}) as { fromDate: string; toDate: string };
+    const q = (request.query ?? {}) as { fromDate?: string; toDate?: string };
+    // Missing/invalid dates used to reach Prisma as `Invalid Date` → 500. A
+    // same-day period is valid here (stayFrom between the two, inclusive).
+    const { fromDate, toDate } = requireDateRange(q.fromDate, q.toDate, { strict: false });
     return listApplicationsForPeriod({
       context: request.userContext,
       propertyId: params.propertyId,
-      fromDate: q.fromDate,
-      toDate: q.toDate
+      fromDate,
+      toDate
     });
   });
 };

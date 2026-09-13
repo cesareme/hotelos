@@ -12,94 +12,19 @@
 // el endpoint deja de funcionar aunque el token siga válido en env.
 
 import { prisma, hashPassword } from "@hotelos/database";
+import { ROLE_PERMISSION_MAP } from "@hotelos/shared";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, ForbiddenError } from "../../lib/http-error.js";
 import { assertPasswordPolicy } from "../auth/auth-pilot.service.js";
+import { applyRoleTemplate, syncPermissionCatalog } from "../../lib/rbac-catalog.js";
+import { ensurePropertySettings, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
 
-// ───────────────────────────────────────────────── lista canónica de permisos
-// Espejo de packages/database/prisma/seed.ts DEMO_PERMISSIONS para garantizar
-// que un piloto fresco tiene exactamente las mismas capacidades que el demo.
-export const PILOT_CANONICAL_PERMISSIONS: readonly string[] = [
-  "backoffice.access",
-  "configuration.read",
-  "configuration.manage",
-  "categories.read",
-  "categories.manage",
-  "custom_fields.read",
-  "custom_fields.manage",
-  "property_profile.edit",
-  "property.configure",
-  "property.map.read",
-  "room_types.manage",
-  "rooms.manage",
-  "spaces.manage",
-  "departments.manage",
-  "operations_setup.manage",
-  "revenue_setup.manage",
-  "compliance_setup.manage",
-  "ai_category_setup.use",
-  "pms.reservation.read",
-  "pms.reservation.create",
-  "pms.reservation.update",
-  "pms.reservation.cancel",
-  "pms.reservation.check_in",
-  "pms.reservation.check_out",
-  "guests.read",
-  "guests.manage",
-  "housekeeping.task.manage",
-  "maintenance.workorder.manage",
-  "billing.compliance.view",
-  "invoice.issue",
-  "accounting.journal.post",
-  "compliance.ses.submit",
-  "compliance.ses.export",
-  "compliance.ses.configure",
-  "compliance.gdpr.manage",
-  "guest_register.read",
-  "guest_register.create",
-  "guest_register.edit",
-  "guest_register.sign",
-  "guest_register.submit",
-  "guest_register.configure",
-  "guest_register.export",
-  "modules.read",
-  "modules.enable",
-  "modules.configure",
-  "integrations.read",
-  "integrations.connect",
-  "assets.read",
-  "owner.dashboard.read",
-  "revenue.read",
-  "revenue.forecast.read",
-  "revenue.recommend",
-  "revenue.manage_rates",
-  "revenue.manage_restrictions",
-  "revenue.apply_recommendations",
-  "revenue.history_forecast.read",
-  "revenue.history_forecast.export",
-  "channel_manager.read",
-  "channel_manager.manage",
-  "channel_manager.sync",
-  "channel_manager.mappings.manage",
-  "channel_manager.parity.read",
-  "payroll.manage",
-  "banking.reconcile",
-  "notifications.manage",
-  "guest_experience.inbox.read",
-  "ai.tool.execute",
-  "ai_governance.read",
-  "onboarding.read",
-  "onboarding.create",
-  "onboarding.upload",
-  "onboarding.ai_extract",
-  "onboarding.ai_map",
-  "onboarding.review",
-  "onboarding.apply",
-  "onboarding.go_live",
-  "audit.read",
-  "users.read",
-  "users.invite"
-] as const;
+// ───────────────────────────────────────────────── permisos del piloto
+// Tanda 1: la lista copiada a mano (79 claves, 4 de ellas fuera del catálogo)
+// se sustituye por la plantilla compartida "owner" = ORG_PERMISSION_KEYS
+// (packages/shared/src/permissions.ts). Se conserva el nombre exportado para
+// los lectores existentes; la fuente única es ROLE_PERMISSION_MAP.owner.
+export const PILOT_CANONICAL_PERMISSIONS: readonly string[] = ROLE_PERMISSION_MAP.owner;
 
 // ───────────────────────────────────────────────── tipos
 
@@ -216,17 +141,10 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
       }
     });
 
-    // Permisos canónicos: upsert para tolerar ejecuciones parciales previas
-    // (aunque la guard del count() lo evita, defendemos por si acaso).
-    let permissionsSeeded = 0;
-    for (const key of PILOT_CANONICAL_PERMISSIONS) {
-      await tx.permission.upsert({
-        where: { key },
-        update: {},
-        create: { key, description: key }
-      });
-      permissionsSeeded += 1;
-    }
+    // Catálogo completo (idempotente, con descripciones reales) + rol Owner con
+    // la plantilla compartida "owner" en la misma transacción. Un piloto fresco
+    // arranca con el mismo alcance que un tenant creado por createTenant.
+    await syncPermissionCatalog({ db: tx });
 
     const ownerRole = await tx.role.create({
       data: {
@@ -235,16 +153,8 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
       }
     });
 
-    const allPerms = await tx.permission.findMany({
-      where: { key: { in: [...PILOT_CANONICAL_PERMISSIONS] } },
-      select: { id: true }
-    });
-
-    for (const perm of allPerms) {
-      await tx.rolePermission.create({
-        data: { roleId: ownerRole.id, permissionId: perm.id }
-      });
-    }
+    const ownerTemplate = await applyRoleTemplate(ownerRole.id, "owner", { db: tx });
+    const permissionsSeeded = ownerTemplate.granted;
 
     const user = await tx.user.create({
       data: {
@@ -267,6 +177,8 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
     });
 
     return {
+      organization: org,
+      property,
       organizationId: org.id,
       propertyId: property.id,
       userId: user.id,
@@ -274,6 +186,13 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
       permissionsSeeded
     };
   });
+
+  // Settings por propiedad (PropertyAiSetting + PropertyComplianceSetting) y
+  // espejos en memoria, igual que createTenant, para que el piloto sea usable
+  // sin reiniciar. Idempotente.
+  await ensurePropertySettings(result.property.id);
+  mirrorOrganization(result.organization);
+  mirrorProperty(result.property);
 
   recordAuditEvent({
     organizationId: result.organizationId,
@@ -293,7 +212,11 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
   });
 
   return {
-    ...result,
+    organizationId: result.organizationId,
+    propertyId: result.propertyId,
+    userId: result.userId,
+    ownerRoleId: result.ownerRoleId,
+    permissionsSeeded: result.permissionsSeeded,
     message: "Piloto inicializado. El endpoint /onboarding/bootstrap queda deshabilitado a partir de ahora."
   };
 }

@@ -17,9 +17,12 @@
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
-import { resolveAdapter } from "./adapters/index.js";
+import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
+import { listProviderCodes, resolveAdapter } from "./adapters/index.js";
+import { buildStubReservations, seedHash, simulateLatency } from "./adapters/stub-utils.js";
 import type {
   AvailabilityPushItem,
+  ChannelAdapter,
   ChannelContext,
   ChannelProviderCode,
   RatePushItem,
@@ -30,7 +33,7 @@ type DateRange = { from: string; to: string };
 
 function parseDate(value: string): Date {
   const d = new Date(value);
-  if (Number.isNaN(d.getTime())) throw new Error(`Invalid date: ${value}`);
+  if (Number.isNaN(d.getTime())) throw new BadRequestError(`Fecha inválida: ${value}`);
   return d;
 }
 
@@ -48,6 +51,99 @@ function toChannelContext(ch: {
     providerCode: ch.providerCode as ChannelProviderCode,
     credentialsJson: credentials
   };
+}
+
+// ---- Provider registry bridge ----
+// The product UI and the demo data (RevenueChannelRecord in lib/demo-store.ts,
+// CHANNEL_MANAGER_ADAPTERS in packages/integrations/src/channel-manager.ts)
+// offer the mock provider codes below, while adapters/index.ts only registers
+// the five OTA stubs (booking/expedia/airbnb/hotelbeds/vrbo). Posting one of
+// the mock codes used to throw a plain Error → HTTP 500. They now resolve to an
+// in-process mock adapter with the same semantics as the integrations package
+// (every push succeeds; direct/manual channels have no reservation feed, the
+// OTA mocks reuse the deterministic stub feed). No real connector is invented.
+const MOCK_PROVIDER_CODES = [
+  "booking_com_mock",
+  "expedia_mock",
+  "google_hotels_mock",
+  "direct_booking_engine",
+  "manual_channel"
+] as const;
+type MockProviderCode = (typeof MOCK_PROVIDER_CODES)[number];
+
+function isMockProviderCode(code: string): code is MockProviderCode {
+  return (MOCK_PROVIDER_CODES as readonly string[]).includes(code);
+}
+
+const mockAdapters = new Map<MockProviderCode, ChannelAdapter>();
+
+function mockAdapterFor(providerCode: MockProviderCode): ChannelAdapter {
+  const cached = mockAdapters.get(providerCode);
+  if (cached) return cached;
+  const hasReservationFeed = providerCode !== "direct_booking_engine" && providerCode !== "manual_channel";
+  const push = async ({ channel, items }: { channel: ChannelContext; items: unknown[] }) => {
+    const latencyMs = await simulateLatency(seedHash(channel.id, providerCode, items.length));
+    return { ok: true, pushed: items.length, latencyMs, raw: { stub: true, provider: providerCode } };
+  };
+  const adapter: ChannelAdapter = {
+    // The adapter contract types providerCode as the OTA union; the mock codes
+    // travel through the same field (toChannelContext applies the same cast).
+    providerCode: providerCode as unknown as ChannelProviderCode,
+    pushRates: push,
+    pushAvailability: push,
+    pushRestrictions: push,
+    async fetchReservations({ channel, since }) {
+      await simulateLatency(seedHash(channel.id, providerCode, "fetchRes"));
+      return {
+        ok: true,
+        reservations: hasReservationFeed ? buildStubReservations(channel.id, since, providerCode) : []
+      };
+    },
+    async testCredentials({ channel }) {
+      await simulateLatency(seedHash(channel.id, providerCode, "testCreds"));
+      return { ok: true, metadata: { provider: providerCode, mode: "mock" } };
+    }
+  };
+  mockAdapters.set(providerCode, adapter);
+  return adapter;
+}
+
+/** Adapter for a stored/posted providerCode: OTA stubs first, then the mock codes; null when unknown. */
+function resolveChannelAdapter(providerCode: string): ChannelAdapter | null {
+  const code = providerCode.toLowerCase();
+  const registered = resolveAdapter(code);
+  if (registered) return registered;
+  return isMockProviderCode(code) ? mockAdapterFor(code) : null;
+}
+
+function supportedProviderCodes(): string[] {
+  return [...listProviderCodes(), ...MOCK_PROVIDER_CODES];
+}
+
+/** 400 (not 500) for a providerCode nobody registers, listing what is accepted. */
+function unsupportedProviderError(providerCode: string): BadRequestError {
+  return new BadRequestError(
+    `Proveedor de canal no soportado: ${providerCode}. Válidos: ${supportedProviderCodes().join(", ")}.`
+  );
+}
+
+/** Channel.channelType for a providerCode (same vocabulary as RevenueChannelRecord). */
+function channelTypeFor(providerCode: string): string {
+  switch (providerCode.toLowerCase()) {
+    case "hotelbeds":
+      return "wholesaler";
+    case "airbnb":
+    case "vrbo":
+      return "vacation_rental";
+    case "google_hotels_mock":
+      return "metasearch";
+    case "direct_booking_engine":
+      return "direct";
+    case "manual_channel":
+      return "manual";
+    default:
+      return "ota";
+  }
 }
 
 async function logSyncJob(input: {
@@ -145,10 +241,9 @@ export async function createChannel(input: {
   displayName: string;
   credentialsJson?: Record<string, unknown> | null;
 }) {
-  const adapter = resolveAdapter(input.providerCode);
-  if (!adapter) throw new Error(`Unsupported providerCode: ${input.providerCode}`);
-  const channelType =
-    input.providerCode === "hotelbeds" ? "wholesaler" : input.providerCode === "airbnb" || input.providerCode === "vrbo" ? "vacation_rental" : "ota";
+  const adapter = resolveChannelAdapter(input.providerCode);
+  if (!adapter) throw unsupportedProviderError(input.providerCode);
+  const channelType = channelTypeFor(input.providerCode);
   const configurationJson: Record<string, unknown> = input.credentialsJson
     ? { credentials: input.credentialsJson }
     : {};
@@ -172,9 +267,9 @@ export async function createChannel(input: {
 
 export async function testChannel(channelId: string) {
   const channel = await prisma.channel.findUnique({ where: { id: channelId } });
-  if (!channel) throw new Error(`Channel not found: ${channelId}`);
-  const adapter = resolveAdapter(channel.providerCode);
-  if (!adapter) throw new Error(`Unsupported providerCode: ${channel.providerCode}`);
+  if (!channel) throw new NotFoundError("Canal no encontrado.");
+  const adapter = resolveChannelAdapter(channel.providerCode);
+  if (!adapter) throw unsupportedProviderError(channel.providerCode);
   const startedAt = new Date();
   const result = await adapter.testCredentials({ channel: toChannelContext(channel) });
   const finishedAt = new Date();
@@ -234,7 +329,7 @@ export async function pushRates(input: {
 
   const results = [];
   for (const channel of channels) {
-    const adapter = resolveAdapter(channel.providerCode);
+    const adapter = resolveChannelAdapter(channel.providerCode);
     if (!adapter) {
       results.push({ channelId: channel.id, providerCode: channel.providerCode, ok: false, errors: ["No adapter registered"] });
       continue;
@@ -324,7 +419,7 @@ export async function pushAvailability(input: {
 
   const results = [];
   for (const channel of channels) {
-    const adapter = resolveAdapter(channel.providerCode);
+    const adapter = resolveChannelAdapter(channel.providerCode);
     if (!adapter) {
       results.push({ channelId: channel.id, providerCode: channel.providerCode, ok: false, errors: ["No adapter registered"] });
       continue;
@@ -408,7 +503,7 @@ export async function pushRestrictions(input: {
 
   const results = [];
   for (const channel of channels) {
-    const adapter = resolveAdapter(channel.providerCode);
+    const adapter = resolveChannelAdapter(channel.providerCode);
     if (!adapter) {
       results.push({ channelId: channel.id, providerCode: channel.providerCode, ok: false, errors: ["No adapter registered"] });
       continue;
@@ -488,9 +583,9 @@ export async function pushRestrictions(input: {
 
 export async function ingestReservations(input: { channelId: string; since?: Date }) {
   const channel = await prisma.channel.findUnique({ where: { id: input.channelId } });
-  if (!channel) throw new Error(`Channel not found: ${input.channelId}`);
-  const adapter = resolveAdapter(channel.providerCode);
-  if (!adapter) throw new Error(`Unsupported providerCode: ${channel.providerCode}`);
+  if (!channel) throw new NotFoundError("Canal no encontrado.");
+  const adapter = resolveChannelAdapter(channel.providerCode);
+  if (!adapter) throw unsupportedProviderError(channel.providerCode);
   const since = input.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
   const startedAt = new Date();
   const fetchResult = await adapter.fetchReservations({ channel: toChannelContext(channel), since });

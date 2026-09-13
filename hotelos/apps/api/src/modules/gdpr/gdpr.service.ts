@@ -2,6 +2,7 @@ import { prisma } from "@hotelos/database";
 import { createId } from "../../lib/ids.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 
 export type GdprRequestType = "dsar" | "erasure" | "rectification" | "portability";
 
@@ -36,7 +37,7 @@ type ErasureSummary = {
 
 function assertRequestType(value: string): asserts value is GdprRequestType {
   if (!VALID_REQUEST_TYPES.includes(value as GdprRequestType)) {
-    throw new Error(`Unsupported GDPR requestType '${value}'. Must be one of: ${VALID_REQUEST_TYPES.join(", ")}.`);
+    throw new BadRequestError(`requestType '${value}' no válido. Valores admitidos: ${VALID_REQUEST_TYPES.join(", ")}.`);
   }
 }
 
@@ -242,9 +243,9 @@ export async function createGdprRequest(input: {
   correlationId?: string;
 }) {
   assertRequestType(input.requestType);
-  if (!input.requestorEmail) throw new Error("requestorEmail is required.");
+  if (!input.requestorEmail) throw new BadRequestError("requestorEmail es obligatorio.");
   if (!input.subjectEmail && !input.subjectId) {
-    throw new Error("Either subjectEmail or subjectId is required to identify the data subject.");
+    throw new BadRequestError("Se necesita subjectEmail o subjectId para identificar al interesado.");
   }
 
   const now = new Date();
@@ -322,9 +323,11 @@ export async function acknowledgeRequest(requestId: string, userId: string) {
 
 export async function fulfillDsar(requestId: string, userId: string) {
   const request = await prisma.gdprRequest.findUnique({ where: { id: requestId } });
-  if (!request) throw new Error(`GDPR request ${requestId} not found.`);
+  if (!request) throw new NotFoundError("Solicitud RGPD no encontrada.");
   if (request.requestType !== "dsar" && request.requestType !== "portability") {
-    throw new Error(`Request ${requestId} is not a DSAR or portability request (got '${request.requestType}').`);
+    throw new ConflictError(
+      `La solicitud ${requestId} no es de acceso (dsar) ni de portabilidad (tipo actual: '${request.requestType}').`
+    );
   }
 
   const dossier = await compileDossier({
@@ -382,9 +385,9 @@ export async function executeErasure(
   options: { confirmRetentionOverride: boolean }
 ) {
   const request = await prisma.gdprRequest.findUnique({ where: { id: requestId } });
-  if (!request) throw new Error(`GDPR request ${requestId} not found.`);
+  if (!request) throw new NotFoundError("Solicitud RGPD no encontrada.");
   if (request.requestType !== "erasure") {
-    throw new Error(`Request ${requestId} is not an erasure request (got '${request.requestType}').`);
+    throw new ConflictError(`La solicitud ${requestId} no es de supresión (erasure) (tipo actual: '${request.requestType}').`);
   }
 
   const { guestIds, guestProfileIds } = await resolveSubjectIdentifiers({
@@ -644,7 +647,7 @@ export async function getRequest(id: string) {
 }
 
 export async function rejectRequest(id: string, reason: string, userId?: string) {
-  if (!reason || !reason.trim()) throw new Error("Rejection reason is required.");
+  if (!reason || !reason.trim()) throw new BadRequestError("El motivo de rechazo es obligatorio.");
   const updated = await prisma.gdprRequest.update({
     where: { id },
     data: { status: "rejected", rejectedAt: new Date(), rejectedReason: reason }

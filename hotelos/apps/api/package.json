@@ -10,7 +10,8 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "backfill:pii": "tsx src/jobs/pii-backfill.ts"
+    "backfill:pii": "tsx src/jobs/pii-backfill.ts",
+    "rbac:sync": "node --env-file-if-exists=../../.env --import tsx src/scripts/rbac-sync.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

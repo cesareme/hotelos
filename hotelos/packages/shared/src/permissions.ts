@@ -211,30 +211,48 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   "onboarding.go_live": "Approve onboarding go-live readiness",
   "onboarding.view_sensitive": "View sensitive onboarding previews and source records",
   "onboarding.manage_cutover": "Manage cutover plan, freeze window and delta import",
-  "audit.read": "Read audit logs"
+  "audit.read": "Read audit logs",
+  "admin.tenants.manage": "Manage platform tenants (HotelOS staff console; never granted to hotel roles)"
 };
 
+// ---------------------------------------------------------------------------
+// Platform vs organization scope
+// ---------------------------------------------------------------------------
+// Platform keys authorise HotelOS staff surfaces (tenant console). They live in
+// the catalog so the DB converges to a single source, but they must never be
+// part of an organization role template: `isPlatformAdmin` is derived from the
+// REAL grant of these keys, so leaking one into "owner" would turn every hotel
+// owner into a platform admin. Any future `admin.*` / `platform.*` key is
+// treated as platform scope automatically.
+
+export const PLATFORM_PERMISSION_KEYS: readonly PermissionKey[] = ["admin.tenants.manage"];
+
+export function isPlatformPermission(key: string): boolean {
+  return (
+    (PLATFORM_PERMISSION_KEYS as readonly string[]).includes(key) ||
+    key.startsWith("admin.") ||
+    key.startsWith("platform.")
+  );
+}
+
+/** Every catalog key an organization role may hold: keys(PERMISSIONS) minus the platform scope. */
+export const ORG_PERMISSION_KEYS: readonly PermissionKey[] = (Object.keys(PERMISSIONS) as PermissionKey[]).filter(
+  (key) => !isPlatformPermission(key)
+);
+
+// ---------------------------------------------------------------------------
+// Role templates
+// ---------------------------------------------------------------------------
+// Applied to Role rows by name (see apps/api/src/lib/rbac-catalog.ts): "owner"
+// is what createTenant / bootstrapPilot grant to the first user of a tenant and
+// what the boot-time backfill applies to template-named roles that still have
+// zero permissions. Templates are ORG scope only (structurally for owner/admin,
+// by construction for the hand-picked ones).
+
 export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
-  owner: [
-    "pms.reservation.read",
-    "guests.read",
-    "invoice.issue",
-    "invoice.cancel",
-    "asset.capex.approve",
-    "assets.read",
-    "capex.read",
-    "capex.approve",
-    "accounting.journal.post",
-    "ai.tool.execute",
-    "ai.high_risk.confirm",
-    "modules.read",
-    "integrations.read",
-    "owner.dashboard.read",
-    "owner.ai_ask",
-    "backoffice.access",
-    "property.map.read",
-    "audit.read"
-  ],
+  // Full organization scope: the hotel owner/administrator can do everything a
+  // hotel can do, and nothing a platform operator can do.
+  owner: [...ORG_PERMISSION_KEYS],
   manager: [
     "pms.reservation.read",
     "pms.reservation.create",
@@ -376,8 +394,58 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "ai.tool.execute",
     "ai.high_risk.confirm"
   ],
-  admin: Object.keys(PERMISSIONS) as PermissionKey[]
+  // Revenue / distribution manager: pricing, restrictions, channels, forecasts.
+  revenue: [
+    "revenue.read",
+    "revenue.forecast.read",
+    "revenue.recommend",
+    "revenue.manage_rates",
+    "revenue.manage_restrictions",
+    "revenue.apply_recommendations",
+    "revenue.automation.manage",
+    "revenue.configure",
+    "revenue.history_forecast.read",
+    "revenue.history_forecast.export",
+    "revenue.history_forecast.configure",
+    "revenue.history_forecast.saved_views.manage",
+    "revenue.forecast_confidence.read",
+    "revenue.comparison.read",
+    "revenue.visual_alerts.read",
+    "revenue.scheduled_reports.manage",
+    "revenue_setup.manage",
+    "distribution.read",
+    "distribution.manage_rates",
+    "distribution.manage_inventory",
+    "distribution.sync",
+    "distribution.ai_recommend",
+    "channel_manager.read",
+    "channel_manager.manage",
+    "channel_manager.sync",
+    "channel_manager.mappings.manage",
+    "channel_manager.parity.read",
+    "pms.reservation.read",
+    "groups.read",
+    "analytics.read",
+    "analytics.export",
+    "analytics.ai_ask",
+    "ai.tool.execute"
+  ],
+  // Organization administrator: same scope as owner (platform keys excluded).
+  admin: [...ORG_PERMISSION_KEYS]
 };
+
+/** Template keys, in the order the backfill tries name matches (most specific first). */
+export const ROLE_TEMPLATE_KEYS: readonly RoleKey[] = [
+  "owner",
+  "admin",
+  "manager",
+  "receptionist",
+  "housekeeper",
+  "maintenance",
+  "accountant",
+  "compliance",
+  "revenue"
+];
 
 export function hasPermission(userPermissions: PermissionKey[], permission: PermissionKey): boolean {
   return userPermissions.includes(permission);

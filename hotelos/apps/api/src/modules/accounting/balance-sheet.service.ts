@@ -1,6 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { requireIsoDate } from "../../lib/query-dates.js";
 
 export type BalanceSheetItem = {
   accountCode: string;
@@ -148,6 +149,7 @@ export async function buildBalanceSheet(input: {
   asOf: string;
 }): Promise<FormalBalanceSheet> {
   requirePermissions(input.context, ["analytics.read"]);
+  requireIsoDate(input.asOf, "asOf");
 
   const cutoff = dateOnly(input.asOf);
   const aggregated = await aggregateBalances({

@@ -1,6 +1,8 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { ConflictError } from "../../lib/http-error.js";
+import { requireDateRange } from "../../lib/query-dates.js";
 
 // Modelo 303 (AEAT) — declaración trimestral del IVA. Aggregates output VAT
 // (cuenta 477) from journal lines by rate bucket. The mapping below follows
@@ -64,10 +66,7 @@ export async function buildModelo303(input: {
   periodType?: "monthly" | "quarterly";
 }): Promise<Modelo303Report> {
   requirePermissions(input.context, ["analytics.read"]);
-
-  if (input.fromDate >= input.toDate) {
-    throw new Error("fromDate must be before toDate.");
-  }
+  requireDateRange(input.fromDate, input.toDate);
 
   const start = dateOnly(input.fromDate);
   const end = dateOnly(nextDay(input.toDate));
@@ -77,7 +76,11 @@ export async function buildModelo303(input: {
     select: { id: true }
   });
   if (!vatAccount) {
-    throw new Error("Account 477 (H.P. IVA repercutido) not found in chart of accounts.");
+    // Organizations created after the demo seed (e.g. Faranda) have no chart
+    // of accounts yet: a 409 explains the missing prerequisite instead of a 500.
+    throw new ConflictError(
+      "Falta la cuenta contable 477 (H.P. IVA repercutido) en el plan de cuentas de esta organización: crea o importa el plan contable (PGC) antes de generar el modelo 303."
+    );
   }
 
   const entries = await prisma.journalEntry.findMany({

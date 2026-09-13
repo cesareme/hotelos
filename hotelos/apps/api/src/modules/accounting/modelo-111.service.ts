@@ -1,6 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { requireDateRange } from "../../lib/query-dates.js";
 
 // Modelo 111 (AEAT) — declaración trimestral de retenciones e ingresos a cuenta del IRPF.
 // Aggregates `WithholdingTaxRecord` rows (built up in cuenta 4751 H.P. acreedor por
@@ -92,10 +93,7 @@ export async function buildModelo111(input: {
   periodType?: "monthly" | "quarterly";
 }): Promise<Modelo111Report> {
   requirePermissions(input.context, ["analytics.read"]);
-
-  if (input.fromDate >= input.toDate) {
-    throw new Error("fromDate must be before toDate.");
-  }
+  requireDateRange(input.fromDate, input.toDate);
 
   const start = dateOnly(input.fromDate);
   const end = dateOnly(nextDay(input.toDate));

@@ -198,11 +198,24 @@ node scripts/check-discoverability.mjs
 7. **OTAs son MOCK** (audit #11): el channel manager no recibe reservas reales
    de Booking/Expedia. Para un PMS de producción hay que implementar 1 adapter
    real (Booking XML/push-pull o Channex) con credenciales + sandbox round-trip.
-8. **Seguridad multi-tenant (audit 2026-06):** IDOR de escritura y rate limit
-   ya cerrados; el RBAC fail-open de GET sigue por defecto — actívalo con
-   `RBAC_STRICT=true` una vez mapeadas todas las rutas GET al manifiesto.
-   Schedulers: en multi-réplica usar `RUN_SCHEDULERS=false` salvo en una
-   instancia (evita envíos duplicados a AEAT).
+8. **Seguridad multi-tenant (audit 2026-06 · auditoría 360 2026-09-13):** IDOR
+   de escritura y rate limit cerrados. El RBAC fail-open de GET está CERRADO
+   por defecto en producción (AUTH-03): las 62 GET sin manifiesto quedaron
+   mapeadas, el modo estricto se resuelve como `RBAC_STRICT` explícito o, si
+   no está definido, `NODE_ENV=production` (`isRbacStrictMode()` en
+   `route-permissions.ts`, memoizado), y el contract test
+   `tests/api-route-permissions-contract.test.mjs` exige igualdad exacta
+   rutas registradas ↔ manifiesto (sin huérfanas, sin duplicados, claves en
+   `PERMISSIONS`). En dev/demo sigue fail-open con warning salvo
+   `RBAC_STRICT=true`. AUTH-04: el API no arranca con `NODE_ENV=production` +
+   `HOTELOS_ALLOW_DEMO_AUTH=true` (`assertDemoAuthPolicy`), salvo el override
+   peligroso `HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true` (solo demo pública
+   sin datos reales). PENDIENTE antes de retirar el modo demo en cualquier
+   instancia con clientes: el catálogo BD de permisos (83 claves) no cubre 79
+   claves del manifiesto y las orgs creadas por la consola tenant-admin nacen
+   sin `role_permissions` — sin la unión demo un usuario real recibe 403 en lo
+   gateado. Schedulers: en multi-réplica usar `RUN_SCHEDULERS=false` salvo en
+   una instancia (evita envíos duplicados a AEAT).
 
 ## Docs prioritarios
 

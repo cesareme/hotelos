@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { apiRequest, type RequestOptions } from "../services/api-client";
+import { isPropertyNotFoundError, reportActivePropertyInvalid } from "../services/activeProperty";
 
 export type ApiState<T> = {
   data: T | null;
@@ -41,6 +42,10 @@ export function useApiData<T>(path: string | null, options: UseApiDataOptions = 
         const message = err instanceof Error ? err.message : String(err);
         setError(message);
         setLoading(false);
+        // Tenancy safety net: the API answers an opaque 404 when the active
+        // property is not visible to this user. Let the shell re-validate the
+        // selection and offer the switcher instead of leaving N red cards.
+        if (isPropertyNotFoundError(err)) reportActivePropertyInvalid();
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path, nonce, JSON.stringify(options.query ?? {})]);

@@ -2,6 +2,7 @@ import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { buildModelo115, MODELO_115_ROW_PREFIX } from "./modelo-115.service.js";
+import { requireYear } from "../../lib/query-dates.js";
 
 // Modelo 180 — resumen anual de las retenciones del Modelo 115 sobre
 // arrendamientos urbanos. Consolida los 4 modelos 115 trimestrales del año y
@@ -70,6 +71,7 @@ export async function buildModelo180(input: {
   year: number;
 }): Promise<Modelo180Report> {
   requirePermissions(input.context, ["analytics.read"]);
+  requireYear(input.year);
 
   const ranges = quarterRanges(input.year);
   const quarterReports = await Promise.all(

@@ -1,6 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { requireDateRange, requireIsoDate } from "../../lib/query-dates.js";
 
 export type PnlLine = {
   accountCode: string;
@@ -39,10 +40,7 @@ export async function getProfitAndLoss(input: {
   toDate: string;
 }): Promise<PnlReport> {
   requirePermissions(input.context, ["analytics.read"]);
-
-  if (input.fromDate >= input.toDate) {
-    throw new Error("fromDate must be before toDate.");
-  }
+  requireDateRange(input.fromDate, input.toDate);
 
   const start = dateOnly(input.fromDate);
   const end = dateOnly(input.toDate);
@@ -160,6 +158,7 @@ export async function getBalanceSheet(input: {
   asOf: string;
 }): Promise<BalanceSheet> {
   requirePermissions(input.context, ["analytics.read"]);
+  requireIsoDate(input.asOf, "asOf");
   const cutoff = dateOnly(input.asOf);
 
   const entries = await prisma.journalEntry.findMany({

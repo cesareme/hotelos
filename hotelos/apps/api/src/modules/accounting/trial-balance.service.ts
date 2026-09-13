@@ -1,6 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { requireIsoDate } from "../../lib/query-dates.js";
 
 export type TrialBalanceRow = {
   accountCode: string;
@@ -38,6 +39,9 @@ export async function buildTrialBalance(input: {
   toDate?: string;
 }): Promise<TrialBalanceReport> {
   requirePermissions(input.context, ["analytics.read"]);
+  requireIsoDate(input.asOf, "asOf");
+  if (input.fromDate) requireIsoDate(input.fromDate, "fromDate");
+  if (input.toDate) requireIsoDate(input.toDate, "toDate");
 
   const cutoff = dateOnly(input.asOf);
 

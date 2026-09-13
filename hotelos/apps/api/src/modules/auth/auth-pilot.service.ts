@@ -12,8 +12,11 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { prisma, hashPassword } from "@hotelos/database";
+import { isPlatformPermission } from "@hotelos/shared";
 import { recordAuditEvent } from "../audit/audit.service.js";
-import { BadRequestError, ConflictError, UnauthorizedError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from "../../lib/http-error.js";
+import type { UserContext } from "../../lib/demo-store.js";
+import { hasPlatformAdminGrant, isPlatformAdmin, loadPermissionsForUserProperty } from "./auth.service.js";
 
 const PASSWORD_MIN_LENGTH = 8;
 const MAX_FAILED_ATTEMPTS = 5;
@@ -74,11 +77,101 @@ export type CreateUserInput = {
   roleId?: string;
   // Información de auditoría: quién está creando este usuario.
   createdByUserId?: string;
+  // Contexto del actor (request.userContext). Preferible a createdByUserId:
+  // trae la org ya re-apuntada por el hook de tenencia para platform admins y
+  // evita las consultas de resolveActorScope. Opcional hasta que la ruta lo pase.
+  actorContext?: UserContext;
 };
+
+type ActorScope = { organizationId: string; isPlatformAdmin: boolean };
+
+/**
+ * Organization + platform-admin flag of whoever is creating the user, from the
+ * request context when available or from the DB row of createdByUserId.
+ * `null` only when no actor at all was provided (system flows).
+ */
+async function resolveActorScope(input: CreateUserInput): Promise<ActorScope | null> {
+  if (input.actorContext) {
+    return {
+      organizationId: input.actorContext.organizationId,
+      isPlatformAdmin: await isPlatformAdmin(input.actorContext)
+    };
+  }
+  if (!input.createdByUserId) return null;
+  const actor = await prisma.user.findUnique({
+    where: { id: input.createdByUserId },
+    select: { id: true, organizationId: true }
+  });
+  if (!actor) {
+    throw new ForbiddenError("El usuario que crea la cuenta no existe.");
+  }
+  // Platform admin = REAL grant of a platform key on any of the actor's
+  // property assignments (same rule as auth.service.hasPlatformAdminGrant).
+  const assignments = await prisma.userPropertyRole.findMany({
+    where: { userId: actor.id },
+    select: { propertyId: true },
+    distinct: ["propertyId"]
+  });
+  let platformAdmin = false;
+  for (const assignment of assignments) {
+    if (hasPlatformAdminGrant(await loadPermissionsForUserProperty(actor.id, assignment.propertyId))) {
+      platformAdmin = true;
+      break;
+    }
+  }
+  return { organizationId: actor.organizationId, isPlatformAdmin: platformAdmin };
+}
+
+/**
+ * Tenancy guard for POST /users (audit AUTH inventory): organizationId, roleId
+ * and propertyId come from the body, so before Tanda 1 any users.invite holder
+ * could create users in another organization or hand out a role of another
+ * org (or a role carrying admin.tenants.manage → platform admin escalation).
+ * Opaque 404 for cross-org role/property (same contract as the tenancy hook),
+ * 403 for org mismatch and for platform-scoped roles.
+ */
+async function assertCreateUserTenancy(input: CreateUserInput): Promise<void> {
+  const scope = await resolveActorScope(input);
+  if (scope && !scope.isPlatformAdmin && scope.organizationId !== input.organizationId) {
+    throw new ForbiddenError("No puedes crear usuarios en otra organización.");
+  }
+
+  if ((input.propertyId && !input.roleId) || (!input.propertyId && input.roleId)) {
+    throw new BadRequestError("propertyId y roleId deben indicarse juntos.");
+  }
+  if (!input.propertyId || !input.roleId) return;
+
+  const [property, role] = await Promise.all([
+    prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } }),
+    prisma.role.findUnique({ where: { id: input.roleId }, select: { id: true, organizationId: true } })
+  ]);
+  if (!property || property.organizationId !== input.organizationId) {
+    throw new NotFoundError("Propiedad no encontrada.");
+  }
+  if (!role || role.organizationId !== input.organizationId) {
+    throw new NotFoundError("Rol no encontrado.");
+  }
+
+  if (!scope?.isPlatformAdmin) {
+    const grants = await prisma.rolePermission.findMany({ where: { roleId: role.id }, select: { permissionId: true } });
+    if (grants.length > 0) {
+      const permissions = await prisma.permission.findMany({
+        where: { id: { in: grants.map((grant) => grant.permissionId) } },
+        select: { key: true }
+      });
+      if (permissions.some((permission) => isPlatformPermission(permission.key))) {
+        throw new ForbiddenError("Solo un administrador de plataforma puede asignar este rol.");
+      }
+    }
+  }
+}
 
 export async function createUser(input: CreateUserInput): Promise<{ id: string; email: string; fullName: string }> {
   // Política de contraseñas
   assertPasswordPolicy(input.password);
+
+  // Tenencia: org del actor, rol y propiedad de la misma org, sin escalada.
+  await assertCreateUserTenancy(input);
 
   // Email único
   const existing = await prisma.user.findUnique({ where: { email: input.email.toLowerCase().trim() } });

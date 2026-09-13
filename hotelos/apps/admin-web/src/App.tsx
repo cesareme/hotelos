@@ -2,7 +2,8 @@ import { lazy, Suspense, useEffect, useMemo, useState, type ComponentType, type 
 import { BackOfficeLayout } from "./layouts/BackOfficeLayout";
 import { LoginScreen } from "./screens/auth/LoginScreen";
 import { ForgotPasswordScreen } from "./screens/auth/ForgotPasswordScreen";
-import { getUser, onAuthChange, type AuthUser } from "./services/auth-storage";
+import { clearSession, getUser, onAuthChange, type AuthUser } from "./services/auth-storage";
+import { ensureActiveProperty } from "./services/activeProperty";
 // Eager imports: critical-path screens and screens referenced at module scope
 // (FiscalDashboard / ComplianceInbox are wrapped in module-scope wired
 // components). Everything else is loaded lazily by route to keep the main
@@ -603,6 +604,11 @@ const SCREEN_COMPONENTS = {
   AICostDashboard: AICostDashboardModule
 };
 
+// Type-only export: the registry itself stays private so no module can import
+// it as a value (App.tsx imports every screen, which would be a real cycle).
+// `lib/navigate.ts` re-exports this type for the typed `navigateTo` helper.
+export type ScreenKey = keyof typeof SCREEN_COMPONENTS;
+
 function routeMatches(pattern: string, pathname: string) {
   const regex = new RegExp(`^${pattern.replace(/:[^/]+/g, "[^/]+")}$`);
   return regex.test(pathname);
@@ -662,6 +668,39 @@ function syncLocation(screen: keyof typeof SCREEN_COMPONENTS, hash: string) {
   }
 }
 
+// Rendered instead of the shell when /users/me/properties is empty for the
+// logged-in user: nothing is persisted, so we never fall back to the demo
+// default property (which would 404 on every request).
+function NoPropertiesScreen({ user }: { user: AuthUser }) {
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 24
+      }}
+    >
+      <div role="status" style={{ maxWidth: 440, textAlign: "center" }}>
+        <h1 style={{ fontSize: 20, margin: "0 0 8px" }}>Sin propiedades asignadas</h1>
+        <p style={{ margin: "0 0 16px", opacity: 0.8, lineHeight: 1.5 }}>
+          Tu usuario ({user.email ?? user.fullName}) no tiene acceso a ninguna propiedad. Pide a un
+          administrador que te asigne una y vuelve a iniciar sesión.
+        </p>
+        <button type="button" className="bo-button-link" onClick={() => clearSession()}>
+          Cerrar sesión
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// Result of validating the stored active property for a given user. Keyed by
+// userId so a fresh login (or a different user) always starts in "checking"
+// on its very first render and the shell never mounts against a stale scope.
+type ActivePropertyGate = { userId: string; status: "ready" | "empty" };
+
 /**
  * AuthGate
  * --------
@@ -669,14 +708,50 @@ function syncLocation(screen: keyof typeof SCREEN_COMPONENTS, hash: string) {
  * "hotelos-auth-changed" event fires (login from LoginScreen, logout from
  * TopBar, or a 401 propagated from api-client). When there is no user we
  * render the LoginScreen / ForgotPasswordScreen instead of the protected app.
+ *
+ * Once a user is present, the stored active property is validated against
+ * GET /users/me/properties (ensureActiveProperty) BEFORE the children mount:
+ * screens read the property id at module-evaluation time and four of them are
+ * imported eagerly above, so a corrected selection requires a full reload.
+ * The reload only fires when the persisted scope actually changed, and a
+ * failed list request degrades to the stored value so login is never blocked.
  */
 function AuthGate({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => getUser());
   const [authScreen, setAuthScreen] = useState<"LoginScreen" | "ForgotPasswordScreen">("LoginScreen");
+  const [propertyGate, setPropertyGate] = useState<ActivePropertyGate | null>(null);
+  const userId = user?.userId ?? null;
 
   useEffect(() => {
     return onAuthChange(() => setUser(getUser()));
   }, []);
+
+  useEffect(() => {
+    if (!userId) {
+      setPropertyGate(null);
+      return;
+    }
+    const current = getUser();
+    if (!current || current.userId !== userId) return;
+    let cancelled = false;
+    ensureActiveProperty(current)
+      .then((result) => {
+        if (cancelled) return;
+        if (result.changed) {
+          window.location.reload();
+          return;
+        }
+        setPropertyGate({ userId, status: result.empty ? "empty" : "ready" });
+      })
+      .catch(() => {
+        // ensureActiveProperty already degrades to the stored value; this
+        // guard only keeps an unexpected throw from locking the user out.
+        if (!cancelled) setPropertyGate({ userId, status: "ready" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
 
   if (!user) {
     if (authScreen === "ForgotPasswordScreen") {
@@ -687,6 +762,13 @@ function AuthGate({ children }: { children: ReactNode }) {
     return <LoginScreen onNavigate={(screen) => {
       if (screen === "ForgotPasswordScreen") setAuthScreen("ForgotPasswordScreen");
     }} />;
+  }
+
+  if (!propertyGate || propertyGate.userId !== user.userId) {
+    return <LoadingBlock label="Comprobando tu propiedad…" />;
+  }
+  if (propertyGate.status === "empty") {
+    return <NoPropertiesScreen user={user} />;
   }
 
   return <>{children}</>;

@@ -51,6 +51,10 @@ export function setSession(token: string, user: AuthUser): void {
   }
 }
 
+// Deliberately leaves the `hotelos-active-*` keys (services/activeProperty.ts)
+// untouched: AuthGate validates the stored selection against the next user's
+// property list on login, and a platform admin keeps their last selection
+// across sessions.
 export function clearSession(): void {
   if (!hasWindow()) return;
   try {

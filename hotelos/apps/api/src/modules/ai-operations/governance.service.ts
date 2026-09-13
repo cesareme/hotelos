@@ -1,6 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { isLlmConfigured, llmComplete } from "../../lib/llm.js";
+import { NotFoundError } from "../../lib/http-error.js";
 
 // =====================================================================================
 // Sprint 49 — AI Governance service
@@ -360,7 +361,7 @@ export async function createPromptVersion(input: {
 export async function publishPromptVersion(id: string): Promise<PromptVersionRecord> {
   return prisma.$transaction(async (tx) => {
     const target = await tx.aiPromptVersion.findUnique({ where: { id } });
-    if (!target) throw new Error("Prompt version was not found.");
+    if (!target) throw new NotFoundError("Versión de prompt no encontrada.");
     if (target.status === "published") return mapPromptVersion(target);
 
     await tx.aiPromptVersion.updateMany({
@@ -378,7 +379,7 @@ export async function publishPromptVersion(id: string): Promise<PromptVersionRec
 
 export async function archivePromptVersion(id: string): Promise<PromptVersionRecord> {
   const target = await prisma.aiPromptVersion.findUnique({ where: { id } });
-  if (!target) throw new Error("Prompt version was not found.");
+  if (!target) throw new NotFoundError("Versión de prompt no encontrada.");
   const updated = await prisma.aiPromptVersion.update({
     where: { id: target.id },
     data: { status: "archived", archivedAt: new Date() }

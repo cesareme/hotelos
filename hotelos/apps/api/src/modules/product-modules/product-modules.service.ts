@@ -203,6 +203,29 @@ export async function listPropertyModules(propertyId: string) {
 }
 
 /**
+ * Boot-time hydration (Tanda 1, tenant-hydration.ts): mirror EVERY persisted
+ * PropertyModule row into demoStore so the synchronous module gate
+ * (getEnabledModuleCodes → requireAdvancedModuleEnabled) sees real tenants
+ * (Faranda & co.) before any per-property read has run. Same mapping as
+ * listPropertyModules (DB module id → catalog code → demo catalog id), merge
+ * by row id (never replaces the prop_123 fixtures). Returns rows mirrored.
+ */
+export async function hydrateAllPropertyModules(): Promise<number> {
+  await ensureModuleStatePersisted();
+  const [rows, moduleRows] = await Promise.all([
+    prisma.propertyModule.findMany(),
+    prisma.module.findMany({ select: { id: true, code: true } })
+  ]);
+  const codeByDbId = new Map(moduleRows.map((row) => [row.id, row.code]));
+  for (const row of rows) {
+    const code = codeByDbId.get(row.moduleId);
+    const catalog = demoStore.modules.find((candidate) => candidate.code === code);
+    mirrorPropertyModule(toPropertyModuleRecord(row, catalog?.id ?? row.moduleId));
+  }
+  return rows.length;
+}
+
+/**
  * Sync on purpose: consumed inside synchronous flows (advanced-modules module
  * gating). Reads the demoStore mirror, which dual-writes keep up to date and
  * async reads re-hydrate from Prisma.
