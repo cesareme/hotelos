@@ -628,6 +628,40 @@ function pathForScreen(screen: keyof typeof SCREEN_COMPONENTS) {
   return BACKOFFICE_ROUTES.find((route) => route.screen === screen && !route.path.includes(":"))?.path;
 }
 
+// Nav targets may carry a `#hash` deep-link ("GroupsEventsDashboard#nuevo-grupo"):
+// only the base screen is a SCREEN_COMPONENTS key; the hash is handed to the
+// screen through the URL (see syncLocation).
+function resolveScreenTarget(target: string): { screen: keyof typeof SCREEN_COMPONENTS; hash: string } | null {
+  const at = target.indexOf("#");
+  const screen = at === -1 ? target : target.slice(0, at);
+  const hash = at === -1 ? "" : target.slice(at);
+  if (!(screen in SCREEN_COMPONENTS)) {
+    if (import.meta.env.DEV) {
+      console.warn(`[hotelos-nav] Unknown screen "${screen}" (target "${target}") is not registered in SCREEN_COMPONENTS`);
+    }
+    return null;
+  }
+  return { screen: screen as keyof typeof SCREEN_COMPONENTS, hash };
+}
+
+// Must run before the screen state update so a freshly mounted screen finds
+// the hash on mount. When the path does not change the screen may already be
+// mounted, so the hash is assigned (fires `hashchange`) rather than replaced;
+// a stale hash from an earlier deep-link is dropped when the target has none.
+function syncLocation(screen: keyof typeof SCREEN_COMPONENTS, hash: string) {
+  const nextPath = pathForScreen(screen);
+  if (nextPath && window.location.pathname !== nextPath) {
+    window.history.pushState(null, "", nextPath + hash);
+    return;
+  }
+  if (window.location.hash === hash) return;
+  if (hash) {
+    window.location.hash = hash;
+  } else {
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+}
+
 /**
  * AuthGate
  * --------
@@ -668,13 +702,11 @@ export function App() {
     }
     function handleHotelosNav(event: Event) {
       const detail = (event as CustomEvent<string>).detail;
-      if (detail && detail in SCREEN_COMPONENTS) {
-        setActiveScreen(detail as keyof typeof SCREEN_COMPONENTS);
-        const nextPath = pathForScreen(detail as keyof typeof SCREEN_COMPONENTS);
-        if (nextPath && window.location.pathname !== nextPath) {
-          window.history.pushState(null, "", nextPath);
-        }
-      }
+      if (!detail) return;
+      const target = resolveScreenTarget(detail);
+      if (!target) return;
+      syncLocation(target.screen, target.hash);
+      setActiveScreen(target.screen);
     }
     window.addEventListener("popstate", handlePopState);
     window.addEventListener("hotelos-nav", handleHotelosNav);
@@ -684,19 +716,18 @@ export function App() {
     };
   }, []);
 
-  function selectScreen(screen: keyof typeof SCREEN_COMPONENTS) {
-    setActiveScreen(screen);
-    const nextPath = pathForScreen(screen);
-    if (nextPath && window.location.pathname !== nextPath) {
-      window.history.pushState(null, "", nextPath);
-    }
+  function selectScreen(rawTarget: string) {
+    const target = resolveScreenTarget(rawTarget);
+    if (!target) return;
+    syncLocation(target.screen, target.hash);
+    setActiveScreen(target.screen);
   }
 
   return (
     <CocoaGlobalProvider>
       <ToastProvider>
         <AuthGate>
-          <BackOfficeLayout activeScreen={activeScreen} onSelect={(screen) => selectScreen(screen as keyof typeof SCREEN_COMPONENTS)}>
+          <BackOfficeLayout activeScreen={activeScreen} onSelect={selectScreen}>
             <Suspense fallback={<LoadingBlock label="Cargando pantalla…" />}>
               <ActiveScreen />
             </Suspense>

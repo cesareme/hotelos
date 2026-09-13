@@ -3,7 +3,7 @@ import type { Prisma } from "@hotelos/database";
 import { demoStore, type FolioLineRecord, type FolioRecord, type PaymentRecord, type UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
-import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 
 // Transitional dual-write helpers; see pms.service.ts for context.
 function mirrorFolio(folio: FolioRecord): void {
@@ -197,7 +197,7 @@ export async function postPayment(input: {
   const folio = await getOpenFolio(input.folioId);
   const propertyId = await resolveFolioPropertyId(input.folioId);
   if (input.amount <= 0) {
-    throw new Error("Payment amount must be positive.");
+    throw new BadRequestError("El importe del cobro debe ser positivo.");
   }
 
   const created = await prisma.payment.create({
@@ -251,10 +251,10 @@ export async function refundPayment(input: {
 
   const existing = await prisma.payment.findUnique({ where: { id: input.paymentId } });
   if (!existing) {
-    throw new Error("Payment was not found.");
+    throw new NotFoundError("Pago no encontrado.");
   }
   if (existing.status !== "captured") {
-    throw new Error("Only captured payments can be refunded.");
+    throw new ConflictError("Solo se pueden devolver cobros capturados.");
   }
 
   const before = mapPayment(existing);
@@ -321,10 +321,10 @@ export async function closeFolio(input: {
 async function getOpenFolio(folioId: string): Promise<FolioRecord> {
   const folio = await prisma.folio.findUnique({ where: { id: folioId } });
   if (!folio) {
-    throw new Error("Folio was not found.");
+    throw new NotFoundError("El folio no existe.");
   }
   if (folio.status !== "open") {
-    throw new Error("Folio is closed.");
+    throw new ConflictError("El folio está cerrado; no admite más cargos ni movimientos.");
   }
   return mapFolio(folio);
 }

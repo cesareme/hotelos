@@ -2,6 +2,7 @@ import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode }
 import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { toArray } from "../../utils/toArray";
 import { LoadingBlock, EmptyState, ErrorState } from "../../components/States";
 
 // ─── Tipos locales ───────────────────────────────────────────────────────
@@ -149,11 +150,11 @@ export function RoomBlockGridDialog(props: {
   onError: (msg: string) => void;
 }) {
   const propertyId = getActivePropertyId();
-  const roomTypesState = useApiData<{ items: RoomType[] }>(
+  const roomTypesState = useApiData<RoomType[]>(
     `/properties/${propertyId}/room-types`,
     { pollIntervalMs: 0 }
   );
-  const roomTypes = roomTypesState.data?.items ?? [];
+  const roomTypes = toArray<RoomType>(roomTypesState.data);
 
   const nights = useMemo(
     () => nightsBetween(props.arrivalDate, props.departureDate),

@@ -7,8 +7,8 @@ import {
   type UserContext
 } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
-import { requirePermissions } from "../auth/auth.service.js";
-import { NotFoundError } from "../../lib/http-error.js";
+import { isPlatformAdmin, requirePermissions } from "../auth/auth.service.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 
 // Housekeeping writes now PERSIST TO PRISMA (housekeeping_tasks / housekeeping_events
 // / rooms) so the Prisma-backed housekeeping dashboard reflects them. Previously
@@ -90,6 +90,112 @@ function mapRoom(row: {
   };
 }
 
+// ---------------------------------------------------------------------------
+// HK-04 guards
+// ---------------------------------------------------------------------------
+
+// Enum guards (HK-04c). `HousekeepingTask.status` is a Prisma enum, so an
+// out-of-range value used to surface as a PrismaClientValidationError (500).
+// `priority` / `taskType` are plain String columns; we validate them against the
+// domain literals anyway so garbage never gets persisted.
+const HK_TASK_STATUSES: readonly HousekeepingTaskRecord["status"][] = ["pending", "assigned", "in_progress", "done", "rejected"];
+const HK_TASK_PRIORITIES: readonly HousekeepingTaskRecord["priority"][] = ["low", "normal", "high"];
+const HK_TASK_TYPES: readonly HousekeepingTaskRecord["taskType"][] = ["departure_clean", "stayover", "inspection", "deep_clean"];
+// Terminal states (HK-04b): a done/rejected task is not transitioned again.
+const HK_TERMINAL_STATUSES: readonly string[] = ["done", "rejected"];
+
+function assertEnumValue(prefix: string, value: unknown, allowed: readonly string[]): void {
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    throw new BadRequestError(`${prefix}: ${String(value)}. Valores admitidos: ${allowed.join(", ")}.`);
+  }
+}
+
+// Input-shape guards. Handlers cast `request.body` without a schema, so any
+// field forwarded raw to Prisma (ids, free text, dates) used to surface a
+// PrismaClientValidationError (500) when the client sent the wrong type.
+// `null` is accepted wherever the column is nullable (it clears the value).
+function assertRequiredString(label: string, value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new BadRequestError(`${label} es obligatorio.`);
+  }
+}
+
+function assertOptionalString(label: string, value: unknown): asserts value is string | null | undefined {
+  if (value !== undefined && value !== null && typeof value !== "string") {
+    throw new BadRequestError(`${label} debe ser texto.`);
+  }
+}
+
+// `dueAt` is a DateTime column: `new Date("garbage")` yields an Invalid Date
+// that Prisma rejects with a 500. Empty/null clears the deadline.
+function parseDueAt(value: unknown): Date | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") throw new BadRequestError("Fecha límite no válida.");
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new BadRequestError("Fecha límite no válida.");
+  return date;
+}
+
+// Tenancy guards (HK-04a). Rooms and tasks carry no Prisma relation to Property,
+// so we resolve the row by id and then confirm its property belongs to the
+// caller's organization. "Missing" and "foreign" collapse into the same 404 —
+// resolved BEFORE any business rule — so a caller from another tenant can
+// neither confirm existence nor learn the state of rows it doesn't own.
+// Exception: a platform admin (admin.tenants.manage granted through REAL DB
+// roles, never the demo union) may act across organizations, mirroring the
+// global `:propertyId` hook in server.ts. A missing row is still a 404 for
+// everyone. Accepts either the root client or a `$transaction` client.
+type HkDb = Pick<typeof prisma, "property" | "room" | "housekeepingTask">;
+
+// `context.isPlatformAdmin` is trusted when the auth layer has stamped it; when
+// absent we fall back to the DB-backed check. Only reached for foreign
+// resources, so regular in-org callers never pay the extra lookup.
+async function callerIsPlatformAdmin(context: UserContext): Promise<boolean> {
+  if (context.isPlatformAdmin !== undefined) return context.isPlatformAdmin === true;
+  return isPlatformAdmin(context);
+}
+
+async function canAccessProperty(db: HkDb, propertyId: string, context: UserContext): Promise<boolean> {
+  const property = await db.property.findUnique({ where: { id: propertyId }, select: { organizationId: true } });
+  if (!property) return false;
+  if (property.organizationId === context.organizationId) return true;
+  return callerIsPlatformAdmin(context);
+}
+
+async function findRoomInOrg(db: HkDb, roomId: string, context: UserContext) {
+  const room = await db.room.findUnique({ where: { id: roomId } });
+  if (!room || !(await canAccessProperty(db, room.propertyId, context))) {
+    throw new NotFoundError("Habitación no encontrada.");
+  }
+  return room;
+}
+
+async function findTaskInOrg(db: HkDb, taskId: string, context: UserContext) {
+  const task = await db.housekeepingTask.findUnique({ where: { id: taskId } });
+  if (!task || !(await canAccessProperty(db, task.propertyId, context))) {
+    throw new NotFoundError("Tarea de limpieza no encontrada.");
+  }
+  return task;
+}
+
+// Status → housekeeping_event literal. `pending` has no dedicated literal (it
+// only means "unassigned"), so a move back to pending records no status event;
+// the audit trail still captures it via HOUSEKEEPING_TASK_UPDATED.
+function statusEventFor(status: string): HousekeepingEventRecord["eventType"] | undefined {
+  switch (status) {
+    case "done":
+      return "done";
+    case "rejected":
+      return "rejected";
+    case "in_progress":
+      return "started";
+    case "assigned":
+      return "assigned";
+    default:
+      return undefined;
+  }
+}
+
 export async function getHousekeepingBoard(propertyId: string): Promise<HousekeepingBoardItem[]> {
   // Read the REAL room inventory + open tasks from Prisma so the board reflects
   // every room and every persisted task (not just the small in-memory demo set).
@@ -140,13 +246,25 @@ export async function createHousekeepingTask(input: {
   correlationId: string;
 }): Promise<HousekeepingTaskRecord> {
   requirePermissions(input.context, ["housekeeping.task.manage"]);
+  // Body-only guards run first (HK-04c): they leak nothing about the rows and
+  // keep Prisma from throwing a 500 on a malformed request.
+  assertRequiredString("El identificador de propiedad", input.propertyId);
+  assertRequiredString("El identificador de habitación", input.roomId);
+  assertEnumValue("Tipo de tarea no válido", input.taskType, HK_TASK_TYPES);
+  if (input.priority !== undefined) assertEnumValue("Prioridad no válida", input.priority, HK_TASK_PRIORITIES);
+  assertOptionalString("El campo assignedTo", input.assignedTo);
+  const dueAt = parseDueAt(input.dueAt);
 
+  // Tenancy (HK-04a): the room must exist in the requested property AND that
+  // property must belong to the caller's organization — a foreign propertyId in
+  // the body must not let a caller create tasks in another tenant's property.
+  // A platform admin may target any org's property (same 404 if it's missing).
   const room = await prisma.room.findFirst({
     where: { id: input.roomId, propertyId: input.propertyId },
     select: { id: true }
   });
-  if (!room) {
-    throw new NotFoundError("Room was not found.");
+  if (!room || !(await canAccessProperty(prisma, input.propertyId, input.context))) {
+    throw new NotFoundError("Habitación no encontrada.");
   }
 
   const created = await prisma.housekeepingTask.create({
@@ -157,7 +275,7 @@ export async function createHousekeepingTask(input: {
       priority: input.priority ?? "normal",
       status: input.assignedTo ? "assigned" : "pending",
       assignedTo: input.assignedTo ?? null,
-      dueAt: input.dueAt ? new Date(input.dueAt) : null
+      dueAt
     }
   });
   const task = mapTask(created);
@@ -209,14 +327,25 @@ export async function updateHousekeepingTask(input: {
   correlationId: string;
 }): Promise<HousekeepingTaskRecord> {
   requirePermissions(input.context, ["housekeeping.task.manage"]);
+  // Enum guards (HK-04c) run first: they only look at the request body, so they
+  // leak nothing about the task, and they keep Prisma from throwing a 500.
+  if (input.patch.status !== undefined) assertEnumValue("Estado no válido", input.patch.status, HK_TASK_STATUSES);
+  if (input.patch.priority !== undefined) assertEnumValue("Prioridad no válida", input.patch.priority, HK_TASK_PRIORITIES);
+  assertOptionalString("El campo assignedTo", input.patch.assignedTo);
+  assertOptionalString("La nota", input.note);
+  const dueAt = input.patch.dueAt !== undefined ? parseDueAt(input.patch.dueAt) : undefined;
 
   // Race-condition fix: read + mutate in a single transaction so a concurrent
   // updateHousekeepingTask (or HK mobile sync) cannot overwrite our changes
-  // between the findUnique and the update.
-  const { before, task } = await prisma.$transaction(async (tx) => {
-    const existing = await tx.housekeepingTask.findUnique({ where: { id: input.taskId } });
-    if (!existing) {
-      throw new NotFoundError("Housekeeping task was not found.");
+  // between the lookup and the update.
+  const { before, task, statusChanged, assigneeChanged } = await prisma.$transaction(async (tx) => {
+    // Tenancy (HK-04a) before any business rule.
+    const existing = await findTaskInOrg(tx, input.taskId, input.context);
+    // Transition guard (HK-04b): a finished task cannot be transitioned again.
+    // Previously a second PATCH status=done returned 200 and logged a duplicate
+    // 'done' event.
+    if (input.patch.status !== undefined && HK_TERMINAL_STATUSES.includes(existing.status)) {
+      throw new ConflictError("La tarea ya está finalizada.");
     }
     const updated = await tx.housekeepingTask.update({
       where: { id: input.taskId },
@@ -224,19 +353,38 @@ export async function updateHousekeepingTask(input: {
         ...(input.patch.status !== undefined ? { status: input.patch.status } : {}),
         ...(input.patch.priority !== undefined ? { priority: input.patch.priority } : {}),
         ...(input.patch.assignedTo !== undefined ? { assignedTo: input.patch.assignedTo ?? null } : {}),
-        ...(input.patch.dueAt !== undefined ? { dueAt: input.patch.dueAt ? new Date(input.patch.dueAt) : null } : {})
+        ...(dueAt !== undefined ? { dueAt } : {})
       }
     });
-    return { before: mapTask(existing), task: mapTask(updated) };
+    return {
+      before: mapTask(existing),
+      task: mapTask(updated),
+      // Compared against the pre-update row so events reflect REAL transitions.
+      statusChanged: input.patch.status !== undefined && input.patch.status !== existing.status,
+      assigneeChanged: input.patch.assignedTo !== undefined && (input.patch.assignedTo ?? null) !== existing.assignedTo
+    };
   });
   mirrorTask(task);
 
-  await recordHousekeepingEvent({
-    taskId: task.id,
-    eventType: task.status === "done" ? "done" : task.status === "rejected" ? "rejected" : "assigned",
-    note: input.note,
-    createdBy: input.context.userId
-  });
+  // Housekeeping events describe transitions, not PATCH calls: a status event
+  // only when the status actually changed (previously PATCH {priority} on a done
+  // task re-logged 'done'), and 'assigned' only when the assignee changed. A
+  // status move to in_progress logs 'started'. The optional note rides on the
+  // first event recorded.
+  const eventTypes: HousekeepingEventRecord["eventType"][] = [];
+  if (statusChanged) {
+    const statusEvent = statusEventFor(task.status);
+    if (statusEvent) eventTypes.push(statusEvent);
+  }
+  if (assigneeChanged && !eventTypes.includes("assigned")) eventTypes.push("assigned");
+  for (const [index, eventType] of eventTypes.entries()) {
+    await recordHousekeepingEvent({
+      taskId: task.id,
+      eventType,
+      note: index === 0 ? input.note ?? undefined : undefined,
+      createdBy: input.context.userId
+    });
+  }
 
   recordAuditEvent({
     organizationId: input.context.organizationId,
@@ -262,11 +410,11 @@ export async function addHousekeepingPhoto(input: {
   correlationId: string;
 }): Promise<HousekeepingEventRecord> {
   requirePermissions(input.context, ["housekeeping.task.manage"]);
+  assertRequiredString("La clave del archivo (objectKey)", input.objectKey);
+  assertOptionalString("La nota", input.note);
 
-  const task = await prisma.housekeepingTask.findUnique({ where: { id: input.taskId } });
-  if (!task) {
-    throw new NotFoundError("Housekeeping task was not found.");
-  }
+  // Tenancy (HK-04a): scoped lookup before writing the photo event.
+  const task = await findTaskInOrg(prisma, input.taskId, input.context);
 
   const event = await recordHousekeepingEvent({
     taskId: task.id,
@@ -297,10 +445,8 @@ export async function markRoomClean(input: {
   correlationId: string;
 }): Promise<RoomRecord> {
   requirePermissions(input.context, ["housekeeping.task.manage"]);
-  const room = await prisma.room.findUnique({ where: { id: input.roomId } });
-  if (!room) {
-    throw new NotFoundError("Room was not found.");
-  }
+  // Tenancy (HK-04a): org-scoped lookup before any write.
+  const room = await findRoomInOrg(prisma, input.roomId, input.context);
 
   await prisma.room.update({
     where: { id: room.id },
@@ -341,14 +487,14 @@ export async function markRoomInspected(input: {
   correlationId: string;
 }): Promise<RoomRecord> {
   requirePermissions(input.context, ["housekeeping.task.manage"]);
-  const room = await prisma.room.findUnique({ where: { id: input.roomId } });
-  if (!room) {
-    throw new NotFoundError("Room was not found.");
-  }
+  // Tenancy (HK-04a) BEFORE the state rule below: a caller from another org must
+  // get the same 404 whether the room is missing, dirty or clean — otherwise the
+  // 409 would confirm existence and state of a room it doesn't own.
+  const room = await findRoomInOrg(prisma, input.roomId, input.context);
   // A room counts as clean if either its HK status or its room status is "clean"
   // (seed rooms may only carry status). Mirrors the board's display logic.
   if ((room.housekeepingStatus ?? room.status ?? "") !== "clean") {
-    throw new NotFoundError("Solo se pueden inspeccionar habitaciones limpias.");
+    throw new ConflictError("Solo se pueden inspeccionar habitaciones limpias.");
   }
 
   await prisma.room.update({

@@ -7,6 +7,7 @@
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
+    "db:push": "prisma db push --skip-generate",
     "db:drift:check": "prisma migrate diff --from-url \"$DATABASE_URL\" --to-schema-datamodel prisma/schema.prisma --exit-code",
     "db:seed": "prisma db seed",
     "db:seed:commercial": "node --env-file=../../.env --import tsx prisma/seed-commercial-demo.ts",

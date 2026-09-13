@@ -1572,6 +1572,8 @@ export type UserContext = {
   fullName: string;
   deviceId: string;
   permissions: PermissionKey[];
+  /** Granted through REAL roles in the database (never the demo union): may act across organizations. */
+  isPlatformAdmin?: boolean;
 };
 
 export type DemoStore = {
@@ -2264,6 +2266,7 @@ export const demoStore: DemoStore = {
       "guests.manage",
       "folio.charge.post",
       "payment.capture",
+      "payment.refund",
       "payments.create_link",
       "payments.capture",
       "payments.refund_request",
@@ -2300,6 +2303,7 @@ export const demoStore: DemoStore = {
       "guest_experience.ai_reply",
       "guest_experience.handoff",
       "billing.compliance.view",
+      "asset.capex.approve",
       "assets.read",
       "assets.manage",
       "owner.dashboard.read",

@@ -1,8 +1,8 @@
 import { prisma } from "@hotelos/database";
 import { demoStore, type UserContext, type WorkOrderMediaRecord, type WorkOrderRecord } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
-import { requirePermissions } from "../auth/auth.service.js";
-import { BadRequestError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
+import { isPlatformAdmin, requirePermissions } from "../auth/auth.service.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
 
 // Maintenance work orders now PERSIST TO PRISMA (work_orders / work_order_media /
 // rooms) so the Prisma-backed maintenance dashboard reflects them. Previously
@@ -52,6 +52,79 @@ function mirrorRoomStatus(roomId: string, patch: Record<string, unknown>): void 
   if (room) Object.assign(room, patch);
 }
 
+// ---------------------------------------------------------------------------
+// HK-04 guards
+// ---------------------------------------------------------------------------
+
+// Enum guards (HK-04c). `WorkOrder.status` is a Prisma enum, so an out-of-range
+// value used to surface as a PrismaClientValidationError (500). `priority` and
+// `WorkOrderMedia.mediaType` are plain String columns; we validate them against
+// the domain literals anyway so garbage never gets persisted.
+const WO_STATUSES: readonly WorkOrderRecord["status"][] = ["open", "assigned", "in_progress", "waiting_vendor", "resolved", "closed"];
+const WO_PRIORITIES: readonly WorkOrderRecord["priority"][] = ["emergency", "urgent", "normal", "preventive"];
+const WO_MEDIA_TYPES: readonly WorkOrderMediaRecord["mediaType"][] = ["photo", "video"];
+// Terminal states (HK-04b): a resolved/closed order is not transitioned again.
+const WO_TERMINAL_STATUSES: readonly string[] = ["resolved", "closed"];
+
+function assertEnumValue(prefix: string, value: unknown, allowed: readonly string[]): void {
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    throw new BadRequestError(`${prefix}: ${String(value)}. Valores admitidos: ${allowed.join(", ")}.`);
+  }
+}
+
+// Input-shape guards. Handlers cast `request.body` without a schema, so any
+// field forwarded raw to Prisma (free text, flags) used to surface a
+// PrismaClientValidationError (500) when the client sent the wrong type.
+// `null` is accepted wherever the column is nullable (it clears the value).
+function assertRequiredString(label: string, value: unknown): asserts value is string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new BadRequestError(`${label} es obligatorio.`);
+  }
+}
+
+function assertOptionalString(label: string, value: unknown): asserts value is string | null | undefined {
+  if (value !== undefined && value !== null && typeof value !== "string") {
+    throw new BadRequestError(`${label} debe ser texto.`);
+  }
+}
+
+function assertBoolean(label: string, value: unknown): asserts value is boolean {
+  if (typeof value !== "boolean") throw new BadRequestError(`${label} debe ser verdadero o falso.`);
+}
+
+// Tenancy guard (HK-04a). Work orders carry no Prisma relation to Property, so
+// we resolve the row by id and then confirm its property belongs to the caller's
+// organization. "Missing" and "foreign" collapse into the same 404 — resolved
+// BEFORE any business rule — so a caller from another tenant can neither confirm
+// existence nor learn the state of orders it doesn't own.
+// Exception: a platform admin (admin.tenants.manage granted through REAL DB
+// roles, never the demo union) may act across organizations, mirroring the
+// global `:propertyId` hook in server.ts. A missing row is still a 404 for
+// everyone.
+
+// `context.isPlatformAdmin` is trusted when the auth layer has stamped it; when
+// absent we fall back to the DB-backed check. Only reached for foreign
+// resources, so regular in-org callers never pay the extra lookup.
+async function callerIsPlatformAdmin(context: UserContext): Promise<boolean> {
+  if (context.isPlatformAdmin !== undefined) return context.isPlatformAdmin === true;
+  return isPlatformAdmin(context);
+}
+
+async function canAccessProperty(propertyId: string, context: UserContext): Promise<boolean> {
+  const property = await prisma.property.findUnique({ where: { id: propertyId }, select: { organizationId: true } });
+  if (!property) return false;
+  if (property.organizationId === context.organizationId) return true;
+  return callerIsPlatformAdmin(context);
+}
+
+async function findWorkOrderInOrg(workOrderId: string, context: UserContext) {
+  const order = await prisma.workOrder.findUnique({ where: { id: workOrderId } });
+  if (!order || !(await canAccessProperty(order.propertyId, context))) {
+    throw new NotFoundError("Orden de trabajo no encontrada.");
+  }
+  return order;
+}
+
 export async function listWorkOrders(
   propertyId: string,
   options: { limit?: number; offset?: number } = {}
@@ -80,6 +153,13 @@ export async function createWorkOrder(input: {
   correlationId: string;
 }): Promise<WorkOrderRecord> {
   requirePermissions(input.context, ["maintenance.workorder.manage"]);
+  // Body-only guards run first (HK-04c): they leak nothing about the rows and
+  // keep Prisma from throwing a 500 on a malformed request.
+  assertRequiredString("El título", input.title);
+  assertOptionalString("El número de habitación", input.roomNumber);
+  assertOptionalString("La descripción", input.description);
+  assertBoolean("El campo blocksRoom", input.blocksRoom);
+  assertEnumValue("Prioridad no válida", input.priority, WO_PRIORITIES);
 
   const room = input.roomNumber
     ? await prisma.room.findFirst({
@@ -149,10 +229,31 @@ export async function updateWorkOrder(input: {
   correlationId: string;
 }): Promise<WorkOrderRecord> {
   requirePermissions(input.context, ["maintenance.workorder.manage"]);
+  // Enum guards (HK-04c) run first: they only look at the request body, so they
+  // leak nothing about the order, and they keep Prisma from throwing a 500.
+  if (input.patch.status !== undefined) assertEnumValue("Estado no válido", input.patch.status, WO_STATUSES);
+  if (input.patch.priority !== undefined) assertEnumValue("Prioridad no válida", input.patch.priority, WO_PRIORITIES);
+  // `title` is NOT NULL in Prisma, so a present title must be a non-empty
+  // string; `description` / `assignedTo` are nullable and accept null to clear.
+  if (input.patch.title !== undefined) assertRequiredString("El título", input.patch.title);
+  assertOptionalString("La descripción", input.patch.description);
+  assertOptionalString("El campo assignedTo", input.patch.assignedTo);
 
-  const existing = await prisma.workOrder.findUnique({ where: { id: input.workOrderId } });
-  if (!existing) throw new NotFoundError("Work order was not found.");
+  // Tenancy (HK-04a) before any business rule.
+  const existing = await findWorkOrderInOrg(input.workOrderId, input.context);
   const before = mapOrder(existing);
+
+  // Transition guard (HK-04b): once resolved/closed the order is terminal. There
+  // is no explicit reopen flow, so a status change out of a terminal state is
+  // rejected; the only forward move allowed is resolved → closed.
+  if (input.patch.status !== undefined && WO_TERMINAL_STATUSES.includes(existing.status)) {
+    const closingResolved = existing.status === "resolved" && input.patch.status === "closed";
+    if (!closingResolved) throw new ConflictError("La orden ya está resuelta.");
+  }
+  // A PATCH that moves the order into a terminal state stamps resolvedAt, the
+  // same way resolveWorkOrder does, so dashboards see a consistent record.
+  const stampResolvedAt =
+    input.patch.status !== undefined && WO_TERMINAL_STATUSES.includes(input.patch.status) && !existing.resolvedAt;
 
   const updated = await prisma.workOrder.update({
     where: { id: input.workOrderId },
@@ -161,6 +262,7 @@ export async function updateWorkOrder(input: {
       ...(input.patch.description !== undefined ? { description: input.patch.description ?? null } : {}),
       ...(input.patch.priority !== undefined ? { priority: input.patch.priority } : {}),
       ...(input.patch.status !== undefined ? { status: input.patch.status } : {}),
+      ...(stampResolvedAt ? { resolvedAt: new Date() } : {}),
       ...(input.patch.assignedTo !== undefined ? { assignedTo: input.patch.assignedTo ?? null } : {})
     }
   });
@@ -191,9 +293,11 @@ export async function attachWorkOrderMedia(input: {
   correlationId: string;
 }): Promise<WorkOrderMediaRecord> {
   requirePermissions(input.context, ["maintenance.workorder.manage"]);
+  assertEnumValue("Tipo de archivo no válido", input.mediaType, WO_MEDIA_TYPES);
+  assertRequiredString("La clave del archivo (objectKey)", input.objectKey);
 
-  const order = await prisma.workOrder.findUnique({ where: { id: input.workOrderId } });
-  if (!order) throw new NotFoundError("Work order was not found.");
+  // Tenancy (HK-04a): scoped lookup before writing the media row.
+  const order = await findWorkOrderInOrg(input.workOrderId, input.context);
 
   const created = await prisma.workOrderMedia.create({
     data: { workOrderId: order.id, objectKey: input.objectKey, mediaType: input.mediaType }
@@ -228,13 +332,18 @@ export async function blockRoomForMaintenance(input: {
 }): Promise<WorkOrderRecord> {
   requirePermissions(input.context, ["maintenance.workorder.manage", "ai.high_risk.confirm"]);
 
-  const existing = await prisma.workOrder.findUnique({ where: { id: input.workOrderId } });
-  if (!existing) throw new NotFoundError("Work order was not found.");
+  // Tenancy (HK-04a) before any business rule.
+  const existing = await findWorkOrderInOrg(input.workOrderId, input.context);
   if (!existing.roomId) {
-    throw new BadRequestError("Work order is not linked to a room.");
+    throw new BadRequestError("La orden de trabajo no está vinculada a ninguna habitación.");
+  }
+  // Idempotency guard: a second block-room on an order that already blocks its
+  // room used to return 200 and emit a duplicate RoomBlocked domain event.
+  if (existing.blocksRoom) {
+    throw new ConflictError("La habitación ya está bloqueada por esta orden.");
   }
   const room = await prisma.room.findUnique({ where: { id: existing.roomId } });
-  if (!room) throw new NotFoundError("Room was not found.");
+  if (!room) throw new NotFoundError("Habitación no encontrada.");
 
   const before = mapOrder(existing);
   const updated = await prisma.workOrder.update({ where: { id: existing.id }, data: { blocksRoom: true } });
@@ -283,8 +392,13 @@ export async function resolveWorkOrder(input: {
 }): Promise<WorkOrderRecord> {
   requirePermissions(input.context, ["maintenance.workorder.manage"]);
 
-  const existing = await prisma.workOrder.findUnique({ where: { id: input.workOrderId } });
-  if (!existing) throw new NotFoundError("Work order was not found.");
+  // Tenancy (HK-04a) before any business rule.
+  const existing = await findWorkOrderInOrg(input.workOrderId, input.context);
+  // Transition guard (HK-04b): resolving an already resolved/closed order used to
+  // return 200, re-stamp resolvedAt and emit a duplicate WorkOrderResolved event.
+  if (WO_TERMINAL_STATUSES.includes(existing.status)) {
+    throw new ConflictError("La orden ya está resuelta.");
+  }
   const room = existing.roomId ? await prisma.room.findUnique({ where: { id: existing.roomId } }) : null;
   const before = mapOrder(existing);
 

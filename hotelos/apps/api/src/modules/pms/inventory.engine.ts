@@ -31,7 +31,7 @@ export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAss
   if (!room) {
     return {
       allowed: false,
-      warnings: ["Room does not exist for this property."],
+      warnings: ["La habitación no existe en esta propiedad."],
       roomStatus: "blocked",
       maintenanceBlock: true
     };
@@ -41,10 +41,10 @@ export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAss
   const maintenanceBlock = room.maintenanceStatus === "blocked" || !room.sellable;
 
   if (maintenanceBlock) {
-    warnings.push("Room is blocked for maintenance or not sellable.");
+    warnings.push("La habitación está bloqueada por mantenimiento o no es vendible.");
   }
   if (room.status === "occupied") {
-    warnings.push("Room is currently occupied.");
+    warnings.push("La habitación está ocupada actualmente.");
   }
 
   const arrival = new Date(`${input.arrivalDate}T00:00:00.000Z`);
@@ -63,7 +63,7 @@ export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAss
   });
 
   if (conflictingReservation) {
-    warnings.push(`Room is already consumed by ${conflictingReservation.code}.`);
+    warnings.push(`La habitación ya está asignada a la reserva ${conflictingReservation.code}.`);
   }
 
   const roomStatus: RoomAssignmentValidation["roomStatus"] =

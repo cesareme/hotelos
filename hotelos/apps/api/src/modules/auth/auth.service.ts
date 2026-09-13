@@ -80,7 +80,10 @@ export async function loadUserContext(sessionId: string): Promise<UserContext | 
     userId: user.id,
     fullName: user.fullName,
     deviceId: session.deviceId,
-    permissions: unionPermissions(permissions)
+    permissions: unionPermissions(permissions),
+    // Derived from the REAL role grants (before the demo union) so the flag is
+    // trustworthy even when unionPermissions adds admin.tenants.manage for all.
+    isPlatformAdmin: hasPlatformAdminGrant(permissions)
   };
 }
 
@@ -224,7 +227,9 @@ export async function loginWithEmailPassword(input: { email: string; password: s
       userId: user.id,
       fullName: user.fullName,
       deviceId: input.deviceId,
-      permissions: effectivePermissions
+      permissions: effectivePermissions,
+      // Real DB grants only (never the demo union) — see loadUserContext.
+      isPlatformAdmin: hasPlatformAdminGrant(permissions)
     }
   };
 }
@@ -239,6 +244,32 @@ export function requirePermissions(context: UserContext, required: PermissionKey
 
 export function listPropertiesForUser(context: UserContext): PropertyRecord[] {
   return demoStore.properties.filter((property) => property.organizationId === context.organizationId);
+}
+
+export const PLATFORM_ADMIN_PERMISSION = "admin.tenants.manage" as PermissionKey;
+
+/** True when the REAL (pre-demo-union) role grants include admin.tenants.manage. */
+export function hasPlatformAdminGrant(realPermissions: PermissionKey[]): boolean {
+  return realPermissions.includes(PLATFORM_ADMIN_PERMISSION);
+}
+
+/**
+ * Loads the real DB grants for a user/property and derives the platform-admin
+ * flag. Used by the demo auth fallback (usr_123 without a token), which builds
+ * its context from the demoStore instead of loadUserContext.
+ */
+export async function loadIsPlatformAdmin(userId: string, propertyId: string): Promise<boolean> {
+  return hasPlatformAdminGrant(await loadPermissionsForUserProperty(userId, propertyId));
+}
+
+// Evaluated against the permissions actually granted through roles in
+// Postgres, not `context.permissions`: in demo mode that array is the union
+// with the demoStore baseline, which carries admin.tenants.manage for everyone.
+// Contexts built by loadUserContext/login/the demo fallback already carry the
+// flag, so the DB lookup only runs for contexts assembled elsewhere.
+export async function isPlatformAdmin(context: UserContext): Promise<boolean> {
+  if (typeof context.isPlatformAdmin === "boolean") return context.isPlatformAdmin;
+  return loadIsPlatformAdmin(context.userId, context.propertyId);
 }
 
 export async function registerDevice(input: {

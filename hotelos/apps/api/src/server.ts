@@ -34,7 +34,7 @@ import type { HotelOsToolName } from "@hotelos/ai-tools";
 import { buildHealthResponse, OBSERVABILITY_HEADERS, SERVICE_NAMES } from "@hotelos/config";
 import { createId } from "./lib/ids.js";
 import { demoStore, type UserContext } from "./lib/demo-store.js";
-import { registerAuthContext } from "./lib/auth-context.js";
+import { isPublicRoute, registerAuthContext } from "./lib/auth-context.js";
 import { isSchedulerLeader } from "./lib/scheduler-leader.js";
 import { BadRequestError, NotFoundError, statusCodeForError } from "./lib/http-error.js";
 import { isLlmConfigured, llmComplete, llmExtractDocument } from "./lib/llm.js";
@@ -142,7 +142,7 @@ import { getBalanceSheet, getProfitAndLoss } from "./modules/accounting/reportin
 import { buildTrialBalance } from "./modules/accounting/trial-balance.service.js";
 import { buildBalanceSheet as buildFormalBalanceSheet } from "./modules/accounting/balance-sheet.service.js";
 import { buildCashFlow } from "./modules/accounting/cash-flow.service.js";
-import { getVerifactuSubmission, getVerifactuSubmissionById, listVerifactuSubmissions, retryVerifactuSubmission } from "./modules/invoicing/verifactu-submission.service.js";
+import { getVerifactuSubmission, getVerifactuSubmissionById, listVerifactuSubmissions, retryVerifactuSubmission, runDueVerifactuRetries } from "./modules/invoicing/verifactu-submission.service.js";
 import { getTbaiSubmission, listTbaiSubmissions, retryTbaiSubmission } from "./modules/invoicing/tbai-submission.service.js";
 import { getIgicSubmission, listIgicSubmissions, retryIgicSubmission } from "./modules/invoicing/igic-submission.service.js";
 import { buildModelo303 } from "./modules/accounting/modelo-303.service.js";
@@ -281,6 +281,7 @@ import {
   createMfaChallenge,
   getSecuritySettings,
   listNotifications,
+  isPlatformAdmin,
   listPropertiesForUser,
   listSessions,
   loginWithEmailPassword,
@@ -499,6 +500,7 @@ import {
   type RectifyingLineAdjustment,
   type RectifyingReasonCode
 } from "./modules/invoicing/invoice.service.js";
+import { createInvoiceDraft, CreateInvoiceDraftSchema } from "./modules/invoicing/invoicing.service.js";
 import {
   exportOperationalReport,
   getBillingReport,
@@ -807,9 +809,16 @@ export function buildApiServer() {
     }
     const exposeMessage =
       statusCode < 500 && error instanceof Error ? error.message : "Internal Server Error";
+    const errorLabels: Record<number, string> = {
+      401: "Unauthorized",
+      403: "Forbidden",
+      404: "Not Found",
+      409: "Conflict",
+      429: "Too Many Requests"
+    };
     reply.code(statusCode).send({
       statusCode,
-      error: statusCode < 500 ? "Bad Request" : "Internal Server Error",
+      error: statusCode < 500 ? (errorLabels[statusCode] ?? "Bad Request") : "Internal Server Error",
       message: exposeMessage,
       ...(correlationId ? { correlationId } : {})
     });
@@ -900,6 +909,77 @@ export function buildApiServer() {
     });
   });
 
+  // ── Global tenant guard for property-scoped routes (CFG-P0-2 / SEC-1) ──────
+  // Every staff-authenticated route carrying a propertyId (path param, then
+  // query string, then the exact `propertyId` body key) goes through a single
+  // hook that enforces that the property belongs to the caller's organization
+  // before any handler runs. Public, guest-authenticated routes (isPublicRoute:
+  // guest-portal sign-in takes a propertyId itself) are skipped — their staff
+  // context is at most the demo fallback and must not gate a guest.
+  // Everyone else pays one indexed `property.findUnique`:
+  //   · unknown property → 404 for ALL callers, platform admins included (no
+  //     more 200-empty responses for phantom ids);
+  //   · property of the caller's org → pass;
+  //   · property of another org → 404 unless the caller is a platform admin
+  //     (admin.tenants.manage granted through REAL DB roles, carried as
+  //     `userContext.isPlatformAdmin`), in which case the request's
+  //     organizationId is RE-POINTED to the property's org: platform admins act
+  //     inside the target organization for this request so every downstream
+  //     org check stays consistent. The explicit `assertPropertyInOrg` calls in
+  //     handlers/services therefore pass for the same reason instead of each
+  //     needing its own escape hatch.
+  // Mismatch → 404 (never 403) so we don't leak other tenants' property ids.
+  // By design, demoStore-only properties (e.g. prop_456) are NOT reachable
+  // through this guard: they don't exist in Prisma and the UI never lists them.
+  function pickPropertyId(request: { params: unknown; query: unknown; body: unknown }): string | null {
+    for (const source of [request.params, request.query, request.body]) {
+      const candidate = (source as { propertyId?: unknown } | null | undefined)?.propertyId;
+      if (typeof candidate === "string" && candidate.length > 0) return candidate;
+    }
+    return null;
+  }
+
+  /**
+   * Resolves `propertyId` and grants the request access to it or throws 404
+   * (`notFoundMessage` is reused for unknown AND foreign properties so the
+   * response is never an oracle). Same org → no-op. Other org → platform
+   * admins get `userContext.organizationId` re-pointed to the property's org
+   * (see the hook comment above); everyone else gets the opaque 404.
+   */
+  async function grantPropertyAccess(
+    request: { userContext: UserContext },
+    propertyId: string,
+    notFoundMessage = "Propiedad no encontrada."
+  ): Promise<void> {
+    const { prisma } = await import("@hotelos/database");
+    const property = await prisma.property.findUnique({
+      where: { id: propertyId },
+      select: { organizationId: true }
+    });
+    if (!property) throw new NotFoundError(notFoundMessage);
+    if (property.organizationId === request.userContext.organizationId) return;
+    if (!(await isPlatformAdmin(request.userContext))) throw new NotFoundError(notFoundMessage);
+    // platform admins act inside the target organization for this request so
+    // every downstream org check stays consistent (propertyId is left as-is).
+    request.userContext.organizationId = property.organizationId;
+  }
+
+  app.addHook("preHandler", async (request) => {
+    if (!request.userContext || isPublicRoute(request.url)) return;
+    const propertyId = pickPropertyId(request);
+    if (!propertyId) return;
+    // Errors thrown here flow to the global setErrorHandler → 404 JSON body.
+    await grantPropertyAccess(request, propertyId);
+  });
+
+  /** 400 (not a TypeError → 500) when a JSON body is missing or not an object. */
+  function requireObjectBody<T extends object>(body: unknown): T {
+    if (body === undefined || body === null || typeof body !== "object" || Array.isArray(body)) {
+      throw new BadRequestError("El cuerpo de la petición debe ser un objeto JSON.");
+    }
+    return body as T;
+  }
+
   // ── Tenant-scope guards (audit 2026-06 · IDOR cross-tenant) ────────────────
   // Read-by-:id routes fetch rows by primary key. Without these, an authenticated
   // user of one hotel could read another hotel's reservation, invoice, folio,
@@ -912,8 +992,9 @@ export function buildApiServer() {
       where: { id: reservationId },
       select: { propertyId: true }
     });
-    if (!row) throw new NotFoundError(`Reservation ${reservationId} not found.`);
-    await assertPropertyInOrg(row.propertyId, organizationId);
+    // Missing and foreign rows must be indistinguishable (no existence oracle).
+    if (!row) throw new NotFoundError("Reserva no encontrada.");
+    await assertPropertyInOrgOpaque(row.propertyId, organizationId, "Reserva no encontrada.");
   }
   async function assertInvoiceInOrg(invoiceId: string, organizationId: string) {
     const { prisma: db } = await import("@hotelos/database");
@@ -921,8 +1002,8 @@ export function buildApiServer() {
       where: { id: invoiceId },
       select: { propertyId: true }
     });
-    if (!row) throw new NotFoundError(`Invoice ${invoiceId} not found.`);
-    await assertPropertyInOrg(row.propertyId, organizationId);
+    if (!row) throw new NotFoundError("Factura no encontrada.");
+    await assertPropertyInOrgOpaque(row.propertyId, organizationId, "Factura no encontrada.");
   }
   async function assertFolioInOrg(folioId: string, organizationId: string) {
     const { prisma: db } = await import("@hotelos/database");
@@ -930,8 +1011,54 @@ export function buildApiServer() {
       where: { id: folioId },
       select: { reservation: { select: { propertyId: true } } }
     });
-    if (!row) throw new NotFoundError(`Folio ${folioId} not found.`);
-    await assertPropertyInOrg(row.reservation.propertyId, organizationId);
+    if (!row) throw new NotFoundError("Folio no encontrado.");
+    await assertPropertyInOrgOpaque(row.reservation.propertyId, organizationId, "Folio no encontrado.");
+  }
+  async function assertPropertyInOrgOpaque(propertyId: string, organizationId: string, message: string) {
+    try {
+      await assertPropertyInOrg(propertyId, organizationId);
+    } catch (error) {
+      if (error instanceof NotFoundError) throw new NotFoundError(message);
+      throw error;
+    }
+  }
+  // Billing actions are addressed by invoice/folio id, so the global tenant
+  // guard never sees a propertyId for them (FISC-02: a receptionist of another
+  // org could issue/cancel/rectify invoices by id). Scope them here with the
+  // same platform-admin escape as the hook: on a tenant mismatch a platform
+  // admin gets organizationId re-pointed to the resource's org; a resource
+  // that does not exist stays 404 for everyone.
+  async function assertBillingAccess(
+    request: { userContext: UserContext },
+    kind: "invoice" | "folio" | "payment",
+    id: string
+  ): Promise<void> {
+    const organizationId = request.userContext.organizationId;
+    if (kind === "payment") {
+      const { prisma: db } = await import("@hotelos/database");
+      const payment = await db.payment.findUnique({ where: { id }, select: { folioId: true } });
+      if (!payment) throw new NotFoundError("Pago no encontrado.");
+      return assertBillingAccess(request, "folio", payment.folioId);
+    }
+    try {
+      if (kind === "invoice") await assertInvoiceInOrg(id, organizationId);
+      else await assertFolioInOrg(id, organizationId);
+    } catch (error) {
+      if (!(error instanceof NotFoundError)) throw error;
+      if (!(await isPlatformAdmin(request.userContext))) throw error;
+      const { prisma: db } = await import("@hotelos/database");
+      const propertyId =
+        kind === "invoice"
+          ? (await db.invoice.findUnique({ where: { id }, select: { propertyId: true } }))?.propertyId
+          : (
+              await db.folio.findUnique({
+                where: { id },
+                select: { reservation: { select: { propertyId: true } } }
+              })
+            )?.reservation.propertyId;
+      if (!propertyId) throw error; // the resource itself does not exist
+      await grantPropertyAccess(request, propertyId, error.message);
+    }
   }
   async function assertGuestInOrg(guestId: string, organizationId: string) {
     const { prisma: db } = await import("@hotelos/database");
@@ -1114,7 +1241,9 @@ export function buildApiServer() {
     // Anti-enumeración: siempre respondemos OK aunque el email no exista.
     return {
       message: "Si existe una cuenta con ese email, recibirás un enlace de recuperación.",
-      ...(result && process.env.NODE_ENV !== "production" ? { _testToken: result.resetTokenForTesting } : {})
+      // Explicit test-only opt-in; never keyed on NODE_ENV (a mis-set env
+      // would leak account-takeover tokens).
+      ...(result && process.env.AUTH_EXPOSE_RESET_TOKEN === "true" ? { _testToken: result.resetTokenForTesting } : {})
     };
   });
 
@@ -1258,12 +1387,18 @@ export function buildApiServer() {
 
   async function listSwitchableProperties(userContext: UserContext) {
     const { prisma } = await import("@hotelos/database");
+    // Tenant isolation: only the platform admin switches across organizations.
+    const platformAdmin = await isPlatformAdmin(userContext);
     const [properties, organizations] = await Promise.all([
       prisma.property.findMany({
+        where: platformAdmin ? {} : { organizationId: userContext.organizationId },
         select: { id: true, name: true, organizationId: true, municipality: true, province: true, status: true },
         orderBy: { name: "asc" }
       }),
-      prisma.organization.findMany({ select: { id: true, name: true } })
+      prisma.organization.findMany({
+        where: platformAdmin ? {} : { id: userContext.organizationId },
+        select: { id: true, name: true }
+      })
     ]);
     const orgName = new Map(organizations.map((org) => [org.id, org.name]));
     if (properties.length === 0) {
@@ -1368,6 +1503,7 @@ export function buildApiServer() {
   app.get("/tbai/territories", async () => ({ items: FORAL_TERRITORIES, config: getTbaiTerritories() }));
   app.post("/invoices/:id/tbai/submit", async (request) => {
     const body = (request.body ?? {}) as { mode?: "stub" | "sandbox" | "production" };
+    await assertBillingAccess(request, "invoice", (request.params as { id: string }).id);
     return submitInvoiceToTbai({
       context: request.userContext,
       invoiceId: (request.params as { id: string }).id,
@@ -3004,7 +3140,19 @@ export function buildApiServer() {
 
   app.get("/backoffice/room-types/:roomTypeId/rooms", async (request) => {
     const params = request.params as { roomTypeId: string };
-    return listRoomsForRoomType(params.roomTypeId);
+    const { prisma } = await import("@hotelos/database");
+    // The path carries no propertyId: resolve it from the room type and make
+    // sure it belongs to the caller's organization before listing rooms.
+    const roomType =
+      (await prisma.roomType.findUnique({ where: { id: params.roomTypeId }, select: { propertyId: true } })) ??
+      demoStore.roomTypes.find((candidate) => candidate.id === params.roomTypeId) ??
+      null;
+    if (!roomType) throw new NotFoundError("Tipo de habitación no encontrado.");
+    // Same rule as the global tenant guard: unknown/foreign property → 404 with
+    // the SAME message as an unknown room type (no oracle); a platform admin
+    // gets organizationId re-pointed to the property's org instead.
+    await grantPropertyAccess(request, roomType.propertyId, "Tipo de habitación no encontrado.");
+    return listRoomsForRoomType(roomType.propertyId, params.roomTypeId);
   });
 
   app.get("/backoffice/properties/:propertyId/room-features", async (request) => {
@@ -3547,7 +3695,7 @@ export function buildApiServer() {
     today.setUTCHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
-    const [arrivalsToday, departuresToday, todayRevenueAgg, unpaidAgg] = await Promise.all([
+    const [arrivalsToday, departuresToday, todayRevenueAgg, unpaidAgg, roomsDirty, roomsCleanInspected, roomsOutOfOrder] = await Promise.all([
       prisma.reservation.count({
         where: { propertyId: params.propertyId, status: { in: ["confirmed", "checked_in"] }, arrivalDate: { gte: today, lt: tomorrow } }
       }),
@@ -3564,7 +3712,15 @@ export function buildApiServer() {
       prisma.folio.findMany({
         where: { reservation: { propertyId: params.propertyId, status: { in: ["checked_in", "confirmed"] } }, status: "open" },
         include: { lines: true, payments: { where: { status: "captured" } } }
-      })
+      }),
+      // housekeepingStatus falls back to status when unset (housekeeping.service mapRoom).
+      prisma.room.count({
+        where: { propertyId: params.propertyId, OR: [{ housekeepingStatus: "dirty" }, { housekeepingStatus: null, status: "dirty" }] }
+      }),
+      prisma.room.count({
+        where: { propertyId: params.propertyId, OR: [{ housekeepingStatus: "inspected" }, { housekeepingStatus: null, status: "inspected" }] }
+      }),
+      prisma.room.count({ where: { propertyId: params.propertyId, status: "out_of_order" } })
     ]);
     const unpaidBalances = unpaidAgg.reduce((sum: number, f: { lines: Array<{ total: unknown }>; payments: Array<{ amount: unknown }> }) => {
       const charges = f.lines.reduce((s: number, l) => s + Number(l.total), 0);
@@ -3575,9 +3731,9 @@ export function buildApiServer() {
     return {
       arrivalsToday,
       departuresToday,
-      roomsDirty: demoStore.rooms.filter((room) => room.housekeepingStatus === "dirty").length,
-      roomsCleanInspected: demoStore.rooms.filter((room) => room.housekeepingStatus === "inspected").length,
-      roomsOutOfOrder: demoStore.rooms.filter((room) => room.status === "out_of_order").length,
+      roomsDirty,
+      roomsCleanInspected,
+      roomsOutOfOrder,
       openMaintenanceTasks: await (await import("@hotelos/database")).prisma.workOrder.count({ where: { propertyId: params.propertyId, status: { notIn: ["resolved", "closed"] } } }),
       guestMessages: 0,
       unpaidBalances: Math.round(unpaidBalances * 100) / 100,
@@ -4004,6 +4160,7 @@ export function buildApiServer() {
   app.post("/folios/:id/lines", async (request) => {
     const params = request.params as { id: string };
     const body = parse(CreateFolioLineSchema, request.body);
+    await assertBillingAccess(request, "folio", params.id);
     return postFolioLine({
       context: request.userContext,
       folioId: params.id,
@@ -4019,6 +4176,7 @@ export function buildApiServer() {
   app.post("/folios/:id/payments", async (request) => {
     const params = request.params as { id: string };
     const body = parse(ApplyPaymentSchema, request.body);
+    await assertBillingAccess(request, "folio", params.id);
     return postPayment({
       context: request.userContext,
       folioId: params.id,
@@ -4033,6 +4191,7 @@ export function buildApiServer() {
   app.post("/payments/:id/refund", async (request) => {
     const params = request.params as { id: string };
     const body = parse(RefundPaymentSchema, request.body ?? {});
+    await assertBillingAccess(request, "payment", params.id);
     return refundPayment({
       context: request.userContext,
       paymentId: params.id,
@@ -4043,6 +4202,7 @@ export function buildApiServer() {
 
   app.post("/folios/:id/close", async (request) => {
     const params = request.params as { id: string };
+    await assertBillingAccess(request, "folio", params.id);
     return closeFolio({
       context: request.userContext,
       folioId: params.id,
@@ -4081,19 +4241,32 @@ export function buildApiServer() {
   app.post("/folios/:id/invoice", async (request) => {
     const params = request.params as { id: string };
     const body = parse(IssueInvoiceSchema, request.body ?? {});
+    await assertBillingAccess(request, "folio", params.id);
     return createInvoiceFromFolio({
       context: request.userContext,
       folioId: params.id,
       customerType: body.customerType,
       customerTaxId: body.customerTaxId,
       invoiceType: body.invoiceType,
-      currencyCode: body.currencyCode,
+      // The schema accepts both spellings; forwarding only one let `currency`
+      // silently fall back to EUR and skip the FX validation.
+      currencyCode: body.currencyCode ?? (body as { currency?: string }).currency,
+      correlationId: createId("corr")
+    });
+  });
+
+  app.post("/invoices/drafts", async (request) => {
+    const body = parse(CreateInvoiceDraftSchema, request.body ?? {});
+    return createInvoiceDraft({
+      ...body,
+      context: request.userContext,
       correlationId: createId("corr")
     });
   });
 
   app.post("/invoices/:id/issue", async (request) => {
     const params = request.params as { id: string };
+    await assertBillingAccess(request, "invoice", params.id);
     return issueInvoice({
       context: request.userContext,
       invoiceId: params.id,
@@ -4103,6 +4276,7 @@ export function buildApiServer() {
 
   app.post("/invoices/:id/cancel", async (request) => {
     const params = request.params as { id: string };
+    await assertBillingAccess(request, "invoice", params.id);
     const body = parse(CancelInvoiceSchema, request.body ?? {});
     return cancelInvoice({
       context: request.userContext,
@@ -4114,6 +4288,7 @@ export function buildApiServer() {
 
   app.post("/invoices/:id/rectify", async (request) => {
     const params = request.params as { id: string };
+    await assertBillingAccess(request, "invoice", params.id);
     const body = parse(RectifyInvoiceSchema, request.body ?? {});
     return createRectifyingInvoice({
       context: request.userContext,
@@ -4136,6 +4311,7 @@ export function buildApiServer() {
   //     to keep the surface area minimal until the schemas land.
   app.post("/folios/:id/split", async (request) => {
     const params = request.params as { id: string };
+    await assertBillingAccess(request, "folio", params.id);
     const body = (request.body ?? {}) as {
       newFolio?: { label?: string; guestId?: string | null; currency?: string };
       moveChargeIds?: string[];
@@ -4158,7 +4334,11 @@ export function buildApiServer() {
   app.post("/folios/:sourceId/move-charges", async (request) => {
     const params = request.params as { sourceId: string };
     const body = (request.body ?? {}) as { targetFolioId?: string; chargeIds?: string[] };
-    if (!body.targetFolioId) throw new BadRequestError("targetFolioId es obligatorio.");
+    if (!body.targetFolioId || typeof body.targetFolioId !== "string") {
+      throw new BadRequestError("targetFolioId es obligatorio.");
+    }
+    await assertBillingAccess(request, "folio", params.sourceId);
+    await assertBillingAccess(request, "folio", body.targetFolioId);
     return moveChargesBetweenFolios({
       context: request.userContext,
       sourceFolioId: params.sourceId,
@@ -4170,6 +4350,7 @@ export function buildApiServer() {
 
   app.post("/invoices/:id/mark-paid", async (request) => {
     const params = request.params as { id: string };
+    await assertBillingAccess(request, "invoice", params.id);
     const body = (request.body ?? {}) as {
       method?: Parameters<typeof markInvoicePaid>[0]["method"];
       pspReference?: string;
@@ -4187,6 +4368,7 @@ export function buildApiServer() {
 
   app.post("/invoices/:id/send-email", async (request) => {
     const params = request.params as { id: string };
+    await assertBillingAccess(request, "invoice", params.id);
     const body = (request.body ?? {}) as {
       recipient?: string;
       subject?: string;
@@ -4415,13 +4597,13 @@ export function buildApiServer() {
 
   app.patch("/housekeeping/tasks/:id", async (request) => {
     const params = request.params as { id: string };
-    const body = request.body as {
+    const body = requireObjectBody<{
       status?: Parameters<typeof updateHousekeepingTask>[0]["patch"]["status"];
       priority?: Parameters<typeof updateHousekeepingTask>[0]["patch"]["priority"];
       assignedTo?: string;
       dueAt?: string;
       note?: string;
-    };
+    }>(request.body);
 
     return updateHousekeepingTask({
       context: request.userContext,
@@ -4469,11 +4651,25 @@ export function buildApiServer() {
 
   // Room Rack actions — endpoints genéricos para tablero de habitaciones.
   // (Sin permisos finos: la operación de recepción los necesita rápido).
+  // Rooms are addressed by id only, so the global tenant hook cannot see them:
+  // resolve the owning property and apply the same rule (platform admins get
+  // organizationId re-pointed to the room's org; everyone else — and any
+  // unknown room/property — gets the same opaque 404).
+  const assertRoomInCallerOrg = async (request: { userContext: UserContext }, roomId: string) => {
+    const { prisma: db } = await import("@hotelos/database");
+    const room = await db.room.findUnique({ where: { id: roomId }, select: { propertyId: true } });
+    if (!room) throw new NotFoundError("Habitación no encontrada.");
+    await grantPropertyAccess(request, room.propertyId, "Habitación no encontrada.");
+  };
+
   app.post("/rooms/:id/housekeeping-status", async (request) => {
     const params = request.params as { id: string };
-    const body = (request.body ?? {}) as { status?: string };
-    const status = (body.status ?? "").toLowerCase();
+    const body = (request.body ?? {}) as { status?: unknown };
+    if (typeof body.status !== "string") throw new BadRequestError("status is required");
+    const status = body.status.toLowerCase();
     if (!status) throw new BadRequestError("status is required");
+    if (!/^[a-z_]{2,32}$/.test(status)) throw new BadRequestError("Estado de limpieza no válido.");
+    await assertRoomInCallerOrg(request, params.id);
     const { prisma: db } = await import("@hotelos/database");
     // Mapeamos a RoomStatus si encaja, además de housekeepingStatus libre.
     const isClean = status === "clean" || status === "inspected" || status === "ready";
@@ -4492,6 +4688,7 @@ export function buildApiServer() {
     const params = request.params as { id: string };
     const body = (request.body ?? {}) as { sellable?: boolean };
     if (typeof body.sellable !== "boolean") throw new BadRequestError("sellable boolean is required");
+    await assertRoomInCallerOrg(request, params.id);
     const { prisma: db } = await import("@hotelos/database");
     return db.room.update({
       where: { id: params.id },
@@ -4530,11 +4727,11 @@ export function buildApiServer() {
 
   app.patch("/work-orders/:id", async (request) => {
     const params = request.params as { id: string };
-    const body = request.body as Parameters<typeof updateWorkOrder>[0]["patch"];
+    const patch = requireObjectBody<Parameters<typeof updateWorkOrder>[0]["patch"]>(request.body);
     return updateWorkOrder({
       context: request.userContext,
       workOrderId: params.id,
-      patch: body,
+      patch,
       correlationId: createId("corr")
     });
   });
@@ -7028,6 +7225,23 @@ if (entryFile === argFile) {
     }, intervalMs);
     timer.unref();
     app.log.info(`[ses.scheduler] enabled (every ${Math.round(intervalMs / 1000)}s)`);
+  }
+
+  // VeriFactu retry scheduler: re-submit registros in "retrying" once their
+  // nextRetryAt elapsed and recover rows orphaned mid-send. Same in-process
+  // pattern as SES (the pg-boss worker is not part of this deployment).
+  // Disable with VERIFACTU_SCHEDULER_DISABLED=true.
+  if (schedulerLeader && process.env.VERIFACTU_SCHEDULER_DISABLED !== "true") {
+    const intervalMs = Number(process.env.VERIFACTU_SCHEDULER_INTERVAL_MS ?? 2 * 60 * 1000);
+    const verifactuTimer = setInterval(() => {
+      void runDueVerifactuRetries()
+        .then((r) => {
+          if (r.due > 0 || r.reconciled > 0) app.log.info({ verifactu: r }, "[verifactu.scheduler] tick");
+        })
+        .catch((error) => app.log.error({ err: error }, "[verifactu.scheduler] failed"));
+    }, intervalMs);
+    verifactuTimer.unref();
+    app.log.info(`[verifactu.scheduler] enabled (every ${Math.round(intervalMs / 1000)}s)`);
   }
 
   // Revenue pace scheduler: capture a daily OTB snapshot per property so PACE has

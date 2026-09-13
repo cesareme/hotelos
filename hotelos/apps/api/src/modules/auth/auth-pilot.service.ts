@@ -236,9 +236,9 @@ export async function requestPasswordReset(input: { email: string }): Promise<{
     correlationId: "pwd_reset"
   });
 
-  // En sandbox (NODE_ENV !== production) devolvemos el token plano para testing.
-  // En producción se envía por email — nunca aparece en la respuesta.
-  if (process.env.NODE_ENV !== "production") {
+  // The plain token is only surfaced under an explicit test flag — never keyed
+  // on NODE_ENV, which a deploy can forget to set (AUTH-06).
+  if (process.env.AUTH_EXPOSE_RESET_TOKEN === "true") {
     return { resetTokenForTesting: token, expiresAt: expiresAt.toISOString() };
   }
   return { expiresAt: expiresAt.toISOString() };

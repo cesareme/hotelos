@@ -5,7 +5,7 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { ensurePropertyModulePersisted } from "../product-modules/product-modules.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
-import { ConflictError } from "../../lib/http-error.js";
+import { ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import {
@@ -437,6 +437,62 @@ async function assertRoomsBelongToProperty(propertyId: string, roomIds: string[]
   }
 }
 
+/**
+ * Building/floor/zone ids written by room, floor, zone and space mutations must
+ * belong to the property (Prisma or seed mirror). Returns the floor name for room rows.
+ */
+async function resolveMapReferences(
+  propertyId: string,
+  refs: { buildingId?: string; floorId?: string; zoneId?: string }
+): Promise<{ floorName: string }> {
+  const { buildingId, floorId, zoneId } = refs;
+  if (buildingId) {
+    const building =
+      (await prisma.building.findFirst({ where: { id: buildingId, propertyId }, select: { id: true } })) ??
+      demoStore.buildings.find((candidate) => candidate.id === buildingId && candidate.propertyId === propertyId);
+    if (!building) {
+      throw new NotFoundError("Building was not found.");
+    }
+  }
+  let floorName = "";
+  if (floorId) {
+    const floor =
+      (await prisma.floor.findFirst({ where: { id: floorId, propertyId }, select: { name: true } })) ??
+      demoStore.floors.find((candidate) => candidate.id === floorId && candidate.propertyId === propertyId);
+    if (!floor) {
+      throw new NotFoundError("Floor was not found.");
+    }
+    floorName = floor.name;
+  }
+  if (zoneId) {
+    const zone =
+      (await prisma.propertyZone.findFirst({ where: { id: zoneId, propertyId }, select: { id: true } })) ??
+      demoStore.propertyZones.find((candidate) => candidate.id === zoneId && candidate.propertyId === propertyId);
+    if (!zone) {
+      throw new NotFoundError("Zone was not found.");
+    }
+  }
+  return { floorName };
+}
+
+/** Rooms by id for configuration reads: one Prisma query, seed mirror only for ids the DB does not have. */
+async function resolveRoomsById(propertyId: string, roomIds: string[]): Promise<Map<string, RoomRecord>> {
+  const uniqueIds = [...new Set(roomIds)];
+  const rows = uniqueIds.length > 0
+    ? await prisma.room.findMany({ where: { id: { in: uniqueIds }, propertyId } })
+    : [];
+  const roomsById = new Map<string, RoomRecord>();
+  for (const row of rows) {
+    roomsById.set(row.id, mirrorRecord(demoStore.rooms, mapRoomRow(row)));
+  }
+  for (const roomId of uniqueIds) {
+    if (roomsById.has(roomId)) continue;
+    const legacy = demoStore.rooms.find((candidate) => candidate.id === roomId && candidate.propertyId === propertyId);
+    if (legacy) roomsById.set(roomId, legacy);
+  }
+  return roomsById;
+}
+
 function userToDbRow(record: UserRecord) {
   return {
     id: record.id,
@@ -450,16 +506,17 @@ function userToDbRow(record: UserRecord) {
 }
 
 /**
- * Usuario para mutaciones: Prisma primero; un usuario solo-seed se materializa
- * (skipDuplicates protege contra el unique de email). `persisted` indica si la
- * fila existe en la BD tras el intento — si no, se muta solo el espejo.
+ * Usuario para mutaciones, acotado a la organización de la propiedad: Prisma
+ * primero; un usuario solo-seed se materializa (skipDuplicates protege contra el
+ * unique de email). `persisted` indica si la fila existe en la BD tras el
+ * intento — si no, se muta solo el espejo.
  */
-async function requireBackOfficeUser(userId: string): Promise<{ user: UserRecord; persisted: boolean }> {
-  const row = await prisma.user.findUnique({ where: { id: userId } });
+async function requireBackOfficeUser(organizationId: string, userId: string): Promise<{ user: UserRecord; persisted: boolean }> {
+  const row = await prisma.user.findFirst({ where: { id: userId, organizationId } });
   if (row) return { user: mirrorRecord(demoStore.users, mapUserRow(row)), persisted: true };
-  const legacy = demoStore.users.find((candidate) => candidate.id === userId);
+  const legacy = demoStore.users.find((candidate) => candidate.id === userId && candidate.organizationId === organizationId);
   if (!legacy) {
-    throw new Error("User was not found.");
+    throw new NotFoundError("User was not found.");
   }
   await prisma.user.createMany({ data: [userToDbRow(legacy)], skipDuplicates: true });
   const persistedRow = await prisma.user.findUnique({ where: { id: userId }, select: { id: true } });
@@ -2213,7 +2270,11 @@ export function patchEntityCustomFields(input: BackOfficeMutationInput & {
 }) {
   requirePermissions(input.context, ["custom_fields.manage"]);
   const updated = input.values.map((value) => {
-    let record = customFieldValues.find((candidate) => candidate.entityType === input.entityType && candidate.entityId === input.entityId && candidate.fieldDefinitionId === value.fieldDefinitionId);
+    const definition = customFieldDefinitions.find((candidate) => candidate.id === value.fieldDefinitionId && candidate.propertyId === input.propertyId);
+    if (!definition) {
+      throw new NotFoundError("Custom field definition was not found.");
+    }
+    let record = customFieldValues.find((candidate) => candidate.propertyId === input.propertyId && candidate.entityType === input.entityType && candidate.entityId === input.entityId && candidate.fieldDefinitionId === value.fieldDefinitionId);
     if (!record) {
       record = { id: createId("cfv"), propertyId: input.propertyId, entityType: input.entityType, entityId: input.entityId, fieldDefinitionId: value.fieldDefinitionId, valueJson: value.valueJson };
       customFieldValues.push(record);
@@ -2602,6 +2663,7 @@ export async function createFloor(input: BackOfficeMutationInput & {
   floor: Pick<FloorRecord, "name"> & Partial<FloorRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
+  await resolveMapReferences(input.propertyId, { buildingId: input.floor.buildingId });
   const timestamp = nowIso();
   const record: FloorRecord = {
     id: createId("floor"),
@@ -2627,6 +2689,7 @@ export async function createZone(input: BackOfficeMutationInput & {
   zone: Pick<PropertyZoneRecord, "name" | "zoneType"> & Partial<PropertyZoneRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
+  await resolveMapReferences(input.propertyId, { buildingId: input.zone.buildingId, floorId: input.zone.floorId });
   const timestamp = nowIso();
   const record: PropertyZoneRecord = {
     id: createId("zone"),
@@ -2654,6 +2717,7 @@ export async function createSpace(input: BackOfficeMutationInput & {
   space: Pick<PropertySpaceRecord, "name" | "spaceType"> & Partial<PropertySpaceRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
+  await resolveMapReferences(input.propertyId, { buildingId: input.space.buildingId, floorId: input.space.floorId, zoneId: input.space.zoneId });
   const timestamp = nowIso();
   const record: PropertySpaceRecord = {
     id: createId("space"),
@@ -2774,9 +2838,12 @@ export async function bulkCreateRooms(input: BackOfficeMutationInput & {
     throw new Error(`Room number must be unique per property: ${duplicates.join(", ")}`);
   }
 
-  const floorName = input.floorId
-    ? (await prisma.floor.findUnique({ where: { id: input.floorId }, select: { name: true } }))?.name ?? ""
-    : "";
+  await requireRoomType(input.propertyId, input.roomTypeId);
+  const { floorName } = await resolveMapReferences(input.propertyId, {
+    buildingId: input.buildingId,
+    floorId: input.floorId,
+    zoneId: input.zoneId
+  });
 
   const created: RoomRecord[] = [];
   for (const number of roomNumbers) {
@@ -2827,6 +2894,10 @@ export async function bulkUpdateRooms(input: BackOfficeMutationInput & {
   if (input.patch.sellable === true && !input.patch.roomTypeId && before.some((room) => !room.roomTypeId)) {
     throw new Error("Room cannot be marked sellable if no room type is assigned.");
   }
+  if (input.patch.roomTypeId) {
+    await requireRoomType(input.propertyId, input.patch.roomTypeId);
+  }
+  await resolveMapReferences(input.propertyId, { zoneId: input.patch.zoneId });
   if (input.patch.buildingId) {
     const building = await prisma.building.findFirst({ where: { id: input.patch.buildingId, propertyId: input.propertyId } });
     if (!building?.active) {
@@ -2975,12 +3046,13 @@ export async function createBackOfficeRoomType(input: BackOfficeMutationInput & 
 
 // Persistencia tanda 2: Prisma primero; fallback al espejo para room types que solo
 // existan en el seed in-memory (se persistirán en su primera edición vía upsert).
-async function requireRoomType(roomTypeId: string): Promise<RoomTypeRecord> {
-  const row = await prisma.roomType.findUnique({ where: { id: roomTypeId } });
+// Acotado a la propiedad: un id de otra propiedad se trata como inexistente.
+async function requireRoomType(propertyId: string, roomTypeId: string): Promise<RoomTypeRecord> {
+  const row = await prisma.roomType.findFirst({ where: { id: roomTypeId, propertyId } });
   if (row) return mirrorRecord(demoStore.roomTypes, mapRoomTypeRow(row));
-  const roomType = demoStore.roomTypes.find((candidate) => candidate.id === roomTypeId);
+  const roomType = demoStore.roomTypes.find((candidate) => candidate.id === roomTypeId && candidate.propertyId === propertyId);
   if (!roomType) {
-    throw new Error("Room type was not found.");
+    throw new NotFoundError("Room type was not found.");
   }
   return roomType;
 }
@@ -3015,10 +3087,7 @@ export async function patchBackOfficeRoomType(input: BackOfficeMutationInput & {
   patch: Partial<RoomTypeRecord>;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  const roomType = await requireRoomType(input.roomTypeId);
-  if (roomType.propertyId !== input.propertyId) {
-    throw new Error("Room type does not belong to the property.");
-  }
+  const roomType = await requireRoomType(input.propertyId, input.roomTypeId);
   if (input.patch.maxOccupancy !== undefined) {
     // Valida contra Prisma (reservas persistidas) y contra el espejo legacy.
     const reservationRows = await prisma.reservation.findMany({
@@ -3049,7 +3118,7 @@ export async function patchBackOfficeRoomType(input: BackOfficeMutationInput & {
 
 export async function deactivateBackOfficeRoomType(input: BackOfficeMutationInput & { roomTypeId: string }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  const roomType = await requireRoomType(input.roomTypeId);
+  const roomType = await requireRoomType(input.propertyId, input.roomTypeId);
   const before = { ...roomType };
   const persisted = await persistRoomType({ ...roomType, active: false });
   Object.assign(roomType, persisted);
@@ -3062,11 +3131,8 @@ export async function mergeBackOfficeRoomTypes(input: BackOfficeMutationInput & 
   targetRoomTypeId: string;
 }) {
   requirePermissions(input.context, ["property.map.manage"]);
-  const source = await requireRoomType(input.sourceRoomTypeId);
-  const target = await requireRoomType(input.targetRoomTypeId);
-  if (source.propertyId !== input.propertyId || target.propertyId !== input.propertyId) {
-    throw new Error("Both room types must belong to the property.");
-  }
+  const source = await requireRoomType(input.propertyId, input.sourceRoomTypeId);
+  const target = await requireRoomType(input.propertyId, input.targetRoomTypeId);
   if (source.id === target.id) {
     throw new Error("Source and target room types must be different.");
   }
@@ -3091,11 +3157,14 @@ export async function mergeBackOfficeRoomTypes(input: BackOfficeMutationInput & 
   return { status: "merged" as const, source, target };
 }
 
-export async function listRoomsForRoomType(roomTypeId: string) {
+export async function listRoomsForRoomType(propertyId: string, roomTypeId: string) {
   // Persistencia tanda 2: rooms viven en Prisma (Fase 0); la lista confirma merges/altas.
-  const rows = await prisma.room.findMany({ where: { roomTypeId } });
+  const rows = await prisma.room.findMany({ where: { roomTypeId, propertyId } });
   const mapped = rows.map(mapRoomRow);
-  return mergeById(mapped, demoStore.rooms.filter((room) => room.roomTypeId === roomTypeId));
+  return mergeById(
+    mapped,
+    demoStore.rooms.filter((room) => room.roomTypeId === roomTypeId && room.propertyId === propertyId)
+  );
 }
 
 export async function listRoomFeatures(propertyId: string) {
@@ -3428,13 +3497,16 @@ export async function getHousekeepingConfiguration(propertyId: string) {
       (candidate) => candidate.housekeepingSectionId === row.housekeepingSectionId && candidate.roomId === row.roomId
     );
   }
+  const sectionIds = new Set(sections.map((section) => section.id));
+  const assignments = demoStore.housekeepingSectionRooms.filter((assignment) => sectionIds.has(assignment.housekeepingSectionId));
+  const roomsById = await resolveRoomsById(propertyId, assignments.map((assignment) => assignment.roomId));
   return {
     sections: sections.map((section) => ({
       ...section,
-      rooms: demoStore.housekeepingSectionRooms
+      rooms: assignments
         .filter((assignment) => assignment.housekeepingSectionId === section.id)
-        .map((assignment) => demoStore.rooms.find((room) => room.id === assignment.roomId))
-        .filter(Boolean)
+        .map((assignment) => roomsById.get(assignment.roomId))
+        .filter((room): room is RoomRecord => Boolean(room))
     })),
     rules: demoStore.housekeepingRules.filter((rule) => rule.propertyId === propertyId)
   };
@@ -3542,13 +3614,16 @@ export async function getMaintenanceConfiguration(propertyId: string) {
       (candidate) => candidate.maintenanceAreaId === row.maintenanceAreaId && candidate.roomId === row.roomId
     );
   }
+  const areaIds = new Set(areas.map((area) => area.id));
+  const assignments = demoStore.maintenanceAreaRooms.filter((assignment) => areaIds.has(assignment.maintenanceAreaId));
+  const roomsById = await resolveRoomsById(propertyId, assignments.map((assignment) => assignment.roomId));
   return {
     areas: areas.map((area) => ({
       ...area,
-      rooms: demoStore.maintenanceAreaRooms
+      rooms: assignments
         .filter((assignment) => assignment.maintenanceAreaId === area.id)
-        .map((assignment) => demoStore.rooms.find((room) => room.id === assignment.roomId))
-        .filter(Boolean)
+        .map((assignment) => roomsById.get(assignment.roomId))
+        .filter((room): room is RoomRecord => Boolean(room))
     })),
     rules: demoStore.maintenanceRules.filter((rule) => rule.propertyId === propertyId)
   };
@@ -3641,12 +3716,16 @@ export async function assignUserToDepartment(input: BackOfficeMutationInput & {
 }) {
   requirePermissions(input.context, ["users.invite"]);
   const department = await requireDepartment(input.propertyId, input.departmentId);
-  const userRow = await prisma.user.findUnique({ where: { id: input.userId } });
+  const property = await resolveProperty(input.propertyId);
+  if (!property) {
+    throw new NotFoundError("Property was not found.");
+  }
+  const userRow = await prisma.user.findFirst({ where: { id: input.userId, organizationId: property.organizationId } });
   const user = userRow
     ? mirrorRecord(demoStore.users, mapUserRow(userRow))
-    : demoStore.users.find((candidate) => candidate.id === input.userId);
+    : demoStore.users.find((candidate) => candidate.id === input.userId && candidate.organizationId === property.organizationId);
   if (!user) {
-    throw new Error("User was not found.");
+    throw new NotFoundError("User was not found.");
   }
   const existing = demoStore.userDepartments.find(
     (candidate) => candidate.departmentId === department.id && candidate.userId === user.id
@@ -3741,7 +3820,11 @@ export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
 
 export async function disableBackOfficeUser(input: BackOfficeMutationInput & { userId: string }) {
   requirePermissions(input.context, ["users.disable"]);
-  const { user, persisted } = await requireBackOfficeUser(input.userId);
+  const property = await resolveProperty(input.propertyId);
+  if (!property) {
+    throw new NotFoundError("Property was not found.");
+  }
+  const { user, persisted } = await requireBackOfficeUser(property.organizationId, input.userId);
   const before = { ...user };
   if (persisted) {
     // Persistencia tanda 2: Prisma primero, después espejo.

@@ -42,10 +42,26 @@ const AUTHORITY_META: Record<AuthorityKind, { label: string; authority: string; 
 
 function statusToClass(status: string): string {
   if (status === "accepted" || status === "accepted_with_warnings") return "ok";
-  if (status === "rejected") return "error";
+  // Terminales sin acuse: "failed" (máx. intentos agotados) y "abandoned"
+  // (la factura dejó de ser emitible) son errores, no información.
+  if (status === "rejected" || status === "failed" || status === "abandoned") return "error";
   if (status === "retrying" || status === "queued" || status === "submitting" || status === "pending" || status === "network_error") return "warn";
   return "info";
 }
+
+const STATUS_LABEL: Record<string, string> = {
+  failed: "Fallido (máx. intentos)",
+  abandoned: "Abandonado"
+};
+
+function statusLabel(status: string): string {
+  return STATUS_LABEL[status] ?? status;
+}
+
+/** Estados desde los que el operador puede forzar un reenvío: los terminales
+ *  ("failed", "abandoned") también, ya que el reintento manual reinicia el
+ *  contador de intentos; si la factura ya no es emitible, la API responde 409. */
+const RETRYABLE_STATUSES = new Set(["rejected", "retrying", "network_error", "failed", "abandoned"]);
 
 export function SubmissionDetailPanel(props: {
   open: boolean;
@@ -90,7 +106,7 @@ export function SubmissionDetailPanel(props: {
   const sub = data;
   const identifier =
     sub?.csvCode ?? sub?.tbaiCode ?? sub?.acknowledgementCode ?? sub?.acceptedHash;
-  const canRetry = sub?.status === "rejected" || sub?.status === "retrying" || sub?.status === "network_error";
+  const canRetry = sub !== null && sub !== undefined && RETRYABLE_STATUSES.has(sub.status);
 
   return (
     <div className="bo-cmdk-overlay" onClick={props.onClose} role="dialog" aria-modal="true">
@@ -118,7 +134,7 @@ export function SubmissionDetailPanel(props: {
             </h2>
             {sub ? (
               <div className="bo-pill-row" style={{ marginTop: 8 }}>
-                <span className={`bo-status ${statusToClass(sub.status)}`}>{sub.status}</span>
+                <span className={`bo-status ${statusToClass(sub.status)}`}>{statusLabel(sub.status)}</span>
                 {sub.submissionType ? <span className="bo-chip">{sub.submissionType}</span> : null}
                 {sub.territory ? <span className="bo-chip">{sub.territory}</span> : null}
                 {sub.signatureMode ? <span className="bo-chip">XAdES {sub.signatureMode}</span> : null}

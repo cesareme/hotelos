@@ -2,6 +2,7 @@ import { assertInvoiceMutable, buildVerifactuQrUrl, computeVerifactuHash, type V
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { demoStore, type UserContext } from "../../lib/demo-store.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { buildTaxCode, resolveTaxRate } from "../accounting/tax-rate.service.js";
@@ -165,6 +166,24 @@ export async function updateInvoiceBranding(input: {
   return (await buildIssuer(input.propertyId)) ?? {};
 }
 
+// FX rate (currency → EUR) for a non-EUR invoice, shared by the folio and the
+// manual draft paths. getExchangeRate throws a plain "No FX rate available …"
+// Error when the currency has no rate on file — a client error (400), not a
+// 500; anything else (DB failure) keeps propagating.
+export async function resolveInvoiceFxRate(currencyCode: string, organizationId: string): Promise<number> {
+  try {
+    return await getExchangeRate({ base: currencyCode, quote: "EUR", organizationId });
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("No FX rate available")) {
+      throw new BadRequestError(
+        `Moneda sin tipo de cambio disponible: ${currencyCode}. ` +
+          `Configura el tipo de cambio ${currencyCode}→EUR antes de facturar en esa moneda.`
+      );
+    }
+    throw error;
+  }
+}
+
 export async function createInvoiceFromFolio(input: {
   context: UserContext;
   folioId: string;
@@ -217,11 +236,7 @@ export async function createInvoiceFromFolio(input: {
   let fxRate: number | null = null;
   let baseTotal: number | null = null;
   if (currencyCode !== "EUR") {
-    fxRate = await getExchangeRate({
-      base: currencyCode,
-      quote: "EUR",
-      organizationId: input.context.organizationId
-    });
+    fxRate = await resolveInvoiceFxRate(currencyCode, input.context.organizationId);
     baseTotal = round(round(total) * fxRate);
   }
 
@@ -277,8 +292,10 @@ export async function issueInvoice(input: {
   requirePermissions(input.context, ["invoice.issue"]);
 
   const existing = await prisma.invoice.findUnique({ where: { id: input.invoiceId } });
-  if (!existing) throw new Error("Invoice was not found.");
-  assertInvoiceMutable(existing.status);
+  if (!existing) throw new NotFoundError("Factura no encontrada.");
+  if (existing.status !== "draft") {
+    throw new ConflictError("Las facturas emitidas son inmutables: usa anulación, abono o rectificativa.");
+  }
 
   const property = await prisma.property.findUnique({ where: { id: existing.propertyId } });
   if (!property) throw new Error("Property was not found.");
@@ -384,9 +401,9 @@ export async function cancelInvoice(input: {
 }): Promise<InvoiceRecord> {
   requirePermissions(input.context, ["invoice.cancel"]);
   const existing = await prisma.invoice.findUnique({ where: { id: input.invoiceId } });
-  if (!existing) throw new Error("Invoice was not found.");
+  if (!existing) throw new NotFoundError("Factura no encontrada.");
   if (existing.status !== "issued") {
-    throw new Error("Only issued invoices use the cancellation workflow.");
+    throw new ConflictError("Solo las facturas emitidas admiten anulación.");
   }
   const before = await loadInvoice(existing.id);
   await prisma.invoice.update({
@@ -587,9 +604,9 @@ export async function createRectifyingInvoice(input: {
   }
 
   const original = await prisma.invoice.findUnique({ where: { id: input.originalInvoiceId } });
-  if (!original) throw new Error("Original invoice was not found.");
+  if (!original) throw new NotFoundError("Factura original no encontrada.");
   if (original.status !== "issued") {
-    throw new Error("Only issued invoices can be rectified.");
+    throw new ConflictError("Solo las facturas emitidas admiten rectificación.");
   }
 
   // Idempotency: refuse a duplicate rectifying for the same (original, reason).

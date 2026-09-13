@@ -729,7 +729,7 @@ export function BillingCenterScreen() {
                     <CocoaButton
                       variant="bordered"
                       tone="neutral"
-                      onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "FolioRoutingScreen" }))}
+                      onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "FolioRouting" }))}
                     >
                       Abrir editor de routing
                     </CocoaButton>

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { toArray } from "../../utils/toArray";
 import { getActivePropertyId, getActiveOrganizationId } from "../../services/activeProperty";
 import {
   createAllotment,
@@ -524,8 +525,8 @@ function NewAllotmentDialog(props: {
   onCreated: (a: Allotment) => void;
   onError: (msg: string) => void;
 }) {
-  const roomTypes = useApiData<{ items: RoomType[] }>(`/properties/${PROPERTY_ID}/room-types`, { pollIntervalMs: 0 });
-  const roomTypeList = roomTypes.data?.items ?? [];
+  const roomTypes = useApiData<RoomType[]>(`/properties/${PROPERTY_ID}/room-types`, { pollIntervalMs: 0 });
+  const roomTypeList = toArray<RoomType>(roomTypes.data);
 
   const [form, setForm] = useState<CreateAllotmentForm>({
     code: "",

@@ -607,10 +607,12 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // Folio/Billing advanced (Sprint 40). All medium risk: they mutate folios
   // and invoices but stay idempotent and reversible (split/move can be undone
   // by another move; mark-paid is mirrored by refundPayment).
-  { method: "POST", path: "/folios/:id/split", permissions: ["billing.invoice.issue", "folio.charge.post"], riskLevel: "medium" },
-  { method: "POST", path: "/folios/:sourceId/move-charges", permissions: ["billing.invoice.issue", "folio.charge.post"], riskLevel: "medium" },
-  { method: "POST", path: "/invoices/:id/mark-paid", permissions: ["billing.invoice.issue", "payment.capture"], riskLevel: "medium" },
-  { method: "POST", path: "/invoices/:id/send-email", permissions: ["billing.invoice.issue"], riskLevel: "medium" },
+  // Same keys the folio.service guards enforce (billing.* keys are not in the
+  // runtime permission catalog).
+  { method: "POST", path: "/folios/:id/split", permissions: ["folio.charge.post"], riskLevel: "medium" },
+  { method: "POST", path: "/folios/:sourceId/move-charges", permissions: ["folio.charge.post"], riskLevel: "medium" },
+  { method: "POST", path: "/invoices/:id/mark-paid", permissions: ["payment.capture"], riskLevel: "medium" },
+  { method: "POST", path: "/invoices/:id/send-email", permissions: ["invoice.issue"], riskLevel: "medium" },
   { method: "GET", path: "/reports/properties/:propertyId/catalog", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/reports/properties/:propertyId/reservations", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/reports/properties/:propertyId/billing", permissions: ["analytics.read"], riskLevel: "low" },
@@ -1137,7 +1139,9 @@ export function assertRoutePermission(input: { method: string; path: string; use
       }
       return;
     }
-    throw new Error(`No route permission manifest entry for ${input.method.toUpperCase()} ${input.path}`);
+    throw new ForbiddenError(
+      `Acción no permitida: la ruta ${input.method.toUpperCase()} ${input.path} no está registrada en el manifiesto de permisos.`
+    );
   }
 
   assertPermissions(input.userPermissions, route.permissions);

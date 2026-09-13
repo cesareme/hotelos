@@ -33,10 +33,26 @@ function statusToClass(status: string, simulated = false): string {
   // envío real a la Administración) no debe pintarse en verde como si fuera un
   // acuse real de AEAT/MIR/Hacienda foral.
   if (status === "accepted" || status === "accepted_with_warnings") return simulated ? "warn" : "ok";
-  if (status === "rejected") return "error";
+  // Terminales sin acuse: "failed" (máx. intentos agotados) y "abandoned"
+  // (la factura dejó de ser emitible) son errores, no información.
+  if (status === "rejected" || status === "failed" || status === "abandoned") return "error";
   if (status === "retrying" || status === "queued" || status === "submitting" || status === "pending" || status === "network_error") return "warn";
   return "info";
 }
+
+const STATUS_LABEL: Record<string, string> = {
+  failed: "Fallido (máx. intentos)",
+  abandoned: "Abandonado"
+};
+
+function statusLabel(status: string): string {
+  return STATUS_LABEL[status] ?? status;
+}
+
+/** Estados desde los que el operador puede forzar un reenvío: los terminales
+ *  ("failed", "abandoned") también, ya que el reintento manual reinicia el
+ *  contador de intentos; si la factura ya no es emitible, la API responde 409. */
+const RETRYABLE_STATUSES = new Set(["rejected", "retrying", "network_error", "failed", "abandoned"]);
 
 /** Envío simulado: el submitter por defecto (sin VERIFACTU_MODE/SES_HOSPEDAJES_MODE
  *  de producción) persiste acuses con endpoint `stub://…` sin contactar a la
@@ -96,7 +112,7 @@ export function FiscalSubmissionsCenter() {
     }
     return [];
   }, [data]);
-  const retryable = useMemo(() => rows.filter((r) => r.status === "rejected" || r.status === "retrying" || r.status === "network_error"), [rows]);
+  const retryable = useMemo(() => rows.filter((r) => RETRYABLE_STATUSES.has(r.status)), [rows]);
 
   async function handleBulkRetry() {
     if (retryable.length === 0) return;
@@ -228,7 +244,7 @@ export function FiscalSubmissionsCenter() {
                   style={{ cursor: "pointer", background: row.id === selected ? "var(--accent-soft)" : undefined }}
                 >
                   <td>
-                    <span className={`bo-status ${statusToClass(row.status, isSimulated(row))}`}>{row.status}</span>
+                    <span className={`bo-status ${statusToClass(row.status, isSimulated(row))}`}>{statusLabel(row.status)}</span>
                     {isSimulated(row) ? (
                       <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, color: "var(--warn-ink, #a16207)", marginTop: 2 }}>
                         SANDBOX · no enviado

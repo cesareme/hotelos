@@ -128,6 +128,11 @@ Fill in:
 | `VERIFACTU_MODE`     | Leave `sandbox` until you have AEAT prod certs             |
 | `SENTRY_DSN`         | Optional — your Sentry project DSN                         |
 
+The table is a summary; `deploy/.env.production.example` documents every
+variable the compose interpolates (17) with its purpose and how to generate
+it. Never add `HOTELOS_ALLOW_DEMO_AUTH=true` to a production env: it disables
+authentication (see the header of the example file).
+
 ### 5 · First deploy
 
 ```bash

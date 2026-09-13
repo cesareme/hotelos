@@ -790,7 +790,7 @@ export function FolioDetailScreen({ folioId: folioIdProp }: FolioDetailScreenPro
             <CocoaButton
               variant="plain"
               size="small"
-              onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "FolioRoutingScreen" }))}
+              onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "FolioRouting" }))}
             >
               FolioRouting
             </CocoaButton>

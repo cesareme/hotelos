@@ -162,7 +162,8 @@ services:
       - web
 
   # Optional: nightly Postgres dumps to ./postgres-backups (kept 14 days).
-  # The host-side cron in deploy/scripts/install-cron.sh wires this in.
+  # The host-side cron (/etc/cron.d/hotelos-backup, 03:15) that runs this
+  # profile is installed by deploy/scripts/bootstrap-vps.sh step 9/9.
   postgres-backup:
     image: postgres:16-alpine
     restart: "no"

@@ -56,7 +56,7 @@ describe("Back Office hotel setup layer", () => {
       "Módulos e integraciones",    // Modules
       "Operaciones",                // Operations
       "Comercial",                  // Commercial
-      "Experiencia del huésped",    // Guest Experience
+      "Portal del huésped",         // Guest Experience (guest-portal settings now live under "Comercial / CRM")
       "Finanzas y fiscal",          // Finance and Compliance
       "activos",                    // Asset and Sustainability (asset role nav)
       "Plataforma de desarrollador" // Platform (Developer & system)
@@ -260,7 +260,7 @@ describe("Back Office hotel setup layer", () => {
     // The other markers cover the same intent (setup checklist, go-live
     // readiness, recent audit signals) in the redesigned dashboard.
     for (const marker of [
-      "HotelOS Aurora · Back Office",  // page eyebrow
+      "Anfitorio Aurora · Back Office",  // page eyebrow (visible brand; HotelOS* identifiers stay technical)
       "Continue setup checklist",      // primary CTA in hero
       "Go-live readiness",             // readiness card
       "Recalculate readiness",         // module health / readiness action

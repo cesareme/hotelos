@@ -183,7 +183,7 @@ describe("AI Onboarding & Migration module", () => {
     assert.match(moreScreen, /ai_onboarding_migration/);
     assert.match(setupCenter, /Start AI Setup/);
     assert.match(adminRoutes, /\/backoffice\/ai-setup/);
-    assert.match(sidebar, /Alta y migración|AI Setup & Migration/);
+    assert.match(sidebar, /label: "Centro de setup de IA", screen: "AISetupCenter"/);
     assert.match(demo, /AI Setup Wizard/);
     assert.match(demo, /Dry-run result/);
     assert.match(demo, /Import application order/);

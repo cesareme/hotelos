@@ -70,6 +70,7 @@ EXPOSE 3000
 # `tini` reaps zombie processes correctly when the API spawns workers/cron.
 ENTRYPOINT ["/sbin/tini", "--"]
 
-# Run Prisma migrations as a separate step (deploy/scripts/migrate.sh handles
-# this in the deploy script), then start the compiled server.
+# The image only starts the compiled server. The schema is applied as a
+# separate step by deploy/scripts/deploy.sh (`prisma db push --skip-generate`
+# behind a drift guard; the migration chain is not the source of truth yet).
 CMD ["node", "apps/api/dist/server.js"]

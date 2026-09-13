@@ -7,6 +7,7 @@ import { TOOL_DEFINITIONS } from "../../ai-tools/src/registry.js";
 const prisma = new PrismaClient();
 
 const DEMO_PERMISSIONS = [
+  "admin.tenants.manage",
   "backoffice.access",
   "configuration.read",
   "configuration.manage",
@@ -33,6 +34,9 @@ const DEMO_PERMISSIONS = [
   "pms.reservation.check_out",
   "guests.read",
   "guests.manage",
+  "folio.charge.post",
+  "payment.capture",
+  "payment.refund",
   "housekeeping.task.manage",
   "maintenance.workorder.manage",
   "billing.compliance.view",
@@ -54,6 +58,7 @@ const DEMO_PERMISSIONS = [
   "modules.configure",
   "integrations.read",
   "integrations.connect",
+  "asset.capex.approve",
   "assets.read",
   "owner.dashboard.read",
   "revenue.read",

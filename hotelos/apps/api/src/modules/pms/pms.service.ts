@@ -219,7 +219,8 @@ export async function assertPropertyInOrg(propertyId: string, organizationId: st
     select: { organizationId: true }
   });
   if (!property || property.organizationId !== organizationId) {
-    throw new NotFoundError(`Property ${propertyId} not found.`);
+    // SEC-2: generic message — never echo the id or hint at its owner.
+    throw new NotFoundError("Propiedad no encontrada.");
   }
 }
 
@@ -243,7 +244,7 @@ export async function createRoom(input: {
     where: { propertyId_number: { propertyId: input.propertyId, number: input.number } }
   });
   if (existing) {
-    throw new Error(`Room ${input.number} already exists.`);
+    throw new ConflictError(`La habitación ${input.number} ya existe en esta propiedad.`);
   }
 
   const created = await prisma.room.create({
@@ -305,7 +306,7 @@ export async function listReservations(propertyId: string, options?: { limit?: n
 export async function getReservation(id: string): Promise<ReservationRecord> {
   const row = await prisma.reservation.findUnique({ where: { id } });
   if (!row) {
-    throw new Error("Reservation was not found.");
+    throw new NotFoundError("Reserva no encontrada.");
   }
   return withPrimaryGuestId(row);
 }
@@ -374,7 +375,8 @@ export async function createReservation(input: {
       select: { organizationId: true }
     });
     if (!property || property.organizationId !== input.context.organizationId) {
-      throw new NotFoundError(`Property ${input.propertyId} not found.`);
+      // SEC-2: generic message — never echo the id or hint at its owner.
+      throw new NotFoundError("Propiedad no encontrada.");
     }
     // roomType / ratePlan must belong to the same property (and therefore the
     // same tenant) — prevents grafting another property's inventory/pricing.
@@ -400,7 +402,7 @@ export async function createReservation(input: {
     // CORRECTNESS (audit 2026-06 · H2): enforce availability on WRITE, not just
     // on the read-side quote. Without this, two concurrent bookings over full
     // inventory both confirm. We take a transactional advisory lock keyed by
-    // (property, roomType) so the count below cannot race with a parallel
+    // (property, roomType) so the sum below cannot race with a parallel
     // create; the lock releases automatically when the transaction ends and
     // only serializes bookings for the SAME room type.
     if (input.roomTypeId) {
@@ -418,7 +420,10 @@ export async function createReservation(input: {
           maintenanceStatus: { not: "blocked" }
         }
       });
-      const overlapping = await tx.reservation.count({
+      // Sum rooms (not reservation rows): a multi-room booking consumes
+      // roomsCount units of inventory. `_sum` is null when nothing overlaps.
+      const overlapping = await tx.reservation.aggregate({
+        _sum: { roomsCount: true },
         where: {
           propertyId: input.propertyId,
           roomTypeId: input.roomTypeId,
@@ -427,11 +432,12 @@ export async function createReservation(input: {
           departureDate: { gt: arrival }
         }
       });
+      const bookedRooms = overlapping._sum.roomsCount ?? 0;
       const requested = input.roomsCount ?? 1;
-      if (overlapping + requested > totalRooms) {
+      if (bookedRooms + requested > totalRooms) {
         throw new ConflictError(
           `No hay disponibilidad para el tipo de habitación seleccionado en esas fechas ` +
-            `(${totalRooms} habitaciones, ${overlapping} ya reservadas).`
+            `(${totalRooms} habitaciones, ${bookedRooms} ya reservadas, ${requested} solicitadas).`
         );
       }
     }
@@ -617,13 +623,13 @@ export async function patchReservation(input: {
 
   const existing = await prisma.reservation.findUnique({ where: { id: input.reservationId } });
   if (!existing) {
-    throw new Error("Reservation was not found.");
+    throw new NotFoundError("Reserva no encontrada.");
   }
   // SECURITY (audit 2026-06 R2 · NUEVO-1): the reservation's property must belong
   // to the caller's org, or a user in org A could patch org B's reservation by id.
   await assertPropertyInOrg(existing.propertyId, input.context.organizationId);
   if (["checked_in", "checked_out", "cancelled", "no_show"].includes(existing.status)) {
-    throw new Error(`Reservation ${existing.code} cannot be modified while ${existing.status}.`);
+    throw new ConflictError(`La reserva ${existing.code} no se puede modificar en estado ${existing.status}.`);
   }
 
   const before = await withPrimaryGuestId(existing);
@@ -798,7 +804,7 @@ export async function matchGuestToReservation(input: {
     });
   }
   if (orClauses.length === 0) {
-    throw new Error("No matching guest was found.");
+    throw new BadRequestError("Se necesita el número de documento o nombre y primer apellido para localizar al huésped.");
   }
 
   // documentNumber inside the OR is plaintext; the Prisma encryption
@@ -807,14 +813,14 @@ export async function matchGuestToReservation(input: {
   // lookups still hit an index after Sprint 32 encryption.
   const guestRow = await prisma.guest.findFirst({ where: { OR: orClauses } });
   if (!guestRow) {
-    throw new Error("No matching guest was found.");
+    throw new NotFoundError("No se ha encontrado ningún huésped que coincida con el documento.");
   }
 
   const links = await prisma.reservationGuest.findMany({
     where: { guestId: guestRow.id, isPrimary: true }
   });
   if (links.length === 0) {
-    throw new Error("No open reservation was found for the matched guest.");
+    throw new NotFoundError("El huésped no tiene ninguna reserva abierta en esta propiedad.");
   }
 
   const reservationRow = await prisma.reservation.findFirst({
@@ -825,7 +831,7 @@ export async function matchGuestToReservation(input: {
     }
   });
   if (!reservationRow) {
-    throw new Error("No open reservation was found for the matched guest.");
+    throw new NotFoundError("El huésped no tiene ninguna reserva abierta en esta propiedad.");
   }
 
   const reservation = mapReservation(Object.assign(reservationRow, { primaryGuestId: guestRow.id }));
@@ -843,7 +849,7 @@ export async function assignRoom(input: {
   const reservation = await prisma.reservation.findUnique({ where: { id: input.reservationId } });
   const room = await prisma.room.findUnique({ where: { id: input.roomId } });
   if (!reservation || !room) {
-    throw new Error("Reservation or room was not found.");
+    throw new NotFoundError("Reserva o habitación no encontrada.");
   }
   // SECURITY (audit 2026-06 R2 · NUEVO-1): the reservation must be in the caller's
   // org, and the room must belong to that same property — otherwise you could
@@ -862,7 +868,7 @@ export async function assignRoom(input: {
   });
 
   if (!validation.allowed) {
-    throw new Error(validation.warnings.join(" "));
+    throw new ConflictError(`No se puede asignar la habitación ${room.number}: ${validation.warnings.join(" ")}`);
   }
 
   const before = await withPrimaryGuestId(reservation);
@@ -910,13 +916,13 @@ export async function assignRoomByNumber(input: {
 }): Promise<ReservationRecord> {
   const reservation = await prisma.reservation.findUnique({ where: { id: input.reservationId } });
   if (!reservation) {
-    throw new Error("Reservation was not found.");
+    throw new NotFoundError("Reserva no encontrada.");
   }
   const room = await prisma.room.findUnique({
     where: { propertyId_number: { propertyId: reservation.propertyId, number: input.roomNumber } }
   });
   if (!room) {
-    throw new Error("Room was not found.");
+    throw new NotFoundError(`Habitación ${input.roomNumber} no encontrada.`);
   }
 
   return assignRoom({
@@ -939,10 +945,10 @@ export async function checkInReservation(input: {
   const reservation = await prisma.reservation.findUnique({ where: { id: input.reservationId } });
   const room = await prisma.room.findUnique({ where: { id: input.roomId } });
   if (!reservation || !room) {
-    throw new Error("Reservation or room was not found.");
+    throw new NotFoundError("Reserva o habitación no encontrada.");
   }
   if (reservation.status !== "confirmed") {
-    throw new Error(`Reservation ${reservation.code} is not ready for check-in.`);
+    throw new ConflictError(`La reserva ${reservation.code} no está lista para el check-in (estado: ${reservation.status}).`);
   }
 
   const validation = await canAssignRoom({
@@ -953,7 +959,7 @@ export async function checkInReservation(input: {
     departureDate: isoDate(reservation.departureDate)
   });
   if (!validation.allowed) {
-    throw new Error(validation.warnings.join(" "));
+    throw new ConflictError(`No se puede hacer el check-in en la habitación ${room.number}: ${validation.warnings.join(" ")}`);
   }
 
   const before = {
@@ -1022,10 +1028,10 @@ export async function checkOutReservation(input: {
 
   const reservation = await prisma.reservation.findUnique({ where: { id: input.reservationId } });
   if (!reservation) {
-    throw new Error("Reservation was not found.");
+    throw new NotFoundError("Reserva no encontrada.");
   }
   if (reservation.status !== "checked_in") {
-    throw new Error(`Reservation ${reservation.code} is not checked in.`);
+    throw new ConflictError(`La reserva ${reservation.code} no tiene el check-in hecho (estado: ${reservation.status}).`);
   }
 
   const room = reservation.assignedRoomId
@@ -1104,10 +1110,10 @@ export async function transitionReservation(input: {
 
   const reservation = await prisma.reservation.findUnique({ where: { id: input.reservationId } });
   if (!reservation) {
-    throw new Error("Reservation was not found.");
+    throw new NotFoundError("Reserva no encontrada.");
   }
   if (["checked_in", "checked_out"].includes(reservation.status)) {
-    throw new Error(`Reservation ${reservation.code} cannot be moved to ${input.status}.`);
+    throw new ConflictError(`La reserva ${reservation.code} no se puede pasar a ${input.status} estando ${reservation.status}.`);
   }
 
   const before = await withPrimaryGuestId(reservation);
@@ -1184,12 +1190,14 @@ export async function quoteAvailability(input: {
           maintenanceStatus: { not: "blocked" }
         }
       });
-      // OVERSELL FIX: availability must subtract ALL overlapping active
-      // reservations for the room type — including confirmed reservations that
-      // have not been assigned a physical room yet. Previously only reservations
-      // with a non-null assignedRoomId were counted, so unassigned bookings
-      // consumed zero inventory and the property could be systematically oversold.
-      const reservationCount = await prisma.reservation.count({
+      // OVERSELL FIX: availability must subtract the rooms of ALL overlapping
+      // active reservations for the room type — including confirmed reservations
+      // that have not been assigned a physical room yet. Previously only
+      // reservations with a non-null assignedRoomId were counted, so unassigned
+      // bookings consumed zero inventory and the property could be oversold.
+      // Sum roomsCount (not rows): a multi-room booking consumes several units.
+      const overlapping = await prisma.reservation.aggregate({
+        _sum: { roomsCount: true },
         where: {
           propertyId: input.propertyId,
           roomTypeId: roomType.id,
@@ -1198,7 +1206,8 @@ export async function quoteAvailability(input: {
           departureDate: { gt: arrival }
         }
       });
-      const available = Math.max(0, totalRooms - reservationCount);
+      const bookedRooms = overlapping._sum.roomsCount ?? 0;
+      const available = Math.max(0, totalRooms - bookedRooms);
 
       // PRICING: read the real rate grid (RateDay) for this room type over the
       // stay. Per night we take the lowest published price across rate plans.

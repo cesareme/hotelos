@@ -50,18 +50,20 @@ function readFileSafe(path) {
  *   - Values of the adminRouteScreenMap (which feed module-driven items via
  *     getModuleRouteItems().map(...)). These also need to exist in App.tsx.
  *
- * Hash-suffixed targets like `GroupsEventsDashboard#nuevo-grupo` are stripped
- * to their base screen — the hash is a deep-link into the same screen, not a
- * separate route.
+ * Hash-suffixed targets like `GroupsEventsDashboard#nuevo-grupo` are validated
+ * by their base screen only. The runtime supports this shape: App.tsx
+ * `resolveScreenTarget` splits `screen#hash`, activates the base screen and
+ * writes `#hash` to the URL for the screen's own hash reader, so a deep-link
+ * is valid exactly when its base screen is a SCREEN_COMPONENTS key.
  */
 function extractSidebarScreens(source) {
   const screens = new Map(); // screen -> Set of context strings for reporting
 
   function add(rawScreen, context) {
-    const screen = rawScreen.split('#')[0]; // drop hash deep-links
+    const [screen, hash] = rawScreen.split('#');
     if (!screen) return;
     if (!screens.has(screen)) screens.set(screen, new Set());
-    screens.get(screen).add(context);
+    screens.get(screen).add(hash ? `${context} (#${hash} deep-link)` : context);
   }
 
   // Literal `screen: 'Foo'` references (handles single + double quotes).

@@ -387,9 +387,22 @@ export function missingPermissions(userPermissions: PermissionKey[], required: P
   return required.filter((permission) => !hasPermission(userPermissions, permission));
 }
 
+// Carries `statusCode` so HTTP layers that map errors by status (the API's
+// global error handler) answer 403 instead of 500. The message is user-facing
+// (Spanish); the full `missing` list stays on the error object for logs.
+export class PermissionDeniedError extends Error {
+  readonly statusCode = 403;
+  readonly missing: PermissionKey[];
+  constructor(missing: PermissionKey[]) {
+    super(`No tienes permiso para realizar esta acción (requiere: ${missing.join(", ")}).`);
+    this.name = "PermissionDeniedError";
+    this.missing = missing;
+  }
+}
+
 export function assertPermissions(userPermissions: PermissionKey[], required: PermissionKey[]): void {
   const missing = missingPermissions(userPermissions, required);
   if (missing.length > 0) {
-    throw new Error(`Missing permissions: ${missing.join(", ")}`);
+    throw new PermissionDeniedError(missing);
   }
 }
