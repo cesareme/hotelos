@@ -18,6 +18,9 @@
 //   --force          also overwrite closes whose dataSource is NOT "night_audit"
 //                    (seeded "demo" rows, imported history). Without it those
 //                    days are SKIPPED so an import is never clobbered.
+//                    A property with NO reservation in Anfitorio is always
+//                    skipped (skippedNoReservations): there is no close to
+//                    derive and a 0-room row would bury imported history.
 //   --json           machine-readable output
 //
 // Idempotent: writeDailySnapshot is find-then-write on the top-level row, so
@@ -48,6 +51,8 @@ export type BackfillPropertyResult = {
   created: number;
   updated: number;
   skippedProtected: Array<{ date: string; dataSource: string }>;
+  /** Days not written because the property has no reservation at all (writer rule, never forced). */
+  skippedNoReservations: number;
   failed: Array<{ date: string; error: string }>;
 };
 
@@ -58,7 +63,7 @@ export type BackfillSummary = {
   to: string;
   clampedTo: boolean;
   properties: BackfillPropertyResult[];
-  totals: { days: number; created: number; updated: number; skippedProtected: number; failed: number };
+  totals: { days: number; created: number; updated: number; skippedProtected: number; skippedNoReservations: number; failed: number };
   durationMs: number;
 };
 
@@ -115,12 +120,20 @@ export async function runBackfill(flags: BackfillFlags, today: Date = dayUtc()):
       select: { snapshotDate: true, dataSource: true }
     });
     const existingByDate = new Map(existing.map((s) => [isoDate(dayUtc(s.snapshotDate)), s.dataSource]));
-    const result: BackfillPropertyResult = { propertyId: p.id, propertyName: p.name, days: dayCount, created: 0, updated: 0, skippedProtected: [], failed: [] };
+    // Same rule as writeDailySnapshot: a property that never had a reservation
+    // has nothing to close (any status counts as "operated"). Checked once per
+    // property so the dry-run reports it exactly like the apply would.
+    const hasReservations = (await prisma.reservation.count({ where: { propertyId: p.id } })) > 0;
+    const result: BackfillPropertyResult = { propertyId: p.id, propertyName: p.name, days: dayCount, created: 0, updated: 0, skippedProtected: [], skippedNoReservations: 0, failed: [] };
     for (let t = from.getTime(); t <= to.getTime(); t += MS_DAY) {
       const date = isoDate(new Date(t));
       const current = existingByDate.get(date);
       if (current !== undefined && current !== "night_audit" && !flags.force) {
         result.skippedProtected.push({ date, dataSource: current });
+        continue;
+      }
+      if (!hasReservations) {
+        result.skippedNoReservations++;
         continue;
       }
       if (flags.dryRun) {
@@ -129,8 +142,14 @@ export async function runBackfill(flags: BackfillFlags, today: Date = dayUtc()):
         continue;
       }
       try {
-        const written = await writeDailySnapshot(p.id, date);
-        if (written.action === "created") result.created++;
+        const written = await writeDailySnapshot(p.id, date, { force: flags.force });
+        if (written.action === "skipped") {
+          // The writer re-checks on its own (a reservation could be deleted, a
+          // row could change hands between the pre-scan and the write): count
+          // its skips honestly instead of reporting them as written.
+          if (written.reason === "protected") result.skippedProtected.push({ date, dataSource: written.dataSource });
+          else result.skippedNoReservations++;
+        } else if (written.action === "created") result.created++;
         else result.updated++;
       } catch (error) {
         result.failed.push({ date, error: error instanceof Error ? error.message : String(error) });
@@ -145,9 +164,10 @@ export async function runBackfill(flags: BackfillFlags, today: Date = dayUtc()):
       created: acc.created + r.created,
       updated: acc.updated + r.updated,
       skippedProtected: acc.skippedProtected + r.skippedProtected.length,
+      skippedNoReservations: acc.skippedNoReservations + r.skippedNoReservations,
       failed: acc.failed + r.failed.length
     }),
-    { days: 0, created: 0, updated: 0, skippedProtected: 0, failed: 0 }
+    { days: 0, created: 0, updated: 0, skippedProtected: 0, skippedNoReservations: 0, failed: 0 }
   );
 
   return {
@@ -167,10 +187,13 @@ function printHuman(summary: BackfillSummary): void {
   const lines = [
     `[backfill:snapshots] ${mode}${summary.force ? " + force" : ""} · ${summary.from} → ${summary.to}${summary.clampedTo ? " (clamped to yesterday)" : ""} · ${summary.durationMs} ms`,
     `  properties: ${summary.properties.length} · days/property: ${summary.properties[0]?.days ?? 0}`,
-    `  totals: +${summary.totals.created} created · ${summary.totals.updated} updated · ${summary.totals.skippedProtected} skipped (protected dataSource) · ${summary.totals.failed} failed`
+    `  totals: +${summary.totals.created} created · ${summary.totals.updated} updated · ${summary.totals.skippedProtected} skipped (protected dataSource) · ${summary.totals.skippedNoReservations} skipped (no reservations) · ${summary.totals.failed} failed`
   ];
   for (const p of summary.properties) {
-    lines.push(`  ${p.propertyId} (${p.propertyName}): +${p.created} / ~${p.updated} / skip ${p.skippedProtected.length} / fail ${p.failed.length}`);
+    lines.push(`  ${p.propertyId} (${p.propertyName}): +${p.created} / ~${p.updated} / skip ${p.skippedProtected.length} protected / skip ${p.skippedNoReservations} no-reservations / fail ${p.failed.length}`);
+    if (p.skippedNoReservations > 0) {
+      lines.push(`    sin reservas en Anfitorio: ${p.skippedNoReservations} días no derivados (no hay cierre que escribir; la historia importada se conserva)`);
+    }
     if (p.skippedProtected.length > 0) {
       const sources = [...new Set(p.skippedProtected.map((s) => s.dataSource))].join(", ");
       lines.push(`    protected (${sources}): ${p.skippedProtected[0].date} … ${p.skippedProtected[p.skippedProtected.length - 1].date} — use --force to overwrite`);

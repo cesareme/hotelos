@@ -18,7 +18,9 @@
     "backfill:taxes": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-taxes.ts",
     "backfill:guest-register": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-guest-register.ts",
     "demo:refresh": "node --env-file-if-exists=../../.env --import tsx src/scripts/refresh-demo-dataset.ts",
-    "demo:fix-identity": "node --env-file-if-exists=../../.env --import tsx src/scripts/fix-demo-legal-identity.ts"
+    "demo:fix-identity": "node --env-file-if-exists=../../.env --import tsx src/scripts/fix-demo-legal-identity.ts",
+    "pilot:provision-property": "node --env-file-if-exists=../../.env --import tsx src/scripts/provision-pilot-property.ts",
+    "import:pms-history-forecast": "node --env-file-if-exists=../../.env --import tsx src/scripts/import-pms-history-forecast.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

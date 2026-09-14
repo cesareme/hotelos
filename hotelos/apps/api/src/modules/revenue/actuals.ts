@@ -22,6 +22,7 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { BadRequestError } from "../../lib/http-error.js";
+import { isIsoDate } from "../../lib/query-dates.js";
 
 export const MS_DAY = 86_400_000;
 
@@ -85,13 +86,64 @@ export function parseMonth(month: string): ParsedMonth {
   };
 }
 
+// ---- query window (from/to) validation ---------------------------------------
+export type RevenueWindow = { from: string; to: string; days: number };
+
+/**
+ * Validate a `from`/`to` query pair for the revenue read endpoints (board and
+ * its aliases, live report, period metrics). `dayUtc` only checks the
+ * `YYYY-MM-DD` shape, so `2026-13-99` used to become an Invalid Date and
+ * surface as a Prisma 500; here every failure is a typed 400 with a Spanish
+ * message BEFORE any DB call. Pure (no I/O) so it is unit-testable.
+ *
+ *   - missing → the caller's default (`defaultFrom` / `defaultTo`, the latter
+ *     may derive from the resolved `from`); no default → 400.
+ *   - malformed or non-existent calendar day → 400.
+ *   - to < from → 400.
+ *   - more than `maxDays` calendar days (inclusive) → 400 naming the limit,
+ *     never a silent truncation.
+ */
+export function parseRevenueWindow(input: {
+  from?: unknown;
+  to?: unknown;
+  maxDays: number;
+  defaultFrom?: string;
+  defaultTo?: string | ((from: string) => string);
+  /** Spanish qualifier for the limit message, e.g. "del informe" → "la ventana máxima del informe es 120 días". */
+  scope?: string;
+}): RevenueWindow {
+  const resolve = (name: "from" | "to", value: unknown, fallback: string | undefined): string => {
+    if (value === undefined || value === null || value === "") {
+      if (fallback === undefined) throw new BadRequestError(`${name} es obligatorio (formato YYYY-MM-DD)`);
+      return fallback;
+    }
+    if (!isIsoDate(value)) throw new BadRequestError(`${name} debe ser una fecha YYYY-MM-DD válida`);
+    return value;
+  };
+  const from = resolve("from", input.from, input.defaultFrom);
+  const toDefault = typeof input.defaultTo === "function" ? input.defaultTo(from) : input.defaultTo;
+  const to = resolve("to", input.to, toDefault);
+  if (to < from) throw new BadRequestError("to debe ser igual o posterior a from");
+  const days = Math.round((dayUtc(to).getTime() - dayUtc(from).getTime()) / MS_DAY) + 1;
+  if (days > input.maxDays) {
+    const scope = input.scope ? ` ${input.scope}` : "";
+    throw new BadRequestError(`la ventana máxima${scope} es ${input.maxDays} días (pedidos ${days})`);
+  }
+  return { from, to, days };
+}
+
 // ---- realized (actual) per day ----------------------------------------------
 export type RealizedDaySource = "snapshot" | "reservations";
 
 export type RealizedDay = {
   date: string;
   source: RealizedDaySource;
+  /** Occupied rooms as the close reports them (`totalOcc`): INCLUDES house use. */
   rooms: number;
+  /** Paying rooms = rooms − houseUseRooms; the PMS's ADR base. Fallback days: = rooms. */
+  paidRooms: number;
+  /** House-use rooms of the close; 0 on fallback days and on rows without the column. */
+  houseUseRooms: number;
   roomRevenue: number;
   /** Snapshot total revenue; on fallback days equals roomRevenue (same rule as writeDailySnapshot). */
   totalRevenue: number;
@@ -134,6 +186,17 @@ export type SnapshotRow = {
   occupancyPercent: Prisma.Decimal | number | null;
   totalRevenue?: Prisma.Decimal | number | null;
   goppar?: Prisma.Decimal | number | null;
+  /**
+   * Guests in house (adults + children) as written by the close or imported
+   * from the PMS report ("Adl/Chl" column). Optional so older/narrower selects
+   * still satisfy the row; missing → pax 0, never a fabricated headcount.
+   */
+  adultsChildren?: number | null;
+  /**
+   * House-use rooms included in `totalOcc`. Optional for the same reason as
+   * `adultsChildren`; missing → 0, so `paidRooms` falls back to `totalOcc`.
+   */
+  houseUseRooms?: number | null;
 };
 
 /** Minimal reservation row for the fallback (structural). */
@@ -159,7 +222,9 @@ export const SNAPSHOT_SELECT = {
   adr: true,
   revpar: true,
   occupancyPercent: true,
-  goppar: true
+  goppar: true,
+  adultsChildren: true,
+  houseUseRooms: true
 } as const satisfies Prisma.RevenueDailySnapshotSelect;
 
 export const REALIZED_RESERVATION_SELECT = {
@@ -261,6 +326,10 @@ export function realizeDays(input: {
     if (snap) {
       snapshotDays++;
       const rooms = snap.totalOcc;
+      // House use is part of totalOcc (PMS and night-audit convention); the
+      // paying base never goes negative even on an inconsistent close.
+      const houseUseRooms = Math.max(0, snap.houseUseRooms ?? 0);
+      const paidRooms = Math.max(0, rooms - houseUseRooms);
       const roomRevenue = round2(dec(snap.roomRevenue));
       const occFromSnap = decOrNull(snap.occupancyPercent);
       const adrFromSnap = decOrNull(snap.adr);
@@ -270,13 +339,17 @@ export function realizeDays(input: {
         date: key,
         source: "snapshot",
         rooms,
+        paidRooms,
+        houseUseRooms,
         roomRevenue,
         totalRevenue,
         arrivals: snap.arrivalRooms,
         departures: snap.departureRooms,
         noShows: snap.noShowRooms,
         ooo: snap.oooRooms,
-        pax: 0,
+        // Pax comes from the close itself (night audit or PMS import); a row
+        // without the column (narrow select) reports 0, same as before.
+        pax: snap.adultsChildren ?? 0,
         occPct: occFromSnap !== null ? round2(occFromSnap) : totalRooms > 0 ? round2((rooms / totalRooms) * 100) : 0,
         adr: adrFromSnap !== null ? round2(adrFromSnap) : rooms > 0 ? round2(roomRevenue / rooms) : null,
         revpar: revparFromSnap !== null ? round2(revparFromSnap) : totalRooms > 0 ? round2(roomRevenue / totalRooms) : null,
@@ -291,6 +364,8 @@ export function realizeDays(input: {
         date: key,
         source: "reservations",
         rooms,
+        paidRooms: rooms, // reservations carry no house-use flag: every room counts as paid
+        houseUseRooms: 0,
         roomRevenue,
         totalRevenue: roomRevenue,
         arrivals: a?.arrivals ?? 0,

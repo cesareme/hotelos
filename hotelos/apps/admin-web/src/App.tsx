@@ -242,7 +242,6 @@ const CutoverAssistantScreen = lazyNamed(() => import("./screens/onboarding/Onbo
 const DataQualityReviewScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "DataQualityReviewScreen");
 const DryRunResultScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "DryRunResultScreen");
 const FileUploadAndClassificationScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "FileUploadAndClassificationScreen");
-const OnboardingGoLiveReadinessScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "GoLiveReadinessScreen");
 const GuestImportReviewScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "GuestImportReviewScreen");
 const MigrationBatchScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "MigrationBatchScreen");
 const OnboardingProjectDetailScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "OnboardingProjectDetailScreen");
@@ -533,7 +532,9 @@ const SCREEN_COMPONENTS = {
   OnboardingDataQualityReview: DataQualityReviewScreen,
   DryRunResult: DryRunResultScreen,
   MigrationBatches: MigrationBatchScreen,
-  OnboardingGoLiveReadiness: OnboardingGoLiveReadinessScreen,
+  // Every "go-live readiness" link (BackOfficeDashboard, guide, cutover stub)
+  // lands on the real checklist instead of the "Pantalla en construcción" stub.
+  OnboardingGoLiveReadiness: GoLiveChecklist,
   CutoverAssistant: CutoverAssistantScreen,
   CRMSettings: CRMSettingsModule,
   LoyaltySettings: LoyaltySettingsModule,

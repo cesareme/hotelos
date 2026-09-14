@@ -161,7 +161,7 @@ const adminRouteScreenMap: Record<string, string> = {
   "/backoffice/onboarding/import-review": "ImportReview",
   "/backoffice/onboarding/property-blueprint": "PropertyBlueprintReview",
   "/backoffice/onboarding/batches": "MigrationBatches",
-  "/backoffice/onboarding/go-live": "OnboardingGoLiveReadiness",
+  "/backoffice/onboarding/go-live": "GoLiveChecklist",
   "/backoffice/onboarding/cutover": "CutoverAssistant"
 };
 
@@ -438,7 +438,11 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
       { label: "Inicio del Back Office", screen: "BackOfficeDashboard", roles: R_OPS_ASSET },
       { label: "Centro de configuración inicial", screen: "SetupCenterScreen", roles: R_OPS_ASSET },
       { label: "Mapeador de propiedad", screen: "PropertyMapper", roles: R_OPS_ASSET },
-      { label: "Lista de configuración", screen: "PropertySetupWizard", roles: R_OPS_ASSET }
+      { label: "Lista de configuración", screen: "PropertySetupWizard", roles: R_OPS_ASSET },
+      // Real go-live readiness (persisted checks + recalculate). It had no
+      // sidebar entry: /backoffice/onboarding/go-live rendered the onboarding
+      // stub instead.
+      { label: "Checklist de go-live", screen: "GoLiveChecklist", roles: R_OPS_ASSET }
     ],
     subgroups: [
       {

@@ -73,8 +73,9 @@ import {
   getRateJournal
 } from "./modules/rate-manager/rate-grid.service.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
-import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport } from "./modules/revenue/forecast.service.js";
-import { getHistoryForecastBoard, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
+import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport, parseReportWindow } from "./modules/revenue/forecast.service.js";
+import { getHistoryForecastBoard, parseBoardWindow, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
+import { parseRevenueWindow } from "./modules/revenue/actuals.js";
 import { getExportCatalog, generateExport } from "./modules/revenue/export-center.service.js";
 import { getPeriodMetrics } from "./modules/revenue/comparison.service.js";
 import { getPace, getPickup, capturePaceSnapshot, capturePaceSnapshotsForAllProperties } from "./modules/revenue/pace.service.js";
@@ -575,6 +576,8 @@ const IssueInvoiceBodySchema = z.object({ customerName: z.string().trim().min(1)
 const BudgetVarianceQuerySchema = z.object({
   month: isoMonth.optional()
 });
+/** Longest window GET /revenue/properties/:id/period-metrics serves per call (one leap year). */
+const PERIOD_METRICS_MAX_DAYS = 366;
 // FISC-05: POS bodies. Wrong types used to reach the service (TypeError on
 // `.trim()`, NaN → Prisma Decimal, 1e15 overflowing Decimal(12,2)) → 500.
 const PosTicketOpenSchema = z
@@ -2351,27 +2354,30 @@ export async function buildApiServer() {
   // History & Forecast BOARD (contract 2026-07-15): canonical Opera-style board
   // computed from Prisma (reservations + RevenueDailySnapshot + RevenueForecast
   // + Budget + RevenuePaceSnapshot).
+  // Pilot verification R1: `from=2026-13-99` used to build an Invalid Date and
+  // surface as a Prisma 500; the window is now validated at the boundary
+  // (real calendar day, from ≤ to, ≤ BOARD_MAX_DAYS) → typed 400 in Spanish.
+  const boardWindow = (request: { query: unknown }) => {
+    const q = (request.query ?? {}) as { from?: unknown; to?: unknown };
+    return parseBoardWindow({ from: q.from, to: q.to });
+  };
   app.get("/revenue/properties/:propertyId/history-forecast/board", async (request) => {
     const params = request.params as { propertyId: string };
-    const q = request.query as { from?: string; to?: string };
-    return getHistoryForecastBoard(params.propertyId, { from: q.from, to: q.to });
+    return getHistoryForecastBoard(params.propertyId, boardWindow(request));
   });
   // Legacy alias: these three used to read the in-memory demoStore (prop_123
   // only; 500 for real properties). They now serve the same real board.
   app.get("/revenue/properties/:propertyId/history-forecast", async (request) => {
     const params = request.params as { propertyId: string };
-    const q = request.query as { from?: string; to?: string };
-    return getHistoryForecastBoard(params.propertyId, { from: q.from, to: q.to });
+    return getHistoryForecastBoard(params.propertyId, boardWindow(request));
   });
   app.get("/revenue/properties/:propertyId/history-forecast/charts", async (request) => {
     const params = request.params as { propertyId: string };
-    const q = request.query as { from?: string; to?: string };
-    return getHistoryForecastBoard(params.propertyId, { from: q.from, to: q.to });
+    return getHistoryForecastBoard(params.propertyId, boardWindow(request));
   });
   app.get("/revenue/properties/:propertyId/history-forecast/kpis", async (request) => {
     const params = request.params as { propertyId: string };
-    const q = request.query as { from?: string; to?: string };
-    return getHistoryForecastBoard(params.propertyId, { from: q.from, to: q.to });
+    return getHistoryForecastBoard(params.propertyId, boardWindow(request));
   });
   // Legacy alias: repointed to the Export Center generator (hf_daily) — the old
   // demoStore export read `report.rows` (key was `report.table`) → empty CSV.
@@ -2453,16 +2459,22 @@ export async function buildApiServer() {
   });
   app.get("/revenue/properties/:propertyId/history-forecast/report", async (request) => {
     const params = request.params as { propertyId: string };
-    const q = request.query as { from?: string; to?: string };
-    return getLiveHistoryForecastReport({ propertyId: params.propertyId, from: q.from, to: q.to });
+    const q = (request.query ?? {}) as { from?: unknown; to?: unknown };
+    // Pilot verification R2: a window over REPORT_MAX_DAYS is a 400 naming the
+    // limit (it used to be truncated to 120 rows while echoing the request).
+    const win = parseReportWindow({ from: q.from, to: q.to });
+    return getLiveHistoryForecastReport({ propertyId: params.propertyId, from: win.from, to: win.to });
   });
   app.get("/revenue/properties/:propertyId/period-metrics", async (request) => {
     const params = request.params as { propertyId: string };
-    const q = request.query as { from?: string; to?: string };
+    const q = (request.query ?? {}) as { from?: unknown; to?: unknown };
     const today = new Date();
     const toDefault = today.toISOString().slice(0, 10);
     const fromDefault = new Date(today.getTime() - 29 * 86_400_000).toISOString().slice(0, 10);
-    return getPeriodMetrics({ propertyId: params.propertyId, from: q.from ?? fromDefault, to: q.to ?? toDefault });
+    // Pilot verification R1: malformed dates → 400, not a Prisma 500. A
+    // comparison window is at most one year (366 days) per call.
+    const win = parseRevenueWindow({ from: q.from, to: q.to, maxDays: PERIOD_METRICS_MAX_DAYS, defaultFrom: fromDefault, defaultTo: toDefault, scope: "de period-metrics" });
+    return getPeriodMetrics({ propertyId: params.propertyId, from: win.from, to: win.to });
   });
   app.get("/revenue/properties/:propertyId/forecasts/by-segment", async (request) => {
     const params = request.params as { propertyId: string };

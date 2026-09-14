@@ -131,8 +131,10 @@ export function GoLiveChecklist() {
             <CocoaButton variant="filled" tone="accent" onClick={() => void handleRecalculate()} disabled={recalculating} loading={recalculating}>
               Recalcular readiness
             </CocoaButton>
-            <CocoaButton variant="bordered" tone="neutral" onClick={() => navigateTo("OnboardingGoLiveReadiness")}>
-              Solicitar aprobación go-live
+            {/* OnboardingGoLiveReadiness now aliases this very screen, so the
+                secondary action points at the cutover step that follows it. */}
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => navigateTo("CutoverAssistant")}>
+              Asistente de cutover
             </CocoaButton>
           </span>
         }

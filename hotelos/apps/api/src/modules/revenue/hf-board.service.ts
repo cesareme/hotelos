@@ -17,12 +17,17 @@
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
-import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
+import { NotFoundError } from "../../lib/http-error.js";
 import { expand, type ResRow } from "./pace.service.js";
-import { REALIZED_STATUSES, realizeDays } from "./actuals.js";
+import { REALIZED_STATUSES, parseRevenueWindow, realizeDays } from "./actuals.js";
 import { adrSourceFromDrivers, emptyAdrSourceCounts, forecastAdrSourceLabel } from "./forecast.service.js";
 
 const MS_DAY = 86_400_000;
+/** Longest board window (inclusive days); the route and the service both enforce it. */
+export const BOARD_MAX_DAYS = 190;
+/** Default window when the query omits from/to: today−7 .. today+90. */
+export const BOARD_DEFAULT_PAST_DAYS = 7;
+export const BOARD_DEFAULT_FUTURE_DAYS = 90;
 /** Statuses that count as on-the-books for today/future stay dates. */
 const OTB_STATUSES = ["confirmed", "checked_in"] as const;
 /** Statuses loaded for the single reservations query (past + future + no-shows) — shared realized rule. */
@@ -196,6 +201,51 @@ const METRIC_NOTES = [
   "Pickup = variación de habitaciones OTB en la ventana indicada"
 ];
 
+/**
+ * Appended to `metricNotes` only when at least one day's forecast comes from
+ * a top-level row imported from another PMS (pilot verification R3): that
+ * ADR/occupancy keep the source system's bases, which differ from the board's
+ * own subtotals.
+ */
+export function pmsForecastMetricNote(totalRooms: number): string {
+  return `Previsión importada del PMS: ADR sobre habitaciones pagadas y ocupación sobre habitaciones disponibles (${totalRooms} − OOO); los subtotales de Anfitorio usan ${totalRooms}`;
+}
+
+/**
+ * Decide the per-day forecast ADR / occupancy shown on the board. When the
+ * day's forecast is a TOP-LEVEL row that carries the source system's own
+ * `expectedAdr` / `expectedOccupancy` (imported PMS forecast), those values
+ * are exposed as-is; otherwise both are recomputed from rooms and revenue
+ * (revenue / rooms; rooms / totalRooms) as before. Pure, unit-tested.
+ */
+export function resolveForecastDayMetrics(input: {
+  rooms: number;
+  /** null when any row of the day had no ADR input. */
+  revenue: number | null;
+  totalRooms: number;
+  topLevel: boolean;
+  expectedAdr: number | null;
+  expectedOccupancy: number | null;
+}): { fcAdr: number | null; fcOccPct: number | null; importedAdr: boolean; importedOcc: boolean } {
+  const importedAdr = input.topLevel && input.expectedAdr !== null;
+  const importedOcc = input.topLevel && input.expectedOccupancy !== null;
+  const fcAdr = importedAdr
+    ? round2(input.expectedAdr as number)
+    : input.revenue !== null && input.rooms > 0
+      ? round2(input.revenue / input.rooms)
+      : null;
+  // Without a room count the row's own occupancy is the only honest figure
+  // (previous behaviour, kept for per-type aggregates too).
+  const fcOccPct = importedOcc
+    ? round2(input.expectedOccupancy as number)
+    : input.totalRooms > 0
+      ? round2((input.rooms / input.totalRooms) * 100)
+      : input.expectedOccupancy !== null
+        ? round2(input.expectedOccupancy)
+        : null;
+  return { fcAdr, fcOccPct, importedAdr, importedOcc };
+}
+
 /** Internal per-day accumulator for the extended series. */
 type DaySeries = {
   date: string;
@@ -240,17 +290,30 @@ function ensureAcc(map: Map<string, DayAcc>, key: string): DayAcc {
   return a;
 }
 
+/** Route-level and service-level validation share this so a direct caller gets the same 400. */
+export function parseBoardWindow(input: { from?: unknown; to?: unknown; today?: Date }) {
+  const today = dayUtc(input.today);
+  return parseRevenueWindow({
+    from: input.from,
+    to: input.to,
+    maxDays: BOARD_MAX_DAYS,
+    defaultFrom: isoDate(addDays(today, -BOARD_DEFAULT_PAST_DAYS)),
+    defaultTo: isoDate(addDays(today, BOARD_DEFAULT_FUTURE_DAYS)),
+    scope: "del board"
+  });
+}
+
 export async function getHistoryForecastBoard(
   propertyId: string,
   opts: { from?: string; to?: string } = {}
 ): Promise<HistoryForecastBoard> {
   const today = dayUtc();
   const yesterday = addDays(today, -1);
-  const from = opts.from ? dayUtc(opts.from) : addDays(today, -7);
-  const to = opts.to ? dayUtc(opts.to) : addDays(today, 90);
-  if (to.getTime() < from.getTime()) throw new BadRequestError("'to' debe ser igual o posterior a 'from'.");
-  const windowDays = Math.round((to.getTime() - from.getTime()) / MS_DAY) + 1;
-  if (windowDays > 190) throw new BadRequestError("Rango máximo del board: 190 días.");
+  // Typed 400 for a malformed day, to < from or a window over the limit —
+  // the same rule the route applies (pilot verification R1).
+  const win = parseBoardWindow({ from: opts.from, to: opts.to, today });
+  const from = dayUtc(win.from);
+  const to = dayUtc(win.to);
 
   // Months outlook is ALWAYS current month + 3, independent of the window, so
   // the internal day series spans the union of both ranges.
@@ -313,6 +376,7 @@ export async function getHistoryForecastBoard(
         departureRooms: true,
         noShowRooms: true,
         oooRooms: true,
+        houseUseRooms: true,
         roomRevenue: true,
         adr: true,
         revpar: true,
@@ -328,6 +392,7 @@ export async function getHistoryForecastBoard(
         channelId: true,
         segment: true,
         expectedOccupancy: true,
+        expectedAdr: true,
         expectedRoomsSold: true,
         expectedRoomRevenue: true,
         expectedTotalRevenue: true,
@@ -388,14 +453,25 @@ export async function getHistoryForecastBoard(
   // the per-room-type rows per day (deterministic-v1 only writes those).
   const topLevelForecasts = forecasts.filter((f) => !f.roomTypeId && !f.ratePlanId && !f.channelId && !f.segment);
   const forecastSource = topLevelForecasts.length > 0 ? topLevelForecasts : forecasts;
-  type FcAcc = { rooms: number; revenue: number; revenueMissingRows: number; confWeighted: number; confRooms: number; confPlain: number[]; occFromRow: number | null };
+  type FcAcc = {
+    rooms: number;
+    revenue: number;
+    revenueMissingRows: number;
+    confWeighted: number;
+    confRooms: number;
+    confPlain: number[];
+    /** Source system's own occupancy / ADR (top-level rows only; imported PMS forecasts carry them). */
+    occFromRow: number | null;
+    adrFromRow: number | null;
+  };
+  const usingTopLevel = topLevelForecasts.length > 0;
   const fcByDate = new Map<string, FcAcc>();
   const fcAdrSources = emptyAdrSourceCounts();
   for (const f of forecastSource) {
     const key = isoDate(dayUtc(f.forecastDate));
     let b = fcByDate.get(key);
     if (!b) {
-      b = { rooms: 0, revenue: 0, revenueMissingRows: 0, confWeighted: 0, confRooms: 0, confPlain: [], occFromRow: null };
+      b = { rooms: 0, revenue: 0, revenueMissingRows: 0, confWeighted: 0, confRooms: 0, confPlain: [], occFromRow: null, adrFromRow: null };
       fcByDate.set(key, b);
     }
     const rooms = dec(f.expectedRoomsSold);
@@ -415,7 +491,10 @@ export async function getHistoryForecastBoard(
     }
     const occ = decOrNull(f.expectedOccupancy);
     if (occ !== null) b.occFromRow = occ;
+    const adrRow = decOrNull(f.expectedAdr);
+    if (adrRow !== null) b.adrFromRow = adrRow;
   }
+  let importedForecastDays = 0;
   const forecastModelVersion = forecastSource.find((f) => f.modelVersion)?.modelVersion ?? "deterministic-v1";
   const fcWindowStartKey = isoDate(today.getTime() > from.getTime() ? today : from);
   const toKey = isoDate(to);
@@ -556,11 +635,21 @@ export async function getHistoryForecastBoard(
       const fc = fcByDate.get(key);
       if (fc) {
         fcRooms = Math.round(fc.rooms);
-        // Revenue/ADR stay null when any row of the day had no ADR input.
+        // Revenue stays null when any row of the day had no ADR input.
         fcRevenue = fc.revenueMissingRows > 0 ? null : round2(fc.revenue);
-        fcOccPct =
-          totalRooms > 0 ? round2((fc.rooms / totalRooms) * 100) : fc.occFromRow !== null ? round2(fc.occFromRow) : null;
-        fcAdr = fcRevenue !== null && fc.rooms > 0 ? round2(fc.revenue / fc.rooms) : null;
+        // Imported top-level rows expose the PMS's own ADR/occupancy (paid-room
+        // and 92−OOO bases); otherwise recomputed from rooms/revenue.
+        const metrics = resolveForecastDayMetrics({
+          rooms: fc.rooms,
+          revenue: fcRevenue,
+          totalRooms,
+          topLevel: usingTopLevel,
+          expectedAdr: fc.adrFromRow,
+          expectedOccupancy: fc.occFromRow
+        });
+        fcOccPct = metrics.fcOccPct;
+        fcAdr = metrics.fcAdr;
+        if (metrics.importedAdr || metrics.importedOcc) importedForecastDays++;
         fcConfidence =
           fc.confRooms > 0
             ? round2(fc.confWeighted / fc.confRooms)
@@ -939,7 +1028,8 @@ export async function getHistoryForecastBoard(
     totalRooms,
     forecastMissing,
     budgetMissing,
-    metricNotes: METRIC_NOTES,
+    // Contract literal list, plus the PMS-bases note only when it applies.
+    metricNotes: importedForecastDays > 0 ? [...METRIC_NOTES, pmsForecastMetricNote(totalRooms)] : METRIC_NOTES,
     sources,
     rows,
     months,
@@ -955,9 +1045,78 @@ export async function getHistoryForecastBoard(
 // "night_audit"). Idempotent by manual find-then-write: the compound unique
 // contains nullable dimension columns and Postgres treats NULLs as distinct,
 // so a plain upsert on the unique would create duplicates.
+//
+// Two protections so the writer can coexist with history IMPORTED from another
+// PMS (dataSource "pms_import:*", "migration_import", seeded "demo"…):
+//   1. A property with NO reservation at all in Anfitorio has no night audit to
+//      write: a 0-room close would overwrite the imported day and open a
+//      "cliff" to zero right after the import. Nothing is written.
+//   2. An existing top-level row whose dataSource is not "night_audit" is never
+//      overwritten unless the caller passes { force: true } (same rule as
+//      scripts/backfill-snapshots.ts --force).
 // -----------------------------------------------------------------------------
-export async function writeDailySnapshot(propertyId: string, dateIso?: string) {
+export type SnapshotWriteDecision =
+  | { action: "write" }
+  | { action: "skipped"; reason: "no_reservations" }
+  | { action: "skipped"; reason: "protected"; dataSource: string };
+
+/** dataSource written by this closer; the only one it may overwrite without force. */
+export const NIGHT_AUDIT_DATA_SOURCE = "night_audit";
+
+/**
+ * Pure decision: write, or skip and why. Order matters: a property without any
+ * operation is skipped regardless of what the day's row says (there is nothing
+ * real to derive), then the existing row's provenance is honoured.
+ */
+export function decideSnapshotWrite(input: {
+  existing: { dataSource: string } | null;
+  hasReservations: boolean;
+  force?: boolean;
+}): SnapshotWriteDecision {
+  if (!input.hasReservations) return { action: "skipped", reason: "no_reservations" };
+  if (input.existing && input.existing.dataSource !== NIGHT_AUDIT_DATA_SOURCE && !input.force) {
+    return { action: "skipped", reason: "protected", dataSource: input.existing.dataSource };
+  }
+  return { action: "write" };
+}
+
+export type DailySnapshotWriteResult =
+  | { propertyId: string; snapshotDate: string; action: "created" | "updated" }
+  | { propertyId: string; snapshotDate: string; action: "skipped"; reason: "no_reservations" }
+  | { propertyId: string; snapshotDate: string; action: "skipped"; reason: "protected"; dataSource: string };
+
+export async function writeDailySnapshot(
+  propertyId: string,
+  dateIso?: string,
+  opts: { force?: boolean } = {}
+): Promise<DailySnapshotWriteResult> {
   const date = dateIso ? dayUtc(dateIso) : addDays(dayUtc(), -1);
+  const snapshotDate = isoDate(date);
+
+  // Decide BEFORE deriving anything: both lookups are cheap and the skip paths
+  // must not touch the row.
+  const [reservationCount, existing] = await Promise.all([
+    prisma.reservation.count({ where: { propertyId } }), // any status: "has this property ever operated here?"
+    prisma.revenueDailySnapshot.findFirst({
+      where: {
+        propertyId,
+        snapshotDate: date,
+        roomTypeId: null,
+        ratePlanId: null,
+        channelId: null,
+        segment: null,
+        market: null
+      },
+      select: { id: true, dataSource: true }
+    })
+  ]);
+  const decision = decideSnapshotWrite({ existing, hasReservations: reservationCount > 0, force: opts.force });
+  if (decision.action === "skipped") {
+    return decision.reason === "protected"
+      ? { propertyId, snapshotDate, action: "skipped", reason: "protected", dataSource: decision.dataSource }
+      : { propertyId, snapshotDate, action: "skipped", reason: "no_reservations" };
+  }
+
   const totalRooms = await prisma.room.count({ where: { propertyId, sellable: true } });
   const reservations = await prisma.reservation.findMany({
     where: {
@@ -1011,46 +1170,46 @@ export async function writeDailySnapshot(propertyId: string, dateIso?: string) {
     adr: rooms > 0 ? round2(roomRevenue / rooms) : null,
     revpar: totalRooms > 0 ? round2(roomRevenue / totalRooms) : null,
     occupancyPercent: totalRooms > 0 ? round2((rooms / totalRooms) * 100) : null,
-    dataSource: "night_audit"
+    dataSource: NIGHT_AUDIT_DATA_SOURCE
   };
 
-  const existing = await prisma.revenueDailySnapshot.findFirst({
-    where: {
-      propertyId,
-      snapshotDate: date,
-      roomTypeId: null,
-      ratePlanId: null,
-      channelId: null,
-      segment: null,
-      market: null
-    },
-    select: { id: true }
-  });
   if (existing) {
     await prisma.revenueDailySnapshot.update({ where: { id: existing.id }, data });
   } else {
     await prisma.revenueDailySnapshot.create({ data: { propertyId, snapshotDate: date, ...data } });
   }
-  return { propertyId, snapshotDate: isoDate(date), action: existing ? ("updated" as const) : ("created" as const) };
+  return { propertyId, snapshotDate, action: existing ? "updated" : "created" };
 }
 
 /**
  * Scheduler entry point: upsert yesterday's top-level snapshot for every
  * property. A failure on one property never blocks the others, but it is
  * never silent either (QC-06): logged per property and returned in `failed`.
+ * Skips (no reservations / protected provenance) are counted and logged too,
+ * so an operator can tell "nothing to close" from "close written".
  */
 export async function writeYesterdayDailySnapshotsForAllProperties(): Promise<{
   properties: number;
   written: number;
+  skipped: { noReservations: string[]; protected: Array<{ propertyId: string; dataSource: string }> };
   failed: Array<{ propertyId: string; error: string }>;
 }> {
   const properties = await prisma.property.findMany({ select: { id: true } });
   let written = 0;
+  const skipped: { noReservations: string[]; protected: Array<{ propertyId: string; dataSource: string }> } = {
+    noReservations: [],
+    protected: []
+  };
   const failed: Array<{ propertyId: string; error: string }> = [];
   for (const p of properties) {
     try {
-      await writeDailySnapshot(p.id);
-      written++;
+      const result = await writeDailySnapshot(p.id);
+      if (result.action === "skipped") {
+        if (result.reason === "protected") skipped.protected.push({ propertyId: p.id, dataSource: result.dataSource });
+        else skipped.noReservations.push(p.id);
+      } else {
+        written++;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       failed.push({ propertyId: p.id, error: message });
@@ -1058,8 +1217,21 @@ export async function writeYesterdayDailySnapshotsForAllProperties(): Promise<{
       // continue with the next property
     }
   }
+  const skippedTotal = skipped.noReservations.length + skipped.protected.length;
+  if (skippedTotal > 0) {
+    const parts: string[] = [];
+    if (skipped.noReservations.length > 0) {
+      parts.push(`${skipped.noReservations.length} sin reservas (${skipped.noReservations.join(", ")})`);
+    }
+    if (skipped.protected.length > 0) {
+      parts.push(
+        `${skipped.protected.length} con cierre protegido (${skipped.protected.map((s) => `${s.propertyId}:${s.dataSource}`).join(", ")})`
+      );
+    }
+    console.info(`[revenue:daily-snapshot] ${skippedTotal}/${properties.length} propiedades omitidas: ${parts.join(" · ")} (escritas: ${written}).`);
+  }
   if (failed.length > 0) {
     console.error(`[revenue:daily-snapshot] ${failed.length}/${properties.length} properties failed (written: ${written}).`);
   }
-  return { properties: properties.length, written, failed };
+  return { properties: properties.length, written, skipped, failed };
 }

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { toArray } from "../../utils/toArray";
 import { getActivePropertyId } from "../../services/activeProperty";
@@ -48,9 +48,17 @@ function confidenceTone(c: number): "ok" | "warn" | "error" {
   return "error";
 }
 
+// Horizon options. listForecasts (apps/api/src/modules/revenue/forecast.service.ts)
+// returns up to 400 rows, so 90 top-level days fit comfortably. 30 stays the
+// default; the longer windows exist so an imported PMS forecast (48 days for
+// the pilot) is fully visible.
+const HORIZON_OPTIONS = [30, 60, 90] as const;
+type HorizonDays = (typeof HORIZON_OPTIONS)[number];
+
 export function RevenueForecastExplorer() {
   const propertyId = getActivePropertyId();
-  const { from, to } = useMemo(() => rangeFrom(30), []);
+  const [horizonDays, setHorizonDays] = useState<HorizonDays>(30);
+  const { from, to } = useMemo(() => rangeFrom(horizonDays), [horizonDays]);
 
   const { data, loading, error, refresh } = useApiData<ForecastRow[]>(
     `/revenue/properties/${propertyId}/forecast`,
@@ -86,10 +94,22 @@ export function RevenueForecastExplorer() {
           <p className="bo-muted">Forecast explorer</p>
           <h2>Forecast Confidence and Drivers</h2>
           <p className="bo-muted" style={{ margin: "4px 0 0", textTransform: "none", fontSize: 12 }}>
-            Próximos 30 días · {from} → {to}
+            Próximos {horizonDays} días · {from} → {to}
           </p>
         </div>
         <div className="bo-pill-row">
+          <label className="bo-muted" style={{ textTransform: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
+            Horizonte
+            <select
+              aria-label="Horizonte de previsión"
+              value={horizonDays}
+              onChange={(event) => setHorizonDays(Number(event.target.value) as HorizonDays)}
+            >
+              {HORIZON_OPTIONS.map((days) => (
+                <option key={days} value={days}>Próximos {days} días</option>
+              ))}
+            </select>
+          </label>
           <span className="bo-status info" style={{ textTransform: "none" }}>En vivo</span>
           <button type="button" onClick={refresh} disabled={loading}>
             ↻ Actualizar
@@ -112,7 +132,7 @@ export function RevenueForecastExplorer() {
         </>
       ) : rows.length === 0 ? (
         <p className="bo-muted">
-          No hay previsión generada para los próximos 30 días. Genera la previsión desde el panel de Revenue.
+          No hay previsión generada para los próximos {horizonDays} días. Genera la previsión desde el panel de Revenue.
         </p>
       ) : (
         <>
@@ -151,7 +171,7 @@ export function RevenueForecastExplorer() {
             </article>
             <article className="rev-kpi rev-kpi-ok">
               <div className="rev-kpi-head">
-                <span className="rev-kpi-label">Ingresos previstos (30d)</span>
+                <span className="rev-kpi-label">Ingresos previstos ({horizonDays}d)</span>
                 <span className="rev-kpi-tag">previsión</span>
               </div>
               <div className="rev-kpi-value">{money(summary.totalRevenue)}</div>
@@ -197,7 +217,7 @@ export function RevenueForecastExplorer() {
           </div>
 
           <p className="bo-muted" style={{ marginTop: 12, textTransform: "none", fontSize: 12 }}>
-            Fuente: GET /revenue/properties/{propertyId}/forecast (range=30d). La confianza, ocupación y
+            Fuente: GET /revenue/properties/{propertyId}/forecast (range={horizonDays}d). La confianza, ocupación y
             ADR se calculan en el backend desde la tabla canónica RevenueForecast, sin invenciones del cliente.
           </p>
         </>

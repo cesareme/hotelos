@@ -1,5 +1,7 @@
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { fetchRoomTypes, fetchRooms } from "../../services/pmsCommerceApi";
+import { fetchRatePlans } from "../../services/ratePlansApi";
 import { useApiData } from "../../hooks/useApiData";
 import { exportToCsv, type CsvColumn } from "../../lib/csv";
 import { EmptyState } from "../../components/States";
@@ -183,16 +185,53 @@ function openSearch() {
 // Bienvenida de primera ejecución — se muestra cuando aún no hay ninguna
 // reserva en el sistema. Los chips guían al recepcionista hacia los cuatro
 // pasos mínimos para empezar a operar el hotel.
-type FirstRunStep = { label: string; screen: string };
+//
+// Each step reflects the REAL state of the property: a hotel provisioned with
+// rooms, room types and a rate plan but no reservation yet (the pilot case)
+// must not be told to "create rooms". Three light GETs the setup forms already
+// use decide it; a failed probe leaves the step as "unknown" rather than
+// pretending it is pending.
+type FirstRunStepKey = "rooms" | "roomTypes" | "ratePlans" | "reservation";
+type FirstRunStep = { key: FirstRunStepKey; label: string; screen: string };
+type FirstRunProgress = Record<Exclude<FirstRunStepKey, "reservation">, boolean | null>;
 
 const FIRST_RUN_STEPS: FirstRunStep[] = [
-  { label: "1. Crear habitaciones", screen: "RoomInventoryManager" },
-  { label: "2. Tipos de habitación", screen: "RoomTypeManager" },
-  { label: "3. Plan tarifario", screen: "RevenueSettings" },
-  { label: "4. Primera reserva", screen: "ReservationCreate" }
+  { key: "rooms", label: "1. Crear habitaciones", screen: "RoomInventoryManager" },
+  { key: "roomTypes", label: "2. Tipos de habitación", screen: "RoomTypeManager" },
+  { key: "ratePlans", label: "3. Plan tarifario", screen: "RevenueSettings" },
+  { key: "reservation", label: "4. Primera reserva", screen: "ReservationCreate" }
 ];
 
-function FirstRunWelcomeCard() {
+async function probeHasRows(load: () => Promise<unknown[]>): Promise<boolean | null> {
+  try {
+    const rows = await load();
+    return Array.isArray(rows) && rows.length > 0;
+  } catch {
+    // Endpoint missing or transient failure: unknown, not "pending".
+    return null;
+  }
+}
+
+function FirstRunWelcomeCard({ propertyId }: { propertyId: string }) {
+  const [progress, setProgress] = useState<FirstRunProgress>({ rooms: null, roomTypes: null, ratePlans: null });
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([
+      probeHasRows(() => fetchRooms(propertyId)),
+      probeHasRows(() => fetchRoomTypes(propertyId)),
+      probeHasRows(() => fetchRatePlans(propertyId))
+    ]).then(([rooms, roomTypes, ratePlans]) => {
+      if (!cancelled) setProgress({ rooms, roomTypes, ratePlans });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [propertyId]);
+
+  const setupDone = progress.rooms === true && progress.roomTypes === true && progress.ratePlans === true;
+  const stepDone = (step: FirstRunStep): boolean => step.key !== "reservation" && progress[step.key] === true;
+
   return (
     <CocoaCard variant="elevated" padding="lg">
       <div
@@ -221,7 +260,7 @@ function FirstRunWelcomeCard() {
             marginTop: "var(--cocoa-space-2)"
           }}
         >
-          Configura tu hotel en 4 pasos
+          {setupDone ? "Todo listo: registra la primera reserva" : "Configura tu hotel en 4 pasos"}
         </h2>
         <p
           style={{
@@ -232,8 +271,9 @@ function FirstRunWelcomeCard() {
             marginBottom: "var(--cocoa-space-4)"
           }}
         >
-          Empieza por dar de alta tu inventario y crea la primera reserva. Estos
-          cuatro pasos cubren lo mínimo para que recepción pueda operar.
+          {setupDone
+            ? "Habitaciones, tipos de habitación y plan tarifario ya están configurados. Solo falta la primera reserva para que recepción empiece a operar."
+            : "Empieza por dar de alta tu inventario y crea la primera reserva. Estos cuatro pasos cubren lo mínimo para que recepción pueda operar."}
         </p>
         <div
           style={{
@@ -242,18 +282,23 @@ function FirstRunWelcomeCard() {
             gap: "var(--cocoa-space-2)"
           }}
         >
-          {FIRST_RUN_STEPS.map((step) => (
-            <CocoaButton
-              key={step.screen}
-              variant="bordered"
-              tone="neutral"
-              size="regular"
-              onClick={() => navigateTo(step.screen)}
-              aria-label={`Ir a ${step.label}`}
-            >
-              {step.label}
-            </CocoaButton>
-          ))}
+          {FIRST_RUN_STEPS.map((step) => {
+            const done = stepDone(step);
+            // The only pending step gets the accent so the eye lands on it.
+            const isNext = setupDone && step.key === "reservation";
+            return (
+              <CocoaButton
+                key={step.screen}
+                variant={isNext ? "filled" : "bordered"}
+                tone={isNext ? "accent" : "neutral"}
+                size="regular"
+                onClick={() => navigateTo(step.screen)}
+                aria-label={done ? `${step.label} (hecho) · revisar` : `Ir a ${step.label}`}
+              >
+                {done ? `✓ ${step.label}` : step.label}
+              </CocoaButton>
+            );
+          })}
         </div>
       </div>
     </CocoaCard>
@@ -713,7 +758,7 @@ export function FrontDeskDashboard() {
       <CocoaScreenInstructionsCard {...FRONTDESK_COCKPIT_INSTRUCTIONS} dismissible persistKey="frontdesk-cockpit" />
 
       {/* Clean-slate — bienvenida de primera ejecución cuando aún no hay reservas. */}
-      {isCleanSlate ? <FirstRunWelcomeCard /> : null}
+      {isCleanSlate ? <FirstRunWelcomeCard propertyId={PROPERTY_ID} /> : null}
 
       {/* Cola de acciones priorizada — la vista que dice qué hacer ahora. */}
       <FrontDeskActionQueue />

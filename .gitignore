@@ -1,3 +1,6 @@
 # Raíz del repo (el código vive en hotelos/). Dumps locales de Postgres: nunca al repo.
 backups/
 *.dump
+
+# Exportes de PMS de hoteles reales (piloto Faranda Los Tilos: PDF/CSV del History & Forecast) en <raíz>/pilots/. Datos reales: fuera del repo. Anclado a la raíz para no ignorar hotelos/docs/pilots/.
+/pilots/

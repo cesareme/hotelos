@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { getCurrentUserPermissions } from "../../services/api-client";
+import { getUser } from "../../services/auth-storage";
 
 function nav(screen: string) {
   window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
@@ -31,19 +32,43 @@ const CATEGORY_MODES: CategoryMode[] = [
   { label: "Read-only", code: "read_only", tag: "Locked", cls: "info", detail: "Fixed internal states stay visible but cannot be changed." }
 ];
 
+type AreaAccess = "allowed" | "denied" | "unknown";
+
 export function ConfigurationCenterScreen() {
   const [permissions, setPermissions] = useState<string[] | null>(null);
+  // True when the stored session carries no permission snapshot at all (a
+  // session written before the login response included `permissions`, or a
+  // token/user pair injected by hand). getCurrentUserPermissions() then
+  // resolves to [] — indistinguishable from "this user holds no permission",
+  // which used to paint all 11 areas as "no access" for a full Owner.
+  const [snapshotMissing, setSnapshotMissing] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    const stored = getUser();
+    if (stored && !Array.isArray(stored.permissions)) {
+      setSnapshotMissing(true);
+      return () => { cancelled = true; };
+    }
     void getCurrentUserPermissions()
       .then((perms) => { if (!cancelled) setPermissions(perms); })
       .catch(() => { if (!cancelled) setPermissions([]); });
     return () => { cancelled = true; };
   }, []);
 
-  // While permissions are unknown, don't block actions (optimistic).
-  const can = (perm: string) => permissions === null || permissions.includes(perm);
+  // While permissions are unknown (still loading, or the session has no
+  // snapshot) the area stays reachable: every configuration route enforces its
+  // own permission server-side, so the only thing at stake here is the label.
+  // A snapshot that exists and lacks the key is a real denial.
+  const access = (perm: string): AreaAccess => {
+    if (snapshotMissing || permissions === null) return "unknown";
+    return permissions.includes(perm) ? "allowed" : "denied";
+  };
+  const ACCESS_LABEL: Record<AreaAccess, { text: string; cls: "ok" | "warn" | "info" }> = {
+    allowed: { text: "available", cls: "ok" },
+    denied: { text: "no access", cls: "warn" },
+    unknown: { text: "sin verificar", cls: "info" }
+  };
 
   return (
     <>
@@ -62,15 +87,23 @@ export function ConfigurationCenterScreen() {
           Manage the operating model of the property — categories, custom fields, rooms, resources, departments, rules and
           setup forms — without developer intervention. Pick an area to configure it.
         </p>
+        {snapshotMissing ? (
+          <p className="bo-muted" style={{ textTransform: "none", letterSpacing: 0, marginTop: "var(--space-2)" }}>
+            Tu sesión no incluye la lista de permisos, así que el acceso a cada área se comprueba al abrirla. Vuelve a
+            iniciar sesión para ver el estado exacto de cada una.
+          </p>
+        ) : null}
 
         <div className="bo-grid three" style={{ marginTop: "var(--space-4)" }}>
           {AREAS.map((area) => {
-            const allowed = can(area.permission);
+            const state = access(area.permission);
+            const allowed = state !== "denied";
+            const badge = ACCESS_LABEL[state];
             return (
               <article className="bo-card bo-stack" key={area.title} style={{ gap: "var(--space-3)" }}>
                 <div className="bo-card-head" style={{ marginBottom: 0 }}>
                   <h3 style={{ margin: 0 }}>{area.title}</h3>
-                  <span className={`bo-status ${allowed ? "ok" : "warn"}`}>{allowed ? "available" : "no access"}</span>
+                  <span className={`bo-status ${badge.cls}`} title={state === "unknown" ? "Permiso no verificado en el cliente; el servidor lo comprobará al abrir el área." : undefined}>{badge.text}</span>
                 </div>
                 <p className="bo-option-desc">{area.detail}</p>
                 <div className="bo-actions">

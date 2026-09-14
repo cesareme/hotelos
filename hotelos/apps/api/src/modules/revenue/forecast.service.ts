@@ -19,6 +19,7 @@ import {
   getRealizedByDay,
   getStlySnapshotAdr,
   isoDate,
+  parseRevenueWindow,
   publishedBarFor,
   typeDateKey
 } from "./actuals.js";
@@ -28,16 +29,28 @@ import {
  * `adr_source`). `legacy_constant` = rows written by the previous generator
  * with its hard-coded fallback ADR (driver value "fallback"): they carry
  * revenue, but not from any real input — regenerate the forecast.
+ * `pms_forecast` = rows IMPORTED from another PMS's History & Forecast report
+ * (modelVersion "pms_import:*"): the ADR is the source system's own forecast.
  */
-export type ForecastAdrSource = "rate_grid" | "stly_snapshot" | "none" | "no_rooms" | "legacy_constant";
+export type ForecastAdrSource = "rate_grid" | "stly_snapshot" | "none" | "no_rooms" | "legacy_constant" | "pms_forecast";
+
+/** modelVersion prefix of forecast rows imported from another PMS (importer contract). */
+export const PMS_IMPORT_MODEL_PREFIX = "pms_import:";
+/** modelVersion written by this file's deterministic generator. */
+export const DETERMINISTIC_MODEL_VERSION = "deterministic-v1";
+
+export function isImportedForecastModelVersion(modelVersion: string | null | undefined): boolean {
+  return typeof modelVersion === "string" && modelVersion.startsWith(PMS_IMPORT_MODEL_PREFIX);
+}
 
 export function emptyAdrSourceCounts(): Record<ForecastAdrSource, number> {
-  return { rate_grid: 0, stly_snapshot: 0, none: 0, no_rooms: 0, legacy_constant: 0 };
+  return { rate_grid: 0, stly_snapshot: 0, none: 0, no_rooms: 0, legacy_constant: 0, pms_forecast: 0 };
 }
 
 /** Spanish label for a set of ADR sources (used by `sources` maps). */
 export function forecastAdrSourceLabel(counts: Record<ForecastAdrSource, number>): string {
   const parts: string[] = [];
+  if (counts.pms_forecast > 0) parts.push("previsión del PMS (importada)");
   if (counts.rate_grid > 0) parts.push("tarifario BAR");
   if (counts.stly_snapshot > 0) parts.push("snapshot LY (fecha−364)");
   if (counts.legacy_constant > 0) parts.push(`ADR constante heredado en ${counts.legacy_constant} filas (regenerar previsión)`);
@@ -45,14 +58,34 @@ export function forecastAdrSourceLabel(counts: Record<ForecastAdrSource, number>
   return parts.length ? parts.join("+") : "sin previsión";
 }
 
-export function adrSourceFromDrivers(drivers: unknown): ForecastAdrSource | null {
-  if (!Array.isArray(drivers)) return null;
-  const hit = drivers.find((d) => d && typeof d === "object" && (d as { driver?: unknown }).driver === "adr_source") as
-    | { value?: unknown }
-    | undefined;
+/**
+ * ADR source of a persisted forecast row. The `adr_source` driver wins; a row
+ * without it but with an imported modelVersion is still "pms_forecast" (the
+ * importer may write drivers of its own), so an imported forecast never shows
+ * as "sin previsión".
+ */
+export function adrSourceFromDrivers(drivers: unknown, modelVersion?: string | null): ForecastAdrSource | null {
+  const hit = Array.isArray(drivers)
+    ? (drivers.find((d) => d && typeof d === "object" && (d as { driver?: unknown }).driver === "adr_source") as { value?: unknown } | undefined)
+    : undefined;
   const v = hit?.value;
-  if (v === "rate_grid" || v === "stly_snapshot" || v === "none" || v === "no_rooms" || v === "legacy_constant") return v;
-  return v === "fallback" ? "legacy_constant" : null;
+  if (v === "rate_grid" || v === "stly_snapshot" || v === "none" || v === "no_rooms" || v === "legacy_constant" || v === "pms_forecast") return v;
+  if (v === "fallback") return "legacy_constant";
+  return isImportedForecastModelVersion(modelVersion) ? "pms_forecast" : null;
+}
+
+/**
+ * Prisma filter for the rows the deterministic generator may delete when it
+ * regenerates a window: every row of the property in the range EXCEPT those
+ * imported from another PMS. `modelVersion` is nullable and Postgres never
+ * matches NULL with NOT LIKE, so legacy NULL rows are listed explicitly.
+ */
+export function forecastDeleteFilter(input: { propertyId: string; from: Date; to: Date }): Prisma.RevenueForecastWhereInput {
+  return {
+    propertyId: input.propertyId,
+    forecastDate: { gte: input.from, lte: input.to },
+    OR: [{ modelVersion: null }, { NOT: { modelVersion: { startsWith: PMS_IMPORT_MODEL_PREFIX } } }]
+  };
 }
 
 function mapForecast(r: {
@@ -77,7 +110,7 @@ function mapForecast(r: {
     expectedTotalRevenue: decOrNull(r.expectedTotalRevenue),
     confidence: dec(r.confidence),
     modelVersion: r.modelVersion ?? undefined,
-    adrSource: adrSourceFromDrivers(r.driversJson),
+    adrSource: adrSourceFromDrivers(r.driversJson, r.modelVersion),
     drivers: r.driversJson
   };
 }
@@ -99,7 +132,11 @@ export async function listForecasts(input: { propertyId: string; from?: string; 
  *   - ADR: published BAR (RateDay of the BAR plan) for that day/room type →
  *     audited ADR of the same day of week last year (snapshot at date−364) →
  *     null (revenue/ADR/RevPAR left null, `adr_source: "none"`). Never a constant.
- * Replaces any existing forecasts in the window for the property (idempotent).
+ * Replaces any existing forecasts in the window for the property (idempotent),
+ * EXCEPT rows imported from another PMS (modelVersion "pms_import:*"): those are
+ * the hotel's real forecast, so the generator neither deletes them nor writes
+ * its curve on the days they cover (a second row per day would double-count in
+ * per-day aggregations). It reports them as `skippedImported`.
  */
 export async function generateForecasts(input: {
   context: UserContext;
@@ -134,11 +171,21 @@ export async function generateForecasts(input: {
     getStlySnapshotAdr(input.propertyId, from, to)
   ]);
 
+  // Imported PMS forecast in the window: preserved, and their days are not
+  // regenerated. Counted before the loop so the result can say so.
+  const importedRows = await prisma.revenueForecast.findMany({
+    where: { propertyId: input.propertyId, forecastDate: { gte: from, lte: to }, modelVersion: { startsWith: PMS_IMPORT_MODEL_PREFIX } },
+    select: { forecastDate: true }
+  });
+  const importedDays = new Set(importedRows.map((r) => isoDate(dayUtc(r.forecastDate))));
+  const skippedImported = importedRows.length;
+
   const adrSources = emptyAdrSourceCounts();
   const data: Prisma.RevenueForecastCreateManyInput[] = [];
   for (let i = 0; i < days; i++) {
     const date = new Date(from.getTime() + i * 86_400_000);
     const key = isoDate(date);
+    if (importedDays.has(key)) continue;
     const dow = date.getUTCDay(); // 0 Sun .. 6 Sat
     const weekendBump = dow === 5 || dow === 6 ? 0.18 : dow === 0 ? 0.05 : 0;
     const occupancy = Math.max(0.2, Math.min(0.98, 0.68 + weekendBump));
@@ -172,7 +219,7 @@ export async function generateForecasts(input: {
         expectedRoomRevenue: roomRevenue,
         expectedTotalRevenue: roomRevenue,
         confidence: 60,
-        modelVersion: "deterministic-v1",
+        modelVersion: DETERMINISTIC_MODEL_VERSION,
         driversJson: [
           { driver: "base_occupancy", value: 0.68 },
           { driver: "weekend_bump", value: weekendBump },
@@ -183,8 +230,9 @@ export async function generateForecasts(input: {
   }
 
   const generated = await prisma.$transaction(async (tx) => {
-    await tx.revenueForecast.deleteMany({ where: { propertyId: input.propertyId, forecastDate: { gte: from, lte: to } } });
-    const created = await tx.revenueForecast.createMany({ data });
+    // Never the imported rows (see forecastDeleteFilter).
+    await tx.revenueForecast.deleteMany({ where: forecastDeleteFilter({ propertyId: input.propertyId, from, to }) });
+    const created = data.length > 0 ? await tx.revenueForecast.createMany({ data }) : { count: 0 };
     return created.count;
   });
 
@@ -196,11 +244,27 @@ export async function generateForecasts(input: {
     action: "REVENUE_FORECAST_GENERATED",
     entityType: "revenue_forecast",
     entityId: input.propertyId,
-    afterJson: { generated, from: isoDate(from), to: isoDate(to), modelVersion: "deterministic-v1", adrSources, barSource: publishedBar.source },
+    afterJson: {
+      generated,
+      skippedImported,
+      skippedImportedDays: importedDays.size,
+      from: isoDate(from),
+      to: isoDate(to),
+      modelVersion: DETERMINISTIC_MODEL_VERSION,
+      adrSources,
+      barSource: publishedBar.source
+    },
     correlationId: input.correlationId
   });
 
-  return { generated, adrSources, barSource: publishedBar.source, adrSourceLabel: forecastAdrSourceLabel(adrSources) };
+  return {
+    generated,
+    skippedImported,
+    skippedImportedDays: importedDays.size,
+    adrSources,
+    barSource: publishedBar.source,
+    adrSourceLabel: forecastAdrSourceLabel(adrSources)
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -284,12 +348,33 @@ type ReportRow = {
  * History/Forecast sections, subtotals and a grand total — the same shape the
  * admin table renders.
  */
+/** Longest window the live report serves; a longer request is a 400, never a silent truncation. */
+export const REPORT_MAX_DAYS = 120;
+/** Default report window when `to` is omitted: 31 calendar days from `from`. */
+export const REPORT_DEFAULT_SPAN_DAYS = 30;
+
+/** Route-level and service-level validation share this so a direct caller gets the same 400. */
+export function parseReportWindow(input: { from?: unknown; to?: unknown; today?: Date }) {
+  const todayIso = isoDate(dayUtc(input.today));
+  return parseRevenueWindow({
+    from: input.from,
+    to: input.to,
+    maxDays: REPORT_MAX_DAYS,
+    defaultFrom: todayIso,
+    defaultTo: (from) => isoDate(addDays(dayUtc(from), REPORT_DEFAULT_SPAN_DAYS)),
+    scope: "del informe"
+  });
+}
+
 export async function getLiveHistoryForecastReport(input: { propertyId: string; from?: string; to?: string }) {
   const propertyId = input.propertyId;
   const today = dayUtc();
-  const from = dayUtc(input.from) ;
-  const to = input.to ? dayUtc(input.to) : new Date(from.getTime() + 30 * 86_400_000);
-  const days = Math.min(120, Math.max(1, Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1));
+  // The window used to be clipped to 120 rows with from/to echoing the request
+  // (pilot verification R2): now the limit is enforced up front.
+  const win = parseReportWindow({ from: input.from, to: input.to, today });
+  const from = dayUtc(win.from);
+  const to = dayUtc(win.to);
+  const days = win.days;
   const totalRooms = await prisma.room.count({ where: { propertyId, sellable: true } });
 
   // History: shared "realized" rule (snapshot-first, reservations fallback, < today).

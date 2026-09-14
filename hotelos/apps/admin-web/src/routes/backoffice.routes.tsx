@@ -202,6 +202,7 @@ export const BACKOFFICE_ROUTES = [
   { path: "/backoffice/onboarding/data-quality", screen: "OnboardingDataQualityReview" },
   { path: "/backoffice/onboarding/dry-run", screen: "DryRunResult" },
   { path: "/backoffice/onboarding/batches", screen: "MigrationBatches" },
-  { path: "/backoffice/onboarding/go-live", screen: "OnboardingGoLiveReadiness" },
+  // Real readiness (GET /backoffice/properties/:id/readiness), not the onboarding stub.
+  { path: "/backoffice/onboarding/go-live", screen: "GoLiveChecklist" },
   { path: "/backoffice/onboarding/cutover", screen: "CutoverAssistant" }
 ] as const;

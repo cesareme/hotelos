@@ -1,5 +1,5 @@
 import { prisma } from "@hotelos/database";
-import { dayUtc, getRealizedByDay, round2, type RealizedSourceLabel } from "./actuals.js";
+import { dayUtc, getRealizedByDay, round2, type RealizedDay, type RealizedSourceLabel } from "./actuals.js";
 
 /**
  * Period metrics for the revenue Comparison tool (and the "cierre mensual"
@@ -10,6 +10,13 @@ import { dayUtc, getRealizedByDay, round2, type RealizedSourceLabel } from "./ac
  * twice — current vs. comparison window — and computes the deltas.
  *
  * GOPPAR only exists on audited snapshots; fallback days do not contribute.
+ *
+ * Bases (pilot verification, 2026-09): `roomsSold` is the close's totalOcc
+ * (house use INCLUDED, same as the PMS "Total Occ" column); ADR divides room
+ * revenue by `paidRooms` (totalOcc − house use), which is the PMS's own ADR
+ * base — dividing by totalOcc gave 99,73 for Aug-26 where the PMS reports
+ * 104,57. `paidRooms` and `houseUseRooms` are exposed so the caller can see
+ * both bases; the response shape is otherwise unchanged.
  */
 
 export type PeriodMetrics = {
@@ -20,8 +27,13 @@ export type PeriodMetrics = {
   snapshotDays: number;
   fallbackDays: number;
   source: RealizedSourceLabel | null;
+  /** Occupied rooms per the close (totalOcc): includes house use. */
   roomsSold: number;
+  /** Paying rooms (totalOcc − house use): the ADR denominator. */
+  paidRooms: number;
+  houseUseRooms: number;
   occupancyPct: number;
+  /** roomRevenue / paidRooms (PMS convention), 0 when no paying room. */
   adr: number;
   revpar: number;
   goppar: number;
@@ -30,14 +42,14 @@ export type PeriodMetrics = {
   hasData: boolean;
 };
 
-export async function getPeriodMetrics(input: { propertyId: string; from: string; to: string }): Promise<PeriodMetrics> {
-  const start = dayUtc(input.from);
-  const end = dayUtc(input.to);
-
-  const totalRooms = await prisma.room.count({ where: { propertyId: input.propertyId, sellable: true } });
-  const realized = await getRealizedByDay(input.propertyId, start, end, { totalRooms });
-
+/** Pure aggregation of realized days into the period KPIs (no I/O; unit-tested). */
+export function aggregatePeriodMetrics(days: Iterable<RealizedDay>): Pick<
+  PeriodMetrics,
+  "roomsSold" | "paidRooms" | "houseUseRooms" | "occupancyPct" | "adr" | "revpar" | "goppar" | "roomRevenue" | "totalRevenue"
+> {
   let roomsSold = 0;
+  let paidRooms = 0;
+  let houseUseRooms = 0;
   let roomRevenue = 0;
   let totalRevenue = 0;
   let occSum = 0;
@@ -47,8 +59,10 @@ export async function getPeriodMetrics(input: { propertyId: string; from: string
   let gopparSum = 0;
   let gopparDays = 0;
 
-  for (const d of realized.days.values()) {
+  for (const d of days) {
     roomsSold += d.rooms;
+    paidRooms += d.paidRooms;
+    houseUseRooms += d.houseUseRooms;
     roomRevenue += d.roomRevenue;
     totalRevenue += d.totalRevenue;
     if (d.occPct > 0 || d.rooms > 0) {
@@ -66,20 +80,35 @@ export async function getPeriodMetrics(input: { propertyId: string; from: string
   }
 
   return {
+    roomsSold,
+    paidRooms,
+    houseUseRooms,
+    occupancyPct: occDays > 0 ? round2(occSum / occDays) : 0,
+    adr: paidRooms > 0 ? round2(roomRevenue / paidRooms) : 0,
+    revpar: revparDays > 0 ? round2(revparSum / revparDays) : 0,
+    goppar: gopparDays > 0 ? round2(gopparSum / gopparDays) : 0,
+    roomRevenue: round2(roomRevenue),
+    totalRevenue: round2(totalRevenue)
+  };
+}
+
+export async function getPeriodMetrics(input: { propertyId: string; from: string; to: string }): Promise<PeriodMetrics> {
+  const start = dayUtc(input.from);
+  const end = dayUtc(input.to);
+
+  const totalRooms = await prisma.room.count({ where: { propertyId: input.propertyId, sellable: true } });
+  const realized = await getRealizedByDay(input.propertyId, start, end, { totalRooms });
+  const metrics = aggregatePeriodMetrics(realized.days.values());
+
+  return {
     from: input.from,
     to: input.to,
     days: realized.days.size,
     snapshotDays: realized.snapshotDays,
     fallbackDays: realized.fallbackDays,
     source: realized.source,
-    roomsSold,
-    occupancyPct: occDays > 0 ? round2(occSum / occDays) : 0,
-    adr: roomsSold > 0 ? round2(roomRevenue / roomsSold) : 0,
-    revpar: revparDays > 0 ? round2(revparSum / revparDays) : 0,
-    goppar: gopparDays > 0 ? round2(gopparSum / gopparDays) : 0,
-    roomRevenue: round2(roomRevenue),
-    totalRevenue: round2(totalRevenue),
+    ...metrics,
     // Audited closes count as data even at 0; a pure fallback window only when it has rooms.
-    hasData: realized.snapshotDays > 0 || roomsSold > 0
+    hasData: realized.snapshotDays > 0 || metrics.roomsSold > 0
   };
 }

@@ -1,0 +1,168 @@
+{
+  "_notes": {
+    "purpose": "Spec de alta del segundo hotel piloto de Faranda Hotels & Resorts (org cmrhw9jy30002fyvb6tsdiugt) para apps/api/src/scripts/provision-pilot-property.ts. Solo dry-run por defecto; --apply --confirm <organizationId> escribe.",
+    "sources": {
+      "identity": "Directorio REAT (https://aei.turismo.gal/es/directorio-alojamientos, consultado 2026-09-14): H-CO-001327, 4 estrellas, 176 plazas. INE municipio 15082 = Teo (A Coruña) verificado contra el nomenclátor INE. Código Choice ES105 y soft-brand Ascend Hotel Collection según ficha de Choice Hotels (el brief decía «Ascendo» por errata; no es marca propia de Faranda).",
+      "rooms": "92 habitaciones (REAT). El REPARTO por tipo es ESTIMADO (ver roomTypes._estimated): fuente secundaria 6 individuales / 83 dobles / 3 suites y 176 plazas REAT; la web oficial vende Individual Estándar, Doble Estándar 2 camas, Doble Estándar matrimonio, Triple Estándar y Suite. No existe rooming list real: la numeración es determinista (ver roomNumbering)."
+    },
+    "notInvented": [
+      "property.legalName = null: el emisor de facturas cae a la razón social de la organización (issuer-identity.service: Property.legalName ?? Organization.legalName). Faranda no ha facilitado una razón social distinta para este hotel.",
+      "NIF propio del hotel: no se conoce; comparte el NIF emisor de la organización (B99999997, ficticio), por eso las series de factura llevan prefijo LT distinto de las de Rías Altas.",
+      "Número de registro SES.HOSPEDAJES: NO se conoce (H-CO-001327 es el registro turístico REAT, no el de SES). property_compliance_settings.sesRegistryNumber queda null y sesHospedajesEnabled=false.",
+      "Tarifario real: no se conoce. Se crea la BAR sin rate_days; el importador del histórico puede derivar una BAR de referencia.",
+      "Rooming list real: no se conoce. Numeración determinista documentada en roomNumbering."
+    ],
+    "fields": {
+      "organizationId": "Organización EXISTENTE (Faranda Hotels & Resorts). El script nunca crea ni modifica organizations.*.",
+      "property": "Columnas 1:1 de Property (schema.prisma). taxRegion canónica ES_PENINSULA_BALEARES y fiscalTerritory common (Galicia → VeriFactu). CP 15894 e INE 15082 comparten prefijo de provincia 15 (regla resolveFiscalLocation).",
+      "profile": "Columnas de CompliancePropertyProfile (autonomousCommunity, hotelType, has*) + resto (starRating, brandAffiliation, tourismRegistry, plazas, phone, email, coordinates, built, renovated, hasBar) que NO tienen columna y se guardan en property_compliance_settings.configurationJson.pilotProfile.",
+      "owners": "user_property_roles (userId Carmen, roleId Owner de la org; los roles son por organización, se reutiliza el existente con 211 permisos).",
+      "modules": "property_modules enabled (mismo conjunto que Rías Altas; maintenance queda sin fila → disabled por defecto del catálogo).",
+      "building": "1 edificio con `floors` plantas: Planta 1..N (floorNumber n, code P<n>).",
+      "totalRooms": "Habitaciones totales del REAT (92). validateSpec exige Σ roomTypes.items[].count == totalRooms y totalRooms divisible entre building.floors (23 por planta).",
+      "roomTypes": "Upsert por code. count = habitaciones por tipo; Σ count debe ser 92.",
+      "roomNumbering": "Regla determinista (planRooms): 4 plantas × 23 = 101-123, 201-223, 301-323, 401-423. x01 y x02 → IND (8). 223/323/423 → SUI (3; la planta 1 no tiene suite). Resto: número impar → DBL (2 camas), número par → DBM (matrimonio) → 41 DBL / 40 DBM. Si se prefiere fijar la lista, añadir `rooms: [{number, roomTypeCode}]` y el script la usa tal cual (misma validación de conteos).",
+      "ratePlans": "rate_plans por code. BAR se resuelve en el módulo revenue por code \"BAR\" o ratePlanType \"bar\".",
+      "invoiceSequences": "invoice_sequences por (sequenceCode, year): padding 6, nextNumber 1; FAC↔F1, REC↔R1 (regla assertSeriesCodeMatchesType). Prefijo LT para no colisionar con FAC-2026-/REC-2026- de Rías Altas (mismo NIF emisor).",
+      "departments": "departments por (propertyId, code) + user_departments (roleLabel)."
+    }
+  },
+  "organizationId": "cmrhw9jy30002fyvb6tsdiugt",
+  "property": {
+    "name": "Faranda Los Tilos, Ascend Hotel Collection",
+    "legalName": null,
+    "address": "Urbanización Los Tilos, Estrada Santiago-A Estrada km 2",
+    "municipality": "Teo",
+    "province": "A Coruña",
+    "country": "ES",
+    "postalCode": "15894",
+    "ineMunicipalityCode": "15082",
+    "taxRegion": "ES_PENINSULA_BALEARES",
+    "fiscalTerritory": "common",
+    "timezone": "Europe/Madrid",
+    "sesHospedajesEnabled": false,
+    "verifactuEnabled": false
+  },
+  "profile": {
+    "hotelType": "hotel",
+    "starRating": 4,
+    "brandAffiliation": "Ascend Hotel Collection (Choice Hotels) · código ES105",
+    "tourismRegistry": {
+      "region": "Galicia",
+      "registry": "REAT",
+      "number": "H-CO-001327",
+      "verifiedAt": "2026-09-14",
+      "source": "https://aei.turismo.gal/es/directorio-alojamientos"
+    },
+    "plazas": 176,
+    "phone": "981 819 200",
+    "email": "reservas.tilos@farandahotels.com",
+    "coordinates": {
+      "lat": 42.84644,
+      "lon": -8.54075
+    },
+    "hasRestaurant": true,
+    "hasBar": true,
+    "hasEvents": true,
+    "hasParking": true,
+    "hasLaundry": true,
+    "hasTerrace": true,
+    "hasPool": false,
+    "hasSpa": false,
+    "autonomousCommunity": "Galicia",
+    "built": 1982,
+    "renovated": 2004
+  },
+  "owners": [
+    {
+      "userId": "cmrhw9jyb0005fyvb4ykaumyc",
+      "roleId": "cmrhw9jy60004fyvbjvur0uqt"
+    }
+  ],
+  "modules": [
+    "pms_core",
+    "compliance_hub",
+    "distribution_hub",
+    "guest_experience",
+    "outlet_pos",
+    "revenue_profit_engine"
+  ],
+  "building": {
+    "name": "Edificio principal",
+    "code": "PRINCIPAL",
+    "floors": 4
+  },
+  "totalRooms": 92,
+  "roomTypes": {
+    "_estimated": true,
+    "_estimatedReason": "Reparto por tipo ESTIMADO: el REAT solo publica 92 habitaciones / 176 plazas; una fuente secundaria indica 6 individuales, 83 dobles y 3 suites y la web oficial vende Individual Estándar, Doble Estándar 2 camas, Doble Estándar matrimonio, Triple Estándar y Suite. 8+41+40+3 = 92 habitaciones y plazas base 8+82+80+6 = 176 = REAT. Corregir con la rooming list real cuando Faranda la facilite.",
+    "items": [
+      {
+        "code": "IND",
+        "name": "Individual Estándar",
+        "baseCapacity": 1,
+        "maxOccupancy": 1,
+        "count": 8,
+        "defaultRateCategory": "Standard"
+      },
+      {
+        "code": "DBL",
+        "name": "Doble Estándar 2 camas",
+        "baseCapacity": 2,
+        "maxOccupancy": 3,
+        "count": 41,
+        "defaultRateCategory": "Standard"
+      },
+      {
+        "code": "DBM",
+        "name": "Doble Estándar matrimonio",
+        "baseCapacity": 2,
+        "maxOccupancy": 2,
+        "count": 40,
+        "defaultRateCategory": "Standard"
+      },
+      {
+        "code": "SUI",
+        "name": "Suite",
+        "baseCapacity": 2,
+        "maxOccupancy": 3,
+        "count": 3,
+        "defaultRateCategory": "Suite"
+      }
+    ]
+  },
+  "ratePlans": [
+    {
+      "code": "BAR",
+      "name": "BAR Flexible",
+      "ratePlanType": "bar",
+      "mealPlan": "room_only"
+    }
+  ],
+  "invoiceSequences": [
+    {
+      "sequenceCode": "FAC",
+      "invoiceType": "F1",
+      "prefix": "FAC-LT-2026-",
+      "year": 2026
+    },
+    {
+      "sequenceCode": "REC",
+      "invoiceType": "R1",
+      "prefix": "REC-LT-2026-",
+      "year": 2026
+    }
+  ],
+  "departments": [
+    {
+      "code": "MGMT",
+      "name": "Management",
+      "users": [
+        {
+          "userId": "cmrhw9jyb0005fyvb4ykaumyc",
+          "roleLabel": "owner"
+        }
+      ]
+    }
+  ]
+}

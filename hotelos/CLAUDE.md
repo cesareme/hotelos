@@ -251,6 +251,36 @@ FAC-2026-000001…, REC-2026-… de Faranda y prop_123/prop_canary son documento
 de prueba en sandbox (stub VeriFactu) con emisor histórico «AUDIT-T1 SL»:
 snapshots inmutables, no se corrigen ni se borran.
 
+Piloto real · segunda propiedad de Faranda (Los Tilos, 2026-09-14;
+**provisionada e importada** ese día: propertyId `cmu1mifcp0000fyo1wzvq7txo`,
+409 snapshots + 48 forecasts `pms_import:opera_hf_2026-09-14`, 1460 rate_days
+BAR de referencia, readiness `ready` con SES/VeriFactu desactivados):
+`corepack pnpm --filter @hotelos/api pilot:provision-property -- --spec
+src/scripts/specs/faranda-los-tilos.json` (dry-run por defecto, `--apply
+--confirm <orgId>`, `--help`; nunca crea ni toca `organizations`/usuarios;
+idempotente: converge por claves naturales, habitaciones por `number`) crea una
+propiedad con todos sus satélites dentro de una org existente; **reiniciar
+el API** después (espejos in-memory) y solo entonces `corepack pnpm --filter
+@hotelos/api import:pms-history-forecast -- --file <csv> --property <id>
+--rooms 92 --source opera_hf_2026-09-14 --publish-bar BAR` (dry-run por
+defecto, `--apply --confirm <propertyId>`, `--revert` por source, `--force`
+solo para pisar otro origen, `--help`) carga el History & Forecast del PMS:
+historia → `revenue_daily_snapshots` top-level con `dataSource
+pms_import:<source>`, forecast → `revenue_forecasts` con `modelVersion
+pms_import:<source>` (`expectedRoomsSold` = `totalOcc` del PMS **con** house
+use, igual que el snapshot; el ADR del PMS va explícito); el scheduler
+nocturno, `backfill:snapshots` y `generateForecasts` no pisan `pms_import:*`
+ni escriben en propiedades sin reservas. Avisos: backup antes de cada
+`--apply` y ejecutar los CLI con los API parados (cadena de auditoría
+in-memory, deuda 12(c)); el CSV real vive fuera del repo en
+`/Users/cfernandez/anfitorio-demo/pilots/<hotel>/` (`/pilots/` en el
+`.gitignore` de la raíz, anclado para no ignorar `docs/pilots/`); nunca
+`backfill:snapshots --force` sobre un hotel importado; la propiedad nace sin
+reservas (recepción vacía a propósito), sin SES/VeriFactu y con reparto de
+habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
+`docs/pilots/FARANDA-LOS-TILOS-2026-09-14.md`; runbook:
+`docs/runbooks/pms-history-forecast-import.md`.
+
 ## Convenciones
 
 - **Comentarios y código**: inglés. **Strings UI y commits**: español
@@ -421,6 +451,7 @@ Antes de tomar decisiones de producto, lee:
 - `deploy/README-HOSTINGER.md` — playbook deploy producción
 - `deploy/README-REMOTE-DEV.md` — workflow remoto desde el Mac Pro (cliente único)
 - `deploy/CLAUDE-RESUME-CONTEXT.md` — versión larga de este archivo
+- `docs/pilots/FARANDA-LOS-TILOS-2026-09-14.md` + `docs/runbooks/pms-history-forecast-import.md` — piloto Faranda Los Tilos (2.ª propiedad real, provisionada e importada el 2026-09-14) y carga del History & Forecast del PMS: ficha, mapeo, salidas reales, readiness y hallazgos pendientes
 
 ## Primera tarea en cada sesión nueva
 

@@ -365,7 +365,16 @@ async function main() {
   // --- Forecasts (deterministic, per room type) so forecast/accuracy/segment/
   //     meeting-pack/budget-projection are fresh without an API call ---
   const fcTo = addDays(today, 90);
-  await prisma.revenueForecast.deleteMany({ where: { propertyId: PROPERTY_ID, forecastDate: { gte: today, lte: fcTo } } });
+  // Same rule as the API's forecastDeleteFilter: never the rows imported from
+  // another PMS (modelVersion "pms_import:*"); NULL modelVersion (legacy) is
+  // listed explicitly because NOT LIKE never matches NULL in Postgres.
+  await prisma.revenueForecast.deleteMany({
+    where: {
+      propertyId: PROPERTY_ID,
+      forecastDate: { gte: today, lte: fcTo },
+      OR: [{ modelVersion: null }, { NOT: { modelVersion: { startsWith: "pms_import:" } } }]
+    }
+  });
   const fcRows: Record<string, unknown>[] = [];
   for (let d = new Date(today); d <= fcTo; d = addDays(d, 1)) {
     const dow = d.getUTCDay();

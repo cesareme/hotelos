@@ -8,6 +8,7 @@ import {
   dayUtc,
   leadRoomTypeIdsFor,
   parseMonth,
+  parseRevenueWindow,
   publishedBarFor,
   realizeDays,
   realizedSourceLabel,
@@ -100,6 +101,54 @@ describe("realizeDays — one definition of 'Real'", () => {
     assert.equal(d02.revpar, 1.83);
     assert.equal(d02.goppar, null);
     assert.equal(d02.totalRevenue, 220); // fallback: total = room revenue (same rule as writeDailySnapshot)
+  });
+
+  it("takes pax from the snapshot's adultsChildren (imported PMS history) and reports 0 when the column is absent", () => {
+    const win = realizeDays({
+      from: dayUtc("2026-09-11"),
+      to: dayUtc("2026-09-13"),
+      today: TODAY,
+      totalRooms: TOTAL_ROOMS,
+      snapshots: [
+        snap("2026-09-11", 40, 3880, { adultsChildren: 73 }), // PMS "Adl/Chl" column
+        snap("2026-09-12", 40, 3880, { adultsChildren: null }), // explicit null → 0, never invented
+        snap("2026-09-13", 40, 3880) // narrow select without the column → 0
+      ],
+      reservations: [res("2026-09-10", "2026-09-14", 400)] // 2 adults/night: must NOT leak into snapshot days
+    });
+    assert.equal(win.snapshotDays, 3);
+    assert.equal(win.days.get("2026-09-11")?.pax, 73);
+    assert.equal(win.days.get("2026-09-12")?.pax, 0);
+    assert.equal(win.days.get("2026-09-13")?.pax, 0);
+  });
+
+  it("exposes paidRooms = totalOcc − houseUseRooms on snapshot days and paidRooms = rooms on fallback days (R4)", () => {
+    const win = realizeDays({
+      from: dayUtc("2026-08-30"),
+      to: dayUtc("2026-09-01"),
+      today: TODAY,
+      totalRooms: 92,
+      snapshots: [
+        snap("2026-08-30", 60, 6300, { houseUseRooms: 4 }), // PMS close: 4 house-use rooms inside totalOcc
+        snap("2026-08-31", 3, 300, { houseUseRooms: 5 }) // inconsistent close: never a negative paid base
+      ],
+      reservations: [res("2026-09-01", "2026-09-02", 150)]
+    });
+    const d30 = win.days.get("2026-08-30")!;
+    assert.equal(d30.rooms, 60); // roomsSold keeps the PMS "Total Occ" base
+    assert.equal(d30.houseUseRooms, 4);
+    assert.equal(d30.paidRooms, 56);
+    assert.equal(d30.adr, 105); // snapshot ADR is the close's own figure (6300/60), untouched
+    const d31 = win.days.get("2026-08-31")!;
+    assert.equal(d31.paidRooms, 0);
+    assert.equal(d31.houseUseRooms, 5);
+    const d01 = win.days.get("2026-09-01")!;
+    assert.equal(d01.source, "reservations");
+    assert.equal(d01.paidRooms, 1);
+    assert.equal(d01.houseUseRooms, 0);
+    // A narrow select without the column → house use 0, paid = total.
+    const narrow = realizeDays({ from: dayUtc("2026-08-30"), to: dayUtc("2026-08-30"), today: TODAY, totalRooms: 92, snapshots: [snap("2026-08-30", 60, 6300)], reservations: [] });
+    assert.equal(narrow.days.get("2026-08-30")?.paidRooms, 60);
   });
 
   it("mixes sources day by day and labels the window 'snapshots+reservas'", () => {
@@ -228,5 +277,49 @@ describe("backfill-snapshots CLI flags", () => {
     assert.throws(() => parseBackfillFlags(["--from", "2026-09-13", "--to", "2026-07-15"]), /on or after/);
     assert.throws(() => parseBackfillFlags(["--from", "2026-07-15", "--to", "2026-09-13", "--nope"]), /Unknown flag/);
     assert.throws(() => parseBackfillFlags(["--from", "2026-07-15", "--to"]), /requires a value/);
+  });
+});
+
+describe("parseRevenueWindow — typed 400 at the query boundary (R1)", () => {
+  const rejects = (input: Parameters<typeof parseRevenueWindow>[0], fragment: string) => {
+    assert.throws(
+      () => parseRevenueWindow(input),
+      (e: unknown) => e instanceof BadRequestError && e.message.includes(fragment),
+      `expected 400 containing "${fragment}" for ${JSON.stringify(input)}`
+    );
+  };
+
+  it("accepts a real window and reports its inclusive day count", () => {
+    assert.deepEqual(parseRevenueWindow({ from: "2026-09-07", to: "2026-12-13", maxDays: 190 }), { from: "2026-09-07", to: "2026-12-13", days: 98 });
+    assert.deepEqual(parseRevenueWindow({ from: "2026-09-14", to: "2026-09-14", maxDays: 1 }), { from: "2026-09-14", to: "2026-09-14", days: 1 });
+    assert.equal(parseRevenueWindow({ from: "2026-03-01", to: "2026-09-06", maxDays: 190 }).days, 190);
+  });
+
+  it("rejects malformed and non-existent days (the 500 of the pilot verification)", () => {
+    rejects({ from: "2026-13-99", to: "abc", maxDays: 190 }, "from debe ser una fecha YYYY-MM-DD válida");
+    rejects({ from: "2026-13-01", to: "x", maxDays: 366 }, "from debe ser una fecha YYYY-MM-DD válida");
+    rejects({ from: "2026-09-01", to: "abc", maxDays: 190 }, "to debe ser una fecha YYYY-MM-DD válida");
+    rejects({ from: "2026-02-30", to: "2026-03-01", maxDays: 190 }, "from debe ser una fecha");
+    rejects({ from: "2026-09-01T00:00:00Z", to: "2026-09-02", maxDays: 190 }, "from debe ser una fecha");
+    rejects({ from: ["2026-09-01", "2026-09-02"], to: "2026-09-02", maxDays: 190 }, "from debe ser una fecha"); // ?from=a&from=b
+  });
+
+  it("requires from ≤ to", () => {
+    rejects({ from: "2026-09-15", to: "2026-09-14", maxDays: 190 }, "to debe ser igual o posterior a from");
+  });
+
+  it("rejects a window over maxDays naming the limit instead of truncating", () => {
+    rejects({ from: "2026-01-01", to: "2026-10-31", maxDays: 120, scope: "del informe" }, "la ventana máxima del informe es 120 días");
+    rejects({ from: "2026-03-01", to: "2026-09-07", maxDays: 190, scope: "del board" }, "la ventana máxima del board es 190 días");
+    rejects({ from: "2025-01-01", to: "2026-01-02", maxDays: 366 }, "la ventana máxima es 366 días");
+  });
+
+  it("applies defaults for missing values and derives `to` from the resolved `from` when asked", () => {
+    assert.deepEqual(parseRevenueWindow({ maxDays: 190, defaultFrom: "2026-09-07", defaultTo: "2026-12-13" }), { from: "2026-09-07", to: "2026-12-13", days: 98 });
+    assert.deepEqual(parseRevenueWindow({ from: "", to: undefined, maxDays: 190, defaultFrom: "2026-09-07", defaultTo: "2026-12-13" }), { from: "2026-09-07", to: "2026-12-13", days: 98 });
+    const win = parseRevenueWindow({ from: "2026-10-01", maxDays: 120, defaultFrom: "2026-09-14", defaultTo: (f) => `${f.slice(0, 8)}31` });
+    assert.deepEqual(win, { from: "2026-10-01", to: "2026-10-31", days: 31 });
+    rejects({ maxDays: 190 }, "from es obligatorio");
+    rejects({ from: "2026-09-01", maxDays: 190 }, "to es obligatorio");
   });
 });
