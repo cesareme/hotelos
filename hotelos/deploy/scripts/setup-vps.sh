@@ -144,7 +144,7 @@ ok "Bootstrap completado"
 step "5/6 · Verificando el entorno instalado"
 VERIFY=$(ssh -o BatchMode=yes "$DEV_USER@$VPS_IP" 'bash -lc "
     echo node=$(node --version 2>/dev/null || echo MISSING)
-    echo npm=$(npm --version 2>/dev/null || echo MISSING)
+    echo pnpm=$(COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm --version 2>/dev/null || echo MISSING)
     echo psql=$(psql --version 2>/dev/null | head -1 || echo MISSING)
     echo redis=$(redis-cli ping 2>/dev/null || echo MISSING)
     echo git=$(git --version 2>/dev/null || echo MISSING)
@@ -176,20 +176,21 @@ cat <<NEXT
   Primer arranque de la app (dentro del VPS):
       cd ~/projects/hotelos/hotelos
       cp .env.example .env && nano .env   # genera secrets con: openssl rand -base64 32
-      npm install
-      npm --workspace @hotelos/database run prisma:generate
-      npm --workspace @hotelos/database run db:push
-      node packages/database/seeds/demo-pre-demo-enrichment.mjs   # datos demo
+      corepack pnpm install --frozen-lockfile        # NUNCA npm install (workspace:*)
+      corepack pnpm --filter @hotelos/database db:generate
+      corepack pnpm db:migrate:deploy                # BD nueva (BD con db push previo: pnpm db:adopt-baseline -- --apply antes)
+      cd packages/database && node --env-file=../../.env --import tsx prisma/seed.ts && cd ../..   # datos demo base
+      corepack pnpm db:seed:commercial
       tmux new -s dev
-      # pane 1: npm --workspace @hotelos/api run dev
-      # pane 2: npm --workspace @hotelos/admin-web run dev
+      # pane 1: corepack pnpm dev:api
+      # pane 2: corepack pnpm dev:web
 
   Ver la app desde el navegador del laptop (túnel SSH):
       ssh -L 5173:localhost:5173 -L 3000:localhost:3000 $SSH_ALIAS
       # luego abre http://localhost:5173/
 
   Guía completa de Claude Code:  docs/CLAUDE-CODE-GUIA.md
-  Playbook remoto completo:      deploy/README-REMOTE-DEV.md
+  Instalación/actualización:     deploy/README-INSTALL.md (README-REMOTE-DEV.md es histórico)
 
 NEXT
 

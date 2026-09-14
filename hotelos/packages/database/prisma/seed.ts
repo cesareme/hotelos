@@ -16,6 +16,20 @@ import {
 
 const prisma = new PrismaClient();
 
+// Flagship scenario dates are RELATIVE to the seed run (Tanda 4 · DATA-09):
+// RES-18392 arrives tomorrow and leaves in three days on every fresh install,
+// so the "check-in room 432" walkthrough never starts expired.
+const MS_DAY = 86_400_000;
+function startUtc(d = new Date()): Date {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+}
+function addDays(d: Date, n: number): Date {
+  return new Date(d.getTime() + n * MS_DAY);
+}
+const SEED_TODAY = startUtc();
+const FLAGSHIP_ARRIVAL = addDays(SEED_TODAY, 1);
+const FLAGSHIP_DEPARTURE = addDays(SEED_TODAY, 3);
+
 // Local demo grants for the "Local Super Admin" role (org_123). This list is
 // NOT the permission catalog: the API converges `permissions` to PERMISSIONS
 // (@hotelos/shared) at boot (syncPermissionCatalog + backfillTemplateRoles in
@@ -46,10 +60,6 @@ const DEMO_PERMISSIONS = [
   "ai_category_setup.use",
   "pms.reservation.read",
   "pms.reservation.create",
-  "pms.reservation.update",
-  "pms.reservation.cancel",
-  "pms.reservation.check_in",
-  "pms.reservation.check_out",
   "guests.read",
   "guests.manage",
   "folio.charge.post",
@@ -166,7 +176,9 @@ async function main() {
       id: "org_123",
       name: "HotelOS Demo Group",
       legalName: "HotelOS Demo SL",
-      taxId: "B12345678",
+      // Valid CIF checksum (Tanda 4 · FISC-10): VERIFACTU_MODE=production
+      // refuses to issue for an issuer whose NIF fails the checksum.
+      taxId: "B12345674",
       country: "ES"
     }
   });
@@ -544,8 +556,8 @@ async function main() {
       code: "RES-18392",
       channel: "direct",
       status: "confirmed",
-      arrivalDate: new Date("2026-05-14"),
-      departureDate: new Date("2026-05-16"),
+      arrivalDate: FLAGSHIP_ARRIVAL,
+      departureDate: FLAGSHIP_DEPARTURE,
       adults: 1,
       children: 0,
       roomTypeId: "rt_double",
@@ -620,7 +632,7 @@ async function main() {
       priority: "normal",
       status: "done",
       assignedTo: "usr_housekeeping_demo",
-      dueAt: new Date("2026-05-14T12:00:00.000Z")
+      dueAt: new Date(FLAGSHIP_ARRIVAL.getTime() + 12 * 60 * 60 * 1000)
     }
   });
 
@@ -1240,24 +1252,35 @@ async function main() {
     `[seed] AI tool registry ready: ${codeToolNames.size} tools synced from code (${deactivatedTools} deactivated).`
   );
 
-  await prisma.auditEvent.create({
-    data: {
-      organizationId: "org_123",
-      propertyId: "prop_123",
-      actorType: "system",
-      action: "DEMO_SEED_READY",
-      entityType: "property",
-      entityId: "prop_123",
-      afterJson: {
-        flagshipReservationCode: "RES-18392",
-        flagshipRoomNumber: "432",
-        idDocumentImagesStored: false
-      },
-      correlationId: "corr_demo_seed",
-      hashAlgorithm: "sha256",
-      currentHash: "demo_seed_ready_hash"
-    }
-  });
+  // DEMO_SEED_READY is written ONCE (Tanda 4 · DATA-10): the audit trail is an
+  // append-only hash chain, so a re-run must not add a second marker. When the
+  // trail already has events, the marker links to the current tip instead of
+  // opening a second genesis (previousHash NULL).
+  const seedMarker = await prisma.auditEvent.findFirst({ where: { correlationId: "corr_demo_seed" }, select: { id: true } });
+  if (seedMarker) {
+    console.log(`[seed] DEMO_SEED_READY already recorded (${seedMarker.id}); audit trail untouched.`);
+  } else {
+    const chainTip = await prisma.auditEvent.findFirst({ orderBy: { createdAt: "desc" }, select: { currentHash: true } });
+    await prisma.auditEvent.create({
+      data: {
+        organizationId: "org_123",
+        propertyId: "prop_123",
+        actorType: "system",
+        action: "DEMO_SEED_READY",
+        entityType: "property",
+        entityId: "prop_123",
+        afterJson: {
+          flagshipReservationCode: "RES-18392",
+          flagshipRoomNumber: "432",
+          idDocumentImagesStored: false
+        },
+        correlationId: "corr_demo_seed",
+        hashAlgorithm: "sha256",
+        previousHash: chainTip?.currentHash ?? null,
+        currentHash: "demo_seed_ready_hash"
+      }
+    });
+  }
 }
 
 main()

@@ -1,0 +1,57 @@
+# Anfitorio API · systemd unit (native VPS deployment, no Docker)
+#
+# Installed by deploy/scripts/install-from-scratch.sh, which replaces the
+# APP_DIR / APP_USER defaults below with the values given on its command
+# line. Manual install:
+#   sudo cp deploy/systemd/anfitorio-api.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now anfitorio-api
+#
+# Runtime = tsx (apps/api `start` script): the TypeScript sources run directly
+# and the workspace packages resolve through tsconfig paths, so
+# `pnpm install --frozen-lockfile` (WITHOUT --prod) must have been run in the
+# repo. All configuration comes from /etc/anfitorio/api.env (never create a
+# hotelos/.env on the server: the API's .env loader only fills missing
+# variables, but the worker's loader overrides the process environment).
+#
+# This is the ONLY instance that runs the in-process schedulers
+# (RUN_SCHEDULERS=true → SES, VeriFactu, pace, allotments, mailbox). Add a
+# second API replica only with RUN_SCHEDULERS=false in its environment.
+
+[Unit]
+Description=Anfitorio API (Fastify, tsx runtime)
+Documentation=file:///opt/anfitorio/hotelos/deploy/README-INSTALL.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=anfitorio
+Group=anfitorio
+WorkingDirectory=/opt/anfitorio/hotelos/apps/api
+# Defaults; anything set in the EnvironmentFile overrides these.
+Environment=NODE_ENV=production
+Environment=PORT=3000
+Environment=HOST=127.0.0.1
+Environment=TRUST_PROXY=1
+Environment=RUN_SCHEDULERS=true
+Environment=COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+EnvironmentFile=/etc/anfitorio/api.env
+ExecStart=/usr/bin/node --import tsx src/server.ts
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=anfitorio-api
+# Hardening (the API only needs the repo, /etc/anfitorio and the network).
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

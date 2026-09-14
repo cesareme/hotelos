@@ -124,13 +124,15 @@ cd /opt/hotelos
 docker compose -f docker-compose.pilot.yml up -d
 docker compose -f docker-compose.pilot.yml logs --tail=50 api
 
-# Schema
+# Schema: migraciones versionadas (BD nueva → aplica la baseline 20260914000000_baseline_squash)
 docker compose -f docker-compose.pilot.yml exec api \
-  npm --workspace @hotelos/database exec prisma db push --skip-generate
+  pnpm --filter @hotelos/database db:migrate:deploy
 
-# Baseline migration (marcar aplicada)
+# Solo si la BD ya existía antes del squash (creada con db push): adoptar la
+# baseline UNA vez (dry-run por defecto; --apply escribe) y repetir el deploy.
+# Ver packages/database/MIGRATIONS_README.md.
 docker compose -f docker-compose.pilot.yml exec api \
-  npm --workspace @hotelos/database exec prisma migrate resolve --applied 20260601000000_baseline_missing_tables
+  pnpm --filter @hotelos/database db:adopt-baseline -- --apply
 
 curl https://api.hotelos.com/health
 ```

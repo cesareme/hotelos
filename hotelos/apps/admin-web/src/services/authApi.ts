@@ -81,6 +81,9 @@ export type PropertyRole = {
   name: string;
   organizationId?: string;
   description?: string;
+  /** Tanda 4: template the role was created from (null = custom) and its effective grant count. */
+  templateKey?: string | null;
+  permissionsCount?: number;
 };
 
 /**

@@ -185,7 +185,8 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
     const ownerRole = await tx.role.create({
       data: {
         organizationId: org.id,
-        name: "Owner"
+        name: "Owner",
+        templateKey: "owner"
       }
     });
 

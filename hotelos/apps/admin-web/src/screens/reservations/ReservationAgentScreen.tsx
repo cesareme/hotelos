@@ -156,9 +156,17 @@ export function ReservationAgentScreen() {
       setStatus("Llegada, salida y tipo de habitación son obligatorios para crear la reserva.");
       return;
     }
+    const [firstName, ...rest] = draft.guestName.trim().split(/\s+/);
+    // The API refuses a primary guest without surname (400 «primaryGuest.surname1
+    // (apellido) es obligatorio») since the Tanda 4 cierre: a guest record with
+    // no surname is unusable for the parte de viajeros. Ask here instead of
+    // letting the request fail.
+    if (firstName && rest.length === 0) {
+      setStatus("Indica nombre y apellido del huésped (por ejemplo «Ana García») o deja el campo vacío.");
+      return;
+    }
     setBusy(true);
     setStatus("Creando reserva…");
-    const [firstName, ...rest] = draft.guestName.trim().split(/\s+/);
     const quote = quotes.find((q) => q.roomTypeId === draft.roomTypeId);
     try {
       const reservation = await createReservation(PROPERTY_ID, {

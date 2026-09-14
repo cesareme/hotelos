@@ -26,7 +26,7 @@ export function ModuleVisibilityDebugScreen() {
         {visibleRoutes.map((route) => (
           <View key={route.route} style={styles.routeRow}>
             <StatusChip label={route.moduleCode} tone="info" />
-            <Text style={styles.body}>{route.label} -> {route.route}</Text>
+            <Text style={styles.body}>{route.label} {"->"} {route.route}</Text>
           </View>
         ))}
       </View>

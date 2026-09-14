@@ -515,6 +515,9 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // role selector, and re-issue of a pending invitation (revokes the previous
   // tokens, sends a new email / returns a copyable link).
   { method: "GET", path: "/backoffice/properties/:propertyId/roles", permissions: ["users.invite"], riskLevel: "medium" },
+  // Tanda 4 (rutas-cors): creating a role from a template grants permissions
+  // to whoever is later invited with it — roles.manage, high (no demo fallback).
+  { method: "POST", path: "/backoffice/properties/:propertyId/roles", permissions: ["roles.manage"], riskLevel: "high" },
   {
     method: "POST",
     path: "/backoffice/properties/:propertyId/users/:userId/reissue-invite",

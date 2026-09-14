@@ -33,16 +33,21 @@ export function buildAiGatewayServer() {
       (aiProvider === "anthropic" || aiProvider === "openai") && aiKey.length > 0 && aiKey !== "change-me";
     const ocrKey = (process.env.OCR_PROVIDER_API_KEY ?? "").trim();
     const speechKey = (process.env.SPEECH_PROVIDER_API_KEY ?? "").trim();
+    const speechConfigured = speechKey.length > 0 && speechKey !== "change-me";
+    const ocrConfigured = ocrKey.length > 0 && ocrKey !== "change-me";
     return {
       ...buildHealthResponse({
         service: SERVICE_NAMES.aiGateway,
+        // DependencyStatus (@hotelos/config) is "ok" | "degraded" |
+        // "unconfigured"; the provider name lives in `providers` below.
         dependencies: {
           api: "ok",
-          llmProvider: llmConfigured ? aiProvider : "unconfigured",
-          speechProvider: speechKey && speechKey !== "change-me" ? "configured" : "unconfigured",
-          ocrProvider: ocrKey && ocrKey !== "change-me" ? "configured" : "unconfigured"
+          llmProvider: llmConfigured ? "ok" : "unconfigured",
+          speechProvider: speechConfigured ? "ok" : "unconfigured",
+          ocrProvider: ocrConfigured ? "ok" : "unconfigured"
         }
       }),
+      providers: { llm: llmConfigured ? aiProvider : "none" },
       directDatabaseAccess: false
     };
   });

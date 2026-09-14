@@ -1,7 +1,9 @@
 // Seed B2B tour operators (Hotelbeds, TUI, FTI, JetTours) and a handful of
 // active allotments for the demo property. Mirrors the canonical Spanish
 // hotel commercial setup where 30–60% of inventory is sold via TT.OO.
+// Guarded by assertDemoTarget (Tanda 4 · DATA-05).
 import { PrismaClient } from "@prisma/client";
+import { assertDemoTarget } from "./lib/demo-guard.js";
 
 const prisma = new PrismaClient();
 const ORG = process.env.SEED_ORG_ID ?? "org_123";
@@ -15,6 +17,15 @@ const TOUR_OPERATORS = [
 ];
 
 async function main() {
+  assertDemoTarget({
+    orgId: ORG,
+    propertyId: PID,
+    action: "seed-allotments",
+    planned: [
+      { table: "allotment_days", op: "deleteMany", where: "de allotments con code SEED-*" },
+      { table: "allotments", op: "deleteMany", where: "code SEED-*" }
+    ]
+  });
   const property = await prisma.property.findUnique({ where: { id: PID }, select: { id: true, name: true } });
   if (!property) throw new Error(`Property ${PID} not found`);
   console.log(`[allotments] property ${PID} (${property.name})`);

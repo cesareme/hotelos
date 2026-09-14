@@ -512,3 +512,50 @@ describe("Tanda 3 · cierre (server-rutas): dangling promises, process guards, d
     assert.match(handler, /reply\.code\(201\);\s*return view;/);
   });
 });
+
+// ── Tanda 4 · rutas-cors ────────────────────────────────────────────────────
+// POST /backoffice/properties/:propertyId/roles creates an organisation role
+// from a shared template (createRoleFromTemplate, lib/rbac-catalog — lote
+// rbac-templates). It hands permissions to whoever is later invited with the
+// role, so it is roles.manage / high: the token-less demo fallback (H1) can
+// never reach it. The generic (a)/(b)/(d) checks above already prove it is
+// registered, not orphaned and keyed on a catalogue permission.
+describe("Tanda 4 · rutas-cors: POST /backoffice/properties/:propertyId/roles", () => {
+  const ROUTE = "/backoffice/properties/:propertyId/roles";
+
+  it("is mapped with roles.manage / high (refused to the demo fallback) next to the GET used by the invite selector", () => {
+    const post = manifest.find((e) => e.method === "POST" && e.path === ROUTE);
+    assert.ok(post, `POST ${ROUTE} missing from routePermissionManifest`);
+    assert.deepEqual(post.permissions.map((p) => p.key), ["roles.manage"]);
+    assert.equal(post.riskLevel, "high");
+    const get = manifest.find((e) => e.method === "GET" && e.path === ROUTE);
+    assert.ok(get, `GET ${ROUTE} missing from routePermissionManifest`);
+    assert.deepEqual(get.permissions.map((p) => p.key), ["users.invite"], "the GET keeps the invite-selector permission");
+    assert.ok(registered.some((r) => r.method === "POST" && r.path === ROUTE), `POST ${ROUTE} not extracted from server.ts`);
+  });
+
+  it("validates the body at the edge (name 2..60, templateKey ∈ ROLE_TEMPLATE_KEYS) and resolves the org through the tenant guard", () => {
+    assert.match(
+      server,
+      /const CreateRoleFromTemplateSchema = z\.object\(\{\s*name: z\.string\(\)\.trim\(\)\.min\(2\)\.max\(60\),\s*templateKey: z\s*\.string\(\)\s*\.trim\(\)\s*\.refine\(\(value\): value is RoleKey => \(ROLE_TEMPLATE_KEYS as readonly string\[\]\)\.includes\(value\)/,
+      "body schema must pin name 2..60 and templateKey to the shared template keys"
+    );
+    assert.match(server, /import \{ ROLE_TEMPLATE_KEYS, type RoleKey \} from "@hotelos\/shared";/);
+    assert.match(server, /import \{ createRoleFromTemplate \} from "\.\/lib\/rbac-catalog\.js";/);
+    const handler = handlerSource(`app.post("${ROUTE}"`);
+    assert.match(handler, /async \(request, reply\) =>/);
+    assert.match(handler, /const body = parse\(CreateRoleFromTemplateSchema, request\.body\);/, "400 on a bad body before any DB access");
+    assert.match(
+      handler,
+      /const organizationId = await grantPropertyAccess\(request, params\.propertyId\);/,
+      "the organisation must be the property's (opaque 404 for foreign properties; platform admins re-pointed), never the caller's by default"
+    );
+    assert.match(
+      handler,
+      /createRoleFromTemplate\(\{\s*organizationId,\s*name: body\.name,\s*templateKey: body\.templateKey,\s*actorUserId: request\.userContext\.userId \?\? null\s*\}\)/,
+      "contract (B): createRoleFromTemplate({ organizationId, name, templateKey, actorUserId })"
+    );
+    assert.match(handler, /reply\.code\(201\);\s*return role;/, "a created role answers 201");
+    assert.doesNotMatch(handler, /prisma\./, "no inline Prisma: creation + template grants live in lib/rbac-catalog (one transaction, 409/400 typed there)");
+  });
+});

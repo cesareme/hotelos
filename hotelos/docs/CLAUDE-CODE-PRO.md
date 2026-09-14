@@ -403,7 +403,7 @@ añádela al sidebar Y al .discoverability-whitelist.json si es un dialog,
 y registra el lazy import en App.tsx."
 
 # Para datos en dev
-"Usa el seed: node packages/database/seeds/demo-pre-demo-enrichment.mjs"
+"Usa el seed: corepack pnpm --filter @hotelos/database db:seed:enrich"
 
 # Compliance — cuidado
 "El módulo compliance toca AEAT/VeriFactu real (sandbox). Antes de

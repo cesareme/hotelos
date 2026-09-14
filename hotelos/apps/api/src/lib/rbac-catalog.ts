@@ -1,30 +1,43 @@
-// RBAC catalog sync + role templates (Tanda 1).
+// RBAC catalog sync + role templates (Tanda 1, extended in Tanda 4 with
+// Role.templateKey).
 //
 // The permission catalog in Postgres (`permissions`) converges to PERMISSIONS
 // from @hotelos/shared, and organization roles receive the permissions of a
-// shared template (ROLE_PERMISSION_MAP). Three entry points:
+// shared template (ROLE_PERMISSION_MAP). Entry points:
 //
 //   - syncPermissionCatalog(): createMany(skipDuplicates) for missing keys and
 //     description refresh for changed ones. Keys present in the DB but absent
 //     from the catalog are reported as `stale` and NEVER deleted unless
 //     `prune: true` (which first removes their role_permissions — there is no
 //     FK between the RBAC tables, so orphans would otherwise linger). Because
-//     prune destroys those grants (today: 4 pms.reservation.* rows of the
-//     super-admin role), the result (`staleGrants`) and the boot/CLI warning
-//     say how many role_permissions rows would be lost.
+//     prune destroys those grants, the result (`staleGrants`) and the boot/CLI
+//     warning say how many role_permissions rows would be lost. Procedure:
+//     docs/runbooks/rbac-sync.md.
 //   - applyRoleTemplate(roleId, templateKey): additive, idempotent grant of a
 //     template to one Role row. Missing catalog keys are materialised first so
-//     the call is self-sufficient inside createTenant's transaction.
-//   - backfillTemplateRoles(): one-off repair for roles created before Tanda 1
-//     (e.g. the Faranda "Owner" with 0 role_permissions): every Role whose
-//     name matches a template (case/accent-insensitive, with Spanish synonyms)
-//     and that still has ZERO permissions gets the template. A role with at
-//     least one grant is considered custom and is never touched — except the
-//     PLATFORM roles (HotelOS staff, see isPlatformRoleName / the detection in
-//     backfillTemplateRoles), which are topped up to the FULL catalog (org +
-//     platform keys) on every run, additively: in production the super admin
-//     held 83/212 grants and answered 403 on 345 manifest routes because the
-//     backfill skipped it.
+//     the call is self-sufficient inside createTenant's transaction. It also
+//     persists `Role.templateKey` when the row has none yet (never rewrites a
+//     different value: a role is stamped once).
+//   - backfillTemplateRoles(): runs at boot. Every role that carries a
+//     templateKey is topped up to its template on EVERY run (additive,
+//     idempotent, +0 once converged) — this is what delivers a key added to
+//     PERMISSIONS to the existing Owners instead of answering 403 to the hotel
+//     owner until someone repairs the role by hand. Roles without templateKey
+//     are adopted by name (resolveTemplateKeyForRoleName, Spanish aliases)
+//     when they hold nothing outside that template; a role with grants that
+//     matches no template, or that carries hand-picked keys beyond it, is a
+//     custom role and is never touched. PLATFORM roles (HotelOS staff, see
+//     isPlatformRoleName / the detection in backfillTemplateRoles) are topped
+//     up to the FULL catalog (org + platform keys) and keep templateKey null:
+//     in production the super admin held 83/212 grants and answered 403 on
+//     345 manifest routes because the backfill skipped it.
+//   - createRoleFromTemplate() / provisionDefaultTemplateRoles(): create an
+//     organization role from a template (POST /backoffice/properties/:id/roles
+//     and createTenant), so the invite role selector has real options.
+//   - ensureRoleHasPermissions(): guard used before assigning a role to a user
+//     (invite / POST /users): a role with 0 grants gets its template applied,
+//     or the caller receives a 409 — an invitee with an empty role would get
+//     403 on every route in production (no demo permission union).
 //
 // server.ts calls syncPermissionCatalog() + backfillTemplateRoles() at boot;
 // apps/api/src/scripts/rbac-sync.ts exposes the same with --prune/--dry-run.
@@ -44,10 +57,18 @@ import {
   type RoleKey
 } from "@hotelos/shared";
 import { prisma, type Prisma } from "@hotelos/database";
-import { NotFoundError } from "./http-error.js";
+import { BadRequestError, ConflictError, NotFoundError } from "./http-error.js";
 
 /** Either the global client or a transaction client (createTenant / bootstrap run inside $transaction). */
 export type RbacDb = Prisma.TransactionClient | typeof prisma;
+
+/** Error code carried in `details` by the 409 of ensureRoleHasPermissions. */
+export const ROLE_WITHOUT_PERMISSIONS_CODE = "ROLE_WITHOUT_PERMISSIONS";
+/** Fixed user-facing message of that 409 (contract B, pinned by tests). */
+export const ROLE_WITHOUT_PERMISSIONS_MESSAGE = "El rol no tiene permisos; asígnale una plantilla antes de invitar";
+
+/** Max length of a role name created through createRoleFromTemplate. */
+export const ROLE_NAME_MAX_LENGTH = 80;
 
 export type CatalogSyncResult = {
   created: number;
@@ -162,13 +183,14 @@ export async function syncPermissionCatalog(options: CatalogSyncOptions = {}): P
 // Templates
 // ---------------------------------------------------------------------------
 
-function isRoleKey(value: string): value is RoleKey {
+/** True when `value` is one of the shared template keys (ROLE_PERMISSION_MAP). */
+export function isRoleTemplateKey(value: string): value is RoleKey {
   return Object.prototype.hasOwnProperty.call(ROLE_PERMISSION_MAP, value);
 }
 
 /** Template keys for a template, with the platform scope stripped as a hard guarantee. */
 export function templatePermissionKeys(templateKey: string): PermissionKey[] {
-  if (!isRoleKey(templateKey)) {
+  if (!isRoleTemplateKey(templateKey)) {
     throw new Error(`Unknown role template "${templateKey}". Known: ${ROLE_TEMPLATE_KEYS.join(", ")}.`);
   }
   const keys = ROLE_PERMISSION_MAP[templateKey].filter((key) => !isPlatformPermission(key));
@@ -183,23 +205,45 @@ export type ApplyRoleTemplateOptions = {
   dryRun?: boolean;
 };
 
-/** Grant a role the permissions of a shared template (e.g. "owner"); additive and idempotent. */
+export type ApplyRoleTemplateResult = {
+  /** role_permissions rows created (or, in dry-run, that would be created). */
+  granted: number;
+  /** Role.templateKey was null and has been (or, in dry-run, would be) set to the template. */
+  templateKeySet: boolean;
+};
+
+/**
+ * Grant a role the permissions of a shared template (e.g. "owner"); additive
+ * and idempotent. Also stamps Role.templateKey when the row has none yet, so
+ * the boot-time backfill keeps topping the role up as the catalog grows.
+ */
 export async function applyRoleTemplate(
   roleId: string,
   templateKey: string,
   options: ApplyRoleTemplateOptions = {}
-): Promise<{ granted: number }> {
-  return grantKeysToRole(roleId, templatePermissionKeys(templateKey), options);
+): Promise<ApplyRoleTemplateResult> {
+  const keys = templatePermissionKeys(templateKey);
+  const db = options.db ?? prisma;
+  const grant = await grantKeysToRole(roleId, keys, options);
+  const templateKeySet = grant.currentTemplateKey === null;
+  if (templateKeySet && !options.dryRun) {
+    // Only when still null: a role created from another template keeps its
+    // own key (the caller escalated it on purpose; the stamp is not rewritten).
+    await db.role.updateMany({ where: { id: roleId, templateKey: null }, data: { templateKey } });
+  }
+  return { granted: grant.granted, templateKeySet };
 }
 
 /**
  * Grant a PLATFORM role every catalog key (org + platform scope). Additive and
  * idempotent: nothing is ever removed. Only backfillTemplateRoles calls this,
  * after its conservative platform-role detection — never wire it to a tenant
- * endpoint, a platform key means cross-tenant access.
+ * endpoint, a platform key means cross-tenant access. Platform roles keep
+ * templateKey null: "the full catalog" is not an organization template.
  */
 export async function applyFullCatalog(roleId: string, options: ApplyRoleTemplateOptions = {}): Promise<{ granted: number }> {
-  return grantKeysToRole(roleId, Object.keys(PERMISSIONS) as PermissionKey[], options);
+  const grant = await grantKeysToRole(roleId, Object.keys(PERMISSIONS) as PermissionKey[], options);
+  return { granted: grant.granted };
 }
 
 /** Shared grant primitive: materialise missing catalog keys, then createMany(skipDuplicates) the diff. */
@@ -207,10 +251,10 @@ async function grantKeysToRole(
   roleId: string,
   keys: PermissionKey[],
   options: ApplyRoleTemplateOptions
-): Promise<{ granted: number }> {
+): Promise<{ granted: number; currentTemplateKey: string | null }> {
   const db = options.db ?? prisma;
 
-  const role = await db.role.findUnique({ where: { id: roleId }, select: { id: true } });
+  const role = await db.role.findUnique({ where: { id: roleId }, select: { id: true, templateKey: true } });
   if (!role) {
     throw new NotFoundError("Rol no encontrado.");
   }
@@ -234,10 +278,10 @@ async function grantKeysToRole(
   const toGrant = permissions.filter((row) => !alreadyGranted.has(row.id));
   if (options.dryRun) {
     // Keys not yet in the catalog would be created and granted by a real run.
-    return { granted: toGrant.length + missingKeys.length };
+    return { granted: toGrant.length + missingKeys.length, currentTemplateKey: role.templateKey };
   }
   if (toGrant.length === 0) {
-    return { granted: 0 };
+    return { granted: 0, currentTemplateKey: role.templateKey };
   }
   // RolePermission.id defaults to cuid() in the schema; the unique
   // [roleId, permissionId] + skipDuplicates makes concurrent runs converge.
@@ -245,7 +289,234 @@ async function grantKeysToRole(
     data: toGrant.map((row) => ({ roleId, permissionId: row.id })),
     skipDuplicates: true
   });
-  return { granted: result.count };
+  return { granted: result.count, currentTemplateKey: role.templateKey };
+}
+
+// ---------------------------------------------------------------------------
+// Role creation from a template
+// ---------------------------------------------------------------------------
+
+/** Run `fn` inside a transaction when `db` is the root client; reuse it when it already is a transaction client. */
+async function runInTransaction<T>(db: RbacDb, fn: (tx: RbacDb) => Promise<T>): Promise<T> {
+  const client = db as { $transaction?: (callback: (tx: Prisma.TransactionClient) => Promise<T>) => Promise<T> };
+  if (typeof client.$transaction === "function") {
+    return client.$transaction((tx) => fn(tx));
+  }
+  return fn(db);
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "P2002";
+}
+
+export type CreateRoleFromTemplateInput = {
+  organizationId: string;
+  name: string;
+  templateKey: string;
+  /** Who created it (audit trail); null for system provisioning. */
+  actorUserId: string | null;
+};
+
+export type CreateRoleFromTemplateResult = {
+  id: string;
+  name: string;
+  templateKey: string;
+  permissionsCount: number;
+};
+
+export type CreateRoleFromTemplateOptions = {
+  db?: RbacDb;
+  /** Skip the audit event (tests with an injected store). */
+  audit?: boolean;
+};
+
+/**
+ * Create an organization role from a shared template (contract B):
+ * 400 when the template does not exist or the name is empty, 409 when the
+ * organization already has a role with that name (case-insensitive: "Manager"
+ * and "manager" would confuse the invite selector), otherwise the Role row is
+ * created with templateKey and the template applied in the same transaction.
+ * Permission gating (roles.manage) belongs to the route, not here.
+ */
+export async function createRoleFromTemplate(
+  input: CreateRoleFromTemplateInput,
+  options: CreateRoleFromTemplateOptions = {}
+): Promise<CreateRoleFromTemplateResult> {
+  const name = (input.name ?? "").trim();
+  if (!name) {
+    throw new BadRequestError("El nombre del rol es obligatorio.");
+  }
+  if (name.length > ROLE_NAME_MAX_LENGTH) {
+    throw new BadRequestError(`El nombre del rol no puede superar ${ROLE_NAME_MAX_LENGTH} caracteres.`);
+  }
+  if (typeof input.templateKey !== "string" || !isRoleTemplateKey(input.templateKey)) {
+    throw new BadRequestError(
+      `Plantilla de rol desconocida: "${String(input.templateKey)}". Disponibles: ${ROLE_TEMPLATE_KEYS.join(", ")}.`
+    );
+  }
+  const templateKey: RoleKey = input.templateKey;
+  const db = options.db ?? prisma;
+
+  const duplicate = await db.role.findFirst({
+    where: { organizationId: input.organizationId, name: { equals: name, mode: "insensitive" } },
+    select: { id: true }
+  });
+  if (duplicate) {
+    throw new ConflictError("Ya existe un rol con ese nombre en la organización.");
+  }
+
+  const created = await runInTransaction(db, async (tx) => {
+    let role: { id: string; name: string; templateKey: string | null };
+    try {
+      role = await tx.role.create({
+        data: { organizationId: input.organizationId, name, templateKey },
+        select: { id: true, name: true, templateKey: true }
+      });
+    } catch (error) {
+      // Lost the race against a concurrent create with the same name: same 409
+      // as the pre-check instead of an opaque P2002.
+      if (isUniqueViolation(error)) {
+        throw new ConflictError("Ya existe un rol con ese nombre en la organización.");
+      }
+      throw error;
+    }
+    const applied = await applyRoleTemplate(role.id, templateKey, { db: tx });
+    return { role, granted: applied.granted };
+  });
+
+  const permissionsCount = await db.rolePermission.count({ where: { roleId: created.role.id } });
+
+  if (options.audit !== false) {
+    // Dynamic import: audit.service pulls the accounting/invoicing graph, which
+    // must not become a static dependency of lib/ (module cycle at boot).
+    try {
+      const { recordAuditEvent } = await import("../modules/audit/audit.service.js");
+      recordAuditEvent({
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId ?? undefined,
+        actorType: input.actorUserId ? "user" : "system",
+        action: "ROLE_CREATED_FROM_TEMPLATE",
+        entityType: "role",
+        entityId: created.role.id,
+        afterJson: { name, templateKey, permissionsCount }
+      });
+    } catch (error) {
+      // The role exists and is usable; a missing audit row must not undo it.
+      console.warn("[rbac] audit event for createRoleFromTemplate failed", {
+        roleId: created.role.id,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  return { id: created.role.id, name: created.role.name, templateKey, permissionsCount };
+}
+
+/**
+ * Template roles every new tenant gets besides "Owner", so the invite role
+ * selector offers real options from day one (no users attached). Names are
+ * what the hotel sees; each one also resolves through
+ * resolveTemplateKeyForRoleName, so a row that lost its templateKey would be
+ * adopted again by the boot backfill.
+ */
+export const DEFAULT_TENANT_ROLE_TEMPLATES: ReadonlyArray<{ name: string; templateKey: RoleKey }> = [
+  { name: "Manager", templateKey: "manager" },
+  { name: "Recepción", templateKey: "receptionist" },
+  { name: "Housekeeping", templateKey: "housekeeper" }
+];
+
+export type ProvisionedTemplateRole = {
+  id: string;
+  name: string;
+  templateKey: string;
+  permissionsCount: number;
+  /** false when the role already existed (its template was still topped up). */
+  created: boolean;
+};
+
+/**
+ * Idempotently create the DEFAULT_TENANT_ROLE_TEMPLATES roles of an
+ * organization and apply their templates (createTenant; also safe to re-run on
+ * an existing tenant). Runs on the given client — pass the transaction client
+ * from createTenant so a failure rolls the whole tenant back.
+ */
+export async function provisionDefaultTemplateRoles(
+  organizationId: string,
+  options: { db?: RbacDb } = {}
+): Promise<ProvisionedTemplateRole[]> {
+  const db = options.db ?? prisma;
+  const provisioned: ProvisionedTemplateRole[] = [];
+  for (const template of DEFAULT_TENANT_ROLE_TEMPLATES) {
+    const existing = await db.role.findUnique({
+      where: { organizationId_name: { organizationId, name: template.name } },
+      select: { id: true, name: true, templateKey: true }
+    });
+    const role =
+      existing ??
+      (await db.role.create({
+        data: { organizationId, name: template.name, templateKey: template.templateKey },
+        select: { id: true, name: true, templateKey: true }
+      }));
+    await applyRoleTemplate(role.id, template.templateKey, { db });
+    const permissionsCount = await db.rolePermission.count({ where: { roleId: role.id } });
+    provisioned.push({
+      id: role.id,
+      name: role.name,
+      templateKey: role.templateKey ?? template.templateKey,
+      permissionsCount,
+      created: existing === null
+    });
+  }
+  return provisioned;
+}
+
+export type EnsureRoleHasPermissionsResult = {
+  /** true when the template had to be applied in this call. */
+  applied: boolean;
+  permissionsCount: number;
+  /** Template the role follows (stored or resolved by name); null for a custom role with grants. */
+  templateKey: string | null;
+};
+
+/**
+ * Guard before assigning a role to a user (contract B). A role with at least
+ * one grant is returned as is. A role with ZERO grants gets its template
+ * (Role.templateKey, else the name-resolved template) applied on the spot;
+ * when no template can be determined the caller gets a 409 — assigning it
+ * would create a user who is 403 everywhere in production.
+ */
+export async function ensureRoleHasPermissions(
+  roleId: string,
+  options: { db?: RbacDb } = {}
+): Promise<EnsureRoleHasPermissionsResult> {
+  const db = options.db ?? prisma;
+  const role = await db.role.findUnique({ where: { id: roleId }, select: { id: true, name: true, templateKey: true } });
+  if (!role) {
+    throw new NotFoundError("Rol no encontrado.");
+  }
+  const current = await db.rolePermission.count({ where: { roleId } });
+  if (current > 0) {
+    return { applied: false, permissionsCount: current, templateKey: role.templateKey };
+  }
+  const templateKey =
+    role.templateKey && isRoleTemplateKey(role.templateKey) ? role.templateKey : resolveTemplateKeyForRoleName(role.name);
+  if (!templateKey) {
+    throw roleWithoutPermissionsError(role.id, role.name);
+  }
+  await applyRoleTemplate(roleId, templateKey, { db });
+  const permissionsCount = await db.rolePermission.count({ where: { roleId } });
+  if (permissionsCount === 0) {
+    // Template with no org-scoped key (cannot happen with the shared map, but
+    // stay honest: never report a filled role that is still empty).
+    throw roleWithoutPermissionsError(role.id, role.name);
+  }
+  return { applied: true, permissionsCount, templateKey };
+}
+
+function roleWithoutPermissionsError(roleId: string, roleName: string): ConflictError {
+  const error = new ConflictError(ROLE_WITHOUT_PERMISSIONS_MESSAGE);
+  error.details = { code: ROLE_WITHOUT_PERMISSIONS_CODE, roleId, roleName, templates: ROLE_TEMPLATE_KEYS };
+  return error;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,11 +610,22 @@ export type BackfillTemplateRolesOptions = {
 };
 
 export type BackfillTemplateRolesResult = {
+  /** Template roles that received at least one new grant in this run (adopted or topped up). */
   rolesFilled: number;
-  /** "<name> (<organizationId>) ← <template>: +<granted>" per filled role. */
+  /** "<name> (<organizationId>) ← <template>: +<granted>" per role in rolesFilled. */
   roles: string[];
-  /** Empty roles whose name matches no template (left untouched). */
+  /** EMPTY roles whose name matches no template (0 permissions, left untouched — the dangerous case). */
   unmatched?: string[];
+  /** Org roles following a template after this run (stored templateKey or adopted by name). */
+  templateRoles?: number;
+  /** Subset of templateRoles that gained grants in this run (0 once converged). */
+  templateRolesToppedUp?: number;
+  /** Roles whose templateKey was null and has been (dry-run: would be) stamped from the name. */
+  templateKeysAssigned?: number;
+  /** "<name> (<organizationId>) → <template>" per stamped role. */
+  templateKeysAssignedRoles?: string[];
+  /** Roles with grants and no template (name unmatched, or keys beyond the template): never touched. */
+  customRoles?: string[];
   /** Platform roles that received at least one new grant in this run (0 once converged). */
   platformRolesToppedUp?: number;
   /** "<name> (<organizationId>) ← full catalog: +<granted>" per detected platform role. */
@@ -351,9 +633,17 @@ export type BackfillTemplateRolesResult = {
 };
 
 /**
- * Fill template-named org roles that still have zero permissions (one-off
- * repair for tenants created before Tanda 1) and top up the platform roles to
- * the full catalog.
+ * Boot-time convergence of organization roles to their templates:
+ *   1. roles with Role.templateKey → applyRoleTemplate on EVERY run (additive
+ *      top-up, +0 once converged) so catalog growth reaches existing tenants;
+ *   2. roles without templateKey whose name resolves to a template and that
+ *      hold nothing outside it → adopted: templateKey stamped + topped up
+ *      (the Faranda "Owner" rows created before the column existed);
+ *   3. roles with grants that match no template, or that carry keys beyond
+ *      the template their name suggests → custom, never touched;
+ *   4. empty roles matching no template → reported in `unmatched` (a user
+ *      assigned to one is 403 everywhere; ensureRoleHasPermissions blocks it);
+ *   5. platform roles → full catalog (see below), templateKey stays null.
  *
  * Platform-role detection is deliberately conservative, because a platform key
  * (admin.tenants.manage) grants cross-tenant access:
@@ -362,25 +652,61 @@ export type BackfillTemplateRolesResult = {
  *       already owns a platform-granted role (the HotelOS org) — never in a
  *       tenant org, so a hotel creating a "Super Admin" role keeps getting the
  *       org-scoped `admin` template and cannot escalate.
- * The top-up is additive and idempotent: a converged role reports +0.
+ * Every write is additive and idempotent: a converged role reports +0.
  */
 export async function backfillTemplateRoles(options: BackfillTemplateRolesOptions = {}): Promise<BackfillTemplateRolesResult> {
   const db = options.db ?? prisma;
-  const roles = await db.role.findMany({ select: { id: true, name: true, organizationId: true }, orderBy: { id: "asc" } });
+  const dryRun = options.dryRun === true;
+  const roles = await db.role.findMany({
+    select: { id: true, name: true, organizationId: true, templateKey: true },
+    orderBy: { id: "asc" }
+  });
   if (roles.length === 0) {
-    return { rolesFilled: 0, roles: [], unmatched: [], platformRolesToppedUp: 0, platformRoles: [] };
+    return {
+      rolesFilled: 0,
+      roles: [],
+      unmatched: [],
+      templateRoles: 0,
+      templateRolesToppedUp: 0,
+      templateKeysAssigned: 0,
+      templateKeysAssignedRoles: [],
+      customRoles: [],
+      platformRolesToppedUp: 0,
+      platformRoles: []
+    };
   }
-  const granted = await db.rolePermission.groupBy({ by: ["roleId"], _count: { _all: true } });
-  const rolesWithGrants = new Set(granted.map((row) => row.roleId));
+
+  // One pass over role_permissions + permissions: the keys each role holds.
+  const permissions = await db.permission.findMany({ select: { id: true, key: true } });
+  const keyById = new Map(permissions.map((row) => [row.id, row.key]));
+  const grants = await db.rolePermission.findMany({ select: { roleId: true, permissionId: true } });
+  const keysByRole = new Map<string, Set<string>>();
+  for (const grant of grants) {
+    const key = keyById.get(grant.permissionId);
+    let set = keysByRole.get(grant.roleId);
+    if (!set) {
+      set = new Set<string>();
+      keysByRole.set(grant.roleId, set);
+    }
+    // A grant pointing at a deleted permission row still counts as "has grants"
+    // (the role is not empty) but contributes no key.
+    if (key !== undefined) set.add(key);
+  }
+  const grantCountByRole = new Map<string, number>();
+  for (const grant of grants) {
+    grantCountByRole.set(grant.roleId, (grantCountByRole.get(grant.roleId) ?? 0) + 1);
+  }
 
   // (a) roles holding a platform key today; (b) the organizations they live in.
-  const platformPermissions = await db.permission.findMany({ select: { id: true, key: true } });
-  const platformPermissionIds = platformPermissions.filter((row) => isPlatformPermission(row.key)).map((row) => row.id);
-  const platformGrantRows =
-    platformPermissionIds.length > 0
-      ? await db.rolePermission.findMany({ where: { permissionId: { in: platformPermissionIds } }, select: { roleId: true } })
-      : [];
-  const rolesWithPlatformGrant = new Set(platformGrantRows.map((row) => row.roleId));
+  const rolesWithPlatformGrant = new Set<string>();
+  for (const [roleId, keys] of keysByRole) {
+    for (const key of keys) {
+      if (isPlatformPermission(key)) {
+        rolesWithPlatformGrant.add(roleId);
+        break;
+      }
+    }
+  }
   const platformOrganizations = new Set(
     roles.filter((role) => rolesWithPlatformGrant.has(role.id)).map((role) => role.organizationId)
   );
@@ -389,32 +715,97 @@ export async function backfillTemplateRoles(options: BackfillTemplateRolesOption
 
   const filled: string[] = [];
   const unmatched: string[] = [];
+  const customRoles: string[] = [];
+  const templateKeysAssignedRoles: string[] = [];
   const platformRoles: string[] = [];
+  let templateRoles = 0;
+  let templateRolesToppedUp = 0;
   let platformRolesToppedUp = 0;
+
   for (const role of roles) {
+    const label = `${role.name} (${role.organizationId})`;
     if (isPlatformRole(role)) {
-      const result = await applyFullCatalog(role.id, { db, dryRun: options.dryRun });
-      platformRoles.push(`${role.name} (${role.organizationId}) ← full catalog: +${result.granted}`);
+      const result = await applyFullCatalog(role.id, { db, dryRun });
+      platformRoles.push(`${label} ← full catalog: +${result.granted}`);
       if (result.granted > 0) platformRolesToppedUp += 1;
       continue;
     }
-    if (rolesWithGrants.has(role.id)) continue; // custom or already provisioned: never touched
-    const templateKey = resolveTemplateKeyForRoleName(role.name);
-    if (!templateKey) {
-      unmatched.push(`${role.name} (${role.organizationId})`);
-      continue;
+
+    const grantCount = grantCountByRole.get(role.id) ?? 0;
+    const heldKeys = keysByRole.get(role.id) ?? new Set<string>();
+    let templateKey: RoleKey | undefined;
+    let adoptedByName = false;
+
+    if (role.templateKey !== null) {
+      if (!isRoleTemplateKey(role.templateKey)) {
+        // A hand-edited template_key no template knows: do not abort the boot
+        // over one row, but say it loudly — the role will never be topped up.
+        console.warn(`[rbac] role ${label} carries unknown template_key "${role.templateKey}" — skipped (fix the row or set it to NULL)`);
+        (grantCount > 0 ? customRoles : unmatched).push(`${label} [template_key "${role.templateKey}" unknown]`);
+        continue;
+      }
+      templateKey = role.templateKey;
+    } else {
+      const byName = resolveTemplateKeyForRoleName(role.name);
+      if (!byName) {
+        (grantCount > 0 ? customRoles : unmatched).push(label);
+        continue;
+      }
+      if (grantCount > 0) {
+        // Provisioned before the column existed (e.g. the 4 Owners) or a custom
+        // role that happens to carry a template-like name: adopt only when it
+        // holds nothing outside the template — extra keys mean hand-crafted.
+        const template = new Set<string>(templatePermissionKeys(byName));
+        const extra = Array.from(heldKeys).filter((key) => !template.has(key));
+        if (extra.length > 0) {
+          customRoles.push(`${label} [${extra.length} key(s) outside "${byName}"]`);
+          continue;
+        }
+      }
+      templateKey = byName;
+      adoptedByName = true;
     }
-    const result = await applyRoleTemplate(role.id, templateKey, { db, dryRun: options.dryRun });
+
+    const result = await applyRoleTemplate(role.id, templateKey, { db, dryRun });
+    templateRoles += 1;
+    if (adoptedByName && result.templateKeySet) {
+      templateKeysAssignedRoles.push(`${label} → ${templateKey}`);
+    }
     if (result.granted > 0) {
-      filled.push(`${role.name} (${role.organizationId}) ← ${templateKey}: +${result.granted}`);
+      templateRolesToppedUp += 1;
+      filled.push(`${label} ← ${templateKey}: +${result.granted}`);
     }
+  }
+
+  const suffix = dryRun ? " [dry-run]" : "";
+  console.log(
+    `[rbac] template roles: ${templateRoles} following a template (${templateRolesToppedUp} topped up${suffix}), ` +
+      `${templateKeysAssignedRoles.length} template_key stamped by name, ${customRoles.length} custom (untouched), ` +
+      `${unmatched.length} EMPTY without template` +
+      (templateKeysAssignedRoles.length > 0 ? ` (stamped: ${templateKeysAssignedRoles.join(", ")})` : "")
+  );
+  if (unmatched.length > 0) {
+    console.warn(
+      `[rbac] ${unmatched.length} role(s) hold 0 permissions and match no template — a user assigned to them is 403 everywhere: ${unmatched.join(" · ")}`
+    );
   }
   if (platformRoles.length > 0) {
     console.log(
-      `[rbac] platform roles topped up: ${platformRolesToppedUp} of ${platformRoles.length} platform role(s)${options.dryRun ? " [dry-run]" : ""} (${platformRoles.join(", ")})`
+      `[rbac] platform roles topped up: ${platformRolesToppedUp} of ${platformRoles.length} platform role(s)${suffix} (${platformRoles.join(", ")})`
     );
   }
-  return { rolesFilled: filled.length, roles: filled, unmatched, platformRolesToppedUp, platformRoles };
+  return {
+    rolesFilled: filled.length,
+    roles: filled,
+    unmatched,
+    templateRoles,
+    templateRolesToppedUp,
+    templateKeysAssigned: templateKeysAssignedRoles.length,
+    templateKeysAssignedRoles,
+    customRoles,
+    platformRolesToppedUp,
+    platformRoles
+  };
 }
 
 /** Sanity check exposed for tests/CLI: no template may carry a platform key. */

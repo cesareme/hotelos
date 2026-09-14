@@ -1,31 +1,35 @@
 # Deployment
 
-## Environments
+> **OBSOLETO (Tanda 4 · 2026-09-14).** Este documento describía un despliegue
+> genérico (imágenes en `infra/docker`, BullMQ/Temporal, `npm run`) que nunca se
+> correspondió con el código. La guía vigente y única es
+> **[`deploy/README-INSTALL.md`](../deploy/README-INSTALL.md)**.
 
-- development
-- staging
-- production
+## Resumen vigente
 
-Required environment variables are listed in `.env.example`.
+| Tema | Dónde |
+|---|---|
+| Instalación desde cero (Ubuntu 24.04, nativa) | `deploy/scripts/install-from-scratch.sh --demo|--real` |
+| Actualización idempotente | `deploy/scripts/deploy.sh` (`--pull`, `--with-backfills`, `--skip-X`, `--only-X`, `--dry-run`) |
+| Smoke post-deploy | `deploy/scripts/smoke.sh` |
+| Adopción de un VPS existente | `deploy/scripts/vps-inventory.sh` + `install-from-scratch.sh --adopt` |
+| Runtime | tsx (`node --import tsx src/server.ts`); `pnpm install --frozen-lockfile` sin `--prod` |
+| Esquema | `pnpm db:adopt-baseline -- --apply` → `pnpm db:migrate:deploy` → `pnpm db:drift:check` (nunca `db push`) |
+| Worker | pg-boss (`webhooks.deliver`), `RUN_SCHEDULERS=false`; los schedulers viven en el API |
+| CI | `.github/workflows/ci.yml` en la **raíz git** (typecheck:all, contract tests, integración con `migrate deploy`, fresh-install + smoke, build web, imágenes pnpm) |
+| Deploy por SSH | `.github/workflows/deploy.yml` (raíz git) → `deploy.sh --role production-native --pull --yes` |
 
-## Backend
+## Orden de instalación y datos
 
-1. Build Docker images for `api`, `ai-gateway`, and `worker`.
-2. Provision PostgreSQL and Redis in an EU region.
-3. Configure S3-compatible object storage.
-4. Store secrets in the cloud secret manager.
-5. Run Prisma migrations.
-6. Deploy API.
-7. Deploy AI Gateway.
-8. Deploy worker.
-9. Configure HTTPS.
-10. Configure OpenTelemetry, Sentry, Prometheus, and Grafana.
-11. Configure scheduled jobs.
-12. Configure daily backups and restore tests.
+1. `corepack pnpm install --frozen-lockfile` → `pnpm db:generate` → `pnpm db:adopt-baseline -- --apply` → `pnpm db:migrate:deploy` → `pnpm db:drift:check`.
+2. Demo/staging: `cd packages/database && node --import tsx prisma/seed.ts` (equivale a `pnpm --filter @hotelos/database db:seed` con `DATABASE_URL` exportada) y después los seeds `db:seed:commercial`, `db:seed:snapshots`, `db:seed:compliance`, `db:seed:operations`, `db:seed:cancellation`, `db:seed:allotments`, `db:seed:fnb`. Nunca en un tenant real.
+3. Arrancar API (`RUN_SCHEDULERS=true`) y worker (`RUN_SCHEDULERS=false`).
+4. Smoke: `deploy/scripts/smoke.sh` (HTTP real) y `pnpm smoke:demo` (contrato estático del preview).
 
 ## Worker Jobs
 
-The worker runs background jobs through BullMQ or Temporal in production and records attempts in `worker_job_runs`.
+El worker (`apps/worker`, pg-boss) registra cada intento en `worker_job_runs`.
+Responsabilidades documentadas (algunas siguen en el API como schedulers in-process):
 
 - `ses_hospedajes.submit`: submit queued guest register records, write accepted/rejected/failed events, and retry transport failures.
 - `invoice.compliance.check`: verify issued invoices have VERI*FACTU hash and QR placeholders, then create B2B e-invoice envelopes when enabled.
@@ -34,58 +38,31 @@ The worker runs background jobs through BullMQ or Temporal in production and rec
 - `bank.reconciliation.match`: suggest payment, folio, invoice, and supplier bill matches without posting journals.
 - `retention.delete_expired`: delete only records whose retention date has elapsed and which are not under legal hold.
 - `reports.daily_briefing`: generate owner daily briefing text from live dashboard metrics.
+- `webhooks.deliver`: cola pg-boss real del worker (entrega de webhooks salientes).
 
-## Mobile
-
-EAS config is in `apps/mobile/eas.json`.
-
-Production builds:
-
-```sh
-eas build --platform ios --profile production
-eas build --platform android --profile production
-```
-
-Submissions:
-
-```sh
-eas submit --platform ios --profile production
-eas submit --platform android --profile production
-```
-
-## Release Gate
-
-Before production:
+## Release Gate (observabilidad)
 
 - AI Gateway has no direct DB imports.
 - `/health` returns service name, timestamp, dependency state, and telemetry targets for API, AI Gateway, and worker.
 - `x-correlation-id` is accepted at the edge and echoed so API, AI Gateway, worker events, audit records, and provider calls can be joined.
-- ID scan storage regression test passes.
-- Issued invoice immutability test passes.
-- Room blocking prevents assignment.
-- SES queue and compliance inbox have audit trails.
-- Database restore has been tested.
-- Crash reporting and metrics are visible.
+- ID scan storage regression test passes; issued invoice immutability test passes.
+- Database restore has been tested; crash reporting and metrics are visible.
 
-## Deploy Readiness Commands
+## Móvil (sin cambios)
+
+La configuración EAS está en `apps/mobile/eas.json`.
 
 ```sh
-npm run validate:env -- .env.example
-npm run test
-npm run typecheck
-npm run backup:check
-docker compose -f infra/docker/docker-compose.yml up --build
+eas build --platform ios --profile production
+eas build --platform android --profile production
+eas submit --platform ios --profile production
+eas submit --platform android --profile production
 ```
 
-The conventional CI workflow is in `.github/workflows/ci.yml`. It validates env shape, runs the no-dependency tests, runs workspace typechecks once dependencies are installed, and builds API, AI Gateway, and worker Docker images.
+## Puerta de salida a producción
 
-## Migration Order
-
-1. Deploy PostgreSQL and Redis.
-2. Apply Prisma migrations.
-3. For demo and staging environments, run `npm --workspace @hotelos/database run db:seed`.
-4. Start API.
-5. Start worker.
-6. Start AI Gateway.
-7. Run smoke tests against `/health`, dashboard, PMS list, AI command parsing, and `npm run smoke:demo`.
-8. Run backup restore rehearsal before accepting production traffic.
+- `pnpm validate:env <env>` verde para el rol correspondiente.
+- `pnpm test`, `pnpm typecheck:all`, `pnpm test:integration` verdes.
+- `pnpm db:install:check` (instalación desde cero en BD temporal) verde.
+- `deploy/scripts/smoke.sh` verde contra el entorno desplegado.
+- Ensayo de restauración de backup realizado (`scripts/test-backup-restore-cycle.sh`).

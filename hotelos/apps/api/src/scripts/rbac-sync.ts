@@ -1,8 +1,15 @@
-// RBAC catalog sync CLI (Tanda 1).
+// RBAC catalog sync CLI (Tanda 1, extended in Tanda 4).
 //
 // Runs the same two steps the API executes at boot (lib/rbac-catalog.ts):
 //   1. syncPermissionCatalog  → `permissions` converges to PERMISSIONS
-//   2. backfillTemplateRoles  → template-named roles with 0 grants get filled
+//   2. backfillTemplateRoles  → roles with Role.templateKey are topped up to
+//                               their template (additive, +0 once converged);
+//                               roles without templateKey whose name matches a
+//                               template and that hold nothing outside it are
+//                               adopted (template_key stamped); platform roles
+//                               get the full catalog; custom roles are never
+//                               touched; EMPTY roles with no template are
+//                               listed (a user assigned to one is 403 everywhere).
 //
 // Usage (from apps/api, DATABASE_URL in env or ../../.env):
 //   pnpm --filter @hotelos/api rbac:sync              # sync + backfill
@@ -10,6 +17,12 @@
 //   pnpm --filter @hotelos/api rbac:sync -- --prune   # also delete stale keys
 //                                                     # (and their role_permissions)
 //   pnpm --filter @hotelos/api rbac:sync -- --json    # machine-readable output
+//
+// --prune is DESTRUCTIVE (it deletes the stale permission rows AND every
+// role_permissions row pointing at them) and is never part of deploy.sh. The
+// mandatory order — remove the keys from the seed → --dry-run → DB backup →
+// --prune → verify the catalog count — lives in docs/runbooks/rbac-sync.md.
+// Until the seed stops recreating the stale keys, a re-seed undoes the prune.
 //
 // Exit codes: 0 ok · 1 failure (DB unreachable, template invariant broken) ·
 // 2 unknown flag.
@@ -72,25 +85,52 @@ export async function runRbacSync(flags: RbacSyncFlags): Promise<RbacSyncSummary
   };
 }
 
-function printHuman(summary: RbacSyncSummary): void {
+/** Human-readable report (exported for tests; `--json` prints the summary instead). */
+export function formatHuman(summary: RbacSyncSummary): string {
   const mode = summary.dryRun ? "DRY-RUN (no writes)" : "APPLIED";
+  const { sync, backfill } = summary;
+  const staleGrants = sync.staleGrants ?? 0;
+  const staleGrantRoles = sync.staleGrantRoles ?? 0;
   const lines = [
     `[rbac:sync] ${mode}${summary.prune ? " + prune" : ""} · ${summary.durationMs} ms`,
     `  catalog: ${summary.catalogKeys} keys (${summary.orgKeys} org + ${summary.platformKeys} platform)`,
-    `  permissions: +${summary.sync.created} created · ${summary.sync.updated} descriptions updated · ${summary.sync.stale.length} stale${
-      summary.sync.pruned ? ` · ${summary.sync.pruned} pruned` : ""
-    }`
+    `  permissions: +${sync.created} created · ${sync.updated} descriptions updated · ${sync.stale.length} stale`
   ];
-  if (summary.sync.stale.length > 0) {
-    lines.push(`  stale keys: ${summary.sync.stale.join(", ")}${summary.prune ? "" : " (kept; use --prune to delete)"}`);
+  if (sync.stale.length > 0) {
+    lines.push(`  stale keys (${sync.stale.length}): ${sync.stale.join(", ")}`);
+    lines.push(`    grants on stale keys: ${staleGrants} role_permissions row(s) on ${staleGrantRoles} role(s)`);
+    if (summary.prune) {
+      lines.push(
+        summary.dryRun
+          ? `    --prune WOULD delete ${sync.pruned ?? 0} key(s) and ${sync.prunedGrants ?? 0} role_permissions row(s) on ${staleGrantRoles} role(s)`
+          : `    pruned: ${sync.pruned ?? 0} key(s) · ${sync.prunedGrants ?? 0} role_permissions row(s) on ${staleGrantRoles} role(s) deleted`
+      );
+    } else {
+      lines.push(
+        `    kept — \`--prune\` deletes the keys AND those grants (backup first; procedure: docs/runbooks/rbac-sync.md)`
+      );
+    }
   }
-  lines.push(`  roles filled: ${summary.backfill.rolesFilled}`);
-  for (const role of summary.backfill.roles) lines.push(`    ${role}`);
-  if (summary.backfill.unmatched && summary.backfill.unmatched.length > 0) {
-    lines.push(`  empty roles with no template match (untouched): ${summary.backfill.unmatched.join(" · ")}`);
+  lines.push(
+    `  template roles: ${backfill.templateRoles ?? 0} following a template · ${backfill.templateRolesToppedUp ?? 0} topped up · ` +
+      `${backfill.templateKeysAssigned ?? 0} template_key stamped by name · ${(backfill.customRoles ?? []).length} custom (untouched) · ` +
+      `${(backfill.unmatched ?? []).length} EMPTY without template`
+  );
+  for (const role of backfill.templateKeysAssignedRoles ?? []) lines.push(`    stamped: ${role}`);
+  for (const role of backfill.roles) lines.push(`    topped up: ${role}`);
+  for (const role of backfill.customRoles ?? []) lines.push(`    custom: ${role}`);
+  if (backfill.unmatched && backfill.unmatched.length > 0) {
+    lines.push(`    EMPTY without template (assign a template before inviting; 0 permissions): ${backfill.unmatched.join(" · ")}`);
   }
+  const platformRoles = backfill.platformRoles ?? [];
+  lines.push(`  platform roles: ${platformRoles.length} (${backfill.platformRolesToppedUp ?? 0} topped up)`);
+  for (const role of platformRoles) lines.push(`    ${role}`);
   lines.push(`  templates: ${Object.entries(summary.templates).map(([key, size]) => `${key}=${size}`).join(" ")}`);
-  console.log(lines.join("\n"));
+  return lines.join("\n");
+}
+
+function printHuman(summary: RbacSyncSummary): void {
+  console.log(formatHuman(summary));
 }
 
 // CLI entrypoint: only runs when invoked directly (same guard as jobs/pii-backfill.ts).
@@ -113,7 +153,9 @@ if (entryFile === argFile) {
     .then(() => process.exit(0))
     .catch(async (error) => {
       console.error("[rbac:sync] failed:", error);
-      await prisma.$disconnect().catch(() => undefined);
+      await prisma.$disconnect().catch((disconnectError: unknown) => {
+        console.error("[rbac:sync] disconnect after failure also failed:", disconnectError);
+      });
       process.exit(1);
     });
 }

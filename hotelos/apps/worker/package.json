@@ -6,8 +6,8 @@
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc -p tsconfig.json",
-    "start": "node dist/index.js",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node --import tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

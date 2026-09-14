@@ -6,11 +6,19 @@
 // Also tops up room inventory for properties that were left with a single demo
 // room, so occupancy weighting and RevPAR are meaningful.
 //
-// Idempotent: re-running rebuilds the top-level snapshots in the window and only
-// creates rooms that don't already exist.
+// Idempotent: re-running rebuilds the DEMO top-level snapshots in the window
+// (rows with dataSource "demo"; night_audit closes written by the API and any
+// date that already has a top-level row are never touched) and only creates
+// rooms for an allowlisted demo property that has none — and only when the
+// operator opts in with SEED_CREATE_ROOMS=1. A property without rooms is
+// skipped ("sin inventario") instead of receiving invented inventory.
+//
+// Guarded by assertDemoTarget (Tanda 4 · DATA-05): SEED_ORG_ID outside the demo
+// allowlist needs SEED_ALLOW_REAL=1 + SEED_CONFIRM=<org id>.
 //
 // Run: node --env-file=../../.env --import tsx prisma/seed-revenue-snapshots.ts
 import { PrismaClient } from "@prisma/client";
+import { assertDemoTarget, isDemoProperty } from "./lib/demo-guard.js";
 
 const prisma = new PrismaClient();
 const ORGANIZATION_ID = process.env.SEED_ORG_ID ?? "org_123";
@@ -48,9 +56,13 @@ function profileFor(name: string): Profile {
 
 // Ensure a property has at least `target` active+sellable rooms. Creates a
 // default room type if none sellable. Returns the active room count.
+// Inventory is only ever CREATED for an allowlisted demo property that has no
+// rooms at all, and only with SEED_CREATE_ROOMS=1 (DATA-05): a property that
+// already has ≥1 room keeps its real inventory untouched.
 async function ensureRooms(propertyId: string, target: number): Promise<number> {
   const current = await prisma.room.count({ where: { propertyId, active: true } });
   if (current >= target) return current;
+  if (current >= 1 || !isDemoProperty(propertyId) || process.env.SEED_CREATE_ROOMS !== "1") return current;
 
   let roomType = await prisma.roomType.findFirst({ where: { propertyId, sellable: true, active: true } });
   if (!roomType) {
@@ -79,20 +91,29 @@ async function ensureRooms(propertyId: string, target: number): Promise<number> 
 async function seedProperty(property: { id: string; name: string }, today: Date) {
   const profile = profileFor(property.name);
   const roomsActive = await ensureRooms(property.id, profile.rooms);
+  if (roomsActive === 0) {
+    console.log(`[snapshots] ${property.name}: sin inventario (0 habitaciones activas) → omitida. Exporta SEED_CREATE_ROOMS=1 para crear ${profile.rooms} habitaciones demo.`);
+    return;
+  }
   const windowStart = addDays(today, -HISTORY_DAYS);
 
-  // Idempotent: clear top-level snapshots in the window before re-inserting.
-  await prisma.revenueDailySnapshot.deleteMany({
-    where: {
-      propertyId: property.id,
-      snapshotDate: { gte: windowStart, lte: today },
-      roomTypeId: null,
-      ratePlanId: null,
-      channelId: null,
-      segment: null,
-      market: null
-    }
+  const topLevel = { roomTypeId: null, ratePlanId: null, channelId: null, segment: null, market: null };
+  // Idempotent: clear the DEMO top-level snapshots in the window before
+  // re-inserting. night_audit closes (and any other dataSource) are kept.
+  const removed = await prisma.revenueDailySnapshot.deleteMany({
+    where: { propertyId: property.id, snapshotDate: { gte: windowStart, lte: today }, dataSource: "demo", ...topLevel }
   });
+  // Dates that still have a top-level row (night_audit, imports) are skipped:
+  // the unique index treats NULL dimensions as distinct, so createMany with
+  // skipDuplicates would otherwise write a second row for the same day.
+  const taken = new Set(
+    (
+      await prisma.revenueDailySnapshot.findMany({
+        where: { propertyId: property.id, snapshotDate: { gte: windowStart, lte: today }, ...topLevel },
+        select: { snapshotDate: true }
+      })
+    ).map((s) => s.snapshotDate.toISOString().slice(0, 10))
+  );
 
   const rows: {
     propertyId: string;
@@ -112,6 +133,7 @@ async function seedProperty(property: { id: string; name: string }, today: Date)
 
   for (let i = 0; i <= HISTORY_DAYS; i += 1) {
     const date = addDays(windowStart, i);
+    if (taken.has(date.toISOString().slice(0, 10))) continue;
     const dow = date.getUTCDay(); // 0 Sun .. 6 Sat
     const isWeekend = dow === 5 || dow === 6 || dow === 0;
 
@@ -156,10 +178,18 @@ async function seedProperty(property: { id: string; name: string }, today: Date)
   }
 
   await prisma.revenueDailySnapshot.createMany({ data: rows, skipDuplicates: true });
-  console.log(`[snapshots] ${property.name}: ${roomsActive} rooms · ${rows.length} días sembrados`);
+  console.log(`[snapshots] ${property.name}: ${roomsActive} rooms · ${rows.length} días sembrados (demo reemplazados ${removed.count}, ${taken.size} días con cierre real conservados)`);
 }
 
 async function main() {
+  assertDemoTarget({
+    orgId: ORGANIZATION_ID,
+    action: "seed-revenue-snapshots",
+    planned: [
+      { table: "revenue_daily_snapshots", op: "deleteMany", where: `top-level · dataSource='demo' · ventana ${HISTORY_DAYS} días · todas las propiedades de la org` },
+      { table: "rooms", op: "create", where: "solo propiedades demo con 0 habitaciones y SEED_CREATE_ROOMS=1" }
+    ]
+  });
   const today = startUtc();
   const properties = await prisma.property.findMany({
     where: { organizationId: ORGANIZATION_ID },

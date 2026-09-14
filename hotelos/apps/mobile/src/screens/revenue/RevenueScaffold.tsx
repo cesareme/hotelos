@@ -64,7 +64,7 @@ const styles = StyleSheet.create({
   cardHead: { flexDirection: "row", justifyContent: "space-between", gap: 12, alignItems: "center" },
   cardTitle: { color: colors.primaryDark, fontWeight: "900", fontSize: 18, flex: 1, letterSpacing: 0 },
   status: { color: colors.primary, borderWidth: 1, borderColor: colors.line, borderRadius: 999, paddingHorizontal: 9, paddingVertical: 5, fontWeight: "900", letterSpacing: 0 },
-  body: { color: colors.text, lineHeight: 21, letterSpacing: 0 },
+  body: { color: colors.ink, lineHeight: 21, letterSpacing: 0 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   action: { color: "#ffffff", backgroundColor: colors.primary, overflow: "hidden", borderRadius: 999, paddingHorizontal: 11, paddingVertical: 7, fontWeight: "900", letterSpacing: 0 }
 });

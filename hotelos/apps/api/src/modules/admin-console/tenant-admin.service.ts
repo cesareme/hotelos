@@ -21,7 +21,7 @@ import { recordAuditEvent } from "../audit/audit.service.js";
 import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
-import { applyRoleTemplate } from "../../lib/rbac-catalog.js";
+import { applyRoleTemplate, provisionDefaultTemplateRoles, type ProvisionedTemplateRole } from "../../lib/rbac-catalog.js";
 import { ensurePropertySettings, ensurePropertyTaxes, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
 import { listPropertyModules } from "../product-modules/product-modules.service.js";
 
@@ -158,6 +158,8 @@ export type CreateTenantResult = TenantInvitationResult & {
   ownerUserId: string;
   /** role_permissions rows granted to the Owner role from the shared "owner" template. */
   ownerPermissionsGranted: number;
+  /** Tanda 4: template roles provisioned besides Owner (Manager / Recepción / Housekeeping), no users attached. */
+  templateRoles: ProvisionedTemplateRole[];
   /** Only when ADMIN_EXPOSE_TEMP_PASSWORD=true (never by default: the owner sets the password on accept-invite). */
   tempPassword?: string;
   /** Statutory tax catalogue provisioned for the property's region (contract C). */
@@ -563,12 +565,21 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
     // ZERO role_permissions, so in production — no demo permission union — the
     // owner got 403 on every route). Additive + idempotent; the template never
     // carries platform keys, so a hotel owner is never a platform admin.
+    // Tanda 4: the row carries templateKey "owner" so the boot-time backfill
+    // keeps topping it up as PERMISSIONS grows (applyRoleTemplate would stamp
+    // a null key anyway; set it explicitly at creation).
     const ownerRole = await tx.role.upsert({
       where: { organizationId_name: { organizationId: organization.id, name: "Owner" } },
       update: {},
-      create: { organizationId: organization.id, name: "Owner" }
+      create: { organizationId: organization.id, name: "Owner", templateKey: "owner" }
     });
     const ownerTemplate = await applyRoleTemplate(ownerRole.id, "owner", { db: tx });
+
+    // Tanda 4: template roles Manager / Recepción / Housekeeping (no users
+    // attached) so the invite role selector offers real options from day one
+    // instead of "Owner" for every employee. Same transaction: a failure rolls
+    // the whole tenant back rather than leaving a half-provisioned org.
+    const templateRoles = await provisionDefaultTemplateRoles(organization.id, { db: tx });
 
     const user = await tx.user.create({
       data: {
@@ -605,7 +616,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       create: { userId: user.id, departmentId: department.id, roleLabel: "owner", active: true }
     });
 
-    return { organization, property, user, ownerRole, ownerPermissionsGranted: ownerTemplate.granted };
+    return { organization, property, user, ownerRole, ownerPermissionsGranted: ownerTemplate.granted, templateRoles };
   });
 
   // Seed module entitlements (best-effort: any unknown moduleCode is skipped
@@ -712,6 +723,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       modulesEnabled: input.modulesEnabled,
       ownerRoleTemplate: "owner",
       ownerPermissionsGranted: persisted.ownerPermissionsGranted,
+      templateRoles: persisted.templateRoles.map((role) => ({ name: role.name, templateKey: role.templateKey, permissionsCount: role.permissionsCount })),
       fiscal: {
         taxRegion: fiscal.taxRegion,
         taxRegionSource: fiscal.taxRegionSource,
@@ -732,6 +744,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
     propertyId: persisted.property.id,
     ownerUserId: persisted.user.id,
     ownerPermissionsGranted: persisted.ownerPermissionsGranted,
+    templateRoles: persisted.templateRoles,
     ...(tempPassword ? { tempPassword } : {}),
     inviteLink: invitation.inviteLink,
     invitation: invitation.invitation,

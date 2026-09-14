@@ -42,4 +42,38 @@ describe("Flagship demo seed contract", () => {
     assert.match(docs, /db:seed/);
     assert.match(docs, /smoke:demo/);
   });
+
+  // Tanda 4 · DATA-05: every parameterisable seed goes through the shared
+  // demo-target guard before writing, the base seed carries a valid NIF for
+  // org_123, records DEMO_SEED_READY once, and no longer grants the four
+  // permission keys that left the catalog.
+  it("guards every parameterisable seed with assertDemoTarget", () => {
+    const seedsDir = new URL("../packages/database/prisma/", import.meta.url);
+    const guarded = [
+      "seed-commercial-demo.ts",
+      "seed-revenue-snapshots.ts",
+      "seed-compliance.ts",
+      "seed-operations.ts",
+      "seed-cancellation-policies.ts",
+      "seed-allotments.ts",
+      "seed-fnb-inventory.ts"
+    ];
+    for (const file of guarded) {
+      const source = readFileSync(new URL(file, seedsDir), "utf8");
+      assert.match(source, /assertDemoTarget\(/, `${file} must call assertDemoTarget before writing`);
+    }
+    const enrichment = readFileSync(new URL("../packages/database/seeds/demo-pre-demo-enrichment.mjs", import.meta.url), "utf8");
+    assert.match(enrichment, /assertDemoTarget\(/);
+    assert.match(enrichment, /DEMO_PROPERTY_IDS/);
+    const guard = readFileSync(new URL("../packages/database/prisma/lib/demo-guard.ts", import.meta.url), "utf8");
+    assert.match(guard, /SEED_ALLOW_REAL/);
+    assert.match(guard, /SEED_CONFIRM/);
+  });
+
+  it("keeps the base seed idempotent and fiscally valid", () => {
+    assert.match(seed, /taxId: "B12345674"/);
+    assert.doesNotMatch(seed, /"pms\.reservation\.(update|cancel|check_in|check_out)"/);
+    assert.match(seed, /correlationId: "corr_demo_seed" \}/);
+    assert.match(seed, /FLAGSHIP_ARRIVAL/);
+  });
 });

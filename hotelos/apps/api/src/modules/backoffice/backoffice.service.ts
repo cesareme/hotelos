@@ -10,6 +10,7 @@ import { getPropertyTaxProfile, invalidateTaxCache } from "../accounting/tax-rat
 import { resolveSesEstablishment } from "../compliance/ses-submission.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
+import { ensureRoleHasPermissions } from "../../lib/rbac-catalog.js";
 import { ensurePropertyTaxes } from "../../lib/tenant-hydration.js";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
@@ -3364,6 +3365,15 @@ async function computeReadiness(input: BackOfficeMutationInput) {
     flagName: "verifactuEnabled",
     usageLabel: "facturas emitidas"
   });
+  // Billing series (Tanda 4 · H3a): a property that already issues invoices is
+  // subject to the series check whatever the module flag says (Faranda: module
+  // off, 25 invoices with verifactu_hash). Same rule as SES "activo por uso".
+  const billingApplicability = resolveComplianceApplicability({
+    flagEnabled: modules.includes("compliance_billing"),
+    usageCount: issuedInvoiceCount,
+    flagName: "compliance_billing (módulo)",
+    usageLabel: "facturas emitidas"
+  });
   const sesEnabled = sesApplicability.applies;
   const verifactuEnabled = verifactuApplicability.applies;
   const verifactuMode = integrationModeFromEnv(process.env.VERIFACTU_MODE);
@@ -3388,6 +3398,21 @@ async function computeReadiness(input: BackOfficeMutationInput) {
     .filter(([, value]) => !hasText(value))
     .map(([key]) => key);
   const fiscalAddressRequired = sesEnabled || verifactuEnabled;
+  // Why the address is mandatory, in this check's own words (Tanda 4 · H3b): the
+  // SES/VeriFactu "activo por uso" notes belong to their own checks and used to be
+  // appended here twice, even on a passing address.
+  const fiscalAddressReasons = [
+    sesApplicability.applies
+      ? sesApplicability.byFlag
+        ? "SES.HOSPEDAJES activado"
+        : `SES.HOSPEDAJES en uso (${sesApplicability.usageCount} envíos en los últimos ${SES_USAGE_WINDOW_DAYS} días)`
+      : null,
+    verifactuApplicability.applies
+      ? verifactuApplicability.byFlag
+        ? "VeriFactu activado"
+        : `VeriFactu en uso (${verifactuApplicability.usageCount} facturas emitidas)`
+      : null
+  ].filter((reason): reason is string => reason !== null);
 
   // Tax region + statutory rates actually provisioned (contract C: never UNKNOWN, but a
   // property is only "configured" when its region is explicit and the rates exist in DB).
@@ -3445,15 +3470,10 @@ async function computeReadiness(input: BackOfficeMutationInput) {
       checkCode: "property_fiscal_address_complete",
       status: addressMissing.length === 0 ? "pass" : fiscalAddressRequired ? "fail" : "warning",
       severity: fiscalAddressRequired ? "blocking" : "warning",
-      message: withUsageNote(
-        withUsageNote(
-          addressMissing.length === 0
-            ? "Dirección fiscal completa (dirección, municipio, provincia y código postal)."
-            : `Dirección fiscal incompleta: faltan ${addressMissing.join(", ")}. ${fiscalAddressRequired ? "Obligatoria con SES.HOSPEDAJES o VeriFactu activados." : "Necesaria antes de activar SES.HOSPEDAJES o VeriFactu."}`,
-          sesApplicability
-        ),
-        verifactuApplicability
-      ),
+      message:
+        addressMissing.length === 0
+          ? "Dirección fiscal completa (dirección, municipio, provincia y código postal)."
+          : `Dirección fiscal incompleta: faltan ${addressMissing.join(", ")}. ${fiscalAddressRequired ? `Obligatoria: ${fiscalAddressReasons.join(" y ")}.` : "Necesaria antes de activar SES.HOSPEDAJES o VeriFactu."}`,
       ...propertyRef
     },
     {
@@ -3515,13 +3535,19 @@ async function computeReadiness(input: BackOfficeMutationInput) {
     },
     {
       checkCode: "invoice_sequence_configured",
-      status: !modules.includes("compliance_billing") || activeSequences.length > 0 ? "pass" : "fail",
-      severity: "blocking",
-      message: !modules.includes("compliance_billing")
-        ? "No aplica: el módulo de facturación y cumplimiento no está activado."
-        : activeSequences.length > 0
-          ? `Series de facturación activas: ${activeSequences.map((sequence) => `${sequence.sequenceCode}${sequence.year ? `/${sequence.year}` : ""}`).join(", ")}.`
-          : "Se necesita al menos una serie de facturación activa (FAC) con el módulo de facturación activado.",
+      // Applies by module flag OR by real usage. With series but none for the
+      // current year the allocator opens FAC-<year> lazily (FISC-09), so that is
+      // a warning (non-blocking), not a failure; no active series at all fails.
+      status: !billingApplicability.applies ? "pass" : activeSequences.length === 0 ? "fail" : hasCurrentYearSeries ? "pass" : "warning",
+      severity: billingApplicability.applies && activeSequences.length > 0 && !hasCurrentYearSeries ? "warning" : "blocking",
+      message: withUsageNote(
+        !billingApplicability.applies
+          ? "No aplica: el módulo de facturación y cumplimiento no está activado y el establecimiento no ha emitido facturas."
+          : activeSequences.length === 0
+            ? `Se necesita al menos una serie de facturación activa (FAC): ${billingApplicability.byFlag ? "el módulo de facturación está activado" : "el establecimiento ya emite facturas"}.`
+            : `Series de facturación activas: ${activeSequences.map((sequence) => `${sequence.sequenceCode}${sequence.year ? `/${sequence.year}` : ""}`).join(", ")}${hasCurrentYearSeries ? ` (incluye el ejercicio ${currentYear})` : `; ninguna del ejercicio ${currentYear}: se abrirá FAC-${currentYear} en la primera emisión`}.`,
+        billingApplicability
+      ),
       relatedEntityType: "invoice_sequence",
       relatedEntityId: undefined
     },
@@ -4931,14 +4957,29 @@ export function pendingInvitationView(pending: PendingInvitationInfo | null | un
   };
 }
 
+export type PropertyRoleView = {
+  id: string;
+  name: string;
+  /** Shared template the role follows ('owner' | 'manager' | ...); null = custom role. */
+  templateKey: string | null;
+  permissionsCount: number;
+};
+
 /**
  * Roles of the property's organization that a back-office invite may assign
  * (Prisma; platform-scoped roles — admin.* / platform.* keys — are excluded:
- * a hotel user is never a platform admin). Feeds the role select of the invite drawer.
+ * a hotel user is never a platform admin). Feeds the role select of the invite
+ * drawer: `templateKey` says which template the role follows and
+ * `permissionsCount === 0` flags a role that would leave the invitee with no
+ * access (requireAssignableRole applies its template or answers 409).
  */
-export async function listPropertyRoles(propertyId: string): Promise<Array<{ id: string; name: string; permissionsCount: number }>> {
+export async function listPropertyRoles(propertyId: string): Promise<PropertyRoleView[]> {
   const property = await requireProperty(propertyId);
-  const roles = await prisma.role.findMany({ where: { organizationId: property.organizationId }, orderBy: { name: "asc" } });
+  const roles = await prisma.role.findMany({
+    where: { organizationId: property.organizationId },
+    select: { id: true, name: true, templateKey: true },
+    orderBy: { name: "asc" }
+  });
   if (roles.length === 0) return [];
   const grants = await prisma.rolePermission.findMany({
     where: { roleId: { in: roles.map((role) => role.id) } },
@@ -4959,11 +5000,27 @@ export async function listPropertyRoles(propertyId: string): Promise<Array<{ id:
   }
   return roles
     .filter((role) => !(summary.get(role.id)?.platformScoped ?? false))
-    .map((role) => ({ id: role.id, name: role.name, permissionsCount: summary.get(role.id)?.count ?? 0 }));
+    .map((role) => ({
+      id: role.id,
+      name: role.name,
+      templateKey: role.templateKey,
+      permissionsCount: summary.get(role.id)?.count ?? 0
+    }));
 }
 
-/** Role of the property's organization, safe to hand to a hotel user (opaque 404 cross-org, 403 platform scope). */
-async function requireAssignableRole(organizationId: string, roleId: string, context: UserContext): Promise<{ id: string; name: string }> {
+/**
+ * Role of the property's organization, safe to hand to a hotel user (opaque
+ * 404 cross-org, 403 platform scope). Tanda 4 (contract B): a role with ZERO
+ * grants gets its template applied on the spot (Role.templateKey or the
+ * name-resolved template); when none can be determined the invite answers
+ * 409 ROLE_WITHOUT_PERMISSIONS — the invitee would be 403 everywhere in
+ * production otherwise.
+ */
+async function requireAssignableRole(
+  organizationId: string,
+  roleId: string,
+  context: UserContext
+): Promise<{ id: string; name: string; templateKey: string | null; permissionsCount: number }> {
   const role = await prisma.role.findUnique({ where: { id: roleId }, select: { id: true, name: true, organizationId: true } });
   if (!role || role.organizationId !== organizationId) {
     throw new NotFoundError("Rol no encontrado.");
@@ -4980,7 +5037,8 @@ async function requireAssignableRole(organizationId: string, roleId: string, con
       }
     }
   }
-  return { id: role.id, name: role.name };
+  const ensured = await ensureRoleHasPermissions(role.id);
+  return { id: role.id, name: role.name, templateKey: ensured.templateKey, permissionsCount: ensured.permissionsCount };
 }
 
 export type InvitationDeliveryView = {

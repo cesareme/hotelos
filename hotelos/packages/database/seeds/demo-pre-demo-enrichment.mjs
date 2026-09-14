@@ -25,13 +25,30 @@
 //     ejecuciones previas (sólo filas con códigos PREENR-) y luego upsertea.
 //     Los datos reales que ya tenga la propiedad NO se tocan.
 //
-// Uso:
-//   node --env-file=../../.env packages/database/seeds/demo-pre-demo-enrichment.mjs
+// Uso (desde packages/database; DATABASE_URL en ../../.env):
+//   corepack pnpm --filter @hotelos/database db:seed:enrich
+//   node --env-file=../../.env --import tsx seeds/demo-pre-demo-enrichment.mjs
+//
+// `--import tsx` es OBLIGATORIO y el cwd debe ser packages/database:
+// `@hotelos/database` no publica `main`/`exports` y este paquete no se
+// referencia a sí mismo en node_modules, así que sólo resuelve a través de los
+// `paths` de tsconfig.base.json que tsx aplica leyendo el tsconfig.json del
+// cwd (tsx tampoco es devDependency de la raíz del monorepo). Con `node` a
+// secas falla con ERR_MODULE_NOT_FOUND antes de tocar la BD.
+//
+// Ámbito (Tanda 4 · DATA-05): SOLO las propiedades de la allowlist demo
+// (prisma/lib/demo-guard.ts: prop_123, prop_canary). Cualquier otra propiedad
+// activa se omite salvo que el operador la confirme con SEED_ALLOW_REAL=1 y
+// SEED_CONFIRM=<id[,id]>. SEED_PROPERTY_ID limita la ejecución a una sola
+// propiedad (y pasa por el mismo guard). El guard es un módulo .ts sin
+// dependencias importado con extensión explícita (tsx lo resuelve igual que
+// el type stripping nativo de Node ≥ 22.18).
 //
 // Salida final (stdout): un resumen con totales de reservas / huéspedes / folios
 // creados para que el script orquestador pueda parsearlo.
 
 import { prisma } from "@hotelos/database";
+import { DEMO_PROPERTY_IDS, assertDemoTarget, confirmedTargets } from "../prisma/lib/demo-guard.ts";
 
 const PREFIX = "PREENR";
 const MS_DAY = 86_400_000;
@@ -538,12 +555,30 @@ async function main() {
   // existentes (chain-iberia usa "open", local-demo usa "open", futuros seeds
   // podrían usar "active").
   const ACTIVE_STATUSES = ["open", "active", "live"];
-  const properties = await prisma.property.findMany({
-    where: { status: { in: ACTIVE_STATUSES } },
+  const onlyProperty = process.env.SEED_PROPERTY_ID ?? null;
+  const allProperties = await prisma.property.findMany({
+    where: { status: { in: ACTIVE_STATUSES }, ...(onlyProperty ? { id: onlyProperty } : {}) },
     orderBy: { name: "asc" }
   });
+  if (onlyProperty && allProperties.length === 0) throw new Error(`Property ${onlyProperty} not found (or not active)`);
+  // DATA-05: allowlist demo + ids confirmados explícitamente; el resto de
+  // propiedades activas (clientes reales, fixtures) se omiten con aviso.
+  const allowed = new Set([...DEMO_PROPERTY_IDS, ...confirmedTargets(process.env)]);
+  const properties = allProperties.filter((p) => allowed.has(p.id));
+  for (const skipped of allProperties.filter((p) => !allowed.has(p.id))) {
+    console.log(`[pre-demo-enrich] · omitida ${skipped.id} (${skipped.name}): fuera de la allowlist demo (SEED_ALLOW_REAL=1 SEED_CONFIRM=${skipped.id} para incluirla)`);
+  }
+  for (const property of properties) {
+    assertDemoTarget({
+      propertyId: property.id,
+      action: "demo-pre-demo-enrichment",
+      planned: [
+        { table: "payments/folio_lines/folios/stays/reservation_guests/reservations/guests", op: "deleteMany", where: `reservas ${PREFIX}-* previas de ${property.id}` }
+      ]
+    });
+  }
   if (properties.length === 0) {
-    console.log("[pre-demo-enrich] no active properties found; nothing to seed.");
+    console.log("[pre-demo-enrich] no allowlisted active properties found; nothing to seed.");
     console.log(JSON.stringify({ propertiesSeeded: 0, reservations: 0, guests: 0, folios: 0, folioLines: 0, payments: 0 }));
     await prisma.$disconnect();
     return;

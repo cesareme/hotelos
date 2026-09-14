@@ -17,8 +17,15 @@
     "preview:demo": "node demo/server.mjs",
     "db:generate": "pnpm --filter @hotelos/database db:generate",
     "db:push": "pnpm --filter @hotelos/database exec prisma db push --skip-generate",
+    "db:migrate:deploy": "pnpm --filter @hotelos/database db:migrate:deploy",
+    "db:migrate:status": "pnpm --filter @hotelos/database db:migrate:status",
+    "db:adopt-baseline": "pnpm --filter @hotelos/database db:adopt-baseline",
+    "db:drift:check": "pnpm --filter @hotelos/database db:drift:check",
+    "db:migrations:check": "node scripts/check-migrations-vs-schema.mjs",
+    "db:install:check": "bash scripts/check-fresh-install.sh",
     "db:seed:commercial": "pnpm --filter @hotelos/database db:seed:commercial",
     "test": "node --test tests/*.test.mjs",
+    "test:unit": "pnpm --filter @hotelos/api test",
     "test:integration": "cd apps/api && node --import tsx --test \"../../tests/integration/*.test.mts\"",
     "smoke:demo": "node scripts/smoke-demo.mjs",
     "validate:env": "node scripts/validate-env.mjs",
@@ -27,7 +34,10 @@
     "ds:drift": "node scripts/check-design-system-drift.mjs",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "prepare": "git config core.hooksPath .husky 2>/dev/null || true"
+    "prepare": "git config core.hooksPath .husky 2>/dev/null || true",
+    "typecheck:all": "node scripts/typecheck-all.mjs",
+    "env:census": "node scripts/env-census.mjs",
+    "env:census:write": "node scripts/env-census.mjs --write"
   },
   "engines": {
     "node": ">=22"

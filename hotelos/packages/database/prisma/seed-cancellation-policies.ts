@@ -1,7 +1,9 @@
 // Seed three canonical cancellation policies for the demo property — they
 // mirror what every Spanish hotel uses (Flexible / Semi-flex / Non-refundable)
 // and are referenced by Reservation.cancellationPolicyCode.
+// Guarded by assertDemoTarget (Tanda 4 · DATA-05).
 import { PrismaClient } from "@prisma/client";
+import { assertDemoTarget } from "./lib/demo-guard.js";
 
 const prisma = new PrismaClient();
 const PID = process.env.SEED_PROPERTY_ID ?? "prop_123";
@@ -13,6 +15,7 @@ const POLICIES = [
 ];
 
 async function main() {
+  assertDemoTarget({ propertyId: PID, action: "seed-cancellation-policies", planned: [] });
   const property = await prisma.property.findUnique({ where: { id: PID }, select: { id: true, name: true } });
   if (!property) throw new Error(`Property ${PID} not found`);
   console.log(`[cancel] property ${PID} (${property.name})`);

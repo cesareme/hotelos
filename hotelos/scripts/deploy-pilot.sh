@@ -1,46 +1,36 @@
 #!/usr/bin/env bash
-# Script de deploy para piloto/demo en un VPS Linux limpio (Ubuntu 22.04+).
-# Asume Docker y docker-compose ya instalados.
+# Anfitorio · envoltorio de compatibilidad para el piloto Docker (Tanda 4).
 #
-# Uso:
-#   ./scripts/deploy-pilot.sh init        # primera vez: build + migrate + seed
+# El compose piloto de infra/docker (Dockerfiles con npm, nunca funcionales)
+# se eliminó. Este script conserva los subcomandos de siempre sobre
+# deploy/docker-compose.production.yml (Dockerfiles pnpm + tsx de deploy/):
+#
+#   ./scripts/deploy-pilot.sh init        # primera vez: deploy.sh --role compose
 #   ./scripts/deploy-pilot.sh up          # arranca todo
 #   ./scripts/deploy-pilot.sh down        # para todo
+#   ./scripts/deploy-pilot.sh status      # ps + health
 #   ./scripts/deploy-pilot.sh logs api    # logs de un servicio
-#   ./scripts/deploy-pilot.sh seed-iberia # repuebla cadena demo
-#   ./scripts/deploy-pilot.sh reset       # borra todo y empieza de cero (PELIGRO)
+#   ./scripts/deploy-pilot.sh seed-demo   # seed base + comercial (org_123/prop_123)
+#   ./scripts/deploy-pilot.sh reset       # borra volúmenes (PELIGRO)
+#
+# Requiere deploy/.env.production (copia deploy/.env.production.example).
+# La vía recomendada es la nativa: deploy/README-INSTALL.md.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
-COMPOSE="docker compose -f infra/docker/docker-compose.pilot.yml"
+ENV_FILE="deploy/.env.production"
+COMPOSE="docker compose -f deploy/docker-compose.production.yml --env-file $ENV_FILE"
 
 cmd=${1:-help}
+[[ "$cmd" == "help" ]] || [[ -f "$ENV_FILE" ]] || { echo "Falta $ENV_FILE (cp deploy/.env.production.example $ENV_FILE)"; exit 2; }
 
 case "$cmd" in
   init)
-    echo "🔨 Build de imágenes…"
-    $COMPOSE build
-    echo ""
-    echo "🚀 Levantando servicios…"
-    $COMPOSE up -d
-    echo ""
-    echo "⏳ Esperando a Postgres…"
-    until $COMPOSE exec -T postgres pg_isready -U "${POSTGRES_USER:-hotelos}"; do sleep 2; done
-    echo ""
-    echo "🗄️  Aplicando schema Prisma…"
-    $COMPOSE exec -T api npm --workspace @hotelos/database run db:push
-    echo ""
-    echo "🌱 Seeding cadena Iberia (8 hoteles)…"
-    $COMPOSE exec -T api npx tsx src/seeds/chain-8-hotels.ts
-    echo ""
-    echo "🌱 Seeding reservas demo…"
-    $COMPOSE exec -T api npx tsx src/seeds/chain-reservations.ts
-    echo ""
-    echo "✅ Listo. Abre http://$(hostname -I | awk '{print $1}'):8080"
+    bash deploy/scripts/deploy.sh --role compose --env-file "$ENV_FILE" --yes
     ;;
   up)
     $COMPOSE up -d
-    echo "✅ Servicios arriba. Admin-web en :8080, API en :3000"
+    echo "Servicios arriba. Caddy en :80/:443, API interno en api:3000."
     ;;
   down)
     $COMPOSE down
@@ -48,20 +38,19 @@ case "$cmd" in
   logs)
     $COMPOSE logs -f "${2:-api}"
     ;;
-  seed-iberia)
-    $COMPOSE exec api npx tsx src/seeds/chain-8-hotels.ts
-    $COMPOSE exec api npx tsx src/seeds/chain-reservations.ts
+  seed-demo)
+    $COMPOSE run --rm --no-deps --entrypoint "" api sh -lc \
+      'cd /app/packages/database && node --import tsx prisma/seed.ts && node --import tsx prisma/seed-commercial-demo.ts'
     ;;
   status)
     $COMPOSE ps
     echo ""
-    echo "Health checks:"
-    curl -s -o /dev/null -w "  api:    HTTP %{http_code}\n" http://localhost:3000/health || echo "  api: DOWN"
-    curl -s -o /dev/null -w "  admin:  HTTP %{http_code}\n" http://localhost:8080/ || echo "  admin: DOWN"
+    domain="$(grep -E '^DOMAIN=' "$ENV_FILE" | cut -d= -f2- | tr -d '"')"
+    curl -s -o /dev/null -w "  https://$domain/health: HTTP %{http_code}\n" "https://$domain/health" || echo "  health: DOWN"
     ;;
   reset)
-    read -p "⚠️  ESTO BORRA TODOS LOS DATOS. Escribe 'BORRAR' para confirmar: " confirm
-    if [ "$confirm" = "BORRAR" ]; then
+    read -r -p "ESTO BORRA TODOS LOS DATOS (volúmenes). Escribe 'BORRAR' para confirmar: " confirm
+    if [[ "$confirm" == "BORRAR" ]]; then
       $COMPOSE down -v
       echo "Datos borrados. Ejecuta 'init' para empezar de cero."
     else
@@ -69,17 +58,6 @@ case "$cmd" in
     fi
     ;;
   *)
-    cat <<EOF
-HotelOS · Deploy piloto
-
-Comandos:
-  init           Build + arranque + schema + seeds (primera vez)
-  up             Arrancar servicios
-  down           Parar servicios
-  status         Estado + health checks
-  logs <svc>     Tail logs (default: api)
-  seed-iberia    Re-sembrar la cadena demo Iberia (8 hoteles)
-  reset          Borrar todos los datos (PELIGRO)
-EOF
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac

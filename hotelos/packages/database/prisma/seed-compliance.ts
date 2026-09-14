@@ -1,7 +1,9 @@
 // Compliance Center seed: areas + baseline requirement matrix (Spanish hotels)
 // + a demo property profile and materialized items with a realistic status mix.
 // Idempotent. Run: node --env-file=../../.env --import tsx prisma/seed-compliance.ts
+// Guarded by assertDemoTarget (Tanda 4 · DATA-05).
 import { PrismaClient } from "@prisma/client";
+import { assertDemoTarget } from "./lib/demo-guard.js";
 
 const prisma = new PrismaClient();
 const PROPERTY_ID = process.env.SEED_PROPERTY_ID ?? "prop_123";
@@ -132,6 +134,7 @@ function addDays(base: Date, n: number): Date {
 }
 
 async function main() {
+  assertDemoTarget({ propertyId: PROPERTY_ID, action: "seed-compliance", planned: [] });
   const property = await prisma.property.findUnique({ where: { id: PROPERTY_ID }, select: { id: true, name: true } });
   if (!property) throw new Error(`Property ${PROPERTY_ID} not found`);
   console.log(`[compliance] property ${PROPERTY_ID} (${property.name})`);

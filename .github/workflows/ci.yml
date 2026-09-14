@@ -1,0 +1,243 @@
+# Anfitorio · CI (Tanda 4 · instalabilidad)
+#
+# Lives at the GIT ROOT (.github/workflows) because GitHub Actions only reads
+# workflows from there; the previous copies under hotelos/.github/workflows/
+# never ran (nested repo, CLAUDE.md debt #1). Every job runs inside hotelos/,
+# the pnpm root, via defaults.run.working-directory.
+#
+# Gates: pnpm install --frozen-lockfile → prisma generate → typecheck of every
+# workspace (typecheck:all) → contract tests + env validation + API unit tests
+# (test:unit) → integration
+# tests on a migrated Postgres (migrate deploy, never db push) → fresh-install
+# (empty DB → migrate deploy → drift check → base seed → API boot + smoke) →
+# admin-web build with a baked VITE_API_URL → shell lint → pnpm/tsx Docker
+# images.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+defaults:
+  run:
+    working-directory: hotelos
+
+env:
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+
+jobs:
+  typecheck-all:
+    name: Typecheck (all workspaces)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: hotelos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: hotelos/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm --filter @hotelos/database db:generate
+      - name: Typecheck every workspace (script typecheck:all)
+        run: pnpm typecheck:all
+
+  contract-tests:
+    name: Contract tests + env contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: hotelos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: hotelos/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Validate the environment contract (.env.example)
+        run: pnpm validate:env
+      - name: Contract tests (node --test tests/*.test.mjs)
+        run: pnpm test
+      # The API unit tests import @hotelos/database, whose Prisma client must
+      # be generated first (no database is needed).
+      - name: Generate Prisma client
+        run: pnpm --filter @hotelos/database db:generate
+      - name: API unit tests (apps/api/src/**/__tests__/*.test.mts)
+        run: pnpm test:unit
+      - name: Migrations vs schema (no DB)
+        run: pnpm db:migrations:check
+      - name: Smoke the demo preview
+        run: pnpm smoke:demo
+
+  integration-tests:
+    name: Integration tests (app.inject + migrated Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      JWT_SECRET: ci-jwt-secret-32-chars-min-aaaaaaaa
+      ENCRYPTION_KEY: ci-encryption-key-32-chars-min-aaaa
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: hotelos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: hotelos/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm --filter @hotelos/database db:generate
+      - name: Apply the versioned migrations (migrate deploy, never db push)
+        run: pnpm db:migrate:deploy
+      - name: Run integration tests (app.inject)
+        run: pnpm test:integration
+
+  fresh-install:
+    name: Fresh install (empty DB → migrate deploy → drift → seed → API smoke)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      DATABASE_URL: postgresql://ci:ci@localhost:5432/ci
+      JWT_SECRET: ci-jwt-secret-32-chars-min-aaaaaaaa
+      # Dummy key: 32 raw bytes in base64, the format crypto-fields requires.
+      ENCRYPTION_KEY: Y2ktZW5jcnlwdGlvbi1rZXktMzItYnl0ZXMtYWFhYWFh
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: hotelos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: hotelos/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Generate Prisma client
+        run: pnpm --filter @hotelos/database db:generate
+      - name: migrate deploy on an empty database
+        run: pnpm db:migrate:deploy
+      - name: Drift check (migrations == schema.prisma)
+        run: pnpm db:drift:check
+      - name: Base seed (org_123 / prop_123 / reception@example.com)
+        working-directory: hotelos/packages/database
+        run: node --import tsx prisma/seed.ts
+      - name: Adopt-baseline must be a no-op on a migrated DB
+        run: pnpm db:adopt-baseline
+      - name: rbac:sync report
+        run: pnpm --filter @hotelos/api rbac:sync -- --dry-run
+      - name: Boot the API with the official runtime (tsx) and run the HTTP smoke
+        env:
+          PORT: "3900"
+          HOST: 127.0.0.1
+        run: |
+          (pnpm --filter @hotelos/api start > /tmp/api.log 2>&1 &)
+          for i in $(seq 1 45); do
+            curl -fsS http://127.0.0.1:3900/health >/dev/null 2>&1 && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:3900/health || { echo "API did not boot"; cat /tmp/api.log; exit 1; }
+          bash deploy/scripts/smoke.sh --base-url http://127.0.0.1:3900 --skip-web \
+            --email reception@example.com --password hotelos-demo --property prop_123
+      - name: API log (on failure)
+        if: failure()
+        run: cat /tmp/api.log || true
+
+  build-web:
+    name: Build admin-web (baked VITE_API_URL)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: hotelos/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+          cache-dependency-path: hotelos/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: vite build with VITE_API_URL
+        env:
+          VITE_API_URL: https://ci.example.invalid/api
+        run: pnpm --filter @hotelos/admin-web build
+      - name: The bundle must contain the baked URL and not the localhost fallback
+        run: |
+          grep -rlF "https://ci.example.invalid/api" apps/admin-web/dist/assets --include='*.js' >/dev/null
+          ! grep -rlF "http://localhost:3000" apps/admin-web/dist/assets --include='*.js'
+
+  shell-lint:
+    name: Deploy scripts (bash -n + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n
+        run: |
+          for f in deploy/scripts/*.sh scripts/*.sh; do bash -n "$f"; done
+      # Errors block; warnings are reported until they are triaged (shellcheck is
+      # not available on the Mac where these scripts were written).
+      - name: shellcheck errors (blocking)
+        run: shellcheck -S error deploy/scripts/*.sh scripts/deploy-pilot.sh
+      - name: shellcheck warnings (report-only)
+        run: shellcheck -S warning deploy/scripts/*.sh scripts/deploy-pilot.sh || echo "::warning::shellcheck reported warnings in deploy scripts (see above)"
+
+  docker-images:
+    name: Docker images (pnpm + tsx)
+    runs-on: ubuntu-latest
+    needs: [contract-tests]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build API image
+        uses: docker/build-push-action@v5
+        with:
+          context: hotelos
+          file: hotelos/deploy/Dockerfile.api
+          push: false
+          tags: anfitorio-api:ci
+      - name: Build worker image
+        uses: docker/build-push-action@v5
+        with:
+          context: hotelos
+          file: hotelos/deploy/Dockerfile.worker
+          push: false
+          tags: anfitorio-worker:ci
+      - name: Build admin-web image
+        uses: docker/build-push-action@v5
+        with:
+          context: hotelos
+          file: hotelos/deploy/Dockerfile.admin-web
+          push: false
+          tags: anfitorio-admin-web:ci
+          build-args: |
+            VITE_API_URL=https://ci.example.invalid/api

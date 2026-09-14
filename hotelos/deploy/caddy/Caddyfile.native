@@ -1,0 +1,79 @@
+# Anfitorio · Caddyfile for the NATIVE deployment (systemd API + static SPA).
+#
+# This is what the public demo VPS (demo.hotelos.es) runs: Caddy terminates
+# HTTPS (Let's Encrypt, automatic), serves the admin-web build from disk and
+# reverse-proxies the API, which listens on 127.0.0.1:3000 under systemd.
+# deploy/Caddyfile is the Docker-compose variant (upstreams api:3000 /
+# admin-web:80); do not mix them.
+#
+# Install (install-from-scratch.sh does this, replacing the domain and the
+# web root):
+#   sudo cp deploy/caddy/Caddyfile.native /etc/caddy/Caddyfile
+#   sudo caddy validate --config /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Routing:
+#   /health          → API (uptime monitors, no auth)
+#   /api/*           → API with the /api prefix stripped (routes are defined at
+#                      the root: /properties, /auth/login, /backoffice/...)
+#   everything else  → SPA: real file if it exists, otherwise index.html
+#                      (/accept-invite and /reset-password deep links included)
+#   index.html is served with Cache-Control: no-store so a deploy is visible
+#   on the next page load; hashed /assets/* are immutable for a year.
+
+{
+	# Let's Encrypt account contact (expiry notices).
+	email admin@hotelos.es
+}
+
+demo.hotelos.es {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		Permissions-Policy "camera=(), microphone=(self), geolocation=(self)"
+		-Server
+	}
+
+	# Scanner noise.
+	@blocked path /.env /.git/* /wp-admin/* /xmlrpc.php
+	respond @blocked 403
+
+	# Unauthenticated health probe, straight to the API.
+	handle /health {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	# API under /api. handle_path strips the prefix before proxying and Caddy
+	# sets X-Forwarded-For / X-Forwarded-Proto / X-Forwarded-Host itself
+	# (the API must run with TRUST_PROXY=1 so the rate limit sees real IPs).
+	handle_path /api/* {
+		reverse_proxy 127.0.0.1:3000 {
+			header_up Host {host}
+		}
+	}
+
+	# admin-web SPA (Vite build copied here by deploy.sh / install-from-scratch.sh).
+	handle {
+		root * /srv/anfitorio/admin-web
+		route {
+			# Rewrite first so the header matchers below see the final path.
+			try_files {path} /index.html
+			@assets path /assets/*
+			header @assets Cache-Control "public, max-age=31536000, immutable"
+			@html path /index.html
+			header @html Cache-Control "no-store, must-revalidate"
+			file_server
+		}
+	}
+
+	log {
+		output file /var/log/caddy/anfitorio.access.log {
+			roll_size 50mb
+			roll_keep 10
+		}
+		format json
+	}
+}

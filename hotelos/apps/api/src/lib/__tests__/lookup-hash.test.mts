@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import {
   __resetCryptoWarningForTests,
   computeLookupHash,
@@ -23,6 +23,27 @@ function clearKeys(): void {
   delete process.env.HOTELOS_LOOKUP_HASH_KEY;
   __resetCryptoWarningForTests();
 }
+
+// Same isolation as crypto.test.mts: crypto-fields.ts accepts ENCRYPTION_KEY
+// as a fallback, so a shell with `.env` sourced turned "no key configured"
+// into a real HMAC key. Pin the environment and restore it afterwards.
+const ISOLATED_KEYS = ["ENCRYPTION_KEY", "HOTELOS_FIELD_KEY", "HOTELOS_LOOKUP_HASH_KEY"] as const;
+const savedEnv = new Map<string, string | undefined>();
+before(() => {
+  for (const name of ISOLATED_KEYS) {
+    savedEnv.set(name, process.env[name]);
+    delete process.env[name];
+  }
+  __resetCryptoWarningForTests();
+});
+after(() => {
+  for (const name of ISOLATED_KEYS) {
+    const value = savedEnv.get(name);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  __resetCryptoWarningForTests();
+});
 
 describe("computeLookupHash (deterministic HMAC-SHA256 for equality lookups)", () => {
   afterEach(clearKeys);

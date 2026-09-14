@@ -7,15 +7,18 @@
   "scripts": {
     "dev": "tsx src/server.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node --import tsx src/server.ts",
     "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test \"src/**/__tests__/*.test.mts\"",
     "lint": "eslint .",
     "backfill:pii": "tsx src/jobs/pii-backfill.ts",
     "rbac:sync": "node --env-file-if-exists=../../.env --import tsx src/scripts/rbac-sync.ts",
     "backfill:snapshots": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-snapshots.ts",
     "backfill:payment-hash": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-payment-lookup-hash.ts",
     "backfill:taxes": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-taxes.ts",
-    "backfill:guest-register": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-guest-register.ts"
+    "backfill:guest-register": "node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-guest-register.ts",
+    "demo:refresh": "node --env-file-if-exists=../../.env --import tsx src/scripts/refresh-demo-dataset.ts",
+    "demo:fix-identity": "node --env-file-if-exists=../../.env --import tsx src/scripts/fix-demo-legal-identity.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",

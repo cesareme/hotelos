@@ -74,33 +74,32 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Tanda 4 (DATA-04): the WHOLE deploy/.env.production reaches the container
+    # through env_file (fiscal certificates and SistemaInformatico block, email
+    # provider, APP_BASE_URL, CORS_ALLOWED_ORIGINS, RATE_LIMIT_MAX, RBAC_STRICT,
+    # RUN_SCHEDULERS...). `environment:` only carries what the compose computes
+    # and it always wins over env_file. HOTELOS_ALLOW_DEMO_AUTH must never be in
+    # .env.production: scripts/validate-env.mjs rejects the file (deploy.sh) and
+    # the API refuses to boot with it under NODE_ENV=production (AUTH-04).
+    env_file:
+      - ./.env.production
     environment:
       NODE_ENV: production
       PORT: 3000
+      # Container networking: Caddy reaches api:3000, so bind every interface
+      # (a native HOST=127.0.0.1 in .env.production must not leak in here).
+      HOST: 0.0.0.0
       DATABASE_URL: postgresql://${POSTGRES_USER:-hotelos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hotelos}
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      AI_PROVIDER_API_KEY: ${AI_PROVIDER_API_KEY:-}
-      OCR_PROVIDER_API_KEY: ${OCR_PROVIDER_API_KEY:-}
-      OBJECT_STORAGE_BUCKET: ${OBJECT_STORAGE_BUCKET:-}
-      OBJECT_STORAGE_REGION: ${OBJECT_STORAGE_REGION:-}
-      OBJECT_STORAGE_ACCESS_KEY: ${OBJECT_STORAGE_ACCESS_KEY:-}
-      OBJECT_STORAGE_SECRET_KEY: ${OBJECT_STORAGE_SECRET_KEY:-}
-      SENTRY_DSN: ${SENTRY_DSN:-}
-      VERIFACTU_MODE: ${VERIFACTU_MODE:-sandbox}
-      SES_HOSPEDAJES_MODE: ${SES_HOSPEDAJES_MODE:-sandbox}
       # audit 2026-06 R2 · H2: detras de Caddy hay que confiar en X-Forwarded-For
       # o el rate-limit colapsa todas las peticiones a la IP de Caddy (DoS auto-infligido).
       TRUST_PROXY: "1"
-      # audit 2026-06 R2 · H1: esta es la UNICA instancia que corre los 5 schedulers
-      # in-process (SES/pace/allotment/cutoff/mailbox). Con >1 replica pon false en las demas.
-      RUN_SCHEDULERS: ${RUN_SCHEDULERS:-true}
-      # audit 2026-09-13 · AUTH-03: RBAC estricto (GET sin entrada en el manifiesto
-      # → 403). Ya es el default con NODE_ENV=production; se reenvia para que quede
-      # visible en el entorno del contenedor. AUTH-04: HOTELOS_ALLOW_DEMO_AUTH NUNCA
-      # se reenvia aqui — con NODE_ENV=production el API se niega a arrancar con el.
-      RBAC_STRICT: ${RBAC_STRICT:-true}
+    volumes:
+      # Fiscal certificates (VERIFACTU_CERT_P12 / VERIFACTU_SIGN_PEM,
+      # SES_HOSPEDAJES_CERT_PATH, TBAI_CERT_PATH, IGIC_CERT_PATH): drop the files
+      # in deploy/certs (gitignored, mkdir -p deploy/certs) and reference them as
+      # /certs/<file> in .env.production.
+      - ./certs:/certs:ro
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
       interval: 15s
@@ -124,17 +123,18 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Same contract as the api service: env_file carries the configuration,
+    # `environment:` only what the compose computes or forces.
+    env_file:
+      - ./.env.production
     environment:
       NODE_ENV: production
       DATABASE_URL: postgresql://${POSTGRES_USER:-hotelos}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-hotelos}
       REDIS_URL: redis://redis:6379
-      JWT_SECRET: ${JWT_SECRET}
-      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
-      VERIFACTU_MODE: ${VERIFACTU_MODE:-sandbox}
-      SES_HOSPEDAJES_MODE: ${SES_HOSPEDAJES_MODE:-sandbox}
-      SENTRY_DSN: ${SENTRY_DSN:-}
       # El worker no corre los schedulers in-process (evita duplicar con la api).
       RUN_SCHEDULERS: "false"
+    volumes:
+      - ./certs:/certs:ro
     networks:
       - internal
 

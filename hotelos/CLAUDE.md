@@ -110,13 +110,22 @@ Pre-commit hook activo en `.husky/pre-commit`:
    - `check-sidebar-coverage.mjs` — orphan screens
    - `check-route-validity.mjs` — broken sidebar links
    - `check-placeholder-budget.mjs` — cap 80 placeholders
-2. typecheck de admin-web (usa `pnpm --filter @hotelos/admin-web
-   typecheck` si pnpm existe, si no cae a npm — hook agnóstico)
+2. `node scripts/typecheck-all.mjs` (alias `pnpm typecheck:all`) — typecheck de TODOS
+   los workspaces (Tanda 4; fallos conocidos listados en KNOWN_FAILURES del script
+   con motivo, nunca en silencio)
 
-Estado verificado:
-- 197 screens, 200 sidebar entries, 56 whitelisted
-- 0 broken links · 75/80 placeholders bajo budget
-- typecheck admin-web + api PASS
+Gates fuera del hook (CI raíz `/.github/workflows/ci.yml`, `working-directory: hotelos`):
+`pnpm test` (contratos, sin BD) · `pnpm test:unit` (unitarios de apps/api, 500+) ·
+`pnpm test:integration` (app.inject sobre Postgres) · `pnpm validate:env` ·
+`node scripts/env-census.mjs` (alias `pnpm env:census`; `pnpm env:census:write` =
+`--write`, regenera `.env.example` y el contrato) · `pnpm db:migrations:check` ·
+fresh-install en BD temporal.
+
+Estado verificado (cierre Tanda 4, 2026-09-14):
+- 190 screens alcanzables · 0 broken links · placeholders bajo budget
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web: sin
+  `@types/react`, ~266 errores preexistentes; añadirla exige regenerar el lockfile)
+- contratos 281/281 · unitarios api 504/504 · integración 31/31 · env 135/135
 
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
@@ -147,7 +156,14 @@ detail, sub-forms de wizards, auth, dev tools).
 cd /home/cesareme/projects/hotelos/hotelos
 pnpm install
 pnpm db:generate            # prisma generate (atajo root)
-pnpm db:push                # prisma db push --skip-generate (crea tablas)
+pnpm db:migrate:deploy      # aplica migraciones versionadas (BD nueva: crea las 251 tablas)
+pnpm db:adopt-baseline -- --apply   # SOLO BD anterior al squash 2026-09-14 (creada con db push):
+                            # registra la baseline como aplicada; dry-run sin --apply
+pnpm db:drift:check         # exit 0 = BD == schema.prisma (tras deploy/adopción)
+# Cambio de schema: pnpm --filter @hotelos/database db:migrate -- --name <cambio> y commit
+# de packages/database/prisma/migrations/<carpeta>. NUNCA db push en BD compartidas
+# (db:push solo para prototipar en local). pnpm db:install:check prueba la instalación
+# desde cero en una BD temporal; pnpm db:migrations:check compara migraciones↔schema sin BD.
 tmux new -s dev
 # pane 1: pnpm dev:api       (API en :3000)
 # pane 2: pnpm dev:web       (admin-web en :5173)
@@ -156,12 +172,84 @@ tmux new -s dev
 cd packages/database && node --env-file=../../.env --import tsx prisma/seed.ts && cd ../..
 pnpm db:seed:commercial     # añade room types, rooms, tarifas sobre prop_123
 
+# Contrato de entorno (Tanda 4): validar un .env y regenerar .env.example tras añadir variables
+node scripts/validate-env.mjs .env --role app
+node scripts/env-census.mjs --write
+
 # Verificación completa antes de commit
 bash .husky/pre-commit
+pnpm test && pnpm test:unit && pnpm test:integration   # contratos + unitarios api + app.inject (BD)
+# En esta shell del Mac solo existe «corepack pnpm»; los scripts raíz encadenan «pnpm» a pelo,
+# así que usa el equivalente: corepack pnpm --filter @hotelos/api test (unitarios), etc.
 
 # Discoverability check standalone
 node scripts/check-discoverability.mjs
 ```
+
+## Seeds
+
+Doce seeds, tres ámbitos. Todos los parametrizables pasan por el guard
+`packages/database/prisma/lib/demo-guard.ts` (`assertDemoTarget`): la allowlist
+demo es `org_123` / `prop_123` / `prop_canary`; cualquier otro objetivo exige
+`SEED_ALLOW_REAL=1` **y** `SEED_CONFIRM=<id exacto[,id]>` o el seed corta con
+exit 2 tras imprimir los `deleteMany` previstos, sin tocar la BD. El contract
+test `tests/demo-seed-contract.test.mjs` exige `assertDemoTarget(` en cada uno.
+
+Orden para un dataset demo desde cero (todos desde `packages/database`, con
+`node --env-file=../../.env --import tsx prisma/<seed>.ts` o el script pnpm):
+
+1. `prisma/seed.ts` — base: org_123 (NIF válido B12345674), prop_123 /
+   prop_canary, usr_123 + Local Super Admin, impuestos IVA/IGIC, edificio,
+   rt_double + room_108/room_432, guest_maria, RES-18392 (llega **hoy+1**,
+   sale hoy+3: fechas relativas), folio/pago, HK, work order, activo, IA.
+   Idempotente: upserts por id fijo y `DEMO_SEED_READY` una sola vez
+   (encadenado al tip del trail si ya hay eventos).
+2. `db:seed:commercial` — prop_123 (`SEED_PROPERTY_ID`): 4 tipos DBL/SUP/JRS/STE,
+   hasta 48 rooms, BAR hoy−45→+120, reservas RVNX-*, forecasts, comp-set
+   (solo borra los 3 competidores que crea), budgets, segmentos, reglas,
+   recomendaciones. Nunca re-tipa una habitación con reservas.
+   `SEED_SCOPE=rates` + `SEED_BAR_PRICES='{"DBL":105}'` (+ `SEED_RATE_DAYS_BACK`
+   / `SEED_RATE_DAYS_AHEAD`) solo reescribe la parrilla BAR del plan existente.
+3. `db:seed:snapshots` — org_123 (`SEED_ORG_ID`), 430 días de
+   `revenue_daily_snapshots` con `dataSource='demo'`; solo borra filas demo,
+   respeta cierres `night_audit` y días ya cerrados; no crea habitaciones salvo
+   propiedad demo con 0 rooms y `SEED_CREATE_ROOMS=1` (si no, «sin inventario»).
+4. `db:seed:compliance` 5. `db:seed:operations` (`opseed_*`) 6. `db:seed:cancellation`
+   7. `db:seed:allotments` (`SEED-*`) 8. `db:seed:fnb` — todos sobre `SEED_PROPERTY_ID`
+   (default prop_123), idempotentes por prefijo/upsert.
+9. `pnpm --filter @hotelos/api rbac:sync` tras cualquier cambio de PERMISSIONS.
+
+Opcional y SOLO demo: `packages/database/seeds/demo-pre-demo-enrichment.mjs`
+(25 reservas PREENR-* por propiedad) itera únicamente la allowlist (+ ids
+confirmados con `SEED_ALLOW_REAL`/`SEED_CONFIRM`; `SEED_PROPERTY_ID` limita a
+una). Se ejecuta SOLO con `corepack pnpm --filter @hotelos/database db:seed:enrich`
+(tsx obligatorio y cwd `packages/database`: `@hotelos/database` solo resuelve
+por los paths del tsconfig; `node` a pelo desde la raíz falla con
+ERR_MODULE_NOT_FOUND). `apps/api/src/seeds/chain-8-hotels.ts` /
+`chain-reservations.ts` son el dataset piloto Iberia (`org_chain_iberia`):
+no mezclar con el demo.
+
+Refresco del demo (Tanda 4): `pnpm --filter @hotelos/api demo:refresh`
+(`src/scripts/refresh-demo-dataset.ts`, dry-run por defecto, `--apply`,
+`--scope audit-orgs|faranda|org123|all`, `--exclude-after <ISO>`, `--json`)
+borra las orgs AUDIT completas, los residuos AUDIT de Faranda/org_123 (las
+reservas con factura VeriFactu o SES se conservan: check-out / cancelación
+por servicio), desplaza las reservas del walkthrough vencidas a [hoy+1,
+hoy+30], libera la 501 y resiembra BAR/snapshots solo si faltan. Tablas
+PROTEGIDAS (assert en código): `audit_events`, `event_stream`, facturas con
+`verifactu_hash`, `verifactu_submissions`, `ses_hospedajes_submissions`,
+series FAC/REC. `demo:fix-identity` (`--apply --confirm <orgId>`) corrige la
+razón social / NIF de Faranda y el NIF de org_123 vía Prisma. Backup antes
+de `--apply` y reinicio del API después (espejos in-memory). Plan e
+inventario: `docs/audits/DEMO-DATASET-2026-09-14.md`.
+
+**Residuos esperados tras una limpieza:** `audit_events` y `event_stream` son
+cadenas hash GLOBALES (un solo génesis, enlaces que cruzan organizaciones):
+nunca se borra trail, así que ids de organización, propiedad o usuario
+huérfanos en esas dos tablas son normales y no un bug. Las facturas
+FAC-2026-000001…, REC-2026-… de Faranda y prop_123/prop_canary son documentos
+de prueba en sandbox (stub VeriFactu) con emisor histórico «AUDIT-T1 SL»:
+snapshots inmutables, no se corrigen ni se borran.
 
 ## Convenciones
 
@@ -234,7 +322,8 @@ node scripts/check-discoverability.mjs
    único validado (`issuer-identity.service.ts`), arqueo POS
    (`/pos/cash-summary`), rate limit efectivo (`RATE_LIMIT_MAX`, 600/min por
    usuario+IP), revenue con `actuals.ts`. Esquema aplicado con `db push` (sin
-   migración → baseline del squash de Tanda 4). Backfills:
+   migración → cubierto por la baseline `20260914000000_baseline_squash` de
+   Tanda 4, ver deuda 11). Backfills:
    `backfill:snapshots`, `backfill:payment-hash --apply`,
    `backfillInvoiceIssuerSnapshots/FolioLinks({dryRun:false})`. Pendiente
    Tanda 3: IVA sin configurar (`ES_UNKNOWN_0`), NIF del productor en el XML
@@ -260,6 +349,64 @@ node scripts/check-discoverability.mjs
     `backfill:taxes --apply`, `backfill:guest-register --apply`. Deuda: Faranda
     con NIF/razón social contaminados (corrección manual), fixtures AUDIT-T3,
     anulaciones legadas bifurcadas en sandbox, TS6059 en compliance/worker.
+
+11. **Migraciones (Tanda 4, DATA-01):** la cadena histórica (6 carpetas de
+    2026-05/06, 248 tablas, 0 FK) se archivó en
+    `packages/database/prisma/migrations-archive/` y se sustituyó por UNA
+    baseline `20260914000000_baseline_squash` generada de `schema.prisma`
+    (251 tablas, 11 enums, 384 índices, 10 FK). BD nueva → `db:migrate:deploy`;
+    BD existente (demo Mac, VPS, dumps previos) → `db:adopt-baseline -- --apply`
+    (idempotente, solo escribe `_prisma_migrations`) y después `migrate deploy`.
+    Deuda: los VPS (72.61.194.216 dev, 76.13.55.180 demo) siguen sin adoptar (el
+    demo tiene esquema anterior a Tandas 2-3: `db push` ANTES de adoptar), los
+    consumidores de `db push` en deploy/ y CI los repunta el lote deploy-install,
+    y Prisma 7 exigirá `prisma.config.ts` (aviso `package.json#prisma`). Guía:
+    `packages/database/MIGRATIONS_README.md`.
+12. **Tanda 4 (auditoría 360, 2026-09-14):** instalabilidad y datos — baseline
+    única + adopción (11), contrato de entorno en `apps/api/src/lib/env.ts`
+    (`assertEnv` al arrancar; `env-census --write` regenera `.env.example`,
+    `deploy/.env.production.example` y `scripts/env-contract.json`; el test de
+    contrato rompe si una variable leída no está documentada), typecheck de los
+    16 workspaces como gate, CORS por allow-list, `Role.templateKey` +
+    `POST /backoffice/properties/:id/roles`, `demo:refresh` (dry-run por defecto;
+    borra residuos AUDIT respetando facturas con hash y partes SES, huérfanos de
+    housekeeping/mensajes, grupos AUDIT solo si todas sus reservas son borrables)
+    y `demo:fix-identity`, guard `assertDemoTarget` en seeds, runtime oficial
+    `node --import tsx` (instalación SIN `--prod`: tsx y prisma son devDependencies
+    a propósito), `deploy/README-INSTALL.md` + `deploy.sh`/`install-from-scratch.sh`/
+    `smoke.sh`, CI en la raíz git. Cierre tras verificación: códigos de reserva por
+    `MAX+1` bajo advisory lock (`lib/reservation-code.ts`; `count+1` colisionaba tras
+    cualquier borrado), rooming-list atómico por fila con numeración continua y 409
+    tipado si nada se importa, check-in abre el folio primario si falta
+    (`ensurePrimaryFolio`) y check-out tolera reservas sin folio (`folio: null`)
+    sin convertir un check-out confirmado en 4xx, errores Prisma saneados en el
+    handler global (`describePrismaError`: P2002 → 409 `UNIQUE_VIOLATION` sin texto
+    de invocación ni rutas), cadena de auditoría hidratada ANTES del bootstrap de
+    tenants y dentro de `buildApiServer` (cada arranque y cada suite de integración
+    creaba una fila génesis nueva). **Deuda que deja:** (a) `pnpm-lock.yaml` en HEAD
+    no cubre `@fontsource-variable/inter`, `zod` y `@playwright/test` de admin-web →
+    `pnpm install --frozen-lockfile` (CI y despliegue) falla hasta que la sesión
+    dueña del lockfile lo regenere y comitee; (b) guest-web fuera del gate hasta ese
+    mismo lockfile (`@types/react`); (c) la cadena de auditoría sigue siendo un tip
+    en memoria por instancia: dos instancias sobre la misma BD (:3000 y :3400 en el
+    Mac) la bifurcan — evidencia de la re-verificación: 9 bifurcaciones en
+    `audit_events` y 6 en `event_stream` por los dos procesos del Mac; `GET
+    /audit-events/integrity` verifica la cadena en memoria (sentinel excluido desde
+    el cierre) — en producción una sola instancia escribe; el sellado dentro
+    de la transacción es trabajo futuro; (d) 20 reservas AUDIT (18 de T0-T3 +
+    AUDIT-T4-REG-001 y RES-00034) y 12 huéspedes «Audit…» con reserva se
+    conservan en Faranda por diseño (factura con hash / parte SES; RES-00028 tiene
+    salida registrada en 2027-07) y siguen abiertos folios de AUDIT-T4-REG-001 y
+    RES-00034; (e) el drawer de check-out del front
+    no lee `warnings` ni tolera `folio: null` explícitamente (hoy solo usa
+    `reservation`); (f) scripts raíz encadenan `pnpm` a pelo (falla en shells sin
+    shim; el instalador hace `corepack enable`); (g) VPS demo sin adoptar
+    (checklist en `deploy/README-INSTALL.md §9`), `EMAIL_PROVIDER` y
+    `VERIFACTU_SOFTWARE_*` por configurar, plantilla `manager` (85 claves) pendiente
+    de decisión de producto; (h) cadena VeriFactu de Faranda no lineal por número
+    (FAC-2026-000014 enlaza al `cancellation_hash` de FAC-2026-000009, no al
+    `verifactu_hash` de la anterior por numeración): válida como grafo, residuo de
+    sandbox.
 
 ## Docs prioritarios
 

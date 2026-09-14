@@ -11,7 +11,10 @@ import { resolve as resolvePath } from "node:path";
       const key = line.slice(0, eq).trim();
       let value = line.slice(eq + 1).trim();
       if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
-      process.env[key] = value;
+      // Never override what the process was started with: an orchestrator
+      // (compose, systemd EnvironmentFile, CI) must always win over a stray
+      // .env on disk — same rule as apps/api/src/server.ts (Tanda 4 · DATA-04).
+      if (process.env[key] === undefined) process.env[key] = value;
     }
     break;
   }

@@ -18,16 +18,16 @@ export function TodayDashboardScreen(props: { onNavigate?: (route: string) => vo
   const data =
     snapshot ??
     ({
-      arrivalsToday: "-",
-      departuresToday: "-",
-      roomsDirty: "-",
-      roomsCleanInspected: "-",
-      roomsOutOfOrder: "-",
-      openMaintenanceTasks: "-",
-      guestMessages: "-",
-      unpaidBalances: "-",
-      failedComplianceRecords: "-",
-      todayRevenue: "-",
+      arrivalsToday: 0,
+      departuresToday: 0,
+      roomsDirty: 0,
+      roomsCleanInspected: 0,
+      roomsOutOfOrder: 0,
+      openMaintenanceTasks: 0,
+      guestMessages: 0,
+      unpaidBalances: 0,
+      failedComplianceRecords: 0,
+      todayRevenue: 0,
       aiDailyBriefing: "Loading briefing."
     } as DashboardSnapshot);
 

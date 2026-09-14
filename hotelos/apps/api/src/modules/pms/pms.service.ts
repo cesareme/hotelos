@@ -6,6 +6,7 @@ import { prisma } from "@hotelos/database";
 // database package — a single @prisma/client copy in the pnpm store.
 import { Prisma } from "@prisma/client";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { allocateReservationCode, withReservationCodeRetry } from "../../lib/reservation-code.js";
 import { buildPage, decodeCursor, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, type Page } from "../../lib/pagination.js";
 import {
   demoStore,
@@ -509,6 +510,14 @@ export async function getReservation(id: string): Promise<ReservationRecord> {
   return withPrimaryGuestId(row);
 }
 
+/** First argument that is a non-blank string, trimmed; undefined otherwise. */
+function firstNonBlank(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
 export async function createReservation(input: {
   context: UserContext;
   propertyId: string;
@@ -563,7 +572,13 @@ export async function createReservation(input: {
     throw new BadRequestError("Departure date must be after arrival date.");
   }
 
-  const reservation = await prisma.$transaction(async (tx) => {
+  // T4 regression: the reservation code is allocated from the MAX existing
+  // suffix under an advisory lock (see lib/reservation-code.ts), never from a
+  // row count — a count collides forever once the sequence has a gap. The
+  // retry wrapper re-runs the WHOLE transaction if the unique index on
+  // (property_id, code) still rejects the insert and turns the third failure
+  // into a typed 409 instead of Prisma's invocation dump.
+  const reservation = await withReservationCodeRetry(() => prisma.$transaction(async (tx) => {
     // SECURITY (audit 2026-06 · NUEVO-1): block cross-tenant writes (IDOR).
     // propertyId arrives from the URL path; verify it belongs to the caller's
     // organization before creating reservations/folios under it. Returning 404
@@ -651,13 +666,22 @@ export async function createReservation(input: {
 
     if (!guestId && input.primaryGuest?.firstName) {
       const g = input.primaryGuest;
+      // Alias tolerance (Tanda 4 · H2): the rooming-list import and most booking
+      // engines send {firstName, lastName}; CreateReservationSchema is passthrough,
+      // so `lastName` used to reach this point untyped and the guest was created
+      // with no surname in silence. Read it as surname1; if neither comes, refuse
+      // rather than persist a nameless guest (SES partes and invoices need it).
+      const surname1 = firstNonBlank(g.surname1, (g as { lastName?: unknown }).lastName);
+      if (!surname1) {
+        throw new BadRequestError("primaryGuest.surname1 (apellido) es obligatorio.");
+      }
       const createdGuest = await tx.guest.create({
         data: {
           organizationId: input.context.organizationId,
           title: g.title ?? null,
           firstName: g.firstName ?? "",
           middleName: g.middleName ?? null,
-          surname1: g.surname1 ?? null,
+          surname1,
           surname2: g.surname2 ?? null,
           documentType: g.documentType ?? null,
           documentNumber: g.documentNumber ?? null,
@@ -691,8 +715,7 @@ export async function createReservation(input: {
       guestId = createdGuest.id;
     }
 
-    const count = await tx.reservation.count({ where: { propertyId: input.propertyId } });
-    const code = `RES-${String(count + 1).padStart(5, "0")}`;
+    const code = await allocateReservationCode(tx, input.propertyId);
 
     const created = await tx.reservation.create({
       data: {
@@ -759,7 +782,7 @@ export async function createReservation(input: {
     });
 
     return Object.assign(created, { primaryGuestId: guestId });
-  });
+  }));
 
   const mapped = mapReservation(reservation);
   mirrorReservation(mapped);

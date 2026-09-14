@@ -34,7 +34,8 @@ export class ApiError extends Error {
 }
 
 export function resolveBaseUrl(): string {
-  const fromEnv = process.env.EXPO_PUBLIC_API_BASE_URL;
+  // Expo inlines EXPO_PUBLIC_* at build time; typed via globalThis so the RN tsconfig needs no @types/node.
+  const fromEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env?.EXPO_PUBLIC_API_BASE_URL;
   if (fromEnv && fromEnv.length > 0) {
     return fromEnv.replace(/\/$/, "");
   }

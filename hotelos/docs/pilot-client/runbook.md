@@ -128,13 +128,22 @@ docker logs --tail=50 hotelos-api-1   # verificar startup
 curl https://api.tudominio.com/health
 ```
 
-Si hay cambio de schema:
+Si hay cambio de schema (migraciones versionadas; el drift guard bloquea DROPs):
 ```bash
-docker exec hotelos-api-1 pnpm exec prisma db push --skip-generate
+docker exec hotelos-api-1 pnpm --filter @hotelos/database db:migrate:deploy
+docker exec hotelos-api-1 pnpm --filter @hotelos/database db:drift:check   # exit 0
 ```
 
-**NUNCA `prisma migrate dev`** en piloto — usa `db push --skip-generate` que es
-aditivo y no destructivo.
+Si la BD del piloto es anterior al squash de migraciones (2026-09-14, creada
+con `db push`), adopta la baseline UNA sola vez antes del primer deploy
+(dry-run por defecto; `--apply` escribe solo en `_prisma_migrations`):
+```bash
+docker exec hotelos-api-1 pnpm --filter @hotelos/database db:adopt-baseline -- --apply
+```
+
+**NUNCA `prisma migrate dev` ni `prisma db push`** en piloto — `migrate dev`
+solo en local para generar la carpeta de migración que luego se commitea; ver
+`packages/database/MIGRATIONS_README.md`.
 
 ### Rotación de JWT_SECRET
 

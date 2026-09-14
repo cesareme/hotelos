@@ -7,7 +7,7 @@
 #
 # Run once as root on a fresh Ubuntu 24.04:
 #   ssh root@<VPS_IP>
-#   curl -fsSL https://raw.githubusercontent.com/cesareme/hotelos/main/deploy/scripts/bootstrap-dev-vps.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/cesareme/hotelos/main/hotelos/deploy/scripts/bootstrap-dev-vps.sh | bash
 #
 # After this finishes, you SSH in as `cesareme` and code as if it were
 # your laptop — except it's a €9/month VPS you can replace in minutes if
@@ -82,12 +82,16 @@ if ! swapon --show | grep -q '/swapfile'; then
     grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
-log "7/12 · Install Node 22 via NodeSource (works for all workspaces)"
+log "7/12 · Install Node 22 via NodeSource + corepack pnpm 9.15.0 (root packageManager)"
 if ! command -v node >/dev/null 2>&1 || [[ "$(node -v)" != v22* ]]; then
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
     apt-get install -y nodejs
 fi
-npm install -g pnpm@latest npm@latest
+# The repo pins pnpm through `packageManager`; corepack honours it. Never
+# `npm install -g pnpm@latest` (version drift) and never npm on the workspace.
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+corepack enable
+corepack prepare pnpm@9.15.0 --activate
 
 log "8/12 · Install PostgreSQL 16 (local dev DB)"
 if ! command -v psql >/dev/null 2>&1; then
@@ -175,15 +179,16 @@ cat <<NEXT
      → pick "hotelos-dev". VS Code opens, looking like the project is
      local, but the files + terminal + Node + Postgres all live on the VPS.
 
-  4. First-time inside the repo (on the VPS):
-       cd ~/projects/hotelos
+  4. First-time inside the repo (on the VPS; the pnpm root is the nested hotelos/):
+       cd ~/projects/hotelos/hotelos
        cp .env.example .env
        nano .env                                  # generate real secrets
-       npm install
-       npm --workspace @hotelos/database run prisma:generate
-       npm --workspace @hotelos/database run db:push
-       npm --workspace @hotelos/api      run dev    # in one tmux pane
-       npm --workspace @hotelos/admin-web run dev   # in another tmux pane
+       corepack pnpm install --frozen-lockfile    # never npm install (workspace:*)
+       corepack pnpm --filter @hotelos/database db:generate
+       corepack pnpm db:migrate:deploy            # existing db-push DB: pnpm db:adopt-baseline -- --apply first
+       corepack pnpm dev:api                      # in one tmux pane
+       corepack pnpm dev:web                      # in another tmux pane
+     Production-style install (systemd + Caddy): deploy/README-INSTALL.md
 
   5. From your laptop browser, open http://localhost:5173/
      SSH port-forward it the first time:

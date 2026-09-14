@@ -652,3 +652,332 @@ describe("cursor pagination contract (REC-05) — parsePageQuery, no DB", () => 
     }
   });
 });
+
+// ── Tanda 4 · rutas-cors ────────────────────────────────────────────────────
+// AUTH-08 CORS allow-list (resolveCorsOrigins, lib/env.ts), the env contract
+// on /health and POST /backoffice/properties/:propertyId/roles. Own app
+// instance: the CORS policy is re-resolved per env change, the /auth/login
+// budget of the main instance is left alone and the rejected-origin log set
+// starts empty. The policy is evaluated per request, so withEnv on the booted
+// app is enough to exercise both the dev fallback and the production rules.
+describe("Tanda 4 · rutas-cors: CORS allow-list, /health env contract and role creation from a template", () => {
+  let app: Awaited<ReturnType<typeof buildApiServer>>;
+  const DEV_ENV = { NODE_ENV: "development", CORS_ALLOWED_ORIGINS: undefined, PILOT_PUBLIC_ORIGIN: undefined } as const;
+  const PROD_ENV = {
+    NODE_ENV: "production",
+    HOTELOS_ALLOW_DEMO_AUTH: "false",
+    CORS_ALLOWED_ORIGINS: "https://demo.anfitorio.es,https://app.cliente.com",
+    PILOT_PUBLIC_ORIGIN: undefined
+  } as const;
+
+  const health = (headers: Headers = {}) => app.inject({ method: "GET", url: "/health", headers });
+  const acao = (res: { headers: Record<string, unknown> }) => res.headers["access-control-allow-origin"];
+
+  before(async () => {
+    app = await buildApiServer();
+    await app.ready();
+  });
+
+  after(async () => {
+    if (app) await app.close();
+  });
+
+  it("dev: reflects the exact allowed origin (localhost / LAN fallback) without Access-Control-Allow-Credentials", async () => {
+    await withEnv({ ...DEV_ENV }, async () => {
+      for (const origin of ["http://localhost:5173", "https://127.0.0.1:8443", "http://192.168.1.50:9999"]) {
+        const res = await health({ origin });
+        assert.equal(res.statusCode, 200);
+        assert.equal(acao(res), origin, `dev fallback must allow ${origin}: ${JSON.stringify(res.headers)}`);
+        assert.equal(res.headers["access-control-allow-credentials"], undefined, "credentials are never reflected (Bearer auth, no cookies)");
+        assert.match(String(res.headers["vary"] ?? ""), /Origin/, "a dynamic origin answer must Vary: Origin");
+      }
+    });
+  });
+
+  it("dev: an origin outside the fallback and the list gets no CORS headers (the request itself still runs)", async () => {
+    await withEnv({ ...DEV_ENV }, async () => {
+      for (const origin of ["https://evil.example.com", "http://10.0.0.5:5173", "http://localhost.evil.com"]) {
+        const res = await health({ origin });
+        assert.equal(res.statusCode, 200, "CORS refusal is header-level: the handler still answers");
+        assert.equal(acao(res), undefined, `${origin} must not receive Access-Control-Allow-Origin`);
+      }
+    });
+  });
+
+  it("dev: a preflight from an allowed origin answers 204 with the methods, headers and a 10-minute cache", async () => {
+    await withEnv({ ...DEV_ENV }, async () => {
+      const res = await app.inject({
+        method: "OPTIONS",
+        url: "/properties",
+        headers: { origin: "http://localhost:5173", "access-control-request-method": "GET", "access-control-request-headers": "authorization" }
+      });
+      assert.equal(res.statusCode, 204, res.body);
+      assert.equal(acao(res), "http://localhost:5173");
+      assert.match(String(res.headers["access-control-allow-methods"]), /GET/);
+      assert.match(String(res.headers["access-control-allow-headers"] ?? ""), /Authorization/i);
+      assert.equal(res.headers["access-control-max-age"], "600");
+      assert.equal(res.headers["access-control-allow-credentials"], undefined);
+    });
+  });
+
+  it("production: only CORS_ALLOWED_ORIGINS (case-insensitive) is allowed; localhost and the LAN are closed", async () => {
+    await withEnv({ ...PROD_ENV }, async () => {
+      for (const origin of ["https://demo.anfitorio.es", "https://app.cliente.com", "https://Demo.Anfitorio.es"]) {
+        const res = await health({ origin });
+        assert.equal(res.statusCode, 200, `/health must stay public in production: ${res.body}`);
+        // The allow-list match is case-insensitive; the header echoes the Origin exactly as sent (what browsers compare).
+        assert.equal(acao(res), origin, `listed origin ${origin}: ${JSON.stringify(res.headers)}`);
+        assert.equal(res.headers["access-control-allow-credentials"], undefined);
+      }
+      for (const origin of ["http://localhost:5173", "http://127.0.0.1:3000", "http://192.168.1.50:9999", "https://evil.example.com", "https://demo.anfitorio.es.evil.com"]) {
+        const res = await health({ origin });
+        assert.equal(res.statusCode, 200);
+        assert.equal(acao(res), undefined, `${origin} must be refused in production: ${JSON.stringify(res.headers)}`);
+      }
+      // No Origin header (curl, same-origin behind Caddy): nothing to reflect, request served.
+      const bare = await health();
+      assert.equal(bare.statusCode, 200);
+      assert.equal(acao(bare), undefined);
+    });
+  });
+
+  it("production: the deprecated PILOT_PUBLIC_ORIGIN alias is folded into the list by resolveCorsOrigins (contract A)", async () => {
+    await withEnv({ ...PROD_ENV, CORS_ALLOWED_ORIGINS: undefined, PILOT_PUBLIC_ORIGIN: "https://legacy.example.com" }, async () => {
+      const allowed = await health({ origin: "https://legacy.example.com" });
+      assert.equal(acao(allowed), "https://legacy.example.com");
+      const refused = await health({ origin: "https://demo.anfitorio.es" });
+      assert.equal(acao(refused), undefined, "an origin only present in the previous env value must not leak through a stale policy");
+    });
+  });
+
+  it("GET /health exposes env: { ok, warnings } as counts (top level and inside checks)", async () => {
+    await withEnv({ ...DEV_ENV }, async () => {
+      const res = await health();
+      assert.equal(res.statusCode, 200);
+      const body = JSON.parse(res.body) as { env: { ok: boolean; warnings: number }; checks: { env: { ok: boolean; warnings: number; message?: string } } };
+      assert.equal(typeof body.env.ok, "boolean");
+      assert.ok(Number.isInteger(body.env.warnings) && body.env.warnings >= 0, `warnings must be a count: ${JSON.stringify(body.env)}`);
+      assert.equal(body.checks.env.ok, body.env.ok);
+      assert.equal(body.checks.env.warnings, body.env.warnings);
+      assert.ok(!("errors" in body.env), "error texts must never be exposed on the public /health");
+    });
+  });
+
+  it("POST …/roles: the token-less demo fallback is refused (401, riskLevel high) before any validation or DB access", async (t) => {
+    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" }, async () => {
+      const [propertyId] = await listPropertyIds(app);
+      if (!propertyId) return t.skip("no property reachable through /properties");
+      const res = await app.inject({
+        method: "POST",
+        url: `/backoffice/properties/${propertyId}/roles`,
+        payload: { name: "Recepción T4", templateKey: "receptionist" }
+      });
+      assert.equal(res.statusCode, 401, res.body);
+      assert.equal((JSON.parse(res.body) as { message: string }).message, "Authentication required.");
+    });
+  });
+
+  it("POST …/roles: a real session gets 400 on a bad body (unknown template, short name) without touching the DB", async (t) => {
+    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" }, async () => {
+      const session = await loginDemo(app);
+      if (!session) return t.skip("demo login unavailable (set INTEGRATION_LOGIN_EMAIL / INTEGRATION_LOGIN_PASSWORD)");
+      const headers = { authorization: `Bearer ${session.token}` };
+      const [propertyId] = await listPropertyIds(app, headers);
+      if (!propertyId) return t.skip("no property reachable through /properties");
+      const url = `/backoffice/properties/${propertyId}/roles`;
+      const unknownTemplate = await app.inject({ method: "POST", url, headers, payload: { name: "Equipo noche", templateKey: "night-shift" } });
+      assert.equal(unknownTemplate.statusCode, 400, unknownTemplate.body);
+      assert.match((JSON.parse(unknownTemplate.body) as { message: string }).message, /templateKey/);
+      assert.match((JSON.parse(unknownTemplate.body) as { message: string }).message, /receptionist/, "the 400 lists the valid template keys");
+      const shortName = await app.inject({ method: "POST", url, headers, payload: { name: "R", templateKey: "receptionist" } });
+      assert.equal(shortName.statusCode, 400, shortName.body);
+      assert.match((JSON.parse(shortName.body) as { message: string }).message, /name/);
+      const noBody = await app.inject({ method: "POST", url, headers, payload: {} });
+      assert.equal(noBody.statusCode, 400, noBody.body);
+    });
+  });
+
+  it("POST …/roles: creates the role with the template's grants (201), lists it for the invite selector, refuses the duplicate name (409) — and cleans up", async (t) => {
+    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" }, async () => {
+      const session = await loginDemo(app);
+      if (!session) return t.skip("demo login unavailable (set INTEGRATION_LOGIN_EMAIL / INTEGRATION_LOGIN_PASSWORD)");
+      const headers = { authorization: `Bearer ${session.token}` };
+      const [propertyId] = await listPropertyIds(app, headers);
+      if (!propertyId) return t.skip("no property reachable through /properties");
+      const url = `/backoffice/properties/${propertyId}/roles`;
+      // Unique per run (unique [organizationId, name]); removed at the end so
+      // the demo dataset is left exactly as found.
+      const name = `Rol T4 rutas-cors ${Date.now().toString(36)}`;
+      const created = await app.inject({ method: "POST", url, headers, payload: { name, templateKey: "receptionist" } });
+      if (created.statusCode === 403) return t.skip(`session lacks roles.manage: ${created.body}`);
+      assert.equal(created.statusCode, 201, created.body);
+      const role = JSON.parse(created.body) as { id: string; name: string; templateKey: string; permissionsCount: number };
+      const { prisma } = await import("@hotelos/database");
+      try {
+        assert.equal(role.name, name);
+        assert.equal(role.templateKey, "receptionist");
+        assert.ok(role.permissionsCount > 0, `a template role must carry grants: ${created.body}`);
+        // Persisted with the template key and the same number of grants.
+        const row = await prisma.role.findUnique({ where: { id: role.id }, select: { templateKey: true, organizationId: true } });
+        assert.equal(row?.templateKey, "receptionist");
+        const grants = await prisma.rolePermission.count({ where: { roleId: role.id } });
+        assert.equal(grants, role.permissionsCount);
+        // Visible to the invite selector of the same property.
+        const listed = (await getJson<Array<{ id: string; name: string; permissionsCount?: number }>>(app, url, headers)) ?? [];
+        const mine = listed.find((entry) => entry.id === role.id);
+        assert.ok(mine, `created role missing from GET ${url}`);
+        assert.equal(mine.name, name);
+        // Same name in the same organisation → 409 (contract B).
+        const duplicate = await app.inject({ method: "POST", url, headers, payload: { name, templateKey: "manager" } });
+        assert.equal(duplicate.statusCode, 409, duplicate.body);
+        assert.equal((JSON.parse(duplicate.body) as { error: string }).error, "Conflict");
+        assert.equal(await prisma.role.count({ where: { organizationId: row!.organizationId, name } }), 1, "the duplicate must not have created a second row");
+      } finally {
+        await prisma.rolePermission.deleteMany({ where: { roleId: role.id } });
+        await prisma.role.deleteMany({ where: { id: role.id } });
+      }
+    });
+  });
+});
+
+describe("Tanda 4 · cierre: reservation codes survive gaps and check-out tolerates a folio-less stay", () => {
+  let app: ApiApp;
+  before(async () => {
+    app = await buildApiServer();
+    await app.ready();
+  });
+  after(async () => {
+    await app.close();
+  });
+
+  const isoDay = (offsetDays: number): string => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + offsetDays);
+    return d.toISOString().slice(0, 10);
+  };
+
+  /** A sellable, unblocked, unoccupied room whose type the reservation can book; null when the box has none. */
+  async function findFreeRoom(): Promise<{ id: string; propertyId: string; roomTypeId: string; status: string; housekeepingStatus: string } | null> {
+    const { prisma } = await import("@hotelos/database");
+    const busy = await prisma.reservation.findMany({
+      where: { assignedRoomId: { not: null }, status: { in: ["confirmed", "checked_in"] } },
+      select: { assignedRoomId: true }
+    });
+    const busyIds = busy.map((r) => r.assignedRoomId).filter((id): id is string => Boolean(id));
+    return prisma.room.findFirst({
+      where: { active: true, sellable: true, status: { not: "occupied" }, maintenanceStatus: { not: "blocked" }, id: { notIn: busyIds } },
+      select: { id: true, propertyId: true, roomTypeId: true, status: true, housekeepingStatus: true },
+      orderBy: { number: "asc" }
+    });
+  }
+
+  /** Hard-deletes a reservation created by these tests (no fiscal document ever attached). */
+  async function deleteTestReservation(reservationId: string, guestId: string | null): Promise<void> {
+    const { prisma } = await import("@hotelos/database");
+    await prisma.guestRegisterRecord.deleteMany({ where: { reservationId } });
+    await prisma.reservationGuest.deleteMany({ where: { reservationId } });
+    await prisma.stay.deleteMany({ where: { reservationId } });
+    await prisma.folio.deleteMany({ where: { reservationId } });
+    await prisma.reservation.deleteMany({ where: { id: reservationId } });
+    if (guestId) {
+      const stillLinked = await prisma.reservationGuest.count({ where: { guestId } });
+      if (stillLinked === 0) await prisma.guest.deleteMany({ where: { id: guestId } });
+    }
+  }
+
+  it("POST /properties/:id/reservations allocates consecutive codes from MAX(code)+1, never count+1 (regresión T4)", async (t) => {
+    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" }, async () => {
+      const session = await loginDemo(app);
+      if (!session) return t.skip("demo login unavailable (set INTEGRATION_LOGIN_EMAIL / INTEGRATION_LOGIN_PASSWORD)");
+      const headers = { authorization: `Bearer ${session.token}` };
+      const room = await findFreeRoom();
+      if (!room) return t.skip("no sellable room on this box");
+      const url = `/properties/${room.propertyId}/reservations`;
+      const payload = (n: number) => ({
+        arrivalDate: isoDay(30),
+        departureDate: isoDay(32),
+        roomTypeId: room.roomTypeId,
+        bookerName: `AUDIT-IT cierre codes ${n}`,
+        primaryGuest: { firstName: "Audit", lastName: `CierreCodes${n}` }
+      });
+      const created: Array<{ id: string; code: string; primaryGuestId: string | null }> = [];
+      try {
+        for (const n of [1, 2]) {
+          const res = await app.inject({ method: "POST", url, headers, payload: payload(n) });
+          assert.ok(res.statusCode === 200 || res.statusCode === 201, `${res.statusCode} ${res.body}`);
+          created.push(JSON.parse(res.body) as { id: string; code: string; primaryGuestId: string | null });
+        }
+        const [first, second] = created;
+        assert.match(first.code, /^RES-\d{5,}$/);
+        assert.match(second.code, /^RES-\d{5,}$/);
+        assert.notEqual(first.code, second.code);
+        // Consecutive: the allocator takes MAX(suffix)+1 under an advisory lock,
+        // so the second code is exactly the first plus one even when the
+        // property's history has gaps (count+1 used to collide on RES-00036).
+        assert.equal(Number(second.code.slice(4)), Number(first.code.slice(4)) + 1);
+      } finally {
+        for (const r of created) await deleteTestReservation(r.id, r.primaryGuestId);
+      }
+    });
+  });
+
+  it("POST /reservations/:id/check-out is 200 (folio: null) for an in-house reservation without folio; check-in opens the primary folio", async (t) => {
+    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development" }, async () => {
+      const session = await loginDemo(app);
+      if (!session) return t.skip("demo login unavailable (set INTEGRATION_LOGIN_EMAIL / INTEGRATION_LOGIN_PASSWORD)");
+      const headers = { authorization: `Bearer ${session.token}` };
+      const room = await findFreeRoom();
+      if (!room) return t.skip("no sellable room on this box");
+      const { prisma } = await import("@hotelos/database");
+      const startedAt = new Date();
+      const createRes = await app.inject({
+        method: "POST",
+        url: `/properties/${room.propertyId}/reservations`,
+        headers,
+        payload: {
+          arrivalDate: isoDay(0),
+          departureDate: isoDay(1),
+          roomTypeId: room.roomTypeId,
+          bookerName: "AUDIT-IT cierre check-out sin folio",
+          primaryGuest: { firstName: "Audit", lastName: "CierreSinFolio" }
+        }
+      });
+      assert.ok(createRes.statusCode === 200 || createRes.statusCode === 201, `${createRes.statusCode} ${createRes.body}`);
+      const reservation = JSON.parse(createRes.body) as { id: string; primaryGuestId: string | null };
+      try {
+        const checkIn = await app.inject({
+          method: "POST",
+          url: `/reservations/${reservation.id}/check-in`,
+          headers,
+          payload: { roomId: room.id, allowEarlyCheckIn: true, overrideReason: "integration test (Tanda 4 cierre)" }
+        });
+        if (checkIn.statusCode === 403) return t.skip(`session cannot check in: ${checkIn.body}`);
+        assert.equal(checkIn.statusCode, 200, checkIn.body);
+        const checkInBody = JSON.parse(checkIn.body) as { status: string; folio?: { id: string; created: boolean } | null };
+        assert.equal(checkInBody.status, "checked_in");
+        assert.ok(checkInBody.folio && typeof checkInBody.folio.id === "string", `check-in must report the primary folio: ${checkIn.body}`);
+        // Legacy shape: a stay that reached checked_in before Tanda 4 with no
+        // folio at all (rooming-list imports). Reproduce it by removing the
+        // folio underneath the in-house reservation.
+        await prisma.folio.deleteMany({ where: { reservationId: reservation.id } });
+        const checkOut = await app.inject({ method: "POST", url: `/reservations/${reservation.id}/check-out`, headers, payload: {} });
+        assert.equal(checkOut.statusCode, 200, checkOut.body);
+        const out = JSON.parse(checkOut.body) as { reservation: { status: string }; folio: unknown; folios: unknown[]; warnings: string[] };
+        assert.equal(out.reservation.status, "checked_out");
+        assert.equal(out.folio, null);
+        assert.deepEqual(out.folios, []);
+        assert.ok(!out.warnings.includes("folio_close_failed"), `unexpected warning: ${checkOut.body}`);
+        const row = await prisma.reservation.findUnique({ where: { id: reservation.id }, select: { status: true } });
+        assert.equal(row?.status, "checked_out");
+      } finally {
+        // Leave the room and the housekeeping board as found: the departure
+        // task created by the check-out and the room status flip are undone.
+        const tasks = await prisma.housekeepingTask.findMany({ where: { roomId: room.id, createdAt: { gte: startedAt } }, select: { id: true } });
+        await prisma.housekeepingEvent.deleteMany({ where: { taskId: { in: tasks.map((task) => task.id) } } });
+        await prisma.housekeepingTask.deleteMany({ where: { id: { in: tasks.map((task) => task.id) } } });
+        await prisma.room.update({ where: { id: room.id }, data: { status: room.status as never, housekeepingStatus: room.housekeepingStatus as never } });
+        await deleteTestReservation(reservation.id, reservation.primaryGuestId);
+      }
+    });
+  });
+});

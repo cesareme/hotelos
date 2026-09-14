@@ -8,7 +8,59 @@ import { queueExtraProjections } from "../accounting/posting-rules/index.js";
 import { queueVerifactuSubmission } from "../invoicing/verifactu-submission.service.js";
 import { queueNotificationsForEvent } from "../notifications/event-hooks.service.js";
 
+// Audit trail + domain event stream, each a SHA-256 hash chain: every record
+// hashes its own contents plus the previousHash of the record sealed before it.
+//
+// Known limitation (CLAUDE.md §Deuda 12(c), NOT solved here): the chain tip
+// lives in memory, per process. `hydrateAuditChainFromPostgres` reads the
+// latest hash once at boot and seeds the ring with a sentinel (see
+// CHAIN_TIP_MARKER); from then on each instance chains against its own tail.
+// Two processes writing to the same database (:3000 and :3400 on the demo Mac)
+// therefore fork the chain — production runs a single writer, and sealing
+// inside the business transaction is future work.
 const HASH_ALGORITHM = "sha256" as const;
+
+/**
+ * `action` / `eventType` of the sentinel that anchors the in-memory ring to the
+ * Postgres tip. Its contents are fabricated (empty org, boot timestamp), so it is
+ * never hashed: integrity checks use its currentHash as the expected previousHash
+ * of the first real record and exclude it from the count.
+ */
+export const CHAIN_TIP_MARKER = "__CHAIN_TIP__";
+
+export function auditChainTipSentinel(id: string, currentHash: string): AuditEvent {
+  return {
+    id,
+    organizationId: "",
+    actorType: "system",
+    action: CHAIN_TIP_MARKER,
+    entityType: "chain_tip",
+    hashAlgorithm: HASH_ALGORITHM,
+    currentHash,
+    createdAt: new Date().toISOString()
+  } as AuditEvent;
+}
+
+export function eventChainTipSentinel(eventId: string, currentHash: string): EventEnvelope {
+  return {
+    eventId,
+    organizationId: "",
+    propertyId: "",
+    entityType: "chain_tip",
+    entityId: "",
+    eventType: CHAIN_TIP_MARKER,
+    payload: {},
+    actorType: "system",
+    correlationId: "",
+    hashAlgorithm: HASH_ALGORITHM,
+    currentHash,
+    createdAt: new Date().toISOString()
+  } as EventEnvelope;
+}
+
+function isChainTip(record: { action?: string; eventType?: string }): boolean {
+  return record.action === CHAIN_TIP_MARKER || record.eventType === CHAIN_TIP_MARKER;
+}
 
 // Serialized Prisma write queue. Audit events are sealed synchronously into
 // demoStore (preserving the in-memory chain); Postgres mirroring happens via
@@ -95,33 +147,11 @@ export async function hydrateAuditChainFromPostgres(): Promise<{
   ]);
 
   if (latestAudit && demoStore.auditEvents.length === 0) {
-    demoStore.auditEvents.push({
-      id: latestAudit.id,
-      organizationId: "",
-      actorType: "system",
-      action: "__CHAIN_TIP__",
-      entityType: "chain_tip",
-      hashAlgorithm: HASH_ALGORITHM,
-      currentHash: latestAudit.currentHash,
-      createdAt: new Date().toISOString()
-    } as AuditEvent);
+    demoStore.auditEvents.push(auditChainTipSentinel(latestAudit.id, latestAudit.currentHash));
   }
 
   if (latestEvent && demoStore.events.length === 0) {
-    demoStore.events.push({
-      eventId: latestEvent.eventId,
-      organizationId: "",
-      propertyId: "",
-      entityType: "chain_tip",
-      entityId: "",
-      eventType: "__CHAIN_TIP__",
-      payload: {},
-      actorType: "system",
-      correlationId: "",
-      hashAlgorithm: HASH_ALGORITHM,
-      currentHash: latestEvent.currentHash,
-      createdAt: new Date().toISOString()
-    } as EventEnvelope);
+    demoStore.events.push(eventChainTipSentinel(latestEvent.eventId, latestEvent.currentHash));
   }
 
   return {
@@ -150,7 +180,7 @@ export function createIntegrityHash(value: unknown): string {
   return createHash(HASH_ALGORITHM).update(stableStringify(value)).digest("hex");
 }
 
-function sealAuditEvent(event: Omit<AuditEvent, "hashAlgorithm" | "previousHash" | "currentHash">): AuditEvent {
+export function sealAuditEvent(event: Omit<AuditEvent, "hashAlgorithm" | "previousHash" | "currentHash">): AuditEvent {
   const previousHash = demoStore.auditEvents.at(-1)?.currentHash;
   const hashable = {
     ...event,
@@ -164,7 +194,7 @@ function sealAuditEvent(event: Omit<AuditEvent, "hashAlgorithm" | "previousHash"
   };
 }
 
-function sealDomainEvent(event: Omit<EventEnvelope, "hashAlgorithm" | "previousHash" | "currentHash">): EventEnvelope {
+export function sealDomainEvent(event: Omit<EventEnvelope, "hashAlgorithm" | "previousHash" | "currentHash">): EventEnvelope {
   const previousHash = demoStore.events.at(-1)?.currentHash;
   const hashable = {
     ...event,
@@ -178,17 +208,30 @@ function sealDomainEvent(event: Omit<EventEnvelope, "hashAlgorithm" | "previousH
   };
 }
 
-function verifyChain<T extends { id?: string; eventId?: string; previousHash?: string; currentHash: string; hashAlgorithm: "sha256" }>(
-  records: T[]
-): { valid: true; count: number } | { valid: false; count: number; brokenAt: string; reason: string } {
-  let previousHash: string | undefined;
+export type ChainVerification =
+  | { valid: true; count: number; anchoredTo?: string }
+  | { valid: false; count: number; anchoredTo?: string; brokenAt: string; reason: string };
 
-  for (const record of records) {
+// Walks the in-memory ring. A hydration sentinel at the head is the starting
+// point, not a record: its fabricated contents are never re-hashed, its
+// currentHash is the previousHash the first real record must carry, and it is
+// left out of `count`. A sentinel anywhere else is verified like any record
+// and fails honestly (its contents never hash to its currentHash).
+function verifyChain<T extends { id?: string; eventId?: string; action?: string; eventType?: string; previousHash?: string; currentHash: string; hashAlgorithm: "sha256" }>(
+  records: T[]
+): ChainVerification {
+  const head = records[0];
+  const anchoredTo = head && isChainTip(head) ? head.currentHash : undefined;
+  const chain = anchoredTo ? records.slice(1) : records;
+  let previousHash: string | undefined = anchoredTo;
+
+  for (const record of chain) {
     const { currentHash, ...hashable } = record;
     if (record.previousHash !== previousHash) {
       return {
         valid: false,
-        count: records.length,
+        count: chain.length,
+        anchoredTo,
         brokenAt: record.id ?? record.eventId ?? "unknown",
         reason: "Previous hash does not match prior record."
       };
@@ -198,7 +241,8 @@ function verifyChain<T extends { id?: string; eventId?: string; previousHash?: s
     if (currentHash !== expectedHash) {
       return {
         valid: false,
-        count: records.length,
+        count: chain.length,
+        anchoredTo,
         brokenAt: record.id ?? record.eventId ?? "unknown",
         reason: "Current hash does not match record contents."
       };
@@ -207,7 +251,7 @@ function verifyChain<T extends { id?: string; eventId?: string; previousHash?: s
     previousHash = currentHash;
   }
 
-  return { valid: true, count: records.length };
+  return { valid: true, count: chain.length, anchoredTo };
 }
 
 export function recordAuditEvent(input: {
@@ -262,10 +306,10 @@ export function recordDomainEvent(input: Omit<EventEnvelope, "eventId" | "create
   return event;
 }
 
-export function verifyAuditIntegrity() {
+export function verifyAuditIntegrity(): ChainVerification {
   return verifyChain(demoStore.auditEvents);
 }
 
-export function verifyDomainEventIntegrity() {
+export function verifyDomainEventIntegrity(): ChainVerification {
   return verifyChain(demoStore.events);
 }

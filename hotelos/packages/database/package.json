@@ -5,10 +5,12 @@
   "type": "module",
   "scripts": {
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate": "node --env-file-if-exists=../../.env node_modules/prisma/build/index.js migrate dev",
+    "db:migrate:deploy": "node --env-file-if-exists=../../.env node_modules/prisma/build/index.js migrate deploy",
+    "db:migrate:status": "node --env-file-if-exists=../../.env node_modules/prisma/build/index.js migrate status",
+    "db:adopt-baseline": "node --env-file-if-exists=../../.env scripts/adopt-baseline.mjs",
     "db:push": "prisma db push --skip-generate",
-    "db:drift:check": "prisma migrate diff --from-url \"$DATABASE_URL\" --to-schema-datamodel prisma/schema.prisma --exit-code",
+    "db:drift:check": "node --env-file-if-exists=../../.env node_modules/prisma/build/index.js migrate diff --from-schema-datasource prisma/schema.prisma --to-schema-datamodel prisma/schema.prisma --exit-code",
     "db:seed": "prisma db seed",
     "db:seed:commercial": "node --env-file=../../.env --import tsx prisma/seed-commercial-demo.ts",
     "db:seed:snapshots": "node --env-file=../../.env --import tsx prisma/seed-revenue-snapshots.ts",
@@ -17,6 +19,7 @@
     "db:seed:cancellation": "node --env-file=../../.env --import tsx prisma/seed-cancellation-policies.ts",
     "db:seed:allotments": "node --env-file=../../.env --import tsx prisma/seed-allotments.ts",
     "db:seed:fnb": "node --env-file=../../.env --import tsx prisma/seed-fnb-inventory.ts",
+    "db:seed:enrich": "node --env-file=../../.env --import tsx seeds/demo-pre-demo-enrichment.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint ."
   },

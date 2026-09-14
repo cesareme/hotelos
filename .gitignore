@@ -1,0 +1,3 @@
+# Raíz del repo (el código vive en hotelos/). Dumps locales de Postgres: nunca al repo.
+backups/
+*.dump

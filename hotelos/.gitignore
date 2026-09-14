@@ -58,4 +58,5 @@ test-results/
 
 # Worktree scratch
 worktrees/
-
+# Tanda 4: certificados montados en /certs (VeriFactu/SES/TBAI)
+deploy/certs/

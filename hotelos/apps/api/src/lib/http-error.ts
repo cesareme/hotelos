@@ -41,8 +41,55 @@ export class NotFoundError extends HttpError {
 }
 
 export class ConflictError extends HttpError {
-  constructor(message = "Conflict") {
-    super(409, message);
+  /** `details` is forwarded on the 409 body (e.g. { code: "RESERVATION_CODE_CONFLICT" }). */
+  constructor(message = "Conflict", details?: unknown) {
+    super(409, message, true, details);
+  }
+}
+
+/**
+ * Translate a Prisma known-request error into a client-safe HTTP description
+ * (status + Spanish message + machine-readable details). Prisma's own
+ * `message` embeds the invocation text (and in dev the source path/lines),
+ * which must never reach an API response. Returns null for anything that is
+ * not one of the recognised codes so callers can fall back to their own
+ * handling. Companion of `statusCodeForError` (kept intact — this one adds
+ * the message/details layer).
+ */
+export function describePrismaError(
+  error: unknown
+): { statusCode: number; message: string; details: Record<string, unknown> } | null {
+  if (!error || typeof error !== "object") return null;
+  const e = error as { code?: unknown; meta?: unknown };
+  if (typeof e.code !== "string") return null;
+  const meta = (e.meta && typeof e.meta === "object" ? e.meta : {}) as Record<string, unknown>;
+  switch (e.code) {
+    case "P2002": // unique constraint violation
+      return {
+        statusCode: 409,
+        message: "Ya existe un registro con el mismo valor único.",
+        details: { code: "UNIQUE_VIOLATION", target: meta.target ?? null }
+      };
+    case "P2025": // record not found (update/delete on a missing row)
+      return {
+        statusCode: 404,
+        message: "El registro no existe.",
+        details: { code: "NOT_FOUND" }
+      };
+    case "P2003": // FK constraint
+      return {
+        statusCode: 400,
+        message: "Referencia inválida.",
+        details: { code: "FK_VIOLATION", field: meta.field_name ?? null }
+      };
+    case "P2000": // value too long for the column
+      return {
+        statusCode: 400,
+        message: "Valor demasiado largo.",
+        details: { code: "VALUE_TOO_LONG", column: meta.column_name ?? null }
+      };
+    default:
+      return null;
   }
 }
 

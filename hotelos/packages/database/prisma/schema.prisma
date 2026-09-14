@@ -2421,8 +2421,11 @@ model Role {
   id             String @id @default(cuid())
   organizationId String @map("organization_id")
   name           String
+  /// Tanda 4 (AUTH-07): role template this role was created from ('owner' | 'manager' | 'reception' | ...); null = custom role.
+  templateKey    String?  @map("template_key")
 
   @@unique([organizationId, name])
+  @@index([organizationId, templateKey])
   @@map("roles")
 }
 

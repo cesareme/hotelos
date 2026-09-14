@@ -205,7 +205,7 @@ packages/compliance/ implementa real, NO mock:
 
 Pre-commit hook activo en .husky/pre-commit:
   1. node scripts/check-discoverability.mjs (corre los 3 sub-checks)
-  2. npm --workspace @hotelos/admin-web run typecheck
+  2. corepack pnpm --filter @hotelos/admin-web typecheck
 
 Sub-checks:
   - check-sidebar-coverage.mjs: para cada .tsx en
@@ -301,20 +301,21 @@ Si no quieres leer 300+ KB, prioriza estos:
 
   # Subir API + admin-web local
   cd /home/cesareme/projects/hotelos/hotelos
-  npm install
-  npm --workspace @hotelos/database run prisma:generate
-  npm --workspace @hotelos/database run db:push
+  corepack pnpm install --frozen-lockfile      # nunca npm (workspace:* → EUNSUPPORTEDPROTOCOL)
+  corepack pnpm --filter @hotelos/database db:generate
+  # Esquema: el VPS dev es una BD compartida → NUNCA db push; solo:
+  corepack pnpm db:adopt-baseline -- --apply && corepack pnpm db:migrate:deploy && corepack pnpm db:drift:check
   tmux new -s dev
-  # En un pane: npm --workspace @hotelos/api run dev
-  # En otro: npm --workspace @hotelos/admin-web run dev
+  # En un pane: corepack pnpm --filter @hotelos/api dev
+  # En otro: corepack pnpm --filter @hotelos/admin-web dev
   # Ctrl-a d para detach
   # tmux attach -t dev para volver
 
   # Verificación full antes de commit
   bash .husky/pre-commit
 
-  # Seed demo
-  node packages/database/seeds/demo-pre-demo-enrichment.mjs
+  # Seed demo de enriquecimiento (solo allowlist demo; tsx obligatorio)
+  corepack pnpm --filter @hotelos/database db:seed:enrich
 
   # Workflows multi-agente (para tareas grandes)
   # — los lanzo desde Claude con la tool Workflow

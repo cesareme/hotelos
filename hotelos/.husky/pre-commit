@@ -23,14 +23,15 @@ echo "🔍 Pre-commit: discoverability check..."
 node scripts/check-discoverability.mjs
 
 echo ""
-echo "🧪 Pre-commit: typecheck admin-web..."
-# Package-manager-agnostic: pnpm on the VPS (pnpm-installed node_modules),
-# npm on machines without pnpm. Both just run the workspace's typecheck script.
-if command -v pnpm >/dev/null 2>&1; then
-  pnpm --filter @hotelos/admin-web typecheck
-else
-  npm --workspace @hotelos/admin-web run typecheck --silent
-fi
+echo "🧪 Pre-commit: typecheck de TODOS los workspaces (scripts/typecheck-all.mjs)..."
+# Tanda 4 (QC-07): the gate covers every workspace (admin-web, api, worker,
+# ai-gateway, packages/*), not only admin-web — the API and the worker were red
+# for weeks without anyone noticing. Measured 2026-09-14 on the Mac Pro:
+# ~20 s with --parallel 2 (admin-web 13 s + api 10 s dominate), well under the
+# 90 s budget for a hook. It runs each workspace through `corepack pnpm run
+# typecheck`, so it needs no globally installed pnpm; explicit skips/known
+# failures are printed with their reason, never silent.
+node scripts/typecheck-all.mjs --parallel 2
 
 echo ""
 echo "✅ Pre-commit checks passed."

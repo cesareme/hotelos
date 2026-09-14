@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { afterEach, beforeEach, describe, it } from "node:test";
+import { after, afterEach, before, beforeEach, describe, it } from "node:test";
 import {
   __resetCryptoWarningForTests,
   decryptField,
@@ -19,6 +19,28 @@ function clearKey(): void {
   delete process.env.HOTELOS_FIELD_KEY;
   __resetCryptoWarningForTests();
 }
+
+// crypto-fields.ts falls back to ENCRYPTION_KEY when HOTELOS_FIELD_KEY is
+// unset, so a developer shell with `.env` sourced (or CI exporting the key)
+// made the "missing key" tests see a valid key. Pin the environment the
+// suite assumes and restore whatever the shell had afterwards.
+const ISOLATED_KEYS = ["ENCRYPTION_KEY", "HOTELOS_FIELD_KEY", "HOTELOS_LOOKUP_HASH_KEY"] as const;
+const savedEnv = new Map<string, string | undefined>();
+before(() => {
+  for (const name of ISOLATED_KEYS) {
+    savedEnv.set(name, process.env[name]);
+    delete process.env[name];
+  }
+  __resetCryptoWarningForTests();
+});
+after(() => {
+  for (const name of ISOLATED_KEYS) {
+    const value = savedEnv.get(name);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+  __resetCryptoWarningForTests();
+});
 
 describe("crypto.service (envelope encryption)", () => {
   afterEach(clearKey);

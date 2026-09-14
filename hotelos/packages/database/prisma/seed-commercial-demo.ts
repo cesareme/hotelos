@@ -21,7 +21,13 @@
 //   back to the median nightly amount of the property's OWN reservations of
 //   that type, and is skipped (with a warning) when neither exists — no price
 //   is ever invented.
+//
+// Guarded by assertDemoTarget (Tanda 4 · DATA-05): SEED_PROPERTY_ID outside the
+// demo allowlist needs SEED_ALLOW_REAL=1 + SEED_CONFIRM=<property id>. Scope
+// "full" never reassigns the room type of a room that has reservations and
+// only deletes the competitor hotels this seed itself creates.
 import { PrismaClient } from "@prisma/client";
+import { assertDemoTarget } from "./lib/demo-guard.js";
 
 const prisma = new PrismaClient();
 const PROPERTY_ID = process.env.SEED_PROPERTY_ID ?? "prop_123";
@@ -170,6 +176,23 @@ async function seedBarRateGrid(propertyId: string): Promise<void> {
 }
 
 async function main() {
+  assertDemoTarget({
+    propertyId: PROPERTY_ID,
+    action: `seed-commercial-demo (scope ${SEED_SCOPE})`,
+    planned:
+      SEED_SCOPE === "rates"
+        ? [{ table: "rate_days", op: "deleteMany", where: "plan BAR · ventana SEED_RATE_DAYS_BACK/AHEAD" }]
+        : [
+            { table: "room_types", op: "update", where: "códigos distintos de DBL/SUP/JRS/STE → active=false" },
+            { table: "rooms", op: "update", where: `roomTypeId reasignado (solo habitaciones sin reservas) · hasta ${SELLABLE_TARGET} creadas` },
+            { table: "rate_days", op: "deleteMany", where: "plan BAR · hoy−45 → hoy+120" },
+            { table: "reservations", op: "deleteMany", where: "code RVNX-*" },
+            { table: "revenue_forecasts", op: "deleteMany", where: "hoy → hoy+90" },
+            { table: "competitor_rate_snapshots", op: "deleteMany", where: "shopDate = hoy" },
+            { table: "competitor_hotels", op: "deleteMany", where: "solo los 3 nombres que crea este seed" },
+            { table: "revenue_recommendations", op: "deleteMany", where: "status pending" }
+          ]
+  });
   const property = await prisma.property.findUnique({ where: { id: PROPERTY_ID } });
   if (!property) throw new Error(`Property ${PROPERTY_ID} not found`);
   console.log(`[seed] property ${PROPERTY_ID} (${property.name}) · scope ${SEED_SCOPE}`);
@@ -222,13 +245,27 @@ async function main() {
   }
   // Mark first SELLABLE_TARGET sellable and assign their type from the weighted
   // pool (force-reassign so legacy single-type rooms get spread across the 4).
+  // A room that already holds reservations (e.g. room_432 / room_108 of the
+  // base seed) keeps its type: re-typing it would silently change what the
+  // guest booked.
+  const roomsWithReservations = new Set(
+    (
+      await prisma.reservation.findMany({
+        where: { propertyId: PROPERTY_ID, assignedRoomId: { not: null }, deletedAt: null },
+        select: { assignedRoomId: true },
+        distinct: ["assignedRoomId"]
+      })
+    ).map((r) => r.assignedRoomId as string)
+  );
   let sellable = 0;
   for (const room of rooms) {
     const makeSellable = sellable < SELLABLE_TARGET;
-    const rtId = makeSellable ? (typePool[sellable] ?? roomTypes[sellable % roomTypes.length].id) : (room.roomTypeId ?? roomTypes[0].id);
+    const pooled = makeSellable ? (typePool[sellable] ?? roomTypes[sellable % roomTypes.length].id) : (room.roomTypeId ?? roomTypes[0].id);
+    const rtId = roomsWithReservations.has(room.id) ? room.roomTypeId : pooled;
     await prisma.room.update({ where: { id: room.id }, data: { sellable: makeSellable, roomTypeId: rtId } });
     if (makeSellable) sellable++;
   }
+  if (roomsWithReservations.size > 0) console.log(`[seed] rooms with reservations kept their room type: ${roomsWithReservations.size}`);
   // Per-type sellable distribution (round-robin from above keeps it even).
   const sellableRooms = await prisma.room.findMany({ where: { propertyId: PROPERTY_ID, sellable: true }, select: { roomTypeId: true } });
   const typeCap = new Map<string, number>();
@@ -360,13 +397,15 @@ async function main() {
   console.log(`[seed] forecasts: ${fcRows.length}`);
 
   // --- Competitors + comp-set snapshots ---
-  await prisma.competitorRateSnapshot.deleteMany({ where: { propertyId: PROPERTY_ID, shopDate: today } });
-  await prisma.competitorHotel.deleteMany({ where: { propertyId: PROPERTY_ID } });
   const comps = [
     { name: "Catalonia Centro", category: "4*", score: 0.9, offset: -0.04 },
     { name: "Eurostars Plaza", category: "4*", score: 0.85, offset: 0.06 },
     { name: "NH Collection Gran Vía", category: "5*", score: 0.8, offset: 0.14 }
   ];
+  await prisma.competitorRateSnapshot.deleteMany({ where: { propertyId: PROPERTY_ID, shopDate: today } });
+  // Only the competitors this seed owns are rebuilt; a comp-set entered by the
+  // hotel (or another seed) survives a re-run.
+  await prisma.competitorHotel.deleteMany({ where: { propertyId: PROPERTY_ID, name: { in: comps.map((c) => c.name) } } });
   const compRows: Record<string, unknown>[] = [];
   for (const c of comps) {
     const comp = await prisma.competitorHotel.create({ data: { propertyId: PROPERTY_ID, name: c.name, category: c.category, comparableScore: c.score, active: true } });

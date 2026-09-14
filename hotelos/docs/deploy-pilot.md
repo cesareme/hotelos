@@ -1,3 +1,11 @@
+> **OBSOLETO (Tanda 4 · 2026-09-14).** Esta guía (ngrok / Railway / VPS con
+> `infra/docker`) usa `npm` y `db push`; `infra/docker/*` y
+> `scripts/deploy-pilot.sh init` con compose piloto ya no existen. La guía
+> vigente es **[`deploy/README-INSTALL.md`](../deploy/README-INSTALL.md)**
+> (nativa: `install-from-scratch.sh --demo|--real`) y, para Docker,
+> `deploy/docker-compose.production.yml` + `deploy.sh --role compose`. Se
+> conserva por el contexto de decisión (duración del piloto, GDPR, checklist).
+
 # Deploy HotelOS para piloto con cliente
 
 Guía concreta para llevar HotelOS a un cliente piloto en menos de una tarde.
@@ -32,8 +40,8 @@ Antes de elegir camino, responde:
 ```bash
 # 1. Arranca local (lo que ya haces)
 cd "/Users/cfernandez/Documents/New project/hotelos"
-npm --workspace @hotelos/api run dev          # :3000
-npm --workspace @hotelos/admin-web run dev    # :5173
+corepack pnpm dev:api          # :3000
+corepack pnpm dev:web          # :5173
 
 # 2. Expón con ngrok (gratis, 1 comando)
 brew install ngrok                            # si no lo tienes
@@ -42,7 +50,7 @@ ngrok http 5173                               # te da una URL pública HTTPS
 # 3. Configura el API_URL del frontend para que apunte al ngrok del API
 ngrok http 3000  # otro túnel, otro terminal
 # Copia esa URL y arranca admin-web con:
-VITE_API_URL="https://xxxx.ngrok.io" npm --workspace @hotelos/admin-web run dev
+VITE_API_URL="https://xxxx.ngrok.io" corepack pnpm dev:web
 ```
 
 **Pros:** 5 minutos. Cero coste. Datos en tu máquina (no expuestos a internet).
@@ -62,9 +70,9 @@ VITE_API_URL="https://xxxx.ngrok.io" npm --workspace @hotelos/admin-web run dev
 3. Add Plugin → PostgreSQL (te crea la BD)
 4. Add Plugin → Redis
 5. Crea 3 services apuntando al mismo repo:
-   - api (root: apps/api, Dockerfile: infra/docker/Dockerfile.api)
-   - admin-web (root: apps/admin-web, Dockerfile: infra/docker/Dockerfile.admin-web)
-   - worker (root: apps/worker, Dockerfile: infra/docker/Dockerfile.worker)
+   - api (context: hotelos/, Dockerfile: deploy/Dockerfile.api)
+   - admin-web (context: hotelos/, Dockerfile: deploy/Dockerfile.admin-web, build-arg VITE_API_URL)
+   - worker (context: hotelos/, Dockerfile: deploy/Dockerfile.worker)
 6. En cada service, settings → variables, pega todas las del .env.example con valores reales
 7. En admin-web añade VITE_API_URL = https://<url-pública-api>.railway.app
 8. Deploy → Railway te da URLs HTTPS automáticas
@@ -73,9 +81,9 @@ VITE_API_URL="https://xxxx.ngrok.io" npm --workspace @hotelos/admin-web run dev
 **Después del primer deploy:**
 ```bash
 # Conéctate al service api por shell de Railway:
-npm --workspace @hotelos/database run db:push
-npx tsx src/seeds/chain-8-hotels.ts
-npx tsx src/seeds/chain-reservations.ts
+corepack pnpm db:migrate:deploy
+cd apps/api && node --import tsx src/seeds/chain-8-hotels.ts
+node --import tsx src/seeds/chain-reservations.ts
 ```
 
 **Pros:** HTTPS automático, dominio gratis (`*.railway.app`), Postgres managed con backups.
@@ -156,7 +164,7 @@ nano .env
 
 ### C.3 — Dominio + HTTPS con Caddy (10 minutos)
 
-Crea `/opt/hotelos/infra/docker/Caddyfile`:
+Crea el Caddyfile (obsoleto: hoy `deploy/caddy/Caddyfile.native` sirve SPA + `/api` en un solo origen):
 
 ```caddy
 api.tudominio.com {
@@ -493,7 +501,7 @@ Si vas más allá de demo y el cliente carga datos reales:
 | Síntoma | Causa probable | Fix |
 |---|---|---|
 | Admin-web no carga (página blanca) | `VITE_API_URL` mal configurado en build | Rebuild admin-web con el ARG correcto |
-| API responde 500 | Falta migración | `db:push` |
+| API responde 500 | Falta migración | `pnpm db:migrate:deploy` (+ `db:adopt-baseline -- --apply` si la BD nació con db push) |
 | API responde pero admin-web no muestra datos | CORS bloquea | Revisa `app.register(fastifyCors, ...)` en server.ts |
 | Worker no procesa jobs | Redis no conecta | Comprueba `REDIS_URL` apunta al hostname correcto (no `localhost` desde container) |
 | Postgres se llena | Logs PII sin rotar | Configura `log_min_duration_statement` y rota logs |
@@ -505,13 +513,13 @@ Si vas más allá de demo y el cliente carga datos reales:
 
 | Artefacto | Ubicación | Estado |
 |---|---|---|
-| Dockerfile API | `infra/docker/Dockerfile.api` | ✅ Existente |
-| Dockerfile worker | `infra/docker/Dockerfile.worker` | ✅ Existente |
-| Dockerfile ai-gateway | `infra/docker/Dockerfile.ai-gateway` | ✅ Existente |
-| Dockerfile admin-web | `infra/docker/Dockerfile.admin-web` | ✅ **Creado en esta tanda** |
-| docker-compose dev | `infra/docker/docker-compose.yml` | ✅ Existente |
-| docker-compose pilot | `infra/docker/docker-compose.pilot.yml` | ✅ **Creado en esta tanda** |
-| Deploy script | `scripts/deploy-pilot.sh` | ✅ **Creado en esta tanda** |
+| Dockerfile API | `deploy/Dockerfile.api` (pnpm + tsx) | ✅ Tanda 4 |
+| Dockerfile worker | `deploy/Dockerfile.worker` | ✅ Tanda 4 |
+| Dockerfile ai-gateway | — | ❌ eliminado (infra/docker, npm) |
+| Dockerfile admin-web | `deploy/Dockerfile.admin-web` | ✅ Tanda 4 |
+| docker-compose | `deploy/docker-compose.production.yml` | ✅ |
+| Instalación nativa | `deploy/scripts/install-from-scratch.sh` | ✅ Tanda 4 (recomendada) |
+| Deploy script | `deploy/scripts/deploy.sh` (`scripts/deploy-pilot.sh` es un envoltorio) | ✅ Tanda 4 |
 | Seed cadena demo | `apps/api/src/seeds/chain-8-hotels.ts` | ✅ Existente |
 | .env.example | `.env.example` | ✅ Existente |
 

@@ -6,7 +6,11 @@
 #
 # Usage:
 #   ssh root@your-vps-ip
-#   curl -fsSL https://raw.githubusercontent.com/<USER>/hotelos/main/deploy/scripts/bootstrap-vps.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/<USER>/hotelos/main/hotelos/deploy/scripts/bootstrap-vps.sh | bash
+#
+# Tanda 4: prefer the native install (deploy/scripts/install-from-scratch.sh,
+# see deploy/README-INSTALL.md). This Docker host bootstrap is kept for the
+# compose role only.
 #   # or copy the file and: bash bootstrap-vps.sh
 
 set -euo pipefail
@@ -105,12 +109,16 @@ cat <<NEXT
        cp deploy/.env.production.example deploy/.env.production
        nano deploy/.env.production    # set DOMAIN, POSTGRES_PASSWORD, JWT_SECRET, ENCRYPTION_KEY
 
-  4. Point your DNS A record at this VPS's public IP, then launch:
-       cd /opt/hotelos
-       bash deploy/scripts/deploy.sh
+  4. Point your DNS A record at this VPS's public IP, then launch
+     (the pnpm root is the nested hotelos/ directory):
+       cd /opt/hotelos/hotelos
+       bash deploy/scripts/deploy.sh --role compose --yes
 
-  5. First-time DB seed (creates demo properties + admin user):
-       docker compose -f deploy/docker-compose.production.yml --env-file deploy/.env.production exec api node packages/database/seeds/demo-pre-demo-enrichment.mjs
+  5. Optional demo data (NEVER on a real tenant):
+       bash scripts/deploy-pilot.sh seed-demo
+
+  NOTE (Tanda 4): the recommended path is the NATIVE install (systemd + Caddy,
+  no Docker): deploy/README-INSTALL.md · deploy/scripts/install-from-scratch.sh
 
   6. Verify HTTPS at https://\$DOMAIN/  — Caddy issues a Let's Encrypt cert
      automatically. Health endpoint: https://\$DOMAIN/health

@@ -5,7 +5,9 @@
 //   - child collections are tagged with the "opseed_" id prefix and replaced on
 //     every run, so re-running never duplicates and never touches real records.
 // Run: node --env-file=../../.env --import tsx prisma/seed-operations.ts
+// Guarded by assertDemoTarget (Tanda 4 · DATA-05).
 import { PrismaClient } from "@prisma/client";
+import { assertDemoTarget } from "./lib/demo-guard.js";
 
 const prisma = new PrismaClient();
 const PID = process.env.SEED_PROPERTY_ID ?? "prop_123";
@@ -54,6 +56,16 @@ async function wipeSeeded() {
 }
 
 async function main() {
+  assertDemoTarget({
+    orgId: ORG,
+    propertyId: PID,
+    action: "seed-operations",
+    planned: ["time_clock_entries", "shifts", "absence_requests", "housekeeping_tasks", "work_orders", "safety_incidents"].map((table) => ({
+      table,
+      op: "deleteMany" as const,
+      where: "id LIKE 'opseed_%'"
+    }))
+  });
   const property = await prisma.property.findUnique({ where: { id: PID }, select: { id: true, name: true } });
   if (!property) throw new Error(`Property ${PID} not found`);
   console.log(`[ops] property ${PID} (${property.name})`);

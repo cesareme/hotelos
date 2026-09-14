@@ -253,6 +253,33 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
   // Full organization scope: the hotel owner/administrator can do everything a
   // hotel can do, and nothing a platform operator can do.
   owner: [...ORG_PERMISSION_KEYS],
+  // TODO(product · César, Tanda 4 recon rbac-roles): the `manager` template
+  // (85 keys) reaches only 295 of the 755 gated routes of the manifest
+  // (apps/api/src/security/route-permissions.ts). A hotel manager with this
+  // template cannot open the dashboards (/dashboards ×33 need analytics.read),
+  // revenue, channel manager, CRM, groups, events, workforce, inventory,
+  // procurement, nor the back-office category/configuration screens, and 25 of
+  // its 85 keys gate no route today (distribution.*, payments.*,
+  // billing.invoice.*, pos.*, guest_experience.*, assets.*, capex.read/create,
+  // integrations.configure/view_logs, tax.configure, payments.configure).
+  // Proposed additive extension (≈85 → ~120 keys), NOT applied until César
+  // confirms — the boot-time top-up (Role.templateKey, lib/rbac-catalog.ts)
+  // will deliver it to every existing Manager role the moment it lands here:
+  //   analytics.read, analytics.export, revenue.read, revenue.forecast.read,
+  //   revenue.history_forecast.read, channel_manager.read, crm.read,
+  //   groups.read, groups.manage, events.read, events.manage, workforce.read,
+  //   workforce.schedule.manage, workforce.labor_cost.view, inventory.read,
+  //   procurement.read, purchase_orders.approve, reputation.read,
+  //   reputation.respond, quality_cases.read, quality_cases.manage,
+  //   surveys.read, incidents.read, incidents.manage, safety_checks.read,
+  //   energy.read, sustainability.read, configuration.read, categories.read,
+  //   custom_fields.read, compliance.gdpr.manage, rooms.manage,
+  //   room_types.manage, spaces.manage, departments.manage.
+  // Same review for `receptionist` (18 keys, 88/755 routes): the rack read
+  // needs housekeeping.task.manage, opening a work order needs
+  // maintenance.workorder.manage, and guest_register.export is a front-desk
+  // task. Keep any change additive: with templateKey only template roles are
+  // topped up; custom roles are never touched.
   manager: [
     "pms.reservation.read",
     "pms.reservation.create",

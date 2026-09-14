@@ -20,6 +20,7 @@ import { prisma, hashPassword } from "@hotelos/database";
 import { isPlatformPermission } from "@hotelos/shared";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from "../../lib/http-error.js";
+import { ensureRoleHasPermissions } from "../../lib/rbac-catalog.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { dispatch, type NotificationDeliveryRecord } from "../notifications/dispatcher.service.js";
 import { emailStatus } from "../notifications/providers/email.provider.js";
@@ -178,6 +179,12 @@ async function assertCreateUserTenancy(input: CreateUserInput): Promise<void> {
       }
     }
   }
+
+  // Tanda 4 (contract B): never hand out an EMPTY role. A role with 0 grants
+  // gets its template applied here (templateKey or name-resolved); a custom
+  // role with no template answers 409 ROLE_WITHOUT_PERMISSIONS — the new user
+  // would be 403 on every route in production (no demo permission union).
+  await ensureRoleHasPermissions(role.id);
 }
 
 export type CreateUserResult = {

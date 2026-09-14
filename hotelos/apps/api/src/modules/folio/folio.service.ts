@@ -261,13 +261,122 @@ export async function getReservationBalance(
  * plus `reservationBalanceDue` / `folios[]` covering every folio (REC-08).
  */
 export async function getReservationFolio(reservationId: string): Promise<ReservationFolioBalance> {
+  const balance = await findReservationFolio(reservationId);
+  if (!balance) {
+    throw new NotFoundError("Folio was not found.");
+  }
+  return balance;
+}
+
+/**
+ * Same as getReservationFolio but resolves to `null` when the reservation has
+ * no folio at all (rooming-list imports and some legacy rows never got one).
+ * Callers that run AFTER an already-committed mutation (the check-out route)
+ * must use this variant: a missing folio there is a degraded response, not a
+ * 404 that would mask a check-out that did happen. Any other failure (DB down,
+ * bad id) still propagates.
+ */
+export async function findReservationFolio(reservationId: string): Promise<ReservationFolioBalance | null> {
   const entries = await loadReservationFolioBalances(reservationId);
   const primary = entries[0];
   if (!primary) {
-    throw new NotFoundError("Folio was not found.");
+    return null;
   }
   const reservation = summarizeReservationFolios(entries);
   return { ...primary.balance, reservationBalanceDue: reservation.balanceDue, folios: reservation.folios };
+}
+
+export type EnsurePrimaryFolioResult = {
+  folio: FolioRecord;
+  /** true when this call opened the folio; false when the reservation already had one. */
+  created: boolean;
+};
+
+/**
+ * Return the reservation's primary folio, opening it when the reservation has
+ * none. Reservations created through POST /properties/:id/reservations get
+ * their folio inside the creation transaction (pms.service createReservation),
+ * but rooming-list imports and some older/secondary creation paths do not, and
+ * every in-house reservation must have a folio for charges, payments and the
+ * check-out close to land on. Called by the check-in route before the check-in
+ * transaction.
+ *
+ * The folio opened here follows the same rule as createReservation and the
+ * inline "ensure primary" in folio-routing createSecondaryFolio / tourist-tax /
+ * cancellation-policy: status open, the reservation's currency, label "guest",
+ * isPrimary true, guestId = the primary reservation guest when there is one.
+ * "Existing" uses the same ordering as getReservationFolio (isPrimary first,
+ * else the oldest non-deleted folio) so check-in and check-out agree on which
+ * folio is the primary one.
+ *
+ * Permissions: none are checked here on purpose. Opening the primary folio is
+ * an intrinsic step of check-in, not a separate billing action, so requiring
+ * folio.manage / folio.charge.post on top of pms.checkin.execute would break
+ * front-desk users whose role can check guests in but not manage billing. The
+ * caller is responsible for its own permission gate (the check-in route is
+ * gated by pms.checkin.execute in route-permissions.ts and again inside
+ * checkInReservation).
+ */
+export async function ensurePrimaryFolio(input: {
+  context: UserContext;
+  reservationId: string;
+  correlationId: string;
+}): Promise<EnsurePrimaryFolioResult> {
+  const reservation = await prisma.reservation.findUnique({
+    where: { id: input.reservationId },
+    select: { id: true, propertyId: true, currency: true }
+  });
+  if (!reservation) {
+    throw new NotFoundError("Reserva no encontrada.");
+  }
+
+  const { row, created } = await prisma.$transaction(async (tx) => {
+    // Serialise on the reservation row: two concurrent callers (a double
+    // click on the check-in button, two receptionists) must not both read
+    // "no folio" and open two primaries. Folio has no unique constraint on
+    // (reservationId, isPrimary), so the lock is the only guard.
+    await tx.$queryRaw`SELECT id FROM reservations WHERE id = ${reservation.id} FOR UPDATE`;
+    const existing = await tx.folio.findFirst({
+      where: { reservationId: reservation.id, deletedAt: null },
+      orderBy: RESERVATION_FOLIO_ORDER
+    });
+    if (existing) {
+      return { row: existing, created: false };
+    }
+    const primaryGuest = await tx.reservationGuest.findFirst({
+      where: { reservationId: reservation.id, isPrimary: true },
+      select: { guestId: true }
+    });
+    const opened = await tx.folio.create({
+      data: {
+        reservationId: reservation.id,
+        guestId: primaryGuest?.guestId ?? null,
+        status: "open",
+        currency: reservation.currency ?? "EUR",
+        label: "guest",
+        isPrimary: true
+      }
+    });
+    return { row: opened, created: true };
+  });
+
+  const folio = mapFolio(row);
+  if (created) {
+    mirrorFolio(folio);
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: reservation.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "user",
+      action: "FOLIO_OPENED",
+      entityType: "folio",
+      entityId: folio.id,
+      afterJson: { ...folio, openedBy: "check-in" },
+      deviceId: input.context.deviceId,
+      correlationId: input.correlationId
+    });
+  }
+  return { folio, created };
 }
 
 export async function getFolioBalance(folioId: string): Promise<FolioBalance> {

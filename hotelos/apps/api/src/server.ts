@@ -39,8 +39,13 @@ import { buildHealthResponse, OBSERVABILITY_HEADERS, SERVICE_NAMES } from "@hote
 import { createId } from "./lib/ids.js";
 import { demoStore, type PropertyRecord, type UserContext } from "./lib/demo-store.js";
 import { isPasswordChangeAllowedRoute, isPublicRoute, passwordChangeRequiredError, registerAuthContext } from "./lib/auth-context.js";
+// Tanda 4 (rutas-cors): env contract (assertEnv/validateEnv/resolveCorsOrigins,
+// lote env-typecheck) and role provisioning from a template (lote rbac-templates).
+import { assertEnv, resolveCorsOrigins, validateEnv } from "./lib/env.js";
+import { createRoleFromTemplate } from "./lib/rbac-catalog.js";
+import { ROLE_TEMPLATE_KEYS, type RoleKey } from "@hotelos/shared";
 import { isSchedulerLeader } from "./lib/scheduler-leader.js";
-import { BadRequestError, ConflictError, ForbiddenError, HttpError, NotFoundError, UnauthorizedError, statusCodeForError } from "./lib/http-error.js";
+import { BadRequestError, ConflictError, ForbiddenError, HttpError, NotFoundError, UnauthorizedError, statusCodeForError, describePrismaError } from "./lib/http-error.js";
 import { pageBody, pageHeaders, parsePageQuery } from "./lib/pagination.js";
 import {
   assertEntityAccess,
@@ -362,6 +367,8 @@ import { parseReservationRequest } from "./modules/pms/reservation-agent.service
 import { getGuestActivity } from "./modules/pms/guest-activity.service.js";
 import {
   closeFolio,
+  ensurePrimaryFolio,
+  findReservationFolio,
   getFolioBalance,
   getReservationFolio,
   postFolioLine,
@@ -439,6 +446,19 @@ const InviteBackOfficeUserSchema = z.object({
   // the role is part of the invitation, not an afterthought.
   roleId: z.string().trim().min(1).max(80),
   mfaRequired: z.boolean().optional()
+});
+// Tanda 4 (rutas-cors): POST /backoffice/properties/:propertyId/roles. The
+// template must be one of the shared ROLE_TEMPLATE_KEYS (packages/shared):
+// rejected here with the list of valid keys (400) rather than deep in the
+// service, and typed as RoleKey so the call site needs no cast.
+const CreateRoleFromTemplateSchema = z.object({
+  name: z.string().trim().min(2).max(60),
+  templateKey: z
+    .string()
+    .trim()
+    .refine((value): value is RoleKey => (ROLE_TEMPLATE_KEYS as readonly string[]).includes(value), {
+      message: `debe ser una plantilla conocida: ${ROLE_TEMPLATE_KEYS.join(", ")}`
+    })
 });
 const InvitationTokenParamsSchema = z.object({ token: z.string().trim().min(16).max(512) });
 const AcceptInviteSchema = z.object({
@@ -1011,6 +1031,22 @@ async function initSentry() {
 // route ever got a limiter (no x-ratelimit-* headers, no 429 — login included).
 // Callers: start() below and tests/integration (`await buildApiServer()`).
 export async function buildApiServer() {
+  // Tanda 4 (rutas-cors) · env contract (lib/env.ts) before anything else
+  // reads the environment: with NODE_ENV=production assertEnv throws one
+  // Error carrying the whole list of violations (the top-level await in the
+  // entry guard below then exits 1 with that message); in dev/test it only
+  // console.warns, so app.inject in the integration suite keeps booting.
+  // Deliberately ahead of Sentry and of registerAuthContext (AUTH-04): a
+  // misconfigured process must not initialise anything.
+  assertEnv();
+
+  // Tanda 4 · cierre: embedders that never go through start() (the
+  // integration suite's `await buildApiServer()`, ad-hoc scripts) still seal
+  // audit events, and each of them used to start a fresh genesis row in the
+  // shared audit_events table. Idempotent: a no-op when start() already
+  // hydrated the ring.
+  await hydrateAuditChainFromPostgres();
+
   // Init Sentry sync (fire-and-forget). El error handler de Fastify lo
   // recoge antes incluso de que Sentry esté listo (Sentry buffera).
   void initSentry();
@@ -1050,8 +1086,19 @@ export async function buildApiServer() {
     // returns). A 429 used to surface as "Internal Server Error" because the
     // thrown value was not an `Error` instance.
     const thrownMessage = (error as { message?: unknown } | null | undefined)?.message;
-    const exposeMessage =
-      statusCode < 500 && typeof thrownMessage === "string" ? thrownMessage : "Internal Server Error";
+    // Tanda 4 · cierre: a Prisma known-request error that reaches this handler
+    // untranslated (P2002 unique violation, P2025 not found, P2003 FK, P2000
+    // too long) used to leak the whole invocation text — and, in development,
+    // file paths and line numbers — into the 4xx body. describePrismaError
+    // turns it into a short Spanish message plus machine-readable details
+    // ({ code: "UNIQUE_VIOLATION", target }); the original error is still in
+    // the log line above with its full text.
+    const prismaDescription = describePrismaError(error);
+    const exposeMessage = prismaDescription
+      ? prismaDescription.message
+      : statusCode < 500 && typeof thrownMessage === "string"
+        ? thrownMessage
+        : "Internal Server Error";
     const errorLabels: Record<number, string> = {
       401: "Unauthorized",
       403: "Forbidden",
@@ -1062,8 +1109,9 @@ export async function buildApiServer() {
     // Typed 4xx errors may carry machine-readable `details` (e.g. the check-out
     // 409 exposes { code: "BALANCE_DUE", balanceDue }) so clients can branch on
     // a code instead of parsing the Spanish message. Never forwarded on 5xx.
-    const details =
-      statusCode < 500 && error && typeof error === "object" && "details" in error
+    const details = prismaDescription
+      ? prismaDescription.details
+      : statusCode < 500 && error && typeof error === "object" && "details" in error
         ? (error as { details?: unknown }).details
         : undefined;
     reply.code(statusCode).send({
@@ -1083,18 +1131,87 @@ export async function buildApiServer() {
     });
   });
 
+  // AUTH-08 (Tanda 4 · rutas-cors) · allow-list CORS. The list comes from
+  // CORS_ALLOWED_ORIGINS (comma-separated origins, normalised by
+  // resolveCorsOrigins in lib/env.ts, which also folds in the deprecated
+  // PILOT_PUBLIC_ORIGIN alias). Decision per request:
+  //   · no Origin header (curl, same-origin behind Caddy, server-to-server)
+  //     → allowed (nothing to reflect);
+  //   · Origin in the list → allowed (exact match, case-insensitive);
+  //   · outside production (`devFallback` from the contract, AND-ed with
+  //     NODE_ENV so the fallback can never open in production) → also
+  //     http(s)://localhost, 127.0.0.1 and 192.168.x.x with an optional port,
+  //     so `pnpm dev:web` (:5173) and a tablet on the hotel LAN work without
+  //     configuration;
+  //   · anything else → refused: no Access-Control-Allow-Origin header, the
+  //     browser blocks the read (the handler still runs: Bearer auth, not the
+  //     CORS layer, is the access control), and the origin is logged ONCE so a
+  //     misconfigured deployment shows up in the logs without turning the
+  //     Origin header into a log-flood vector.
+  // `credentials: false` on purpose: the SPA authenticates with
+  // `Authorization: Bearer` (localStorage) and the API sets no cookies (no
+  // @fastify/cookie), so reflecting Access-Control-Allow-Credentials was pure
+  // attack surface next to the old 192.168.x.x reflection (CWE-942). If a
+  // cookie-based client ever appears, turn it on ONLY together with an
+  // explicit list — never with a wildcard or a regex.
+  const DEV_CORS_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3})(:\d{1,5})?$/;
+  const MAX_LOGGED_CORS_REJECTIONS = 500;
+  const corsRejectedOrigins = new Set<string>();
+  // Resolved lazily and re-resolved only when the governing env changes
+  // (the integration suite flips NODE_ENV / CORS_ALLOWED_ORIGINS with
+  // withEnv on an already booted app); steady state is one string compare.
+  let corsPolicyCache: { key: string; allowed: Set<string>; devFallback: boolean } | null = null;
+  const corsPolicy = () => {
+    const nodeEnv = process.env.NODE_ENV ?? "";
+    const key = `${nodeEnv}|${process.env.CORS_ALLOWED_ORIGINS ?? ""}|${process.env.PILOT_PUBLIC_ORIGIN ?? ""}`;
+    if (!corsPolicyCache || corsPolicyCache.key !== key) {
+      const resolved = resolveCorsOrigins();
+      corsPolicyCache = {
+        key,
+        allowed: new Set(resolved.allowed.map((entry: string) => entry.trim().toLowerCase())),
+        devFallback: resolved.devFallback && nodeEnv !== "production"
+      };
+    }
+    return corsPolicyCache;
+  };
+  const isCorsOriginAllowed = (origin: string): boolean => {
+    const policy = corsPolicy();
+    const normalized = origin.trim().toLowerCase();
+    if (policy.allowed.has(normalized)) return true;
+    if (policy.devFallback && DEV_CORS_ORIGIN.test(normalized)) return true;
+    if (!corsRejectedOrigins.has(normalized) && corsRejectedOrigins.size < MAX_LOGGED_CORS_REJECTIONS) {
+      corsRejectedOrigins.add(normalized);
+      app.log.warn(
+        { origin: normalized, allowed: policy.allowed.size, devFallback: policy.devFallback },
+        "[cors] origen no permitido — añádelo a CORS_ALLOWED_ORIGINS si es legítimo"
+      );
+    }
+    return false;
+  };
+  {
+    const policy = corsPolicy();
+    app.log.info(
+      { allowed: [...policy.allowed], devFallback: policy.devFallback, credentials: false },
+      policy.allowed.size === 0 && !policy.devFallback
+        ? "[cors] sin CORS_ALLOWED_ORIGINS: solo peticiones same-origin (Caddy) o sin cabecera Origin"
+        : "[cors] política cargada"
+    );
+  }
   await app.register(fastifyCors, {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
-      if (/^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?$/.test(origin)) return cb(null, true);
-      // Permite el dominio configurado (PILOT_PUBLIC_ORIGIN, e.g. https://app.tudominio.com)
-      const allowed = process.env.PILOT_PUBLIC_ORIGIN;
-      if (allowed && origin === allowed) return cb(null, true);
-      cb(null, false);
+      cb(null, isCorsOriginAllowed(origin));
     },
-    credentials: true,
+    credentials: false,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"]
+    allowedHeaders: ["Content-Type", "Authorization", "x-correlation-id"],
+    // Headers the SPA is allowed to READ on a cross-origin response (dev:
+    // :5173 → :3000): pagination (lib/pagination.ts), correlation id and the
+    // rate-limit budget. Same-origin (production behind Caddy) never needs it.
+    exposedHeaders: ["x-correlation-id", "X-Total-Count", "X-Next-Cursor", "x-ratelimit-limit", "x-ratelimit-remaining", "retry-after"],
+    // Cache the preflight for 10 minutes: one OPTIONS per route per browser
+    // instead of one per request.
+    maxAge: 600
   });
 
   // PILOT-D1: rate limit global moderado + restricción dura en /auth/*.
@@ -1309,6 +1426,8 @@ export async function buildApiServer() {
       message?: string;
       /** VeriFactu SistemaInformatico block (Tanda 3): valid or the list of config errors. */
       software?: { ok: boolean; errors: string[] };
+      /** Env contract (Tanda 4): number of soft findings (never their text — this route is public). */
+      warnings?: number;
     };
     const checks: Record<string, SubCheck> = {};
 
@@ -1369,6 +1488,21 @@ export async function buildApiServer() {
       message: schedulerLeader ? "leader (RUN_SCHEDULERS)" : "disabled on this instance (RUN_SCHEDULERS=false)"
     };
 
+    // env (Tanda 4 · rutas-cors): the same contract assertEnv enforced at boot
+    // (lib/env.ts). `ok === false` can only happen outside production (there
+    // the boot already aborted), i.e. a dev/test box running with an env that
+    // production would refuse — worth a "degraded" so it is noticed before the
+    // deploy. Only COUNTS are exposed: /health is public and the messages
+    // name variables and their formats.
+    const envReport = validateEnv(process.env, { production: process.env.NODE_ENV === "production" });
+    const envCheck = { ok: envReport.errors.length === 0, warnings: envReport.warnings.length };
+    checks.env = {
+      ...envCheck,
+      message: envCheck.ok
+        ? `ok (${envCheck.warnings} avisos)`
+        : `${envReport.errors.length} errores de configuración (${envCheck.warnings} avisos)`
+    };
+
     const allOk = Object.values(checks).every((check) => check.ok);
     const status: "healthy" | "degraded" = allOk ? "healthy" : "degraded";
 
@@ -1389,6 +1523,9 @@ export async function buildApiServer() {
       timestamp: new Date().toISOString(),
       version: process.env.APP_VERSION ?? "dev",
       schedulerLeader,
+      // Contract (C) of Tanda 4: `env: { ok, warnings }` at the top level as
+      // well as inside `checks` (the latter drives `status`).
+      env: envCheck,
       checks
     };
   });
@@ -3949,6 +4086,31 @@ export async function buildApiServer() {
     return listPropertyRoles(params.propertyId);
   });
 
+  // Tanda 4 (rutas-cors) · create an organisation role from a shared template
+  // (roles.manage, riskLevel high: the token-less demo fallback is refused).
+  // Until now a hotel could only hand out "Owner": no route created roles, so
+  // the invite selector's "crea uno antes de invitar" had nothing to point
+  // at (recon rbac-roles). The property → organisation hop goes through the
+  // tenant guard (grantPropertyAccess: opaque 404 for a foreign property,
+  // platform admins re-pointed to the property's org), so the role always
+  // lands in the organisation that owns the property in the URL — never in
+  // the caller's org by default. createRoleFromTemplate (lib/rbac-catalog)
+  // answers 409 on a duplicate name within the org and 400 on an unknown
+  // template, and grants the template's keys in the same transaction.
+  app.post("/backoffice/properties/:propertyId/roles", async (request, reply) => {
+    const params = request.params as { propertyId: string };
+    const body = parse(CreateRoleFromTemplateSchema, request.body);
+    const organizationId = await grantPropertyAccess(request, params.propertyId);
+    const role = await createRoleFromTemplate({
+      organizationId,
+      name: body.name,
+      templateKey: body.templateKey,
+      actorUserId: request.userContext.userId ?? null
+    });
+    reply.code(201);
+    return role;
+  });
+
   // Re-issue a pending invitation: revokes the previous tokens, creates a new
   // one and re-sends the email (or returns the copyable link when email is
   // simulated/failed). The user must hang from THIS property's organization
@@ -4605,6 +4767,23 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     const body = parse(CheckInSchema, request.body);
+    // Tanda 4: every in-house reservation must have a primary folio. POST
+    // /properties/:id/reservations opens one inside createReservation's
+    // transaction, but rooming-list imports (group bookings) and older creation
+    // paths do not, and the check-out route then had nothing to close and
+    // answered 404 AFTER the check-out had committed. Open it BEFORE the
+    // check-in transaction so a folio-less reservation can never reach the
+    // checked_in state: if this fails, nothing has been mutated yet and the
+    // error is an honest pre-check-in failure. A folio left on a reservation
+    // whose check-in is then refused (wrong state, room mismatch) is harmless:
+    // it is the same folio createReservation would have opened at birth.
+    // Permission: covered by pms.checkin.execute (route manifest + service);
+    // see ensurePrimaryFolio for why no billing permission is added here.
+    const primaryFolio = await ensurePrimaryFolio({
+      context: request.userContext,
+      reservationId: params.id,
+      correlationId: createId("corr")
+    });
     const reservation = await checkInReservation({
       context: request.userContext,
       reservationId: params.id,
@@ -4633,7 +4812,7 @@ export async function buildApiServer() {
         error: error instanceof Error ? error.message : "No se pudo crear el parte de viajeros (SES)."
       };
     }
-    return { ...reservation, guestRegister };
+    return { ...reservation, guestRegister, folio: { id: primaryFolio.folio.id, created: primaryFolio.created } };
   });
 
   app.post("/reservations/:id/check-out", async (request) => {
@@ -4670,6 +4849,15 @@ export async function buildApiServer() {
         { details: { code: "BALANCE_DUE", balanceDue: balanceBefore.balanceDue, folios: balanceBefore.folios } }
       );
     }
+    // Tanda 4: read the primary folio BEFORE mutating anything, tolerating a
+    // reservation without one (rooming-list imports and legacy rows; check-in
+    // now opens the folio, but reservations checked in before that fix are
+    // still in house). Reading it after the transaction turned a committed
+    // check-out into a 404 "Folio was not found." and the retry into a 409
+    // "no está alojada" — the guest was out, the drawer said failure.
+    // checkOutReservationDetailed never posts to or closes the primary folio,
+    // so this pre-read balance is the one the close below must honour.
+    const primaryBefore = await findReservationFolio(params.id);
     // Detailed outcome: the aggregated balance, the per-folio decisions and
     // the non-blocking warnings (e.g. a secondary folio left open with a
     // balance the caller acknowledged) reach the front-desk drawer verbatim.
@@ -4680,22 +4868,56 @@ export async function buildApiServer() {
       correlationId: createId("corr")
     });
     const reservation = outcome.reservation;
-    const departureTask = reservation.assignedRoomId
-      ? await createDepartureCleaningTask({
+    const warnings: string[] = [
+      ...(outcome.balanceDue > 0 ? ["balance_due"] : []),
+      ...outcome.warnings
+    ];
+
+    // From here on the check-out is COMMITTED (reservation checked_out, stay
+    // closed, room dirty). Nothing below may turn it into a 4xx/5xx: the
+    // departure cleaning task and the folio close are best-effort follow-ups
+    // that are logged with the reservation + correlation id and surfaced as
+    // machine-readable warnings so the drawer can say what still needs a hand.
+    let departureTask: Awaited<ReturnType<typeof createDepartureCleaningTask>> | undefined;
+    if (reservation.assignedRoomId) {
+      const correlationId = createId("corr");
+      try {
+        departureTask = await createDepartureCleaningTask({
           context: request.userContext,
           propertyId: reservation.propertyId,
           roomId: reservation.assignedRoomId,
-          correlationId: createId("corr")
-        })
-      : undefined;
-    const balance = await getReservationFolio(params.id);
-    const folio = balance.balanceDue === 0
-      ? await closeFolio({
+          correlationId
+        });
+      } catch (error) {
+        request.log.error(
+          { err: error, reservationId: params.id, roomId: reservation.assignedRoomId, correlationId },
+          "check-out committed but the departure cleaning task could not be created"
+        );
+        warnings.push("departure_task_failed");
+      }
+    }
+
+    // Close the primary folio only when it exists and is settled (same
+    // sub-cent tolerance closeFolio applies). A folio-less reservation
+    // answers folio: null; an unsettled one stays open so the acknowledged
+    // debt remains collectable.
+    let folio = primaryBefore?.folio ?? null;
+    if (primaryBefore && Math.abs(primaryBefore.balanceDue) < 0.005) {
+      const correlationId = createId("corr");
+      try {
+        folio = await closeFolio({
           context: request.userContext,
-          folioId: balance.folio.id,
-          correlationId: createId("corr")
-        })
-      : balance.folio;
+          folioId: primaryBefore.folio.id,
+          correlationId
+        });
+      } catch (error) {
+        request.log.error(
+          { err: error, reservationId: params.id, folioId: primaryBefore.folio.id, correlationId },
+          "check-out committed but the primary folio could not be closed"
+        );
+        warnings.push("folio_close_failed");
+      }
+    }
 
     return {
       reservation,
@@ -4705,11 +4927,8 @@ export async function buildApiServer() {
       balanceAcknowledged: outcome.balanceAcknowledged,
       // The primary folio is closed by this route AFTER the service built
       // folios[], so reflect its final status instead of the pre-close one.
-      folios: outcome.folios.map((f) => (f.id === folio.id ? { ...f, status: folio.status } : f)),
-      warnings: [
-        ...(outcome.balanceDue > 0 ? ["balance_due"] : []),
-        ...outcome.warnings
-      ]
+      folios: outcome.folios.map((f) => (folio && f.id === folio.id ? { ...f, status: folio.status } : f)),
+      warnings
     };
   });
 
@@ -8273,6 +8492,14 @@ if (entryFile === argFile) {
   // tenant mirrors must hold every Prisma property BEFORE the first request. A
   // failure here aborts the boot (a half-provisioned tenant would answer 403 or
   // 500 to real users). TENANT_BOOTSTRAP_SKIP=true bypasses it (tests only).
+  // Tanda 4 · cierre: hydrate the audit/event chain tips BEFORE the tenant
+  // bootstrap. syncPermissionCatalog / backfillTemplateRoles record audit
+  // events, and sealing them on an empty in-memory ring started a NEW genesis
+  // row on every boot (9 genesis rows in the demo after a day of restarts);
+  // hydrateAuditChainFromPostgres is a no-op once the ring holds anything, so
+  // it has to be the first writer-adjacent step of the process.
+  const tips = await hydrateAuditChainFromPostgres();
+  console.log(`[audit] hydrated chain tips: audit=${tips.auditTail?.slice(0, 12) ?? "<empty>"} event=${tips.eventTail?.slice(0, 12) ?? "<empty>"}`);
   if (process.env.TENANT_BOOTSTRAP_SKIP === "true") {
     console.warn("[tenants] bootstrap skipped (TENANT_BOOTSTRAP_SKIP=true)");
   } else {
@@ -8299,8 +8526,6 @@ if (entryFile === argFile) {
       process.exit(1);
     }
   }
-  const tips = await hydrateAuditChainFromPostgres();
-  console.log(`[audit] hydrated chain tips: audit=${tips.auditTail?.slice(0, 12) ?? "<empty>"} event=${tips.eventTail?.slice(0, 12) ?? "<empty>"}`);
   const app = await buildApiServer();
 
   // Tanda 3 (cierre · CRÍTICO SES): a rejected promise nobody awaited (the old

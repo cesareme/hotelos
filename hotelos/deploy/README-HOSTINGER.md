@@ -1,3 +1,11 @@
+> **OBSOLETO (Tanda 4 · 2026-09-14).** Este playbook describe la vía Docker con
+> `npm` y `prisma db push`, que nunca funcionó sobre el monorepo pnpm. La guía
+> vigente es **[`deploy/README-INSTALL.md`](README-INSTALL.md)** (instalación
+> nativa con `install-from-scratch.sh`, actualización con `deploy.sh`, smoke,
+> adopción del VPS). Los Dockerfiles de `deploy/` ya usan corepack pnpm + tsx y
+> `deploy.sh --role compose` aplica migraciones con `migrate deploy`; el resto de
+> este documento se conserva solo como histórico.
+
 # HotelOS · Hostinger VPS deployment guide
 
 End-to-end playbook to get HotelOS running in production on a Hostinger VPS,
@@ -144,18 +152,16 @@ with no real tenant data — never for a customer-facing deployment.
 
 ```bash
 cd /opt/hotelos
-bash deploy/scripts/deploy.sh
+bash deploy/scripts/deploy.sh --role compose --pull --yes
 ```
 
 The script will:
 1. Build the API + admin-web Docker images (the first build takes ~5 min;
    subsequent ones with cached layers take 30–60 s).
 2. Bring up Postgres + Redis.
-3. **Schema-drift guard**: compute the DB→schema diff and **block the deploy**
-   if any change would `DROP` a table/column, so production data is never
-   dropped silently. Override a reviewed, known-safe drop with
-   `ALLOW_DESTRUCTIVE_MIGRATION=1 bash deploy/scripts/deploy.sh`.
-4. Apply the Prisma schema (`db push`).
+3. pg_dump backup, then `pnpm db:adopt-baseline -- --apply` (idempotent).
+4. Apply the versioned migrations (`pnpm db:migrate:deploy` + `db:drift:check`);
+   `db push` is no longer used (Tanda 4).
 5. Roll the API + admin-web containers.
 6. Smoke-test `https://$DOMAIN/health` and bail out on failure.
 
@@ -165,12 +171,16 @@ After ~10 s the cert is live and `https://$DOMAIN/` returns the SPA.
 ### 6 · Seed the demo data (optional)
 
 ```bash
+# Base seed + commercial demo (org_123 / prop_123 · reception@example.com / hotelos-demo).
 docker compose -f deploy/docker-compose.production.yml --env-file deploy/.env.production \
-  exec api node packages/database/seeds/demo-pre-demo-enrichment.mjs
+  run --rm --no-deps --entrypoint "" api sh -lc \
+  'cd /app/packages/database && node --import tsx prisma/seed.ts && node --import tsx prisma/seed-commercial-demo.ts'
 ```
 
-This creates the 10 demo properties, ~250 reservations, guests with SES
-identity, BAR levels for the next 60 days, groups, allotments, etc.
+The remaining demo seeds (`seed-revenue-snapshots`, `seed-compliance`,
+`seed-operations`, `seed-cancellation-policies`, `seed-allotments`,
+`seed-fnb-inventory`) run the same way; `deploy/scripts/install-from-scratch.sh --demo`
+runs all of them on the native install. Never seed demo data on a real tenant.
 
 ### 7 · Onboard your first real client
 
@@ -221,10 +231,11 @@ docker compose -f deploy/docker-compose.production.yml restart api
 
 ### Apply a schema change
 After merging a Prisma schema change to `main`, the deploy script runs
-`prisma db push` automatically. To do it manually:
+`pnpm db:adopt-baseline -- --apply` + `pnpm db:migrate:deploy` + `pnpm db:drift:check`.
+To do it manually:
 ```bash
-docker compose -f deploy/docker-compose.production.yml exec api \
-  npx prisma db push --skip-generate --schema packages/database/prisma/schema.prisma
+docker compose -f deploy/docker-compose.production.yml --env-file deploy/.env.production \
+  run --rm --no-deps --entrypoint "" api sh -lc 'cd /app && corepack pnpm db:migrate:deploy && corepack pnpm db:drift:check'
 ```
 
 ### Restore from a backup

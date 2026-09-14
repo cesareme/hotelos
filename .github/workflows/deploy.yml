@@ -1,0 +1,67 @@
+# Anfitorio · deploy al VPS (nativo: systemd + Caddy) · Tanda 4
+#
+# Manual (workflow_dispatch) o automático tras un CI verde en main cuando la
+# variable de repositorio AUTO_DEPLOY vale "true" (hasta que el VPS demo esté
+# bajo control, déjala sin definir y lanza el deploy a mano).
+#
+# Hace SSH al VPS y ejecuta deploy/scripts/deploy.sh --pull --yes, que:
+#   valida el entorno → pnpm install --frozen-lockfile → db:generate → pg_dump →
+#   db:adopt-baseline --apply → db:migrate:deploy + drift check → rbac:sync --dry-run →
+#   build admin-web (VITE_API_URL=APP_BASE_URL/api) → systemctl restart → smoke.sh
+#
+# Secrets (Repo → Settings → Secrets and variables → Actions):
+#   VPS_HOST      IP o hostname del VPS
+#   VPS_USER      usuario de despliegue (anfitorio) con sudo -n para systemctl restart
+#   VPS_SSH_KEY   clave privada autorizada en /home/<VPS_USER>/.ssh/authorized_keys
+# Variables (opcionales):
+#   APP_DIR       clon en el VPS (default /opt/anfitorio; el código está en <APP_DIR>/hotelos)
+#   PUBLIC_DOMAIN dominio público para la comprobación final (default: VPS_HOST)
+#   AUTO_DEPLOY   "true" para desplegar automáticamente tras CI en main
+
+name: Deploy VPS
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      with_backfills:
+        description: "Ejecutar también los backfills con --apply (tras backup)"
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    name: SSH deploy (deploy.sh --pull)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && vars.AUTO_DEPLOY == 'true')
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Install SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "${{ secrets.VPS_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Run deploy.sh on the VPS
+        env:
+          APP_DIR: ${{ vars.APP_DIR || '/opt/anfitorio' }}
+          WITH_BACKFILLS: ${{ github.event.inputs.with_backfills == 'true' && '--with-backfills' || '' }}
+        run: |
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=accept-new \
+              "${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}" \
+              "set -e; cd '$APP_DIR'; if [ -f hotelos/pnpm-workspace.yaml ]; then cd hotelos; fi; \
+               bash deploy/scripts/deploy.sh --role production-native --pull --yes $WITH_BACKFILLS"
+
+      - name: Verify public health
+        run: |
+          curl -fsS --max-time 20 "https://${{ vars.PUBLIC_DOMAIN || secrets.VPS_HOST }}/health" | head -c 300
+          echo

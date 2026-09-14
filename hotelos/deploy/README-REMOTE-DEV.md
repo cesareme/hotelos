@@ -1,3 +1,10 @@
+> **OBSOLETO (Tanda 4 · 2026-09-14).** Guía histórica del VPS de desarrollo
+> remoto (72.61.194.216). Sus comandos `npm` no funcionan sobre el monorepo pnpm
+> y el esquema ya no se aplica con `db push`. Para instalar, actualizar o adoptar
+> un servidor usa **[`deploy/README-INSTALL.md`](README-INSTALL.md)**; para el
+> flujo de desarrollo, `CLAUDE.md` → "Comandos frecuentes". Se conserva por las
+> notas de SSH/tmux/VS Code Remote.
+
 # HotelOS · Remote development on a Hostinger VPS
 
 Your Mac becomes a thin terminal. The code, the database, the build cache,
@@ -40,7 +47,7 @@ VS Code's automatic forward) makes them reachable as `localhost:5173` and
 The recommended path is **KVM 2 for dev (€9/mo)**, plus a separate
 **KVM 4 for production (€17/mo)** when you sign your first client. €26
 total. Keeping dev and production on *different* boxes is the cheapest
-form of insurance — a broken `npm install` on dev can't tank a paying
+form of insurance — a broken `pnpm install` on dev can't tank a paying
 customer.
 
 ---
@@ -68,7 +75,7 @@ The script (re-runnable, idempotent) does:
 | 4 | Harden SSH (key-only auth, allow tcp/agent forwarding)                |
 | 5 | Create non-root user `cesareme` with passwordless sudo                |
 | 6 | 4 GB swap (the TypeScript compiler eats RAM)                          |
-| 7 | Install Node 22 + pnpm + latest npm                                   |
+| 7 | Install Node 22 + corepack pnpm 9.15.0 (`packageManager`)             |
 | 8 | Install Postgres 16 + create `hotelos` DB + role                      |
 | 9 | Install Redis 7                                                       |
 |10 | Clone the repo to `/home/cesareme/projects/hotelos`                   |
@@ -140,9 +147,9 @@ cp .env.example .env
 nano .env       # set DATABASE_URL=postgresql://hotelos:hotelos@localhost:5432/hotelos
                 # generate JWT_SECRET and ENCRYPTION_KEY with openssl rand -base64 32
 
-npm install
-npm --workspace @hotelos/database run prisma:generate
-npm --workspace @hotelos/database run db:push
+corepack pnpm install --frozen-lockfile
+corepack pnpm --filter @hotelos/database db:generate
+corepack pnpm db:migrate:deploy          # BD nueva; BD anterior al squash: pnpm db:adopt-baseline -- --apply primero
 
 # Start tmux so a dropped SSH connection doesn't kill the dev servers:
 tmux new -s dev
@@ -150,10 +157,10 @@ tmux new -s dev
 # Ctrl-a -          # split horizontally
 
 # In one pane:
-npm --workspace @hotelos/api run dev
+corepack pnpm dev:api
 
 # In another pane:
-npm --workspace @hotelos/admin-web run dev
+corepack pnpm dev:web
 ```
 
 To leave the dev servers running and come back later from another
@@ -266,7 +273,7 @@ user's home. If you SSHed in as root with a password (not a key), there
 was nothing to copy. Paste your laptop's `~/.ssh/id_ed25519.pub` into
 `/home/cesareme/.ssh/authorized_keys` manually.
 
-**`npm install` runs out of memory**
+**`pnpm install` runs out of memory**
 The 4 GB swap helps, but if you're on KVM 1 (4 GB RAM total), upgrade
 to KVM 2. Vite + TypeScript watch mode comfortably uses 2–3 GB.
 
@@ -275,7 +282,7 @@ Vite binds to `localhost` by default. With the SSH port-forward in Step
 6 that's fine; if VS Code Remote-SSH's auto-forward isn't working, run
 Vite explicitly on all interfaces:
 ```bash
-npm --workspace @hotelos/admin-web run dev -- --host 0.0.0.0
+corepack pnpm --filter @hotelos/admin-web dev -- --host 0.0.0.0
 ```
 
 **SSH connection drops every few minutes on hotel Wi-Fi**

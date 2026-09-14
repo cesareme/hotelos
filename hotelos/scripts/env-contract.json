@@ -1,0 +1,1643 @@
+{
+  "$comment": "GENERADO por scripts/env-census.mjs desde apps/api/src/lib/env.ts (ENV_CONTRACT). No editar a mano.",
+  "sections": [
+    "Proceso",
+    "BD y colas",
+    "Seguridad",
+    "Auth/demo flags",
+    "Rate limit/CORS",
+    "Email y mensajería",
+    "VeriFactu",
+    "SES",
+    "TBAI",
+    "IGIC",
+    "Schedulers",
+    "IA",
+    "OTA",
+    "Wallet",
+    "Sentry",
+    "Frontend",
+    "Seeds",
+    "Tests"
+  ],
+  "variables": {
+    "ADMIN_EXPOSE_TEMP_PASSWORD": {
+      "section": "Tests",
+      "format": "bool",
+      "default": "false",
+      "example": "false",
+      "productionForbidden": "true",
+      "tags": [
+        "test"
+      ],
+      "doc": "Devuelve la contraseña temporal en claro en la consola super-admin. NUNCA en un despliegue accesible.",
+      "readBy": [
+        "apps/api/src/modules/admin-console/tenant-admin.service.ts"
+      ]
+    },
+    "ADMIN_WEB_URL": {
+      "section": "Tests",
+      "format": "url",
+      "default": "http://localhost:5173",
+      "severity": "warn",
+      "tags": [
+        "tool",
+        "dev-only"
+      ],
+      "doc": "scripts/smoke-director-dashboard.mjs: URL del admin-web.",
+      "readBy": [
+        "scripts/smoke-director-dashboard.mjs"
+      ]
+    },
+    "AIRBNB_ADAPTER_MODE": {
+      "section": "OTA",
+      "format": "enum",
+      "values": [
+        "stub",
+        "real"
+      ],
+      "default": "stub",
+      "doc": "Airbnb: stub o real.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/airbnb.adapter.ts"
+      ]
+    },
+    "AIRBNB_API_BASE_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Base de la API de Airbnb (vacío = por defecto).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/airbnb.adapter.ts"
+      ]
+    },
+    "AIRBNB_OAUTH_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Endpoint OAuth de Airbnb.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/airbnb/auth.ts"
+      ]
+    },
+    "AI_GATEWAY_MODE": {
+      "section": "IA",
+      "format": "enum",
+      "values": [
+        "stub",
+        "real"
+      ],
+      "default": "stub",
+      "doc": "Motor de onboarding con IA: stub (en proceso) o real (llama al ai-gateway).",
+      "readBy": [
+        "apps/api/src/modules/onboarding/ai-engine/dual-mode-engine.ts"
+      ]
+    },
+    "AI_GATEWAY_URL": {
+      "section": "IA",
+      "format": "url",
+      "default": "http://localhost:4000",
+      "doc": "URL del ai-gateway cuando AI_GATEWAY_MODE=real.",
+      "readBy": [
+        "apps/api/src/modules/onboarding/ai-engine/dual-mode-engine.ts"
+      ]
+    },
+    "AI_MODEL": {
+      "section": "IA",
+      "format": "string",
+      "doc": "Modelo a usar. Vacío = claude-3-5-sonnet-latest (anthropic) o gpt-4o-mini (openai).",
+      "readBy": [
+        "apps/api/src/lib/llm.ts"
+      ]
+    },
+    "AI_PROVIDER": {
+      "section": "IA",
+      "format": "enum",
+      "values": [
+        "none",
+        "anthropic",
+        "openai"
+      ],
+      "default": "none",
+      "doc": "Proveedor LLM de los asistentes. none = respuestas basadas en reglas. Sin este valor la API key no sirve.",
+      "readBy": [
+        "apps/ai-gateway/src/server.ts",
+        "apps/api/src/lib/llm.ts",
+        "apps/api/src/modules/assistant/assistant.service.ts"
+      ]
+    },
+    "AI_PROVIDER_API_KEY": {
+      "section": "IA",
+      "required": {
+        "when": "AI_PROVIDER!=none"
+      },
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "API key del proveedor LLM.",
+      "readBy": [
+        "apps/ai-gateway/src/server.ts",
+        "apps/api/src/lib/llm.ts",
+        "apps/api/src/modules/assistant/assistant.service.ts"
+      ]
+    },
+    "AI_REQUEST_TIMEOUT_MS": {
+      "section": "IA",
+      "format": "int",
+      "min": 1000,
+      "max": 600000,
+      "default": "20000",
+      "doc": "Timeout de cada llamada al LLM (ms).",
+      "readBy": [
+        "apps/api/src/lib/llm.ts"
+      ]
+    },
+    "ALLOTMENT_RELEASE_SCHEDULER_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva la liberación automática de cupos.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "API_BASE_URL": {
+      "section": "IA",
+      "format": "url",
+      "default": "http://localhost:3000",
+      "doc": "Solo la lee el ai-gateway: URL del API contra el que ejecuta las herramientas.",
+      "readBy": [
+        "apps/ai-gateway/src/server.ts"
+      ]
+    },
+    "API_PUBLIC_URL": {
+      "section": "Rate limit/CORS",
+      "format": "url",
+      "httpsInProduction": true,
+      "default": "http://localhost:3000",
+      "productionExample": "https://app.example.com/api",
+      "doc": "URL pública del API para los callbacks OAuth de las bandejas de correo (Gmail/Microsoft). Sin barra final.",
+      "readBy": [
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+      ]
+    },
+    "API_URL": {
+      "section": "Tests",
+      "format": "url",
+      "default": "http://localhost:3000",
+      "severity": "warn",
+      "tags": [
+        "tool",
+        "dev-only"
+      ],
+      "doc": "scripts/smoke-director-dashboard.mjs: URL del API a probar.",
+      "readBy": [
+        "scripts/smoke-director-dashboard.mjs"
+      ]
+    },
+    "APPLE_WALLET_CERT_PATH": {
+      "section": "Wallet",
+      "format": "path",
+      "doc": "Certificado de firma de pases; definido = los pases salen firmados.",
+      "readBy": [
+        "apps/api/src/modules/mobile-keys/wallet-pass.service.ts"
+      ]
+    },
+    "APPLE_WALLET_PASS_TYPE_ID": {
+      "section": "Wallet",
+      "format": "string",
+      "default": "pass.com.hotelos.roomkey",
+      "doc": "Pass Type ID de las llaves móviles en Apple Wallet.",
+      "readBy": [
+        "apps/api/src/modules/mobile-keys/wallet-pass.service.ts"
+      ]
+    },
+    "APPLE_WALLET_TEAM_ID": {
+      "section": "Wallet",
+      "format": "string",
+      "default": "HOTELOSDEV",
+      "doc": "Team ID de Apple Developer. El valor por defecto es de desarrollo: en producción avisa si sigue ahí.",
+      "readBy": [
+        "apps/api/src/modules/mobile-keys/wallet-pass.service.ts"
+      ]
+    },
+    "APP_BASE_URL": {
+      "section": "Rate limit/CORS",
+      "required": "production",
+      "format": "url",
+      "origin": true,
+      "httpsInProduction": true,
+      "default": "http://localhost:5173",
+      "example": "http://localhost:5173",
+      "productionExample": "https://app.example.com",
+      "doc": "Origen público del admin-web: construye los enlaces /accept-invite y /reset-password de los emails. Sin barra final; https en producción.",
+      "readBy": [
+        "apps/api/src/modules/auth/invitations.service.ts"
+      ]
+    },
+    "APP_VERSION": {
+      "section": "Proceso",
+      "format": "string",
+      "maxLength": 50,
+      "default": "dev",
+      "doc": "Versión desplegada: se muestra en /health y es el valor por defecto de VERIFACTU_SYSTEM_VERSION.",
+      "readBy": [
+        "apps/api/src/server.ts",
+        "packages/compliance/src/spain/verifactu/software.ts"
+      ]
+    },
+    "AUTH_EXPOSE_RESET_TOKEN": {
+      "section": "Tests",
+      "format": "bool",
+      "default": "false",
+      "example": "false",
+      "productionForbidden": "true",
+      "tags": [
+        "test"
+      ],
+      "doc": "Devuelve el token de reset de contraseña en la respuesta HTTP para poder testearlo. NUNCA en un despliegue accesible.",
+      "readBy": [
+        "apps/api/src/modules/auth/auth-pilot.service.ts",
+        "apps/api/src/server.ts"
+      ]
+    },
+    "BOOKING_ADAPTER_MODE": {
+      "section": "OTA",
+      "format": "enum",
+      "values": [
+        "stub",
+        "sandbox",
+        "real"
+      ],
+      "default": "stub",
+      "doc": "Channel manager Booking.com: stub (respuestas locales), sandbox (BOOKING_SANDBOX_URL) o real.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/booking.adapter.ts"
+      ]
+    },
+    "BOOKING_API_BASE_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Base de la API real de Booking (vacío = por defecto del adaptador).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/booking.adapter.ts"
+      ]
+    },
+    "BOOKING_OAUTH_SCOPE": {
+      "section": "OTA",
+      "format": "string",
+      "doc": "Scope OAuth por defecto de Booking (cuando la credencial no lo trae).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/booking/oauth.ts"
+      ]
+    },
+    "BOOKING_OAUTH_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Endpoint OAuth de Booking.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/booking/oauth.ts"
+      ]
+    },
+    "BOOKING_SANDBOX_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Base del sandbox de Booking.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/booking.adapter.ts"
+      ]
+    },
+    "BOOTSTRAP_TOKEN": {
+      "section": "Seguridad",
+      "format": "string",
+      "minLength": 32,
+      "tags": [
+        "secret"
+      ],
+      "generate": "openssl rand -hex 32",
+      "doc": "Token del endpoint POST /onboarding/bootstrap (primera organización de una instalación real). Se desactiva solo en cuanto existe una organización.",
+      "readBy": [
+        "apps/api/src/modules/onboarding/bootstrap.service.ts"
+      ]
+    },
+    "CORS_ALLOWED_ORIGINS": {
+      "section": "Rate limit/CORS",
+      "format": "origin-list",
+      "productionExample": "https://app.example.com",
+      "doc": "Orígenes (scheme://host[:puerto]) autorizados por CORS, separados por comas. Fuera de producción se admiten además localhost/127.0.0.1 en cualquier puerto. Vacía en producción = solo same-origin (Caddy sirve SPA y API en el mismo origen).",
+      "readBy": [
+        "apps/api/src/lib/env.ts",
+        "apps/api/src/server.ts"
+      ]
+    },
+    "CORS_ALLOW_LAN": {
+      "section": "Rate limit/CORS",
+      "format": "bool",
+      "default": "false",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Solo desarrollo: true admite además los rangos privados 10/8, 172.16/12 y 192.168/16 (tablets del hotel contra un portátil). Ignorada en producción.",
+      "readBy": [
+        "apps/api/src/lib/env.ts"
+      ]
+    },
+    "DATABASE_LOG_LEVEL": {
+      "section": "Proceso",
+      "format": "enum",
+      "values": [
+        "off",
+        "query",
+        "info",
+        "warn",
+        "error"
+      ],
+      "default": "info",
+      "doc": "Nivel de log de Prisma. Sin definir: warn en producción e info en desarrollo.",
+      "readBy": [
+        "packages/database/src/client.ts"
+      ]
+    },
+    "DATABASE_URL": {
+      "section": "BD y colas",
+      "required": "always",
+      "format": "postgres-url",
+      "example": "postgresql://hotelos:hotelos@localhost:5432/hotelos",
+      "productionExample": "",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Conexión Postgres de Prisma y pg-boss. En el compose de producción se ensambla desde POSTGRES_USER/PASSWORD/DB (déjala vacía ahí); en un despliegue nativo (systemd) es obligatoria.",
+      "readBy": [
+        "apps/worker/src/scheduler.ts"
+      ]
+    },
+    "DEMO_PROPERTY_ID": {
+      "section": "Tests",
+      "format": "string",
+      "default": "prop_123",
+      "severity": "warn",
+      "tags": [
+        "tool",
+        "dev-only"
+      ],
+      "doc": "scripts/smoke-director-dashboard.mjs: propiedad del smoke.",
+      "readBy": [
+        "scripts/smoke-director-dashboard.mjs"
+      ]
+    },
+    "EMAIL_FROM": {
+      "section": "Email y mensajería",
+      "required": {
+        "when": "EMAIL_PROVIDER"
+      },
+      "format": "string",
+      "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
+      "doc": "Remitente verificado en el proveedor (ej. no-reply@tu-hotel.com).",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/email.provider.ts"
+      ]
+    },
+    "EMAIL_PROVIDER": {
+      "section": "Email y mensajería",
+      "format": "enum",
+      "values": [
+        "postmark",
+        "sendgrid"
+      ],
+      "doc": "Proveedor de email saliente (invitaciones, reset de contraseña, magic links). Vacío = envío simulado en desarrollo (la API devuelve el enlace) y 'disabled' en producción. Los tres EMAIL_* van juntos.",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/email.provider.ts"
+      ]
+    },
+    "EMAIL_PROVIDER_KEY": {
+      "section": "Email y mensajería",
+      "required": {
+        "when": "EMAIL_PROVIDER"
+      },
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "API key del proveedor de email.",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/email.provider.ts"
+      ]
+    },
+    "ENCRYPTION_KEY": {
+      "section": "Seguridad",
+      "required": "production",
+      "format": "base64-32",
+      "alternatives": [
+        "HOTELOS_FIELD_KEY"
+      ],
+      "tags": [
+        "secret"
+      ],
+      "generate": "openssl rand -base64 32",
+      "doc": "Clave AES-256-GCM de los campos PII de huéspedes (fallback de HOTELOS_FIELD_KEY). En producción sin una clave válida el API aborta el arranque; en desarrollo avisa y guarda la PII en claro. Rotarla deja ilegible lo ya cifrado: haz backup antes.",
+      "readBy": [
+        "packages/database/src/crypto-fields.ts"
+      ]
+    },
+    "EXPEDIA_ADAPTER_MODE": {
+      "section": "OTA",
+      "format": "enum",
+      "values": [
+        "stub",
+        "real"
+      ],
+      "default": "stub",
+      "doc": "Expedia: stub o real.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/expedia.adapter.ts"
+      ]
+    },
+    "EXPEDIA_API_BASE_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Base de la API de Expedia (vacío = por defecto).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/expedia.adapter.ts"
+      ]
+    },
+    "EXPEDIA_OAUTH_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Endpoint OAuth de Expedia.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/expedia/auth.ts"
+      ]
+    },
+    "EXPO_PUBLIC_ADMIN_WEB_URL": {
+      "section": "Frontend",
+      "format": "url",
+      "doc": "URL del admin-web que abre la app móvil desde Más.",
+      "readBy": [
+        "apps/mobile/src/screens/more/MoreScreen.tsx"
+      ]
+    },
+    "EXPO_PUBLIC_API_BASE_URL": {
+      "section": "Frontend",
+      "format": "url",
+      "doc": "URL del API para la app móvil (Expo).",
+      "readBy": [
+        "apps/mobile/src/api/client.ts"
+      ]
+    },
+    "EXPO_PUBLIC_SHOW_DEV_LAUNCHER": {
+      "section": "Frontend",
+      "format": "bool",
+      "default": "false",
+      "severity": "warn",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Muestra el lanzador de entornos de desarrollo en la app móvil.",
+      "readBy": [
+        "apps/mobile/src/screens/dev/LocalDevLauncherScreen.tsx"
+      ]
+    },
+    "GMAIL_CLIENT_ID": {
+      "section": "Email y mensajería",
+      "format": "string",
+      "doc": "OAuth de Google para leer reservas desde una bandeja Gmail (integración de correo). Vacío = integración desactivada.",
+      "readBy": [
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+      ]
+    },
+    "GMAIL_CLIENT_SECRET": {
+      "section": "Email y mensajería",
+      "required": {
+        "when": "GMAIL_CLIENT_ID"
+      },
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Secreto OAuth de Google.",
+      "readBy": [
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+      ]
+    },
+    "GMAIL_REDIRECT_URI": {
+      "section": "Email y mensajería",
+      "format": "url",
+      "doc": "Callback OAuth registrado en Google. Por defecto API_PUBLIC_URL + /integrations/email/oauth/callback.",
+      "readBy": [
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+      ]
+    },
+    "GOOGLE_WALLET_ISSUER_ID": {
+      "section": "Wallet",
+      "format": "string",
+      "default": "3388000000022000000",
+      "doc": "Issuer ID de Google Wallet (el valor por defecto es de pruebas).",
+      "readBy": [
+        "apps/api/src/modules/mobile-keys/wallet-pass.service.ts"
+      ]
+    },
+    "GROUP_CUTOFF_SCHEDULER_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el cutoff automático de grupos.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "GUEST_PORTAL_RETURN_TOKEN": {
+      "section": "Tests",
+      "format": "bool",
+      "default": "false",
+      "example": "false",
+      "productionForbidden": "true",
+      "tags": [
+        "test"
+      ],
+      "doc": "Devuelve el token del portal de huéspedes por HTTP aunque el magic link se haya entregado por email. NUNCA en producción.",
+      "readBy": [
+        "apps/api/src/modules/guest-portal/guest-portal-auth.service.ts"
+      ]
+    },
+    "GUEST_WEB_BASE_URL": {
+      "section": "Rate limit/CORS",
+      "format": "url",
+      "origin": true,
+      "httpsInProduction": true,
+      "default": "http://localhost:5174",
+      "doc": "Origen público del portal de huéspedes (magic links). Sin barra final.",
+      "readBy": [
+        "apps/api/src/modules/notifications/event-hooks.service.ts"
+      ]
+    },
+    "HOST": {
+      "section": "Proceso",
+      "format": "string",
+      "default": "0.0.0.0",
+      "doc": "Interfaz de escucha. En un despliegue nativo detrás de Caddy usa 127.0.0.1 para no exponer el puerto 3000; el compose fuerza 0.0.0.0 (red interna de contenedores).",
+      "readBy": [
+        "apps/ai-gateway/src/server.ts",
+        "apps/api/src/server.ts"
+      ]
+    },
+    "HOTELBEDS_ADAPTER_MODE": {
+      "section": "OTA",
+      "format": "enum",
+      "values": [
+        "stub",
+        "real"
+      ],
+      "default": "stub",
+      "doc": "Hotelbeds: stub o real.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/hotelbeds.adapter.ts"
+      ]
+    },
+    "HOTELBEDS_API_BASE_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Base de la API de Hotelbeds (vacío = por defecto).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/hotelbeds.adapter.ts"
+      ]
+    },
+    "HOTELOS_ALLOW_DEMO_AUTH": {
+      "section": "Auth/demo flags",
+      "format": "bool",
+      "default": "false",
+      "example": "false",
+      "productionForbidden": "true",
+      "doc": "true SOLO en dev/demo: toda petición sin token recibe el super-usuario demo. Con NODE_ENV=production el API se niega a arrancar (AUTH-04) salvo HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true. El demo local lo pone a true en su .env.",
+      "readBy": [
+        "apps/api/src/lib/auth-context.ts",
+        "apps/api/src/modules/auth/auth.service.ts"
+      ]
+    },
+    "HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE": {
+      "section": "Auth/demo flags",
+      "format": "bool",
+      "default": "false",
+      "tags": [
+        "dangerous"
+      ],
+      "doc": "Escape PELIGROSO del guard anterior: permite HOTELOS_ALLOW_DEMO_AUTH=true en producción (demo pública sin datos reales). Nunca en un despliegue de cliente.",
+      "readBy": [
+        "apps/api/src/lib/auth-context.ts"
+      ]
+    },
+    "HOTELOS_FIELD_KEY": {
+      "section": "Seguridad",
+      "format": "base64-32",
+      "tags": [
+        "secret"
+      ],
+      "generate": "openssl rand -base64 32",
+      "doc": "Clave de cifrado de campos PII con prioridad sobre ENCRYPTION_KEY. Cadena de fallback: HOTELOS_FIELD_KEY → ENCRYPTION_KEY.",
+      "readBy": [
+        "packages/database/src/crypto-fields.ts"
+      ]
+    },
+    "HOTELOS_LOOKUP_HASH_KEY": {
+      "section": "Seguridad",
+      "format": "string",
+      "minLength": 16,
+      "tags": [
+        "secret"
+      ],
+      "generate": "openssl rand -base64 32",
+      "doc": "Clave HMAC de los hashes de búsqueda por igualdad (email, documento). Fallback: HOTELOS_FIELD_KEY → ENCRYPTION_KEY. Acepta base64 o texto.",
+      "readBy": [
+        "packages/database/src/crypto-fields.ts"
+      ]
+    },
+    "IGIC_CERT_PASSPHRASE": {
+      "section": "IGIC",
+      "required": {
+        "when": "IGIC_MODE!=sandbox"
+      },
+      "format": "string",
+      "tags": [
+        "secret",
+        "fiscal-real"
+      ],
+      "doc": "Contraseña del certificado IGIC.",
+      "readBy": [
+        "apps/api/src/modules/invoicing/igic-submission.service.ts",
+        "packages/compliance/src/spain/igic/igic.ts"
+      ]
+    },
+    "IGIC_CERT_PATH": {
+      "section": "IGIC",
+      "required": {
+        "when": "IGIC_MODE!=sandbox"
+      },
+      "format": "path",
+      "tags": [
+        "fiscal-real"
+      ],
+      "doc": "Certificado para la Agencia Tributaria Canaria (PKCS#12).",
+      "readBy": [
+        "apps/api/src/modules/invoicing/igic-submission.service.ts",
+        "packages/compliance/src/spain/igic/igic.ts"
+      ]
+    },
+    "IGIC_MODE": {
+      "section": "IGIC",
+      "format": "enum",
+      "values": [
+        "sandbox",
+        "preproduction",
+        "production"
+      ],
+      "default": "sandbox",
+      "example": "sandbox",
+      "doc": "IGIC (Canarias): solo si la propiedad tributa allí. sandbox, preproduction o production.",
+      "readBy": [
+        "packages/compliance/src/spain/igic/igic.ts"
+      ]
+    },
+    "JWT_SECRET": {
+      "section": "Seguridad",
+      "required": "always",
+      "format": "string",
+      "minLength": 32,
+      "tags": [
+        "secret"
+      ],
+      "generate": "openssl rand -base64 48",
+      "doc": "Firma los JWT de sesión. Vacía o con el valor de ejemplo el API arranca pero rechaza el primer login.",
+      "readBy": [
+        "packages/database/src/jwt.ts"
+      ]
+    },
+    "MAILBOX_POLL_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el sondeo de las bandejas de correo integradas.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "MAILBOX_POLL_INTERVAL_MS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 10000,
+      "max": 86400000,
+      "default": "300000",
+      "doc": "Periodo del sondeo de buzones (ms).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "MS_CLIENT_ID": {
+      "section": "Email y mensajería",
+      "format": "string",
+      "doc": "OAuth de Microsoft 365 para la bandeja de reservas. Vacío = integración desactivada.",
+      "readBy": [
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+      ]
+    },
+    "MS_CLIENT_SECRET": {
+      "section": "Email y mensajería",
+      "required": {
+        "when": "MS_CLIENT_ID"
+      },
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Secreto OAuth de Microsoft.",
+      "readBy": [
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+      ]
+    },
+    "MS_REDIRECT_URI": {
+      "section": "Email y mensajería",
+      "format": "url",
+      "doc": "Callback OAuth registrado en Azure. Por defecto API_PUBLIC_URL + /integrations/email/oauth/callback.",
+      "readBy": [
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+      ]
+    },
+    "MS_TENANT": {
+      "section": "Email y mensajería",
+      "format": "string",
+      "default": "common",
+      "doc": "Tenant de Azure AD (common, organizations o el id del tenant).",
+      "readBy": [
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+      ]
+    },
+    "NODE_ENV": {
+      "section": "Proceso",
+      "format": "enum",
+      "values": [
+        "development",
+        "test",
+        "production"
+      ],
+      "default": "development",
+      "example": "development",
+      "productionExample": "production",
+      "doc": "Modo del proceso. Con production: RBAC estricto por defecto, la clave de cifrado de PII es obligatoria (aborta el arranque), se rechaza HOTELOS_ALLOW_DEMO_AUTH y las validaciones de este contrato son errores en vez de avisos. Otros valores (prod, Production…) se rechazan porque el código compara el literal.",
+      "readBy": [
+        "apps/admin-web/src/services/api-client.ts",
+        "apps/api/src/lib/auth-context.ts",
+        "apps/api/src/lib/env.ts",
+        "apps/api/src/modules/auth/auth.service.ts",
+        "apps/api/src/modules/guest-portal/guest-portal-auth.service.ts",
+        "apps/api/src/modules/notifications/providers/email.provider.ts",
+        "apps/api/src/modules/notifications/providers/sms.provider.ts",
+        "apps/api/src/modules/notifications/providers/whatsapp.provider.ts",
+        "apps/api/src/security/route-permissions.ts",
+        "apps/api/src/server.ts",
+        "packages/database/src/client.ts",
+        "packages/database/src/crypto-fields.ts"
+      ]
+    },
+    "OCR_PROVIDER_API_KEY": {
+      "section": "IA",
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Reservada: solo el /health del ai-gateway la refleja como configured/unconfigured.",
+      "readBy": [
+        "apps/ai-gateway/src/server.ts"
+      ]
+    },
+    "PACE_SCHEDULER_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el cálculo diario de pace/night-audit.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "PILOT_PUBLIC_ORIGIN": {
+      "section": "Rate limit/CORS",
+      "format": "url",
+      "origin": true,
+      "tags": [
+        "deprecated"
+      ],
+      "doc": "OBSOLETA: alias de un único origen que se fusiona en CORS_ALLOWED_ORIGINS. Migra el valor allí.",
+      "readBy": [
+        "apps/api/src/lib/env.ts",
+        "apps/api/src/server.ts"
+      ]
+    },
+    "PORT": {
+      "section": "Proceso",
+      "format": "int",
+      "min": 1,
+      "max": 65535,
+      "default": "3000",
+      "doc": "Puerto TCP del API (el ai-gateway usa 3100 por defecto).",
+      "readBy": [
+        "apps/ai-gateway/src/server.ts",
+        "apps/api/src/server.ts"
+      ]
+    },
+    "RATE_LIMIT_MAX": {
+      "section": "Rate limit/CORS",
+      "format": "int",
+      "min": 1,
+      "max": 100000,
+      "default": "600",
+      "doc": "Peticiones por minuto y por usuario+IP antes de responder 429.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "RBAC_STRICT": {
+      "section": "Auth/demo flags",
+      "format": "bool",
+      "productionForbidden": "false",
+      "productionExample": "true",
+      "doc": "RBAC estricto: un GET sin entrada en el manifiesto de permisos devuelve 403. Vacía = estricto en producción y fail-open con aviso en desarrollo. false está prohibido en producción.",
+      "readBy": [
+        "apps/api/src/security/route-permissions.ts"
+      ]
+    },
+    "REDIS_URL": {
+      "section": "BD y colas",
+      "format": "string",
+      "pattern": "^redis(s)?://",
+      "example": "redis://localhost:6379",
+      "productionExample": "",
+      "doc": "Reservada: hoy no hay cliente Redis (el rate-limit es en memoria); solo se refleja en /health. El compose la fija a redis://redis:6379.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "RUN_SCHEDULERS": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "true",
+      "example": "true",
+      "doc": "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false).",
+      "readBy": [
+        "apps/api/src/lib/scheduler-leader.ts"
+      ]
+    },
+    "SEED_ALLOW_REAL": {
+      "section": "Seeds",
+      "format": "enum",
+      "values": [
+        "1"
+      ],
+      "tags": [
+        "dev-only",
+        "dangerous"
+      ],
+      "doc": "Guard DATA-05: los seeds solo escriben sobre la allowlist demo (org_123, prop_123, prop_canary). Para apuntar a otro objetivo exporta el literal 1 junto con SEED_CONFIRM=<id>. Nunca en un .env persistente.",
+      "readBy": [
+        "packages/database/prisma/lib/demo-guard.ts"
+      ]
+    },
+    "SEED_BAR_PRICES": {
+      "section": "Seeds",
+      "format": "string",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Precios BAR por categoría para el seed comercial (formato del seed).",
+      "readBy": [
+        "packages/database/prisma/seed-commercial-demo.ts"
+      ]
+    },
+    "SEED_CONFIRM": {
+      "section": "Seeds",
+      "format": "string",
+      "tags": [
+        "dev-only",
+        "dangerous"
+      ],
+      "doc": "Guard DATA-05: id exacto (o lista separada por comas) de la organización/propiedad NO demo que confirmas como objetivo del seed; solo se honra con SEED_ALLOW_REAL=1.",
+      "readBy": [
+        "packages/database/prisma/lib/demo-guard.ts"
+      ]
+    },
+    "SEED_CREATE_ROOMS": {
+      "section": "Seeds",
+      "format": "enum",
+      "values": [
+        "1"
+      ],
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "db:seed:snapshots: el literal 1 permite crear habitaciones demo en una propiedad de la allowlist que no tenga ninguna; sin él la propiedad se omite.",
+      "readBy": [
+        "packages/database/prisma/seed-revenue-snapshots.ts"
+      ]
+    },
+    "SEED_ORG_ID": {
+      "section": "Seeds",
+      "format": "string",
+      "default": "org_123",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Organización destino de los seeds demo (db:seed:*). Solo desarrollo/demo.",
+      "readBy": [
+        "packages/database/prisma/seed-allotments.ts",
+        "packages/database/prisma/seed-operations.ts",
+        "packages/database/prisma/seed-revenue-snapshots.ts"
+      ]
+    },
+    "SEED_PROPERTY_ID": {
+      "section": "Seeds",
+      "format": "string",
+      "default": "prop_123",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Propiedad destino de los seeds demo.",
+      "readBy": [
+        "packages/database/prisma/seed-allotments.ts",
+        "packages/database/prisma/seed-cancellation-policies.ts",
+        "packages/database/prisma/seed-commercial-demo.ts",
+        "packages/database/prisma/seed-compliance.ts",
+        "packages/database/prisma/seed-fnb-inventory.ts",
+        "packages/database/prisma/seed-operations.ts"
+      ]
+    },
+    "SEED_RATE_DAYS_AHEAD": {
+      "section": "Seeds",
+      "format": "int",
+      "min": 0,
+      "max": 3650,
+      "default": "150",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Días hacia delante de la rejilla de tarifas sembrada.",
+      "readBy": [
+        "packages/database/prisma/seed-commercial-demo.ts"
+      ]
+    },
+    "SEED_RATE_DAYS_BACK": {
+      "section": "Seeds",
+      "format": "int",
+      "min": 0,
+      "max": 3650,
+      "default": "30",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Días hacia atrás de la rejilla de tarifas sembrada.",
+      "readBy": [
+        "packages/database/prisma/seed-commercial-demo.ts"
+      ]
+    },
+    "SEED_SCOPE": {
+      "section": "Seeds",
+      "format": "enum",
+      "values": [
+        "full",
+        "rates"
+      ],
+      "default": "full",
+      "tags": [
+        "dev-only"
+      ],
+      "doc": "Alcance del seed comercial: full o solo rates.",
+      "readBy": [
+        "packages/database/prisma/seed-commercial-demo.ts"
+      ]
+    },
+    "SENTRY_DSN": {
+      "section": "Sentry",
+      "format": "url",
+      "tags": [
+        "secret"
+      ],
+      "doc": "DSN de Sentry del API/worker: captura errores 5xx. Vacío = desactivado (en producción avisa).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "SES_HOSPEDAJES_CERT_PASSPHRASE": {
+      "section": "SES",
+      "required": {
+        "when": "SES_HOSPEDAJES_MODE!=sandbox"
+      },
+      "format": "string",
+      "tags": [
+        "secret",
+        "fiscal-real"
+      ],
+      "doc": "Contraseña del certificado SES.",
+      "readBy": [
+        "apps/api/src/modules/backoffice/backoffice.service.ts",
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "apps/api/src/modules/compliance/ses-submission.service.ts",
+        "packages/compliance/src/spain/ses-hospedajes/submitter.ts"
+      ]
+    },
+    "SES_HOSPEDAJES_CERT_PATH": {
+      "section": "SES",
+      "required": {
+        "when": "SES_HOSPEDAJES_MODE!=sandbox"
+      },
+      "format": "path",
+      "tags": [
+        "fiscal-real"
+      ],
+      "doc": "Certificado electrónico cualificado registrado en el MIR (PKCS#12); en el compose /certs/ses-hospedajes.p12.",
+      "readBy": [
+        "apps/api/src/modules/backoffice/backoffice.service.ts",
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "apps/api/src/modules/compliance/ses-submission.service.ts",
+        "packages/compliance/src/spain/ses-hospedajes/submitter.ts"
+      ]
+    },
+    "SES_HOSPEDAJES_CLIENT_ID": {
+      "section": "SES",
+      "required": {
+        "when": "SES_HOSPEDAJES_MODE!=sandbox"
+      },
+      "format": "string",
+      "tags": [
+        "fiscal-real"
+      ],
+      "doc": "Usuario de la API de comunicaciones SES.Hospedajes.",
+      "readBy": [
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "packages/compliance/src/spain/ses-hospedajes/submitter.ts"
+      ]
+    },
+    "SES_HOSPEDAJES_CLIENT_SECRET": {
+      "section": "SES",
+      "required": {
+        "when": "SES_HOSPEDAJES_MODE!=sandbox"
+      },
+      "format": "string",
+      "tags": [
+        "secret",
+        "fiscal-real"
+      ],
+      "doc": "Contraseña de la API SES.Hospedajes.",
+      "readBy": [
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "packages/compliance/src/spain/ses-hospedajes/submitter.ts"
+      ]
+    },
+    "SES_HOSPEDAJES_MODE": {
+      "section": "SES",
+      "format": "enum",
+      "values": [
+        "sandbox",
+        "preproduction",
+        "production"
+      ],
+      "default": "sandbox",
+      "example": "sandbox",
+      "doc": "Partes de viajeros al Ministerio del Interior (SES.Hospedajes): sandbox (stub), preproduction o production. Fuera de sandbox exige certificado y credenciales.",
+      "readBy": [
+        "apps/api/src/modules/backoffice/backoffice.service.ts",
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "apps/api/src/modules/compliance/compliance.service.ts",
+        "apps/api/src/server.ts",
+        "packages/compliance/src/spain/ses-hospedajes/submitter.ts"
+      ]
+    },
+    "SES_MAX_ATTEMPTS": {
+      "section": "SES",
+      "format": "int",
+      "min": 1,
+      "max": 100,
+      "default": "10",
+      "doc": "Reintentos por comunicación antes de marcarla fallida.",
+      "readBy": [
+        "apps/api/src/modules/compliance/ses-submission.service.ts"
+      ]
+    },
+    "SES_SCHEDULER_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el envío periódico de partes SES.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "SES_SCHEDULER_INTERVAL_MS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 10000,
+      "max": 86400000,
+      "default": "300000",
+      "doc": "Periodo del scheduler SES (ms).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "SMOKE_TIMEOUT_MS": {
+      "section": "Tests",
+      "format": "int",
+      "min": 1000,
+      "max": 600000,
+      "default": "15000",
+      "severity": "warn",
+      "tags": [
+        "tool",
+        "dev-only"
+      ],
+      "doc": "scripts/smoke-director-dashboard.mjs: timeout por petición (ms).",
+      "readBy": [
+        "scripts/smoke-director-dashboard.mjs"
+      ]
+    },
+    "SPEECH_PROVIDER_API_KEY": {
+      "section": "IA",
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Reservada: solo el /health del ai-gateway la refleja como configured/unconfigured.",
+      "readBy": [
+        "apps/ai-gateway/src/server.ts"
+      ]
+    },
+    "TBAI_CERT_PASSPHRASE": {
+      "section": "TBAI",
+      "required": {
+        "when": "TBAI_MODE=production"
+      },
+      "format": "string",
+      "tags": [
+        "secret",
+        "fiscal-real"
+      ],
+      "doc": "Contraseña del certificado TicketBAI.",
+      "readBy": [
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "apps/api/src/modules/invoicing/tbai-submission.service.ts",
+        "packages/compliance/src/spain/tbai/tbai.ts"
+      ]
+    },
+    "TBAI_CERT_PATH": {
+      "section": "TBAI",
+      "required": {
+        "when": "TBAI_MODE=production"
+      },
+      "format": "path",
+      "tags": [
+        "fiscal-real"
+      ],
+      "productionExample": "",
+      "doc": "Certificado de dispositivo/entidad TicketBAI (PKCS#12).",
+      "readBy": [
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "apps/api/src/modules/invoicing/tbai-submission.service.ts",
+        "packages/compliance/src/spain/tbai/tbai.ts"
+      ]
+    },
+    "TBAI_DEVICE_SERIAL": {
+      "section": "TBAI",
+      "format": "string",
+      "maxLength": 30,
+      "doc": "NumSerieDispositivo (≤30). Vacío = VERIFACTU_INSTALL_NUMBER.",
+      "readBy": [
+        "apps/api/src/modules/invoicing/tbai-submission.service.ts"
+      ]
+    },
+    "TBAI_LICENSE_KEY": {
+      "section": "TBAI",
+      "required": {
+        "when": "TBAI_MODE=production"
+      },
+      "format": "string",
+      "maxLength": 20,
+      "tags": [
+        "fiscal-real"
+      ],
+      "doc": "LicenciaTBAI concedida por la diputación foral (≤20).",
+      "readBy": [
+        "apps/api/src/modules/invoicing/tbai-submission.service.ts"
+      ]
+    },
+    "TBAI_MODE": {
+      "section": "TBAI",
+      "format": "enum",
+      "values": [
+        "sandbox",
+        "production"
+      ],
+      "default": "sandbox",
+      "example": "sandbox",
+      "doc": "TicketBAI (País Vasco): solo si la propiedad tributa allí. NO existe preproduction: cualquier valor distinto de production se trata como sandbox, así que se rechaza para evitar sorpresas.",
+      "readBy": [
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "apps/api/src/modules/invoicing/tbai-submission.service.ts",
+        "packages/compliance/src/spain/tbai/tbai.ts"
+      ]
+    },
+    "TENANT_BOOTSTRAP_SKIP": {
+      "section": "Auth/demo flags",
+      "format": "bool",
+      "default": "false",
+      "productionForbidden": "true",
+      "tags": [
+        "test"
+      ],
+      "doc": "Salta la sincronización del catálogo RBAC y la hidratación de tenants al arrancar. Solo tests.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "TRUST_PROXY": {
+      "section": "Rate limit/CORS",
+      "format": "enum",
+      "values": [
+        "0",
+        "1"
+      ],
+      "productionWarnUnless": "1",
+      "productionExample": "1",
+      "doc": "1 detrás de Caddy/nginx para leer X-Forwarded-For; si no, el rate-limit agrupa todo en la IP del proxy. Solo se acepta el literal 1.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "TWILIO_ACCOUNT_SID": {
+      "section": "Email y mensajería",
+      "format": "string",
+      "doc": "SMS vía Twilio (con TWILIO_AUTH_TOKEN y TWILIO_FROM). Sin configurar: simulado en desarrollo, fallo explícito en producción.",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/sms.provider.ts"
+      ]
+    },
+    "TWILIO_AUTH_TOKEN": {
+      "section": "Email y mensajería",
+      "required": {
+        "when": "TWILIO_ACCOUNT_SID"
+      },
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Auth token de la cuenta Twilio.",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/sms.provider.ts"
+      ]
+    },
+    "TWILIO_FROM": {
+      "section": "Email y mensajería",
+      "required": {
+        "when": "TWILIO_ACCOUNT_SID"
+      },
+      "format": "string",
+      "pattern": "^\\+[1-9]\\d{6,14}$",
+      "doc": "Número remitente en formato E.164 (+34600000000).",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/sms.provider.ts"
+      ]
+    },
+    "VERIFACTU_CERT_P12": {
+      "section": "VeriFactu",
+      "required": {
+        "when": "VERIFACTU_MODE!=sandbox && !VERIFACTU_CERT_PATH"
+      },
+      "format": "path",
+      "tags": [
+        "fiscal-real"
+      ],
+      "doc": "Certificado de representante/sello en PKCS#12 (.p12/.pfx) para mTLS contra AEAT. En el compose los certificados se montan desde deploy/certs en /certs (p. ej. /certs/verifactu.p12).",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/submitter.ts"
+      ]
+    },
+    "VERIFACTU_CERT_P12_PASSPHRASE": {
+      "section": "VeriFactu",
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Contraseña del PKCS#12 (fallback: VERIFACTU_CERT_PASSPHRASE).",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/submitter.ts"
+      ]
+    },
+    "VERIFACTU_CERT_PASSPHRASE": {
+      "section": "VeriFactu",
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Contraseña del fichero de VERIFACTU_CERT_PATH y fallback de las dos anteriores.",
+      "readBy": [
+        "apps/api/src/modules/backoffice/backoffice.service.ts",
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "packages/compliance/src/spain/verifactu/submitter.ts"
+      ]
+    },
+    "VERIFACTU_CERT_PATH": {
+      "section": "VeriFactu",
+      "format": "path",
+      "doc": "Compatibilidad: un único fichero (PEM o PKCS#12, se detecta) para mTLS y firma. Ignorado cuando VERIFACTU_CERT_P12 / VERIFACTU_SIGN_PEM están definidos.",
+      "readBy": [
+        "apps/api/src/modules/backoffice/backoffice.service.ts",
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "packages/compliance/src/spain/verifactu/submitter.ts"
+      ]
+    },
+    "VERIFACTU_INSTALL_NUMBER": {
+      "section": "VeriFactu",
+      "required": {
+        "when": "VERIFACTU_MODE!=sandbox"
+      },
+      "format": "string",
+      "maxLength": 100,
+      "tags": [
+        "fiscal-real"
+      ],
+      "doc": "NumeroInstalacion (≤100): identificador que el productor asigna a esta instalación (no lo asigna AEAT).",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/software.ts"
+      ]
+    },
+    "VERIFACTU_MAX_ATTEMPTS": {
+      "section": "VeriFactu",
+      "format": "int",
+      "min": 1,
+      "max": 100,
+      "default": "12",
+      "doc": "Reintentos por registro antes de marcarlo fallido (terminal).",
+      "readBy": [
+        "apps/api/src/modules/invoicing/verifactu-submission.service.ts"
+      ]
+    },
+    "VERIFACTU_MODE": {
+      "section": "VeriFactu",
+      "format": "enum",
+      "values": [
+        "sandbox",
+        "preproduction",
+        "production"
+      ],
+      "default": "sandbox",
+      "example": "sandbox",
+      "doc": "Envío a AEAT: sandbox (stub local), preproduction (entorno de pruebas oficial, ya requiere certificado y bloque SistemaInformatico) o production. Pasa por preproduction antes de production.",
+      "readBy": [
+        "apps/api/src/modules/backoffice/backoffice.service.ts",
+        "apps/api/src/modules/compliance/compliance-health.service.ts",
+        "apps/api/src/modules/invoicing/issuer-identity.service.ts",
+        "apps/api/src/server.ts",
+        "packages/compliance/src/spain/verifactu/submitter.ts"
+      ]
+    },
+    "VERIFACTU_MULTI_OT": {
+      "section": "VeriFactu",
+      "format": "enum",
+      "values": [
+        "S",
+        "N"
+      ],
+      "default": "S",
+      "example": "S",
+      "doc": "IndicadorMultiplesOT: S (SaaS multi-tenant) o N.",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/software.ts"
+      ]
+    },
+    "VERIFACTU_SCHEDULER_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el envío periódico de registros VeriFactu.",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "VERIFACTU_SCHEDULER_INTERVAL_MS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 10000,
+      "max": 86400000,
+      "default": "120000",
+      "doc": "Periodo del scheduler VeriFactu (ms).",
+      "readBy": [
+        "apps/api/src/server.ts"
+      ]
+    },
+    "VERIFACTU_SIGN_PEM": {
+      "section": "VeriFactu",
+      "format": "path",
+      "doc": "Opcional: PEM (clave privada + certificado) para la firma XAdES de auditoría guardada en verifactu_submissions. Sin PEM se guarda una firma stub. openssl pkcs12 -in cert.p12 -nodes -out sign.pem",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/submitter.ts"
+      ]
+    },
+    "VERIFACTU_SIGN_PEM_PASSPHRASE": {
+      "section": "VeriFactu",
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Contraseña de la clave del PEM de firma (fallback: VERIFACTU_CERT_PASSPHRASE).",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/submitter.ts"
+      ]
+    },
+    "VERIFACTU_SOFTWARE_NAME": {
+      "section": "VeriFactu",
+      "required": {
+        "when": "VERIFACTU_MODE!=sandbox"
+      },
+      "format": "string",
+      "maxLength": 120,
+      "tags": [
+        "fiscal-real"
+      ],
+      "doc": "NombreRazon del PRODUCTOR del software (titular de Anfitorio, no el hotel), según la declaración responsable (docs/compliance/verifactu-declaracion-responsable.md).",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/software.ts"
+      ]
+    },
+    "VERIFACTU_SOFTWARE_NIF": {
+      "section": "VeriFactu",
+      "required": {
+        "when": "VERIFACTU_MODE!=sandbox"
+      },
+      "format": "nif",
+      "tags": [
+        "fiscal-real"
+      ],
+      "doc": "NIF del productor del software, con letra de control.",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/software.ts"
+      ]
+    },
+    "VERIFACTU_SYSTEM_ID": {
+      "section": "VeriFactu",
+      "format": "string",
+      "minLength": 2,
+      "maxLength": 2,
+      "default": "01",
+      "example": "01",
+      "doc": "IdSistemaInformatico: código de exactamente 2 caracteres elegido por el productor.",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/software.ts"
+      ]
+    },
+    "VERIFACTU_SYSTEM_NAME": {
+      "section": "VeriFactu",
+      "format": "string",
+      "maxLength": 30,
+      "default": "Anfitorio",
+      "example": "Anfitorio",
+      "doc": "NombreSistemaInformatico (≤30).",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/software.ts"
+      ]
+    },
+    "VERIFACTU_SYSTEM_VERSION": {
+      "section": "VeriFactu",
+      "format": "string",
+      "maxLength": 50,
+      "doc": "Versión declarada del sistema (≤50). Vacía = APP_VERSION y, en su defecto, 0.1.0.",
+      "readBy": [
+        "packages/compliance/src/spain/verifactu/software.ts"
+      ]
+    },
+    "VITE_API_URL": {
+      "section": "Frontend",
+      "format": "url",
+      "default": "http://localhost:3000",
+      "productionExample": "https://app.example.com/api",
+      "doc": "URL del API que llama el admin-web; se hornea en el build (vite build). En producción https://<host>/api. Sin barra final.",
+      "readBy": [
+        "apps/admin-web/src/services/api-client.ts"
+      ]
+    },
+    "VITE_APP_VERSION": {
+      "section": "Frontend",
+      "format": "string",
+      "default": "0.1.0",
+      "doc": "Versión mostrada en la ayuda del admin-web.",
+      "readBy": [
+        "apps/admin-web/src/components/cocoa-global/CocoaKeyboardShortcutsHelp.tsx"
+      ]
+    },
+    "VITE_SENTRY_DSN": {
+      "section": "Sentry",
+      "format": "url",
+      "doc": "DSN de Sentry del admin-web (se hornea en el build de Vite).",
+      "readBy": [
+        "apps/admin-web/src/main.tsx"
+      ]
+    },
+    "VRBO_ADAPTER_MODE": {
+      "section": "OTA",
+      "format": "enum",
+      "values": [
+        "stub",
+        "real"
+      ],
+      "default": "stub",
+      "doc": "Vrbo: stub o real.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/vrbo.adapter.ts"
+      ]
+    },
+    "VRBO_API_BASE_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Base de la API de Vrbo (vacío = por defecto).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/vrbo.adapter.ts"
+      ]
+    },
+    "VRBO_OAUTH_URL": {
+      "section": "OTA",
+      "format": "url",
+      "doc": "Endpoint OAuth de Vrbo.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/vrbo/auth.ts"
+      ]
+    },
+    "WHATSAPP_PHONE_ID": {
+      "section": "Email y mensajería",
+      "format": "string",
+      "doc": "WhatsApp Business (Meta Cloud API): id del número de teléfono.",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/whatsapp.provider.ts"
+      ]
+    },
+    "WHATSAPP_PROVIDER_TOKEN": {
+      "section": "Email y mensajería",
+      "required": {
+        "when": "WHATSAPP_PHONE_ID"
+      },
+      "format": "string",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Token Bearer de la Meta Cloud API.",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/whatsapp.provider.ts"
+      ]
+    },
+    "WHATSAPP_TOKEN": {
+      "section": "Email y mensajería",
+      "format": "string",
+      "tags": [
+        "secret",
+        "deprecated"
+      ],
+      "doc": "OBSOLETA: alias de WHATSAPP_PROVIDER_TOKEN.",
+      "readBy": [
+        "apps/api/src/modules/notifications/providers/whatsapp.provider.ts"
+      ]
+    },
+    "WORKER_AUTOSTART": {
+      "section": "Tests",
+      "format": "bool",
+      "default": "true",
+      "tags": [
+        "test"
+      ],
+      "doc": "false evita que el worker arranque el scheduler al importarlo (solo tests).",
+      "readBy": [
+        "apps/worker/src/index.ts"
+      ]
+    },
+    "XADES_TIMESTAMP_ENABLED": {
+      "section": "VeriFactu",
+      "format": "bool",
+      "default": "false",
+      "doc": "Añade sello de tiempo (TSA) a las firmas XAdES de auditoría.",
+      "readBy": [
+        "apps/api/src/lib/compliance-signing.ts"
+      ]
+    },
+    "XADES_TIMESTAMP_MODE": {
+      "section": "VeriFactu",
+      "format": "enum",
+      "values": [
+        "stub",
+        "real"
+      ],
+      "default": "stub",
+      "doc": "real llama a la TSA de XADES_TIMESTAMP_TSA_URL; stub genera un sello local.",
+      "readBy": [
+        "apps/api/src/lib/compliance-signing.ts"
+      ]
+    },
+    "XADES_TIMESTAMP_TSA_URL": {
+      "section": "VeriFactu",
+      "format": "url",
+      "default": "http://timestamp.digicert.com",
+      "doc": "URL de la autoridad de sellado de tiempo (RFC 3161).",
+      "readBy": [
+        "apps/api/src/lib/compliance-signing.ts"
+      ]
+    }
+  }
+}

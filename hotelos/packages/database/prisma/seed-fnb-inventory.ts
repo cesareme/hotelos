@@ -1,7 +1,9 @@
 // Seed F&B inventory: stock location + canonical items (vinos, café, leche,
 // patatas, aceite, queso, pan, agua) + 5 menu items con recetas + initial
 // opening balances. Permits end-to-end testing of POS → stock consumption.
+// Guarded by assertDemoTarget (Tanda 4 · DATA-05).
 import { PrismaClient } from "@prisma/client";
+import { assertDemoTarget } from "./lib/demo-guard.js";
 
 const prisma = new PrismaClient();
 const PID = process.env.SEED_PROPERTY_ID ?? "prop_123";
@@ -29,6 +31,15 @@ const MENU = [
 ];
 
 async function main() {
+  assertDemoTarget({
+    propertyId: PID,
+    action: "seed-fnb-inventory",
+    planned: [
+      { table: "menu_recipes", op: "deleteMany", where: "de menu_items con sku MENU-SEED-*" },
+      { table: "menu_items", op: "deleteMany", where: "sku MENU-SEED-*" },
+      { table: "stock_movements", op: "deleteMany", where: "de inventory_items con sku VINO-RIOJA*" }
+    ]
+  });
   const property = await prisma.property.findUnique({ where: { id: PID }, select: { id: true, name: true } });
   if (!property) throw new Error(`Property ${PID} not found`);
   console.log(`[fnb] property ${PID} (${property.name})`);

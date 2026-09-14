@@ -9,7 +9,8 @@ import type { Prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
-import { BadRequestError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, describePrismaError } from "../../lib/http-error.js";
+import { allocateReservationCode, withReservationCodeRetry } from "../../lib/reservation-code.js";
 
 type Payload = Record<string, unknown>;
 
@@ -458,7 +459,37 @@ export async function listPropertyEventSpaces(propertyId: string) {
 // Reservation linked to the group via the group's code; (3) a pickedUp tick on
 // each GroupRoomBlock cell the night covers. Rows that fail validation are
 // reported in the errors array — the rest still import so partial imports are
-// possible.
+// possible. Each row runs in its OWN transaction so guest + reservation +
+// reservationGuest + pickup ticks are atomic: a failed reservation no longer
+// leaves an orphan guest behind. Reservation codes continue from the highest
+// existing `<group code>-NNN` suffix in the property (advisory-locked
+// allocator), so a second import into the same group no longer collides with
+// the first one.
+
+/** Zero-padding of rooming-list reservation codes (`GRP-001`). */
+const ROOMING_CODE_PAD = 3;
+
+/**
+ * Client-safe message for a failed rooming row. Prisma known errors are
+ * translated (their `message` carries the invocation text and, in dev, source
+ * paths); typed HttpErrors and plain Errors keep their message; anything
+ * else is reported generically and logged with the full error so nothing is
+ * swallowed silently.
+ */
+function roomingRowErrorMessage(err: unknown, row: number, groupId: string): string {
+  const prismaDescription = describePrismaError(err);
+  if (prismaDescription) return prismaDescription.message;
+  if (err && typeof err === "object" && typeof (err as { statusCode?: unknown }).statusCode === "number") {
+    return (err as Error).message;
+  }
+  // Prisma errors we do not translate (validation, unknown request…) still
+  // embed the invocation text: never forward it, but keep it in the logs.
+  const isPrismaShaped = err && typeof err === "object" && typeof (err as { clientVersion?: unknown }).clientVersion === "string";
+  if (err instanceof Error && !isPrismaShaped) return err.message;
+  console.error(`[sales] rooming-list row ${row} of group ${groupId} failed with an untranslated error`, err);
+  return "Error interno al importar la fila.";
+}
+
 export async function importRoomingList(input: { context: UserContext; groupId: string; payload: Payload; correlationId: string }) {
   requirePermissions(input.context, ["groups.manage"]);
   const group = await getGroupBooking(input.groupId);
@@ -470,6 +501,7 @@ export async function importRoomingList(input: { context: UserContext; groupId: 
     : [];
   if (entries.length === 0) throw new BadRequestError("entries array is required and must not be empty.");
 
+  const codePrefix = group.code ?? group.id.slice(0, 6);
   const errors: Array<{ row: number; message: string }> = [];
   let imported = 0;
 
@@ -488,82 +520,94 @@ export async function importRoomingList(input: { context: UserContext; groupId: 
       if (departureDate <= arrivalDate) throw new BadRequestError("departureDate must be after arrivalDate.");
       if (!roomTypeId) throw new BadRequestError("roomTypeId is required.");
 
-      let guest = null;
-      if (email) {
-        guest = await prisma.guest.findFirst({
-          where: { organizationId: property.organizationId, email }
-        });
-      }
-      if (!guest) {
-        guest = await prisma.guest.findFirst({
-          where: {
-            organizationId: property.organizationId,
-            firstName,
-            surname1: lastName
-          }
-        });
-      }
-      if (!guest) {
-        guest = await prisma.guest.create({
-          data: {
-            organizationId: property.organizationId,
-            firstName,
-            surname1: lastName,
-            email,
-            phone
-          }
-        });
-      }
+      await withReservationCodeRetry(() =>
+        prisma.$transaction(async (tx) => {
+          // Lock + MAX-suffix first: serialises this row against parallel
+          // imports/bookings on the same group sequence for the rest of the tx.
+          const code = await allocateReservationCode(tx, group.propertyId, codePrefix, ROOMING_CODE_PAD);
 
-      const code = `${group.code ?? group.id.slice(0, 6)}-${String(i + 1).padStart(3, "0")}`;
-      const reservation = await prisma.reservation.create({
-        data: {
-          propertyId: group.propertyId,
-          code,
-          channel: "group",
-          status: "confirmed",
-          arrivalDate,
-          departureDate,
-          adults: 1,
-          children: 0,
-          roomsCount: 1,
-          roomTypeId,
-          groupCode: group.code ?? group.id,
-          companyName: group.companyName,
-          specialRequests: optStr(e.specialRequests),
-          notes: [optStr(e.sharing) ? `sharing: ${optStr(e.sharing)}` : null, optStr(e.dietary) ? `dietary: ${optStr(e.dietary)}` : null]
-            .filter((v): v is string => Boolean(v))
-            .join("; ") || null
-        }
-      });
-      await prisma.reservationGuest.create({
-        data: { reservationId: reservation.id, guestId: guest.id, isPrimary: true }
-      });
+          let guest = null;
+          if (email) {
+            guest = await tx.guest.findFirst({
+              where: { organizationId: property.organizationId, email }
+            });
+          }
+          if (!guest) {
+            guest = await tx.guest.findFirst({
+              where: {
+                organizationId: property.organizationId,
+                firstName,
+                surname1: lastName
+              }
+            });
+          }
+          if (!guest) {
+            guest = await tx.guest.create({
+              data: {
+                organizationId: property.organizationId,
+                firstName,
+                surname1: lastName,
+                email,
+                phone
+              }
+            });
+          }
 
-      // Bump pickedUpCount on every night the rooming entry covers — that is
-      // how the grid UI's "picked up vs blocked" indicator stays in sync.
-      const cursor = new Date(arrivalDate);
-      while (cursor < departureDate) {
-        const block = await prisma.groupRoomBlock.findFirst({
-          where: { groupBookingId: group.id, roomTypeId, date: cursor }
-        });
-        if (block) {
-          await prisma.groupRoomBlock.update({
-            where: { id: block.id },
-            data: { pickedUpCount: block.pickedUpCount + 1 }
+          const reservation = await tx.reservation.create({
+            data: {
+              propertyId: group.propertyId,
+              code,
+              channel: "group",
+              status: "confirmed",
+              arrivalDate,
+              departureDate,
+              adults: 1,
+              children: 0,
+              roomsCount: 1,
+              roomTypeId,
+              groupCode: group.code ?? group.id,
+              companyName: group.companyName,
+              specialRequests: optStr(e.specialRequests),
+              notes: [optStr(e.sharing) ? `sharing: ${optStr(e.sharing)}` : null, optStr(e.dietary) ? `dietary: ${optStr(e.dietary)}` : null]
+                .filter((v): v is string => Boolean(v))
+                .join("; ") || null
+            }
           });
-        }
-        cursor.setUTCDate(cursor.getUTCDate() + 1);
-      }
+          await tx.reservationGuest.create({
+            data: { reservationId: reservation.id, guestId: guest.id, isPrimary: true }
+          });
+
+          // Bump pickedUpCount on every night the rooming entry covers — that is
+          // how the grid UI's "picked up vs blocked" indicator stays in sync.
+          const cursor = new Date(arrivalDate);
+          while (cursor < departureDate) {
+            const block = await tx.groupRoomBlock.findFirst({
+              where: { groupBookingId: group.id, roomTypeId, date: cursor }
+            });
+            if (block) {
+              await tx.groupRoomBlock.update({
+                where: { id: block.id },
+                data: { pickedUpCount: block.pickedUpCount + 1 }
+              });
+            }
+            cursor.setUTCDate(cursor.getUTCDate() + 1);
+          }
+        })
+      );
       imported += 1;
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errors.push({ row: i + 1, message });
+      errors.push({ row: i + 1, message: roomingRowErrorMessage(err, i + 1, input.groupId) });
     }
   }
 
   const summary = { imported, errors };
   audit(input.context, "ROOMING_LIST_IMPORTED", "group_booking", input.groupId, summary, input.correlationId, group.propertyId);
+  // Nothing imported and every row failed → a 409 with the per-row detail so
+  // the client does not mistake a total failure for an empty success. A
+  // partial import still answers 200 with { imported, errors }.
+  if (imported === 0 && errors.length > 0) {
+    throw new ConflictError("Ninguna fila del rooming-list se importó", { errors });
+  }
   return summary;
 }
 
