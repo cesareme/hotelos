@@ -11,17 +11,35 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError } from "../../lib/http-error.js";
+import {
+  addDays,
+  dayUtc,
+  dec,
+  getPublishedBar,
+  isoDate,
+  leadRoomTypeIdsFor,
+  MS_DAY,
+  publishedBarFor,
+  resolveBarRatePlan,
+  round2
+} from "./actuals.js";
 
-const MS_DAY = 86_400_000;
 const OTB_STATUSES = ["confirmed", "checked_in", "checked_out"] as const;
-function dayUtc(v?: string): Date {
-  const base = v && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : new Date().toISOString().slice(0, 10);
-  return new Date(`${base}T00:00:00.000Z`);
-}
-function addDays(d: Date, n: number): Date { return new Date(d.getTime() + n * MS_DAY); }
-function isoDate(d: Date): string { return d.toISOString().slice(0, 10); }
-function dec(v: Prisma.Decimal | number | null | undefined): number { return v === null || v === undefined ? 0 : typeof v === "number" ? v : Number(v); }
-function round2(n: number): number { return Math.round(n * 100) / 100; }
+/** Engine parameters (explicit, explainable — surfaced in reasonJson, never hidden literals). */
+const ENGINE = {
+  /** Without a matching rule, move this share of the way toward the comp-set median. */
+  compsetTrackingWeight: 0.3,
+  /** Hard floor for any recommended BAR (EUR). */
+  minRecommendedBar: 40,
+  /** Changes below this |Δ%| are not worth a recommendation. */
+  materialDeltaPct: 1,
+  /** |Δ%| above this is flagged riskLevel "high". */
+  highRiskDeltaPct: 15,
+  /** Rules-based engine: fixed confidence (there is no probabilistic model behind it). */
+  confidence: 60,
+  /** Max window per generation run (days). */
+  maxDays: 60
+} as const;
 function num(v: unknown): number | undefined { if (v === null || v === undefined || v === "") return undefined; const n = Number(v); return Number.isFinite(n) ? n : undefined; }
 function median(values: number[]): number { if (!values.length) return 0; const s = [...values].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
 
@@ -84,15 +102,42 @@ export async function createBarLevel(input: { context: UserContext; propertyId: 
 }
 
 // ---- Recommendation engine ------------------------------------------------
-export async function generateRecommendations(input: { context: UserContext; propertyId: string; from?: string; to?: string; correlationId: string }) {
+export type GenerateRecommendationsResult = {
+  generated: number;
+  /** Days in the window with no published BAR → no recommendation row (never a default price). */
+  skippedNoBar: number;
+  /** Days whose recommended BAR differs from the current one by less than the material threshold. */
+  skippedNoChange: number;
+  /** Stale pending rows (targetDate < today) removed in the same transaction. */
+  purgedPast: number;
+  from: string;
+  to: string;
+  barSource: "rate_grid" | "no_bar_plan" | "no_sellable_room_types" | "no_rate_days";
+  reason?: "no_sellable_rooms" | "no_published_bar" | "no_material_change";
+};
+
+/**
+ * BAR recommendations per stay date (REV-04). `current.bar` is the published
+ * BAR of the BAR plan (lead rate across sellable room types); days without a
+ * published BAR are skipped and counted in `skippedNoBar`. The window starts
+ * at max(from, today): recommendations for the past are meaningless, and
+ * stale pending rows in the past are purged.
+ */
+export async function generateRecommendations(input: { context: UserContext; propertyId: string; from?: string; to?: string; correlationId: string }): Promise<GenerateRecommendationsResult> {
   requirePermissions(input.context, ["revenue.recommend"]);
   const propertyId = input.propertyId;
-  const from = dayUtc(input.from);
-  const days = Math.min(60, input.to ? Math.max(1, Math.round((dayUtc(input.to).getTime() - from.getTime()) / MS_DAY) + 1) : 30);
+  const today = dayUtc();
+  const requestedFrom = dayUtc(input.from);
+  const from = requestedFrom.getTime() < today.getTime() ? today : requestedFrom;
+  if (input.to && dayUtc(input.to).getTime() < today.getTime()) {
+    throw new BadRequestError("No se pueden generar recomendaciones para fechas pasadas.");
+  }
+  const days = Math.min(ENGINE.maxDays, input.to ? Math.max(1, Math.round((dayUtc(input.to).getTime() - from.getTime()) / MS_DAY) + 1) : 30);
   const to = addDays(from, days - 1);
 
   const totalRooms = await prisma.room.count({ where: { propertyId, sellable: true } });
-  if (totalRooms === 0) return { generated: 0, reason: "no_sellable_rooms" };
+  const base = { skippedNoBar: 0, skippedNoChange: 0, purgedPast: 0, from: isoDate(from), to: isoDate(to) };
+  if (totalRooms === 0) return { generated: 0, ...base, barSource: "no_sellable_room_types", reason: "no_sellable_rooms" };
 
   // OTB rooms per stay date.
   const reservations = await prisma.reservation.findMany({
@@ -111,28 +156,32 @@ export async function generateRecommendations(input: { context: UserContext; pro
     }
   }
 
-  // Current BAR (min rateDay) per day.
-  const rateRows = await prisma.rateDay.findMany({ where: { propertyId, date: { gte: from, lte: to } }, select: { date: true, price: true } });
-  const currentBar = new Map<string, number>();
-  for (const r of rateRows) {
-    const k = isoDate(r.date);
-    const p = dec(r.price);
-    if (!currentBar.has(k) || p < (currentBar.get(k) as number)) currentBar.set(k, p);
-  }
+  // Current BAR per day: published BAR of the BAR plan (lead rate), never a default.
+  const publishedBar = await getPublishedBar(propertyId, from, to);
 
   // Comp-set median per day from the latest shop.
   const compRows = await prisma.competitorRateSnapshot.findMany({ where: { propertyId, stayDate: { gte: from, lte: to }, price: { not: null } }, select: { stayDate: true, price: true } });
   const compByDay = new Map<string, number[]>();
   for (const r of compRows) { const k = isoDate(r.stayDate); const arr = compByDay.get(k) ?? []; arr.push(dec(r.price)); compByDay.set(k, arr); }
 
-  const rules = await prisma.pricingRule.findMany({ where: { propertyId, active: true }, orderBy: { priority: "asc" } });
+  // Rules + BAR ladder: loaded once for the whole window (no per-day queries).
+  const [rules, levels] = await Promise.all([
+    prisma.pricingRule.findMany({ where: { propertyId, active: true }, orderBy: { priority: "asc" } }),
+    prisma.barLevel.findMany({ where: { propertyId, active: true } })
+  ]);
 
+  let skippedNoBar = 0;
+  let skippedNoChange = 0;
   const data: Prisma.RevenueRecommendationCreateManyInput[] = [];
   for (let i = 0; i < days; i++) {
     const date = addDays(from, i);
     const key = isoDate(date);
     const occ = totalRooms > 0 ? round2(((otb.get(key) ?? 0) / totalRooms) * 100) : 0;
-    const baseBar = currentBar.get(key) ?? 130;
+    const baseBar = publishedBarFor(publishedBar, key);
+    if (baseBar === null) {
+      skippedNoBar++;
+      continue; // no published BAR → nothing to recommend against
+    }
     const compMedian = compByDay.has(key) ? round2(median(compByDay.get(key) as number[])) : null;
 
     // First matching rule by occupancy band.
@@ -143,7 +192,11 @@ export async function generateRecommendations(input: { context: UserContext; pro
     });
 
     let recommended = baseBar;
-    const reasons: Array<{ driver: string; value: unknown }> = [{ driver: "occupancy_pct", value: occ }, { driver: "current_bar", value: baseBar }];
+    const reasons: Array<{ driver: string; value: unknown }> = [
+      { driver: "occupancy_pct", value: occ },
+      { driver: "current_bar", value: baseBar },
+      { driver: "current_bar_source", value: "rate_grid" }
+    ];
     if (compMedian !== null) reasons.push({ driver: "compset_median", value: compMedian });
 
     if (rule) {
@@ -152,46 +205,65 @@ export async function generateRecommendations(input: { context: UserContext; pro
       if (rule.maxPrice !== null) recommended = Math.min(recommended, dec(rule.maxPrice));
       reasons.push({ driver: "rule", value: rule.name });
     } else if (compMedian !== null) {
-      // No rule: gently track comp-set (move 30% of the way toward median).
-      recommended = baseBar + (compMedian - baseBar) * 0.3;
-      reasons.push({ driver: "rule", value: "comp_set_tracking" });
+      // No rule: gently track the comp-set (move a fixed share of the way toward the median).
+      recommended = baseBar + (compMedian - baseBar) * ENGINE.compsetTrackingWeight;
+      reasons.push({ driver: "rule", value: "comp_set_tracking" }, { driver: "compset_tracking_weight", value: ENGINE.compsetTrackingWeight });
     }
 
     // Snap to nearest BAR level if any.
-    const levels = await prisma.barLevel.findMany({ where: { propertyId, active: true } });
     if (levels.length) {
       const nearest = levels.reduce((best, l) => (Math.abs(dec(l.price) - recommended) < Math.abs(dec(best.price) - recommended) ? l : best));
       recommended = dec(nearest.price);
       reasons.push({ driver: "snapped_to_level", value: nearest.name });
     }
 
-    recommended = round2(Math.max(40, recommended));
+    recommended = round2(Math.max(ENGINE.minRecommendedBar, recommended));
     const deltaPct = baseBar > 0 ? Math.abs((recommended - baseBar) / baseBar) * 100 : 0;
-    if (deltaPct < 1) continue; // no material change
+    if (deltaPct < ENGINE.materialDeltaPct) {
+      skippedNoChange++;
+      continue; // no material change
+    }
 
     data.push({
       propertyId,
       recommendationType: "bar",
       targetDate: date,
-      currentValueJson: { bar: baseBar, occupancyPct: occ, compsetMedian: compMedian } as Prisma.InputJsonValue,
+      ratePlanId: publishedBar.ratePlan?.id ?? null,
+      currentValueJson: { bar: baseBar, barSource: "rate_grid", ratePlanId: publishedBar.ratePlan?.id ?? null, occupancyPct: occ, compsetMedian: compMedian } as Prisma.InputJsonValue,
       recommendedValueJson: { bar: recommended } as Prisma.InputJsonValue,
       expectedImpactJson: { direction: recommended > baseBar ? "up" : "down", deltaPct: round2((recommended - baseBar) / baseBar * 100) } as Prisma.InputJsonValue,
       reasonJson: reasons as unknown as Prisma.InputJsonValue,
-      confidence: 60,
-      riskLevel: deltaPct > 15 ? "high" : "medium",
+      confidence: ENGINE.confidence,
+      riskLevel: deltaPct > ENGINE.highRiskDeltaPct ? "high" : "medium",
       status: "pending"
     });
   }
 
-  const generated = await prisma.$transaction(async (tx) => {
+  const { generated, purgedPast } = await prisma.$transaction(async (tx) => {
+    // Stale pendings (past target dates) can never be acted upon: purge them.
+    const purged = await tx.revenueRecommendation.deleteMany({ where: { propertyId, recommendationType: "bar", status: "pending", targetDate: { lt: today } } });
     await tx.revenueRecommendation.deleteMany({ where: { propertyId, recommendationType: "bar", status: "pending", targetDate: { gte: from, lte: to } } });
-    if (data.length === 0) return 0;
+    if (data.length === 0) return { generated: 0, purgedPast: purged.count };
     const created = await tx.revenueRecommendation.createMany({ data });
-    return created.count;
+    return { generated: created.count, purgedPast: purged.count };
   });
 
-  recordAuditEvent({ organizationId: input.context.organizationId, propertyId, actorUserId: input.context.userId, actorType: "user", action: "REVENUE_RECOMMENDATIONS_GENERATED", entityType: "revenue_recommendation", entityId: propertyId, afterJson: { generated, from: isoDate(from), to: isoDate(to) }, correlationId: input.correlationId });
-  return { generated };
+  const reason: GenerateRecommendationsResult["reason"] =
+    generated > 0 ? undefined : skippedNoBar > 0 && skippedNoChange === 0 ? "no_published_bar" : skippedNoChange > 0 ? "no_material_change" : "no_published_bar";
+  recordAuditEvent({ organizationId: input.context.organizationId, propertyId, actorUserId: input.context.userId, actorType: "user", action: "REVENUE_RECOMMENDATIONS_GENERATED", entityType: "revenue_recommendation", entityId: propertyId, afterJson: { generated, skippedNoBar, skippedNoChange, purgedPast, from: isoDate(from), to: isoDate(to), barSource: publishedBar.source }, correlationId: input.correlationId });
+  return { generated, skippedNoBar, skippedNoChange, purgedPast, from: isoDate(from), to: isoDate(to), barSource: publishedBar.source, ...(reason ? { reason } : {}) };
+}
+
+/**
+ * `current.bar` is only exposed when the row records its provenance
+ * (`barSource: "rate_grid"`, written by this engine). Legacy rows generated
+ * against a default price have no provenance → bar null, barSource "unknown".
+ */
+function mapCurrentValue(json: unknown): Record<string, unknown> & { bar: number | null; barSource: string } {
+  const current = json && typeof json === "object" && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
+  const barSource = typeof current.barSource === "string" ? current.barSource : "unknown";
+  const bar = barSource === "rate_grid" ? num(current.bar) ?? null : null;
+  return { ...current, bar, barSource };
 }
 
 function mapRecommendation(r: Awaited<ReturnType<typeof prisma.revenueRecommendation.findFirst>>) {
@@ -200,7 +272,7 @@ function mapRecommendation(r: Awaited<ReturnType<typeof prisma.revenueRecommenda
     id: r.id,
     recommendationType: r.recommendationType,
     targetDate: isoDate(r.targetDate),
-    current: r.currentValueJson,
+    current: mapCurrentValue(r.currentValueJson),
     recommended: r.recommendedValueJson,
     expectedImpact: r.expectedImpactJson,
     reasons: r.reasonJson,
@@ -223,15 +295,34 @@ export async function decideRecommendation(input: { context: UserContext; id: st
 
   if (input.decision === "applied") {
     const recommended = num((rec.recommendedValueJson as { bar?: unknown })?.bar);
-    if (recommended === undefined) throw new BadRequestError("Recommendation has no recommended BAR.");
-    // Write the recommended BAR back to every rate day on the target date.
-    await prisma.rateDay.updateMany({
-      where: { propertyId: rec.propertyId, date: rec.targetDate },
+    if (recommended === undefined) throw new BadRequestError("La recomendación no tiene BAR recomendada.");
+    if (rec.status === "applied") throw new BadRequestError("La recomendación ya está aplicada.");
+    const targetDate = dayUtc(rec.targetDate);
+    const targetKey = isoDate(targetDate);
+    if (targetDate.getTime() < dayUtc().getTime()) {
+      throw new BadRequestError(`No se puede aplicar una recomendación sobre una fecha pasada (${targetKey}).`);
+    }
+    // Apply ONLY to the BAR plan, and only to the room type(s) whose BAR is the
+    // lead rate the recommendation was computed against (`current.bar` = min
+    // across sellable types). Other plans (BAR-NR, packages) and the rest of
+    // the room-type ladder are never overwritten.
+    const ratePlan = await resolveBarRatePlan(rec.propertyId);
+    if (!ratePlan) throw new BadRequestError("La propiedad no tiene un plan BAR activo; no se ha aplicado nada.");
+    const published = await getPublishedBar(rec.propertyId, targetDate, targetDate);
+    const previousBar = publishedBarFor(published, targetKey);
+    const leadRoomTypeIds = leadRoomTypeIdsFor(published, targetKey);
+    if (previousBar === null || leadRoomTypeIds.length === 0) {
+      throw new BadRequestError(`No hay tarifario BAR publicado para ${targetKey}; no se ha aplicado nada.`);
+    }
+    const updated = await prisma.rateDay.updateMany({
+      where: { propertyId: rec.propertyId, ratePlanId: ratePlan.id, roomTypeId: { in: leadRoomTypeIds }, date: targetDate },
       data: { price: recommended, manuallyOverridden: true, updatedBy: input.context.userId }
     });
-    const updated = await prisma.revenueRecommendation.update({ where: { id: input.id }, data: { status: "applied", appliedAt: new Date(), approvedBy: input.context.userId } });
-    recordAuditEvent({ organizationId: input.context.organizationId, propertyId: rec.propertyId, actorUserId: input.context.userId, actorType: "user", action: "REVENUE_RECOMMENDATION_APPLIED", entityType: "revenue_recommendation", entityId: rec.id, afterJson: { bar: recommended, targetDate: isoDate(rec.targetDate) }, correlationId: input.correlationId });
-    return mapRecommendation(updated);
+    if (updated.count === 0) throw new BadRequestError(`No hay tarifario BAR publicado para ${targetKey}; no se ha aplicado nada.`);
+    const updatedRec = await prisma.revenueRecommendation.update({ where: { id: input.id }, data: { status: "applied", appliedAt: new Date(), approvedBy: input.context.userId, ratePlanId: ratePlan.id } });
+    const applied = { ratePlanId: ratePlan.id, ratePlanCode: ratePlan.code, roomTypeIds: leadRoomTypeIds, rateDaysUpdated: updated.count, previousBar, bar: recommended, targetDate: targetKey };
+    recordAuditEvent({ organizationId: input.context.organizationId, propertyId: rec.propertyId, actorUserId: input.context.userId, actorType: "user", action: "REVENUE_RECOMMENDATION_APPLIED", entityType: "revenue_recommendation", entityId: rec.id, afterJson: applied, correlationId: input.correlationId });
+    return { ...mapRecommendation(updatedRec), applied };
   }
 
   const updated = await prisma.revenueRecommendation.update({

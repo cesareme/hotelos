@@ -609,6 +609,8 @@ export type GuestRecord = {
 };
 
 export type ReservationRecord = {
+  /** Non-blocking remarks from the last room assignment (e.g. orphan `occupied` status). Never persisted. */
+  assignmentNotes?: string[];
   id: string;
   propertyId: string;
   code: string;
@@ -645,6 +647,21 @@ export type ReservationRecord = {
   totalAmount: number;
   currency: string;
   primaryGuestId?: string;
+  // Tanda 2 · REC-01a: PMS parity columns (schema.prisma `model Reservation`).
+  // Accepted by UpdateReservationSchema and persisted; they must round-trip
+  // through GET / PATCH / list, so they are part of the record. Same
+  // conventions as the fields above: absent → undefined, Decimal → number,
+  // @db.Date → "YYYY-MM-DD".
+  estimatedArrivalTime?: string;
+  internalNotes?: string;
+  vipFlag?: boolean;
+  accessibilityNeeds?: string;
+  dietaryRequirements?: string;
+  bookingSource?: string;
+  paymentMethod?: string;
+  depositPaid?: number;
+  depositDueDate?: string;
+  groupBookingId?: string;
 };
 
 export type FolioRecord = {
@@ -672,6 +689,8 @@ export type PaymentRecord = {
   id: string;
   propertyId: string;
   folioId: string;
+  /** Tanda 2 (DIN-02): payment → invoice link so "pagada" derives from real cash, not a flag. */
+  invoiceId?: string | null;
   amount: number;
   currency: string;
   method: "cash" | "card" | "bank_transfer" | "payment_link" | "ota_virtual_card";

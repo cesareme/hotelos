@@ -2,26 +2,16 @@
 import { apiRequest } from "./api-client";
 import { getActivePropertyId } from "./activeProperty";
 
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
-
-async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.json() as Promise<T>;
+// All calls go through apiRequest (JWT + 401 handling + API error message).
+// The previous raw `fetch` helpers sent no Authorization header, which only
+// worked on the demo instance (fail-open) and returned 401 in production.
+function get<T>(path: string): Promise<T> {
+  return apiRequest<T>(path);
 }
-async function post<T>(path: string, body?: unknown): Promise<T> {
-  const res = await fetch(`${API_BASE_URL}${path}`, {
-    method: "POST",
-    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    let m = t;
-    try { m = (JSON.parse(t) as { message?: string }).message ?? t; } catch { /* keep */ }
-    throw new Error(m || `HTTP ${res.status}`);
-  }
-  return res.json() as Promise<T>;
+function post<T>(path: string, body?: unknown): Promise<T> {
+  // apiRequest only sets Content-Type when a body is present; POST actions
+  // without payload send `{}` so the server's `request.body ?? {}` stays valid.
+  return apiRequest<T>(path, { method: "POST", body: body ?? {} });
 }
 
 // ---- Pace & pickup --------------------------------------------------------
@@ -78,13 +68,17 @@ export function fetchParityAlerts(propertyId = getActivePropertyId()) {
 }
 
 // ---- Recommendations + pricing rules (Fase C2) ----------------------------
+// Tanda 2 · REV-04: `current.bar` is null when no BAR is published in the rate
+// grid for that date (`barSource: "none"`); the UI must render "—", never a
+// fallback price.
+export type RecommendationBarSource = "rate_grid" | "none";
 export type Recommendation = {
   id: string;
   recommendationType: string;
   targetDate: string;
-  current: { bar?: number; occupancyPct?: number; compsetMedian?: number | null };
-  recommended: { bar?: number };
-  expectedImpact: { direction?: string; deltaPct?: number };
+  current: { bar?: number | null; barSource?: RecommendationBarSource; occupancyPct?: number; compsetMedian?: number | null };
+  recommended: { bar?: number | null };
+  expectedImpact: { direction?: string; deltaPct?: number | null };
   reasons: Array<{ driver: string; value: unknown }>;
   confidence: number;
   riskLevel: string;
@@ -110,12 +104,27 @@ export function createPricingRule(payload: { name: string; priority?: number; mi
 }
 
 // ---- Strategy: meeting pack + displacement (Fase D) -----------------------
+export type BudgetVarianceBlock = { roomsSold: number; roomRevenue: number; adr: number; occupancyPct: number };
+// Tanda 2 · REV-03: `actual` comes from RevenueDailySnapshot first and falls
+// back to reservations per day; `forecast` only sums RevenueForecast from
+// max(from, today) and is null for a closed month. `sources` says which.
+export type BudgetVarianceSources = {
+  /** "snapshots" | "snapshots+reservas" | "reservas" */
+  actual: string;
+  /** Forecast model version, or null when no forecast applies (closed month). */
+  forecast: string | null;
+};
 export type BudgetVariance = {
   month: string;
   totalRooms: number;
   budget: { roomsSold: number | null; roomRevenue: number; adr: number; occupancyPct: number } | null;
-  forecast: { roomsSold: number; roomRevenue: number; adr: number; occupancyPct: number };
-  actual: { roomsSold: number; roomRevenue: number; adr: number; occupancyPct: number };
+  forecast: BudgetVarianceBlock | null;
+  actual: BudgetVarianceBlock;
+  sources?: BudgetVarianceSources;
+  /** Past days of the month covered by a night-audit snapshot. */
+  snapshotDays?: number;
+  /** Past days computed from reservations because no snapshot exists. */
+  fallbackDays?: number;
 };
 export type MeetingPack = {
   propertyId: string;
@@ -136,7 +145,9 @@ export type Displacement = {
   displacedRevenue: number;
   netBenefit: number;
   recommendation: string;
-  nights: Array<{ date: string; available: number; displacedRooms: number; transientAdr: number; displacedRevenue: number; groupRevenue: number }>;
+  // transientAdr is null when neither a forecast nor a published BAR exists for
+  // the night (the API flags it via adrSource instead of inventing a rate).
+  nights: Array<{ date: string; available: number; displacedRooms: number; transientAdr: number | null; adrSource?: string; displacedRevenue: number; groupRevenue: number }>;
 };
 
 export function fetchMeetingPack(propertyId = getActivePropertyId()) {

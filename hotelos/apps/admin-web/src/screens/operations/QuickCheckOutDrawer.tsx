@@ -10,13 +10,21 @@
 //   2. Pago (capture si hay saldo, método)
 //   3. Salida (auto: HK notify + folio close)
 // CTA único "Hacer check-out" que:
-//   - POST /folios/:id/payments (si saldo > 0)
+//   - POST /folios/:id/payments (si saldo > 0 y no se eligió "Sin cobro")
 //   - POST /reservations/:id/check-out (cierra folio + crea tarea HK + libera room)
+//
+// Tanda 2 · REC-08 / QC-06:
+//   - El folio ya NO se traga a null: si no carga, error visible con reintento y
+//     la opción explícita "Sin cobro" (el saldo se muestra como no disponible,
+//     nunca como 0,00 € "Saldado").
+//   - Si el API responde 409 BALANCE_DUE, el drawer muestra el saldo y ofrece
+//     "Cobrar" o "Salir con saldo pendiente" (reintento con acknowledgeBalance).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useToast } from "../../components/Toast";
 import { LoadingBlock } from "../../components/States";
 import { apiRequest } from "../../services/api-client";
+import { balanceDueConflict, type BalanceDueConflict } from "../../services/pmsCommerceApi";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 
 type Reservation = {
@@ -49,8 +57,11 @@ export type QuickCheckOutProps = {
   onCompleted?: (info: { reservationId: string; elapsedSeconds: number }) => void;
 };
 
+// Payment method values match the API PaymentRecord.method union.
+type PaymentMethod = "card" | "cash" | "bank_transfer";
+
 function fmtEur(value: number | undefined | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,00 €";
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
   return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
 }
 
@@ -64,9 +75,14 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
   const [reservation, setReservation] = useState<Reservation | null>(null);
   const [guest, setGuest] = useState<Guest | null>(null);
   const [folio, setFolio] = useState<FolioBalance | null>(null);
+  const [folioError, setFolioError] = useState<string | null>(null);
+  const [folioLoading, setFolioLoading] = useState(false);
   const [room, setRoom] = useState<Room | null>(null);
 
-  const [paymentMethod, setPaymentMethod] = useState<"card" | "cash" | "transfer">("card");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card");
+  // Explicit operator choice to leave without collecting (required when the
+  // folio could not be loaded; optional otherwise).
+  const [skipPayment, setSkipPayment] = useState(false);
   const [issueInvoice, setIssueInvoice] = useState(true);
   const [notifyHousekeeping, setNotifyHousekeeping] = useState(true);
 
@@ -74,6 +90,8 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [completed, setCompleted] = useState<{ elapsedSeconds: number } | null>(null);
+  // 409 BALANCE_DUE returned by /check-out: the operator must decide.
+  const [balancePrompt, setBalancePrompt] = useState<BalanceDueConflict | null>(null);
 
   const [tick, setTick] = useState(0);
   const startedAt = useMemo(() => Date.now(), []);
@@ -90,19 +108,32 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
   const elapsedSeconds = completed ? completed.elapsedSeconds : Math.floor((Date.now() - startedAt) / 1000);
   const elapsedLabel = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
 
+  const loadFolio = useCallback(async () => {
+    setFolioLoading(true);
+    setFolioError(null);
+    try {
+      setFolio(await apiRequest<FolioBalance>(`/reservations/${reservationId}/folio`));
+    } catch (err) {
+      setFolio(null);
+      setFolioError(err instanceof Error ? err.message : "No se pudo cargar el folio.");
+    } finally {
+      setFolioLoading(false);
+    }
+  }, [reservationId]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const res = await apiRequest<Reservation>(`/reservations/${reservationId}`);
       setReservation(res);
-      const [folioData, rooms] = await Promise.all([
-        apiRequest<FolioBalance>(`/reservations/${reservationId}/folio`).catch(() => null),
+      const [, rooms] = await Promise.all([
+        loadFolio(),
         res.assignedRoomId
-          ? apiRequest<Room[]>(`/properties/${res.propertyId}/rooms`).catch(() => [] as Room[])
+          ? // best-effort: rooms only feed the "Hab. 101" label in the header.
+            apiRequest<Room[]>(`/properties/${res.propertyId}/rooms`).catch(() => [] as Room[])
           : Promise.resolve([] as Room[])
       ]);
-      setFolio(folioData);
       if (res.assignedRoomId) {
         setRoom(rooms.find((r) => r.id === res.assignedRoomId) ?? null);
       }
@@ -114,42 +145,57 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
     } finally {
       setLoading(false);
     }
-  }, [reservationId]);
+  }, [reservationId, loadFolio]);
 
   useEffect(() => {
     void loadAll();
   }, [loadAll]);
 
-  const balanceDue = folio?.balanceDue ?? 0;
-  const canSubmit = Boolean(reservation && reservation.status === "checked_in");
+  // null = unknown (folio not loaded); never fall back to 0.
+  const balanceDue: number | null = folio ? folio.balanceDue : null;
+  const hasBalance = balanceDue !== null && balanceDue > 0.01;
+  const willCollect = hasBalance && !skipPayment;
+  const canSubmit = Boolean(reservation && reservation.status === "checked_in" && (folio || skipPayment));
   const blockingReason = !reservation
-    ? "Cargando…"
+    ? ""
     : reservation.status !== "checked_in"
     ? `Reserva en estado "${reservation.status}". No procede check-out.`
+    : !folio && !skipPayment
+    ? "No se pudo cargar el folio: reintenta o elige «Sin cobro» de forma explícita."
     : "";
 
-  async function executeCheckOut() {
-    if (!reservation || !folio) return;
+  // `collectAmount` overrides the derived decision (used by the 409 prompt so
+  // the retry does not depend on state updates that have not rendered yet):
+  // a positive number collects that amount first; null skips the payment.
+  async function executeCheckOut(options: { acknowledgeBalance?: boolean; collectAmount?: number | null } = {}) {
+    if (!reservation) return;
+    if (!folio && !skipPayment) return;
+    const amountToCollect =
+      options.collectAmount !== undefined ? options.collectAmount : willCollect ? balanceDue : null;
+    const collecting = Boolean(folio) && amountToCollect !== null && amountToCollect > 0.01 && !options.acknowledgeBalance;
     setBusy(true);
     setError(null);
+    setBalancePrompt(null);
     logBreadcrumb("checkout.submitted", "mutation", {
       reservationId: reservation.id,
       balanceDue,
+      skipPayment,
+      acknowledgeBalance: Boolean(options.acknowledgeBalance),
       issueInvoice,
-      paymentMethod: balanceDue > 0.01 ? paymentMethod : undefined
+      paymentMethod: collecting ? paymentMethod : undefined
     });
     try {
-      // 1) Cobrar saldo si > 0.
+      // 1) Cobrar saldo si > 0 y no se eligió "Sin cobro".
       // Auditoría 2026-07: antes `.catch(()=>undefined)` — si el cobro fallaba se
       // tragaba el error, el check-out CERRABA el folio igualmente y mostraba
       // "completado" con saldo sin cobrar. Un fallo de cobro ahora ABORTA el
       // check-out con error visible; el folio sigue abierto.
-      if (balanceDue > 0.01) {
+      if (folio && collecting) {
         try {
           await apiRequest(`/folios/${folio.folio.id}/payments`, {
             method: "POST",
             body: {
-              amount: balanceDue,
+              amount: amountToCollect,
               currency: reservation.currency || "EUR",
               method: paymentMethod,
               status: "captured"
@@ -163,24 +209,29 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
         }
       }
       // 2) Check-out (el endpoint cierra el folio + crea tarea departure HK).
+      //    Con saldo pendiente responde 409 BALANCE_DUE salvo acknowledgeBalance.
       await apiRequest(`/reservations/${reservation.id}/check-out`, {
         method: "POST",
-        body: {}
+        body: { acknowledgeBalance: options.acknowledgeBalance }
       });
       // 3) Emitir factura (background). Ya no silencioso: si falla, se avisa
       // para que el operador la emita desde Facturación.
       if (issueInvoice) {
-        void apiRequest(`/folios/${folio.folio.id}/invoice`, {
-          method: "POST",
-          body: { customerType: "guest" }
-        })
-          .then(() => showToast("Factura solicitada", { variant: "info" }))
-          .catch(() => {
-            showToast(
-              "Check-out hecho, pero la factura NO se pudo emitir. Emítela desde Facturación.",
-              { variant: "error" }
-            );
-          });
+        if (folio) {
+          void apiRequest(`/folios/${folio.folio.id}/invoice`, {
+            method: "POST",
+            body: { customerType: "guest" }
+          })
+            .then(() => showToast("Factura solicitada", { variant: "info" }))
+            .catch(() => {
+              showToast(
+                "Check-out hecho, pero la factura NO se pudo emitir. Emítela desde Facturación.",
+                { variant: "error" }
+              );
+            });
+        } else {
+          showToast("Check-out hecho sin folio cargado: emite la factura desde Facturación.", { variant: "info" });
+        }
       }
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
       setCompleted({ elapsedSeconds: elapsed });
@@ -188,6 +239,13 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
       showToast(`Check-out completado en ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`, { variant: "success" });
       window.setTimeout(() => onClose(), 2500);
     } catch (err) {
+      const conflict = balanceDueConflict(err);
+      if (conflict) {
+        // The API refused: show the balance and let the operator decide.
+        setBalancePrompt({ ...conflict, balanceDue: conflict.balanceDue ?? balanceDue });
+        logBreadcrumb("checkout.balanceDue", "ui", { reservationId: reservation.id, balanceDue: conflict.balanceDue ?? balanceDue });
+        return;
+      }
       const message = err instanceof Error ? err.message : "Error ejecutando check-out";
       setError(message);
       showToast(message, { variant: "error" });
@@ -195,6 +253,16 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
       setBusy(false);
     }
   }
+
+  const ctaLabel = busy
+    ? "Procesando…"
+    : !folio
+    ? "Salir sin cobro →"
+    : willCollect
+    ? `Cobrar ${fmtEur(balanceDue)} y cerrar`
+    : hasBalance
+    ? "Salir sin cobrar →"
+    : "Hacer check-out →";
 
   return (
     <div
@@ -246,14 +314,17 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
         <div style={{ padding: 16, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>
           {loading ? (
             <LoadingBlock label="Cargando reserva…" />
-          ) : error ? (
-            <p className="bo-status error">{error}</p>
           ) : !reservation ? (
-            <p className="bo-status error">No se encontró la reserva.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <p className="bo-status error">{error ?? "No se encontró la reserva."}</p>
+              <button type="button" onClick={() => void loadAll()} disabled={busy}>Reintentar</button>
+            </div>
           ) : completed ? (
             <CompletedView elapsed={elapsedLabel} roomNumber={room?.number} />
           ) : (
             <>
+              {error ? <p className="bo-status error">{error}</p> : null}
+
               {/* Guest + room header */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <div>
@@ -266,8 +337,34 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
               </div>
 
               {/* STEP 1: folio */}
-              <Section title="1 · Folio" badge={`${folio?.lines.length ?? 0} líneas`} badgeTone="info">
-                {folio && folio.lines.length > 0 ? (
+              <Section
+                title="1 · Folio"
+                badge={folio ? `${folio.lines.length} líneas` : folioLoading ? "Cargando…" : "No disponible"}
+                badgeTone={folio ? "info" : folioLoading ? "info" : "danger"}
+              >
+                {folioLoading ? (
+                  <LoadingBlock label="Cargando folio…" />
+                ) : !folio ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    <p className="bo-status error" style={{ margin: 0 }}>
+                      No se pudo cargar el folio{folioError ? `: ${folioError}` : "."}
+                    </p>
+                    <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
+                      Sin folio no es posible cobrar ni saber el saldo real. Reintenta o elige «Sin cobro» para salir sin cobrar.
+                    </p>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <button type="button" onClick={() => void loadFolio()} disabled={busy}>Reintentar</button>
+                      <button
+                        type="button"
+                        className={skipPayment ? "primary" : "ghost"}
+                        onClick={() => setSkipPayment(true)}
+                        disabled={busy}
+                      >
+                        Sin cobro
+                      </button>
+                    </div>
+                  </div>
+                ) : folio.lines.length > 0 ? (
                   <table style={{ width: "100%", fontSize: 13 }}>
                     <tbody>
                       {folio.lines.map((l) => (
@@ -291,7 +388,7 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
                       </tr>
                       <tr>
                         <td style={{ padding: "6px 0", fontWeight: 700 }}>Saldo</td>
-                        <td style={{ padding: "6px 0", textAlign: "right", fontWeight: 700, color: balanceDue > 0 ? "var(--danger, #d23b3b)" : "var(--ok, #1f8a4c)" }}>
+                        <td style={{ padding: "6px 0", textAlign: "right", fontWeight: 700, color: hasBalance ? "var(--danger, #d23b3b)" : "var(--ok, #1f8a4c)" }}>
                           {fmtEur(balanceDue)}
                         </td>
                       </tr>
@@ -305,27 +402,74 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
               {/* STEP 2: cobro */}
               <Section
                 title="2 · Cobro"
-                badge={balanceDue > 0 ? "Saldo abierto" : "Saldado"}
-                badgeTone={balanceDue > 0 ? "warning" : "ok"}
+                badge={!folio ? "Saldo no disponible" : hasBalance ? (skipPayment ? "Sin cobro" : "Saldo abierto") : "Saldado"}
+                badgeTone={!folio ? "danger" : hasBalance ? "warning" : "ok"}
               >
-                {balanceDue > 0 ? (
+                {!folio ? (
+                  <p style={{ fontSize: 13, margin: 0 }}>
+                    {skipPayment
+                      ? "Has elegido salir sin cobrar. El saldo real se comprobará en el servidor: si queda importe pendiente te lo mostraremos antes de cerrar."
+                      : "El saldo no está disponible porque el folio no se ha cargado."}
+                  </p>
+                ) : hasBalance ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     <div style={{ fontSize: 13 }}>
                       Importe a cobrar: <strong>{fmtEur(balanceDue)}</strong>
                     </div>
                     <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
                       <span className="bo-muted">Método:</span>
-                      <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as never)} style={{ padding: 6 }}>
+                      <select
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                        style={{ padding: 6 }}
+                        disabled={skipPayment}
+                      >
                         <option value="card">Tarjeta</option>
                         <option value="cash">Efectivo</option>
-                        <option value="transfer">Transferencia</option>
+                        <option value="bank_transfer">Transferencia</option>
                       </select>
+                    </label>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                      <input type="checkbox" checked={skipPayment} onChange={(e) => setSkipPayment(e.target.checked)} />
+                      Sin cobro ahora (el huésped saldrá con saldo pendiente)
                     </label>
                   </div>
                 ) : (
                   <p style={{ fontSize: 13, margin: 0 }}>El folio está saldado. No hay nada que cobrar.</p>
                 )}
               </Section>
+
+              {/* 409 BALANCE_DUE: decide before retrying */}
+              {balancePrompt ? (
+                <Section title="Saldo pendiente detectado" badge="Confirmar" badgeTone="warning">
+                  <p style={{ fontSize: 13, margin: 0 }}>
+                    {balancePrompt.message}
+                    {balancePrompt.balanceDue !== null ? ` Saldo: ${fmtEur(balancePrompt.balanceDue)}.` : ""}
+                  </p>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                    {folio ? (
+                      <button
+                        type="button"
+                        className="primary"
+                        disabled={busy}
+                        onClick={() => {
+                          // The API-reported balance is authoritative; the folio one is the fallback.
+                          setSkipPayment(false);
+                          void executeCheckOut({ collectAmount: balancePrompt.balanceDue ?? balanceDue });
+                        }}
+                      >
+                        Cobrar {fmtEur(balancePrompt.balanceDue ?? balanceDue)} y cerrar
+                      </button>
+                    ) : null}
+                    <button type="button" disabled={busy} onClick={() => void executeCheckOut({ acknowledgeBalance: true })}>
+                      Salir con saldo pendiente
+                    </button>
+                    <button type="button" className="ghost" disabled={busy} onClick={() => setBalancePrompt(null)}>
+                      Cancelar
+                    </button>
+                  </div>
+                </Section>
+              ) : null}
 
               {/* STEP 3: salida automática */}
               <Section title="3 · Salida" badge="Auto" badgeTone="info">
@@ -366,11 +510,11 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
             <button
               type="button"
               className="primary"
-              disabled={!canSubmit || busy}
-              onClick={executeCheckOut}
+              disabled={!canSubmit || busy || Boolean(balancePrompt)}
+              onClick={() => void executeCheckOut()}
               title={blockingReason || "Pulsa para completar el check-out"}
             >
-              {busy ? "Procesando…" : balanceDue > 0 ? `Cobrar ${fmtEur(balanceDue)} y cerrar` : "Hacer check-out →"}
+              {ctaLabel}
             </button>
           ) : (
             <button type="button" className="primary" onClick={onClose}>

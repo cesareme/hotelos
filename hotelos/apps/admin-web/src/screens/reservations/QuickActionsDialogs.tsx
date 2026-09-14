@@ -394,11 +394,10 @@ export function TransferToGroupDialog(props: TransferToGroupDialogProps) {
     }
     setSubmitting(true);
     try {
-      // PATCH /reservations/:id — el endpoint admite campos arbitrarios; enviamos
-      // groupBookingId. Se permite null/cadena vacía para des-vincular del grupo.
-      const updated = await apiRequest<AdminReservation>(`/reservations/${props.reservationId}`, {
-        method: "PATCH",
-        body: { groupBookingId: selectedGroupId || null }
+      // PATCH /reservations/:id — `groupBookingId` is part of the strict
+      // allowlist (Tanda 2 · REC-01); null detaches the reservation from its group.
+      const updated = await updateReservation(props.reservationId, {
+        groupBookingId: selectedGroupId || null
       });
       const msg = selectedGroupId ? "Reserva transferida al grupo" : "Reserva separada del grupo";
       showToast(msg, { variant: "success" });
@@ -594,12 +593,11 @@ export function ChangeRoomDialog(props: ChangeRoomDialogProps) {
     }
     setSubmitting(true);
     try {
-      // PATCH /reservations/:id con roomId (el campo persistido en la entidad
-      // es `assignedRoomId`; enviamos ambos por compatibilidad con back ends que
-      // acepten cualquiera de los dos).
-      const updated = await apiRequest<AdminReservation>(`/reservations/${props.reservationId}`, {
-        method: "PATCH",
-        body: { roomId: selectedRoomId, assignedRoomId: selectedRoomId }
+      // PATCH /reservations/:id with `assignedRoomId` (allowlisted; `roomId` is
+      // an alias). The API runs canAssignRoom and, for a checked-in stay,
+      // performs the transactional room move (Tanda 2 · REC-01/REC-03).
+      const updated = await updateReservation(props.reservationId, {
+        assignedRoomId: selectedRoomId
       });
       showToast("Habitación reasignada", { variant: "success" });
       props.onSaved(updated);

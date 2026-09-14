@@ -8,6 +8,7 @@ import { createId, nowIso } from "../../lib/ids.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
+import { normalizeTaxId, spanishTaxIdValidationMessage } from "@hotelos/compliance";
 import {
   demoStore,
   type AccountingSettingsRecord,
@@ -1624,7 +1625,15 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
         taxRegion: payloadText(payload, "taxRegion", payloadText(payload, "region", property.taxRegion ?? ""))
       };
       const legalNameInput = payloadText(payload, "legalName");
-      const taxIdInput = payloadText(payload, "taxId");
+      // FISC-03: the profile form is the ONLY writer of Organization.taxId, the
+      // issuer NIF of every invoice / registro. Reject anything that is not a
+      // checksum-valid DNI / NIE / CIF (400) and store it normalised.
+      const rawTaxIdInput = payloadText(payload, "taxId");
+      const taxIdProblem = rawTaxIdInput ? spanishTaxIdValidationMessage(rawTaxIdInput) : null;
+      if (taxIdProblem) {
+        throw new BadRequestError(`NIF/CIF del emisor no válido («${rawTaxIdInput}»): ${taxIdProblem}`);
+      }
+      const taxIdInput = rawTaxIdInput ? normalizeTaxId(rawTaxIdInput) ?? "" : "";
       const nextOrganization: OrganizationRecord = {
         ...organization,
         legalName: legalNameInput || organization.legalName,

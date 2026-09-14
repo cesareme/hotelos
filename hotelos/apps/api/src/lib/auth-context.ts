@@ -23,7 +23,11 @@ async function resolveDemoPlatformAdmin(): Promise<boolean> {
         demoPlatformAdminCache = { value, expiresAt: Date.now() + DEMO_PLATFORM_ADMIN_TTL_MS };
         return value;
       })
-      .catch(() => false)
+      .catch((error: unknown) => {
+        // Fail closed: a DB outage must never promote the demo fallback to platform admin.
+        console.warn("[auth-context] platform-admin lookup failed; failing closed for the cache window", error instanceof Error ? error.message : String(error));
+        return false;
+      })
       .finally(() => {
         demoPlatformAdminInFlight = null;
       });

@@ -1,4 +1,5 @@
 import { prisma } from "@hotelos/database";
+import { ConflictError, NotFoundError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 
@@ -93,7 +94,7 @@ function appendHistory(
 
 async function loadRowOrThrow(id: string): Promise<ReviewRow> {
   const row = await prisma.aiHumanReviewItem.findUnique({ where: { id } });
-  if (!row) throw new Error("Review item was not found.");
+  if (!row) throw new NotFoundError("Elemento de revisión no encontrado.");
   return row;
 }
 
@@ -241,7 +242,7 @@ export async function approveReview(input: {
 }): Promise<ReviewItemRecord> {
   const row = await loadRowOrThrow(input.id);
   if (row.status !== "pending" && row.status !== "escalated") {
-    throw new Error(`Cannot approve a review item with status "${row.status}".`);
+    throw new ConflictError(`No se puede aprobar un elemento de revisión en estado "${row.status}".`);
   }
   const decidedBy = input.userId ?? input.context.userId;
   const decidedAt = new Date().toISOString();
@@ -309,7 +310,7 @@ export async function rejectReview(input: {
   if (!input.reason || !input.reason.trim()) throw new Error("A rejection reason is required.");
   const row = await loadRowOrThrow(input.id);
   if (row.status !== "pending" && row.status !== "escalated") {
-    throw new Error(`Cannot reject a review item with status "${row.status}".`);
+    throw new ConflictError(`No se puede rechazar un elemento de revisión en estado "${row.status}".`);
   }
   const decidedBy = input.userId ?? input.context.userId;
   const decidedAt = new Date().toISOString();

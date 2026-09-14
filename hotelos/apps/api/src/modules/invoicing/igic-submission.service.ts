@@ -3,6 +3,7 @@ import { prisma } from "@hotelos/database";
 import type { EventEnvelope } from "@hotelos/shared";
 import { signSubmissionXml } from "../../lib/compliance-signing.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
+import { issuerForInvoice } from "./issuer-identity.service.js";
 
 let igicChain: Promise<void> = Promise.resolve();
 
@@ -25,10 +26,11 @@ export async function submitIgicForInvoice(invoiceId: string, organizationId: st
   const existing = await prisma.igicSubmission.findUnique({ where: { invoiceId } });
   if (existing && existing.status === "accepted") return;
 
-  const property = await prisma.property.findUnique({ where: { id: invoice.propertyId } });
+  // FISC-03: issuer identity from the invoice snapshot (see issuer-identity.service.ts).
+  const issuer = await issuerForInvoice(invoice);
+  const emitterTaxId = issuer.taxId;
+  const emitterName = issuer.legalName;
   const lines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
-  const emitterTaxId = property?.legalName?.match(/[A-Z]?\d{8}[A-Z]?/i)?.[0] ?? "B00000000";
-  const emitterName = property?.legalName ?? property?.name ?? "HotelOS Demo";
 
   const breakdowns = lines.map((line) => {
     const rate = Number(line.taxRate.toString());

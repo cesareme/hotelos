@@ -14,8 +14,10 @@ import {
   type AdminReservation,
   type FolioBalance,
   type InvoiceDraft,
-  type InvoiceFull
+  type InvoiceFull,
+  type InvoiceListSummary
 } from "../../services/pmsCommerceApi";
+import { ApiError } from "../../services/api-client";
 import { useToast } from "../../components/Toast";
 import { exportToCsv, type CsvColumn } from "../../lib/csv";
 import { logBreadcrumb } from "../../lib/breadcrumb";
@@ -63,35 +65,28 @@ const TAB_DEFS: Array<{ key: InvoiceTab; label: string }> = [
   { key: "cancelled", label: "Anuladas" }
 ];
 
-// Local UI-only state of paid invoices (no backend "paid" status in InvoiceDraft yet).
-// Persisted in sessionStorage so toggling tabs / refresh within a session keeps the mark.
-const PAID_STORAGE_KEY = "hotelos.billing.paidInvoiceIds";
+// Rows per page for the invoice listing (API caps at 500); "Cargar más" walks
+// the cursor. The enveloped response also carries the aggregate `summary`.
+const INVOICE_PAGE_SIZE = 200;
+// Reservations shown in the folio selector (most recent arrivals first).
+const RESERVATION_PAGE_SIZE = 200;
 
-function readPaidIds(): Set<string> {
-  try {
-    const raw = sessionStorage.getItem(PAID_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as string[];
-    return new Set(parsed);
-  } catch {
-    return new Set();
-  }
+// Tanda 2 · QC-03: the "paid" state comes ONLY from the API (`paymentStatus`,
+// derived from captured payments linked to the invoice). The previous
+// sessionStorage mark — which was even set when the backend call failed — is
+// gone: an invoice reads as paid if and only if the server says so.
+function isInvoicePaid(invoice: Pick<InvoiceDraft, "status" | "paymentStatus">): boolean {
+  return invoice.status === "issued" && invoice.paymentStatus === "paid";
 }
 
-function writePaidIds(ids: Set<string>) {
-  try {
-    sessionStorage.setItem(PAID_STORAGE_KEY, JSON.stringify(Array.from(ids)));
-  } catch {
-    // ignore quota / private mode errors
-  }
+function canMarkPaid(invoice: Pick<InvoiceDraft, "status" | "paymentStatus">): boolean {
+  return invoice.status === "issued" && invoice.paymentStatus !== "paid" && invoice.paymentStatus !== "not_applicable";
 }
 
-function deriveInvoiceUiStatus(invoice: InvoiceDraft, paidIds: Set<string>): InvoiceUiStatus {
+function deriveInvoiceUiStatus(invoice: InvoiceDraft): InvoiceUiStatus {
   if (invoice.status === "cancelled") return "cancelled";
   if (invoice.status === "rectified") return "rectified";
-  if (invoice.status === "issued") {
-    return paidIds.has(invoice.id) ? "paid" : "issued";
-  }
+  if (invoice.status === "issued") return isInvoicePaid(invoice) ? "paid" : "issued";
   return "draft";
 }
 
@@ -101,6 +96,10 @@ export function BillingCenterScreen() {
   const [selectedReservationId, setSelectedReservationId] = useState("res_18392");
   const [folio, setFolio] = useState<FolioBalance | null>(null);
   const [invoices, setInvoices] = useState<InvoiceDraft[]>([]);
+  const [invoiceSummary, setInvoiceSummary] = useState<InvoiceListSummary | null>(null);
+  const [invoicesNextCursor, setInvoicesNextCursor] = useState<string | null>(null);
+  const [invoicesError, setInvoicesError] = useState<string | null>(null);
+  const [loadingMoreInvoices, setLoadingMoreInvoices] = useState(false);
   const [draftTotal, setDraftTotal] = useState("272");
   const [draftTaxTotal, setDraftTaxTotal] = useState("24.73");
   const [customerType, setCustomerType] = useState<InvoiceDraft["customerType"]>("guest");
@@ -113,15 +112,50 @@ export function BillingCenterScreen() {
   const [preview, setPreview] = useState<InvoiceFull | null>(null);
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<InvoiceTab>("draft");
-  const [paidIds, setPaidIds] = useState<Set<string>>(() => readPaidIds());
   const [folioTab, setFolioTab] = useState<"charges" | "payments" | "routing" | "notes">("charges");
   const [folioNote, setFolioNote] = useState("");
   const [emailDraft, setEmailDraft] = useState<{ invoiceId: string; to: string; subject: string; body: string } | null>(null);
 
+  // Enveloped listing: items carry paymentStatus/balanceDue, `summary` feeds the
+  // KPIs across ALL invoices (not just the loaded page).
+  async function loadInvoices() {
+    setInvoicesError(null);
+    try {
+      const page = await fetchInvoices(PROPERTY_ID, { limit: INVOICE_PAGE_SIZE });
+      setInvoices(page.items);
+      setInvoiceSummary(page.summary ?? null);
+      setInvoicesNextCursor(page.nextCursor);
+    } catch (error) {
+      setInvoicesError(error instanceof Error ? error.message : "No se pudieron cargar las facturas.");
+      throw error;
+    }
+  }
+
+  async function loadMoreInvoices() {
+    if (!invoicesNextCursor || loadingMoreInvoices) return;
+    setLoadingMoreInvoices(true);
+    try {
+      const page = await fetchInvoices(PROPERTY_ID, { limit: INVOICE_PAGE_SIZE, cursor: invoicesNextCursor });
+      setInvoices((current) => {
+        const seen = new Set(current.map((inv) => inv.id));
+        return [...current, ...page.items.filter((inv) => !seen.has(inv.id))];
+      });
+      if (page.summary) setInvoiceSummary(page.summary);
+      setInvoicesNextCursor(page.nextCursor);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "No se pudieron cargar más facturas.", { variant: "error" });
+    } finally {
+      setLoadingMoreInvoices(false);
+    }
+  }
+
   async function refresh() {
-    const [reservationResponse, invoiceResponse] = await Promise.all([fetchReservations(PROPERTY_ID), fetchInvoices(PROPERTY_ID)]);
+    const [reservationPage] = await Promise.all([
+      fetchReservations(PROPERTY_ID, { limit: RESERVATION_PAGE_SIZE }),
+      loadInvoices()
+    ]);
+    const reservationResponse = reservationPage.items;
     setReservations(reservationResponse);
-    setInvoices(invoiceResponse);
     void fetchInvoiceBranding(PROPERTY_ID)
       .then((b) => {
         setLogoUrl(b.logoUrl ?? "");
@@ -180,7 +214,9 @@ export function BillingCenterScreen() {
     logBreadcrumb("invoice.issue", "mutation", { invoiceId });
     try {
       const issued = await issueInvoice(invoiceId);
-      setInvoices((current) => current.map((invoice) => (invoice.id === issued.id ? issued : invoice)));
+      setInvoices((current) => current.map((invoice) => (invoice.id === issued.id ? { ...invoice, ...issued } : invoice)));
+      // The issue response has no payment enrichment: refetch the listing.
+      void loadInvoices().catch(() => undefined);
       setStatus(`Factura ${issued.invoiceNumber ?? issued.id} emitida con huella VeriFactu.`);
       showToast(`Factura ${issued.invoiceNumber ?? issued.id} emitida`, { variant: "success" });
     } catch (error) {
@@ -221,30 +257,37 @@ export function BillingCenterScreen() {
     setStatus(`Marcando factura ${invoiceId} como pagada...`);
     try {
       const result = await markInvoicePaid(invoiceId);
-      // The backend does not yet expose a "paid" sub-state in InvoiceDraft.status,
-      // so we keep a local set of paid ids to drive the KPIs and the tabs.
-      setPaidIds((current) => {
-        const next = new Set(current);
-        next.add(invoiceId);
-        writePaidIds(next);
-        return next;
-      });
+      // Reflect the server answer right away, then refetch the listing so tabs
+      // and KPIs read the persisted payment state (never a local mark).
+      const fullyPaid = result.alreadyPaid || result.paidAmount >= result.invoiceTotal;
+      setInvoices((current) =>
+        current.map((invoice) =>
+          invoice.id === invoiceId
+            ? {
+                ...invoice,
+                paymentStatus: result.paymentStatus ?? (fullyPaid ? "paid" : invoice.paymentStatus),
+                balanceDue: result.balanceDue ?? (fullyPaid ? 0 : invoice.balanceDue),
+                paidAt: result.paidAt ?? invoice.paidAt,
+                folioId: result.folioId ?? invoice.folioId
+              }
+            : invoice
+        )
+      );
+      void loadInvoices().catch(() => undefined);
       const message = result.alreadyPaid
         ? `Factura ${invoiceId} ya estaba pagada.`
-        : `Factura ${invoiceId} marcada como pagada (${result.paidAmount} / ${result.invoiceTotal}).`;
+        : `Factura ${invoiceId} marcada como pagada (${fmtEur(result.paidAmount)} / ${fmtEur(result.invoiceTotal)}).`;
       setStatus(message);
       showToast(message, { variant: "success" });
     } catch (error) {
+      // Surface the API message as-is (e.g. 409 "La factura no está vinculada a
+      // ningún folio" for manual drafts). NEVER mark the invoice paid locally.
       const message = error instanceof Error ? error.message : "No se pudo marcar como pagada.";
-      // Fallback: keep local UI mark so the operator can continue working even
-      // if the backend endpoint is unreachable.
-      setPaidIds((current) => {
-        const next = new Set(current);
-        next.add(invoiceId);
-        writePaidIds(next);
-        return next;
-      });
-      setStatus(message);
+      const hint =
+        error instanceof ApiError && error.status === 409
+          ? " Emite la factura desde el folio de la reserva o registra el cobro en ese folio."
+          : "";
+      setStatus(`${message}${hint}`);
       showToast(message, { variant: "error" });
     }
   }
@@ -309,12 +352,12 @@ export function BillingCenterScreen() {
       } else if (inv.status === "issued") {
         counts.issued += 1;
         totals.issued += amount;
-        if (paidIds.has(inv.id)) {
+        if (isInvoicePaid(inv)) {
           counts.paid += 1;
           totals.paid += amount;
-        } else {
+        } else if (inv.paymentStatus !== "not_applicable") {
           counts.pending += 1;
-          totals.pending += amount;
+          totals.pending += inv.balanceDue ?? amount;
         }
       } else if (inv.status === "cancelled" || inv.status === "rectified") {
         // rectificadas se agrupan visualmente con anuladas
@@ -322,8 +365,16 @@ export function BillingCenterScreen() {
         totals.cancelled += amount;
       }
     }
-    return { counts, totals };
-  }, [invoices, paidIds]);
+    // The server summary spans every invoice of the property (the page may be
+    // partial), so it wins for the counts it covers and for the outstanding total.
+    if (invoiceSummary) {
+      counts.issued = invoiceSummary.issued;
+      counts.paid = invoiceSummary.paid;
+      counts.pending = invoiceSummary.unpaid;
+      totals.pending = invoiceSummary.totalDue;
+    }
+    return { counts, totals, pagePartial: Boolean(invoicesNextCursor) };
+  }, [invoices, invoiceSummary, invoicesNextCursor]);
 
   const filteredInvoices = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -331,15 +382,15 @@ export function BillingCenterScreen() {
       if (activeTab === "draft" && inv.status !== "draft") return false;
       if (activeTab === "issued" && inv.status !== "issued") return false;
       if (activeTab === "cancelled" && inv.status !== "cancelled" && inv.status !== "rectified") return false;
-      if (activeTab === "pending" && !(inv.status === "issued" && !paidIds.has(inv.id))) return false;
-      if (activeTab === "paid" && !(inv.status === "issued" && paidIds.has(inv.id))) return false;
+      if (activeTab === "pending" && !canMarkPaid(inv)) return false;
+      if (activeTab === "paid" && !isInvoicePaid(inv)) return false;
       if (!term) return true;
       const haystack = [inv.invoiceNumber ?? "", inv.id, inv.customerTaxId ?? "", inv.invoiceType, inv.customerType, String(inv.total)]
         .join(" ")
         .toLowerCase();
       return haystack.includes(term);
     });
-  }, [invoices, search, activeTab, paidIds]);
+  }, [invoices, search, activeTab]);
 
   function handleExportInvoicesCsv() {
     if (invoices.length === 0) {
@@ -353,8 +404,10 @@ export function BillingCenterScreen() {
       { key: "customerType", label: "Cliente" },
       { key: "customerTaxId", label: "NIF/CIF" },
       { key: "status", label: "Estado" },
+      { key: "paymentStatus", label: "Cobro", format: (v) => (v ? String(v) : "") },
       { key: "total", label: "Total" },
       { key: "taxTotal", label: "IVA" },
+      { key: "balanceDue", label: "Pendiente", format: (v) => (v === undefined || v === null ? "" : String(v)) },
       {
         key: "issuedAt",
         label: "Emitida",
@@ -380,7 +433,20 @@ export function BillingCenterScreen() {
       {
         key: "invoiceNumber",
         label: "N. Factura",
-        render: (row) => <strong>{row.invoiceNumber ?? row.id}</strong>
+        render: (row) => (
+          <span>
+            <strong>{row.invoiceNumber ?? row.id}</strong>
+            {row.issuerTaxIdPlaceholder ? (
+              <span
+                className="bo-status warn"
+                style={{ marginLeft: "var(--cocoa-space-2)", textTransform: "none" }}
+                title="Emitida con NIF emisor provisional (sandbox): configura el NIF real en Perfil del establecimiento"
+              >
+                NIF provisional
+              </span>
+            ) : null}
+          </span>
+        )
       },
       {
         key: "customer",
@@ -410,11 +476,18 @@ export function BillingCenterScreen() {
         key: "status",
         label: "Estado",
         render: (row) => {
-          const uiStatus = deriveInvoiceUiStatus(row, paidIds);
+          const uiStatus = deriveInvoiceUiStatus(row);
           return (
-            <StatusBadge variant={statusBadgeVariant(uiStatus)} size="sm">
-              {statusBadgeLabel(uiStatus)}
-            </StatusBadge>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--cocoa-space-2)", flexWrap: "wrap" }}>
+              <StatusBadge variant={statusBadgeVariant(uiStatus)} size="sm">
+                {statusBadgeLabel(uiStatus)}
+              </StatusBadge>
+              {row.status === "issued" && row.paymentStatus === "partial" ? (
+                <small style={{ color: "var(--cocoa-label-secondary)" }}>
+                  Cobro parcial · pendiente {fmtEur(row.balanceDue)}
+                </small>
+              ) : null}
+            </span>
           );
         }
       },
@@ -423,7 +496,7 @@ export function BillingCenterScreen() {
         label: "Acciones",
         align: "right",
         render: (row) => {
-          const isPaid = row.status === "issued" && paidIds.has(row.id);
+          const markable = canMarkPaid(row);
           return (
             <span
               style={{
@@ -446,7 +519,7 @@ export function BillingCenterScreen() {
               >
                 Enviar email
               </CocoaButton>
-              {row.status === "issued" && !isPaid ? (
+              {markable ? (
                 <CocoaButton
                   variant="filled"
                   tone="accent"
@@ -461,8 +534,14 @@ export function BillingCenterScreen() {
         }
       }
     ],
-    [paidIds]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
   );
+
+  // The preview is fetched with GET /invoices/:id; its payment state comes from
+  // the listing row (the detail endpoint does not carry the enrichment yet).
+  const previewListRow = preview ? invoices.find((inv) => inv.id === preview.id) : undefined;
+  const previewMarkable = preview ? canMarkPaid(previewListRow ?? preview) : false;
 
   return (
     <section className="bo-card">
@@ -1075,12 +1154,39 @@ export function BillingCenterScreen() {
           />
         </div>
 
+        {invoicesError ? (
+          <p className="bo-status error" style={{ textTransform: "none", marginBottom: "var(--cocoa-space-3)" }}>
+            No se pudieron cargar las facturas: {invoicesError}{" "}
+            <CocoaButton variant="plain" size="small" onClick={() => void loadInvoices().catch(() => undefined)}>
+              Reintentar
+            </CocoaButton>
+          </p>
+        ) : null}
         <CocoaTable<InvoiceDraft>
           columns={invoiceColumns}
           rows={filteredInvoices}
           rowKey="id"
           emptyState="No hay facturas que coincidan con el filtro o búsqueda."
         />
+        {invoicesNextCursor ? (
+          <div style={{ display: "flex", justifyContent: "center", marginTop: "var(--cocoa-space-3)" }}>
+            <CocoaButton
+              variant="bordered"
+              tone="neutral"
+              onClick={() => void loadMoreInvoices()}
+              disabled={loadingMoreInvoices}
+              loading={loadingMoreInvoices}
+            >
+              Cargar más facturas
+            </CocoaButton>
+          </div>
+        ) : null}
+        {kpis.pagePartial ? (
+          <p className="bo-muted" style={{ marginTop: "var(--cocoa-space-2)" }}>
+            Los importes de borradores, emitidas, pagadas y anuladas se calculan sobre las {invoices.length} facturas cargadas; los recuentos y el
+            pendiente de cobro provienen del resumen del servidor.
+          </p>
+        ) : null}
       </section>
 
       {emailDraft ? (
@@ -1156,7 +1262,7 @@ export function BillingCenterScreen() {
                   Emitir factura
                 </CocoaButton>
               ) : null}
-              {preview.status === "issued" && !paidIds.has(preview.id) ? (
+              {previewMarkable ? (
                 <CocoaButton
                   variant="filled"
                   tone="accent"
@@ -1204,6 +1310,11 @@ export function BillingCenterScreen() {
               ) : null}
               <div><strong>{preview.issuer?.legalName ?? preview.issuer?.propertyName ?? "—"}</strong></div>
               {preview.issuer?.taxId ? <div className="bo-muted">NIF/CIF: {preview.issuer.taxId}</div> : null}
+              {preview.issuer?.taxIdPlaceholder || preview.issuerTaxIdPlaceholder || previewListRow?.issuerTaxIdPlaceholder ? (
+                <div className="bo-status warn" style={{ textTransform: "none", marginTop: "var(--cocoa-space-1)" }}>
+                  NIF emisor provisional (sandbox): configura el NIF real en Perfil del establecimiento antes de facturar en modo fiscal.
+                </div>
+              ) : null}
               {preview.issuer?.address ? <div className="bo-muted">{preview.issuer.address}</div> : null}
             </div>
             <div style={{ textAlign: "right" }}>

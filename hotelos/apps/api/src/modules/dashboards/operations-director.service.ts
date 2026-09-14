@@ -14,6 +14,7 @@
 //   - Cocina/POS: outlets abiertos, comandas pendientes (best-effort)
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 
 export type OpsDirectorKpi = {
   label: string;
@@ -165,6 +166,10 @@ export type OpsDirectorResult = {
     departmentsError: number;
     criticalAlerts: number;
   };
+  // QC-06: labels of the counters/lists that fell back to 0/[] because their
+  // query failed. Empty means every number above is real; the UI should show
+  // "—" for a degraded counter instead of a confident zero.
+  degraded: string[];
 };
 
 function startOfDayUtc(d: Date): Date {
@@ -177,6 +182,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
   const today = startOfDayUtc(now);
   const tomorrow = new Date(today.getTime() + 86400000);
   const yesterday = new Date(today.getTime() - 86400000);
+  const { safe, degraded } = createDegradedCollector("dashboards.operations-director", { propertyId });
 
   const [
     property,
@@ -230,72 +236,72 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
         createdAt: { lt: new Date(now.getTime() - 2 * 3600 * 1000) }
       }
     }),
-    prisma.workOrder.count({ where: { propertyId, status: "open" } }).catch(() => 0),
-    prisma.workOrder.count({ where: { propertyId, status: "in_progress" } }).catch(() => 0),
-    prisma.workOrder.count({ where: { propertyId, status: { in: ["open", "in_progress"] }, priority: "emergency" } }).catch(() => 0),
+    safe("maintenance.openWorkOrders", prisma.workOrder.count({ where: { propertyId, status: "open" } }), 0),
+    safe("maintenance.inProgressWorkOrders", prisma.workOrder.count({ where: { propertyId, status: "in_progress" } }), 0),
+    safe("maintenance.emergencyWorkOrders", prisma.workOrder.count({ where: { propertyId, status: { in: ["open", "in_progress"] }, priority: "emergency" } }), 0),
     prisma.room.count({ where: { propertyId, sellable: false, active: true } }),
     // TimeClock no tiene "clockOut" boolean; contamos entries del día tipo "in".
-    prisma.timeClockEntry.count({
+    safe("workforce.clockedIn", prisma.timeClockEntry.count({
       where: { propertyId, clockAt: { gte: today, lt: tomorrow }, clockType: "in" }
-    }).catch(() => 0),
-    prisma.shift.count({
+    }), 0),
+    safe("workforce.shiftsToday", prisma.shift.count({
       where: { propertyId, startAt: { gte: today, lt: tomorrow } }
-    }).catch(() => 0),
+    }), 0),
     // Shifts with someone actually assigned — denominator stays "shifts needed".
-    prisma.shift.count({
+    safe("workforce.shiftsStaffedToday", prisma.shift.count({
       where: {
         propertyId,
         startAt: { gte: today, lt: tomorrow },
         staffProfileId: { not: null }
       }
-    }).catch(() => 0),
-    prisma.absenceRequest.count({
+    }), 0),
+    safe("workforce.absencesToday", prisma.absenceRequest.count({
       where: {
         propertyId,
         startDate: { lte: now },
         endDate: { gte: now },
         status: { in: ["approved", "pending"] }
       }
-    }).catch(() => 0),
-    prisma.safetyIncident.count({
+    }), 0),
+    safe("safety.incidentsActive", prisma.safetyIncident.count({
       where: { propertyId, status: { in: ["open", "investigating"] } }
-    }).catch(() => 0),
+    }), 0),
     // Critical-severity subset of active safety incidents.
-    prisma.safetyIncident.count({
+    safe("safety.incidentsCritical", prisma.safetyIncident.count({
       where: { propertyId, status: { in: ["open", "investigating"] }, severity: "critical" }
-    }).catch(() => 0),
-    prisma.posOrder.count({
+    }), 0),
+    safe("pos.openTickets", prisma.posOrder.count({
       where: { propertyId, status: "open" }
-    }).catch(() => 0),
+    }), 0),
     // POS orders created today across all outlets — we'll project outlet type
     // for breakdown. We deliberately include open + closed (everything created
     // today counts toward "revenue today"); status filter would mask in-flight
     // tickets.
-    prisma.posOrder.findMany({
+    safe("pos.ordersToday", prisma.posOrder.findMany({
       where: { propertyId, createdAt: { gte: today, lt: tomorrow } },
       select: { outletId: true, total: true }
-    }).catch(() => [] as Array<{ outletId: string; total: unknown }>),
-    prisma.outlet.findMany({
+    }), [] as Array<{ outletId: string; total: unknown }>),
+    safe("pos.outlets", prisma.outlet.findMany({
       where: { propertyId },
       select: { id: true, outletType: true }
-    }).catch(() => [] as Array<{ id: string; outletType: string }>),
+    }), [] as Array<{ id: string; outletType: string }>),
     // Yesterday clean-room baseline. RoomStatus is not historized, so we use
     // the current dirty-count from yesterday's HK tasks as a best-effort proxy:
     // a clean room today was either already clean yesterday or has been
     // cleaned since. The delta we expose is (cleanRooms - this proxy), which
     // surfaces directional movement rather than an exact diff. If the model
     // gets historized later, swap this for a real snapshot read.
-    prisma.room.count({
+    safe("housekeeping.cleanRoomsYesterdayProxy", prisma.room.count({
       where: { propertyId, active: true, status: "clean" }
-    }).catch(() => 0),
-    prisma.workOrder.count({
+    }), 0),
+    safe("maintenance.workOrdersActiveYesterdayProxy", prisma.workOrder.count({
       where: {
         propertyId,
         createdAt: { lt: yesterday },
         OR: [{ resolvedAt: null }, { resolvedAt: { gte: yesterday } }],
         status: { in: ["open", "in_progress"] }
       }
-    }).catch(() => 0)
+    }), 0)
   ]);
 
   const cleanPct = totalRooms > 0 ? Math.round((cleanRooms / totalRooms) * 1000) / 10 : 0;
@@ -513,7 +519,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
     workOrdersResolvedLast7d,
     shiftsLast7d
   ] = await Promise.all([
-    prisma.housekeepingTask.findMany({
+    safe("details.hkTasks", prisma.housekeepingTask.findMany({
       where: { propertyId, status: { in: ["pending", "assigned", "in_progress"] } },
       orderBy: [{ priority: "desc" }, { dueAt: "asc" }],
       take: 25,
@@ -527,7 +533,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
         dueAt: true,
         createdAt: true
       }
-    }).catch(() => [] as Array<{
+    }), [] as Array<{
       id: string;
       roomId: string;
       taskType: string;
@@ -537,7 +543,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
       dueAt: Date | null;
       createdAt: Date;
     }>),
-    prisma.workOrder.findMany({
+    safe("details.workOrders", prisma.workOrder.findMany({
       where: { propertyId, status: { in: ["open", "in_progress"] } },
       orderBy: [{ priority: "desc" }, { dueDate: "asc" }],
       take: 25,
@@ -551,7 +557,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
         dueDate: true,
         createdAt: true
       }
-    }).catch(() => [] as Array<{
+    }), [] as Array<{
       id: string;
       title: string;
       priority: string;
@@ -561,7 +567,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
       dueDate: Date | null;
       createdAt: Date;
     }>),
-    prisma.shift.findMany({
+    safe("details.shifts", prisma.shift.findMany({
       where: { propertyId, startAt: { gte: today, lt: tomorrow } },
       orderBy: [{ startAt: "asc" }],
       take: 50,
@@ -574,7 +580,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
         startAt: true,
         endAt: true
       }
-    }).catch(() => [] as Array<{
+    }), [] as Array<{
       id: string;
       staffProfileId: string | null;
       departmentId: string | null;
@@ -583,7 +589,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
       startAt: Date;
       endAt: Date;
     }>),
-    prisma.safetyIncident.findMany({
+    safe("details.safetyIncidents", prisma.safetyIncident.findMany({
       where: { propertyId, status: { in: ["open", "investigating"] } },
       orderBy: [{ severity: "desc" }, { createdAt: "desc" }],
       take: 20,
@@ -596,7 +602,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
         occurredAt: true,
         createdAt: true
       }
-    }).catch(() => [] as Array<{
+    }), [] as Array<{
       id: string;
       incidentType: string;
       severity: string;
@@ -606,18 +612,18 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
       createdAt: Date;
     }>),
     // 7-day trend datasets
-    prisma.housekeepingTask.findMany({
+    safe("trends.hkTasksLast7d", prisma.housekeepingTask.findMany({
       where: { propertyId, createdAt: { gte: sevenDaysAgo, lt: tomorrow } },
       select: { createdAt: true, status: true }
-    }).catch(() => [] as Array<{ createdAt: Date; status: string }>),
-    prisma.workOrder.findMany({
+    }), [] as Array<{ createdAt: Date; status: string }>),
+    safe("trends.workOrdersResolvedLast7d", prisma.workOrder.findMany({
       where: { propertyId, resolvedAt: { gte: sevenDaysAgo, lt: tomorrow }, status: "resolved" },
       select: { createdAt: true, resolvedAt: true }
-    }).catch(() => [] as Array<{ createdAt: Date; resolvedAt: Date | null }>),
-    prisma.shift.findMany({
+    }), [] as Array<{ createdAt: Date; resolvedAt: Date | null }>),
+    safe("trends.shiftsLast7d", prisma.shift.findMany({
       where: { propertyId, startAt: { gte: sevenDaysAgo, lt: tomorrow } },
       select: { startAt: true, staffProfileId: true }
-    }).catch(() => [] as Array<{ startAt: Date; staffProfileId: string | null }>)
+    }), [] as Array<{ startAt: Date; staffProfileId: string | null }>)
   ]);
 
   const details: OpsDirectorDetails = {
@@ -765,6 +771,7 @@ export async function buildOperationsDirector(input: { propertyId: string }): Pr
     miniCards,
     details,
     trends,
-    summary
+    summary,
+    degraded
   };
 }

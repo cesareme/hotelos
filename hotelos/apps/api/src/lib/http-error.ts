@@ -5,11 +5,14 @@
 export class HttpError extends Error {
   readonly statusCode: number;
   readonly expose: boolean;
-  constructor(statusCode: number, message: string, expose = true) {
+  /** Machine-readable payload forwarded on 4xx bodies (e.g. { code: "BALANCE_DUE", balanceDue }). */
+  details?: unknown;
+  constructor(statusCode: number, message: string, expose = true, details?: unknown) {
     super(message);
     this.name = new.target.name;
     this.statusCode = statusCode;
     this.expose = expose;
+    if (details !== undefined) this.details = details;
   }
 }
 

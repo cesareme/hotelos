@@ -10,6 +10,7 @@
 
 import { existsSync } from "node:fs";
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 
 type IntegrationMode = "sandbox" | "preproduction" | "production";
 
@@ -149,13 +150,17 @@ export type ComplianceHealthReport = {
   generatedAt: string;
   overall: "sandbox_only" | "mixed" | "production_ready";
   integrations: IntegrationHealth[];
+  // Counters are `null` (never 0) when their query failed; the label of each
+  // failed counter is listed in `degraded` so the UI shows "no disponible"
+  // instead of a green zero (QC-06).
   stats: {
-    verifactuSubmissionsLast24h: number;
-    sesSubmissionsLast24h: number;
-    tbaiSubmissionsLast24h: number;
-    verifactuRejectedLast24h: number;
-    sesRejectedLast24h: number;
+    verifactuSubmissionsLast24h: number | null;
+    sesSubmissionsLast24h: number | null;
+    tbaiSubmissionsLast24h: number | null;
+    verifactuRejectedLast24h: number | null;
+    sesRejectedLast24h: number | null;
   };
+  degraded: string[];
 };
 
 export async function getComplianceHealth(organizationId?: string): Promise<ComplianceHealthReport> {
@@ -181,19 +186,29 @@ export async function getComplianceHealth(organizationId?: string): Promise<Comp
       : "mixed";
 
   const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  // A failed count must not read as "0 rejections" (green) in the Compliance
+  // Center: each counter degrades to null and is listed in `degraded`.
+  const { safe, degraded } = createDegradedCollector("compliance.health", { organizationId: organizationId ?? null });
+  const nullCount: number | null = null;
   const [vCount, sCount, tCount, vRejected, sRejected] = await Promise.all([
-    prisma.verifactuSubmission.count({ where: { ...tenantScope, createdAt: { gte: dayAgo } } }).catch(() => 0),
-    prisma.sesHospedajesSubmission.count({ where: { ...tenantScope, createdAt: { gte: dayAgo } } }).catch(() => 0),
+    safe("verifactuSubmissionsLast24h", prisma.verifactuSubmission.count({ where: { ...tenantScope, createdAt: { gte: dayAgo } } }), nullCount),
+    safe("sesSubmissionsLast24h", prisma.sesHospedajesSubmission.count({ where: { ...tenantScope, createdAt: { gte: dayAgo } } }), nullCount),
     // tbai usa una tabla distinta o reutiliza verifactu — protegemos:
-    prisma.verifactuSubmission
-      .count({ where: { ...tenantScope, createdAt: { gte: dayAgo }, endpoint: { contains: "tbai" } } })
-      .catch(() => 0),
-    prisma.verifactuSubmission
-      .count({ where: { ...tenantScope, status: "rejected", createdAt: { gte: dayAgo } } })
-      .catch(() => 0),
-    prisma.sesHospedajesSubmission
-      .count({ where: { ...tenantScope, status: "rejected", createdAt: { gte: dayAgo } } })
-      .catch(() => 0)
+    safe(
+      "tbaiSubmissionsLast24h",
+      prisma.verifactuSubmission.count({ where: { ...tenantScope, createdAt: { gte: dayAgo }, endpoint: { contains: "tbai" } } }),
+      nullCount
+    ),
+    safe(
+      "verifactuRejectedLast24h",
+      prisma.verifactuSubmission.count({ where: { ...tenantScope, status: "rejected", createdAt: { gte: dayAgo } } }),
+      nullCount
+    ),
+    safe(
+      "sesRejectedLast24h",
+      prisma.sesHospedajesSubmission.count({ where: { ...tenantScope, status: "rejected", createdAt: { gte: dayAgo } } }),
+      nullCount
+    )
   ]);
 
   return {
@@ -206,6 +221,7 @@ export async function getComplianceHealth(organizationId?: string): Promise<Comp
       tbaiSubmissionsLast24h: tCount,
       verifactuRejectedLast24h: vRejected,
       sesRejectedLast24h: sRejected
-    }
+    },
+    degraded
   };
 }

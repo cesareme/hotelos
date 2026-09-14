@@ -3,7 +3,11 @@ import { prisma } from "@hotelos/database";
 import type { EventEnvelope } from "@hotelos/shared";
 import { signSubmissionXml } from "../../lib/compliance-signing.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
+import { issuerForInvoice } from "./issuer-identity.service.js";
 
+// Software producer block (NIF of the software PRODUCER, not the invoice
+// issuer). TBAI_SOFTWARE_NIF MUST be a real NIF before sending to a hacienda
+// foral — the all-zero placeholder is only tolerated in development.
 const TBAI_SOFTWARE = {
   nif: process.env.TBAI_SOFTWARE_NIF ?? "B00000000",
   name: "HotelOS",
@@ -34,10 +38,11 @@ export async function submitTbaiForInvoice(invoiceId: string, organizationId: st
   const existing = await prisma.tbaiSubmission.findUnique({ where: { invoiceId } });
   if (existing && existing.status === "accepted") return;
 
-  const property = await prisma.property.findUnique({ where: { id: invoice.propertyId } });
+  // FISC-03: issuer identity from the invoice snapshot (see issuer-identity.service.ts).
+  const issuer = await issuerForInvoice(invoice);
+  const emitterTaxId = issuer.taxId;
+  const emitterName = issuer.legalName;
   const lines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
-  const emitterTaxId = property?.legalName?.match(/[A-Z]?\d{8}[A-Z]?/i)?.[0] ?? "B00000000";
-  const emitterName = property?.legalName ?? property?.name ?? "HotelOS Demo";
 
   // TBAI hash chain per territory & property.
   const previousTbai = await prisma.tbaiSubmission.findFirst({

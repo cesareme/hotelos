@@ -191,24 +191,52 @@ export function LiveTimelineWorkspace() {
   const rangeEnd = useMemo(() => addDays(rangeStart, dayCount), [rangeStart, dayCount]);
 
   // ---- data loading -------------------------------------------------------
+  // Reservations are fetched for the visible window only (REC-05: overlap
+  // filter with one day of margin on each side, up to the API cap); rooms and
+  // room types once. If the first window is empty we anchor it on the next
+  // upcoming arrival (else the most recent one) so the board never opens
+  // blank — done a single time, never in a loop.
+  const initializedRef = useRef(false);
+  const anchoredRef = useRef(false);
+  const [rangeLoading, setRangeLoading] = useState(false);
+  // QC-06: a failed refresh keeps the current view but says so.
+  const [staleSince, setStaleSince] = useState<{ at: string; message: string } | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+
+  const rangeQuery = useCallback(
+    () => ({ from: toDateOnly(addDays(rangeStart, -1)), to: toDateOnly(addDays(rangeEnd, 1)), limit: 500 }),
+    [rangeStart, rangeEnd]
+  );
+
   const load = useCallback(async () => {
-    setLoading(true);
+    const first = !initializedRef.current;
+    if (first) setLoading(true);
+    else setRangeLoading(true);
     setError(null);
     try {
-      const [rms, rts, res] = await Promise.all([
-        fetchRooms(propertyId),
-        fetchRoomTypes(propertyId),
-        fetchReservations(propertyId)
+      const [res, rms, rts] = await Promise.all([
+        fetchReservations(propertyId, rangeQuery()),
+        first ? fetchRooms(propertyId) : Promise.resolve(null),
+        first ? fetchRoomTypes(propertyId) : Promise.resolve(null)
       ]);
-      setRooms(rms);
-      setRoomTypes(rts);
-      setReservations(res);
+      if (rms) setRooms(rms);
+      if (rts) setRoomTypes(rts);
+      setReservations(res.items);
+      setStaleSince(null);
+      initializedRef.current = true;
+      if (res.items.length === 0 && !anchoredRef.current) {
+        anchoredRef.current = true;
+        const upcoming = await fetchReservations(propertyId, { arrivalFrom: toDateOnly(todayUtc()), sort: "arrival_asc", limit: 1 });
+        const anchor = upcoming.items[0] ?? (await fetchReservations(propertyId, { sort: "arrival_desc", limit: 1 })).items[0];
+        if (anchor) setRangeStart(addDays(parseDateOnly(anchor.arrivalDate), -1));
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "No se pudo cargar el timeline.");
     } finally {
-      setLoading(false);
+      if (first) setLoading(false);
+      else setRangeLoading(false);
     }
-  }, [propertyId]);
+  }, [propertyId, rangeQuery]);
 
   useEffect(() => {
     void load();
@@ -216,47 +244,47 @@ export function LiveTimelineWorkspace() {
 
   const refresh = useCallback(async () => {
     try {
-      const [rms, res] = await Promise.all([fetchRooms(propertyId), fetchReservations(propertyId)]);
+      const [rms, res] = await Promise.all([fetchRooms(propertyId), fetchReservations(propertyId, rangeQuery())]);
       setRooms(rms);
-      setReservations(res);
-    } catch {
-      /* keep current view */
+      setReservations(res.items);
+      setStaleSince(null);
+    } catch (err) {
+      // Keep the current view, but flag it as stale instead of failing silently.
+      setStaleSince({
+        at: new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }),
+        message: err instanceof Error ? err.message : "No se pudo actualizar el timeline."
+      });
     }
-  }, [propertyId]);
-
-  // Snap the window to where the data actually is, so the demo never looks empty.
-  useEffect(() => {
-    if (loading || reservations.length === 0) return;
-    const visible = reservations.some(
-      (r) => parseDateOnly(r.arrivalDate) < rangeEnd && parseDateOnly(r.departureDate) > rangeStart
-    );
-    if (!visible) {
-      const earliest = reservations.reduce(
-        (min, r) => (parseDateOnly(r.arrivalDate) < min ? parseDateOnly(r.arrivalDate) : min),
-        parseDateOnly(reservations[0].arrivalDate)
-      );
-      setRangeStart(addDays(earliest, -1));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, reservations]);
+  }, [propertyId, rangeQuery]);
 
   // ---- detail panel data --------------------------------------------------
   useEffect(() => {
     if (!selectedId) {
       setFolio(null);
       setActivity(null);
+      setDetailError(null);
       return;
     }
     let on = true;
     setDetailLoading(true);
+    setDetailError(null);
+    const describe = (e: unknown) => (e instanceof Error ? e.message : "no disponible");
+    const failures: string[] = [];
     Promise.all([
-      fetchReservationFolio(selectedId).catch(() => null),
-      fetchGuestActivity(selectedId).catch(() => null)
+      fetchReservationFolio(selectedId).catch((e: unknown) => {
+        failures.push(`folio: ${describe(e)}`);
+        return null;
+      }),
+      fetchGuestActivity(selectedId).catch((e: unknown) => {
+        failures.push(`actividad: ${describe(e)}`);
+        return null;
+      })
     ])
       .then(([f, a]) => {
         if (!on) return;
         setFolio(f);
         setActivity(a);
+        setDetailError(failures.length ? `Datos no disponibles — ${failures.join(" · ")}` : null);
       })
       .finally(() => {
         if (on) setDetailLoading(false);
@@ -588,6 +616,12 @@ export function LiveTimelineWorkspace() {
           <span className="bo-muted" style={{ textTransform: "none" }}>Sin selección</span>
         )}
         <button type="button" onClick={() => void refresh()}>↻ Actualizar</button>
+        {rangeLoading ? <span className="bo-muted" style={{ textTransform: "none" }}>Cargando rango…</span> : null}
+        {staleSince ? (
+          <span className="bo-status warn" style={{ textTransform: "none" }} title={staleSince.message}>
+            Datos desactualizados desde {staleSince.at} — no se pudo actualizar
+          </span>
+        ) : null}
       </div>
 
       {loading ? (
@@ -642,6 +676,7 @@ export function LiveTimelineWorkspace() {
             folio={folio}
             activity={activity}
             loading={detailLoading}
+            error={detailError}
             onOpenReservation={() => openReservation(selected.id)}
             onNav={nav}
             onAction={(type) => {
@@ -865,6 +900,8 @@ function DetailPanel(props: {
   folio: FolioBalance | null;
   activity: GuestActivity | null;
   loading: boolean;
+  /** Folio / activity fetch failures (QC-06): shown inline, never as blank facts. */
+  error?: string | null;
   onOpenReservation: () => void;
   onNav: (screen: string) => void;
   onAction: (type: "checkin" | "checkout" | "cancel" | "noshow" | "assign") => void;
@@ -900,6 +937,9 @@ function DetailPanel(props: {
 
   return (
     <div style={{ display: "grid", gap: 14 }}>
+      {props.error ? (
+        <div className="bo-status error" style={{ textTransform: "none" }}>{props.error}</div>
+      ) : null}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
         <span className="bo-status ok" style={{ textTransform: "none" }}>{RES_STATUS_LABEL[res.status] ?? res.status}</span>
         {res.channel ? <span className="bo-chip">{res.channel}</span> : null}

@@ -13,6 +13,7 @@
 //   - Eventos del turno (timeline de las últimas 4h)
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 
 export type ShiftManagerKpis = {
   checkInsToday: number;
@@ -46,6 +47,9 @@ export type ShiftManagerResult = {
   kpis: ShiftManagerKpis;
   events: ShiftEvent[];     // últimos 50, descendente
   flags: Array<{ id: string; status: "critical" | "warning" | "ok"; title: string; detail: string }>;
+  // QC-06: labels of the counters/lists that fell back to 0/[] because their
+  // query failed. Empty means every KPI above is real.
+  degraded: string[];
 };
 
 function startOfDayUtc(): Date {
@@ -63,6 +67,7 @@ export async function buildShiftManager(input: { propertyId: string }): Promise<
   const now = new Date();
   const today = startOfDayUtc();
   const tomorrow = new Date(today.getTime() + 86400000);
+  const { safe, degraded } = createDegradedCollector("dashboards.shift-manager", { propertyId });
 
   const [
     checkInsRows,
@@ -123,20 +128,20 @@ export async function buildShiftManager(input: { propertyId: string }): Promise<
     prisma.reservation.count({
       where: { propertyId, arrivalDate: { gte: today, lt: tomorrow }, status: "confirmed", assignedRoomId: null }
     }),
-    prisma.workOrder.count({
+    safe("alerts.emergencyIncidents", prisma.workOrder.count({
       where: { propertyId, status: { in: ["open", "in_progress"] }, priority: "emergency" }
-    }).catch(() => 0),
+    }), 0),
     prisma.room.count({ where: { propertyId, sellable: false, active: true } }),
     prisma.reservation.findMany({
       where: { propertyId, status: "cancelled", arrivalDate: { gte: today, lt: tomorrow } },
       take: 20,
       orderBy: { arrivalDate: "desc" }
     }),
-    prisma.workOrder.findMany({
+    safe("events.workOrders", prisma.workOrder.findMany({
       where: { propertyId, status: { in: ["open", "in_progress"] } },
       orderBy: { createdAt: "desc" },
       take: 20
-    }).catch(() => [])
+    }), [])
   ]);
 
   const cashCaptured = Number(paymentsCaptured._sum.amount ?? 0);
@@ -311,6 +316,7 @@ export async function buildShiftManager(input: { propertyId: string }): Promise<
     propertyId,
     kpis,
     events: events.slice(0, 50),
-    flags
+    flags,
+    degraded
   };
 }

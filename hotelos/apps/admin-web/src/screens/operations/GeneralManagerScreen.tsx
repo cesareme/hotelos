@@ -44,6 +44,14 @@ import {
   toneToColorToken,
   type ManagementTone
 } from "./managementBadges";
+import {
+  DegradedBanner,
+  DegradedCard,
+  DegradedNote,
+  DegradedValue,
+  isDegraded
+} from "../../components/cocoa-extras/DegradedValue";
+import { toArray } from "../../utils/toArray";
 
 // ---------------------------------------------------------------------------
 // Types — wire-shape of the dashboard endpoint. Kept aligned with
@@ -103,6 +111,8 @@ type Data = {
   };
   cash: { capturedTodayEur: number; refundedTodayEur: number; netTodayEur: number; openBalanceEur: number };
   reputation?: { avgScore?: number; reviewsLast30: number; npsLast30?: number };
+  // QC-06: `safe()` labels whose query failed and fell back to 0/null/[].
+  degraded: string[];
 };
 
 type PaceRow = { date: string; otb: number; forecast: number; lastYear: number };
@@ -114,7 +124,28 @@ type PaceData = {
   to: string;
   days: number;
   rows: Array<PaceRow>;
+  // QC-06: datasets that fell back to [] because their query failed.
+  degraded: string[];
 };
+
+// `safe()` labels in general-manager.service.ts grouped by the UI slot they
+// feed. A slot is degraded when ANY of its labels is in `degraded[]`.
+const DEGRADED_LABEL = {
+  emergencyIncidents: "alerts.emergencyIncidents",
+  openIncidents: "alerts.openIncidents",
+  incidents: ["alerts.openIncidents", "alerts.emergencyIncidents"],
+  // GOPPAR / net contribution subtract a channel cost built from two
+  // safe()-wrapped sources; if either failed the cost is understated.
+  channelCost: ["channelCost.commissionAccrualToday", "channelCost.profitabilitySnapshotToday"],
+  verifactu: "compliance.verifactuPending",
+  verifactuLastAck: "compliance.verifactuLastAck",
+  ses: "compliance.sesPending",
+  tbai: ["compliance.tbaiPending", "compliance.tbaiErrors"],
+  anomalies: "anomalies.lastYearSnapshot",
+  // Pace endpoint (`/general-manager/pace`).
+  pace: ["pace.forecastSnapshots", "pace.lastYearSnapshots"],
+  paceLastYear: "pace.lastYearSnapshots"
+} as const;
 
 // ---------------------------------------------------------------------------
 // Formatting helpers.
@@ -249,7 +280,7 @@ function statusFromAnomalies(k: Data, kind: "occupancy" | "adr" | "revpar"): "ok
     adr: ["adr_drop_vs_ly"],
     revpar: []
   };
-  const matches = k.aiAnomalies.filter((a) => kinds[kind].includes(a.kind));
+  const matches = toArray<Anomaly>(k.aiAnomalies).filter((a) => kinds[kind].includes(a.kind));
   if (matches.some((m) => m.severity === "high")) return "critical";
   if (matches.some((m) => m.severity === "medium" || m.severity === "low")) return "warning";
   return "ok";
@@ -282,8 +313,9 @@ function anomalySeverity(s: "low" | "medium" | "high"): DirectorAiInsightSeverit
 // pickupNet = OTB - LY for that stay date. Without historical OTB-by-day we
 // approximate this as the daily delta vs LY which is what the row exposes.
 function buildPickup7d(pace: PaceData | null): Array<{ day: string; net: number; pctVsLY?: number }> {
-  if (!pace || pace.rows.length === 0) return [];
-  const slice = pace.rows.slice(0, 7);
+  const rows = toArray<PaceRow>(pace?.rows);
+  if (rows.length === 0) return [];
+  const slice = rows.slice(0, 7);
   const days = ["L", "M", "X", "J", "V", "S", "D"];
   return slice.map((r, i) => {
     const ly = r.lastYear || 0;
@@ -301,7 +333,7 @@ function buildPickup7d(pace: PaceData | null): Array<{ day: string; net: number;
 
 // Build segment bars from segmentMix entries.
 function buildSegmentBars(k: Data) {
-  return k.segmentMix.slice(0, 5).map((s) => ({
+  return toArray<Data["segmentMix"][number]>(k.segmentMix).slice(0, 5).map((s) => ({
     name: s.segment,
     adr: s.adr,
     mixPct: s.pct,
@@ -312,7 +344,7 @@ function buildSegmentBars(k: Data) {
 // Map channelMix to the donut's expected shape. costPct unknown per channel
 // today, so we fall back to the global channelCostPct.
 function buildChannelDonut(k: Data) {
-  return k.channelMix.slice(0, 6).map((c) => ({
+  return toArray<Data["channelMix"][number]>(k.channelMix).slice(0, 6).map((c) => ({
     name: c.channel,
     revenue: c.revenue,
     roomNights: c.reservations,
@@ -324,7 +356,7 @@ function buildChannelDonut(k: Data) {
 // component expects. We use the first level as "current" and the cheaper /
 // pricier neighbours as "suggested" until backend exposes deltas.
 function buildBarRecs(k: Data, asOf: string) {
-  const base = k.barRecommendations;
+  const base = toArray<Data["barRecommendations"][number]>(k.barRecommendations);
   if (base.length === 0) return [];
   const ref = base[0]?.price ?? 0;
   return base.slice(0, 3).map((b, i) => {
@@ -345,8 +377,7 @@ function buildBarRecs(k: Data, asOf: string) {
 
 // Build pace points for the chart from raw pace rows.
 function buildPacePoints(pace: PaceData | null) {
-  if (!pace) return [];
-  return pace.rows.map((r) => ({
+  return toArray<PaceRow>(pace?.rows).map((r) => ({
     date: r.date,
     otb: r.otb,
     forecast: r.forecast,
@@ -372,9 +403,13 @@ export function GeneralManagerScreen() {
 
   const k = data;
   const isLoading = loading && !k;
+  const degraded = toArray<string>(data?.degraded);
+  const paceDegraded = toArray<string>(pace?.degraded);
+  const paceRows = toArray<PaceRow>(pace?.rows);
 
   const headerActions: ReactNode = (
     <>
+      <DegradedBanner degraded={[...degraded, ...paceDegraded]} />
       {loading || paceLoading ? <span style={badgeStyle("info")}>cargando</span> : null}
       {error ? <span style={badgeStyle("danger")}>{error}</span> : null}
       <CocoaButton
@@ -428,16 +463,17 @@ export function GeneralManagerScreen() {
   const revVsLyPct = k.revenue.today.vsLastWeek?.pct;
   const arrivals = k.productivity.checkInsPlanned;
   const departures = k.productivity.checkOutsPlanned;
-  const occupancySpark = pace?.rows.slice(0, 7).map((r) => r.otb) ?? [];
+  const occupancySpark = paceRows.slice(0, 7).map((r) => r.otb);
 
   // ---------------------------------------------------------------------------
   // Row 7 — AI insights (anomalies, top 3 actions, demand spikes).
   // ---------------------------------------------------------------------------
-  const topAnomalies = k.aiAnomalies.slice(0, 5);
-  const top3Actions = k.aiAnomalies.slice(0, 3);
+  const anomalies = toArray<Anomaly>(k.aiAnomalies);
+  const topAnomalies = anomalies.slice(0, 5);
+  const top3Actions = anomalies.slice(0, 3);
   // Demand spikes are not yet a backend signal; we project the top 14 days
   // of pace where OTB exceeds LY by >25% as "spike" indicators.
-  const demandSpikes = (pace?.rows ?? [])
+  const demandSpikes = paceRows
     .slice(0, 14)
     .filter((r) => r.lastYear > 0 && (r.otb - r.lastYear) / r.lastYear > 0.25)
     .slice(0, 5);
@@ -501,12 +537,14 @@ export function GeneralManagerScreen() {
           deltaPolarity="positive-good"
           status={statusFromAnomalies(k, "revpar")}
         />
-        <DirectorKpiTile
-          label="GOPPAR"
-          value={fmtEur(k.goppar)}
-          deltaLabel="proxy"
-          deltaPolarity="positive-good"
-        />
+        <DegradedCard label={DEGRADED_LABEL.channelCost} degraded={degraded} title="GOPPAR">
+          <DirectorKpiTile
+            label="GOPPAR"
+            value={fmtEur(k.goppar)}
+            deltaLabel="proxy"
+            deltaPolarity="positive-good"
+          />
+        </DegradedCard>
         <DirectorKpiTile
           label="In-house"
           value={fmtNumber(k.productivity.checkInsDone)}
@@ -546,30 +584,36 @@ export function GeneralManagerScreen() {
           deltaLabel="hoy"
           deltaPolarity="negative-good"
         />
-        <DirectorKpiTile
-          label="Net contribution"
-          value={fmtEurCompact(k.netContributionToday)}
-          deltaLabel="hoy"
-          deltaPolarity="positive-good"
-          status={k.netContributionToday < 0 ? "critical" : "ok"}
-        />
+        <DegradedCard label={DEGRADED_LABEL.channelCost} degraded={degraded} title="Net contribution">
+          <DirectorKpiTile
+            label="Net contribution"
+            value={fmtEurCompact(k.netContributionToday)}
+            deltaLabel="hoy"
+            deltaPolarity="positive-good"
+            status={k.netContributionToday < 0 ? "critical" : "ok"}
+          />
+        </DegradedCard>
       </div>
 
       {/* Row 2 — Forward pace + Pickup + Cancellation risk (8/2/2) */}
       <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(8, 480)}>
-          <DirectorForwardPaceChart
-            data={buildPacePoints(pace)}
-            days={30}
-            valueLabel="Revenue €"
-            title="Pace próximos 30 días"
-          />
+          <DegradedCard label={DEGRADED_LABEL.pace} degraded={paceDegraded} title="Pace próximos 30 días">
+            <DirectorForwardPaceChart
+              data={buildPacePoints(pace)}
+              days={30}
+              valueLabel="Revenue €"
+              title="Pace próximos 30 días"
+            />
+          </DegradedCard>
         </div>
         <div style={spanStyle(2, 200)}>
-          <DirectorPickupBar
-            data={buildPickup7d(pace)}
-            valueLabel="Pickup 7d"
-          />
+          <DegradedCard label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded} title="Pickup 7d">
+            <DirectorPickupBar
+              data={buildPickup7d(pace)}
+              valueLabel="Pickup 7d"
+            />
+          </DegradedCard>
         </div>
         <div style={spanStyle(2, 200)}>
           <DirectorCancellationRiskGauge
@@ -616,19 +660,21 @@ export function GeneralManagerScreen() {
           status={statusFromCount(k.alerts.blockedRooms, 1, 5)}
           onDrillDown={() => navigateTo("HousekeepingDashboard")}
         />
-        <DirectorOpsHealthMini
-          module="maintenance"
-          title="Mantenimiento"
-          primaryCount={k.alerts.openIncidents}
-          primaryLabel="abiertas"
-          status={statusFromCount(k.alerts.openIncidents, 5, 10)}
-          breakdown={
-            k.alerts.emergencyIncidents > 0
-              ? [{ label: "críticas", count: k.alerts.emergencyIncidents, color: "var(--cocoa-danger)" }]
-              : undefined
-          }
-          onDrillDown={() => navigateTo("MaintenanceDashboard")}
-        />
+        <DegradedCard label={DEGRADED_LABEL.incidents} degraded={degraded} title="Mantenimiento">
+          <DirectorOpsHealthMini
+            module="maintenance"
+            title="Mantenimiento"
+            primaryCount={k.alerts.openIncidents}
+            primaryLabel="abiertas"
+            status={statusFromCount(k.alerts.openIncidents, 5, 10)}
+            breakdown={
+              k.alerts.emergencyIncidents > 0
+                ? [{ label: "críticas", count: k.alerts.emergencyIncidents, color: "var(--cocoa-danger)" }]
+                : undefined
+            }
+            onDrillDown={() => navigateTo("MaintenanceDashboard")}
+          />
+        </DegradedCard>
         <DirectorOpsHealthMini
           module="workforce"
           title="Workforce"
@@ -637,14 +683,16 @@ export function GeneralManagerScreen() {
           status="ok"
           onDrillDown={() => navigateTo("ShiftManagerScreen")}
         />
-        <DirectorOpsHealthMini
-          module="safety"
-          title="Safety"
-          primaryCount={k.alerts.emergencyIncidents}
-          primaryLabel="incidentes urgentes"
-          status={statusFromCount(k.alerts.emergencyIncidents, 1, 3)}
-          onDrillDown={() => navigateTo("SafetyDashboard")}
-        />
+        <DegradedCard label={DEGRADED_LABEL.emergencyIncidents} degraded={degraded} title="Safety">
+          <DirectorOpsHealthMini
+            module="safety"
+            title="Safety"
+            primaryCount={k.alerts.emergencyIncidents}
+            primaryLabel="incidentes urgentes"
+            status={statusFromCount(k.alerts.emergencyIncidents, 1, 3)}
+            onDrillDown={() => navigateTo("SafetyDashboard")}
+          />
+        </DegradedCard>
         <DirectorOpsHealthMini
           module="pos"
           title="POS"
@@ -691,6 +739,7 @@ export function GeneralManagerScreen() {
             <ServiceRequestsList
               openIncidents={k.alerts.openIncidents}
               emergencyIncidents={k.alerts.emergencyIncidents}
+              degraded={degraded}
             />
           </CocoaCard>
         </div>
@@ -706,30 +755,42 @@ export function GeneralManagerScreen() {
       {/* Row 6 — Compliance widgets (VeriFactu · SES · TBAI · GDPR) */}
       <div className="gm-grid" style={gridRowStyle}>
         <div style={spanStyle(3, 240)}>
-          <DirectorComplianceWidget
-            authority="verifactu"
-            pendingCount={k.complianceSummary.verifactu.pending}
-            status={complianceStatusFor(k.complianceSummary.verifactu)}
-            lastSubmission={fmtCompactDateTime(k.complianceSummary.verifactu.last)}
-            onDrillDown={() => navigateTo("FiscalDashboard")}
-          />
+          <DegradedCard label={DEGRADED_LABEL.verifactu} degraded={degraded} title="VeriFactu">
+            <DirectorComplianceWidget
+              authority="verifactu"
+              pendingCount={k.complianceSummary.verifactu.pending}
+              status={complianceStatusFor(k.complianceSummary.verifactu)}
+              lastSubmission={
+                // The last-ack lookup is its own safe() query: omit the date
+                // rather than show "never acknowledged" when it failed.
+                isDegraded(DEGRADED_LABEL.verifactuLastAck, degraded)
+                  ? undefined
+                  : fmtCompactDateTime(k.complianceSummary.verifactu.last)
+              }
+              onDrillDown={() => navigateTo("FiscalDashboard")}
+            />
+          </DegradedCard>
         </div>
         <div style={spanStyle(3, 240)}>
-          <DirectorComplianceWidget
-            authority="ses"
-            pendingCount={k.complianceSummary.ses.pending}
-            status={complianceStatusFor(k.complianceSummary.ses)}
-            onDrillDown={() => navigateTo("SesHospedajesSettings")}
-          />
+          <DegradedCard label={DEGRADED_LABEL.ses} degraded={degraded} title="SES">
+            <DirectorComplianceWidget
+              authority="ses"
+              pendingCount={k.complianceSummary.ses.pending}
+              status={complianceStatusFor(k.complianceSummary.ses)}
+              onDrillDown={() => navigateTo("SesHospedajesSettings")}
+            />
+          </DegradedCard>
         </div>
         <div style={spanStyle(3, 240)}>
-          <DirectorComplianceWidget
-            authority="tbai"
-            pendingCount={k.complianceSummary.tbai.pending}
-            status={complianceStatusFor(k.complianceSummary.tbai)}
-            errorsCount={k.complianceSummary.tbai.errors}
-            onDrillDown={() => navigateTo("TbaiForal")}
-          />
+          <DegradedCard label={DEGRADED_LABEL.tbai} degraded={degraded} title="TBAI">
+            <DirectorComplianceWidget
+              authority="tbai"
+              pendingCount={k.complianceSummary.tbai.pending}
+              status={complianceStatusFor(k.complianceSummary.tbai)}
+              errorsCount={k.complianceSummary.tbai.errors}
+              onDrillDown={() => navigateTo("TbaiForal")}
+            />
+          </DegradedCard>
         </div>
         <div style={spanStyle(3, 240)}>
           <DirectorComplianceWidget
@@ -747,7 +808,9 @@ export function GeneralManagerScreen() {
           <CocoaCard variant="bordered" padding="md">
             <div style={cardHeadStyle}>
               <h3 style={cardTitleStyle}>Anomalías hoy</h3>
-              <span style={cardMutedStyle}>{topAnomalies.length} detectadas</span>
+              <span style={cardMutedStyle}>
+                <DegradedValue label={DEGRADED_LABEL.anomalies} degraded={degraded}>{topAnomalies.length}</DegradedValue> detectadas
+              </span>
             </div>
             <AnomaliesList anomalies={topAnomalies} />
           </CocoaCard>
@@ -786,9 +849,13 @@ export function GeneralManagerScreen() {
           <CocoaCard variant="bordered" padding="md">
             <div style={cardHeadStyle}>
               <h3 style={cardTitleStyle}>Demand spikes 14d</h3>
-              <span style={cardMutedStyle}>{demandSpikes.length}</span>
+              <span style={cardMutedStyle}>
+                <DegradedValue label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded}>{demandSpikes.length}</DegradedValue>
+              </span>
             </div>
-            <DemandSpikeList rows={demandSpikes} />
+            <DegradedNote label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded}>
+              <DemandSpikeList rows={demandSpikes} />
+            </DegradedNote>
           </CocoaCard>
         </div>
       </div>
@@ -914,12 +981,25 @@ function ReviewsScore({ avgScore, count }: ReviewsScoreProps) {
 interface ServiceRequestsListProps {
   openIncidents: number;
   emergencyIncidents: number;
+  degraded: string[];
 }
 
-function ServiceRequestsList({ openIncidents, emergencyIncidents }: ServiceRequestsListProps) {
-  const rows: Array<{ label: string; count: number; tone: ManagementTone }> = [
-    { label: "Abiertas", count: openIncidents, tone: openIncidents > 5 ? "warning" : "success" },
-    { label: "Urgentes", count: emergencyIncidents, tone: emergencyIncidents > 0 ? "danger" : "success" }
+function ServiceRequestsList({ openIncidents, emergencyIncidents, degraded }: ServiceRequestsListProps) {
+  const openDegraded = isDegraded(DEGRADED_LABEL.openIncidents, degraded);
+  const emergencyDegraded = isDegraded(DEGRADED_LABEL.emergencyIncidents, degraded);
+  const rows: Array<{ label: string; count: number; tone: ManagementTone; degradedLabel: string }> = [
+    {
+      label: "Abiertas",
+      count: openIncidents,
+      tone: openDegraded ? "neutral" : openIncidents > 5 ? "warning" : "success",
+      degradedLabel: DEGRADED_LABEL.openIncidents
+    },
+    {
+      label: "Urgentes",
+      count: emergencyIncidents,
+      tone: emergencyDegraded ? "neutral" : emergencyIncidents > 0 ? "danger" : "success",
+      degradedLabel: DEGRADED_LABEL.emergencyIncidents
+    }
   ];
   return (
     <ul
@@ -945,7 +1025,7 @@ function ServiceRequestsList({ openIncidents, emergencyIncidents }: ServiceReque
         >
           <span style={cardMutedStyle}>{r.label}</span>
           <strong style={{ color: toneToColorToken(r.tone), fontVariantNumeric: "tabular-nums" }}>
-            {fmtNumber(r.count)}
+            <DegradedValue label={r.degradedLabel} degraded={degraded}>{fmtNumber(r.count)}</DegradedValue>
           </strong>
         </li>
       ))}

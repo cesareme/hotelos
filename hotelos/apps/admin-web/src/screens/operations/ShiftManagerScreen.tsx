@@ -6,6 +6,13 @@
 
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { toArray } from "../../utils/toArray";
+import {
+  DegradedBanner,
+  DegradedNote,
+  DegradedValue,
+  isDegraded
+} from "../../components/cocoa-extras/DegradedValue";
 
 type Kpis = {
   checkInsToday: number;
@@ -41,7 +48,16 @@ type Data = {
   kpis: Kpis;
   events: ShiftEvent[];
   flags: Flag[];
+  // QC-06: `safe()` labels whose query failed and fell back to 0/[]. Mirrors
+  // `apps/api/src/modules/dashboards/shift-manager.service.ts`.
+  degraded: string[];
 };
+
+// `safe()` labels in shift-manager.service.ts mapped to the UI slot they feed.
+const DEGRADED_LABEL = {
+  emergencyFlag: "alerts.emergencyIncidents",
+  events: "events.workOrders"
+} as const;
 
 const EVENT_ICON: Record<string, string> = {
   check_in: "🔑",
@@ -76,6 +92,9 @@ export function ShiftManagerScreen() {
   );
 
   const k = data?.kpis;
+  const events = toArray<ShiftEvent>(data?.events);
+  const flags = toArray<Flag>(data?.flags);
+  const degraded = toArray<string>(data?.degraded);
   const completedRatio = k && (k.checkInsToday + k.pendingArrivals) > 0
     ? Math.round((k.checkInsToday / (k.checkInsToday + k.pendingArrivals)) * 100)
     : 0;
@@ -95,6 +114,7 @@ export function ShiftManagerScreen() {
           </p>
         </div>
         <div className="bo-page-head-actions">
+          <DegradedBanner degraded={degraded} />
           {loading ? <span className="bo-status info">cargando</span> : null}
           {error ? <span className="bo-status error">{error}</span> : null}
           <button type="button" className="ghost" onClick={refresh}>↻</button>
@@ -175,16 +195,24 @@ export function ShiftManagerScreen() {
       ) : null}
 
       {/* Flags / Conflictos */}
-      {data?.flags && data.flags.length > 0 ? (
+      {flags.length > 0 ? (
         <article className="bo-card" style={{ background: "var(--surface)" }}>
           <div className="bo-card-head">
             <h3 style={{ color: "var(--ink)" }}>Estado operativo</h3>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
-            {data.flags.map((f) => {
-              const tone = f.status === "critical" ? "#d23b3b" : f.status === "warning" ? "#d29b00" : "#1f8a4c";
-              const bg = f.status === "critical" ? "rgba(210, 59, 59, 0.08)" : f.status === "warning" ? "rgba(210, 155, 0, 0.08)" : "rgba(31, 138, 76, 0.08)";
-              const icon = f.status === "critical" ? "✕" : f.status === "warning" ? "!" : "✓";
+            {flags.map((f) => {
+              // The "emergency" flag is computed from a safe()-wrapped counter:
+              // when its query failed the API still says "ok · Sin emergencias",
+              // so neutralise the tone and show "—" instead of a green tick.
+              const flagDegraded = f.id === "emergency" && isDegraded(DEGRADED_LABEL.emergencyFlag, degraded);
+              const tone = flagDegraded
+                ? "var(--cocoa-label-tertiary)"
+                : f.status === "critical" ? "#d23b3b" : f.status === "warning" ? "#d29b00" : "#1f8a4c";
+              const bg = flagDegraded
+                ? "transparent"
+                : f.status === "critical" ? "rgba(210, 59, 59, 0.08)" : f.status === "warning" ? "rgba(210, 155, 0, 0.08)" : "rgba(31, 138, 76, 0.08)";
+              const icon = flagDegraded ? "—" : f.status === "critical" ? "✕" : f.status === "warning" ? "!" : "✓";
               return (
                 <div key={f.id} style={{ border: `1px solid ${tone}`, borderLeftWidth: 4, borderRadius: 8, padding: 12, background: bg }}>
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -193,7 +221,11 @@ export function ShiftManagerScreen() {
                     </span>
                     <strong style={{ fontSize: 13 }}>{f.title}</strong>
                   </div>
-                  <div className="bo-muted" style={{ fontSize: 12, marginTop: 6 }}>{f.detail}</div>
+                  <div className="bo-muted" style={{ fontSize: 12, marginTop: 6 }}>
+                    {flagDegraded ? (
+                      <DegradedValue label={DEGRADED_LABEL.emergencyFlag} degraded={degraded}>{f.detail}</DegradedValue>
+                    ) : f.detail}
+                  </div>
                 </div>
               );
             })}
@@ -205,13 +237,17 @@ export function ShiftManagerScreen() {
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
           <h3 style={{ color: "var(--ink)" }}>Eventos del turno</h3>
-          <span className="bo-muted" style={{ fontSize: 12 }}>{data?.events.length ?? 0} eventos</span>
+          <span className="bo-muted" style={{ fontSize: 12 }}>
+            <DegradedValue label={DEGRADED_LABEL.events} degraded={degraded}>{events.length}</DegradedValue> eventos
+          </span>
         </div>
-        {!data?.events.length ? (
-          <p className="bo-muted">Sin actividad registrada hoy.</p>
+        {events.length === 0 ? (
+          <DegradedNote label={DEGRADED_LABEL.events} degraded={degraded}>
+            <p className="bo-muted">Sin actividad registrada hoy.</p>
+          </DegradedNote>
         ) : (
           <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-            {data.events.slice(0, 30).map((ev) => {
+            {events.slice(0, 30).map((ev) => {
               const tone = ev.importance === "alert" ? "#d23b3b" : ev.importance === "highlight" ? "#6f3ad2" : "#888";
               return (
                 <li key={ev.id} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>

@@ -6,6 +6,8 @@ import {
   fetchReservationFolio,
   fetchRoomTypes,
   fetchGuestActivity,
+  pickInitialReservation,
+  todayIsoLocal,
   type AdminReservation,
   type AdminRoomType,
   type FolioBalance,
@@ -16,6 +18,11 @@ import { fetchGuest, type GuestProfile } from "../../services/guestsApi";
 import { LoadingBlock, EmptyState, ErrorState, Spinner } from "../../components/States";
 
 const PROPERTY_ID = getActivePropertyId();
+// Rows per page (API default order: most recent arrival first); "Cargar más"
+// walks the cursor.
+const PAGE_SIZE = 100;
+
+type PanelErrors = { folio?: string; guest?: string; activity?: string };
 
 function nav(screen: string) {
   window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
@@ -155,46 +162,102 @@ export function GuestJourneyWorkspace() {
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
 
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+
   const [selected, setSelected] = useState<AdminReservation | null>(null);
   const [folio, setFolio] = useState<FolioBalance | null>(null);
   const [guest, setGuest] = useState<GuestProfile | null>(null);
   const [activity, setActivity] = useState<GuestActivity | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // QC-06: a failed detail load is an explicit error (with the id, so retry
+  // targets the right reservation) — never blank panels or a stale selection.
+  const [detailError, setDetailError] = useState<{ id: string; message: string } | null>(null);
+  // Per-panel failures: "no disponible" is different from "sin datos".
+  const [panelErrors, setPanelErrors] = useState<PanelErrors>({});
 
   function load() {
     setLoading(true);
     setError(null);
-    Promise.all([fetchReservations(PROPERTY_ID), fetchRoomTypes(PROPERTY_ID)])
-      .then(([res, rt]) => {
-        setReservations(res);
+    Promise.all([fetchReservations(PROPERTY_ID, { limit: PAGE_SIZE }), fetchRoomTypes(PROPERTY_ID)])
+      .then(([page, rt]) => {
+        setReservations(page.items);
+        setNextCursor(page.nextCursor);
+        setTotal(page.total);
         setRoomTypes(rt);
-        if (res[0]) void openReservation(res[0].id);
+        const initial = pickInitialReservation(page.items, todayIsoLocal());
+        if (initial) void openReservation(initial.id);
       })
-      .catch(() => setError("Could not load the guest journey right now."))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : "No se pudo cargar el guest journey."))
       .finally(() => setLoading(false));
   }
   useEffect(load, []);
 
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchReservations(PROPERTY_ID, { limit: PAGE_SIZE, cursor: nextCursor });
+      setReservations((current) => {
+        const seen = new Set(current.map((r) => r.id));
+        return [...current, ...page.items.filter((r) => !seen.has(r.id))];
+      });
+      setNextCursor(page.nextCursor);
+      setTotal(page.total);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "No se pudieron cargar más reservas.");
+    } finally {
+      setLoadingMore(false);
+    }
+  }
+
   async function openReservation(id: string) {
     setDetailLoading(true);
+    setDetailError(null);
+    setPanelErrors({});
     setFolio(null);
     setGuest(null);
     setActivity(null);
+    const describe = (e: unknown) => (e instanceof Error ? e.message : "no disponible");
     try {
       const res = await fetchReservation(id);
       setSelected(res);
+      const errors: PanelErrors = {};
       const [f, g, a] = await Promise.all([
-        fetchReservationFolio(id).catch(() => null),
-        res.primaryGuestId ? fetchGuest(res.primaryGuestId).then((d) => d.guest).catch(() => null) : Promise.resolve(null),
-        fetchGuestActivity(id).catch(() => null)
+        fetchReservationFolio(id).catch((e: unknown) => {
+          errors.folio = describe(e);
+          return null;
+        }),
+        res.primaryGuestId
+          ? fetchGuest(res.primaryGuestId)
+              .then((d) => d.guest)
+              .catch((e: unknown) => {
+                errors.guest = describe(e);
+                return null;
+              })
+          : Promise.resolve(null),
+        fetchGuestActivity(id).catch((e: unknown) => {
+          errors.activity = describe(e);
+          return null;
+        })
       ]);
       setFolio(f);
       setGuest(g);
       setActivity(a);
+      setPanelErrors(errors);
+    } catch (err) {
+      setDetailError({ id, message: err instanceof Error ? err.message : "No se pudo cargar la reserva." });
     } finally {
       setDetailLoading(false);
     }
   }
+
+  const panelErrorSummary = [
+    panelErrors.folio ? `folio (${panelErrors.folio})` : null,
+    panelErrors.guest ? `huésped (${panelErrors.guest})` : null,
+    panelErrors.activity ? `actividad (${panelErrors.activity})` : null
+  ].filter(Boolean);
 
   function roomTypeName(id: string) {
     return roomTypes.find((rt) => rt.id === id)?.name ?? id;
@@ -214,7 +277,7 @@ export function GuestJourneyWorkspace() {
           <p className="bo-page-eyebrow">Guest Journey</p>
           <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>Guest Journey Workspace</h2>
         </div>
-        <span className="bo-chip">{reservations.length} reservations</span>
+        <span className="bo-chip">{total ?? reservations.length} reservations</span>
       </div>
       <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
         Every reservation's real progress — booking, identity (SES), payment, room, check-in, stay and check-out — with the
@@ -253,6 +316,13 @@ export function GuestJourneyWorkspace() {
               );
             })
           )}
+          {!loading && !error && nextCursor ? (
+            <div className="bo-actions" style={{ marginTop: "var(--space-3)" }}>
+              <button type="button" onClick={() => void loadMore()} disabled={loadingMore}>
+                {loadingMore ? <><Spinner size="sm" /> Cargando…</> : "Cargar más"}
+              </button>
+            </div>
+          ) : null}
         </section>
 
         {/* Detail journey */}
@@ -262,10 +332,16 @@ export function GuestJourneyWorkspace() {
             <span className="bo-chip">{selected?.code ?? "Select a reservation"}</span>
           </div>
 
-          {!selected ? (
-            <p className="bo-muted">Select a reservation to see its journey.</p>
-          ) : detailLoading ? (
+          {detailLoading ? (
             <LoadingBlock label="Loading journey…" />
+          ) : detailError ? (
+            <ErrorState
+              title="No se pudo cargar la reserva"
+              message={detailError.message}
+              onRetry={() => void openReservation(detailError.id)}
+            />
+          ) : !selected ? (
+            <p className="bo-muted">Select a reservation to see its journey.</p>
           ) : journey ? (
             <>
               <div className="bo-row" style={{ justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
@@ -274,6 +350,12 @@ export function GuestJourneyWorkspace() {
                   {selected.bookerName ?? guest?.fullName ?? "Guest pending"} · {roomTypeName(selected.roomTypeId)}
                 </span>
               </div>
+              {panelErrorSummary.length > 0 ? (
+                <div className="bo-status warn" style={{ textTransform: "none", marginBottom: "var(--space-2)" }}>
+                  Datos no disponibles: {panelErrorSummary.join(" · ")}. Los pasos de identidad y pago pueden mostrarse incompletos.{" "}
+                  <button type="button" className="bo-link" onClick={() => void openReservation(selected.id)}>Reintentar</button>
+                </div>
+              ) : null}
 
               {journey.next && !journey.cancelled ? (
                 <div className="bo-card" style={{ background: "var(--accent-soft)", borderColor: "var(--accent-line, var(--line))", marginBottom: "var(--space-3)" }}>
@@ -317,7 +399,9 @@ export function GuestJourneyWorkspace() {
                   {activity ? <span className={`bo-status ${activity.counts.openTotal ? "warn" : "ok"}`}>{activity.counts.openTotal} open</span> : null}
                 </div>
                 {!activity ? (
-                  <p className="bo-muted">Loading activity…</p>
+                  <p className="bo-muted">
+                    {panelErrors.activity ? `Actividad no disponible: ${panelErrors.activity}` : "Loading activity…"}
+                  </p>
                 ) : (
                   <>
                     <div className="bo-pill-row" style={{ marginBottom: "var(--space-3)" }}>

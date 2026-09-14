@@ -197,6 +197,9 @@ export function __resetCryptoWarningForTests(): void {
 // Sibling lookup-hash column for each searchable PII field. Keys are
 // plaintext PII field names (as they appear in `data: { ... }` payloads);
 // values are the corresponding `*LookupHash` column on the same row.
+// Every model listed here MUST also be in PII_FIELDS: the client extension
+// (client.ts) only intercepts models present in PII_FIELDS, and both
+// encryptArgsForModel / rewriteWhereForModel read this map generically.
 export const LOOKUP_HASH_FIELDS = {
   Guest: {
     email: "emailLookupHash",
@@ -207,6 +210,14 @@ export const LOOKUP_HASH_FIELDS = {
     email: "emailLookupHash",
     phoneMobile: "phoneMobileLookupHash",
     documentNumber: "documentNumberLookupHash"
+  },
+  // Payment.pspReference is encrypted (PII_FIELDS) and markInvoicePaid relies
+  // on `findFirst({ where: { invoiceId, pspReference } })` for idempotency:
+  // without this sibling the where never matches and every PSP retry creates
+  // a duplicate capture. Rows written before the column existed must be
+  // backfilled (apps/api: `pnpm backfill:payment-hash --apply`).
+  Payment: {
+    pspReference: "pspReferenceLookupHash"
   }
 } as const;
 

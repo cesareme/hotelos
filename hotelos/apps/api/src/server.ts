@@ -32,13 +32,15 @@ import fastifyCors from "@fastify/cors";
 import fastifyRateLimit from "@fastify/rate-limit";
 import type { ChatAttachmentDraft, CheckInFromScanRequest, GuestIdentityFields, RateGridBulkUpdateRequest, RateGridPushRequest } from "@hotelos/shared";
 import type { HotelModuleCode } from "@hotelos/product";
+import { isValidSpanishTaxId } from "@hotelos/compliance";
 import type { HotelOsToolName } from "@hotelos/ai-tools";
 import { buildHealthResponse, OBSERVABILITY_HEADERS, SERVICE_NAMES } from "@hotelos/config";
 import { createId } from "./lib/ids.js";
 import { demoStore, type PropertyRecord, type UserContext } from "./lib/demo-store.js";
 import { isPublicRoute, registerAuthContext } from "./lib/auth-context.js";
 import { isSchedulerLeader } from "./lib/scheduler-leader.js";
-import { BadRequestError, ForbiddenError, NotFoundError, statusCodeForError } from "./lib/http-error.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, statusCodeForError } from "./lib/http-error.js";
+import { pageBody, pageHeaders, parsePageQuery } from "./lib/pagination.js";
 import {
   assertEntityAccess,
   assertPropertyEntityAccess,
@@ -295,6 +297,7 @@ import {
   loginWithEmailPassword,
   markNotificationRead,
   registerDevice,
+  requirePermissions,
   revokeSession,
   verifyMfaChallenge
 } from "./modules/auth/auth.service.js";
@@ -335,7 +338,7 @@ import {
   assignRoom,
   assignRoomByNumber,
   checkInReservation,
-  checkOutReservation,
+  checkOutReservationDetailed,
   createReservation,
   createRoom,
   getReservation,
@@ -360,9 +363,10 @@ import {
   splitFolio,
   moveChargesBetweenFolios,
   markInvoicePaid,
-  sendInvoiceByEmail
+  sendInvoiceByEmail,
+  getReservationBalance
 } from "./modules/folio/folio.service.js";
-import { addPosLine, closePosTicket, listPosOutlets, listPosTickets, openPosTicket } from "./modules/pos/pos.service.js";
+import { addPosLine, closePosTicket, getPosCashSummary, listPosOutlets, listPosTickets, openPosTicket } from "./modules/pos/pos.service.js";
 import { getComplianceCenter, updateComplianceItem, updateComplianceProfile, listComplianceTasks, createComplianceTask, updateComplianceTask, deleteComplianceTask, listComplianceDocuments, createComplianceDocument, deleteComplianceDocument, getComplianceAlerts } from "./modules/compliance/compliance-center.service.js";
 import { exportInspectionFolder } from "./modules/compliance/compliance-inspection.service.js";
 import {
@@ -387,6 +391,112 @@ import {
 } from "./modules/folio/folio-routing.service.js";
 import { z } from "zod";
 import { parse } from "./lib/validate.js";
+
+// ---- Handler-level query schemas (Tanda 2) ---------------------------------
+// Values are validated here (400 on malformed), unknown params are ignored.
+const isoDateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Formato de fecha esperado: YYYY-MM-DD");
+const isoDateOrDateTime = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}(T[0-9:.]+(Z|[+-]\d{2}:\d{2})?)?$/, "Formato esperado: YYYY-MM-DD o ISO-8601");
+const RESERVATION_STATUSES = ["draft", "confirmed", "checked_in", "checked_out", "cancelled", "no_show"] as const;
+type ReservationStatusValue = (typeof RESERVATION_STATUSES)[number];
+const splitCsv = (raw: string): string[] => raw.split(",").map((v) => v.trim()).filter((v) => v.length > 0);
+const isReservationStatus = (v: string): v is ReservationStatusValue =>
+  (RESERVATION_STATUSES as readonly string[]).includes(v);
+// NOTE: `parse()` takes ZodSchema<T> (input === output), so no transform/default
+// here — the csv is validated as a string and split by the handler.
+const ReservationListQuerySchema = z.object({
+  // csv of ReservationStatus, e.g. status=confirmed,checked_in
+  status: z
+    .string()
+    .refine((raw) => splitCsv(raw).length > 0 && splitCsv(raw).every(isReservationStatus), {
+      message: `status debe ser una lista separada por comas de: ${RESERVATION_STATUSES.join(", ")}`
+    })
+    .optional(),
+  // stay overlap window: arrivalDate < to && departureDate > from
+  from: isoDateOnly.optional(),
+  to: isoDateOnly.optional(),
+  // arrivals window (inclusive)
+  arrivalFrom: isoDateOnly.optional(),
+  arrivalTo: isoDateOnly.optional(),
+  // free text over code / bookerName / primary guest
+  q: z.string().trim().min(1).max(100).optional(),
+  sort: z.enum(["arrival_desc", "arrival_asc"]).optional()
+});
+// FISC-05.c: `date=YYYY-MM-DD` is an alias for the whole property-local
+// business day; `from`/`to` remain the explicit window. Unknown keys are
+// rejected (a typo such as `outlet=` would otherwise silently widen the
+// closure to every outlet). The window itself is resolved by
+// `resolveCashSummaryWindow` (pos-cash-closure.service).
+const PosCashSummaryQuerySchema = z
+  .object({
+    from: isoDateOrDateTime.optional(),
+    to: isoDateOrDateTime.optional(),
+    date: isoDateOnly.optional(),
+    outletId: z.string().trim().min(1).optional()
+  })
+  .strict();
+// NEW-REV-A: a calendar month. `2024-13` used to reach the services and blow
+// up in Date arithmetic (500); now it is a 400 at the handler boundary.
+const isoMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "month debe tener formato YYYY-MM");
+const MeetingPackQuerySchema = z.object({
+  month: isoMonth.optional()
+});
+const BudgetVarianceQuerySchema = z.object({
+  month: isoMonth.optional()
+});
+// FISC-05: POS bodies. Wrong types used to reach the service (TypeError on
+// `.trim()`, NaN → Prisma Decimal, 1e15 overflowing Decimal(12,2)) → 500.
+const PosTicketOpenSchema = z
+  .object({
+    propertyId: z.string().min(1).max(64).optional(),
+    outletId: z.string().trim().min(1).max(60),
+    roomNumber: z.string().trim().min(1).max(20).optional()
+  })
+  .strict();
+const PosLineSchema = z
+  .object({
+    name: z.string().trim().min(1).max(200),
+    quantity: z.number().int().min(1).max(999).optional(),
+    unitPrice: z.number().min(0).max(100000)
+  })
+  .strict();
+const PosCloseSchema = z.object({ settlement: z.enum(["room", "cash", "card"]) }).strict();
+// NEW-REV-C: the legacy history-forecast export only produces csv/xls. A
+// `format` outside that set (e.g. "pdf") is a 400, never a silent csv.
+const HistoryForecastExportBodySchema = z.object({
+  format: z
+    .enum(["csv", "xls", "xlsx"], { errorMap: () => ({ message: "Formato no disponible: usa csv o xls." }) })
+    .optional(),
+  from: z.string().max(40).optional(),
+  to: z.string().max(40).optional(),
+  fromDate: z.string().max(40).optional(),
+  toDate: z.string().max(40).optional()
+});
+// REC-07: list filters used to be read straight from `request.query`; a
+// repeated parameter (`?search=a&search=b`) arrives as an array and `.trim()`
+// threw a TypeError (500). Both schemas `passthrough()` so the pagination
+// keys read by `parsePageQuery` (limit / cursor / envelope) are untouched.
+const GuestListQuerySchema = z
+  .object({
+    search: z.string().trim().max(100).optional(),
+    // Consumed by the global tenant guard (pickPropertyId); the list itself is
+    // organization-scoped.
+    propertyId: z.string().optional()
+  })
+  .passthrough();
+const InvoiceListQuerySchema = z
+  .object({
+    // csv of InvoiceStatus; the service validates the individual values.
+    status: z.string().max(100).optional(),
+    from: isoDateOnly.optional(),
+    to: isoDateOnly.optional(),
+    q: z.string().trim().max(100).optional()
+  })
+  .passthrough()
+  .refine((query) => !query.from || !query.to || query.from <= query.to, {
+    message: "El parámetro to debe ser posterior o igual a from."
+  });
 import {
   LoginSchema,
   ChangePasswordSchema,
@@ -413,7 +523,8 @@ import {
   ReopenFiscalYearSchema,
   CreateGdprRequestSchema,
   ExecuteErasureSchema,
-  RejectGdprRequestSchema
+  RejectGdprRequestSchema,
+  QuoteAvailabilitySchema
 } from "./schemas/index.js";
 import { globalSearch, type SearchHit } from "./modules/search/search.service.js";
 import { webhooksRoutes } from "./routes/webhooks.routes.js";
@@ -781,7 +892,14 @@ async function initSentry() {
   }
 }
 
-export function buildApiServer() {
+// AUTH-05 (audit 2026-09-14): async on purpose. @fastify/rate-limit does not
+// add a global onRequest hook — it attaches a per-route limiter through an
+// `onRoute` hook, which only exists once the plugin has LOADED. Without the
+// `await` below, avvio (autostart:false) deferred the plugin body to
+// app.ready()/listen(), i.e. AFTER the ~780 inline routes were declared, so no
+// route ever got a limiter (no x-ratelimit-* headers, no 429 — login included).
+// Callers: start() below and tests/integration (`await buildApiServer()`).
+export async function buildApiServer() {
   // Init Sentry sync (fire-and-forget). El error handler de Fastify lo
   // recoge antes incluso de que Sentry esté listo (Sentry buffera).
   void initSentry();
@@ -815,8 +933,14 @@ export function buildApiServer() {
     } else {
       request.log.warn({ err: error, correlationId, statusCode }, "request rejected");
     }
+    // AUTH-05: expose the message of any 4xx that carries one — typed
+    // HttpErrors, but also plain `{ statusCode, message }` objects thrown by
+    // plugins (e.g. @fastify/rate-limit throws whatever errorResponseBuilder
+    // returns). A 429 used to surface as "Internal Server Error" because the
+    // thrown value was not an `Error` instance.
+    const thrownMessage = (error as { message?: unknown } | null | undefined)?.message;
     const exposeMessage =
-      statusCode < 500 && error instanceof Error ? error.message : "Internal Server Error";
+      statusCode < 500 && typeof thrownMessage === "string" ? thrownMessage : "Internal Server Error";
     const errorLabels: Record<number, string> = {
       401: "Unauthorized",
       403: "Forbidden",
@@ -824,11 +948,19 @@ export function buildApiServer() {
       409: "Conflict",
       429: "Too Many Requests"
     };
+    // Typed 4xx errors may carry machine-readable `details` (e.g. the check-out
+    // 409 exposes { code: "BALANCE_DUE", balanceDue }) so clients can branch on
+    // a code instead of parsing the Spanish message. Never forwarded on 5xx.
+    const details =
+      statusCode < 500 && error && typeof error === "object" && "details" in error
+        ? (error as { details?: unknown }).details
+        : undefined;
     reply.code(statusCode).send({
       statusCode,
       error: statusCode < 500 ? (errorLabels[statusCode] ?? "Bad Request") : "Internal Server Error",
       message: exposeMessage,
-      ...(correlationId ? { correlationId } : {})
+      ...(correlationId ? { correlationId } : {}),
+      ...(details !== undefined ? { details } : {})
     });
   });
 
@@ -840,7 +972,7 @@ export function buildApiServer() {
     });
   });
 
-  app.register(fastifyCors, {
+  await app.register(fastifyCors, {
     origin: (origin, cb) => {
       if (!origin) return cb(null, true);
       if (/^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+)(:\d+)?$/.test(origin)) return cb(null, true);
@@ -857,27 +989,49 @@ export function buildApiServer() {
   // PILOT-D1: rate limit global moderado + restricción dura en /auth/*.
   // Anti-bruteforce + protección contra abuso. Usa memoria local (suficiente
   // para single-node piloto); en cluster usaríamos Redis.
-  app.register(fastifyRateLimit, {
+  // AUTH-05: MUST be awaited before the first inline route (see the note on
+  // buildApiServer) — the limiter is attached per route via `onRoute`.
+  await app.register(fastifyRateLimit, {
     // SECURITY (audit 2026-06 · H3): default-on. Every route gets a baseline
     // limit; auth/critical routes harden it further via `config.rateLimit`.
     global: true,
-    max: 200,
+    // RATE_LIMIT_MAX: requests per minute per bucket (see keyGenerator).
+    // Default 600 — a front desk sharing one staff login (several PCs, one
+    // userId) used to exhaust the old 200/min bucket in a busy check-in wave
+    // and lock the whole reception out; the bucket is now user+IP so every
+    // PC gets its own 600/min. Lower it per deployment if needed.
+    max: Number(process.env.RATE_LIMIT_MAX ?? 600),
     timeWindow: "1 minute",
     keyGenerator: (req) => {
       // Only trust x-forwarded-for behind a known proxy (TRUST_PROXY=1, e.g.
       // Caddy in prod). Otherwise the header is client-spoofable and lets an
       // attacker dodge the limit by rotating it — fall back to the socket IP.
+      let clientIp = req.ip;
       if (process.env.TRUST_PROXY === "1") {
         const xff = (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim();
-        if (xff) return xff;
+        if (xff) clientIp = xff;
       }
-      return req.ip;
+      // Bucket per AUTHENTICATED user AND client IP: a whole front desk behind
+      // one NAT router would otherwise share a single bucket by IP, and a
+      // front desk sharing one login would share a single bucket by userId —
+      // either way locking each other out. The route-level limiter runs after
+      // the app-level auth hook (registerAuthContext), so userContext is
+      // populated here. Public routes (login, password reset, health…) and the
+      // demo fallback context (isAuthenticated=false, not a real session) are
+      // keyed by client IP only.
+      if (req.isAuthenticated && req.userContext?.userId) {
+        return `user:${req.userContext.userId}:${clientIp}`;
+      }
+      return `ip:${clientIp}`;
     },
-    errorResponseBuilder: () => ({
-      statusCode: 429,
-      error: "Too Many Requests",
-      message: "Demasiadas peticiones. Reintenta en unos segundos."
-    })
+    // The plugin THROWS whatever this returns, so it must be a real Error:
+    // a plain object reached setErrorHandler without `message` being
+    // exposed and the 429 body read "Internal Server Error" (AUTH-05).
+    errorResponseBuilder: () => {
+      const err = new Error("Demasiadas peticiones. Reintenta en unos segundos.");
+      Object.assign(err, { statusCode: 429 });
+      return err;
+    }
   });
 
   // Sprint 44: the sandbox channel-manager mock receives text/xml bodies from
@@ -906,6 +1060,10 @@ export function buildApiServer() {
   registerAuthContext(app);
 
   app.addHook("preHandler", async (request) => {
+    // P6: Fastify runs app-level hooks for the not-found route too. An
+    // unknown path has no manifest entry, so strict RBAC turned every typo
+    // into a 403; let it reach setNotFoundHandler (404) instead.
+    if (request.is404) return;
     assertRoutePermission({
       method: request.method,
       path: request.routeOptions.url ?? request.url.split("?")[0],
@@ -953,6 +1111,9 @@ export function buildApiServer() {
   // addressed by an ENTITY id (no propertyId anywhere) go through
   // `assertEntityAccess` from the same module with identical semantics.
   app.addHook("preHandler", async (request) => {
+    // Same P6 short-circuit as the permission hook: no property lookup for a
+    // path that is about to 404 anyway.
+    if (request.is404) return;
     if (!request.userContext || isPublicRoute(request.url)) return;
     const propertyId = pickPropertyId(request);
     if (!propertyId) return;
@@ -1041,6 +1202,15 @@ export function buildApiServer() {
       message: `mode=${process.env.SES_HOSPEDAJES_MODE ?? "sandbox"}`
     };
 
+    // P7: whether THIS instance runs the in-process schedulers (RUN_SCHEDULERS,
+    // lib/scheduler-leader). Lets ops verify at runtime that exactly one
+    // replica is the leader. No logger passed → no side effects.
+    const schedulerLeader = isSchedulerLeader();
+    checks.schedulers = {
+      ok: true,
+      message: schedulerLeader ? "leader (RUN_SCHEDULERS)" : "disabled on this instance (RUN_SCHEDULERS=false)"
+    };
+
     const allOk = Object.values(checks).every((check) => check.ok);
     const status: "healthy" | "degraded" = allOk ? "healthy" : "degraded";
 
@@ -1060,6 +1230,7 @@ export function buildApiServer() {
       status,
       timestamp: new Date().toISOString(),
       version: process.env.APP_VERSION ?? "dev",
+      schedulerLeader,
       checks
     };
   });
@@ -1245,7 +1416,7 @@ export function buildApiServer() {
         organization: z.object({
           name: z.string().min(1).max(200),
           legalName: z.string().max(200).optional(),
-          taxId: z.string().max(40).optional(),
+          taxId: z.string().max(40).optional().refine((v) => !v || isValidSpanishTaxId(v), { message: "NIF/CIF no válido" }),
           country: z.string().length(2).optional()
         }),
         property: z.object({
@@ -1418,9 +1589,11 @@ export function buildApiServer() {
   });
 
   // --- Bounded contexts extraídos (P1-9 + P1-16) ---------------------------
-  // Cada plugin agrupa los handlers de un dominio en su propio fichero. Fastify
-  // `register` se ejecuta perezosamente al hacer `app.ready()`/`listen()`, no
-  // hace falta await.
+  // Cada plugin agrupa los handlers de un dominio en su propio fichero. These
+  // plugins only ADD routes, so loading them lazily at app.ready()/listen() is
+  // fine. Do NOT generalise that to infrastructure plugins: anything that
+  // hooks route registration (@fastify/rate-limit via `onRoute`) must be
+  // `await`ed before the first inline route — see AUTH-05 in buildApiServer.
   app.register(webhooksRoutes);
   app.register(assistantRoutes);
   app.register(touristTaxRoutes);
@@ -1878,7 +2051,9 @@ export function buildApiServer() {
   // Same path + permission; keeps its historical audit action.
   app.post("/revenue/properties/:propertyId/history-forecast/export", async (request) => {
     const params = request.params as { propertyId: string };
-    const b = (request.body ?? {}) as { format?: string; from?: string; to?: string; fromDate?: string; toDate?: string };
+    // NEW-REV-C: format is validated (csv | xls | xlsx → xls); "pdf" is a 400
+    // instead of a silently downgraded csv. Missing format keeps csv.
+    const b = parse(HistoryForecastExportBodySchema, request.body ?? {});
     return generateExport({
       context: request.userContext,
       propertyId: params.propertyId,
@@ -1903,7 +2078,7 @@ export function buildApiServer() {
         format: z.enum(["csv", "xls", "pdf"]),
         from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
         to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-        month: z.string().regex(/^\d{4}-\d{2}$/).optional()
+        month: isoMonth.optional()
       }),
       request.body
     );
@@ -2027,7 +2202,11 @@ export function buildApiServer() {
   // Strategy (Fase D): budget, market segments, displacement, meeting pack
   app.get("/revenue/properties/:propertyId/budget", async (request) => listBudgets((request.params as { propertyId: string }).propertyId));
   app.post("/revenue/properties/:propertyId/budget", async (request) => upsertBudget({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/revenue/properties/:propertyId/budget/variance", async (request) => getBudgetVariance({ propertyId: (request.params as { propertyId: string }).propertyId, month: (request.query as { month?: string }).month }));
+  app.get("/revenue/properties/:propertyId/budget/variance", async (request) => {
+    // NEW-REV-A: month=2024-13 is a 400 here, not a 500 in date arithmetic.
+    const q = parse(BudgetVarianceQuerySchema, request.query ?? {}, "query");
+    return getBudgetVariance({ propertyId: (request.params as { propertyId: string }).propertyId, month: q.month });
+  });
   app.get("/revenue/properties/:propertyId/market-segments", async (request) => listMarketSegments((request.params as { propertyId: string }).propertyId));
   app.post("/revenue/properties/:propertyId/market-segments", async (request) => createMarketSegment({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
   app.post("/revenue/properties/:propertyId/market-segments/seed", async (request) => seedMarketSegments({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, correlationId: createId("corr") }));
@@ -2036,7 +2215,12 @@ export function buildApiServer() {
     const b = (request.body ?? {}) as { arrivalDate?: string; departureDate?: string; roomsPerNight?: number; groupRate?: number };
     return analyzeDisplacement({ propertyId: params.propertyId, arrivalDate: String(b.arrivalDate), departureDate: String(b.departureDate), roomsPerNight: Number(b.roomsPerNight), groupRate: Number(b.groupRate) });
   });
-  app.get("/revenue/properties/:propertyId/meeting-pack", async (request) => getMeetingPack((request.params as { propertyId: string }).propertyId));
+  app.get("/revenue/properties/:propertyId/meeting-pack", async (request) => {
+    // REV-03c: the pack's budget/variance block is month-addressable; without
+    // ?month the service keeps its current-month default.
+    const q = parse(MeetingPackQuerySchema, request.query ?? {}, "query");
+    return getMeetingPack((request.params as { propertyId: string }).propertyId, { month: q.month });
+  });
 
   // ---- Email connectors → AI → reservation (HITL) ----
   app.get("/integrations/email/providers", async () => emailProvidersStatus());
@@ -3914,11 +4098,15 @@ export function buildApiServer() {
     };
   });
 
-  app.get("/properties/:propertyId/rooms", async (request) => {
+  app.get("/properties/:propertyId/rooms", async (request, reply) => {
     const params = request.params as { propertyId: string };
-    const query = request.query as { limit?: string };
-    const limit = query?.limit ? Number(query.limit) : undefined;
-    return listRooms(params.propertyId, { limit });
+    // REC-05/QC-04: cursor pagination (number, id). Default 500: inventory is
+    // bounded and the old default of 100 silently dropped 21 of Faranda's 121
+    // rooms for every consumer (check-in/out drawers, timeline, room mapper).
+    const page = parsePageQuery(request.query as Record<string, unknown>, { limit: 500, max: 500 });
+    const result = await listRooms(params.propertyId, { limit: page.limit, cursor: page.cursor });
+    reply.headers(pageHeaders(result));
+    return pageBody(result, page);
   });
 
   app.post("/properties/:propertyId/rooms", async (request) => {
@@ -3939,28 +4127,43 @@ export function buildApiServer() {
     return listRoomTypes(params.propertyId);
   });
 
-  app.get("/properties/:propertyId/reservations", async (request) => {
+  app.get("/properties/:propertyId/reservations", async (request, reply) => {
     const params = request.params as { propertyId: string };
     await assertPropertyInOrg(params.propertyId, request.userContext.organizationId);
-    const query = request.query as { limit?: string };
-    const limit = query?.limit ? Number(query.limit) : undefined;
-    return listReservations(params.propertyId, { limit });
+    // REC-05/QC-04: server-side filters + cursor pagination. Malformed values
+    // → 400 (zod); unknown params are ignored (no client sends any today).
+    const page = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const filters = parse(ReservationListQuerySchema, request.query ?? {}, "query");
+    const result = await listReservations(params.propertyId, {
+      limit: page.limit,
+      cursor: page.cursor,
+      status: filters.status ? splitCsv(filters.status).filter(isReservationStatus) : undefined,
+      from: filters.from,
+      to: filters.to,
+      arrivalFrom: filters.arrivalFrom,
+      arrivalTo: filters.arrivalTo,
+      q: filters.q,
+      sort: filters.sort ?? "arrival_desc"
+    });
+    reply.headers(pageHeaders(result));
+    return pageBody(result, page);
   });
 
   app.post("/properties/:propertyId/availability/quote", async (request) => {
     const params = request.params as { propertyId: string };
-    const body = request.body as {
-      arrivalDate: string;
-      departureDate: string;
-      adults?: number;
-      children?: number;
-    };
+    // A missing/malformed body used to reach the service and 500 on
+    // `undefined >= undefined`; the schema makes it a 400.
+    const body = parse(QuoteAvailabilitySchema, request.body ?? {});
     return quoteAvailability({
       propertyId: params.propertyId,
       arrivalDate: body.arrivalDate,
       departureDate: body.departureDate,
+      // The schema defaults adults=1 / children=0 at runtime; `parse<T>` is
+      // typed on the schema INPUT (fields optional), hence the fallbacks.
       adults: body.adults ?? 1,
-      children: body.children ?? 0
+      children: body.children ?? 0,
+      roomTypeId: body.roomTypeId,
+      ratePlanId: body.ratePlanId
     });
   });
 
@@ -4084,11 +4287,13 @@ export function buildApiServer() {
     // encontrada.' for a foreign reservation vs 'Reserva no encontrada.' for a
     // missing one (existence oracle) and had no platform-admin escape.
     await assertEntityAccess(request, { entity: "reservation", id: params.id });
-    parse(UpdateReservationSchema, request.body);
+    // REC-01: the service receives the VALIDATED allowlist (the raw body used
+    // to pass through untouched, so unknown keys like `status` reached Prisma).
+    const patch = parse(UpdateReservationSchema, request.body);
     return patchReservation({
       context: request.userContext,
       reservationId: params.id,
-      patch: request.body as Parameters<typeof patchReservation>[0]["patch"],
+      patch,
       correlationId: createId("corr")
     });
   });
@@ -4157,6 +4362,8 @@ export function buildApiServer() {
       context: request.userContext,
       reservationId: params.id,
       roomId: body.roomId,
+      allowEarlyCheckIn: body.allowEarlyCheckIn,
+      overrideReason: body.overrideReason,
       signatureObjectKey: body.signatureObjectKey ?? "sig_manual_checkin",
       correlationId: createId("corr")
     });
@@ -4185,12 +4392,47 @@ export function buildApiServer() {
   app.post("/reservations/:id/check-out", async (request) => {
     await assertEntityAccess(request, { entity: "reservation", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
-    parse(CheckOutSchema, request.body ?? {});
-    const reservation = await checkOutReservation({
+    const body = parse(CheckOutSchema, request.body ?? {});
+    const acknowledgeBalance = (body as { acknowledgeBalance?: boolean }).acknowledgeBalance === true;
+    // REC-08 (permissions): the balance pre-check below discloses the folio
+    // balance in the 409 body, so the same permission checkOutReservation
+    // enforces must be satisfied BEFORE any folio read — otherwise a user
+    // without pms.checkout.execute could probe balances through this route.
+    requirePermissions(request.userContext, ["pms.checkout.execute"]);
+    // REC-08: read the folio BEFORE mutating anything. A guest leaving with an
+    // unpaid balance is a money-path decision, not a side effect: 409 with a
+    // machine-readable code unless the caller explicitly acknowledged it
+    // (the front-desk drawer asks for confirmation and retries, or collects).
+    // The balance is the sum over EVERY folio of the reservation (secondary
+    // folios included), and the 409 lists them so the drawer can point at the
+    // one that still owes.
+    // State first: a reservation that is not in house cannot be checked out,
+    // and saying "balance due" about it would mislead the drawer.
+    const current = await getReservation(params.id);
+    if (current.status !== "checked_in") {
+      throw new ConflictError(
+        `La reserva ${current.code} no está alojada (estado ${current.status}); solo se puede hacer check-out de una reserva con check-in hecho.`
+      );
+    }
+    const balanceBefore = await getReservationBalance(params.id);
+    if (balanceBefore.balanceDue > 0 && !acknowledgeBalance) {
+      throw Object.assign(
+        new ConflictError(
+          `Saldo pendiente de ${balanceBefore.balanceDue.toFixed(2)} €: cobra antes del check-out o confírmalo con saldo pendiente.`
+        ),
+        { details: { code: "BALANCE_DUE", balanceDue: balanceBefore.balanceDue, folios: balanceBefore.folios } }
+      );
+    }
+    // Detailed outcome: the aggregated balance, the per-folio decisions and
+    // the non-blocking warnings (e.g. a secondary folio left open with a
+    // balance the caller acknowledged) reach the front-desk drawer verbatim.
+    const outcome = await checkOutReservationDetailed({
       context: request.userContext,
       reservationId: params.id,
+      acknowledgeBalance,
       correlationId: createId("corr")
     });
+    const reservation = outcome.reservation;
     const departureTask = reservation.assignedRoomId
       ? await createDepartureCleaningTask({
           context: request.userContext,
@@ -4208,7 +4450,20 @@ export function buildApiServer() {
         })
       : balance.folio;
 
-    return { reservation, folio, departureTask };
+    return {
+      reservation,
+      folio,
+      departureTask,
+      balanceDue: outcome.balanceDue,
+      balanceAcknowledged: outcome.balanceAcknowledged,
+      // The primary folio is closed by this route AFTER the service built
+      // folios[], so reflect its final status instead of the pre-close one.
+      folios: outcome.folios.map((f) => (f.id === folio.id ? { ...f, status: folio.status } : f)),
+      warnings: [
+        ...(outcome.balanceDue > 0 ? ["balance_due"] : []),
+        ...outcome.warnings
+      ]
+    };
   });
 
   app.post("/reservations/:id/cancel", async (request) => {
@@ -4284,13 +4539,16 @@ export function buildApiServer() {
   });
 
   // ===== Guest profiles (organization-scoped) =====
-  app.get("/guests", async (request) => {
-    const query = (request.query ?? {}) as { search?: string; limit?: string };
-    return listGuests({
-      context: request.userContext,
-      search: query.search,
-      limit: query.limit ? Number(query.limit) : undefined
-    });
+  app.get("/guests", async (request, reply) => {
+    // REC-07: validated (a repeated `search` param is an array → 400, not a
+    // TypeError on `.trim()`).
+    const query = parse(GuestListQuerySchema, request.query ?? {}, "query");
+    // REC-05/QC-04: cursor pagination (createdAt, id); with `search` the
+    // service merges three lookups and returns nextCursor null (documented).
+    const page = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 200 });
+    const result = await listGuests(request.userContext.organizationId, { search: query.search, limit: page.limit, cursor: page.cursor });
+    reply.headers(pageHeaders(result));
+    return pageBody(result, page);
   });
 
   app.get("/guests/:id", async (request) => {
@@ -4380,6 +4638,7 @@ export function buildApiServer() {
       context: request.userContext,
       paymentId: params.id,
       reason: body.reason ?? "Manual refund",
+      amount: body.amount,
       correlationId: createId("corr")
     });
   });
@@ -4394,9 +4653,17 @@ export function buildApiServer() {
     });
   });
 
-  app.get("/properties/:propertyId/invoices", async (request) => {
+  app.get("/properties/:propertyId/invoices", async (request, reply) => {
     const params = request.params as { propertyId: string };
-    return listInvoices(params.propertyId);
+    // QC-03/QC-04: cursor pagination (createdAt, id); every item carries
+    // paidTotal/balanceDue/paymentStatus and the envelope adds `summary`.
+    const page = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    // REC-07: validated (repeated params → 400; from/to as YYYY-MM-DD with
+    // from <= to) instead of `.trim()` on an array → 500.
+    const q = parse(InvoiceListQuerySchema, request.query ?? {}, "query");
+    const result = await listInvoices(params.propertyId, { status: q.status, from: q.from, to: q.to, q: q.q, limit: page.limit, cursor: page.cursor });
+    reply.headers(pageHeaders(result));
+    return pageBody(result, page);
   });
 
   app.get("/properties/:propertyId/invoice-branding", async (request) => {
@@ -5223,18 +5490,31 @@ export function buildApiServer() {
     return listPosTickets((request.params as { propertyId: string }).propertyId);
   });
   app.post("/pos/tickets", async (request) => {
-    const body = request.body as { propertyId?: string; outletId: string; roomNumber?: string };
+    // FISC-05.d: no body → 400 (was a TypeError → 500 reading `outletId`).
+    const body = parse(PosTicketOpenSchema, requireObjectBody(request.body));
     return openPosTicket({ propertyId: body.propertyId ?? request.userContext.propertyId, outletId: body.outletId, roomNumber: body.roomNumber });
   });
   app.post("/pos/tickets/:id/lines", async (request) => {
     await assertEntityAccess(request, { entity: "posTicket", id: (request.params as { id: string }).id });
-    const body = request.body as { name: string; quantity?: number; unitPrice: number };
+    const body = parse(PosLineSchema, requireObjectBody(request.body));
     return addPosLine({ ticketId: (request.params as { id: string }).id, name: body.name, quantity: body.quantity ?? 1, unitPrice: body.unitPrice });
   });
   app.post("/pos/tickets/:id/close", async (request) => {
     await assertEntityAccess(request, { entity: "posTicket", id: (request.params as { id: string }).id });
-    const body = request.body as { settlement: "room" | "cash" | "card" };
+    const body = parse(PosCloseSchema, requireObjectBody(request.body));
     return closePosTicket({ context: request.userContext, ticketId: (request.params as { id: string }).id, settlement: body.settlement, correlationId: createId("corr") });
+  });
+  // FISC-05: cash reconciliation from persisted PosOrder rows (settlement /
+  // closedAt / closedByUserId), grouped by outlet and settlement method.
+  app.get("/properties/:propertyId/pos/cash-summary", async (request) => {
+    const params = request.params as { propertyId: string };
+    const q = parse(PosCashSummaryQuerySchema, request.query ?? {}, "query");
+    // FISC-05.c: `date=YYYY-MM-DD` (property-local business day) or an explicit
+    // from/to window. The window is resolved ONCE, inside the service
+    // (`resolveCashSummaryWindow`, pos-cash-closure.service) against the
+    // property's IANA time zone — date+from/to together, a bad day or
+    // from >= to are its 400s; the handler only forwards the validated keys.
+    return getPosCashSummary({ propertyId: params.propertyId, date: q.date, from: q.from, to: q.to, outletId: q.outletId });
   });
 
   app.get("/properties/:propertyId/capex", async (request) => {
@@ -5839,7 +6119,8 @@ export function buildApiServer() {
       errorMessage,
       automationLevel: "suggest_and_confirm",
       requiredConfirmation: true
-    }).catch(() => undefined);
+      // Best-effort telemetry: never fails the scan, but logged (QC-06).
+    }).catch((err: unknown) => app.log.warn({ err, toolName: "id_document_scan" }, "[ai.telemetry] insert failed"));
 
     if (!docResult.configured) {
       return {
@@ -5931,7 +6212,8 @@ export function buildApiServer() {
       errorMessage,
       automationLevel: "suggest_and_confirm",
       requiredConfirmation: true
-    }).catch(() => undefined);
+      // Best-effort telemetry: never fails the suggestion, but logged (QC-06).
+    }).catch((err: unknown) => app.log.warn({ err, toolName: "navigation_suggest" }, "[ai.telemetry] insert failed"));
 
     if (!suggestion || !suggestion.target) {
       return { configured: true, suggestion: null, message: errorMessage ?? "La IA no encontró un destino claro." };
@@ -7539,7 +7821,7 @@ if (entryFile === argFile) {
   }
   const tips = await hydrateAuditChainFromPostgres();
   console.log(`[audit] hydrated chain tips: audit=${tips.auditTail?.slice(0, 12) ?? "<empty>"} event=${tips.eventTail?.slice(0, 12) ?? "<empty>"}`);
-  const app = buildApiServer();
+  const app = await buildApiServer();
   await app.listen({ port, host });
 
   // HA gate (audit 2026-06 · #13): the five schedulers below must run on EXACTLY
@@ -7590,7 +7872,12 @@ if (entryFile === argFile) {
     const dayMs = 24 * 60 * 60 * 1000;
     const runCapture = () =>
       void capturePaceSnapshotsForAllProperties()
-        .then((r) => app.log.info({ pace: r }, "[pace.scheduler] tick"))
+        .then((r) => {
+          // QC-06: per-property failures are no longer swallowed inside the
+          // loop; the service reports them and the tick escalates to warn.
+          if (r.failed.length > 0) app.log.warn({ pace: r }, "[pace.scheduler] tick with failed properties");
+          else app.log.info({ pace: r }, "[pace.scheduler] tick");
+        })
         // Night-audit writer (H&F contract §5): after the OTB capture, upsert
         // yesterday's top-level RevenueDailySnapshot per property from real
         // reservations (dataSource "night_audit") so the audited history feeds
@@ -7676,7 +7963,12 @@ if (entryFile === argFile) {
     const intervalMs = Number(process.env.MAILBOX_POLL_INTERVAL_MS ?? 5 * 60 * 1000);
     const mailboxTimer = setInterval(() => {
       void pollAllEmailConnections(demoStore.userContext)
-        .then((r) => { if (r.processed > 0) app.log.info({ mailbox: r }, "[mailbox.poll] tick"); })
+        .then((r) => {
+          // QC-06: a mailbox that fails to poll (expired token, provider down)
+          // is reported by id; lastError is already persisted on the connection.
+          if (r.failed.length > 0) app.log.warn({ mailbox: r }, "[mailbox.poll] tick with failed connections");
+          else if (r.processed > 0) app.log.info({ mailbox: r }, "[mailbox.poll] tick");
+        })
         .catch((error) => app.log.error({ err: error }, "[mailbox.poll] failed"));
     }, intervalMs);
     mailboxTimer.unref();

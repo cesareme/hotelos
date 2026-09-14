@@ -178,6 +178,14 @@ node scripts/check-discoverability.mjs
   plan, luego ejecuta.
 - **Antes de declarar algo "hecho"**: verifica con typecheck +
   pre-commit hook + comprobación manual.
+- **Catch honesto (QC-06)**: un `catch` en jobs/schedulers o en el
+  money-path (folio, cobros, facturación, night audit) loguea con
+  correlación (entidad + correlationId) y devuelve contadores
+  (`failed[]`), nunca traga en silencio; solo se tolera un error tipado
+  concreto (p.ej. «ya decidida»), el resto se relanza. Los fallbacks de
+  KPI (`.catch(() => 0 | [] | null)`) pasan por `safe()` de
+  `apps/api/src/lib/degraded.ts` y marcan `degraded[]` en el payload
+  para que la UI muestre «—» en vez de un cero verde.
 
 ## Deuda técnica conocida
 
@@ -216,6 +224,22 @@ node scripts/check-discoverability.mjs
    sin `role_permissions` — sin la unión demo un usuario real recibe 403 en lo
    gateado. Schedulers: en multi-réplica usar `RUN_SCHEDULERS=false` salvo en
    una instancia (evita envíos duplicados a AEAT).
+
+9. **Tanda 2 (auditoría 360, 2026-09-14):** recepción y dinero fiables —
+   contrato de paginación en `apps/api/src/lib/pagination.ts` (array plano;
+   `?cursor`/`?envelope=1` → `{items,nextCursor,total}`; cabeceras
+   `X-Total-Count`/`X-Next-Cursor`), PATCH de reserva `.strict()`, moves y
+   check-in transaccionales, saldo de check-out sobre todos los folios,
+   `markInvoicePaid` idempotente por `pspReference` (lookup hash), NIF emisor
+   único validado (`issuer-identity.service.ts`), arqueo POS
+   (`/pos/cash-summary`), rate limit efectivo (`RATE_LIMIT_MAX`, 600/min por
+   usuario+IP), revenue con `actuals.ts`. Esquema aplicado con `db push` (sin
+   migración → baseline del squash de Tanda 4). Backfills:
+   `backfill:snapshots`, `backfill:payment-hash --apply`,
+   `backfillInvoiceIssuerSnapshots/FolioLinks({dryRun:false})`. Pendiente
+   Tanda 3: IVA sin configurar (`ES_UNKNOWN_0`), NIF del productor en el XML
+   VeriFactu. Detalle: addendum Tanda 2 en
+   `docs/audits/AUDITORIA-360-2026-09-13.md`.
 
 ## Docs prioritarios
 

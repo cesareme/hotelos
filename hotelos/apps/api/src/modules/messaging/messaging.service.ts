@@ -358,7 +358,16 @@ export async function createAiReplyDraft(input: {
     tokensInput,
     tokensOutput,
     errorMessage
-  }).catch(() => undefined);
+    // Best-effort telemetry: a failed insert must never break the guest reply,
+    // but it is logged so a broken AI-telemetry table does not go unnoticed.
+  }).catch((err: unknown) =>
+    console.warn("[ai.telemetry] insert failed", {
+      toolName: "guest_message_reply",
+      conversationId: input.conversationId,
+      correlationId: input.correlationId,
+      error: err instanceof Error ? err.message : String(err)
+    })
+  );
 
   recordAuditEvent({
     organizationId: input.context.organizationId,

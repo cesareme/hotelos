@@ -370,6 +370,26 @@ function apiFormToView(form: PropertySetupForm): PropertySetupFormView {
   };
 }
 
+// Input constraints for free-text fields the API validates strictly. The
+// field catalog (PropertySetupFormField) carries no pattern/hint, so they are
+// keyed here by field key. FISC-03: the issuer NIF/CIF/NIE feeds VeriFactu
+// hash/QR, so it is normalized (uppercase, no spaces/dashes) and checked
+// against the Spanish tax-id shape client-side; the checksum is validated
+// server-side (isValidSpanishTaxId) and answers 400 with the reason.
+const SPANISH_TAX_ID_PATTERN = "^(?:[0-9]{8}[A-Za-z]|[XYZxyz][0-9]{7}[A-Za-z]|[A-HJNPQRSUVWa-hjnpqrsuvw][0-9]{7}[0-9A-Ja-j])$";
+
+const TEXT_FIELD_CONSTRAINTS: Record<
+  string,
+  { pattern?: string; hint?: string; placeholder?: string; normalize?: (value: string) => string }
+> = {
+  taxId: {
+    pattern: SPANISH_TAX_ID_PATTERN,
+    hint: "NIF/CIF/NIE español: 8 dígitos + letra (12345678Z), letra + 7 dígitos + control (B12345678) o NIE (X1234567L). El dígito de control se valida al guardar; sin NIF válido no se puede emitir factura en modo fiscal.",
+    placeholder: "B12345678",
+    normalize: (value) => value.toUpperCase().replace(/[\s-]/g, "")
+  }
+};
+
 function fieldControl(
   field: PropertySetupFormField,
   value: unknown,
@@ -413,13 +433,19 @@ function fieldControl(
   if (field.inputType === "textarea" || field.inputType === "json") {
     return <FormTextarea key={field.key} label={field.label} value={typeof value === "string" ? value : ""} onChange={(nextValue) => setValue(field.key, nextValue)} />;
   }
+  const constraints = TEXT_FIELD_CONSTRAINTS[field.key];
   return (
-    <FormField key={field.key} label={field.label} required={field.required}>
+    <FormField key={field.key} label={field.label} required={field.required} hint={constraints?.hint}>
       <input
         aria-label={field.label}
         value={typeof value === "string" || typeof value === "number" ? String(value) : ""}
-        onChange={(event) => setValue(field.key, event.currentTarget.value)}
-        placeholder={field.label}
+        onChange={(event) => {
+          const raw = event.currentTarget.value;
+          setValue(field.key, constraints?.normalize ? constraints.normalize(raw) : raw);
+        }}
+        placeholder={constraints?.placeholder ?? field.label}
+        pattern={constraints?.pattern}
+        title={constraints?.hint}
       />
     </FormField>
   );

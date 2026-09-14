@@ -15,6 +15,7 @@
 //   - Reputación (reviews recientes si existen)
 
 import { prisma } from "@hotelos/database";
+import { createDegradedCollector } from "../../lib/degraded.js";
 
 export type GmKpiCompare = {
   value: number;
@@ -97,6 +98,10 @@ export type GmDashboard = {
     reviewsLast30: number;
     npsLast30?: number;
   };
+
+  // QC-06: labels of the counters that fell back to 0/null/[] because their
+  // query failed. Empty means every KPI above is real.
+  degraded: string[];
 };
 
 // Pace endpoint: one row per stay date with on-the-books, expected
@@ -116,6 +121,8 @@ export type GmPaceResponse = {
   to: string;
   days: number;
   rows: GmPaceRow[];
+  // QC-06: datasets that fell back to [] because their query failed.
+  degraded: string[];
 };
 
 // Status values considered "still open" for fiscal queues (matches
@@ -187,6 +194,7 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
   const lastWeek = new Date(today.getTime() - 7 * 86400000);
   const monthStart = startOfMonthUtc(now);
   const yearStart = new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+  const { safe, degraded } = createDegradedCollector("dashboards.general-manager", { propertyId });
 
   const [property, totalRoomsCount] = await Promise.all([
     prisma.property.findUnique({ where: { id: propertyId }, select: { name: true } }),
@@ -306,8 +314,8 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
 
   // --- Alerts
   const [emergencyIncidents, openIncidents, blockedRooms, openFolios, capturedTodayAgg, refundedTodayAgg] = await Promise.all([
-    prisma.workOrder.count({ where: { propertyId, status: { in: ["open", "in_progress"] }, priority: "emergency" } }).catch(() => 0),
-    prisma.workOrder.count({ where: { propertyId, status: { in: ["open", "in_progress"] } } }).catch(() => 0),
+    safe("alerts.emergencyIncidents", prisma.workOrder.count({ where: { propertyId, status: { in: ["open", "in_progress"] }, priority: "emergency" } }), 0),
+    safe("alerts.openIncidents", prisma.workOrder.count({ where: { propertyId, status: { in: ["open", "in_progress"] } } }), 0),
     prisma.room.count({ where: { propertyId, sellable: false, active: true } }),
     prisma.folio.findMany({
       where: { reservation: { propertyId }, status: "open" },
@@ -402,14 +410,14 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
   // We pick the larger of the two to avoid double-counting while still
   // surfacing a signal when one of them is empty.
   const [commissionAggToday, profitabilityToday] = await Promise.all([
-    prisma.commissionAccrual.aggregate({
+    safe("channelCost.commissionAccrualToday", prisma.commissionAccrual.aggregate({
       where: { propertyId, accruedAt: { gte: today, lt: tomorrow } },
       _sum: { commissionAmount: true }
-    }).catch(() => ({ _sum: { commissionAmount: null as number | null } })),
-    prisma.channelProfitabilitySnapshot.findMany({
+    }), { _sum: { commissionAmount: null } }),
+    safe("channelCost.profitabilitySnapshotToday", prisma.channelProfitabilitySnapshot.findMany({
       where: { propertyId, date: { gte: today, lt: tomorrow } },
       select: { commissionCost: true, paymentCost: true }
-    }).catch(() => [] as Array<{ commissionCost: unknown; paymentCost: unknown }>)
+    }), [] as Array<{ commissionCost: unknown; paymentCost: unknown }>)
   ]);
   const accruedCommissionToday = Number(commissionAggToday._sum.commissionAmount ?? 0);
   const profitabilityChannelCostToday = profitabilityToday.reduce(
@@ -544,23 +552,23 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
     tbaiPending,
     tbaiErrors
   ] = await Promise.all([
-    prisma.verifactuSubmission.count({
+    safe("compliance.verifactuPending", prisma.verifactuSubmission.count({
       where: { propertyId, status: { in: FISCAL_PENDING_STATUSES } }
-    }).catch(() => 0),
-    prisma.verifactuSubmission.findFirst({
+    }), 0),
+    safe("compliance.verifactuLastAck", prisma.verifactuSubmission.findFirst({
       where: { propertyId, acknowledgedAt: { not: null } },
       orderBy: { acknowledgedAt: "desc" },
       select: { acknowledgedAt: true }
-    }).catch(() => null),
-    prisma.sesHospedajesSubmission.count({
+    }), null),
+    safe("compliance.sesPending", prisma.sesHospedajesSubmission.count({
       where: { propertyId, status: { in: SES_PENDING_STATUSES as unknown as Array<"queued"> } }
-    }).catch(() => 0),
-    prisma.tbaiSubmission.count({
+    }), 0),
+    safe("compliance.tbaiPending", prisma.tbaiSubmission.count({
       where: { propertyId, status: { in: FISCAL_PENDING_STATUSES } }
-    }).catch(() => 0),
-    prisma.tbaiSubmission.count({
+    }), 0),
+    safe("compliance.tbaiErrors", prisma.tbaiSubmission.count({
       where: { propertyId, status: { in: ["failed", "rejected"] } }
-    }).catch(() => 0)
+    }), 0)
   ]);
   const complianceSummary: GmDashboard["complianceSummary"] = {
     verifactu: {
@@ -584,7 +592,7 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
     today.getUTCDate()
   ));
   const lyEnd = new Date(lastYearSameDay.getTime() + 86400000);
-  const lySnapshot = await prisma.revenueDailySnapshot.findFirst({
+  const lySnapshot = await safe("anomalies.lastYearSnapshot", prisma.revenueDailySnapshot.findFirst({
     where: {
       propertyId,
       snapshotDate: { gte: lastYearSameDay, lt: lyEnd },
@@ -595,7 +603,7 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
       market: null
     },
     select: { adr: true, occupancyPercent: true }
-  }).catch(() => null);
+  }), null);
   if (lySnapshot) {
     const lyAdr = Number(lySnapshot.adr ?? 0);
     if (lyAdr > 0) {
@@ -756,7 +764,8 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
       openBalanceEur: Math.round(foliosOpenBalanceEur * 100) / 100
     },
 
-    reputation
+    reputation,
+    degraded
   };
 }
 
@@ -776,6 +785,7 @@ export async function buildGmDashboard(input: { propertyId: string; asOf?: Date 
 // If a source is missing we return 0 — no fabrication.
 export async function buildGmPace(input: { propertyId: string; days?: number; asOf?: Date }): Promise<GmPaceResponse> {
   const propertyId = input.propertyId;
+  const { safe, degraded } = createDegradedCollector("dashboards.general-manager.pace", { propertyId });
   const now = input.asOf ?? new Date();
   const start = startOfDayUtc(now);
   const days = Math.max(1, Math.min(180, Math.floor(input.days ?? 30)));
@@ -819,7 +829,7 @@ export async function buildGmPace(input: { propertyId: string; days?: number; as
   }
 
   const [forecastRows, lyRows] = await Promise.all([
-    prisma.revenueForecastSnapshot.findMany({
+    safe("pace.forecastSnapshots", prisma.revenueForecastSnapshot.findMany({
       where: {
         propertyId,
         forecastDate: { gte: start, lt: end },
@@ -831,8 +841,8 @@ export async function buildGmPace(input: { propertyId: string; days?: number; as
       },
       select: { forecastDate: true, expectedTotalRevenue: true, expectedRoomRevenue: true, modelVersion: true, createdAt: true },
       orderBy: { createdAt: "desc" }
-    }).catch(() => [] as Array<{ forecastDate: Date; expectedTotalRevenue: unknown; expectedRoomRevenue: unknown; modelVersion: string | null; createdAt: Date }>),
-    prisma.revenueDailySnapshot.findMany({
+    }), [] as Array<{ forecastDate: Date; expectedTotalRevenue: unknown; expectedRoomRevenue: unknown; modelVersion: string | null; createdAt: Date }>),
+    safe("pace.lastYearSnapshots", prisma.revenueDailySnapshot.findMany({
       where: {
         propertyId,
         snapshotDate: { gte: lyStart, lt: lyEnd },
@@ -843,7 +853,7 @@ export async function buildGmPace(input: { propertyId: string; days?: number; as
         market: null
       },
       select: { snapshotDate: true, totalRevenue: true, roomRevenue: true }
-    }).catch(() => [] as Array<{ snapshotDate: Date; totalRevenue: unknown; roomRevenue: unknown }>)
+    }), [] as Array<{ snapshotDate: Date; totalRevenue: unknown; roomRevenue: unknown }>)
   ]);
 
   // Forecast: pick latest per forecastDate.
@@ -886,6 +896,7 @@ export async function buildGmPace(input: { propertyId: string; days?: number; as
     from: start.toISOString().slice(0, 10),
     to: new Date(end.getTime() - 86400000).toISOString().slice(0, 10),
     days,
-    rows
+    rows,
+    degraded
   };
 }

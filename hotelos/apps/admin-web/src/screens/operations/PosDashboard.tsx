@@ -1,14 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import {
   addPosLine,
   closePosTicket,
+  fetchPosCashSummary,
   fetchPosOutlets,
   openPosTicket,
+  type PosCashSummary,
   type PosOutlet,
   type PosTicket
 } from "../../services/posApi";
+import { todayIsoLocal } from "../../services/pmsCommerceApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { SidePanel, DetailRow } from "../../components/SidePanel";
 import { toArray } from "../../utils/toArray";
@@ -23,6 +26,14 @@ function fmtTime(iso?: string): string {
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
 }
+/** True when the ISO timestamp falls on the given local calendar day. */
+function isOnLocalDay(iso: string | undefined, dayIso: string): boolean {
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  const local = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return local === dayIso;
+}
 const SETTLE_LABEL: Record<string, string> = { room: "a la habitación", cash: "efectivo", card: "tarjeta" };
 
 export function PosDashboard() {
@@ -33,8 +44,18 @@ export function PosDashboard() {
   const tickets = useMemo(() => toArray<PosTicket>(data), [data]);
 
   const [outlets, setOutlets] = useState<PosOutlet[]>([]);
+  const [outletsError, setOutletsError] = useState<string | null>(null);
   useEffect(() => {
-    void fetchPosOutlets(PROPERTY_ID).then(setOutlets).catch(() => setOutlets([]));
+    void fetchPosOutlets(PROPERTY_ID)
+      .then((list) => {
+        setOutlets(list);
+        setOutletsError(null);
+      })
+      .catch((e: unknown) => {
+        // QC-06: without outlets no ticket can be opened; say why.
+        setOutlets([]);
+        setOutletsError(e instanceof Error ? e.message : "No se pudieron cargar los puntos de venta.");
+      });
   }, []);
 
   const [busy, setBusy] = useState(false);
@@ -50,8 +71,47 @@ export function PosDashboard() {
     if (!outletId && outlets[0]) setOutletId(outlets[0].id);
   }, [outlets, outletId]);
 
+  // ---- cash summary (arqueo) ------------------------------------------------
+  // FISC-05: settlement / closedAt are persisted on PosOrder, so the summary is
+  // computed server-side (GET /pos/cash-summary) over closed tickets in the
+  // selected window, never from the in-memory board.
+  const today = todayIsoLocal();
+  const [csFrom, setCsFrom] = useState(today);
+  const [csTo, setCsTo] = useState(today);
+  const [csOutletId, setCsOutletId] = useState("");
+  const [cashSummary, setCashSummary] = useState<PosCashSummary | null>(null);
+  const [cashLoading, setCashLoading] = useState(false);
+  const [cashError, setCashError] = useState<string | null>(null);
+  // Outlet ids the cash-summary endpoint understands come from its own
+  // unfiltered answer (board outlet ids are synthetic); cached so the selector
+  // keeps its options while a single outlet is selected.
+  const [cashOutlets, setCashOutlets] = useState<Array<{ id: string; name: string }>>([]);
+
+  const loadCashSummary = useCallback(async () => {
+    if (!csFrom || !csTo) return;
+    setCashLoading(true);
+    setCashError(null);
+    try {
+      const summary = await fetchPosCashSummary({ from: csFrom, to: csTo, outletId: csOutletId || undefined }, PROPERTY_ID);
+      setCashSummary(summary);
+      if (!csOutletId) setCashOutlets(summary.byOutlet.map((o) => ({ id: o.outletId, name: o.outletName })));
+    } catch (e: unknown) {
+      setCashSummary(null);
+      setCashError(e instanceof Error ? e.message : "No se pudo calcular el arqueo.");
+    } finally {
+      setCashLoading(false);
+    }
+  }, [csFrom, csTo, csOutletId]);
+
+  useEffect(() => {
+    void loadCashSummary();
+  }, [loadCashSummary]);
+
+  const cashOutletOptions = cashOutlets.length > 0 ? cashOutlets : outlets.map((o) => ({ id: o.id, name: o.name }));
+
   const open = tickets.filter((t) => t.status === "open");
   const closed = tickets.filter((t) => t.status === "closed");
+  const closedToday = closed.filter((t) => isOnLocalDay(t.closedAt, today));
   const openTotal = open.reduce((s, t) => s + t.total, 0);
 
   async function run(fn: () => Promise<unknown>, ok: string) {
@@ -61,6 +121,7 @@ export function PosDashboard() {
       await fn();
       setMsg(ok);
       refresh();
+      void loadCashSummary();
     } catch (e) {
       setMsg(e instanceof Error ? e.message : "No se pudo completar la acción.");
     } finally {
@@ -96,12 +157,79 @@ export function PosDashboard() {
       <div className="rev-kpi-grid">
         <article className={`rev-kpi rev-kpi-${open.length > 0 ? "warn" : "ok"}`}><div className="rev-kpi-head"><span className="rev-kpi-label">Comandas abiertas</span><span className={`bo-status ${open.length > 0 ? "warn" : "ok"}`}>{open.length > 0 ? "en curso" : "ninguna"}</span></div><div className="rev-kpi-value">{open.length}</div></article>
         <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Total abierto</span><span className="bo-status info">por cobrar</span></div><div className="rev-kpi-value" style={{ fontSize: 22 }}>{eur(openTotal)}</div></article>
-        <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Comandas cerradas</span><span className="bo-status ok">hoy</span></div><div className="rev-kpi-value">{closed.length}</div></article>
+        {/* Counted by real closedAt (persisted), not "every closed ticket in memory". */}
+        <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Comandas cerradas</span><span className="bo-status ok">hoy</span></div><div className="rev-kpi-value">{closedToday.length}</div></article>
       </div>
+
+      {/* Arqueo */}
+      <article className="bo-card" style={{ background: "var(--surface)" }}>
+        <div className="bo-card-head">
+          <div>
+            <h3 style={{ color: "var(--ink)" }}>Arqueo de caja</h3>
+            <p className="bo-muted" style={{ marginTop: 2, textTransform: "none", fontSize: 13 }}>
+              Comandas cerradas en el rango, por punto de venta y medio de cobro (datos persistidos en BD).
+            </p>
+          </div>
+          <button type="button" onClick={() => void loadCashSummary()} disabled={cashLoading}>↻</button>
+        </div>
+        <div className="bo-row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center", marginBottom: 12 }}>
+          <label style={{ display: "grid", gap: 2 }}>
+            <span className="bo-muted" style={{ textTransform: "none", fontSize: 12 }}>Desde</span>
+            <input type="date" value={csFrom} max={csTo || undefined} onChange={(e) => setCsFrom(e.target.value)} />
+          </label>
+          <label style={{ display: "grid", gap: 2 }}>
+            <span className="bo-muted" style={{ textTransform: "none", fontSize: 12 }}>Hasta</span>
+            <input type="date" value={csTo} min={csFrom || undefined} onChange={(e) => setCsTo(e.target.value)} />
+          </label>
+          <label style={{ display: "grid", gap: 2 }}>
+            <span className="bo-muted" style={{ textTransform: "none", fontSize: 12 }}>Punto de venta</span>
+            <select value={csOutletId} onChange={(e) => setCsOutletId(e.target.value)}>
+              <option value="">Todos</option>
+              {cashOutletOptions.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
+            </select>
+          </label>
+          <button type="button" className="ghost" onClick={() => { setCsFrom(today); setCsTo(today); }} style={{ alignSelf: "end" }}>Hoy</button>
+        </div>
+        {cashLoading && !cashSummary ? (
+          <LoadingBlock label="Calculando arqueo…" />
+        ) : cashError ? (
+          <ErrorState title="No se pudo calcular el arqueo" message={cashError} onRetry={() => void loadCashSummary()} />
+        ) : cashSummary ? (
+          <>
+            <div className="rev-kpi-grid">
+              <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Efectivo</span></div><div className="rev-kpi-value" style={{ fontSize: 22 }}>{eur(cashSummary.totals.bySettlement.cash)}</div></article>
+              <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Tarjeta</span></div><div className="rev-kpi-value" style={{ fontSize: 22 }}>{eur(cashSummary.totals.bySettlement.card)}</div></article>
+              <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">A habitación</span></div><div className="rev-kpi-value" style={{ fontSize: 22 }}>{eur(cashSummary.totals.bySettlement.room)}</div></article>
+              <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Total</span><span className="bo-chip">{cashSummary.totals.tickets} comandas</span></div><div className="rev-kpi-value" style={{ fontSize: 22 }}>{eur(cashSummary.totals.total)}</div></article>
+            </div>
+            {cashSummary.byOutlet.length === 0 ? (
+              <p className="bo-muted" style={{ marginTop: 8, textTransform: "none" }}>Sin comandas cerradas en el rango seleccionado.</p>
+            ) : (
+              <table className="cm-table" style={{ marginTop: 12 }}>
+                <thead><tr><th>Punto de venta</th><th>Comandas</th><th>Efectivo</th><th>Tarjeta</th><th>A habitación</th><th>Total</th></tr></thead>
+                <tbody>
+                  {cashSummary.byOutlet.map((o) => (
+                    <tr key={o.outletId}>
+                      <td>{o.outletName}</td>
+                      <td>{o.tickets}</td>
+                      <td>{eur(o.bySettlement.cash)}</td>
+                      <td>{eur(o.bySettlement.card)}</td>
+                      <td>{eur(o.bySettlement.room)}</td>
+                      <td><strong>{eur(o.total)}</strong></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {cashLoading ? <p className="bo-muted" style={{ marginTop: 6, textTransform: "none", fontSize: 12 }}><Spinner size="sm" /> Actualizando…</p> : null}
+          </>
+        ) : null}
+      </article>
 
       {/* Nueva comanda */}
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head"><h3 style={{ color: "var(--ink)" }}>Abrir comanda</h3></div>
+        {outletsError ? <p className="bo-status error" style={{ textTransform: "none" }}>{outletsError}</p> : null}
         <div className="bo-row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <select value={outletId} onChange={(e) => setOutletId(e.target.value)} disabled={busy}>
             {outlets.map((o) => <option key={o.id} value={o.id}>{o.name}</option>)}
@@ -168,15 +296,15 @@ export function PosDashboard() {
             <article className="bo-card" style={{ background: "var(--surface)" }}>
               <div className="bo-card-head"><h3 style={{ color: "var(--ink)" }}>Comandas cerradas</h3><span className="bo-chip">{closed.length}</span></div>
               <table className="cm-table">
-                <thead><tr><th>Punto de venta</th><th>Habitación</th><th>Total</th><th>Cobro</th><th>Hora</th></tr></thead>
+                <thead><tr><th>Punto de venta</th><th>Habitación</th><th>Total</th><th>Cobro</th><th>Cierre</th></tr></thead>
                 <tbody>
                   {closed.slice(0, 15).map((t) => (
                     <tr key={t.id} style={{ cursor: "pointer" }} onClick={() => setSelectedId(t.id)} title="Ver ficha de la comanda">
                       <td>{t.outletName}</td>
                       <td>{t.roomNumber ? `Hab. ${t.roomNumber}` : "—"}</td>
                       <td>{eur(t.total)}</td>
-                      <td><span className="bo-status ok">{SETTLE_LABEL[t.settlement ?? ""] ?? t.settlement}</span></td>
-                      <td>{fmtTime(t.closedAt)}</td>
+                      <td>{t.settlement ? <span className="bo-status ok">{SETTLE_LABEL[t.settlement] ?? t.settlement}</span> : <span className="bo-muted">sin registrar</span>}</td>
+                      <td>{t.closedAt ? `${isOnLocalDay(t.closedAt, today) ? "hoy" : new Date(t.closedAt).toLocaleDateString("es-ES")} ${fmtTime(t.closedAt)}` : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -198,7 +326,7 @@ export function PosDashboard() {
             <DetailRow label="Punto de venta">{selected.outletName}</DetailRow>
             <DetailRow label="Habitación">{selected.roomNumber ? `Hab. ${selected.roomNumber}` : "—"}</DetailRow>
             <DetailRow label="Abierta">{fmtTime(selected.createdAt)}</DetailRow>
-            {selected.closedAt ? <DetailRow label="Cerrada">{fmtTime(selected.closedAt)}</DetailRow> : null}
+            {selected.closedAt ? <DetailRow label="Cerrada">{new Date(selected.closedAt).toLocaleDateString("es-ES")} {fmtTime(selected.closedAt)}</DetailRow> : null}
             {selected.settlement ? <DetailRow label="Cobro">{SETTLE_LABEL[selected.settlement] ?? selected.settlement}</DetailRow> : null}
             <div style={{ marginTop: 8 }}>
               <p className="bo-muted" style={{ fontSize: 12, textTransform: "none", marginBottom: 4 }}>Consumos</p>

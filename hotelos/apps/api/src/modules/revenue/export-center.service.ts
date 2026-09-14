@@ -23,6 +23,7 @@ import { getHistoryForecastBoard, type BoardRow, type HistoryForecastBoard } fro
 import { getForecastBySegment } from "./forecast.service.js";
 import { getMeetingPack } from "./strategy.service.js";
 import { getPeriodMetrics } from "./comparison.service.js";
+import { parseMonth } from "./actuals.js";
 
 const MS_DAY = 86_400_000;
 const CLOSED_STAY_STATUSES = ["confirmed", "checked_in", "checked_out"] as const;
@@ -78,6 +79,12 @@ function madridStamp(date = new Date()): string {
   }).formatToParts(date);
   const get = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "";
   return `${get("day")}/${get("month")}/${get("year")} ${get("hour")}:${get("minute")}`;
+}
+
+/** "septiembre de 2026" for a YYYY-MM key (es-ES; UTC so the day never shifts). */
+function monthLabelEs(month: string): string {
+  const { from } = parseMonth(month);
+  return new Intl.DateTimeFormat("es-ES", { month: "long", year: "numeric", timeZone: "UTC" }).format(from);
 }
 
 function slugify(name: string): string {
@@ -299,10 +306,12 @@ const EXPORT_DEFS: ExportDef[] = [
     code: "meeting_pack",
     name: "Meeting pack de revenue",
     description:
-      "Dossier de la reunión semanal: pace y pickup, precisión del forecast, presupuesto, fechas críticas y recomendaciones.",
+      "Dossier de la reunión semanal: pace y pickup, precisión del forecast, presupuesto del mes indicado (por defecto, el mes en curso), fechas críticas y recomendaciones.",
     ritual: "semanal",
     formats: ["pdf"],
-    params: "none",
+    // Month is optional server-side (defaults to the current month); the card
+    // shows the month picker so the pack can be generated for another month.
+    params: "month",
     recommendedSchedule: "Miércoles (reunión semanal)"
   },
   {
@@ -594,7 +603,7 @@ async function buildPaceSegmentoXls(propertyId: string, hotelName: string, from:
       bySeg.set(row.segment, agg);
     }
     agg.rooms += row.expectedRoomsSold;
-    agg.revenue += row.expectedRoomRevenue;
+    agg.revenue += row.expectedRoomRevenue ?? 0;
   }
   const segments = [...bySeg.values()].sort((a, b) => b.revenue - a.revenue);
   const resumenRows: SheetCell[][] = [
@@ -636,8 +645,8 @@ async function buildPaceSegmentoXls(propertyId: string, hotelName: string, from:
 }
 
 // ---- meeting_pack ----------------------------------------------------------------------
-async function buildMeetingPackHtml(propertyId: string, board: HistoryForecastBoard): Promise<string> {
-  const pack = await getMeetingPack(propertyId);
+async function buildMeetingPackHtml(propertyId: string, board: HistoryForecastBoard, month: string): Promise<string> {
+  const pack = await getMeetingPack(propertyId, { month });
   const stamp = madridStamp();
   const statusLabel: Record<string, string> = { ok: "OK", warn: "Atención", risk: "Riesgo", no_budget: "Sin presupuesto" };
 
@@ -671,7 +680,7 @@ async function buildMeetingPackHtml(propertyId: string, board: HistoryForecastBo
   const budgetTable = `<table><thead><tr><th>Mes ${xmlEscape(bv.month)}</th><th class="num">Hab.</th><th class="num">Ingreso hab.</th><th class="num">ADR</th><th class="num">Ocupación</th></tr></thead>
     <tbody>
       <tr><td>Presupuesto</td><td class="num">${bv.budget ? fmtInt(bv.budget.roomsSold) : "—"}</td><td class="num">${bv.budget ? fmtEur(bv.budget.roomRevenue) : "—"}</td><td class="num">${bv.budget ? fmtEur(bv.budget.adr) : "—"}</td><td class="num">${bv.budget ? fmtPct(bv.budget.occupancyPct) : "—"}</td></tr>
-      <tr><td>Proyección (real + forecast)</td><td class="num">${fmtInt(bv.forecast.roomsSold)}</td><td class="num">${fmtEur(bv.forecast.roomRevenue)}</td><td class="num">${fmtEur(bv.forecast.adr)}</td><td class="num">${fmtPct(bv.forecast.occupancyPct)}</td></tr>
+      <tr><td>Proyección (real + forecast)</td><td class="num">${bv.forecast ? fmtInt(bv.forecast.roomsSold) : "—"}</td><td class="num">${bv.forecast ? fmtEur(bv.forecast.roomRevenue) : "—"}</td><td class="num">${bv.forecast ? fmtEur(bv.forecast.adr) : "—"}</td><td class="num">${bv.forecast ? fmtPct(bv.forecast.occupancyPct) : "—"}</td></tr>
       <tr><td>Real hasta hoy</td><td class="num">${fmtInt(bv.actual.roomsSold)}</td><td class="num">${fmtEur(bv.actual.roomRevenue)}</td><td class="num">${fmtEur(bv.actual.adr)}</td><td class="num">${fmtPct(bv.actual.occupancyPct)}</td></tr>
     </tbody></table>`;
 
@@ -726,7 +735,13 @@ async function buildMeetingPackHtml(propertyId: string, board: HistoryForecastBo
     recsTable,
     compsetLine
   ].join("\n");
-  return printableHtml({ title: "Meeting pack de revenue", hotel: board.propertyName, stamp, body });
+  return printableHtml({
+    title: `Meeting pack de revenue — ${monthLabelEs(pack.month)}`,
+    hotel: board.propertyName,
+    stamp,
+    range: `mes ${pack.month} (presupuesto y proyección)`,
+    body
+  });
 }
 
 // ---- cierre_mensual ------------------------------------------------------------------------
@@ -755,8 +770,8 @@ type CierreData = {
 };
 
 async function loadCierreMensual(propertyId: string, hotelName: string, month: string): Promise<CierreData> {
-  const monthStart = dayUtc(`${month}-01`);
-  const monthEnd = endOfMonthUtc(monthStart);
+  // parseMonth → 400 on '2024-13'; dayUtc(`${month}-01`) used to yield an Invalid Date (500).
+  const { from: monthStart, to: monthEnd } = parseMonth(month);
   const yesterday = addDays(dayUtc(), -1);
   const dailyEnd = monthEnd.getTime() < yesterday.getTime() ? monthEnd : yesterday;
   const lyStart = addMonthsUtc(monthStart, -12);
@@ -1000,9 +1015,8 @@ export async function generateExport(input: {
   if (!def.formats.includes(format)) {
     throw new BadRequestError(`Formato '${input.format}' no disponible para ${def.code} (usa: ${def.formats.join(", ")}).`);
   }
-  if (input.month !== undefined && !/^\d{4}-\d{2}$/.test(input.month)) {
-    throw new BadRequestError("month debe tener formato YYYY-MM.");
-  }
+  // Strict calendar month (400 on '2024-13' / '2024-00'), never an Invalid Date downstream.
+  if (input.month !== undefined) parseMonth(input.month);
   if (input.from !== undefined && !/^\d{4}-\d{2}-\d{2}/.test(input.from)) {
     throw new BadRequestError("from debe tener formato YYYY-MM-DD.");
   }
@@ -1047,8 +1061,10 @@ export async function generateExport(input: {
       break;
     }
     case "meeting_pack": {
+      // Optional month → the pack's budget/variance block (default: current month).
+      const month = input.month ?? isoDate(today).slice(0, 7);
       const board = await getHistoryForecastBoard(input.propertyId, {});
-      content = await buildMeetingPackHtml(input.propertyId, board);
+      content = await buildMeetingPackHtml(input.propertyId, board, month);
       break;
     }
     case "cierre_mensual": {

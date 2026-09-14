@@ -49,7 +49,7 @@ import { prisma } from "@hotelos/database";
 import { BadRequestError, NotFoundError } from "./http-error.js";
 import { demoStore, type UserContext } from "./demo-store.js";
 import { isPlatformAdmin } from "../modules/auth/auth.service.js";
-import { listPosTickets } from "../modules/pos/pos.service.js";
+import { findSyntheticPosTicket } from "../modules/pos/pos.service.js";
 import {
   getOnboardingProject,
   listMappingSuggestions,
@@ -710,14 +710,17 @@ const RESOLVERS = {
       return row ? { propertyId: row.propertyId, inMemory: true } : null;
     }
   } satisfies Resolver,
-  // POS tickets are module-private and keyed by property; the only lookup the
-  // service exposes is per property, so a ticket is resolved against the
-  // caller's ACTIVE property (tickets are opened with that same property).
+  // POS tickets are Prisma-first (Tanda 2 · FISC-05): a ticket IS a PosOrder
+  // row, so its owner is pos_orders.property_id with the normal re-pointing
+  // semantics. The in-memory fallback only covers the synthetic demo tickets of
+  // prop_123 / prop_456 that have not been materialised yet (strict check).
   posTicket: {
     notFound: "Ticket no encontrado.",
-    resolve: async (id, request) => {
-      const row = listPosTickets(request.userContext.propertyId).find((candidate) => candidate.id === id);
-      return row ? { propertyId: row.propertyId, inMemory: true } : null;
+    resolve: async (id) => {
+      const row = await prisma.posOrder.findUnique({ where: { id }, select: selectProperty });
+      if (row) return { propertyId: row.propertyId };
+      const mirror = findSyntheticPosTicket(id);
+      return mirror ? { propertyId: mirror.propertyId, inMemory: true } : null;
     }
   } satisfies Resolver,
   // Onboarding sub-entities only exist in the in-memory service and are only

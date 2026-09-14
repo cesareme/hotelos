@@ -1184,6 +1184,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/menu-items/:id", permissions: ["inventory.read"], riskLevel: "low" },
   { method: "GET", path: "/properties/:propertyId/pos/outlets", permissions: ["folio.charge.post"], riskLevel: "low" },
   { method: "GET", path: "/properties/:propertyId/pos/tickets", permissions: ["folio.charge.post"], riskLevel: "low" },
+  // FISC-05 · cash reconciliation (read) shares the POS read key.
+  { method: "GET", path: "/properties/:propertyId/pos/cash-summary", permissions: ["folio.charge.post"], riskLevel: "low" },
   // Accounting & fiscal reports (modelo-303/390 also enforce analytics.read in
   // their service; the entry makes the edge gate explicit and uniform).
   { method: "GET", path: "/accounting/journal-entries/recent", permissions: ["accounting.journal.post"], riskLevel: "medium" },

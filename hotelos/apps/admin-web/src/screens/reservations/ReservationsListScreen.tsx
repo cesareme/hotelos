@@ -1,10 +1,15 @@
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import {
   fetchReservations,
   fetchRoomTypes,
+  matchesReservationTab,
+  reservationTabQuery,
+  todayIsoLocal,
   type AdminReservation,
-  type AdminRoomType
+  type AdminRoomType,
+  type ReservationListQuery,
+  type ReservationOperationalTab
 } from "../../services/pmsCommerceApi";
 import { PageHeader } from "../../components/v2/PageHeader";
 import { SearchInput } from "../../components/v2/SearchInput";
@@ -27,15 +32,17 @@ import { RESERVATIONS_INSTRUCTIONS } from "../../content/screen-instructions/res
 
 const PROPERTY_ID = getActivePropertyId();
 
-// Operational tabs aligned with the daily front-desk rhythm. Counts are derived
-// from the loaded list so the badges stay accurate without an extra request.
-type StatusTab =
-  | "all"
-  | "today_arrivals"
-  | "in_house"
-  | "today_departures"
-  | "future"
-  | "cancelled";
+// Rows fetched per page. The API clamps at 500; 100 keeps the first paint
+// light and "Cargar más" walks the cursor for the rest.
+const PAGE_SIZE = 100;
+// Window used to count / list today's departures: the API only offers the
+// overlap filter, so we pull the in-house window and refine client-side.
+const DEPARTURES_WINDOW_LIMIT = 300;
+
+// Operational tabs aligned with the daily front-desk rhythm. Every tab maps to
+// a server-side filter (reservationTabQuery); counts come from `total` of a
+// limit=1 request per tab so the badges stay accurate without loading everything.
+type StatusTab = ReservationOperationalTab;
 
 const STATUS_LABEL: Record<string, string> = {
   draft: "Borrador",
@@ -87,13 +94,6 @@ function fmtShortDate(iso: string): string {
   return `${Number(parts[2])} ${MONTHS_ES[mi]}`;
 }
 
-function todayIso(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-    d.getDate()
-  ).padStart(2, "0")}`;
-}
-
 function guestLabel(reservation: AdminReservation): string {
   return (
     reservation.bookerName ?? reservation.primaryGuestId ?? "Huésped pendiente"
@@ -133,132 +133,150 @@ interface ReservationRow extends AdminReservation {
   roomTypeLabel: string;
 }
 
+type TabCounts = Partial<Record<StatusTab, number>>;
+
+const COUNT_TABS: StatusTab[] = ["all", "today_arrivals", "in_house", "future", "cancelled"];
+
+function mergeById(current: AdminReservation[], incoming: AdminReservation[]): AdminReservation[] {
+  const seen = new Set(current.map((r) => r.id));
+  return [...current, ...incoming.filter((r) => !seen.has(r.id))];
+}
+
 export function ReservationsListScreen() {
   const [reservations, setReservations] = useState<AdminReservation[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
   const [roomTypes, setRoomTypes] = useState<AdminRoomType[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
   const [tab, setTab] = useState<StatusTab>("today_arrivals");
+  const [tabCounts, setTabCounts] = useState<TabCounts>({});
+  const [countsError, setCountsError] = useState<string | null>(null);
   const [sort, setSort] = useState<DataTableSort>({
     key: "arrivalDate",
     direction: "asc"
   });
+  // Guards against out-of-order responses when the user switches tabs quickly.
+  const requestSeq = useRef(0);
 
-  function load() {
+  const today = todayIsoLocal();
+
+  // Debounce the search box: the `q` filter is server-side now.
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQuery(query.trim()), 300);
+    return () => window.clearTimeout(t);
+  }, [query]);
+
+  const buildQuery = useCallback(
+    (cursor?: string): ReservationListQuery => ({
+      ...reservationTabQuery(tab, today),
+      q: debouncedQuery || undefined,
+      limit: tab === "today_departures" ? DEPARTURES_WINDOW_LIMIT : PAGE_SIZE,
+      cursor
+    }),
+    [tab, today, debouncedQuery]
+  );
+
+  const load = useCallback(() => {
+    const seq = ++requestSeq.current;
     setLoading(true);
     setError(null);
-    Promise.all([fetchReservations(PROPERTY_ID), fetchRoomTypes(PROPERTY_ID)])
-      .then(([list, types]) => {
-        setReservations(list);
+    Promise.all([
+      fetchReservations(PROPERTY_ID, buildQuery()),
+      roomTypes.length > 0 ? Promise.resolve(roomTypes) : fetchRoomTypes(PROPERTY_ID)
+    ])
+      .then(([page, types]) => {
+        if (seq !== requestSeq.current) return;
+        setReservations(page.items);
+        setNextCursor(page.nextCursor);
+        setTotal(page.total);
         setRoomTypes(types);
       })
       .catch((err: unknown) => {
+        if (seq !== requestSeq.current) return;
         // Auditoría 2026-07: NUNCA fabricar reservas mock ante un fallo de API.
         // Bajo el gate de auth de producción esto pintaba reservas inventadas
         // (res_mock_*) como si fueran reales delante del usuario/inversor.
         setReservations([]);
-        setRoomTypes([]);
+        setNextCursor(null);
+        setTotal(null);
         setError(err instanceof Error ? err.message : "No se pudieron cargar las reservas.");
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (seq === requestSeq.current) setLoading(false);
+      });
+    // roomTypes is only read to skip a refetch; it must not retrigger the load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buildQuery]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  // Per-tab counts for the KPI tiles and segment badges. One limit=1 request
+  // per exact server filter; departures need the overlap window + refinement.
+  // A failed count shows "—" instead of a fabricated 0.
+  const loadCounts = useCallback(async () => {
+    setCountsError(null);
+    const results = await Promise.allSettled([
+      ...COUNT_TABS.map((t) => fetchReservations(PROPERTY_ID, { ...reservationTabQuery(t, today), limit: 1 })),
+      fetchReservations(PROPERTY_ID, { ...reservationTabQuery("today_departures", today), limit: DEPARTURES_WINDOW_LIMIT })
+    ]);
+    const next: TabCounts = {};
+    let failed = false;
+    results.forEach((result, index) => {
+      if (result.status !== "fulfilled") {
+        failed = true;
+        return;
+      }
+      if (index < COUNT_TABS.length) {
+        next[COUNT_TABS[index]] = result.value.total;
+      } else {
+        next.today_departures = result.value.items.filter((r) => matchesReservationTab(r, "today_departures", today)).length;
+      }
+    });
+    setTabCounts(next);
+    if (failed) setCountsError("Algunos contadores no se pudieron calcular.");
+  }, [today]);
+
+  useEffect(() => {
+    void loadCounts();
+  }, [loadCounts]);
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchReservations(PROPERTY_ID, buildQuery(nextCursor));
+      setReservations((current) => mergeById(current, page.items));
+      setNextCursor(page.nextCursor);
+      setTotal(page.total);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "No se pudieron cargar más reservas.");
+    } finally {
+      setLoadingMore(false);
+    }
   }
-
-  useEffect(load, []);
-
-  const today = todayIso();
 
   function roomTypeName(roomTypeId: string): string {
     return roomTypes.find((rt) => rt.id === roomTypeId)?.name ?? roomTypeId;
   }
 
-  // Counts per operational tab. Computed once per data change so the segmented
-  // badges always reflect the underlying list, even when the search narrows it.
-  const tabCounts = useMemo(() => {
-    const counts: Record<StatusTab, number> = {
-      all: reservations.length,
-      today_arrivals: 0,
-      in_house: 0,
-      today_departures: 0,
-      future: 0,
-      cancelled: 0
-    };
-    for (const r of reservations) {
-      if (
-        r.arrivalDate === today &&
-        r.status !== "cancelled" &&
-        r.status !== "no_show"
-      ) {
-        counts.today_arrivals += 1;
-      }
-      if (r.status === "checked_in") counts.in_house += 1;
-      if (r.departureDate === today && r.status !== "cancelled") {
-        counts.today_departures += 1;
-      }
-      if (
-        r.arrivalDate > today &&
-        r.status !== "cancelled" &&
-        r.status !== "no_show"
-      ) {
-        counts.future += 1;
-      }
-      if (r.status === "cancelled" || r.status === "no_show") {
-        counts.cancelled += 1;
-      }
-    }
-    return counts;
-  }, [reservations, today]);
-
-  function matchesTab(reservation: AdminReservation): boolean {
-    switch (tab) {
-      case "today_arrivals":
-        return (
-          reservation.arrivalDate === today &&
-          reservation.status !== "cancelled" &&
-          reservation.status !== "no_show"
-        );
-      case "in_house":
-        return reservation.status === "checked_in";
-      case "today_departures":
-        return (
-          reservation.departureDate === today &&
-          reservation.status !== "cancelled"
-        );
-      case "future":
-        return (
-          reservation.arrivalDate > today &&
-          reservation.status !== "cancelled" &&
-          reservation.status !== "no_show"
-        );
-      case "cancelled":
-        return (
-          reservation.status === "cancelled" ||
-          reservation.status === "no_show"
-        );
-      case "all":
-      default:
-        return true;
-    }
-  }
-
+  // The server filter is exact for every tab but "today_departures"; the
+  // refinement is applied uniformly so the two definitions never diverge.
   const filteredRows: ReservationRow[] = useMemo(() => {
-    const q = query.trim().toLowerCase();
     return reservations
-      .filter(matchesTab)
-      .filter((r) => {
-        if (!q) return true;
-        return [r.code, guestLabel(r)]
-          .join(" ")
-          .toLowerCase()
-          .includes(q);
-      })
+      .filter((r) => matchesReservationTab(r, tab, today))
       .map((r) => ({
         ...r,
         guestName: guestLabel(r),
         roomTypeLabel: roomTypeName(r.roomTypeId)
       }));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reservations, query, tab, roomTypes, today]);
+  }, [reservations, tab, roomTypes, today]);
 
   const sortedRows = useMemo(() => {
     const dir = sort.direction === "asc" ? 1 : -1;
@@ -288,21 +306,24 @@ export function ReservationsListScreen() {
     return rows;
   }, [filteredRows, sort]);
 
+  const badge = (key: StatusTab): number | string | undefined => tabCounts[key];
+  const tileValue = (key: StatusTab): number | string => tabCounts[key] ?? "—";
+
   const segments: SegmentOption[] = [
-    { value: "all", label: "Todas", badge: tabCounts.all },
+    { value: "all", label: "Todas", badge: badge("all") },
     {
       value: "today_arrivals",
       label: "Llegan hoy",
-      badge: tabCounts.today_arrivals
+      badge: badge("today_arrivals")
     },
-    { value: "in_house", label: "In-house", badge: tabCounts.in_house },
+    { value: "in_house", label: "In-house", badge: badge("in_house") },
     {
       value: "today_departures",
       label: "Salen hoy",
-      badge: tabCounts.today_departures
+      badge: badge("today_departures")
     },
-    { value: "future", label: "Futuras", badge: tabCounts.future },
-    { value: "cancelled", label: "Canceladas", badge: tabCounts.cancelled }
+    { value: "future", label: "Futuras", badge: badge("future") },
+    { value: "cancelled", label: "Canceladas", badge: badge("cancelled") }
   ];
 
   const columns: DataTableColumn<ReservationRow>[] = [
@@ -403,6 +424,10 @@ export function ReservationsListScreen() {
     gap: "var(--space-4, 16px)"
   };
 
+  // Departures are refined client-side, so the server `total` overstates them;
+  // for that tab we report the refined count instead.
+  const shownTotal = tab === "today_departures" ? filteredRows.length : total;
+  const hasMore = Boolean(nextCursor);
 
   return (
     <section style={wrapperStyle}>
@@ -434,37 +459,45 @@ export function ReservationsListScreen() {
       <div style={kpiGridStyle}>
         <StatTile
           label="Llegadas hoy"
-          value={tabCounts.today_arrivals}
+          value={tileValue("today_arrivals")}
           color="ok"
-          helper="Reservas con arrival = hoy"
-          loading={loading}
+          helper="Confirmadas o alojadas con llegada hoy"
+          loading={loading && tabCounts.today_arrivals === undefined}
           onClick={() => setTab("today_arrivals")}
         />
         <StatTile
           label="In-house"
-          value={tabCounts.in_house}
+          value={tileValue("in_house")}
           color="default"
           helper="Huéspedes actualmente alojados"
-          loading={loading}
+          loading={loading && tabCounts.in_house === undefined}
           onClick={() => setTab("in_house")}
         />
         <StatTile
           label="Salidas"
-          value={tabCounts.today_departures}
+          value={tileValue("today_departures")}
           color="warn"
           helper="Departure = hoy"
-          loading={loading}
+          loading={loading && tabCounts.today_departures === undefined}
           onClick={() => setTab("today_departures")}
         />
         <StatTile
           label="Futuras"
-          value={tabCounts.future}
+          value={tileValue("future")}
           color="default"
           helper="Confirmadas y por llegar"
-          loading={loading}
+          loading={loading && tabCounts.future === undefined}
           onClick={() => setTab("future")}
         />
       </div>
+      {countsError ? (
+        <p style={{ margin: 0, fontSize: "var(--fs-xs, 12px)", color: "var(--ink-muted, #6a6a6a)" }}>
+          {countsError}{" "}
+          <button type="button" className="bo-link" onClick={() => void loadCounts()}>
+            Reintentar
+          </button>
+        </p>
+      ) : null}
 
       <div style={toolbarStyle}>
         <div style={{ flex: "1 1 260px", maxWidth: 360 }}>
@@ -482,6 +515,11 @@ export function ReservationsListScreen() {
           size="md"
           ariaLabel="Filtros operativos"
         />
+        {shownTotal !== null && !loading ? (
+          <span style={{ fontSize: "var(--fs-xs, 12px)", color: "var(--ink-muted, #6a6a6a)" }}>
+            {sortedRows.length} de {shownTotal}
+          </span>
+        ) : null}
       </div>
 
       {loading ? (
@@ -494,20 +532,35 @@ export function ReservationsListScreen() {
           retryLabel="Reintentar"
         />
       ) : (
-        <DataTable<ReservationRow>
-          columns={columns}
-          rows={sortedRows}
-          rowKey="id"
-          sortBy={sort}
-          onSort={setSort}
-          onRowClick={openReservation}
-          density="comfortable"
-          emptyState={
-            query
-              ? "Ninguna reserva coincide con la búsqueda."
-              : "No hay reservas para este filtro."
-          }
-        />
+        <>
+          <DataTable<ReservationRow>
+            columns={columns}
+            rows={sortedRows}
+            rowKey="id"
+            sortBy={sort}
+            onSort={setSort}
+            onRowClick={openReservation}
+            density="comfortable"
+            emptyState={
+              debouncedQuery
+                ? "Ninguna reserva coincide con la búsqueda."
+                : "No hay reservas para este filtro."
+            }
+          />
+          {hasMore ? (
+            <div style={{ display: "flex", justifyContent: "center" }}>
+              <CocoaButton
+                variant="bordered"
+                tone="neutral"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                loading={loadingMore}
+              >
+                Cargar más
+              </CocoaButton>
+            </div>
+          ) : null}
+        </>
       )}
     </section>
   );

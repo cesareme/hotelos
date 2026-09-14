@@ -7,7 +7,11 @@ export type FrontDeskDashboardInput = {
 };
 
 export type FrontDeskDashboardKpis = {
+  /** Arrivals still expected or already in (confirmed / checked_in) — never cancelled or no-show. */
   arrivalsToday: number;
+  /** Cancelled / no-show reservations that were due to arrive today (kept visible, counted apart). */
+  arrivalsCancelledToday: number;
+  /** In-house or already departed guests leaving today — never cancelled or no-show. */
   departuresToday: number;
   inHouseNow: number;
   unassignedRooms: number;
@@ -112,13 +116,21 @@ export async function buildFrontDeskDashboard(
   const now = new Date();
 
   // Pull all reservations relevant to the dashboard in a few queries.
+  // REC-07: only live reservations count as arrivals/departures. Cancelled and
+  // no-show rows were inflating both KPIs (and the unassigned list derived
+  // from arrivals); they are counted separately in arrivalsCancelledToday.
+  // Same status rule as front-desk-queue.service and room-rack.service.
   const arrivalsRaw = await prisma.reservation.findMany({
-    where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd } },
+    where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd }, status: { in: ["confirmed", "checked_in"] } },
     orderBy: { arrivalDate: "asc" }
   });
 
+  const arrivalsCancelledCount = await prisma.reservation.count({
+    where: { propertyId, arrivalDate: { gte: dayStart, lt: dayEnd }, status: { in: ["cancelled", "no_show"] } }
+  });
+
   const departuresRaw = await prisma.reservation.findMany({
-    where: { propertyId, departureDate: { gte: dayStart, lt: dayEnd } },
+    where: { propertyId, departureDate: { gte: dayStart, lt: dayEnd }, status: { in: ["checked_in", "checked_out"] } },
     orderBy: { departureDate: "asc" }
   });
 
@@ -259,7 +271,8 @@ export async function buildFrontDeskDashboard(
       roomTypeName,
       status: String(r.status),
       balanceEur: balanceForReservation(r.id),
-      specialRequests: r.notes ?? undefined
+      // The column is specialRequests; notes is the legacy fallback.
+      specialRequests: r.specialRequests ?? r.notes ?? undefined
     };
   });
 
@@ -318,6 +331,7 @@ export async function buildFrontDeskDashboard(
   return {
     kpis: {
       arrivalsToday: safeNumber(arrivalsRaw.length),
+      arrivalsCancelledToday: safeNumber(arrivalsCancelledCount),
       departuresToday: safeNumber(departuresRaw.length),
       inHouseNow: safeNumber(inHouseRaw.length),
       unassignedRooms: safeNumber(unassignedRaw.length),

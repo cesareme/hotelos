@@ -11,6 +11,7 @@
 // El segundo cerrojo es el más fuerte: una vez creada la primera organización,
 // el endpoint deja de funcionar aunque el token siga válido en env.
 
+import { normalizeTaxId, spanishTaxIdValidationMessage } from "@hotelos/compliance";
 import { prisma, hashPassword } from "@hotelos/database";
 import { ROLE_PERMISSION_MAP } from "@hotelos/shared";
 import { recordAuditEvent } from "../audit/audit.service.js";
@@ -111,6 +112,14 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
     throw new BadRequestError("adminUser.fullName es requerido.");
   }
   assertPasswordPolicy(input.adminUser.password);
+  // FISC-03: organization.taxId is the issuer NIF of every invoice; when given
+  // it must be a checksum-valid DNI / NIE / CIF and is stored normalised.
+  const rawTaxId = input.organization.taxId?.trim();
+  const taxIdProblem = rawTaxId ? spanishTaxIdValidationMessage(rawTaxId) : null;
+  if (taxIdProblem) {
+    throw new BadRequestError(`organization.taxId no es un NIF/CIF válido («${rawTaxId}»): ${taxIdProblem}`);
+  }
+  const organizationTaxId = rawTaxId ? normalizeTaxId(rawTaxId) : undefined;
 
   const passwordHash = hashPassword(input.adminUser.password);
 
@@ -120,7 +129,7 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
       data: {
         name: input.organization.name.trim(),
         legalName: input.organization.legalName?.trim(),
-        taxId: input.organization.taxId?.trim(),
+        taxId: organizationTaxId,
         country: input.organization.country?.trim() || "ES"
       }
     });

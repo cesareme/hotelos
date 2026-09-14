@@ -203,16 +203,25 @@ export async function capturePaceSnapshot(propertyId: string, captureDateIso?: s
 }
 
 /** Capture nightly snapshots for every active property (scheduler entry point). */
-export async function capturePaceSnapshotsForAllProperties(): Promise<{ properties: number; captured: number }> {
+export async function capturePaceSnapshotsForAllProperties(): Promise<{ properties: number; captured: number; failed: string[] }> {
   const properties = await prisma.property.findMany({ select: { id: true } });
   let captured = 0;
+  const failed: string[] = [];
   for (const p of properties) {
     try {
       const r = await capturePaceSnapshot(p.id);
       captured += r.captured;
-    } catch {
-      // continue with the next property
+    } catch (err) {
+      // Continue with the next property (one broken hotel must not block the
+      // others' history) but report it: a property whose snapshot fails loses
+      // a day of PACE baseline, and the scheduler tick warns on failed > 0.
+      failed.push(p.id);
+      console.error(`[pace.scheduler] property ${p.id} snapshot failed`, {
+        propertyId: p.id,
+        correlationId: `corr_pace_${p.id}`,
+        error: err instanceof Error ? err.message : String(err)
+      });
     }
   }
-  return { properties: properties.length, captured };
+  return { properties: properties.length, captured, failed };
 }

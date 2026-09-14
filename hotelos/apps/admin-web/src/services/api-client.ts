@@ -84,12 +84,15 @@ export type RequestOptions = {
 export class ApiError extends Error {
   readonly status: number;
   readonly correlationId?: string;
+  /** Machine-readable payload the API attaches to typed 4xx errors (e.g. { code: "BALANCE_DUE", balanceDue }). */
+  readonly details?: unknown;
 
-  constructor(message: string, status: number, correlationId?: string) {
+  constructor(message: string, status: number, correlationId?: string, details?: unknown) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.correlationId = correlationId;
+    this.details = details;
   }
 }
 
@@ -127,14 +130,16 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     const text = await response.text();
     let message = text;
     let correlationId: string | undefined;
+    let details: unknown;
     try {
-      const parsed = JSON.parse(text) as { message?: string; correlationId?: string };
+      const parsed = JSON.parse(text) as { message?: string; correlationId?: string; details?: unknown };
       message = parsed.message ?? text;
       correlationId = parsed.correlationId;
+      details = parsed.details;
     } catch {
       /* keep raw body as the message */
     }
-    throw new ApiError(message || `HTTP ${response.status}`, response.status, correlationId);
+    throw new ApiError(message || `HTTP ${response.status}`, response.status, correlationId, details);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;

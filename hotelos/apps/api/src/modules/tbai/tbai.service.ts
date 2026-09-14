@@ -27,6 +27,7 @@ import { createHash } from "node:crypto";
 import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { issuerForInvoice } from "../invoicing/issuer-identity.service.js";
 
 // ---------------------------------------------------------------------------
 // Jurisdicciones forales
@@ -244,6 +245,10 @@ export async function submitInvoiceToTbai(input: {
   const cfg = TERRITORY_CONFIG[territory];
   const mode = input.mode ?? "stub";
 
+  // FISC-03: <Emisor> carries the identity the invoice was issued with
+  // (snapshot / legacy QR / resolver) — before this the NIF was always empty.
+  const issuer = await issuerForInvoice(invoice);
+
   const previousHash = await fetchPreviousHash(invoice.propertyId, territory);
   const xml = buildTbaiXml({
     invoice: {
@@ -258,7 +263,7 @@ export async function submitInvoiceToTbai(input: {
       propertyId: invoice.propertyId
     },
     territory,
-    property: { name: property.name, taxId: undefined },
+    property: { name: issuer.legalName, taxId: issuer.taxId },
     previousHash
   });
   const hash = tbaiHash(xml, previousHash);

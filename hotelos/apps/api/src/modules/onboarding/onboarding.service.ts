@@ -3,7 +3,9 @@ import { requirePermissions } from "../auth/auth.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { demoStore, type UserContext } from "../../lib/demo-store.js";
 import { prisma } from "@hotelos/database";
+import { normalizeTaxId, spanishTaxIdValidationMessage } from "@hotelos/compliance";
 import type { PermissionKey } from "@hotelos/shared";
+import { BadRequestError } from "../../lib/http-error.js";
 import {
   buildHistoryForecastImportPreview,
   buildHumanReviewQueue,
@@ -1055,7 +1057,18 @@ async function materialiseOnboardingProject(
   spaces?: Array<Record<string, unknown>>
 ) {
   const organizationId = String(targetProperty.organizationId ?? context.organizationId);
-  // Ensure the organization exists.
+  // FISC-03: Organization.taxId is the issuer NIF of every invoice / registro.
+  // Same rule as the profile form and the bootstrap: a given value must be a
+  // checksum-valid DNI / NIE / CIF (400 otherwise) and is stored normalised;
+  // an empty value stores NULL ("not configured"). Validated before any write
+  // so a bad NIF leaves nothing half-materialised.
+  const rawOrganizationTaxId = targetProperty.organizationTaxId ? String(targetProperty.organizationTaxId).trim() : "";
+  const taxIdProblem = rawOrganizationTaxId ? spanishTaxIdValidationMessage(rawOrganizationTaxId) : null;
+  if (taxIdProblem) {
+    throw new BadRequestError(`targetProperty.organizationTaxId no es un NIF/CIF válido («${rawOrganizationTaxId}»): ${taxIdProblem}`);
+  }
+  const organizationTaxId = rawOrganizationTaxId ? normalizeTaxId(rawOrganizationTaxId) : null;
+  // Ensure the organization exists (an existing organization keeps its own NIF).
   await prisma.organization.upsert({
     where: { id: organizationId },
     update: {},
@@ -1063,7 +1076,7 @@ async function materialiseOnboardingProject(
       id: organizationId,
       name: String(targetProperty.organizationName ?? "HotelOS Group"),
       legalName: String(targetProperty.organizationLegalName ?? targetProperty.organizationName ?? "HotelOS Group"),
-      taxId: targetProperty.organizationTaxId ? String(targetProperty.organizationTaxId) : null
+      taxId: organizationTaxId
     }
   });
 

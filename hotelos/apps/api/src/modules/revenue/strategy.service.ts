@@ -11,19 +11,26 @@ import { BadRequestError } from "../../lib/http-error.js";
 import { getPace, getPickup } from "./pace.service.js";
 import { getForecastAccuracy, listForecasts } from "./forecast.service.js";
 import { listRecommendations } from "./pricing.service.js";
+import {
+  addDays,
+  dayUtc,
+  dec,
+  decOrNull,
+  getPublishedBar,
+  getRealizedByDay,
+  isoDate,
+  MS_DAY,
+  parseMonth,
+  publishedBarFor,
+  round2,
+  sumRealized,
+  type RealizedSourceLabel
+} from "./actuals.js";
 
-const MS_DAY = 86_400_000;
+/** Live on-the-books statuses for today/future stay dates (displacement). */
 const OTB_STATUSES = ["confirmed", "checked_in", "checked_out"] as const;
-function dayUtc(v?: string): Date {
-  const base = v && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : new Date().toISOString().slice(0, 10);
-  return new Date(`${base}T00:00:00.000Z`);
-}
-function addDays(d: Date, n: number): Date { return new Date(d.getTime() + n * MS_DAY); }
-function isoDate(d: Date): string { return d.toISOString().slice(0, 10); }
 function monthOf(d: Date): string { return isoDate(d).slice(0, 7); }
-function dec(v: Prisma.Decimal | number | null | undefined): number { return v === null || v === undefined ? 0 : typeof v === "number" ? v : Number(v); }
 function num(v: unknown): number | undefined { if (v === null || v === undefined || v === "") return undefined; const n = Number(v); return Number.isFinite(n) ? n : undefined; }
-function round2(n: number): number { return Math.round(n * 100) / 100; }
 function median(values: number[]): number { if (!values.length) return 0; const s = [...values].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; }
 
 // ---- Budget ---------------------------------------------------------------
@@ -49,64 +56,125 @@ export async function upsertBudget(input: { context: UserContext; propertyId: st
   return row;
 }
 
-/** Budget vs forecast vs actual for a month. Forecast from RevenueForecast; actual realized from reservations. */
-export async function getBudgetVariance(input: { propertyId: string; month?: string }) {
-  const month = input.month && /^\d{4}-\d{2}$/.test(input.month) ? input.month : monthOf(dayUtc());
-  const from = dayUtc(`${month}-01`);
-  const to = addDays(new Date(Date.UTC(from.getUTCFullYear(), from.getUTCMonth() + 1, 1)), -1);
-  const today = dayUtc();
+export type BudgetVarianceBlock = {
+  roomsSold: number;
+  /** null when the forecast rows for the remaining days carry no ADR (no BAR, no LY close). */
+  roomRevenue: number | null;
+  adr: number | null;
+  occupancyPct: number | null;
+};
 
-  const budget = await prisma.budget.findUnique({ where: { propertyId_periodMonth: { propertyId: input.propertyId, periodMonth: month } } });
-  const totalRooms = await prisma.room.count({ where: { propertyId: input.propertyId, sellable: true } });
+export type BudgetVariance = {
+  propertyId: string;
+  month: string;
+  totalRooms: number;
+  monthNights: number;
+  /** Past days of the month (snapshot or reservations fallback). */
+  realizedDays: number;
+  snapshotDays: number;
+  fallbackDays: number;
+  /** Days from max(from, today) to month end (0 once the month is closed). */
+  remainingDays: number;
+  /** Distinct remaining days that have a RevenueForecast row. */
+  forecastDays: number;
+  forecastDaysWithoutAdr: number;
+  monthClosed: boolean;
+  budget: { roomsSold: number | null; roomRevenue: number | null; adr: number | null; occupancyPct: number | null } | null;
+  /** Full-month projection = realized-to-date + forecast for the REMAINING days; null in a closed month or without forecast rows. */
+  forecast: BudgetVarianceBlock | null;
+  /** Realized-to-date (occupancy over the realized days, not the whole month). */
+  actual: BudgetVarianceBlock;
+  variance: { roomRevenueVsBudget: number | null; basis: "forecast" | "actual" } | null;
+  sources: { actual: RealizedSourceLabel | null; forecast: string | null };
+};
 
-  // Forecast (sum room-type rows over the month).
-  const forecasts = await listForecasts({ propertyId: input.propertyId, from: isoDate(from), to: isoDate(to) });
-  const fcRooms = forecasts.reduce((s, f) => s + f.expectedRoomsSold, 0);
-  const fcRevenue = forecasts.reduce((s, f) => s + f.expectedRoomRevenue, 0);
-
-  // Actual realized (reservations OTB on past stay dates within the month).
-  const reservations = await prisma.reservation.findMany({
-    where: { propertyId: input.propertyId, status: { in: OTB_STATUSES as unknown as Prisma.EnumReservationStatusFilter["in"] }, arrivalDate: { lt: addDays(to, 1) }, departureDate: { gt: from } },
-    select: { arrivalDate: true, departureDate: true, roomsCount: true, totalAmount: true }
-  });
-  let actualRooms = 0;
-  let actualRevenue = 0;
-  for (const r of reservations) {
-    const a = dayUtc(isoDate(r.arrivalDate));
-    const d = dayUtc(isoDate(r.departureDate));
-    const n = Math.max(1, Math.round((d.getTime() - a.getTime()) / MS_DAY));
-    const revPerNight = dec(r.totalAmount) / n;
-    for (let i = 0; i < n; i++) {
-      const day = addDays(a, i);
-      if (day < from || day > to || day >= today) continue; // realized = past only
-      actualRooms += r.roomsCount;
-      actualRevenue += revPerNight;
-    }
-  }
-
-  const mk = (rooms: number, revenue: number, nights: number) => ({
-    roomsSold: Math.round(rooms),
-    roomRevenue: round2(revenue),
-    adr: rooms > 0 ? round2(revenue / rooms) : 0,
-    occupancyPct: totalRooms > 0 && nights > 0 ? round2((rooms / (totalRooms * nights)) * 100) : 0
-  });
+/**
+ * Budget vs forecast vs actual for a month (REV-03).
+ *   actual   → getRealizedByDay (audited snapshots first, reservations fallback, past days only)
+ *   forecast → RevenueForecast rows from max(from, today) only, so realized days
+ *              are never double counted; null in a closed month.
+ */
+export async function getBudgetVariance(input: { propertyId: string; month?: string; today?: Date }): Promise<BudgetVariance> {
+  const today = dayUtc(input.today);
+  // Explicit month → strict YYYY-MM (400 on '2024-13' / '2024-00', never a
+  // silent fallback nor an Invalid Date reaching Prisma); absent → current month.
+  const month = input.month || monthOf(today);
+  const { from, to } = parseMonth(month);
   const monthNights = Math.round((to.getTime() - from.getTime()) / MS_DAY) + 1;
+  const monthClosed = to.getTime() < today.getTime();
 
-  // Full-month projection = realized-to-date + forecast for the remaining days.
-  const projRooms = actualRooms + fcRooms;
-  const projRevenue = actualRevenue + fcRevenue;
+  const [budget, totalRooms] = await Promise.all([
+    prisma.budget.findUnique({ where: { propertyId_periodMonth: { propertyId: input.propertyId, periodMonth: month } } }),
+    prisma.room.count({ where: { propertyId: input.propertyId, sellable: true } })
+  ]);
+
+  // Actual realized: shared helper (snapshot-first, reservations fallback, < today).
+  const realized = await getRealizedByDay(input.propertyId, from, to, { today, totalRooms });
+  const actualSum = sumRealized(realized);
+
+  // Forecast: ONLY the remaining days [max(from, today), to]. Closed month → none.
+  const fcFrom = today.getTime() > from.getTime() ? today : from;
+  const remainingDays = monthClosed ? 0 : Math.round((to.getTime() - fcFrom.getTime()) / MS_DAY) + 1;
+  const forecasts = monthClosed ? [] : await listForecasts({ propertyId: input.propertyId, from: isoDate(fcFrom), to: isoDate(to) });
+  const fcDates = new Set<string>();
+  const fcDatesWithoutAdr = new Set<string>();
+  let fcRooms = 0;
+  let fcRevenue = 0;
+  for (const f of forecasts) {
+    fcDates.add(f.forecastDate);
+    fcRooms += f.expectedRoomsSold;
+    if (f.expectedRoomRevenue === null) fcDatesWithoutAdr.add(f.forecastDate);
+    else fcRevenue += f.expectedRoomRevenue;
+  }
+  const forecastModelVersion = forecasts.find((f) => f.modelVersion)?.modelVersion ?? null;
+  const hasForecast = fcDates.size > 0;
+  const forecastRevenueKnown = hasForecast && fcDatesWithoutAdr.size === 0;
+
+  const mk = (rooms: number, revenue: number | null, nights: number): BudgetVarianceBlock => ({
+    roomsSold: Math.round(rooms),
+    roomRevenue: revenue === null ? null : round2(revenue),
+    adr: revenue !== null && rooms > 0 ? round2(revenue / rooms) : null,
+    occupancyPct: totalRooms > 0 && nights > 0 ? round2((rooms / (totalRooms * nights)) * 100) : null
+  });
+
+  const actual = mk(actualSum.rooms, actualSum.roomRevenue, actualSum.days);
+  const forecast = hasForecast
+    ? mk(actualSum.rooms + fcRooms, forecastRevenueKnown ? actualSum.roomRevenue + fcRevenue : null, monthNights)
+    : null;
+
+  const budgetRevenue = budget ? decOrNull(budget.budgetedRoomRevenue) : null;
+  const basis: "forecast" | "actual" = forecast && forecast.roomRevenue !== null ? "forecast" : "actual";
+  const basisRevenue = basis === "forecast" ? (forecast as BudgetVarianceBlock).roomRevenue : actual.roomRevenue;
 
   return {
     propertyId: input.propertyId,
     month,
     totalRooms,
+    monthNights,
+    realizedDays: actualSum.days,
+    snapshotDays: realized.snapshotDays,
+    fallbackDays: realized.fallbackDays,
+    remainingDays,
+    forecastDays: fcDates.size,
+    forecastDaysWithoutAdr: fcDatesWithoutAdr.size,
+    monthClosed,
     budget: budget
-      ? { roomsSold: budget.budgetedRoomsSold ?? null, roomRevenue: dec(budget.budgetedRoomRevenue), adr: dec(budget.budgetedAdr), occupancyPct: dec(budget.budgetedOccupancy) }
+      ? {
+          roomsSold: budget.budgetedRoomsSold ?? null,
+          roomRevenue: budgetRevenue,
+          adr: decOrNull(budget.budgetedAdr),
+          occupancyPct: decOrNull(budget.budgetedOccupancy)
+        }
       : null,
-    forecast: mk(projRooms, projRevenue, monthNights),
-    actual: mk(actualRooms, actualRevenue, monthNights),
-    variance: budget ? { roomRevenueVsBudget: round2(projRevenue - dec(budget.budgetedRoomRevenue)) } : null,
-    source: "forecast+reservations"
+    forecast,
+    actual,
+    variance: budget
+      ? {
+          roomRevenueVsBudget: budgetRevenue !== null && basisRevenue !== null ? round2(basisRevenue - budgetRevenue) : null,
+          basis
+        }
+      : null,
+    sources: { actual: realized.source, forecast: hasForecast ? forecastModelVersion : null }
   };
 }
 
@@ -165,33 +233,85 @@ export async function analyzeDisplacement(input: { propertyId: string; arrivalDa
     for (let i = 0; i < n; i++) { const day = addDays(a, i); if (day < from || day >= to) continue; otb.set(isoDate(day), (otb.get(isoDate(day)) ?? 0) + r.roomsCount); }
   }
 
-  // Forecast demand + ADR per night.
-  const forecasts = await listForecasts({ propertyId: input.propertyId, from: isoDate(from), to: isoDate(addDays(to, -1)) });
-  const fcByDay = new Map<string, { rooms: number; revenue: number }>();
-  for (const f of forecasts) { const b = fcByDay.get(f.forecastDate) ?? { rooms: 0, revenue: 0 }; b.rooms += f.expectedRoomsSold; b.revenue += f.expectedRoomRevenue; fcByDay.set(f.forecastDate, b); }
+  // Forecast demand + ADR per night, and the published BAR as the ADR fallback.
+  const lastNight = addDays(to, -1);
+  const [forecasts, publishedBar] = await Promise.all([
+    listForecasts({ propertyId: input.propertyId, from: isoDate(from), to: isoDate(lastNight) }),
+    getPublishedBar(input.propertyId, from, lastNight)
+  ]);
+  const fcByDay = new Map<string, { rooms: number; revenue: number; revenueKnown: boolean }>();
+  for (const f of forecasts) {
+    const b = fcByDay.get(f.forecastDate) ?? { rooms: 0, revenue: 0, revenueKnown: true };
+    b.rooms += f.expectedRoomsSold;
+    if (f.expectedRoomRevenue === null) b.revenueKnown = false;
+    else b.revenue += f.expectedRoomRevenue;
+    fcByDay.set(f.forecastDate, b);
+  }
 
-  const nights: Array<{ date: string; available: number; displacedRooms: number; transientAdr: number; displacedRevenue: number; groupRevenue: number }> = [];
+  type DisplacementNight = {
+    date: string;
+    available: number;
+    displacedRooms: number;
+    /** Transient ADR the displaced rooms would have earned; null when neither forecast nor BAR exists. */
+    transientAdr: number | null;
+    adrSource: "forecast" | "bar" | "unknown";
+    /** null when the night has displaced rooms but no ADR (excluded from the total, see warnings). */
+    displacedRevenue: number | null;
+    groupRevenue: number;
+  };
+  const nights: DisplacementNight[] = [];
+  const warnings: string[] = [];
   let displacedRevenue = 0;
   let groupRevenue = 0;
+  let nightsWithoutAdr = 0;
+  let unreliable = false;
   for (let d = new Date(from); d < to; d = addDays(d, 1)) {
     const key = isoDate(d);
     const used = otb.get(key) ?? 0;
     const available = Math.max(0, totalRooms - used);
     const fc = fcByDay.get(key);
-    const transientAdr = fc && fc.rooms > 0 ? round2(fc.revenue / fc.rooms) : 130;
+    // ADR chain: forecast ADR → published BAR → null (never a constant).
+    let transientAdr: number | null = null;
+    let adrSource: DisplacementNight["adrSource"] = "unknown";
+    if (fc && fc.rooms > 0 && fc.revenueKnown) {
+      transientAdr = round2(fc.revenue / fc.rooms);
+      adrSource = "forecast";
+    } else {
+      const bar = publishedBarFor(publishedBar, key);
+      if (bar !== null) {
+        transientAdr = bar;
+        adrSource = "bar";
+      }
+    }
     // Rooms the group takes beyond free inventory displace forecast transient demand.
     const overCapacity = Math.max(0, groupRooms - available);
     const unmetForecast = fc ? Math.max(0, Math.round(fc.rooms) - used) : 0;
     const displacedRooms = Math.min(overCapacity, Math.max(unmetForecast, overCapacity));
-    const dr = round2(displacedRooms * transientAdr);
     const gr = round2(groupRooms * groupRate);
-    displacedRevenue += dr;
     groupRevenue += gr;
-    nights.push({ date: key, available, displacedRooms, transientAdr, displacedRevenue: dr, groupRevenue: gr });
+    let dr: number | null;
+    if (transientAdr !== null) {
+      dr = round2(displacedRooms * transientAdr);
+      displacedRevenue += dr;
+    } else if (displacedRooms === 0) {
+      dr = 0; // nothing displaced: the ADR is irrelevant for this night
+    } else {
+      dr = null;
+      nightsWithoutAdr++;
+      unreliable = true;
+      warnings.push(`${key}: sin previsión ni BAR publicado; ${displacedRooms} hab. desplazadas excluidas del cálculo.`);
+    }
+    nights.push({ date: key, available, displacedRooms, transientAdr, adrSource, displacedRevenue: dr, groupRevenue: gr });
   }
 
   const net = round2(groupRevenue - displacedRevenue);
-  const recommendation = net > 0 ? (displacedRevenue === 0 ? "accept" : "accept_with_caution") : "negotiate_or_decline";
+  const recommendation: "accept" | "accept_with_caution" | "negotiate_or_decline" | "insufficient_data" = unreliable
+    ? "insufficient_data"
+    : net > 0
+      ? displacedRevenue === 0
+        ? "accept"
+        : "accept_with_caution"
+      : "negotiate_or_decline";
   return {
     propertyId: input.propertyId,
     arrivalDate: input.arrivalDate,
@@ -200,25 +320,38 @@ export async function analyzeDisplacement(input: { propertyId: string; arrivalDa
     groupRate,
     totalRooms,
     groupRevenue: round2(groupRevenue),
+    /** Sum over nights with a known ADR only (see nightsWithoutAdr / warnings). */
     displacedRevenue: round2(displacedRevenue),
     netBenefit: net,
     recommendation,
     nights,
-    source: "forecast+otb"
+    nightsWithoutAdr,
+    warnings,
+    sources: { otb: "reservas", adr: "forecast → BAR publicado → sin dato", bar: publishedBar.source },
+    source: "forecast+bar+otb"
   };
 }
 
 // ---- Revenue meeting pack -------------------------------------------------
-export async function getMeetingPack(propertyId: string) {
+/**
+ * Meeting pack. `month` (YYYY-MM, optional) selects the budget-variance month
+ * (defaults to the current month). Pending recommendations are limited to
+ * today/future target dates — the same rule as the board's criticalDates.
+ */
+export async function getMeetingPack(propertyId: string, opts: { month?: string } = {}) {
+  const today = dayUtc();
+  const todayKey = isoDate(today);
+  // Resolve + validate the month up front (400 on '2024-13') so a bad query
+  // fails before the pace/pickup/forecast queries are fanned out.
+  const month = opts.month || monthOf(today);
+  parseMonth(month);
   const [pace, pickup, accuracy, recommendations, budgetVariance] = await Promise.all([
     getPace(propertyId),
     getPickup(propertyId),
     getForecastAccuracy({ propertyId, days: 30 }),
     listRecommendations(propertyId),
-    getBudgetVariance({ propertyId })
+    getBudgetVariance({ propertyId, month, today })
   ]);
-
-  const today = dayUtc();
   const compRows = await prisma.competitorRateSnapshot.findMany({
     where: { propertyId, stayDate: { gte: today, lte: addDays(today, 14) }, price: { not: null } },
     select: { price: true }
@@ -226,14 +359,20 @@ export async function getMeetingPack(propertyId: string) {
   const compPrices = compRows.map((r) => dec(r.price)).filter((p) => p > 0);
   const compSet = { samples: compPrices.length, median: compPrices.length ? round2(median(compPrices)) : null, min: compPrices.length ? Math.min(...compPrices) : null, max: compPrices.length ? Math.max(...compPrices) : null };
 
-  const pendingRecs = (recommendations.filter((r): r is NonNullable<typeof r> => !!r && r.status === "pending")).slice(0, 6);
+  // Pending + actionable (targetDate >= today); past pendings are stale, not "top".
+  const pendingRecs = recommendations
+    .filter((r): r is NonNullable<typeof r> => !!r && r.status === "pending" && r.targetDate >= todayKey)
+    .slice(0, 6);
 
   return {
     propertyId,
+    /** Budget/variance month of this pack (YYYY-MM; the export title reflects it). */
+    month,
     generatedAt: new Date().toISOString(),
     pace,
     pickup,
     forecastAccuracy: accuracy.metrics,
+    forecastAccuracySources: accuracy.sources,
     compSet,
     budgetVariance,
     topRecommendations: pendingRecs,

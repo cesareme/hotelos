@@ -19,7 +19,8 @@
 //
 // Cada check devuelve:
 //   - status: "ok" | "warning" | "blocker"
-//   - count: int (cuántos elementos afectados)
+//   - count: int (cuántos elementos afectados) · null cuando la propia
+//     comprobación falló (status "warning" + detail explica el motivo)
 //   - detail: texto natural
 //   - items: lista accionable opcional (top N) con id de la entidad
 //
@@ -51,7 +52,8 @@ export type PreflightCheck = {
   id: PreflightCheckId;
   title: string;
   status: PreflightStatus;
-  count: number;
+  /** Affected items; `null` when the check itself could not run (see detail). */
+  count: number | null;
   detail: string;
   items?: PreflightItem[];
 };
@@ -262,26 +264,37 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     where: { reservation: { propertyId }, status: "closed" },
     select: { id: true, reservationId: true }
   });
-  // No tenemos un modelo Invoice consistente → comprobación ligera:
-  let invoicesPending = 0;
+  // Lightweight check. If the query itself fails we must NOT report "ok" with
+  // count 0 (QC-06): the check degrades to "warning" with count null and an
+  // explicit detail. Only "blocker" blocks the close, so this never locks the
+  // night audit — it just stops hiding a broken query behind a green tick.
+  let checkInvoices: PreflightCheck;
   try {
     const invoices = await prisma.invoice.findMany({
       where: { propertyId, status: { in: ["draft", "issued"] } },
       select: { id: true, status: true }
     });
-    invoicesPending = invoices.filter((i) => i.status === "draft").length;
-  } catch {
-    invoicesPending = 0;
+    const invoicesPending = invoices.filter((i) => i.status === "draft").length;
+    checkInvoices = {
+      id: "invoices_pending",
+      title: "Facturas pendientes",
+      status: invoicesPending === 0 ? "ok" : "warning",
+      count: invoicesPending,
+      detail: invoicesPending === 0
+        ? "Sin facturas en draft sin emitir."
+        : `${invoicesPending} facturas en estado draft. Emite antes del cierre para que entren en la producción del día.`
+    };
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.warn("[night-audit.preflight] invoices_pending check failed", { propertyId, error: reason });
+    checkInvoices = {
+      id: "invoices_pending",
+      title: "Facturas pendientes",
+      status: "warning",
+      count: null,
+      detail: `No se pudo comprobar las facturas pendientes: ${reason}`
+    };
   }
-  const checkInvoices: PreflightCheck = {
-    id: "invoices_pending",
-    title: "Facturas pendientes",
-    status: invoicesPending === 0 ? "ok" : "warning",
-    count: invoicesPending,
-    detail: invoicesPending === 0
-      ? "Sin facturas en draft sin emitir."
-      : `${invoicesPending} facturas en estado draft. Emite antes del cierre para que entren en la producción del día.`
-  };
   void closedFolios;
 
   // ---- 9) Pre-autorizaciones sin capturar -----------------------------
@@ -316,12 +329,17 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     ? undefined
     : `No puedes cerrar todavía: ${blockers.map((b) => `${b.count} ${b.title.toLowerCase()}`).join(", ")}.`;
 
-  // Business date (best effort)
+  // Business date (best effort): the preflight is still useful without it, so
+  // a failed lookup leaves it undefined — but logged, never silent.
   let businessDate: string | undefined;
   try {
     const bd = await prisma.businessDate.findUnique({ where: { propertyId } });
     if (bd) businessDate = bd.currentDate.toISOString().slice(0, 10);
-  } catch {
+  } catch (err) {
+    console.warn("[night-audit.preflight] businessDate lookup failed", {
+      propertyId,
+      error: err instanceof Error ? err.message : String(err)
+    });
     businessDate = undefined;
   }
 

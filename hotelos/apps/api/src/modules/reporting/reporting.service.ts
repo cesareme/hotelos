@@ -5,7 +5,8 @@ import { createId, nowIso } from "../../lib/ids.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { getReservationFolio } from "../folio/folio.service.js";
-import { listInvoices } from "../invoicing/invoice.service.js";
+import { MAX_PAGE_LIMIT } from "../../lib/pagination.js";
+import { listInvoices, summarizeInvoicesByStatus, type ListInvoicesOptions } from "../invoicing/invoice.service.js";
 
 export type OperationalReportFormat = "pdf" | "csv" | "xlsx" | "json";
 export type OperationalReportType = "reservation" | "billing" | "revenue" | "owner";
@@ -167,17 +168,30 @@ export async function getReservationReport(propertyId: string, query: Record<str
 }
 
 export async function getBillingReport(propertyId: string, query: Record<string, unknown> = {}) {
-  const invoices = await listInvoices(propertyId);
+  // Invoice KPIs come from aggregates over the WHOLE filtered set (QC-03 /
+  // pagination): the `invoices` array is the most recent page only, with the
+  // derived payment state per row. Filters: fromDate / toDate (createdAt),
+  // invoiceStatus (csv of InvoiceStatus); malformed values → 400.
+  const invoiceOptions: ListInvoicesOptions = {
+    ...(typeof query.invoiceStatus === "string" ? { status: query.invoiceStatus } : {}),
+    ...(typeof query.fromDate === "string" ? { from: query.fromDate } : {}),
+    ...(typeof query.toDate === "string" ? { to: query.toDate } : {})
+  };
+  const [invoiceTotals, invoicePage] = await Promise.all([
+    summarizeInvoicesByStatus(propertyId, invoiceOptions),
+    listInvoices(propertyId, { ...invoiceOptions, limit: MAX_PAGE_LIMIT })
+  ]);
   const reservations = await prisma.reservation.findMany({ where: { propertyId }, select: { id: true } });
   const reservationIds = reservations.map((r) => r.id);
   const folioRows = reservationIds.length
     ? await prisma.folio.findMany({ where: { reservationId: { in: reservationIds } } })
     : [];
   const folioBalances = await Promise.all(folioRows.map((folio) => getReservationFolio(folio.reservationId)));
-  const payments = (await prisma.payment.findMany({ where: { propertyId } })).map((p) => ({
+  const payments = (await prisma.payment.findMany({ where: { propertyId, deletedAt: null } })).map((p) => ({
     id: p.id,
     propertyId: p.propertyId,
     folioId: p.folioId,
+    invoiceId: p.invoiceId ?? null,
     amount: Number(p.amount),
     currency: p.currency,
     method: p.method,
@@ -191,15 +205,28 @@ export async function getBillingReport(propertyId: string, query: Record<string,
     generatedAt: nowIso(),
     query,
     kpis: {
-      invoiceCount: invoices.length,
-      issuedInvoices: invoices.filter((invoice) => invoice.status === "issued").length,
-      draftInvoices: invoices.filter((invoice) => invoice.status === "draft").length,
-      invoiceTotal: sum(invoices.map((invoice) => invoice.total)),
-      taxTotal: sum(invoices.map((invoice) => invoice.taxTotal)),
+      invoiceCount: invoiceTotals.count,
+      issuedInvoices: invoiceTotals.issued.count,
+      draftInvoices: invoiceTotals.draft.count,
+      invoiceTotal: invoiceTotals.total,
+      taxTotal: invoiceTotals.taxTotal,
+      // Issued invoices fully paid / with balance due and the sum of balance
+      // due (captured payments linked to the invoice, see InvoicePaymentSource).
+      paidInvoices: invoicePage.summary.paid,
+      unpaidInvoices: invoicePage.summary.unpaid,
+      invoiceBalanceDue: invoicePage.summary.totalDue,
       capturedPayments: sum(payments.filter((payment) => payment.status === "captured").map((payment) => payment.amount)),
       openFolioBalances: sum(openBalances.map((balance) => balance.balanceDue))
     },
-    invoices,
+    invoicesByStatus: {
+      draft: invoiceTotals.draft,
+      issued: invoiceTotals.issued,
+      cancelled: invoiceTotals.cancelled,
+      rectified: invoiceTotals.rectified
+    },
+    // Most recent invoices (createdAt desc) - a page, not the whole ledger.
+    invoices: invoicePage.items,
+    invoicePage: { limit: MAX_PAGE_LIMIT, total: invoicePage.total, nextCursor: invoicePage.nextCursor },
     folios: folioBalances.map((balance) => ({
       folioId: balance.folio.id,
       reservationId: balance.folio.reservationId,

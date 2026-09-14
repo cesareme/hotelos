@@ -30,6 +30,8 @@ const { assertRoutePermission, resetRbacStrictModeForTests } = await import(
   "../../apps/api/src/security/route-permissions.js"
 );
 const { assertDemoAuthPolicy } = await import("../../apps/api/src/lib/auth-context.js");
+const { parsePageQuery, MAX_PAGE_LIMIT } = await import("../../apps/api/src/lib/pagination.js");
+const { BadRequestError } = await import("../../apps/api/src/lib/http-error.js");
 
 function applyEnv(entries: Record<string, string | undefined>): void {
   for (const [key, value] of Object.entries(entries)) {
@@ -56,7 +58,9 @@ describe("API integration (app.inject)", () => {
   let app: Awaited<ReturnType<typeof buildApiServer>>;
 
   before(async () => {
-    app = buildApiServer();
+    // AUTH-05: buildApiServer is async (it awaits cors + rate-limit before
+    // declaring routes); a sync call here would hand back a Promise.
+    app = await buildApiServer();
     await app.ready();
   });
 
@@ -67,6 +71,20 @@ describe("API integration (app.inject)", () => {
   it("GET /health returns 200", async () => {
     const res = await app.inject({ method: "GET", url: "/health" });
     assert.equal(res.statusCode, 200);
+  });
+
+  it("GET /health carries the global x-ratelimit headers (AUTH-05)", async () => {
+    // Before the fix no inline route had a limiter: the plugin loaded at
+    // app.ready(), after every route had already been registered.
+    // The global ceiling is `Number(process.env.RATE_LIMIT_MAX ?? 600)` in
+    // server.ts (Tanda 2 · server-higiene); the exact default is pinned by
+    // tests/rate-limit-contract.test.mjs, here we prove the limiter is wired.
+    const res = await app.inject({ method: "GET", url: "/health" });
+    assert.equal(res.statusCode, 200);
+    const limit = res.headers["x-ratelimit-limit"];
+    assert.equal(limit, process.env.RATE_LIMIT_MAX ?? "600", `headers: ${JSON.stringify(res.headers)}`);
+    const remaining = Number(res.headers["x-ratelimit-remaining"]);
+    assert.ok(Number.isInteger(remaining) && remaining < Number(limit), `x-ratelimit-remaining not accounted: ${JSON.stringify(res.headers)}`);
   });
 
   it("rejects unauthenticated access to a protected route in production (default-deny)", async () => {
@@ -97,6 +115,56 @@ describe("API integration (app.inject)", () => {
       });
       assert.equal(res.statusCode, 404);
     });
+  });
+
+  it("GET /guests?search=a&search=b (repeated query key) is a 400, never a 500 (Tanda 2 · cierre)", async () => {
+    // Fastify's default query parser hands a repeated key to the handler as an
+    // array. The old code called `.trim()` on it → TypeError → 500 with a
+    // stack in the logs. A malformed query is the caller's fault: 400.
+    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true" }, async () => {
+      const res = await app.inject({ method: "GET", url: "/guests?search=a&search=b" });
+      assert.equal(res.statusCode, 400, `expected 400, got ${res.statusCode}: ${res.body}`);
+      assert.equal(JSON.parse(res.body).error, "Bad Request");
+    });
+  });
+
+  it("GET /properties/:id/reservations?cursor=a&cursor=b (array cursor) is a 400 (REC-05)", async (t) => {
+    await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true" }, async () => {
+      // Discover a property of the caller's org through the API itself so the
+      // case does not hard-code seed ids; an empty box skips loudly.
+      const list = await app.inject({ method: "GET", url: "/properties" });
+      assert.equal(list.statusCode, 200, `GET /properties → ${list.statusCode}: ${list.body}`);
+      const properties = JSON.parse(list.body) as Array<{ id: string }>;
+      const propertyId = properties[0]?.id;
+      if (!propertyId) {
+        t.skip("no property visible to the demo user — seed the demo (packages/database prisma/seed.ts) to exercise this case");
+        return;
+      }
+      const res = await app.inject({ method: "GET", url: `/properties/${propertyId}/reservations?cursor=a&cursor=b` });
+      assert.equal(res.statusCode, 400, `expected 400, got ${res.statusCode}: ${res.body}`);
+      assert.equal(JSON.parse(res.body).message, "El cursor de paginación no es válido.");
+      // A single malformed cursor is the documented 400 too (decodeCursor).
+      const single = await app.inject({ method: "GET", url: `/properties/${propertyId}/reservations?cursor=not-a-cursor` });
+      assert.equal(single.statusCode, 400, `expected 400, got ${single.statusCode}: ${single.body}`);
+      assert.equal(JSON.parse(single.body).message, "El cursor de paginación no es válido.");
+    });
+  });
+
+  it("an unknown route is a 404 for an authenticated caller with and without RBAC_STRICT (is404 guard)", async () => {
+    // Root-level preHandler hooks also run for the not-found handler. Without
+    // `if (request.is404) return;` in the permission preHandler the unknown
+    // path is looked up in the manifest: RBAC_STRICT=true turned every 404 into
+    // a manifest 403 (and mutations always did). RBAC strict mode is memoized,
+    // so withEnv (which resets the memo) is enough — no second server needed.
+    for (const rbacStrict of [undefined, "true", "false"]) {
+      await withEnv({ HOTELOS_ALLOW_DEMO_AUTH: "true", NODE_ENV: "development", RBAC_STRICT: rbacStrict }, async () => {
+        for (const method of ["GET", "POST"] as const) {
+          const res = await app.inject({ method, url: "/__no_such_route__" });
+          assert.equal(res.statusCode, 404, `RBAC_STRICT=${rbacStrict ?? "(unset)"} ${method}: ${res.statusCode} ${res.body}`);
+          assert.equal(JSON.parse(res.body).error, "Not Found");
+        }
+      });
+    }
   });
 
   it("RBAC_STRICT=true: mapped GET routes never hit the manifest 403 (AUTH-03)", async () => {
@@ -149,7 +217,8 @@ describe("API integration (app.inject)", () => {
       async () => {
         assert.throws(() => assertDemoAuthPolicy(), forbidden);
         // Real boot path: registerAuthContext (inside buildApiServer) enforces it.
-        assert.throws(() => buildApiServer(), forbidden);
+        // buildApiServer is async since AUTH-05, so the policy error rejects.
+        await assert.rejects(() => buildApiServer(), forbidden);
       }
     );
     await withEnv(
@@ -165,5 +234,65 @@ describe("API integration (app.inject)", () => {
     await withEnv({ NODE_ENV: "development", HOTELOS_ALLOW_DEMO_AUTH: "true" }, async () => {
       assert.doesNotThrow(() => assertDemoAuthPolicy());
     });
+  });
+});
+
+describe("rate limit (AUTH-05) — own app instance: the in-memory store is per instance and keyed by IP for public routes", () => {
+  let app: Awaited<ReturnType<typeof buildApiServer>>;
+
+  before(async () => {
+    app = await buildApiServer();
+    await app.ready();
+  });
+
+  after(async () => {
+    if (app) await app.close();
+  });
+
+  it("POST /auth/login: the 11th attempt from the same IP within a minute is 429 with retry-after", async () => {
+    // Distinct non-existent emails so the per-account lockout (5 failures /
+    // 15 min) never fires; the rate limit is per IP (127.0.0.1 under inject).
+    for (let i = 1; i <= 11; i++) {
+      const res = await app.inject({
+        method: "POST",
+        url: "/auth/login",
+        payload: { email: `nobody-${i}@example.invalid`, password: "x" }
+      });
+      if (i <= 10) {
+        assert.equal(res.statusCode, 401, `attempt ${i}: ${res.body}`);
+        assert.equal(res.headers["x-ratelimit-limit"], "10", `attempt ${i}: ${JSON.stringify(res.headers)}`);
+      } else {
+        assert.equal(res.statusCode, 429, `attempt ${i}: ${res.body}`);
+        assert.ok(res.headers["retry-after"], "retry-after header missing on 429");
+        const body = JSON.parse(res.body) as { error: string; message: string };
+        assert.equal(body.error, "Too Many Requests");
+        assert.equal(body.message, "Demasiadas peticiones. Reintenta en unos segundos.");
+      }
+    }
+  });
+});
+
+
+describe("cursor pagination contract (REC-05) — parsePageQuery, no DB", () => {
+  const isInvalidCursor = (err: unknown) =>
+    err instanceof BadRequestError && err.statusCode === 400 && err.message === "El cursor de paginación no es válido.";
+
+  it("rejects a repeated ?cursor (array after query parsing) with a 400 instead of ignoring it", () => {
+    assert.throws(() => parsePageQuery({ cursor: ["a", "b"] }), isInvalidCursor);
+    assert.throws(() => parsePageQuery({ cursor: 42 }), isInvalidCursor);
+  });
+
+  it("keeps the documented shapes: absent/empty cursor → null, string cursor → envelope on", () => {
+    assert.deepEqual(parsePageQuery(undefined), { limit: 100, cursor: null, envelope: false });
+    assert.deepEqual(parsePageQuery({ cursor: "" }), { limit: 100, cursor: null, envelope: false });
+    assert.deepEqual(parsePageQuery({ cursor: "abc" }), { limit: 100, cursor: "abc", envelope: true });
+  });
+
+  it("clamps limit to MAX_PAGE_LIMIT without an error; only a non-integer or non-positive limit is a 400", () => {
+    assert.equal(parsePageQuery({ limit: "10000" }).limit, MAX_PAGE_LIMIT);
+    assert.equal(parsePageQuery({ limit: "10000" }, { max: 200 }).limit, 200);
+    for (const limit of ["0", "-1", "abc", "1.5"]) {
+      assert.throws(() => parsePageQuery({ limit }), (err: unknown) => err instanceof BadRequestError);
+    }
   });
 });

@@ -207,6 +207,24 @@ describe("API route permission manifest (AUTH-03)", () => {
     assert.match(server, /userContext\?\.permissions \?\? \[\]/);
   });
 
+  it("skips the permission gate for unknown routes so they stay 404 in strict mode (is404 guard)", () => {
+    // Root-level preHandler hooks also run for the not-found handler. Without
+    // this guard an unknown URL has no routeOptions.url, is looked up in the
+    // manifest as-is, and RBAC_STRICT=true turns every 404 into a manifest 403
+    // (leaking which paths exist and confusing clients). The guard must sit
+    // BEFORE assertRoutePermission inside the permission preHandler.
+    const gateCall = server.indexOf("assertRoutePermission({");
+    assert.ok(gateCall >= 0, "assertRoutePermission({ call not found in server.ts");
+    const hookStart = server.lastIndexOf('app.addHook("preHandler"', gateCall);
+    assert.ok(hookStart >= 0, "permission preHandler hook not found before assertRoutePermission");
+    const hookHead = server.slice(hookStart, gateCall);
+    assert.match(
+      hookHead,
+      /if \(request\.is404\) return;/,
+      `permission preHandler must start with \`if (request.is404) return;\` (server.ts:${lineOf(server, hookStart)})`
+    );
+  });
+
   it("fails closed: unmapped mutations always 403, unmapped GET 403 in strict mode (default in production)", () => {
     assert.match(manifestSource, /export function isRbacStrictMode/);
     assert.match(manifestSource, /process\.env\.RBAC_STRICT/);

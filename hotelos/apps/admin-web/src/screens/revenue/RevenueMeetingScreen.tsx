@@ -12,6 +12,26 @@ function fmtDate(iso: string): string {
   return new Date(`${iso}T00:00:00.000Z`).toLocaleDateString("es-ES", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
 }
 
+// Human label for BudgetVariance.sources.actual (Tanda 2 · REV-03).
+function actualSourceLabel(source: string | undefined): string {
+  switch (source) {
+    case "snapshots":
+      return "Real: cierres nocturnos";
+    case "snapshots+reservas":
+      return "Real: cierres + reservas";
+    case "reservas":
+      return "Real: reservas (sin cierres)";
+    case undefined:
+      return "Real: fuente no indicada";
+    default:
+      return `Real: ${source}`;
+  }
+}
+
+function fmtPct(value: number | null | undefined): string {
+  return value == null ? "—" : `${value}%`;
+}
+
 export function RevenueMeetingScreen() {
   const [pack, setPack] = useState<MeetingPack | null>(null);
   const [loading, setLoading] = useState(true);
@@ -24,6 +44,7 @@ export function RevenueMeetingScreen() {
   const [rate, setRate] = useState("95");
   const [disp, setDisp] = useState<Displacement | null>(null);
   const [dispBusy, setDispBusy] = useState(false);
+  const [dispError, setDispError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -43,14 +64,20 @@ export function RevenueMeetingScreen() {
 
   async function runDisplacement() {
     setDispBusy(true);
+    setDispError(null);
     try {
       setDisp(await analyzeDisplacement({ arrivalDate: arrival, departureDate: departure, roomsPerNight: Number(rooms), groupRate: Number(rate) }));
-    } catch {
+    } catch (e) {
+      // QC-06: a failed analysis is shown, not rendered as "no result".
       setDisp(null);
+      setDispError(e instanceof Error ? e.message : "No se pudo analizar el desplazamiento.");
     } finally {
       setDispBusy(false);
     }
   }
+
+  const variance = pack?.budgetVariance ?? null;
+  const varianceSources = variance?.sources;
 
   const h = (n: number) => pack?.pace.horizons.find((x) => x.horizonDays === n);
   const pk = (n: number) => pack?.pickup.windows.find((x) => x.windowDays === n);
@@ -112,14 +139,37 @@ export function RevenueMeetingScreen() {
             </article>
 
             <article className="bo-card">
-              <div className="bo-card-head"><h3>Presupuesto vs previsión vs real</h3><span className="bo-chip">{pack.budgetVariance.month}</span></div>
+              <div className="bo-card-head">
+                <h3>Presupuesto vs previsión vs real</h3>
+                <div className="bo-pill-row">
+                  <span className="bo-chip">{pack.budgetVariance.month}</span>
+                  {/* Source chip (REV-03): says where "Real" comes from and how many past
+                      days lacked a night-audit snapshot. */}
+                  <span
+                    className={`bo-chip${varianceSources?.actual === "reservas" || (variance?.fallbackDays ?? 0) > 0 ? " bo-chip-warn" : ""}`}
+                    title={
+                      varianceSources
+                        ? `Real: ${varianceSources.actual}${variance?.snapshotDays != null ? ` · ${variance.snapshotDays} días con cierre` : ""}${variance?.fallbackDays != null ? ` · ${variance.fallbackDays} días desde reservas` : ""} · Previsión: ${varianceSources.forecast ?? "no aplica"}`
+                        : "El API no ha indicado la fuente del dato"
+                    }
+                  >
+                    {actualSourceLabel(varianceSources?.actual)}
+                    {variance?.fallbackDays ? ` · ${variance.fallbackDays} d sin cierre` : ""}
+                  </span>
+                </div>
+              </div>
               <div className="rev-report-wrap">
                 <table className="cm-table">
                   <thead><tr><th></th><th>Ocup.</th><th>ADR</th><th>Ingresos hab.</th></tr></thead>
                   <tbody>
-                    <tr><td><strong>Presupuesto</strong></td><td>{pack.budgetVariance.budget ? `${pack.budgetVariance.budget.occupancyPct}%` : "—"}</td><td>{pack.budgetVariance.budget ? money(pack.budgetVariance.budget.adr) : "—"}</td><td>{pack.budgetVariance.budget ? money(pack.budgetVariance.budget.roomRevenue) : "—"}</td></tr>
-                    <tr><td><strong>Previsión</strong></td><td>{pack.budgetVariance.forecast.occupancyPct}%</td><td>{money(pack.budgetVariance.forecast.adr)}</td><td>{money(pack.budgetVariance.forecast.roomRevenue)}</td></tr>
-                    <tr><td><strong>Real</strong></td><td>{pack.budgetVariance.actual.occupancyPct}%</td><td>{money(pack.budgetVariance.actual.adr)}</td><td>{money(pack.budgetVariance.actual.roomRevenue)}</td></tr>
+                    <tr><td><strong>Presupuesto</strong></td><td>{pack.budgetVariance.budget ? fmtPct(pack.budgetVariance.budget.occupancyPct) : "—"}</td><td>{pack.budgetVariance.budget ? money(pack.budgetVariance.budget.adr) : "—"}</td><td>{pack.budgetVariance.budget ? money(pack.budgetVariance.budget.roomRevenue) : "—"}</td></tr>
+                    <tr>
+                      <td><strong>Previsión</strong>{pack.budgetVariance.forecast ? null : <small className="bo-muted" style={{ display: "block", textTransform: "none" }}>Mes cerrado: sin previsión</small>}</td>
+                      <td>{pack.budgetVariance.forecast ? fmtPct(pack.budgetVariance.forecast.occupancyPct) : "—"}</td>
+                      <td>{pack.budgetVariance.forecast ? money(pack.budgetVariance.forecast.adr) : "—"}</td>
+                      <td>{pack.budgetVariance.forecast ? money(pack.budgetVariance.forecast.roomRevenue) : "—"}</td>
+                    </tr>
+                    <tr><td><strong>Real</strong></td><td>{fmtPct(pack.budgetVariance.actual.occupancyPct)}</td><td>{money(pack.budgetVariance.actual.adr)}</td><td>{money(pack.budgetVariance.actual.roomRevenue)}</td></tr>
                   </tbody>
                 </table>
               </div>
@@ -135,15 +185,21 @@ export function RevenueMeetingScreen() {
                 <table className="cm-table">
                   <thead><tr><th>Fecha</th><th>BAR actual</th><th>BAR sugerido</th><th>Δ</th><th>Riesgo</th></tr></thead>
                   <tbody>
-                    {pack.topRecommendations.map((r) => (
-                      <tr key={r.id}>
-                        <td><strong>{fmtDate(r.targetDate)}</strong></td>
-                        <td>{r.current?.bar != null ? money(r.current.bar) : "—"}</td>
-                        <td><strong>{r.recommended?.bar != null ? money(r.recommended.bar) : "—"}</strong></td>
-                        <td>{(r.expectedImpact?.deltaPct ?? 0) >= 0 ? "+" : ""}{r.expectedImpact?.deltaPct ?? 0}%</td>
-                        <td><span className={`bo-status ${r.riskLevel === "high" ? "warn" : "ok"}`} style={{ textTransform: "none" }}>{r.riskLevel}</span></td>
-                      </tr>
-                    ))}
+                    {pack.topRecommendations.map((r) => {
+                      const delta = r.expectedImpact?.deltaPct;
+                      return (
+                        <tr key={r.id}>
+                          <td><strong>{fmtDate(r.targetDate)}</strong></td>
+                          {/* REV-04: null BAR = nothing published in the rate grid; never a fallback price. */}
+                          <td title={r.current?.bar == null ? "Sin BAR publicado en la parrilla para esta fecha" : undefined}>
+                            {r.current?.bar != null ? money(r.current.bar) : "—"}
+                          </td>
+                          <td><strong>{r.recommended?.bar != null ? money(r.recommended.bar) : "—"}</strong></td>
+                          <td>{delta == null ? "—" : `${delta >= 0 ? "+" : ""}${delta}%`}</td>
+                          <td><span className={`bo-status ${r.riskLevel === "high" ? "warn" : "ok"}`} style={{ textTransform: "none" }}>{r.riskLevel}</span></td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -160,6 +216,7 @@ export function RevenueMeetingScreen() {
               <label style={{ display: "grid", gap: 2 }}><span className="bo-muted" style={{ textTransform: "none", fontSize: 12 }}>Tarifa grupo</span><input value={rate} onChange={(e) => setRate(e.target.value)} style={{ width: 100 }} /></label>
               <button type="button" className="primary" onClick={() => void runDisplacement()} disabled={dispBusy} style={{ alignSelf: "end" }}>{dispBusy ? <><Spinner size="sm" /> Analizando…</> : "Analizar"}</button>
             </div>
+            {dispError ? <p className="bo-status error" style={{ textTransform: "none" }}>{dispError}</p> : null}
             {disp ? (
               <div className="rev-kpi-grid">
                 <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Ingresos del grupo</span></div><div className="rev-kpi-value">{money(disp.groupRevenue)}</div></article>

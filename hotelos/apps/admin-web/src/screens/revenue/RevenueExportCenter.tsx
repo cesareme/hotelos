@@ -104,8 +104,14 @@ type ExportParams = { from: string; to: string; month: string };
 type CardNote = { kind: "ok" | "error"; text: string };
 type SessionEntry = { key: string; exportName: string; resp: GenerateExportResponse };
 
+function currentMonthIso(): string {
+  return new Date().toISOString().slice(0, 7);
+}
+
 function initialParamsFor(code: string): ExportParams {
-  return { ...defaultRangeFor(code), month: previousMonthIso() };
+  // The meeting pack is a "this month so far" ritual (REV-03c); the monthly
+  // close and the other month-addressed exports default to the closed month.
+  return { ...defaultRangeFor(code), month: code === "meeting_pack" ? currentMonthIso() : previousMonthIso() };
 }
 
 const FIELD_LABEL_STYLE = { fontSize: 11 } as const;

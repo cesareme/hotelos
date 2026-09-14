@@ -62,29 +62,11 @@ function readInvoiceIdFromUrl(): string {
   return "";
 }
 
-// Same persistence trick BillingCenterScreen uses for the UI-only "paid" mark.
-// We import / write to the same session-storage key so toggling between the
-// list and the detail keeps state consistent within a session.
-const PAID_STORAGE_KEY = "hotelos.billing.paidInvoiceIds";
-
-function readPaidIds(): Set<string> {
-  try {
-    const raw = sessionStorage.getItem(PAID_STORAGE_KEY);
-    if (!raw) return new Set();
-    const parsed = JSON.parse(raw) as string[];
-    return new Set(parsed);
-  } catch {
-    return new Set();
-  }
-}
-
-function writePaidIds(ids: Set<string>) {
-  try {
-    sessionStorage.setItem(PAID_STORAGE_KEY, JSON.stringify(Array.from(ids)));
-  } catch {
-    // ignore quota / private-mode errors
-  }
-}
+// Tanda 2 · QC-03: the "paid" state is server-derived (`paymentStatus` from
+// captured payments linked to the invoice). The former sessionStorage mark
+// shared with BillingCenterScreen is gone; when GET /invoices/:id does not
+// carry the enrichment yet, only a successful mark-paid response (full amount
+// or alreadyPaid) flips the local view, and the detail is refetched.
 
 // --- screen ----------------------------------------------------------------
 
@@ -103,7 +85,8 @@ export function InvoiceDetailScreen() {
   const [invoice, setInvoice] = useState<InvoiceFull | null>(null);
   const [loading, setLoading] = useState<boolean>(Boolean(invoiceId));
   const [error, setError] = useState<string>("");
-  const [paidIds, setPaidIds] = useState<Set<string>>(() => readPaidIds());
+  // Set only from a successful mark-paid response that settles the invoice.
+  const [paidFromResponse, setPaidFromResponse] = useState(false);
   const [emailDialog, setEmailDialog] = useState<{
     to: string;
     subject: string;
@@ -130,15 +113,23 @@ export function InvoiceDetailScreen() {
     void refresh();
   }, [refresh]);
 
-  // Derived UI status combines server status with the session-local "paid" flag.
-  // Order matters: cancelled / rectified take precedence over a stale paid mark.
+  // Derived UI status: server status + server payment state. Order matters:
+  // cancelled / rectified take precedence over any paid flag.
+  const isPaid = Boolean(invoice && invoice.status === "issued" && (invoice.paymentStatus === "paid" || paidFromResponse));
   const uiStatus = useMemo<InvoiceUiStatus>(() => {
     if (!invoice) return "draft";
     if (invoice.status === "cancelled") return "cancelled";
     if (invoice.status === "rectified") return "rectified";
-    if (invoice.status === "issued") return paidIds.has(invoice.id) ? "paid" : "issued";
+    if (invoice.status === "issued") return isPaid ? "paid" : "issued";
     return "draft";
-  }, [invoice, paidIds]);
+  }, [invoice, isPaid]);
+  // Amounts come from the API enrichment when present; otherwise only a fully
+  // settled invoice is known (total / 0) and anything else renders "—".
+  const paidTotal: number | undefined = invoice?.paidTotal ?? (isPaid && invoice ? invoice.total : undefined);
+  const balanceDue: number | undefined = invoice?.balanceDue ?? (isPaid ? 0 : undefined);
+  const canMarkPaid = Boolean(
+    invoice && invoice.status === "issued" && !isPaid && invoice.paymentStatus !== "not_applicable"
+  );
 
   const currency = (invoice?.lines?.[0] as { currency?: string } | undefined)?.currency ?? "EUR";
 
@@ -304,18 +295,23 @@ export function InvoiceDetailScreen() {
     setMarkingPaid(true);
     logBreadcrumb("invoice.markPaid", "mutation", { invoiceId: invoice.id });
     try {
-      await markInvoicePaid(invoice.id);
-      // server source of truth: the linked folio now has a captured payment.
-      // Mirror the optimistic UI flag the BillingCenterScreen also uses so the
-      // list view stays in sync within this session.
-      setPaidIds((current) => {
-        const next = new Set(current);
-        next.add(invoice.id);
-        writePaidIds(next);
-        return next;
-      });
-      showToast(`Factura ${invoice.invoiceNumber ?? invoice.id} marcada como pagada`, { variant: "success" });
+      const result = await markInvoicePaid(invoice.id);
+      // Server source of truth: the payment is written against invoice.folioId.
+      // Flip the local view only when the response says the invoice is settled,
+      // then refetch the detail (which carries the enrichment when available).
+      if (result.alreadyPaid || result.paymentStatus === "paid" || result.paidAmount >= result.invoiceTotal) {
+        setPaidFromResponse(true);
+      }
+      void refresh();
+      showToast(
+        result.alreadyPaid
+          ? `Factura ${invoice.invoiceNumber ?? invoice.id} ya estaba pagada`
+          : `Factura ${invoice.invoiceNumber ?? invoice.id} marcada como pagada`,
+        { variant: "success" }
+      );
     } catch (err) {
+      // e.g. 409 "La factura no está vinculada a ningún folio": shown as-is,
+      // the invoice is never marked paid locally.
       const message = err instanceof Error ? err.message : "No se pudo marcar la factura como pagada.";
       showToast(message, { variant: "error" });
     } finally {
@@ -453,7 +449,7 @@ export function InvoiceDetailScreen() {
             <StatusBadge variant={statusBadgeVariant(uiStatus)} size="md">
               {statusBadgeLabel(uiStatus)}
             </StatusBadge>
-            {invoice.status === "issued" && uiStatus !== "paid" ? (
+            {canMarkPaid ? (
               <CocoaButton
                 variant="filled"
                 tone="accent"
@@ -528,6 +524,11 @@ export function InvoiceDetailScreen() {
           {invoice.issuer?.taxId ? (
             <div style={{ color: "var(--cocoa-label-secondary)" }}>
               NIF/CIF: {invoice.issuer.taxId}
+            </div>
+          ) : null}
+          {invoice.issuer?.taxIdPlaceholder || invoice.issuerTaxIdPlaceholder ? (
+            <div className="bo-status warn" style={{ textTransform: "none", marginTop: "var(--cocoa-space-1)" }}>
+              NIF emisor provisional (sandbox): la huella y el QR se calcularon con un NIF de relleno. Configura el NIF real en Perfil del establecimiento.
             </div>
           ) : null}
           {invoice.issuer?.address ? (
@@ -614,14 +615,14 @@ export function InvoiceDetailScreen() {
           </div>
           <div className="bo-row">
             <span>Importe pagado</span>
-            <strong style={{ fontVariantNumeric: "tabular-nums" }}>
-              {fmtMoney(uiStatus === "paid" ? invoice.total : 0, currency)}
+            <strong style={{ fontVariantNumeric: "tabular-nums" }} title={paidTotal === undefined ? "El API no ha devuelto el estado de cobro de esta factura" : undefined}>
+              {fmtMoney(paidTotal, currency)}
             </strong>
           </div>
           <div className="bo-row">
             <span>Saldo pendiente</span>
-            <strong style={{ fontVariantNumeric: "tabular-nums" }}>
-              {fmtMoney(uiStatus === "paid" ? 0 : invoice.total, currency)}
+            <strong style={{ fontVariantNumeric: "tabular-nums" }} title={balanceDue === undefined ? "El API no ha devuelto el estado de cobro de esta factura" : undefined}>
+              {fmtMoney(balanceDue, currency)}
             </strong>
           </div>
         </div>

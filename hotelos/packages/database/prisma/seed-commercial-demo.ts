@@ -2,11 +2,32 @@
 // Idempotent: re-running rebuilds the demo rate grid, demo reservations
 // (code prefix RVNX-), comp-set snapshots, budgets, segments and pricing rules.
 //
-// Run: node --env-file=../../.env --import tsx prisma/seed-commercial-demo.ts
+// Run (full demo rebuild, prop_123 by default):
+//   node --env-file=../../.env --import tsx prisma/seed-commercial-demo.ts
+//
+// Run (BAR rate grid ONLY, for an existing/real property — REV-05):
+//   SEED_PROPERTY_ID=<id> SEED_SCOPE=rates \
+//   SEED_BAR_PRICES='{"IND":75,"DBL":95,"DSV":125,"JSU":165,"SRA":240}' \
+//   node --env-file=../../.env --import tsx prisma/seed-commercial-demo.ts
+//
+//   SEED_SCOPE=rates never touches room types, rooms, reservations,
+//   competitors, budgets, segments, rules or recommendations: it resolves the
+//   property's BAR plan (code "BAR" or ratePlanType "bar", active — created as
+//   type "bar" only if none exists), takes the sellable room types that have
+//   rooms, and (re)writes RateDay rows for [today−SEED_RATE_DAYS_BACK,
+//   today+SEED_RATE_DAYS_AHEAD] (defaults 30 + 150 = 180 days) using the
+//   weekend/season curve below on a per-type base price. Base prices come from
+//   SEED_BAR_PRICES (JSON keyed by room-type code); a type without one falls
+//   back to the median nightly amount of the property's OWN reservations of
+//   that type, and is skipped (with a warning) when neither exists — no price
+//   is ever invented.
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 const PROPERTY_ID = process.env.SEED_PROPERTY_ID ?? "prop_123";
+const SEED_SCOPE = process.env.SEED_SCOPE === "rates" ? "rates" : "full";
+const RATE_DAYS_BACK = Number.isFinite(Number(process.env.SEED_RATE_DAYS_BACK)) && process.env.SEED_RATE_DAYS_BACK !== undefined ? Number(process.env.SEED_RATE_DAYS_BACK) : 30;
+const RATE_DAYS_AHEAD = Number.isFinite(Number(process.env.SEED_RATE_DAYS_AHEAD)) && process.env.SEED_RATE_DAYS_AHEAD !== undefined ? Number(process.env.SEED_RATE_DAYS_AHEAD) : 150;
 const SELLABLE_TARGET = 48;
 const MS_DAY = 86_400_000;
 
@@ -46,10 +67,118 @@ const CHANNELS = [
 ];
 const SEG_DISCOUNT: Record<string, number> = { leisure: 1.0, corporate: 0.9, ota_leisure: 1.0, group: 0.85, wholesale: 0.78 };
 
+/** Realistic BAR curve on a per-type base price: Fri/Sat +18 %, Sun +5 %, Jun–Sep +16 %, Dec–Jan −8 %. */
+function barPriceFor(base: number, d: Date): number {
+  const dow = d.getUTCDay();
+  const weekend = dow === 5 || dow === 6 ? 1.18 : dow === 0 ? 1.05 : 1.0;
+  const month = d.getUTCMonth();
+  const season = month >= 5 && month <= 8 ? 1.16 : month === 11 || month === 0 ? 0.92 : 1.0;
+  return Math.round(base * weekend * season);
+}
+
+function parseBarPrices(raw: string | undefined): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!raw) return out;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("SEED_BAR_PRICES must be a JSON object keyed by room-type code, e.g. {\"DBL\":95}.");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("SEED_BAR_PRICES must be a JSON object keyed by room-type code.");
+  for (const [code, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n <= 0) throw new Error(`SEED_BAR_PRICES.${code} must be a positive number.`);
+    out.set(code.toUpperCase(), n);
+  }
+  return out;
+}
+
+/**
+ * SEED_SCOPE=rates: BAR rate grid only, on the property's real room types and
+ * BAR plan. Idempotent for the window (delete + createMany on the BAR plan).
+ */
+async function seedBarRateGrid(propertyId: string): Promise<void> {
+  const configured = parseBarPrices(process.env.SEED_BAR_PRICES);
+
+  // BAR plan: code "BAR" (case-insensitive) or ratePlanType "bar", active.
+  const plans = await prisma.ratePlan.findMany({
+    where: { propertyId, active: true, OR: [{ code: { equals: "BAR", mode: "insensitive" } }, { ratePlanType: "bar" }] },
+    orderBy: { createdAt: "asc" }
+  });
+  let bar = plans.find((p) => p.code.toUpperCase() === "BAR") ?? plans.find((p) => p.ratePlanType === "bar") ?? plans[0];
+  if (!bar) {
+    bar = await prisma.ratePlan.create({ data: { propertyId, code: "BAR", name: "Best Available Rate", ratePlanType: "bar", mealPlan: "room_only", active: true } });
+    console.log(`[seed:rates] created BAR rate plan ${bar.id}`);
+  } else {
+    console.log(`[seed:rates] BAR rate plan ${bar.id} (${bar.code} · ${bar.ratePlanType})`);
+  }
+
+  // Sellable, active room types that actually have sellable rooms.
+  const [types, roomGroups] = await Promise.all([
+    prisma.roomType.findMany({ where: { propertyId, active: true, sellable: true }, orderBy: [{ displayOrder: "asc" }, { code: "asc" }] }),
+    prisma.room.groupBy({ by: ["roomTypeId"], where: { propertyId, sellable: true }, _count: { _all: true } })
+  ]);
+  const roomsByType = new Map(roomGroups.map((g) => [g.roomTypeId, g._count._all]));
+  const sellableTypes = types.filter((t) => (roomsByType.get(t.id) ?? 0) > 0);
+  if (sellableTypes.length === 0) throw new Error(`Property ${propertyId} has no sellable room type with rooms; nothing to seed.`);
+
+  // Base price per type: SEED_BAR_PRICES → median nightly amount of the
+  // property's own reservations for that type → skip (never invented).
+  const basePrices: Array<{ roomTypeId: string; code: string; base: number; source: "env" | "reservations_median" }> = [];
+  for (const t of sellableTypes) {
+    const fromEnv = configured.get(t.code.toUpperCase());
+    if (fromEnv !== undefined) {
+      basePrices.push({ roomTypeId: t.id, code: t.code, base: fromEnv, source: "env" });
+      continue;
+    }
+    const res = await prisma.reservation.findMany({
+      where: { propertyId, roomTypeId: t.id, status: { in: ["confirmed", "checked_in", "checked_out"] }, totalAmount: { gt: 0 } },
+      select: { arrivalDate: true, departureDate: true, totalAmount: true, roomsCount: true },
+      take: 500
+    });
+    const nightly = res
+      .map((r) => {
+        const n = Math.max(1, Math.round((startUtc(r.departureDate).getTime() - startUtc(r.arrivalDate).getTime()) / MS_DAY));
+        return Number(r.totalAmount) / n / Math.max(1, r.roomsCount);
+      })
+      .filter((v) => Number.isFinite(v) && v > 0)
+      .sort((a, b) => a - b);
+    if (nightly.length === 0) {
+      console.warn(`[seed:rates] SKIP ${t.code}: no SEED_BAR_PRICES entry and no priced reservations to derive a base BAR from.`);
+      continue;
+    }
+    const mid = Math.floor(nightly.length / 2);
+    const median = nightly.length % 2 ? nightly[mid] : (nightly[mid - 1] + nightly[mid]) / 2;
+    basePrices.push({ roomTypeId: t.id, code: t.code, base: Math.round(median), source: "reservations_median" });
+  }
+  if (basePrices.length === 0) throw new Error("No room type has a base BAR (set SEED_BAR_PRICES); nothing to seed.");
+  for (const b of basePrices) console.log(`[seed:rates] ${b.code}: base ${b.base} € (${b.source === "env" ? "SEED_BAR_PRICES" : `median of ${b.source}`})`);
+
+  const today = startUtc();
+  const gridFrom = addDays(today, -Math.max(0, Math.round(RATE_DAYS_BACK)));
+  const gridTo = addDays(today, Math.max(0, Math.round(RATE_DAYS_AHEAD)) - 1);
+  const typeIds = basePrices.map((b) => b.roomTypeId);
+  const deleted = await prisma.rateDay.deleteMany({ where: { propertyId, ratePlanId: bar.id, roomTypeId: { in: typeIds }, date: { gte: gridFrom, lte: gridTo } } });
+  const rows: { propertyId: string; ratePlanId: string; roomTypeId: string; date: Date; price: number; currency: string }[] = [];
+  for (let d = new Date(gridFrom); d <= gridTo; d = addDays(d, 1)) {
+    for (const b of basePrices) rows.push({ propertyId, ratePlanId: bar.id, roomTypeId: b.roomTypeId, date: new Date(d), price: barPriceFor(b.base, d), currency: "EUR" });
+  }
+  for (let i = 0; i < rows.length; i += 1000) await prisma.rateDay.createMany({ data: rows.slice(i, i + 1000) });
+  const days = Math.round((gridTo.getTime() - gridFrom.getTime()) / MS_DAY) + 1;
+  console.log(`[seed:rates] rate days: ${rows.length} (${days} days × ${basePrices.length} types, ${iso(gridFrom)} → ${iso(gridTo)}; replaced ${deleted.count})`);
+}
+
 async function main() {
   const property = await prisma.property.findUnique({ where: { id: PROPERTY_ID } });
   if (!property) throw new Error(`Property ${PROPERTY_ID} not found`);
-  console.log(`[seed] property ${PROPERTY_ID} (${property.name})`);
+  console.log(`[seed] property ${PROPERTY_ID} (${property.name}) · scope ${SEED_SCOPE}`);
+
+  if (SEED_SCOPE === "rates") {
+    await seedBarRateGrid(PROPERTY_ID);
+    console.log("[seed] done.");
+    return;
+  }
 
   // --- Room types: ensure exactly these 4 (cheapest → priciest), in order ---
   const TYPE_DEFS = [
@@ -121,12 +250,9 @@ async function main() {
   await prisma.rateDay.deleteMany({ where: { propertyId: PROPERTY_ID, ratePlanId: bar.id, date: { gte: gridFrom, lte: gridTo } } });
   const rateRows: { propertyId: string; ratePlanId: string; roomTypeId: string; date: Date; price: number; currency: string }[] = [];
   const priceFor = (rtId: string, d: Date): number => {
-    const base = rtPrice.get(rtId) ?? 130;
-    const dow = d.getUTCDay();
-    const weekend = dow === 5 || dow === 6 ? 1.18 : dow === 0 ? 1.05 : 1.0;
-    const month = d.getUTCMonth();
-    const season = month >= 5 && month <= 8 ? 1.16 : month === 11 || month === 0 ? 0.92 : 1.0;
-    return Math.round(base * weekend * season);
+    const base = rtPrice.get(rtId);
+    if (base === undefined) throw new Error(`No base price for room type ${rtId} (TYPE_DEFS).`);
+    return barPriceFor(base, d);
   };
   for (let d = new Date(gridFrom); d <= gridTo; d = addDays(d, 1)) {
     for (const rt of roomTypes) rateRows.push({ propertyId: PROPERTY_ID, ratePlanId: bar.id, roomTypeId: rt.id, date: new Date(d), price: priceFor(rt.id, d), currency: "EUR" });
@@ -340,7 +466,7 @@ async function main() {
       propertyId: PROPERTY_ID,
       recommendationType: "bar",
       targetDate: new Date(d),
-      currentValueJson: { bar: baseBar, occupancyPct: occ, compsetMedian: compMedian },
+      currentValueJson: { bar: baseBar, barSource: "rate_grid", ratePlanId: bar.id, occupancyPct: occ, compsetMedian: compMedian },
       recommendedValueJson: { bar: recommended },
       expectedImpactJson: { direction: recommended > baseBar ? "up" : "down", deltaPct: Math.round(((recommended - baseBar) / baseBar) * 10000) / 100 },
       reasonJson: reasons,

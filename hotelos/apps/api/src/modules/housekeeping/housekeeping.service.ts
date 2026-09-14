@@ -303,20 +303,140 @@ export async function createHousekeepingTask(input: {
   return task;
 }
 
+// ---------------------------------------------------------------------------
+// System-originated tasks (Tanda 2 · REC-03)
+// ---------------------------------------------------------------------------
+
+// Delegates the system variant can run on: the root client or a `$transaction`
+// client, so a room move can create the departure-clean task atomically with
+// the room/Stay updates.
+type HkTaskDb = Pick<typeof prisma, "room" | "housekeepingTask" | "housekeepingEvent">;
+
+// Open tasks that make a new one of the same type redundant for a room.
+const HK_OPEN_STATUSES: readonly HousekeepingTaskRecord["status"][] = ["pending", "assigned"];
+
+export type SystemHousekeepingTaskInput = {
+  /** Root client by default; pass the `$transaction` client to join a transaction. */
+  db?: HkTaskDb;
+  organizationId: string;
+  propertyId: string;
+  roomId: string;
+  taskType: HousekeepingTaskRecord["taskType"];
+  priority?: HousekeepingTaskRecord["priority"];
+  dueAt?: Date | null;
+  /** User whose front-desk action triggered the task (audit actor); absent → system. */
+  actorUserId?: string;
+  /** Free-text note stored on the `created` housekeeping event. */
+  reason?: string;
+  correlationId: string;
+};
+
+export type SystemHousekeepingTaskResult = {
+  task: HousekeepingTaskRecord;
+  /** false when an open (pending/assigned) task of the same type already covered the room. */
+  created: boolean;
+};
+
+/**
+ * Create a housekeeping task as a SIDE EFFECT of a front-desk operation
+ * (check-out, in-house room move) WITHOUT `housekeeping.task.manage`: the
+ * receptionist role does not hold that permission (packages/shared
+ * permissions.ts), so routing these through `createHousekeepingTask` made the
+ * primary operation succeed and then fail on the follow-up task under strict
+ * RBAC. Tenancy is the CALLER's responsibility (the reservation/room was
+ * already access-checked); this helper only verifies the room exists in the
+ * given property. Dedup: an open (pending/assigned) task of the same type for
+ * the same room is returned instead of creating a duplicate.
+ */
+export async function createSystemHousekeepingTask(input: SystemHousekeepingTaskInput): Promise<SystemHousekeepingTaskResult> {
+  const db = input.db ?? prisma;
+  assertRequiredString("El identificador de propiedad", input.propertyId);
+  assertRequiredString("El identificador de habitación", input.roomId);
+  assertEnumValue("Tipo de tarea no válido", input.taskType, HK_TASK_TYPES);
+  if (input.priority !== undefined) assertEnumValue("Prioridad no válida", input.priority, HK_TASK_PRIORITIES);
+
+  const room = await db.room.findFirst({
+    where: { id: input.roomId, propertyId: input.propertyId },
+    select: { id: true }
+  });
+  if (!room) {
+    throw new NotFoundError("Habitación no encontrada.");
+  }
+
+  const existing = await db.housekeepingTask.findFirst({
+    where: { propertyId: input.propertyId, roomId: input.roomId, taskType: input.taskType, status: { in: [...HK_OPEN_STATUSES] } },
+    orderBy: { createdAt: "asc" }
+  });
+  if (existing) {
+    const task = mapTask(existing);
+    mirrorTask(task);
+    return { task, created: false };
+  }
+
+  const created = await db.housekeepingTask.create({
+    data: {
+      propertyId: input.propertyId,
+      roomId: input.roomId,
+      taskType: input.taskType,
+      priority: input.priority ?? "normal",
+      status: "pending",
+      assignedTo: null,
+      dueAt: input.dueAt ?? null
+    }
+  });
+  const task = mapTask(created);
+  mirrorTask(task);
+
+  await recordHousekeepingEvent({
+    db,
+    taskId: task.id,
+    eventType: "created",
+    note: input.reason ?? `${task.taskType} task created.`,
+    createdBy: input.actorUserId
+  });
+
+  recordAuditEvent({
+    organizationId: input.organizationId,
+    propertyId: input.propertyId,
+    actorUserId: input.actorUserId,
+    actorType: input.actorUserId ? "user" : "system",
+    action: "HOUSEKEEPING_TASK_CREATED",
+    entityType: "housekeeping_task",
+    entityId: task.id,
+    afterJson: { ...task, reason: input.reason ?? null },
+    correlationId: input.correlationId
+  });
+
+  return { task, created: true };
+}
+
+/**
+ * Departure-clean task after a check-out. Tenancy is still enforced (the
+ * property must be in the caller's org, or the caller is a platform admin) but
+ * NO housekeeping permission is required: this is the automatic consequence
+ * of `pms.checkout.execute`, not a manual HK action. Idempotent per room.
+ */
 export async function createDepartureCleaningTask(input: {
   context: UserContext;
   propertyId: string;
   roomId: string;
   correlationId: string;
 }): Promise<HousekeepingTaskRecord> {
-  return createHousekeepingTask({
-    context: input.context,
+  assertRequiredString("El identificador de propiedad", input.propertyId);
+  if (!(await canAccessProperty(prisma, input.propertyId, input.context))) {
+    throw new NotFoundError("Habitación no encontrada.");
+  }
+  const { task } = await createSystemHousekeepingTask({
+    organizationId: input.context.organizationId,
     propertyId: input.propertyId,
     roomId: input.roomId,
     taskType: "departure_clean",
     priority: "high",
+    actorUserId: input.context.userId,
+    reason: "Departure clean after check-out.",
     correlationId: input.correlationId
   });
+  return task;
 }
 
 export async function updateHousekeepingTask(input: {
@@ -531,13 +651,15 @@ export async function markRoomInspected(input: {
 }
 
 async function recordHousekeepingEvent(input: {
+  /** Root client by default; a `$transaction` client keeps the event atomic with its task. */
+  db?: Pick<typeof prisma, "housekeepingEvent">;
   taskId: string;
   eventType: HousekeepingEventRecord["eventType"];
   note?: string;
   photoObjectKey?: string;
   createdBy?: string;
 }): Promise<HousekeepingEventRecord> {
-  const created = await prisma.housekeepingEvent.create({
+  const created = await (input.db ?? prisma).housekeepingEvent.create({
     data: {
       taskId: input.taskId,
       eventType: input.eventType,

@@ -14,7 +14,7 @@ import type { Prisma } from "@hotelos/database";
 import type { UserContext } from "../../../lib/demo-store.js";
 import { requirePermissions } from "../../auth/auth.service.js";
 import { recordAuditEvent } from "../../audit/audit.service.js";
-import { BadRequestError } from "../../../lib/http-error.js";
+import { BadRequestError, ConflictError } from "../../../lib/http-error.js";
 import { parseReservationRequest } from "../../pms/reservation-agent.service.js";
 import { createReservation } from "../../pms/pms.service.js";
 import { enqueueReview, approveReview, rejectReview } from "../../ai-operations/human-review.service.js";
@@ -119,8 +119,14 @@ export async function handleOAuthCallback(state: string, code: string) {
       const j = await me.json();
       emailAddress = j?.mail ?? j?.userPrincipalName;
     }
-  } catch {
-    /* email address is best-effort */
+  } catch (err) {
+    // Best-effort: the mailbox works without its display address, but log why
+    // it is missing so a connection listed without email is explainable.
+    console.warn("[mailbox.oauth] userinfo lookup failed; connection saved without emailAddress", {
+      provider,
+      connectionId,
+      error: err instanceof Error ? err.message : String(err)
+    });
   }
 
   await prisma.emailConnection.update({
@@ -157,7 +163,8 @@ async function getAccessToken(connection: { id: string; provider: string; oauthR
 function decodeGmailBody(payload: unknown): string {
   const p = payload as { mimeType?: string; body?: { data?: string }; parts?: unknown[] };
   if (p?.body?.data) {
-    try { return Buffer.from(p.body.data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch { /* ignore */ }
+    // Best-effort: a malformed base64 body falls through to the MIME parts below.
+    try { return Buffer.from(p.body.data.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8"); } catch { /* fall through to parts */ }
   }
   if (Array.isArray(p?.parts)) {
     for (const part of p.parts) {
@@ -297,18 +304,41 @@ export async function pollConnection(input: { context: UserContext; connectionId
   }
 }
 
-export async function pollAllConnections(context: UserContext) {
+export async function pollAllConnections(context: UserContext): Promise<{ connections: number; processed: number; failed: string[] }> {
   const connections = await prisma.emailConnection.findMany({ where: { status: "connected", provider: { in: ["gmail", "microsoft"] } } });
   let total = 0;
+  const failed: string[] = [];
   for (const c of connections) {
+    const correlationId = `corr_mailbox_${c.id}`;
     try {
-      const r = await pollConnection({ context, connectionId: c.id, correlationId: `corr_mailbox_${c.id}` });
+      const r = await pollConnection({ context, connectionId: c.id, correlationId });
       total += (r as { processed?: number }).processed ?? 0;
-    } catch {
-      /* keep going */
+    } catch (err) {
+      // Keep polling the other mailboxes (one expired token must not stop the
+      // whole poller), but never silently: pollConnection already persisted
+      // emailConnection.lastError; here we log with correlation and report the
+      // connection id back to the scheduler tick, which warns when failed > 0.
+      failed.push(c.id);
+      console.error("[mailbox.poll] connection failed", {
+        connectionId: c.id,
+        propertyId: c.propertyId,
+        correlationId,
+        error: err instanceof Error ? err.message : String(err)
+      });
     }
   }
-  return { connections: connections.length, processed: total };
+  return { connections: connections.length, processed: total, failed };
+}
+
+// approveReview/rejectReview (human-review.service.ts) throw a plain Error
+// "Cannot approve|reject a review item with status …" when the item was already
+// decided. That is the ONLY tolerated outcome when closing the review from the
+// email flow: the inbound email is still processed. Anything else (DB down,
+// missing row) is re-thrown so the review queue never drifts from the email.
+function isReviewAlreadyDecided(err: unknown): boolean {
+  if (err instanceof ConflictError) return true;
+  const message = err instanceof Error ? err.message : "";
+  return /Cannot (approve|reject) a review item with status/.test(message);
 }
 
 /** Manual/demo ingest: paste an email and run the identical pipeline. */
@@ -426,8 +456,13 @@ export async function approveEmailReservation(input: { context: UserContext; inb
   if (row.reviewItemId) {
     try {
       await approveReview({ context: input.context, id: row.reviewItemId, userId: input.context.userId, notes: "Reserva creada desde email", correlationId: input.correlationId });
-    } catch {
-      /* review may already be decided */
+    } catch (err) {
+      if (!isReviewAlreadyDecided(err)) throw err;
+      console.warn("[email.reservation] review already decided; reservation created anyway", {
+        reviewItemId: row.reviewItemId,
+        inboundEmailId: row.id,
+        correlationId: input.correlationId
+      });
     }
   }
   const updated = await prisma.inboundEmail.update({ where: { id: row.id }, data: { status: "reservation_created", reservationId: reservation.id } });
@@ -442,8 +477,13 @@ export async function rejectEmailReservation(input: { context: UserContext; inbo
   if (row.reviewItemId) {
     try {
       await rejectReview({ context: input.context, id: row.reviewItemId, userId: input.context.userId, reason: input.reason ?? "Descartado", correlationId: input.correlationId });
-    } catch {
-      /* ignore */
+    } catch (err) {
+      if (!isReviewAlreadyDecided(err)) throw err;
+      console.warn("[email.reservation] review already decided; email marked ignored anyway", {
+        reviewItemId: row.reviewItemId,
+        inboundEmailId: row.id,
+        correlationId: input.correlationId
+      });
     }
   }
   const updated = await prisma.inboundEmail.update({ where: { id: row.id }, data: { status: "ignored" } });

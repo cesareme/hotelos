@@ -2337,16 +2337,25 @@ model PosProduct {
 }
 
 model PosOrder {
-  id            String   @id @default(cuid())
-  propertyId    String   @map("property_id")
-  outletId      String   @map("outlet_id")
-  roomId        String?  @map("room_id")
-  reservationId String?  @map("reservation_id")
-  status        String
-  total         Decimal  @default(0) @db.Decimal(12, 2)
-  createdAt     DateTime @default(now()) @map("created_at")
+  id             String    @id @default(cuid())
+  propertyId     String    @map("property_id")
+  outletId       String    @map("outlet_id")
+  roomId         String?   @map("room_id")
+  reservationId  String?   @map("reservation_id")
+  status         String
+  total          Decimal   @default(0) @db.Decimal(12, 2)
+  // Tanda 2 · FISC-05: settlement persisted (was only in the in-memory mirror).
+  // db push only (no migration): must enter the Tanda 4 squash baseline.
+  settlement     String?
+  roomNumber     String?   @map("room_number")
+  closedAt       DateTime? @map("closed_at")
+  closedByUserId String?   @map("closed_by_user_id")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([propertyId, status])
+  @@index([propertyId, closedAt])
+  @@index([propertyId, outletId, closedAt])
   @@map("pos_orders")
 }
 
@@ -2645,6 +2654,7 @@ model Guest {
   // Used by the guests list endpoint when filtering by name.
   @@index([organizationId, firstName])
   @@index([organizationId, surname1])
+  @@index([organizationId, createdAt])
   @@index([deletedAt])
   @@map("guests")
 }
@@ -2840,6 +2850,7 @@ model Reservation {
 
   @@unique([propertyId, code])
   @@index([propertyId, arrivalDate, departureDate])
+  @@index([propertyId, arrivalDate, id])
   @@index([propertyId, status, arrivalDate])
   @@index([propertyId, status, departureDate])
   @@index([propertyId, externalReference])
@@ -2936,6 +2947,7 @@ model Folio {
   reservation   Reservation @relation("ReservationFolios", fields: [reservationId], references: [id], onDelete: Cascade)
   lines         FolioLine[]
   payments      Payment[]
+  invoices      Invoice[]   @relation("FolioInvoices")
 
   @@index([reservationId])
   // Hot-fix perf: filter the open vs closed folios on a reservation
@@ -2995,13 +3007,24 @@ model Payment {
   currency     String        @default("EUR")
   method       String
   pspReference String?       @map("psp_reference")
+  // Deterministic HMAC of pspReference (Tanda 2 · PSP-IDEMPOTENCY-ENCRYPTED):
+  // pspReference is AES-GCM ciphertext with a random IV, so equality lookups
+  // must go through this sibling column. Filled by the Prisma encryption
+  // extension (LOOKUP_HASH_FIELDS.Payment); legacy rows need
+  // `pnpm --filter @hotelos/api backfill:payment-hash --apply`.
+  pspReferenceLookupHash String? @map("psp_reference_lookup_hash")
+  invoiceId    String?       @map("invoice_id")
   status       PaymentStatus @default(pending)
   createdAt    DateTime      @default(now()) @map("created_at")
   deletedAt    DateTime?     @map("deleted_at")
 
   folio        Folio         @relation(fields: [folioId], references: [id], onDelete: Cascade)
+  invoice      Invoice?      @relation("InvoicePayments", fields: [invoiceId], references: [id], onDelete: SetNull)
 
   @@index([propertyId, folioId])
+  @@index([invoiceId])
+  // markInvoicePaid idempotency lookup by (invoiceId, pspReference) → hash.
+  @@index([invoiceId, pspReferenceLookupHash])
   // Hot-fix perf: per-folio payment timeline (folio.service.getFolioBalance
   // sorts payments by createdAt within a folio).
   @@index([folioId, createdAt])
@@ -3031,12 +3054,27 @@ model Invoice {
   verifactuHash       String?       @map("verifactu_hash")
   previousInvoiceHash String?       @map("previous_invoice_hash")
   qrPayload           String?       @map("qr_payload")
+  // Tanda 2 · FISC-03/FISC-04/QC-03: issuer snapshot, source folio and payment state.
+  // db push only (no migration): must enter the Tanda 4 squash baseline.
+  issuerTaxId         String?       @map("issuer_tax_id")
+  issuerLegalName     String?       @map("issuer_legal_name")
+  issuerTaxIdPlaceholder Boolean    @default(false) @map("issuer_tax_id_placeholder")
+  folioId             String?       @map("folio_id")
+  reservationId       String?       @map("reservation_id")
+  paidAt              DateTime?     @map("paid_at")
+  updatedAt           DateTime      @default(now()) @updatedAt @map("updated_at")
   createdAt           DateTime      @default(now()) @map("created_at")
   deletedAt           DateTime?     @map("deleted_at")
+
+  folio               Folio?        @relation("FolioInvoices", fields: [folioId], references: [id], onDelete: SetNull)
+  payments            Payment[]     @relation("InvoicePayments")
 
   @@unique([propertyId, invoiceNumber])
   @@index([propertyId, status])
   @@index([propertyId, issuedAt])
+  @@index([propertyId, createdAt])
+  @@index([folioId])
+  @@index([reservationId])
   @@index([rectifyingForId])
   @@index([deletedAt])
   @@map("invoices")

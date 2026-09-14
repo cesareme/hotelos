@@ -27,6 +27,14 @@ import {
   type DirectorOpsHealthStatus
 } from "../../components/cocoa-director/DirectorOpsHealthMini";
 import {
+  DegradedBanner,
+  DegradedCard,
+  DegradedNote,
+  DegradedValue,
+  isDegraded
+} from "../../components/cocoa-extras/DegradedValue";
+import { toArray } from "../../utils/toArray";
+import {
   SEVERITY_TONE,
   toneToColorToken,
   type ManagementTone
@@ -158,10 +166,48 @@ type Data = {
     departmentsError: number;
     criticalAlerts: number;
   };
+  // QC-06: `safe()` labels whose query failed and fell back to 0/[]. Mirrors
+  // `apps/api/src/modules/dashboards/operations-director.service.ts`.
+  degraded: string[];
 };
 
 type OpsTab = "overview" | "alertas";
 type DetailTab = "hk" | "wo" | "shifts" | "incidents";
+
+// `safe()` labels in operations-director.service.ts grouped by the UI slot
+// they feed. A slot is degraded when ANY of its labels is in `degraded[]`.
+const DEGRADED_LABEL = {
+  // Department health / alerts roll-up (summary tiles, alerts badge).
+  summary: [
+    "maintenance.openWorkOrders",
+    "maintenance.inProgressWorkOrders",
+    "maintenance.emergencyWorkOrders",
+    "workforce.absencesToday",
+    "safety.incidentsActive",
+    "pos.openTickets"
+  ],
+  hkDelta: "housekeeping.cleanRoomsYesterdayProxy",
+  maintenance: [
+    "maintenance.openWorkOrders",
+    "maintenance.inProgressWorkOrders",
+    "maintenance.emergencyWorkOrders"
+  ],
+  maintenanceDelta: "maintenance.workOrdersActiveYesterdayProxy",
+  workforce: ["workforce.shiftsToday", "workforce.shiftsStaffedToday"],
+  safety: ["safety.incidentsActive", "safety.incidentsCritical"],
+  pos: ["pos.ordersToday", "pos.outlets"],
+  details: {
+    hk: "details.hkTasks",
+    wo: "details.workOrders",
+    shifts: "details.shifts",
+    incidents: "details.safetyIncidents"
+  },
+  trends: {
+    hk: "trends.hkTasksLast7d",
+    mttr: "trends.workOrdersResolvedLast7d",
+    coverage: "trends.shiftsLast7d"
+  }
+} as const;
 
 function navigateTo(screen: string) {
   if (typeof window !== "undefined") {
@@ -230,13 +276,15 @@ function badgeStyle(tone: ManagementTone): CSSProperties {
   };
 }
 
-function summaryTileStyle(tone: ManagementTone): CSSProperties {
+// "degraded": the tile's counter fell back (QC-06) — attenuated border instead
+// of a confident green/red one.
+function summaryTileStyle(tone: ManagementTone | "degraded"): CSSProperties {
   return {
     display: "flex",
     flexDirection: "column",
     gap: "var(--cocoa-space-1)",
     padding: "var(--cocoa-space-3)",
-    borderLeft: `3px solid ${toneToColorToken(tone)}`
+    borderLeft: `3px solid ${tone === "degraded" ? "var(--cocoa-label-tertiary)" : toneToColorToken(tone)}`
   };
 }
 
@@ -353,7 +401,10 @@ function posStatus(mc: MiniCards["posRevenueToday"]): DirectorOpsHealthStatus {
   return "ok";
 }
 
-function buildHkMiniProps(mc: MiniCards["housekeeping"]): DirectorOpsHealthMiniProps {
+// `deltaDegraded`: the yesterday baseline is a safe()-wrapped query; when it
+// failed the API returns a delta computed against 0, so omit the delta rather
+// than show a fake "+N".
+function buildHkMiniProps(mc: MiniCards["housekeeping"], deltaDegraded: boolean): DirectorOpsHealthMiniProps {
   return {
     module: "housekeeping",
     title: "Housekeeping",
@@ -365,12 +416,12 @@ function buildHkMiniProps(mc: MiniCards["housekeeping"]): DirectorOpsHealthMiniP
       { label: "OOO", count: mc.ooo, color: "var(--cocoa-danger)" }
     ],
     status: hkStatus(mc),
-    deltaVsYesterday: mc.deltaVsYesterday,
+    deltaVsYesterday: deltaDegraded ? undefined : mc.deltaVsYesterday,
     onDrillDown: () => navigateTo("HousekeepingMobileScreen")
   };
 }
 
-function buildMaintenanceMiniProps(mc: MiniCards["maintenance"]): DirectorOpsHealthMiniProps {
+function buildMaintenanceMiniProps(mc: MiniCards["maintenance"], deltaDegraded: boolean): DirectorOpsHealthMiniProps {
   return {
     module: "maintenance",
     title: "Mantenimiento",
@@ -382,7 +433,7 @@ function buildMaintenanceMiniProps(mc: MiniCards["maintenance"]): DirectorOpsHea
       { label: "crítica", count: mc.critical, color: "var(--cocoa-danger)" }
     ],
     status: maintenanceStatus(mc),
-    deltaVsYesterday: mc.deltaVsYesterday,
+    deltaVsYesterday: deltaDegraded ? undefined : mc.deltaVsYesterday,
     onDrillDown: () => navigateTo("MaintenanceMobileScreen")
   };
 }
@@ -456,14 +507,18 @@ export function OperationsDirectorScreen() {
   const [activeTab, setActiveTab] = useState<OpsTab>("overview");
   const [activeDetail, setActiveDetail] = useState<DetailTab>("hk");
 
-  const alerts = data?.alerts ?? [];
+  const alerts = toArray<Alert>(data?.alerts);
+  const degraded = toArray<string>(data?.degraded);
   const summary = data?.summary ?? { departmentsOk: 0, departmentsWarn: 0, departmentsError: 0, criticalAlerts: 0 };
   const miniCards = data?.miniCards;
   const details = data?.details;
   const trends = data?.trends;
 
+  const summaryDegraded = isDegraded(DEGRADED_LABEL.summary, degraded);
+
   const headerActions: ReactNode = (
     <>
+      <DegradedBanner degraded={degraded} />
       {loading ? <span style={badgeStyle("info")}>cargando</span> : null}
       {error ? <span style={badgeStyle("danger")}>{error}</span> : null}
       <CocoaButton
@@ -499,21 +554,31 @@ export function OperationsDirectorScreen() {
           <h3 style={cardTitleStyle}>Resumen operativo</h3>
         </div>
         <div style={summaryGridStyle}>
-          <div style={summaryTileStyle("success")}>
+          {/* The roll-up is computed from safe()-wrapped department counters:
+              a failed query would otherwise surface as "0 críticos" in green. */}
+          <div style={summaryTileStyle(summaryDegraded ? "degraded" : "success")}>
             <span style={summaryLabelStyle}>Departamentos OK</span>
-            <span style={summaryValueStyle}>{summary.departmentsOk}</span>
+            <span style={summaryValueStyle}>
+              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{summary.departmentsOk}</DegradedValue>
+            </span>
           </div>
-          <div style={summaryTileStyle("warning")}>
+          <div style={summaryTileStyle(summaryDegraded ? "degraded" : "warning")}>
             <span style={summaryLabelStyle}>Atención</span>
-            <span style={summaryValueStyle}>{summary.departmentsWarn}</span>
+            <span style={summaryValueStyle}>
+              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{summary.departmentsWarn}</DegradedValue>
+            </span>
           </div>
-          <div style={summaryTileStyle(summary.departmentsError > 0 ? "danger" : "success")}>
+          <div style={summaryTileStyle(summaryDegraded ? "degraded" : summary.departmentsError > 0 ? "danger" : "success")}>
             <span style={summaryLabelStyle}>Críticos</span>
-            <span style={summaryValueStyle}>{summary.departmentsError}</span>
+            <span style={summaryValueStyle}>
+              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{summary.departmentsError}</DegradedValue>
+            </span>
           </div>
-          <div style={summaryTileStyle(summary.criticalAlerts > 0 ? "danger" : "success")}>
+          <div style={summaryTileStyle(summaryDegraded ? "degraded" : summary.criticalAlerts > 0 ? "danger" : "success")}>
             <span style={summaryLabelStyle}>Alertas críticas</span>
-            <span style={summaryValueStyle}>{summary.criticalAlerts}</span>
+            <span style={summaryValueStyle}>
+              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{summary.criticalAlerts}</DegradedValue>
+            </span>
           </div>
         </div>
       </CocoaCard>
@@ -536,11 +601,23 @@ export function OperationsDirectorScreen() {
             </div>
             {miniCards ? (
               <div style={miniCardsRowStyle}>
-                <DirectorOpsHealthMini {...buildHkMiniProps(miniCards.housekeeping)} />
-                <DirectorOpsHealthMini {...buildMaintenanceMiniProps(miniCards.maintenance)} />
-                <DirectorOpsHealthMini {...buildWorkforceMiniProps(miniCards.workforce)} />
-                <DirectorOpsHealthMini {...buildSafetyMiniProps(miniCards.safety)} />
-                <DirectorOpsHealthMini {...buildPosMiniProps(miniCards.posRevenueToday)} />
+                <DirectorOpsHealthMini
+                  {...buildHkMiniProps(miniCards.housekeeping, isDegraded(DEGRADED_LABEL.hkDelta, degraded))}
+                />
+                <DegradedCard label={DEGRADED_LABEL.maintenance} degraded={degraded} title="Mantenimiento">
+                  <DirectorOpsHealthMini
+                    {...buildMaintenanceMiniProps(miniCards.maintenance, isDegraded(DEGRADED_LABEL.maintenanceDelta, degraded))}
+                  />
+                </DegradedCard>
+                <DegradedCard label={DEGRADED_LABEL.workforce} degraded={degraded} title="Personal">
+                  <DirectorOpsHealthMini {...buildWorkforceMiniProps(miniCards.workforce)} />
+                </DegradedCard>
+                <DegradedCard label={DEGRADED_LABEL.safety} degraded={degraded} title="Seguridad">
+                  <DirectorOpsHealthMini {...buildSafetyMiniProps(miniCards.safety)} />
+                </DegradedCard>
+                <DegradedCard label={DEGRADED_LABEL.pos} degraded={degraded} title="F&B / TPV hoy">
+                  <DirectorOpsHealthMini {...buildPosMiniProps(miniCards.posRevenueToday)} />
+                </DegradedCard>
               </div>
             ) : (
               <p
@@ -567,7 +644,7 @@ export function OperationsDirectorScreen() {
                 style={detailTabButtonStyle(activeDetail === "hk")}
                 onClick={() => setActiveDetail("hk")}
               >
-                Tareas HK ({details?.hkTasks.length ?? 0})
+                Tareas HK (<DegradedValue label={DEGRADED_LABEL.details.hk} degraded={degraded}>{toArray(details?.hkTasks).length}</DegradedValue>)
               </button>
               <button
                 type="button"
@@ -576,7 +653,7 @@ export function OperationsDirectorScreen() {
                 style={detailTabButtonStyle(activeDetail === "wo")}
                 onClick={() => setActiveDetail("wo")}
               >
-                Work orders ({details?.workOrders.length ?? 0})
+                Work orders (<DegradedValue label={DEGRADED_LABEL.details.wo} degraded={degraded}>{toArray(details?.workOrders).length}</DegradedValue>)
               </button>
               <button
                 type="button"
@@ -585,7 +662,7 @@ export function OperationsDirectorScreen() {
                 style={detailTabButtonStyle(activeDetail === "shifts")}
                 onClick={() => setActiveDetail("shifts")}
               >
-                Turnos ({details?.shifts.length ?? 0})
+                Turnos (<DegradedValue label={DEGRADED_LABEL.details.shifts} degraded={degraded}>{toArray(details?.shifts).length}</DegradedValue>)
               </button>
               <button
                 type="button"
@@ -594,10 +671,10 @@ export function OperationsDirectorScreen() {
                 style={detailTabButtonStyle(activeDetail === "incidents")}
                 onClick={() => setActiveDetail("incidents")}
               >
-                Incidentes ({details?.safetyIncidents.length ?? 0})
+                Incidentes (<DegradedValue label={DEGRADED_LABEL.details.incidents} degraded={degraded}>{toArray(details?.safetyIncidents).length}</DegradedValue>)
               </button>
             </div>
-            <DetailTable detail={activeDetail} details={details} />
+            <DetailTable detail={activeDetail} details={details} degraded={degraded} />
           </CocoaCard>
 
           {/* Row 3 — trend charts (7d). */}
@@ -606,31 +683,37 @@ export function OperationsDirectorScreen() {
               title="HK · habitaciones (7 días)"
               subtitle="Limpiadas vs programadas"
             >
-              <PairTrendChart
-                data={trends?.housekeepingCleanedVsScheduled ?? []}
-                actualLabel="limpiadas"
-                targetLabel="programadas"
-              />
+              <DegradedNote label={DEGRADED_LABEL.trends.hk} degraded={degraded}>
+                <PairTrendChart
+                  data={toArray<TrendPair>(trends?.housekeepingCleanedVsScheduled)}
+                  actualLabel="limpiadas"
+                  targetLabel="programadas"
+                />
+              </DegradedNote>
             </TrendCard>
             <TrendCard
               title="Mantenimiento · MTTR (7 días)"
               subtitle="Horas promedio de resolución"
             >
-              <SingleTrendChart
-                data={trends?.maintenanceMttrHours ?? []}
-                suffix="h"
-                color="var(--cocoa-warning)"
-              />
+              <DegradedNote label={DEGRADED_LABEL.trends.mttr} degraded={degraded}>
+                <SingleTrendChart
+                  data={toArray<TrendPoint>(trends?.maintenanceMttrHours)}
+                  suffix="h"
+                  color="var(--cocoa-warning)"
+                />
+              </DegradedNote>
             </TrendCard>
             <TrendCard
               title="Personal · cobertura (7 días)"
               subtitle="% de turnos con asignación"
             >
-              <SingleTrendChart
-                data={trends?.workforceCoveragePct ?? []}
-                suffix="%"
-                color="var(--cocoa-info)"
-              />
+              <DegradedNote label={DEGRADED_LABEL.trends.coverage} degraded={degraded}>
+                <SingleTrendChart
+                  data={toArray<TrendPoint>(trends?.workforceCoveragePct)}
+                  suffix="%"
+                  color="var(--cocoa-info)"
+                />
+              </DegradedNote>
             </TrendCard>
           </div>
         </>
@@ -641,19 +724,21 @@ export function OperationsDirectorScreen() {
         <CocoaCard variant="bordered" padding="md">
           <div style={cardHeadStyle}>
             <h3 style={cardTitleStyle}>Atender ahora</h3>
-            <span style={badgeStyle(alerts.length > 0 ? "danger" : "success")}>
-              {alerts.length}
+            <span style={badgeStyle(summaryDegraded ? "neutral" : alerts.length > 0 ? "danger" : "success")}>
+              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{alerts.length}</DegradedValue>
             </span>
           </div>
           {alerts.length === 0 ? (
-            <p
-              style={{
-                fontSize: "var(--cocoa-fs-callout)",
-                color: "var(--cocoa-label-secondary)"
-              }}
-            >
-              Sin alertas
-            </p>
+            <DegradedNote label={DEGRADED_LABEL.summary} degraded={degraded}>
+              <p
+                style={{
+                  fontSize: "var(--cocoa-fs-callout)",
+                  color: "var(--cocoa-label-secondary)"
+                }}
+              >
+                Sin alertas
+              </p>
+            </DegradedNote>
           ) : (
             <ul
               style={{
@@ -717,10 +802,12 @@ export function OperationsDirectorScreen() {
 
 function DetailTable({
   detail,
-  details
+  details,
+  degraded
 }: {
   detail: DetailTab;
   details: Details | undefined;
+  degraded: string[];
 }) {
   if (!details) {
     return (
@@ -735,10 +822,34 @@ function DetailTable({
     );
   }
 
-  if (detail === "hk") return <HkTasksTable items={details.hkTasks} />;
-  if (detail === "wo") return <WorkOrdersTable items={details.workOrders} />;
-  if (detail === "shifts") return <ShiftsTable items={details.shifts} />;
-  return <IncidentsTable items={details.safetyIncidents} />;
+  // Each detail list is a safe()-wrapped query: when it failed the API sends
+  // [] and "Sin elementos." would read as a clean board.
+  if (detail === "hk") {
+    return (
+      <DegradedNote label={DEGRADED_LABEL.details.hk} degraded={degraded}>
+        <HkTasksTable items={toArray<DetailHkTask>(details.hkTasks)} />
+      </DegradedNote>
+    );
+  }
+  if (detail === "wo") {
+    return (
+      <DegradedNote label={DEGRADED_LABEL.details.wo} degraded={degraded}>
+        <WorkOrdersTable items={toArray<DetailWorkOrder>(details.workOrders)} />
+      </DegradedNote>
+    );
+  }
+  if (detail === "shifts") {
+    return (
+      <DegradedNote label={DEGRADED_LABEL.details.shifts} degraded={degraded}>
+        <ShiftsTable items={toArray<DetailShift>(details.shifts)} />
+      </DegradedNote>
+    );
+  }
+  return (
+    <DegradedNote label={DEGRADED_LABEL.details.incidents} degraded={degraded}>
+      <IncidentsTable items={toArray<DetailSafetyIncident>(details.safetyIncidents)} />
+    </DegradedNote>
+  );
 }
 
 function EmptyRow({ colSpan }: { colSpan: number }) {

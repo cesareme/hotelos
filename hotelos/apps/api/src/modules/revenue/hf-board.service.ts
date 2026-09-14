@@ -19,12 +19,14 @@ import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
 import { expand, type ResRow } from "./pace.service.js";
+import { REALIZED_STATUSES, realizeDays } from "./actuals.js";
+import { adrSourceFromDrivers, emptyAdrSourceCounts, forecastAdrSourceLabel } from "./forecast.service.js";
 
 const MS_DAY = 86_400_000;
 /** Statuses that count as on-the-books for today/future stay dates. */
 const OTB_STATUSES = ["confirmed", "checked_in"] as const;
-/** Statuses loaded for the single reservations query (past + future + no-shows). */
-const BOARD_STATUSES = ["confirmed", "checked_in", "checked_out", "no_show"] as const;
+/** Statuses loaded for the single reservations query (past + future + no-shows) — shared realized rule. */
+const BOARD_STATUSES = REALIZED_STATUSES;
 
 // ---- date + number helpers --------------------------------------------------
 function dayUtc(value?: string | Date): Date {
@@ -330,7 +332,8 @@ export async function getHistoryForecastBoard(
         expectedRoomRevenue: true,
         expectedTotalRevenue: true,
         confidence: true,
-        modelVersion: true
+        modelVersion: true,
+        driversJson: true
       }
     }),
     prisma.revenuePaceSnapshot.findMany({
@@ -350,50 +353,34 @@ export async function getHistoryForecastBoard(
   ]);
 
   // ---- in-memory maps --------------------------------------------------------
-  // Reservations → past actual fallback + live OTB (today/future).
-  const pastAcc = new Map<string, DayAcc>();
+  // Past actuals: the SHARED realized rule (audited snapshot first, reservations
+  // fallback, < today) fed with the rows already loaded above — one
+  // implementation for the board, budget variance, accuracy and period metrics.
+  const realized = realizeDays({ from: extFrom, to: extTo, today, totalRooms, snapshots, reservations });
+
+  // Reservations → live OTB (today/future).
   const otbAcc = new Map<string, DayAcc>();
   for (const r of reservations) {
+    if (r.status !== "confirmed" && r.status !== "checked_in") continue;
     const arr = dayUtc(r.arrivalDate);
     const dep = dayUtc(r.departureDate);
     const arrKey = isoDate(arr);
     const depKey = isoDate(dep);
-    if (r.status === "no_show") {
-      if (arr.getTime() >= extFrom.getTime() && arr.getTime() < today.getTime()) {
-        ensureAcc(pastAcc, arrKey).noShows += r.roomsCount;
-      }
-      continue;
-    }
-    const isOtbStatus = r.status === "confirmed" || r.status === "checked_in";
     const n = Math.max(1, Math.round((dep.getTime() - arr.getTime()) / MS_DAY));
     const revPerNight = dec(r.totalAmount) / n;
-    if (arr.getTime() >= extFrom.getTime() && arr.getTime() <= extTo.getTime()) {
-      if (arr.getTime() < today.getTime()) ensureAcc(pastAcc, arrKey).arrivals += r.roomsCount;
-      else if (isOtbStatus) ensureAcc(otbAcc, arrKey).arrivals += r.roomsCount;
-    }
-    if (dep.getTime() >= extFrom.getTime() && dep.getTime() <= extTo.getTime()) {
-      if (dep.getTime() < today.getTime()) ensureAcc(pastAcc, depKey).departures += r.roomsCount;
-      else if (isOtbStatus) ensureAcc(otbAcc, depKey).departures += r.roomsCount;
-    }
+    if (arr.getTime() >= today.getTime() && arr.getTime() <= extTo.getTime()) ensureAcc(otbAcc, arrKey).arrivals += r.roomsCount;
+    if (dep.getTime() >= today.getTime() && dep.getTime() <= extTo.getTime()) ensureAcc(otbAcc, depKey).departures += r.roomsCount;
     for (let i = 0; i < n; i++) {
       const d = addDays(arr, i);
-      if (d.getTime() < extFrom.getTime() || d.getTime() > extTo.getTime()) continue;
-      const key = isoDate(d);
-      if (d.getTime() < today.getTime()) {
-        const a = ensureAcc(pastAcc, key);
-        a.rooms += r.roomsCount;
-        a.revenue += revPerNight;
-        a.pax += r.adults + r.children;
-      } else if (isOtbStatus) {
-        const a = ensureAcc(otbAcc, key);
-        a.rooms += r.roomsCount;
-        a.revenue += revPerNight;
-        a.pax += r.adults + r.children;
-      }
+      if (d.getTime() < today.getTime() || d.getTime() > extTo.getTime()) continue;
+      const a = ensureAcc(otbAcc, isoDate(d));
+      a.rooms += r.roomsCount;
+      a.revenue += revPerNight;
+      a.pax += r.adults + r.children;
     }
   }
 
-  // Audited snapshots keyed by date (covers past window, STLY range and LY months).
+  // Audited snapshots keyed by date (STLY range and LY months; the past window is served by `realized`).
   const snapByDate = new Map<string, (typeof snapshots)[number]>();
   for (const s of snapshots) snapByDate.set(isoDate(dayUtc(s.snapshotDate)), s);
 
@@ -401,18 +388,25 @@ export async function getHistoryForecastBoard(
   // the per-room-type rows per day (deterministic-v1 only writes those).
   const topLevelForecasts = forecasts.filter((f) => !f.roomTypeId && !f.ratePlanId && !f.channelId && !f.segment);
   const forecastSource = topLevelForecasts.length > 0 ? topLevelForecasts : forecasts;
-  type FcAcc = { rooms: number; revenue: number; confWeighted: number; confRooms: number; confPlain: number[]; occFromRow: number | null };
+  type FcAcc = { rooms: number; revenue: number; revenueMissingRows: number; confWeighted: number; confRooms: number; confPlain: number[]; occFromRow: number | null };
   const fcByDate = new Map<string, FcAcc>();
+  const fcAdrSources = emptyAdrSourceCounts();
   for (const f of forecastSource) {
     const key = isoDate(dayUtc(f.forecastDate));
     let b = fcByDate.get(key);
     if (!b) {
-      b = { rooms: 0, revenue: 0, confWeighted: 0, confRooms: 0, confPlain: [], occFromRow: null };
+      b = { rooms: 0, revenue: 0, revenueMissingRows: 0, confWeighted: 0, confRooms: 0, confPlain: [], occFromRow: null };
       fcByDate.set(key, b);
     }
     const rooms = dec(f.expectedRoomsSold);
     b.rooms += rooms;
-    b.revenue += dec(f.expectedRoomRevenue ?? f.expectedTotalRevenue);
+    // Revenue is null when the model had no ADR input (no BAR, no LY close):
+    // the day's forecast revenue is then unknown, never summed as 0.
+    const rev = decOrNull(f.expectedRoomRevenue ?? f.expectedTotalRevenue);
+    if (rev === null) b.revenueMissingRows++;
+    else b.revenue += rev;
+    const adrSrc = adrSourceFromDrivers(f.driversJson);
+    if (adrSrc) fcAdrSources[adrSrc]++;
     const conf = decOrNull(f.confidence);
     if (conf !== null) {
       b.confPlain.push(conf);
@@ -464,18 +458,22 @@ export async function getHistoryForecastBoard(
     }
   }
 
-  // Pending BAR recommendations (first per date, newest wins).
+  // Pending BAR recommendations (first per date, newest wins). `current.bar` is
+  // the published BAR the engine compared against and is only trusted when the
+  // row records its provenance (`barSource`); legacy rows without it were
+  // generated against a default price and read as "no published BAR".
   const recByDate = new Map<string, string>();
   for (const rec of pendingRecs) {
     const key = isoDate(dayUtc(rec.targetDate));
     if (recByDate.has(key)) continue;
-    const cur = num((rec.currentValueJson as { bar?: unknown } | null)?.bar);
+    const current = rec.currentValueJson as { bar?: unknown; barSource?: unknown } | null;
+    const cur = current?.barSource === "rate_grid" ? num(current.bar) : undefined;
     const next = num((rec.recommendedValueJson as { bar?: unknown } | null)?.bar);
     const text =
       next !== undefined
         ? cur !== undefined
           ? `BAR recomendada ${fmtEs(next)} € (actual ${fmtEs(cur)} €)`
-          : `BAR recomendada ${fmtEs(next)} €`
+          : `BAR recomendada ${fmtEs(next)} € (sin BAR publicado)`
         : `Recomendación ${rec.recommendationType} pendiente`;
     recByDate.set(key, text);
   }
@@ -504,8 +502,8 @@ export async function getHistoryForecastBoard(
   const budgetMissing = ![...windowMonths].some((m) => budgetByMonth.has(m));
 
   // ---- extended day series ----------------------------------------------------
-  let snapshotDaysUsed = 0;
-  let fallbackDaysUsed = 0;
+  const snapshotDaysUsed = realized.snapshotDays;
+  const fallbackDaysUsed = realized.fallbackDays;
   const series: DaySeries[] = [];
   for (let t = extFrom.getTime(); t <= extTo.getTime(); t += MS_DAY) {
     const d = new Date(t);
@@ -524,35 +522,18 @@ export async function getHistoryForecastBoard(
     let adr: number | null = null;
     let revpar: number | null = null;
     if (isPast) {
-      const snap = snapByDate.get(key);
-      if (snap) {
-        snapshotDaysUsed++;
-        roomsSold = snap.totalOcc;
-        roomRevenue = round2(dec(snap.roomRevenue));
-        arrivals = snap.arrivalRooms;
-        departures = snap.departureRooms;
-        noShows = snap.noShowRooms;
-        ooo = snap.oooRooms;
-        occPct =
-          snap.occupancyPercent !== null
-            ? round2(dec(snap.occupancyPercent))
-            : totalRooms > 0
-              ? round2((roomsSold / totalRooms) * 100)
-              : 0;
-        adr = snap.adr !== null ? round2(dec(snap.adr)) : roomsSold > 0 ? round2(roomRevenue / roomsSold) : null;
-        revpar =
-          snap.revpar !== null ? round2(dec(snap.revpar)) : totalRooms > 0 ? round2(roomRevenue / totalRooms) : null;
-      } else {
-        fallbackDaysUsed++;
-        const a = pastAcc.get(key);
-        roomsSold = a?.rooms ?? 0;
-        roomRevenue = round2(a?.revenue ?? 0);
-        arrivals = a?.arrivals ?? 0;
-        departures = a?.departures ?? 0;
-        noShows = a?.noShows ?? 0;
-        occPct = totalRooms > 0 ? round2((roomsSold / totalRooms) * 100) : 0;
-        adr = roomsSold > 0 ? round2(roomRevenue / roomsSold) : null;
-        revpar = totalRooms > 0 ? round2(roomRevenue / totalRooms) : null;
+      // Shared realized rule (actuals.ts): snapshot day or reservations fallback day.
+      const r = realized.days.get(key);
+      if (r) {
+        roomsSold = r.rooms;
+        roomRevenue = r.roomRevenue;
+        arrivals = r.arrivals;
+        departures = r.departures;
+        noShows = r.noShows;
+        ooo = r.ooo;
+        occPct = r.occPct;
+        adr = r.adr;
+        revpar = r.revpar;
       }
     } else {
       const a = otbAcc.get(key);
@@ -575,10 +556,11 @@ export async function getHistoryForecastBoard(
       const fc = fcByDate.get(key);
       if (fc) {
         fcRooms = Math.round(fc.rooms);
-        fcRevenue = round2(fc.revenue);
+        // Revenue/ADR stay null when any row of the day had no ADR input.
+        fcRevenue = fc.revenueMissingRows > 0 ? null : round2(fc.revenue);
         fcOccPct =
           totalRooms > 0 ? round2((fc.rooms / totalRooms) * 100) : fc.occFromRow !== null ? round2(fc.occFromRow) : null;
-        fcAdr = fc.rooms > 0 ? round2(fc.revenue / fc.rooms) : null;
+        fcAdr = fcRevenue !== null && fc.rooms > 0 ? round2(fc.revenue / fc.rooms) : null;
         fcConfidence =
           fc.confRooms > 0
             ? round2(fc.confWeighted / fc.confRooms)
@@ -683,6 +665,9 @@ export async function getHistoryForecastBoard(
     const capacity = totalRooms * days.length;
     const fcDays = days.filter((x) => x.fcRooms !== null);
     const fcRoomsSum = fcDays.reduce((s, x) => s + (x.fcRooms as number), 0);
+    // A day with forecast rooms but unknown revenue (no ADR input) makes the
+    // bucket's forecast revenue unknown too — never summed as 0.
+    const fcRevenueKnown = fcDays.length > 0 && fcDays.every((x) => x.fcRevenue !== null);
     const fcRevSum = fcDays.reduce((s, x) => s + (x.fcRevenue ?? 0), 0);
     const fcConfDays = fcDays.filter((x) => x.fcConfidence !== null);
     const stlyDays = days.filter((x) => x.stlyRooms !== null);
@@ -704,8 +689,8 @@ export async function getHistoryForecastBoard(
       ooo: days.reduce((s, x) => s + x.ooo, 0),
       fcRooms: fcDays.length ? fcRoomsSum : null,
       fcOccPct: fcDays.length && totalRooms > 0 ? round2((fcRoomsSum / (totalRooms * fcDays.length)) * 100) : null,
-      fcAdr: fcRoomsSum > 0 ? round2(fcRevSum / fcRoomsSum) : null,
-      fcRevenue: fcDays.length ? round2(fcRevSum) : null,
+      fcAdr: fcRevenueKnown && fcRoomsSum > 0 ? round2(fcRevSum / fcRoomsSum) : null,
+      fcRevenue: fcRevenueKnown ? round2(fcRevSum) : null,
       fcConfidence: fcConfDays.length
         ? round2(fcConfDays.reduce((s, x) => s + (x.fcConfidence as number), 0) / fcConfDays.length)
         : null,
@@ -798,7 +783,11 @@ export async function getHistoryForecastBoard(
     const otbRooms = futureDays.reduce((s, x) => s + x.roomsSold, 0);
     const fcDays = futureDays.filter((x) => x.fcRooms !== null);
     const monthHasFc = fcDays.length > 0;
-    const fcRevSum = fcDays.reduce((s, x) => s + (x.fcRevenue ?? 0), 0);
+    const fcRevenueKnown = monthHasFc && fcDays.every((x) => x.fcRevenue !== null);
+    // Forecast revenue for the month is only reported when every forecast day
+    // has an ADR input; the projection falls back to the day's live OTB
+    // revenue for days without one (same policy as a month with no forecast).
+    const fcRevSum = fcDays.reduce((s, x) => s + (x.fcRevenue ?? x.roomRevenue), 0);
     const fcRoomsSum = fcDays.reduce((s, x) => s + (x.fcRooms as number), 0);
     const projectedRevenue = round2(actualRevenue + (monthHasFc ? fcRevSum : otbRevenue));
     const projRooms = actualRooms + (monthHasFc ? fcRoomsSum : otbRooms);
@@ -833,7 +822,7 @@ export async function getHistoryForecastBoard(
       daysTotal,
       actualRevenue,
       otbRevenue,
-      forecastRevenue: monthHasFc ? round2(fcRevSum) : null,
+      forecastRevenue: fcRevenueKnown ? round2(fcDays.reduce((s, x) => s + (x.fcRevenue as number), 0)) : null,
       projectedRevenue,
       projectedOccPct: totalRooms > 0 ? round2((projRooms / (totalRooms * daysTotal)) * 100) : null,
       projectedAdr: projRooms > 0 ? round2(projectedRevenue / projRooms) : null,
@@ -926,14 +915,10 @@ export async function getHistoryForecastBoard(
 
   // ---- honest source map ---------------------------------------------------------
   const sources: Record<string, string> = {
-    history:
-      snapshotDaysUsed > 0 && fallbackDaysUsed > 0
-        ? "snapshots+reservas"
-        : snapshotDaysUsed > 0
-          ? "snapshots"
-          : "reservas",
+    history: realized.source ?? (snapshotDaysUsed + fallbackDaysUsed === 0 ? "sin días pasados en la ventana" : "reservas"),
     otb: "reservas en vivo",
     forecast: forecastModelVersion,
+    forecastAdr: forecastAdrSourceLabel(fcAdrSources),
     stly: "snapshots (fecha−364)",
     budget: "presupuesto mensual prorrateado",
     pickup:
@@ -1049,17 +1034,32 @@ export async function writeDailySnapshot(propertyId: string, dateIso?: string) {
   return { propertyId, snapshotDate: isoDate(date), action: existing ? ("updated" as const) : ("created" as const) };
 }
 
-/** Scheduler entry point: upsert yesterday's top-level snapshot for every property. */
-export async function writeYesterdayDailySnapshotsForAllProperties(): Promise<{ properties: number; written: number }> {
+/**
+ * Scheduler entry point: upsert yesterday's top-level snapshot for every
+ * property. A failure on one property never blocks the others, but it is
+ * never silent either (QC-06): logged per property and returned in `failed`.
+ */
+export async function writeYesterdayDailySnapshotsForAllProperties(): Promise<{
+  properties: number;
+  written: number;
+  failed: Array<{ propertyId: string; error: string }>;
+}> {
   const properties = await prisma.property.findMany({ select: { id: true } });
   let written = 0;
+  const failed: Array<{ propertyId: string; error: string }> = [];
   for (const p of properties) {
     try {
       await writeDailySnapshot(p.id);
       written++;
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failed.push({ propertyId: p.id, error: message });
+      console.error(`[revenue:daily-snapshot] property ${p.id}: ${message}`);
       // continue with the next property
     }
   }
-  return { properties: properties.length, written };
+  if (failed.length > 0) {
+    console.error(`[revenue:daily-snapshot] ${failed.length}/${properties.length} properties failed (written: ${written}).`);
+  }
+  return { properties: properties.length, written, failed };
 }

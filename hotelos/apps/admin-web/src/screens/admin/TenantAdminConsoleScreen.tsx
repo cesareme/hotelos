@@ -40,6 +40,7 @@ import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
 import { CocoaEmptyState } from "../../components/cocoa-empty-state/CocoaEmptyState";
 import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
 import { ErrorState, LoadingBlock } from "../../components/States";
+import { useToast } from "../../components/Toast";
 import {
   fetchTenantAuditLog,
   fetchTenants,
@@ -334,6 +335,7 @@ function SystemTile({ label, value, detail, tone = "info" }: SystemTileProps) {
 // ---------------------------------------------------------------------------
 
 export function TenantAdminConsoleScreen() {
+  const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<ConsoleTab>("tenants");
   const [tenants, setTenants] = useState<TenantSummary[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
@@ -822,12 +824,19 @@ export function TenantAdminConsoleScreen() {
               variant="bordered"
               tone="destructive"
               onClick={async () => {
-                // Placeholder — needs the owner userId, fetched from detail.
-                // We surface a noop here until the detail endpoint is wired.
+                // "owner" is a role alias resolved server-side until the tenant
+                // detail endpoint exposes the owner userId. QC-06: the outcome is
+                // always reported — never swallowed.
                 try {
                   await resetTempPassword(selectedTenant.organizationId, "owner");
-                } catch {
-                  /* swallow — UI feedback lives in the full wizard */
+                  showToast(`Contraseña temporal del owner de ${selectedTenant.name ?? selectedTenant.organizationId} restablecida.`, {
+                    variant: "success"
+                  });
+                } catch (err) {
+                  showToast(
+                    err instanceof Error ? `No se pudo restablecer la contraseña: ${err.message}` : "No se pudo restablecer la contraseña.",
+                    { variant: "error" }
+                  );
                 }
               }}
             >

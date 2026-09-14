@@ -66,23 +66,42 @@ export function SesHospedajesSettingsScreen() {
   const [reporting, setReporting] = useState<SesReportingSettings | undefined>();
   const [form, setForm] = useState<Form>(toForm());
   const [submissions, setSubmissions] = useState<AuthoritySubmission[]>([]);
+  // QC-06: the submission history has a 24h legal deadline; a failed load is
+  // reported on its own (the settings form keeps working) instead of showing
+  // "no submissions yet".
+  const [submissionsError, setSubmissionsError] = useState<string | null>(null);
+  const [submissionsLoading, setSubmissionsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState(false);
 
+  function loadSubmissions() {
+    setSubmissionsLoading(true);
+    setSubmissionsError(null);
+    fetchSesSubmissions(PROPERTY_ID)
+      .then(setSubmissions)
+      .catch((err: unknown) => {
+        setSubmissions([]);
+        setSubmissionsError(err instanceof Error ? err.message : "No se pudo cargar el historial de envíos.");
+      })
+      .finally(() => setSubmissionsLoading(false));
+  }
+
   function load() {
     setLoading(true);
     setError(null);
-    Promise.all([fetchSesSettings(PROPERTY_ID), fetchSesSubmissions(PROPERTY_ID).catch(() => [])])
-      .then(([settings, subs]) => {
+    fetchSesSettings(PROPERTY_ID)
+      .then((settings) => {
         setReporting(settings.reporting);
         setForm(toForm(settings.reporting));
-        setSubmissions(subs);
       })
-      .catch(() => setError("No se pudo cargar la configuración SES.HOSPEDAJES."))
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : "No se pudo cargar la configuración SES.HOSPEDAJES.")
+      )
       .finally(() => setLoading(false));
+    loadSubmissions();
   }
   useEffect(load, []);
 
@@ -196,9 +215,10 @@ export function SesHospedajesSettingsScreen() {
             <span className="rev-kpi-label">Web service</span>
             <span className="rev-kpi-value" style={{ fontSize: "var(--fs-lg)" }}>{webServiceReady ? "Ready" : "Blocked"}</span>
           </div>
-          <div className={`rev-kpi ${rejected ? "rev-kpi-error" : "rev-kpi-ok"}`}>
+          <div className={`rev-kpi ${submissionsError ? "rev-kpi-warn" : rejected ? "rev-kpi-error" : "rev-kpi-ok"}`} title={submissionsError ?? undefined}>
             <span className="rev-kpi-label">Rejected / failed</span>
-            <span className="rev-kpi-value">{rejected}</span>
+            {/* "—" when the history could not be loaded: a green 0 would be a lie. */}
+            <span className="rev-kpi-value">{submissionsError ? "—" : rejected}</span>
           </div>
         </div>
 
@@ -266,12 +286,25 @@ export function SesHospedajesSettingsScreen() {
         <div className="bo-card-head">
           <div><p className="bo-muted">Submission queue</p><h3 style={{ margin: 0 }}>Authority submissions</h3></div>
           <div className="bo-pill-row">
-            <span className="bo-chip">{counts.queued ?? 0} queued</span>
-            <span className="bo-chip">{counts.accepted ?? 0} accepted</span>
-            {rejected ? <span className="bo-status error">{rejected} rejected/failed</span> : null}
+            {submissionsError ? null : (
+              <>
+                <span className="bo-chip">{counts.queued ?? 0} queued</span>
+                <span className="bo-chip">{counts.accepted ?? 0} accepted</span>
+                {rejected ? <span className="bo-status error">{rejected} rejected/failed</span> : null}
+              </>
+            )}
+            <button type="button" onClick={loadSubmissions} disabled={submissionsLoading}>↻</button>
           </div>
         </div>
-        {submissions.length === 0 ? (
+        {submissionsError ? (
+          <ErrorState
+            title="No se pudo cargar el historial de envíos"
+            message={`${submissionsError} Los partes SES tienen un plazo legal de 24 h: reintenta o revisa el conector.`}
+            onRetry={loadSubmissions}
+          />
+        ) : submissionsLoading && submissions.length === 0 ? (
+          <LoadingBlock label="Cargando envíos…" />
+        ) : submissions.length === 0 ? (
           <p className="bo-muted">No authority submissions yet. They appear here as guest-register records are queued.</p>
         ) : (
           <div className="bo-table-wrap">

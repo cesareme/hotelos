@@ -114,12 +114,17 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   const [room, setRoom] = useState<Room | null>(null);
   const [roomType, setRoomType] = useState<RoomType | null>(null);
   const [folio, setFolio] = useState<FolioBalance | null>(null);
+  // QC-06: the folio is money-path. A failed load is surfaced (with retry) and
+  // the operator must explicitly pick "Sin cobro" to continue without it.
+  const [folioError, setFolioError] = useState<string | null>(null);
+  const [folioLoading, setFolioLoading] = useState(false);
   const [availableRooms, setAvailableRooms] = useState<Room[]>([]);
   const [priorStays, setPriorStays] = useState<number>(0);
 
   const [selectedRoomId, setSelectedRoomId] = useState<string | undefined>(undefined);
   const [paymentMode, setPaymentMode] = useState<"none" | "preauth" | "capture">("preauth");
-  const [paymentMethod, setPaymentMethod] = useState<"card" | "cash" | "transfer">("card");
+  // Values match the API PaymentRecord.method union.
+  const [paymentMethod, setPaymentMethod] = useState<"card" | "cash" | "bank_transfer">("card");
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +149,19 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   const elapsedLabel = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
 
   // ------------------------------------------------------------- data load
+  const loadFolio = useCallback(async () => {
+    setFolioLoading(true);
+    setFolioError(null);
+    try {
+      setFolio(await apiRequest<FolioBalance>(`/reservations/${reservationId}/folio`));
+    } catch (err) {
+      setFolio(null);
+      setFolioError(err instanceof Error ? err.message : "No se pudo cargar el folio.");
+    } finally {
+      setFolioLoading(false);
+    }
+  }, [reservationId]);
+
   const loadAll = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -152,13 +170,13 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
       setReservation(res);
       setSelectedRoomId(res.assignedRoomId);
 
-      // Parallel fetches
-      const [folioData, roomsData, roomTypesData] = await Promise.all([
-        apiRequest<FolioBalance>(`/reservations/${reservationId}/folio`).catch(() => null),
+      // Parallel fetches — the folio failure is tracked separately (folioError)
+      // instead of being swallowed into a fake "0 € pending".
+      const [, roomsData, roomTypesData] = await Promise.all([
+        loadFolio(),
         apiRequest<Room[]>(`/properties/${res.propertyId}/rooms`),
         apiRequest<RoomType[]>(`/properties/${res.propertyId}/room-types`)
       ]);
-      setFolio(folioData);
       setAvailableRooms(roomsData);
       const rt = roomTypesData.find((t) => t.id === res.roomTypeId) ?? null;
       setRoomType(rt);
@@ -171,7 +189,8 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
       const primaryGuest = (res as unknown as { primaryGuest?: Guest | null }).primaryGuest;
       if (primaryGuest) setGuest(primaryGuest);
 
-      // Stays anteriores (cliente recurrente) — best effort.
+      // Stays anteriores (cliente recurrente) — best-effort: only feeds the
+      // "Recurrente" badge, so a failure degrades to "no badge" (not money-path).
       const reservationGuestsList = await apiRequest<Array<{ guestId: string; reservation: { propertyId: string; status: string; departureDate: string } }>>(
         `/reservations/${reservationId}/guest-history`
       ).catch(() => []);
@@ -181,7 +200,7 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     } finally {
       setLoading(false);
     }
-  }, [reservationId]);
+  }, [reservationId, loadFolio]);
 
   useEffect(() => {
     void loadAll();
@@ -212,13 +231,18 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     });
   }, [availableRooms, reservation]);
 
-  const balanceDue = folio?.balanceDue ?? (reservation?.totalAmount ?? 0) - 0;
+  // null = unknown (folio not loaded). The reservation total is NOT a balance:
+  // it ignores deposits already captured, so it is never used as a fallback.
+  const balanceDue: number | null = folio ? folio.balanceDue : null;
   const preauthAmount = Math.max(0, Math.round((reservation?.totalAmount ?? 0) * 100) / 100);
+  const paymentRequiresFolio = paymentMode !== "none";
 
   // ------------------------------------------------------------- execute
-  const canSubmit = Boolean(reservation && selectedRoomId && guest && reservation.status === "confirmed");
+  const canSubmit = Boolean(
+    reservation && selectedRoomId && guest && reservation.status === "confirmed" && (folio || !paymentRequiresFolio)
+  );
   const blockingReason = !reservation
-    ? "Cargando…"
+    ? ""
     : reservation.status !== "confirmed"
     ? `Reserva en estado "${reservation.status}". No procede check-in.`
     : !selectedRoomId
@@ -227,6 +251,8 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     ? "Sin huésped principal vinculado."
     : !roomIsClean
     ? "La habitación seleccionada no está limpia. Cambia o avisa a housekeeping."
+    : !folio && paymentRequiresFolio
+    ? "No se pudo cargar el folio: reintenta o elige «Sin cobro» de forma explícita."
     : "";
 
   async function executeCheckIn() {
@@ -251,7 +277,12 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
       // tragaba el error y el check-in seguía como si se hubiera cobrado. Ahora
       // un fallo de cobro ABORTA el check-in con error visible; el recepcionista
       // puede reintentar o elegir explícitamente "Sin cobro".
-      if (paymentMode !== "none" && folio && balanceDue > 0) {
+      // QC-06: sin folio cargado no se puede cobrar; la UI exige "Sin cobro"
+      // explícito antes de llegar aquí, y este guard lo hace imposible de saltar.
+      if (paymentMode !== "none" && !folio) {
+        throw new Error("No se pudo cargar el folio: no es posible cobrar. Reintenta o elige «Sin cobro».");
+      }
+      if (paymentMode !== "none" && folio && balanceDue !== null && balanceDue > 0) {
         try {
           await apiRequest(`/folios/${folio.folio.id}/payments`, {
             method: "POST",
@@ -452,27 +483,54 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
               {/* STEP 3: pago */}
               <Section
                 title="3 · Pago"
-                badge={balanceDue > 0 ? `${fmtEur(balanceDue)} pendiente` : "Saldado"}
-                badgeTone={balanceDue > 0 ? "warning" : "ok"}
+                badge={
+                  folioLoading
+                    ? "Cargando folio…"
+                    : balanceDue === null
+                    ? "Folio no disponible"
+                    : balanceDue > 0
+                    ? `${fmtEur(balanceDue)} pendiente`
+                    : "Saldado"
+                }
+                badgeTone={folioLoading ? "info" : balanceDue === null ? "danger" : balanceDue > 0 ? "warning" : "ok"}
               >
                 <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
+                  {!folio && !folioLoading ? (
+                    <div
+                      style={{
+                        padding: "6px 8px",
+                        borderLeft: "3px solid var(--danger, #d23b3b)",
+                        background: "var(--surface-elevated, rgba(0,0,0,0.03))"
+                      }}
+                    >
+                      <div>No se pudo cargar el folio{folioError ? `: ${folioError}` : "."}</div>
+                      <div className="bo-muted" style={{ fontSize: 12, marginTop: 2 }}>
+                        Sin folio no se puede cobrar ni preautorizar. Reintenta o elige «Sin cobro» de forma explícita.
+                      </div>
+                      <div style={{ marginTop: 6 }}>
+                        <button type="button" onClick={() => void loadFolio()} disabled={busy}>Reintentar</button>
+                      </div>
+                    </div>
+                  ) : null}
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span>Total estancia ({nightsBetween(reservation.arrivalDate, reservation.departureDate)} noches)</span>
                     <strong>{fmtEur(reservation.totalAmount)}</strong>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span>Pagos hasta ahora</span>
-                    <span>{fmtEur(folio?.paymentsTotal ?? 0)}</span>
+                    <span>{folio ? fmtEur(folio.paymentsTotal) : "No disponible"}</span>
                   </div>
                   <div style={{ display: "flex", justifyContent: "space-between" }}>
                     <span>Saldo pendiente</span>
-                    <strong>{fmtEur(balanceDue)}</strong>
+                    <strong>{balanceDue === null ? "No disponible (folio no cargado)" : fmtEur(balanceDue)}</strong>
                   </div>
                   <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
                     <button
                       type="button"
                       className={paymentMode === "preauth" ? "primary" : "ghost"}
                       onClick={() => setPaymentMode("preauth")}
+                      disabled={!folio}
+                      title={!folio ? "Requiere el folio cargado" : ""}
                     >
                       Preautorizar
                     </button>
@@ -480,6 +538,8 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
                       type="button"
                       className={paymentMode === "capture" ? "primary" : "ghost"}
                       onClick={() => setPaymentMode("capture")}
+                      disabled={!folio}
+                      title={!folio ? "Requiere el folio cargado" : ""}
                     >
                       Cobrar ahora
                     </button>
@@ -488,16 +548,20 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
                       className={paymentMode === "none" ? "primary" : "ghost"}
                       onClick={() => setPaymentMode("none")}
                     >
-                      Saltar
+                      Sin cobro
                     </button>
                   </div>
                   {paymentMode !== "none" ? (
                     <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
                       <span className="bo-muted">Método:</span>
-                      <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value as never)} style={{ padding: 6 }}>
+                      <select
+                        value={paymentMethod}
+                        onChange={(e) => setPaymentMethod(e.target.value as "card" | "cash" | "bank_transfer")}
+                        style={{ padding: 6 }}
+                      >
                         <option value="card">Tarjeta</option>
                         <option value="cash">Efectivo</option>
-                        <option value="transfer">Transferencia</option>
+                        <option value="bank_transfer">Transferencia</option>
                       </select>
                     </label>
                   ) : null}

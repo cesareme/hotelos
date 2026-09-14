@@ -2,6 +2,7 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useMemo, useState } from "react";
 import {
   assignReservationRoom,
+  balanceDueConflict,
   cancelReservation,
   checkInReservation,
   checkOutReservation,
@@ -11,15 +12,21 @@ import {
   fetchReservations,
   fetchRooms,
   fetchRoomTypes,
+  matchesReservationTab,
   noShowReservation,
+  pickInitialReservation,
   postFolioLine,
   postFolioPayment,
+  reservationTabQuery,
+  todayIsoLocal,
   type ActivityItem,
   type AdminReservation,
   type AdminRoom,
   type AdminRoomType,
+  type BalanceDueConflict,
   type FolioBalance,
-  type GuestActivity
+  type GuestActivity,
+  type ReservationOperationalTab
 } from "../../services/pmsCommerceApi";
 import { LoadingBlock, EmptyState, ErrorState } from "../../components/States";
 import { useToast } from "../../components/Toast";
@@ -60,9 +67,11 @@ const STATUS_FILTER_LABEL: Record<string, string> = {
 };
 
 // Status tabs aligned to operational moments (today's arrivals, in-house, today's
-// departures, future bookings, cancellations). These are derived dynamically from
-// today's date so they remain accurate without a deploy.
-type StatusTab = "today_arrivals" | "in_house" | "today_departures" | "future" | "cancelled" | "all";
+// departures, future bookings, cancellations). Each tab is a server-side filter
+// (reservationTabQuery) so the list no longer depends on downloading everything.
+type StatusTab = ReservationOperationalTab;
+// Rows per page; "Cargar más" walks the cursor for the rest.
+const PAGE_SIZE = 100;
 const STATUS_TABS: { key: StatusTab; label: string }[] = [
   { key: "today_arrivals", label: "Llegan hoy" },
   { key: "in_house", label: "In-house" },
@@ -91,14 +100,14 @@ function fmtShort(iso: string): string {
 // search. Keeps the DOM bounded without forcing pagination yet.
 const ROW_CAP = 150;
 
-function todayIso(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
+const todayIso = todayIsoLocal;
 
 export function ReservationWorkspaceScreen() {
   const { showToast } = useToast();
   const [reservations, setReservations] = useState<AdminReservation[]>([]);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [roomTypes, setRoomTypes] = useState<AdminRoomType[]>([]);
   const [selected, setSelected] = useState<AdminReservation | null>(null);
   const [folio, setFolio] = useState<FolioBalance | null>(null);
@@ -111,19 +120,53 @@ export function ReservationWorkspaceScreen() {
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
 
+  // The active tab drives the server-side filter; the initial selection is the
+  // first relevant reservation (arriving today, else the most recent arrival
+  // with the API's default arrival_desc order).
   function load() {
     setLoading(true);
     setError(null);
-    Promise.all([fetchReservations(PROPERTY_ID), fetchRoomTypes(PROPERTY_ID)])
-      .then(([reservationResponse, roomTypeResponse]) => {
-        setReservations(reservationResponse);
+    const today = todayIso();
+    Promise.all([
+      fetchReservations(PROPERTY_ID, { ...reservationTabQuery(statusTab, today), limit: PAGE_SIZE }),
+      roomTypes.length > 0 ? Promise.resolve(roomTypes) : fetchRoomTypes(PROPERTY_ID)
+    ])
+      .then(([page, roomTypeResponse]) => {
+        setReservations(page.items);
+        setNextCursor(page.nextCursor);
+        setTotal(page.total);
         setRoomTypes(roomTypeResponse);
-        setSelected((cur) => cur ?? reservationResponse[0] ?? null);
+        setSelected((cur) => cur ?? pickInitialReservation(page.items, today));
       })
-      .catch(() => setError("No se pudieron cargar las reservas. Inténtalo de nuevo."))
+      .catch((err: unknown) =>
+        setError(err instanceof Error ? err.message : "No se pudieron cargar las reservas. Inténtalo de nuevo.")
+      )
       .finally(() => setLoading(false));
   }
-  useEffect(load, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(load, [statusTab]);
+
+  async function loadMore() {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await fetchReservations(PROPERTY_ID, {
+        ...reservationTabQuery(statusTab, todayIso()),
+        limit: PAGE_SIZE,
+        cursor: nextCursor
+      });
+      setReservations((current) => {
+        const seen = new Set(current.map((r) => r.id));
+        return [...current, ...page.items.filter((r) => !seen.has(r.id))];
+      });
+      setNextCursor(page.nextCursor);
+      setTotal(page.total);
+    } catch (err: unknown) {
+      showToast(err instanceof Error ? err.message : "No se pudieron cargar más reservas.", { variant: "error" });
+    } finally {
+      setLoadingMore(false);
+    }
+  }
 
   useEffect(() => {
     if (!selected) {
@@ -157,25 +200,12 @@ export function ReservationWorkspaceScreen() {
 
   const q = query.trim().toLowerCase();
 
-  // Tab-based filtering: matches the operational moment chosen by the user (arrivals
-  // today, in-house, departures today, future, cancelled). The legacy status pills
-  // are still honored after the tab filter for finer slicing.
+  // Tab-based filtering: the server already applied the tab filter; this is the
+  // shared client-side refinement (needed for "today_departures", which the API
+  // can only approximate with the overlap window). The legacy status pills are
+  // still honored after the tab filter for finer slicing.
   function matchesStatusTab(reservation: AdminReservation): boolean {
-    switch (statusTab) {
-      case "today_arrivals":
-        return reservation.arrivalDate === today && reservation.status !== "cancelled" && reservation.status !== "no_show";
-      case "in_house":
-        return reservation.status === "checked_in";
-      case "today_departures":
-        return reservation.departureDate === today && reservation.status !== "cancelled";
-      case "future":
-        return reservation.arrivalDate > today && reservation.status !== "cancelled" && reservation.status !== "no_show";
-      case "cancelled":
-        return reservation.status === "cancelled" || reservation.status === "no_show";
-      case "all":
-      default:
-        return true;
-    }
+    return matchesReservationTab(reservation, statusTab, today);
   }
 
   const filtered = reservations.filter((r) => {
@@ -261,15 +291,18 @@ export function ReservationWorkspaceScreen() {
     [statusCounts]
   );
 
-  // The tab options use the live tab counts so each segment shows actionable
-  // volume at a glance.
+  // Only the active tab is loaded server-side, so only its count is known: the
+  // API `total` (other tabs would need their own request; no fabricated 0s).
   const tabOptions = useMemo(
     () =>
       STATUS_TABS.map((tab) => ({
         value: tab.key,
-        label: `${tab.label} (${tabCounts[tab.key]})`
+        label:
+          tab.key === statusTab && total !== null
+            ? `${tab.label} (${statusTab === "today_departures" ? tabCounts[tab.key] : total})`
+            : tab.label
       })),
-    [tabCounts]
+    [tabCounts, statusTab, total]
   );
 
   // Columns for the Cocoa table. Render functions keep the existing visual
@@ -327,7 +360,7 @@ export function ReservationWorkspaceScreen() {
           <p className="bo-muted">PMS · Reservas</p>
           <h2>Espacio de reservas</h2>
         </div>
-        <span className="bo-chip">{reservations.length} reservas</span>
+        <span className="bo-chip">{total ?? reservations.length} reservas</span>
       </div>
       <p>
         Creación y gestión de reservas. Cada reserva incluye origen y categoría, fechas de estancia, recurso asignado,
@@ -346,10 +379,10 @@ export function ReservationWorkspaceScreen() {
         <CocoaCard variant="bordered" padding="md">
           <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Reservas</span>
           <div style={{ fontSize: "var(--cocoa-fs-title-1)", fontWeight: 600, color: "var(--cocoa-label)", marginTop: "var(--cocoa-space-1)" }}>
-            {reservations.length}
+            {total ?? reservations.length}
           </div>
           <p style={{ marginTop: "var(--cocoa-space-1)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-subheadline)" }}>
-            Todas las reservas activas e históricas de la demo.
+            Reservas que cumplen el filtro de la pestaña activa ({reservations.length} cargadas).
           </p>
         </CocoaCard>
         <CocoaCard variant="bordered" padding="md">
@@ -493,6 +526,19 @@ export function ReservationWorkspaceScreen() {
               ) : null}
             </div>
           )}
+          {!loading && !error && nextCursor ? (
+            <div style={{ display: "flex", justifyContent: "center", marginTop: "var(--cocoa-space-3)" }}>
+              <CocoaButton
+                variant="bordered"
+                tone="neutral"
+                onClick={() => void loadMore()}
+                disabled={loadingMore}
+                loading={loadingMore}
+              >
+                Cargar más
+              </CocoaButton>
+            </div>
+          ) : null}
         </section>
 
         <section className="bo-card">
@@ -638,24 +684,49 @@ export function ReservationDetailWorkspaceScreen() {
   const [activity, setActivity] = useState<GuestActivity | null>(null);
   const [activityLoading, setActivityLoading] = useState(false);
   const [activityError, setActivityError] = useState<string | null>(null);
+  // QC-06: a failed load is an error state with retry, never the "no
+  // reservation selected" empty state.
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [folioError, setFolioError] = useState<string | null>(null);
+  // REC-08: pending balance reported by /check-out (409 BALANCE_DUE). The
+  // operator must choose between collecting it and leaving with the balance.
+  const [balancePrompt, setBalancePrompt] = useState<BalanceDueConflict | null>(null);
 
   async function reload() {
     if (!reservationId) {
       setReservation(null);
       setFolio(null);
       setActivity(null);
+      setLoadError(null);
       return;
     }
-    const res = await fetchReservation(reservationId).catch(() => null);
-    setReservation(res);
-    if (res) {
+    setLoadError(null);
+    try {
+      const res = await fetchReservation(reservationId);
+      setReservation(res);
       setSelectedRoomId((current) => current || res.assignedRoomId || "");
+      // Rooms feed the assignment select only; a failure leaves it empty and is
+      // reported through the select placeholder rather than blocking the page.
       void fetchRooms(res.propertyId).then(setRooms).catch(() => setRooms([]));
+    } catch (err) {
+      setReservation(null);
+      setLoadError(err instanceof Error ? err.message : "No se pudo cargar la reserva.");
     }
-    void fetchReservationFolio(reservationId).then(setFolio).catch(() => setFolio(null));
+    void reloadFolio();
     // Invalidate the cached activity so a post-mutation reload (check-in, charge,
     // cancellation…) triggers a fresh fetch the next time the tab is opened.
     setActivity(null);
+  }
+
+  async function reloadFolio() {
+    if (!reservationId) return;
+    setFolioError(null);
+    try {
+      setFolio(await fetchReservationFolio(reservationId));
+    } catch (err) {
+      setFolio(null);
+      setFolioError(err instanceof Error ? err.message : "No se pudo cargar el folio.");
+    }
   }
 
   useEffect(() => {
@@ -681,12 +752,20 @@ export function ReservationDetailWorkspaceScreen() {
   async function runAction(label: string, fn: () => Promise<unknown>) {
     setBusy(true);
     setMessage(`${label}…`);
+    setBalancePrompt(null);
     try {
       await fn();
       await reload();
       setMessage(`${label} ✓`);
     } catch (error) {
-      setMessage(`${label} — ${error instanceof Error ? error.message : "error"}`);
+      const conflict = balanceDueConflict(error);
+      if (conflict) {
+        // The API refused the check-out because the folio still has a balance.
+        setBalancePrompt({ ...conflict, balanceDue: conflict.balanceDue ?? folio?.balanceDue ?? null });
+        setMessage(`${label} — ${conflict.message}`);
+      } else {
+        setMessage(`${label} — ${error instanceof Error ? error.message : "error"}`);
+      }
     } finally {
       setBusy(false);
     }
@@ -829,6 +908,41 @@ export function ReservationDetailWorkspaceScreen() {
                   Check-out
                 </CocoaButton>
               </div>
+              {balancePrompt ? (
+                <CocoaCard variant="bordered" padding="md">
+                  <strong style={{ display: "block", color: "var(--cocoa-label)" }}>
+                    Saldo pendiente{balancePrompt.balanceDue !== null ? `: ${balancePrompt.balanceDue} ${reservation.currency}` : ""}
+                  </strong>
+                  <p style={{ margin: "var(--cocoa-space-1) 0 0", color: "var(--cocoa-label-secondary)" }}>
+                    {balancePrompt.message} Cobra el saldo desde el folio o confirma la salida dejando el saldo pendiente.
+                  </p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--cocoa-space-2)", marginTop: "var(--cocoa-space-2)" }}>
+                    <CocoaButton
+                      variant="filled"
+                      tone="accent"
+                      disabled={busy}
+                      onClick={() => {
+                        setBalancePrompt(null);
+                        setActiveTab("folio");
+                      }}
+                    >
+                      Ir a cobrar
+                    </CocoaButton>
+                    <CocoaButton
+                      variant="bordered"
+                      tone="destructive"
+                      disabled={busy}
+                      onClick={() =>
+                        void runAction("Check-out con saldo pendiente", () =>
+                          checkOutReservation(reservation.id, { acknowledgeBalance: true })
+                        )
+                      }
+                    >
+                      Salir con saldo pendiente
+                    </CocoaButton>
+                  </div>
+                </CocoaCard>
+              ) : null}
               {/* TODO(cocoa): use CocoaSheet for cancel/no-show confirmation */}
               <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--cocoa-space-2)", marginTop: "var(--cocoa-space-2)" }}>
                 <CocoaButton
@@ -1005,6 +1119,12 @@ export function ReservationDetailWorkspaceScreen() {
                     </CocoaButton>
                   </div>
                 </>
+              ) : folioError ? (
+                <ErrorState
+                  title="No se pudo cargar el folio"
+                  message={folioError}
+                  onRetry={() => void reloadFolio()}
+                />
               ) : (
                 <LoadingBlock label="Cargando folio…" />
               )}
@@ -1173,6 +1293,12 @@ export function ReservationDetailWorkspaceScreen() {
             </CocoaButton>
           </div>
         </>
+      ) : loadError ? (
+        <ErrorState
+          title="No se pudo cargar la reserva"
+          message={loadError}
+          onRetry={() => void reload()}
+        />
       ) : (
         <div style={{ padding: "var(--cocoa-space-6)", textAlign: "center" }}>
           <p style={{ color: "var(--cocoa-label-secondary)" }}>No se encontró ninguna reserva con ese identificador.</p>

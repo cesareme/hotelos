@@ -123,15 +123,23 @@ export function RevenueRulesScreen() {
                   </thead>
                   <tbody>
                     {recs.slice(0, 30).map((r) => {
-                      const delta = r.expectedImpact?.deltaPct ?? 0;
+                      const delta = r.expectedImpact?.deltaPct;
+                      // REV-04: `current.bar` is null when no BAR is published for the
+                      // date (barSource "none"); we show "—", never a fallback price.
+                      const noBar = r.current?.bar == null;
                       return (
                         <tr key={r.id} className={r.riskLevel === "high" ? "cm-row-warn" : undefined}>
                           <td><strong>{fmtDate(r.targetDate)}</strong></td>
                           <td>{r.current?.occupancyPct != null ? `${r.current.occupancyPct}%` : "—"}</td>
-                          <td>{r.current?.bar != null ? money(r.current.bar) : "—"}</td>
+                          <td title={noBar ? "Sin BAR publicado en la parrilla para esta fecha" : undefined}>
+                            {noBar ? "—" : money(r.current.bar as number)}
+                            {noBar ? <small className="bo-muted" style={{ display: "block", textTransform: "none" }}>sin tarifario</small> : null}
+                          </td>
                           <td>{r.current?.compsetMedian != null ? money(r.current.compsetMedian) : "—"}</td>
                           <td><strong>{r.recommended?.bar != null ? money(r.recommended.bar) : "—"}</strong></td>
-                          <td style={{ color: delta >= 0 ? "var(--ok-ink, #0a7e57)" : "var(--danger-ink, #c2413a)" }}>{delta >= 0 ? "+" : ""}{delta}%</td>
+                          <td style={{ color: delta == null ? undefined : delta >= 0 ? "var(--ok-ink, #0a7e57)" : "var(--danger-ink, #c2413a)" }}>
+                            {delta == null ? "—" : `${delta >= 0 ? "+" : ""}${delta}%`}
+                          </td>
                           <td><span className={`bo-status ${statusPill(r.status)}`} style={{ textTransform: "none" }}>{STATUS_ES[r.status] ?? r.status}</span></td>
                           <td>
                             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>

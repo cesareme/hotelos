@@ -11,24 +11,24 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError } from "../../lib/http-error.js";
+import { addDays, dayUtc, dec, getPublishedBar, isoDate, publishedBarFor, round2 } from "./actuals.js";
 
-const MS_DAY = 86_400_000;
-function dayUtc(v?: string): Date {
-  const base = v && /^\d{4}-\d{2}-\d{2}/.test(v) ? v.slice(0, 10) : new Date().toISOString().slice(0, 10);
-  return new Date(`${base}T00:00:00.000Z`);
-}
-function addDays(d: Date, n: number): Date {
-  return new Date(d.getTime() + n * MS_DAY);
-}
-function isoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-function dec(v: Prisma.Decimal | number | null | undefined): number {
-  return v === null || v === undefined ? 0 : typeof v === "number" ? v : Number(v);
-}
-function round2(n: number): number {
-  return Math.round(n * 100) / 100;
-}
+/**
+ * Deterministic provider parameters (explicit and labelled: every snapshot it
+ * writes carries metadata.source "deterministic"). They shape the synthetic
+ * spread around OUR published BAR — they never produce a price without one.
+ */
+const PROVIDER = {
+  /** Stable per-competitor position: hash(id) % (2·spread+1) − spread → −12..+12 %. */
+  spreadPct: 12,
+  /** Comparable score that maps to a 0 % adjustment; each 0.1 above/below moves ±1 %. */
+  referenceComparableScore: 0.85,
+  /** Fri/Sat premium (%). */
+  weekendPremiumPct: 6,
+  /** Floor for any derived competitor price (EUR). */
+  minPrice: 40,
+  maxDaysAhead: 60
+} as const;
 function hash(s: string): number {
   let h = 0;
   for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
@@ -90,40 +90,42 @@ export async function listCompetitorRates(input: { propertyId: string; from?: st
 
 /**
  * Run a rate shop: for each active competitor × next N stay dates, derive a price
- * from our published BAR (rateDay min) and a stable per-competitor offset, then
- * upsert CompetitorRateSnapshot for today's shopDate. Records a RateShopJob.
+ * from our published BAR (BAR plan, lead rate) and a stable per-competitor
+ * offset, then upsert CompetitorRateSnapshot for today's shopDate. Dates with
+ * no published BAR are skipped (reported as `datesWithoutBar`) — the provider
+ * never anchors on an invented rate. Records a RateShopJob.
  */
 export async function runRateShop(input: { context: UserContext; propertyId: string; payload?: Record<string, unknown>; correlationId: string }) {
   requirePermissions(input.context, ["revenue.recommend"]);
-  const daysAhead = Math.min(60, Math.max(1, Number(input.payload?.daysAhead ?? 30)));
+  const daysAhead = Math.min(PROVIDER.maxDaysAhead, Math.max(1, Number(input.payload?.daysAhead ?? 30)));
   const shopDate = dayUtc();
   const to = addDays(shopDate, daysAhead - 1);
 
-  const competitors = await prisma.competitorHotel.findMany({ where: { propertyId: input.propertyId, active: true } });
-  // Our published min rate per day (the comparison anchor).
-  const rateRows = await prisma.rateDay.findMany({
-    where: { propertyId: input.propertyId, date: { gte: shopDate, lte: to } },
-    select: { date: true, price: true }
-  });
-  const minRate = new Map<string, number>();
-  for (const r of rateRows) {
-    const k = isoDate(r.date);
-    const p = dec(r.price);
-    if (!minRate.has(k) || p < (minRate.get(k) as number)) minRate.set(k, p);
-  }
+  const [competitors, publishedBar] = await Promise.all([
+    prisma.competitorHotel.findMany({ where: { propertyId: input.propertyId, active: true } }),
+    getPublishedBar(input.propertyId, shopDate, to)
+  ]);
 
   const data: Prisma.CompetitorRateSnapshotCreateManyInput[] = [];
-  for (const comp of competitors) {
-    // Stable per-competitor position: ±12% around our BAR, nudged by comparable score.
-    const base = (hash(comp.id) % 25) - 12; // -12..+12 %
-    const scoreAdj = comp.comparableScore ? (Number(comp.comparableScore) - 0.85) * 10 : 0;
-    for (let i = 0; i < daysAhead; i++) {
-      const stay = addDays(shopDate, i);
-      const dow = stay.getUTCDay();
-      const weekend = dow === 5 || dow === 6 ? 6 : 0;
-      const anchor = minRate.get(isoDate(stay)) ?? 130;
+  const datesWithoutBar: string[] = [];
+  let datesShopped = 0;
+  for (let i = 0; i < daysAhead; i++) {
+    const stay = addDays(shopDate, i);
+    const stayKey = isoDate(stay);
+    const anchor = publishedBarFor(publishedBar, stayKey);
+    if (anchor === null) {
+      datesWithoutBar.push(stayKey);
+      continue;
+    }
+    datesShopped++;
+    const dow = stay.getUTCDay();
+    const weekend = dow === 5 || dow === 6 ? PROVIDER.weekendPremiumPct : 0;
+    for (const comp of competitors) {
+      // Stable per-competitor position around our BAR, nudged by comparable score.
+      const base = (hash(comp.id) % (2 * PROVIDER.spreadPct + 1)) - PROVIDER.spreadPct;
+      const scoreAdj = comp.comparableScore ? (Number(comp.comparableScore) - PROVIDER.referenceComparableScore) * 10 : 0;
       const pct = (base + scoreAdj + weekend) / 100;
-      const price = round2(Math.max(40, anchor * (1 + pct)));
+      const price = round2(Math.max(PROVIDER.minPrice, anchor * (1 + pct)));
       data.push({
         propertyId: input.propertyId,
         competitorHotelId: comp.id,
@@ -135,7 +137,7 @@ export async function runRateShop(input: { context: UserContext; propertyId: str
         price,
         currency: "EUR",
         availabilityStatus: "available",
-        metadataJson: { source: "deterministic" } as Prisma.InputJsonValue
+        metadataJson: { source: "deterministic", anchorBar: anchor, anchorSource: "rate_grid" } as Prisma.InputJsonValue
       });
     }
   }
@@ -168,11 +170,21 @@ export async function runRateShop(input: { context: UserContext; propertyId: str
     action: "RATE_SHOP_RUN",
     entityType: "rate_shop_job",
     entityId: job.id,
-    afterJson: { competitors: competitors.length, snapshots, daysAhead, source: "deterministic" },
+    afterJson: { competitors: competitors.length, snapshots, daysAhead, datesShopped, datesWithoutBar: datesWithoutBar.length, barSource: publishedBar.source, source: "deterministic" },
     correlationId: input.correlationId
   });
 
-  return { jobId: job.id, competitors: competitors.length, snapshots, daysAhead, shopDate: isoDate(shopDate), source: "deterministic" as const };
+  return {
+    jobId: job.id,
+    competitors: competitors.length,
+    snapshots,
+    daysAhead,
+    datesShopped,
+    datesWithoutBar,
+    barSource: publishedBar.source,
+    shopDate: isoDate(shopDate),
+    source: "deterministic" as const
+  };
 }
 
 export async function listParityAlerts(propertyId: string) {

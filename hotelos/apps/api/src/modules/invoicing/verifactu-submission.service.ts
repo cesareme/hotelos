@@ -11,11 +11,15 @@ import { ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { queueTbaiSubmission } from "./tbai-submission.service.js";
 import { queueIgicSubmission } from "./igic-submission.service.js";
+import { issuerForInvoice } from "./issuer-identity.service.js";
 
+// Software producer block of the registro (SistemaInformatico). This is the NIF
+// of the software PRODUCER (Anfitorio's legal owner), a different concept from
+// the invoice issuer (Invoice.issuerTaxId, see issuer-identity.service.ts).
+// VERIFACTU_SOFTWARE_NIF MUST be a real NIF before sending to AEAT — the
+// all-zero placeholder is only tolerated in development. Keep in sync with
+// apps/worker/src/scheduler.ts (same block, so a retry rebuilds the same XML).
 const SOFTWARE = {
-  // NIF del PRODUCTOR del software (el titular legal de Anfitorio). DEBE venir de
-  // env con un NIF real antes de enviar a AEAT — el placeholder B00000000 solo es
-  // válido en desarrollo. (Revisión 360º: identidad de SIF ante AEAT.)
   nif: process.env.VERIFACTU_SOFTWARE_NIF ?? "B00000000",
   name: "Anfitorio",
   id: "ANFITORIO-VRF-01",
@@ -179,7 +183,11 @@ async function recordUncountedFailure(submissionId: string, error: unknown): Pro
         nextRetryAt: new Date(Date.now() + RETRY_BACKOFF_MS)
       }
     })
-    .catch(() => undefined);
+    .catch((persistError: unknown) => {
+      // QC-06: the row keeps its previous state; say so instead of hiding it.
+      const detail = persistError instanceof Error ? persistError.message : String(persistError);
+      console.error(`[verifactu.retry] could not record failed attempt on submission ${submissionId}: ${detail}`);
+    });
 }
 
 // Terminal states are never reselected by the sweep (status filter) and keep
@@ -389,7 +397,11 @@ async function reconcileMissingSubmissions(now: Date, result: VerifactuRetrySwee
               nextRetryAt
             }
           })
-          .catch(() => undefined);
+          .catch((persistError: unknown) => {
+            // QC-06: without the row the invoice is re-scanned every tick for 72h.
+            const detail = persistError instanceof Error ? persistError.message : String(persistError);
+            console.error(`[verifactu.reconcile] could not park invoice ${invoice.id} as retrying: ${detail}`);
+          });
       }
     });
   }
@@ -413,10 +425,14 @@ async function submitForInvoice(invoiceId: string, organizationId: string, actor
   const existing = await prisma.verifactuSubmission.findUnique({ where: { invoiceId } });
   if (existing && existing.status === "accepted") return "already_accepted";
 
-  const property = await prisma.property.findUnique({ where: { id: invoice.propertyId } });
+  // FISC-03: the identity the invoice was issued with (snapshot; QR nif= for
+  // legacy invoices; live resolver as the last resort, which applies the
+  // production 409 / sandbox placeholder policy). Never a regex over the
+  // property name — the huella must be reproducible.
+  const issuer = await issuerForInvoice(invoice);
+  const emitterTaxId = issuer.taxId;
+  const emitterName = issuer.legalName;
   const lines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
-  const emitterTaxId = property?.legalName?.match(/[A-Z]?\d{8}[A-Z]?/i)?.[0] ?? "B00000000";
-  const emitterName = property?.legalName ?? property?.name ?? "Establecimiento";
 
   let previousInvoiceNumber: string | null = null;
   let previousIssuedAt: string | null = null;
@@ -443,20 +459,31 @@ async function submitForInvoice(invoiceId: string, organizationId: string, actor
   if (invoice.rectifyingForId) {
     const rectified = await prisma.invoice.findUnique({
       where: { id: invoice.rectifyingForId },
-      select: { invoiceNumber: true, issuedAt: true, propertyId: true }
+      select: {
+        invoiceNumber: true,
+        issuedAt: true,
+        propertyId: true,
+        issuerTaxId: true,
+        issuerLegalName: true,
+        issuerTaxIdPlaceholder: true,
+        qrPayload: true
+      }
     });
     rectifiedRef = {
       invoiceNumber: rectified?.invoiceNumber ?? null,
       issuedAt: rectified?.issuedAt?.toISOString() ?? null
     };
     if (rectified?.invoiceNumber && rectified.issuedAt) {
+      // IDEmisorFactura of the rectified invoice is ITS snapshot (it may
+      // predate a NIF correction), not the current issuer.
+      const rectifiedIssuer = await issuerForInvoice(rectified);
       rectification = {
         type: "S",
         rectifiedInvoices: [
           {
             invoiceNumber: rectified.invoiceNumber,
             issueDate: rectified.issuedAt.toISOString(),
-            emitterTaxId
+            emitterTaxId: rectifiedIssuer.taxId
           }
         ]
       };
@@ -553,7 +580,11 @@ async function submitForInvoice(invoiceId: string, organizationId: string, actor
           where: { id: submission.id },
           data: { status: "retrying", errorMessage: message, nextRetryAt: new Date(Date.now() + RETRY_BACKOFF_MS) }
         })
-        .catch(() => undefined);
+        .catch((persistError: unknown) => {
+          // QC-06: the row stays "submitting" and is rescued by the stuck-row sweep; log it.
+          const detail = persistError instanceof Error ? persistError.message : String(persistError);
+          console.error(`[verifactu] could not park submission ${submission.id} (invoice ${invoiceId}) as retrying: ${detail}`);
+        });
     }
     throw new AttemptAlreadyCountedError(message);
   }

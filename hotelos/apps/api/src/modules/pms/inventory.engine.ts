@@ -1,4 +1,8 @@
 import { prisma } from "@hotelos/database";
+import type { Prisma } from "@hotelos/database";
+
+/** Prisma client or interactive-transaction client (re-validation under a row lock). */
+export type InventoryDb = Prisma.TransactionClient | typeof prisma;
 
 export type RoomAssignmentInput = {
   propertyId: string;
@@ -7,18 +11,31 @@ export type RoomAssignmentInput = {
   roomNumber?: string;
   arrivalDate: string;
   departureDate: string;
+  /**
+   * Optional transaction client. When the caller holds a lock on the room row
+   * (pms.service `lockRoomRow`) the queries below run inside that transaction,
+   * so a concurrent assignment that committed meanwhile is visible here.
+   */
+  db?: InventoryDb;
 };
 
 export type RoomAssignmentValidation = {
   allowed: boolean;
+  /** Blocking reasons — `allowed` is false whenever this is non-empty. */
   warnings: string[];
+  /**
+   * Informative, NON-blocking remarks (e.g. a room flagged `occupied` with no
+   * in-house reservation behind it). Never influences `allowed`.
+   */
+  notes?: string[];
   roomStatus: "clean_inspected" | "clean" | "dirty" | "occupied" | "blocked";
   maintenanceBlock: boolean;
   roomId?: string;
 };
 
 export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAssignmentValidation> {
-  const room = await prisma.room.findFirst({
+  const db = input.db ?? prisma;
+  const room = await db.room.findFirst({
     where: {
       propertyId: input.propertyId,
       OR: [
@@ -32,25 +49,57 @@ export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAss
     return {
       allowed: false,
       warnings: ["La habitación no existe en esta propiedad."],
+      notes: [],
       roomStatus: "blocked",
       maintenanceBlock: true
     };
   }
 
   const warnings: string[] = [];
+  const notes: string[] = [];
   const maintenanceBlock = room.maintenanceStatus === "blocked" || !room.sellable;
 
   if (maintenanceBlock) {
     warnings.push("La habitación está bloqueada por mantenimiento o no es vendible.");
   }
   if (room.status === "occupied") {
-    warnings.push("La habitación está ocupada actualmente.");
+    // REC-03: `occupied` is only a conflict when an in-house reservation OTHER
+    // than the one being validated actually holds the room. The reservation
+    // re-validating its own room (PATCH with the current assignedRoomId, a
+    // move that lands on the same room) is not a conflict.
+    //
+    // NUEVO-ORPHAN-OCCUPIED: a room flagged `occupied` with NO checked_in
+    // reservation behind it is an inconsistent state (a lost race, a manual
+    // status edit, a failed check-out). It used to block every assignment
+    // until housekeeping marked the room clean; now it is reported as a
+    // non-blocking note so reception can reuse the room, and logged so the
+    // inconsistency does not go unnoticed.
+    const inHouse = await db.reservation.findMany({
+      where: { assignedRoomId: room.id, status: "checked_in" },
+      select: { id: true, code: true },
+      take: 10
+    });
+    const otherOccupant = inHouse.find((r) => r.id !== input.reservationId);
+    const occupiedBySelf = inHouse.some((r) => r.id === input.reservationId);
+    if (otherOccupant) {
+      warnings.push("La habitación está ocupada actualmente.");
+    } else if (!occupiedBySelf) {
+      notes.push(
+        "La habitación figura como ocupada pero no tiene ninguna reserva alojada; se permite la asignación, revisa su estado en housekeeping."
+      );
+      console.warn("[inventory.canAssignRoom] room flagged occupied without an in-house reservation (orphan status)", {
+        roomId: room.id,
+        roomNumber: room.number,
+        propertyId: room.propertyId,
+        reservationId: input.reservationId
+      });
+    }
   }
 
   const arrival = new Date(`${input.arrivalDate}T00:00:00.000Z`);
   const departure = new Date(`${input.departureDate}T00:00:00.000Z`);
 
-  const conflictingReservation = await prisma.reservation.findFirst({
+  const conflictingReservation = await db.reservation.findFirst({
     where: {
       propertyId: input.propertyId,
       id: { not: input.reservationId },
@@ -80,6 +129,7 @@ export async function canAssignRoom(input: RoomAssignmentInput): Promise<RoomAss
   return {
     allowed: warnings.length === 0,
     warnings,
+    notes,
     roomStatus,
     maintenanceBlock,
     roomId: room.id

@@ -8,6 +8,8 @@ import { prisma } from "@hotelos/database";
 import { signSubmissionXml } from "../../lib/compliance-signing.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
+import { ConflictError } from "../../lib/http-error.js";
+import { requireIssuerIdentity } from "../invoicing/issuer-identity.service.js";
 
 let sesChain: Promise<void> = Promise.resolve();
 
@@ -173,12 +175,43 @@ async function processSubmission(input: {
 
   const submissionType = (input.submissionType ?? "alta") as "alta" | "modificacion" | "baja";
   const externalReference = `${reservation.code}-${submissionType}-${Date.now()}`;
+
+  // FISC-03: a comunicación is not an invoice (no snapshot), so the
+  // establishment identity is resolved live with the same policy as issuance:
+  // fiscal production mode without a valid NIF is a hard stop. Inside this job
+  // that stop is persisted as a "failed" row with the reason (visible in the
+  // SES dashboard, no infinite retry) instead of being thrown away.
+  let issuer: Awaited<ReturnType<typeof requireIssuerIdentity>>;
+  try {
+    issuer = await requireIssuerIdentity(property.id);
+  } catch (error) {
+    if (!(error instanceof ConflictError)) throw error;
+    console.error(`[ses] cannot submit ${externalReference} for property ${property.id}: ${error.message}`);
+    await prisma.sesHospedajesSubmission.create({
+      data: {
+        propertyId: property.id,
+        guestRegisterRecordId: record.id,
+        reservationId,
+        externalReference,
+        submissionType,
+        status: "failed",
+        requestPayloadJson: { reason: "ISSUER_TAX_ID_MISSING" } as object,
+        errorCode: "ISSUER_TAX_ID_MISSING",
+        errorMessage: error.message,
+        attempts: 0,
+        nextRetryAt: null,
+        correlationId: input.correlationId
+      }
+    });
+    return;
+  }
+
   const submissionRecord: SesSubmissionRecord = {
     submissionType,
     externalReference,
     establishment: {
-      taxId: property.legalName?.match(/[A-Z]?\d{8}[A-Z]?/i)?.[0] ?? "B00000000",
-      legalName: property.legalName ?? property.name ?? "HotelOS Demo",
+      taxId: issuer.taxId,
+      legalName: issuer.legalName,
       registryNumber: process.env.SES_REGISTRY_NUMBER ?? `REG-${property.id}`,
       registryType: "establecimiento_turistico",
       address: property.address ?? "Demo address",

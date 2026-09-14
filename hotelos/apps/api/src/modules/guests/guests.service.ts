@@ -13,6 +13,7 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
+import { buildPage, decodeCursor, DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, type Page } from "../../lib/pagination.js";
 
 type GuestRow = NonNullable<Awaited<ReturnType<typeof prisma.guest.findUnique>>>;
 
@@ -73,54 +74,62 @@ function mapGuest(row: GuestRow) {
 export type GuestProfile = ReturnType<typeof mapGuest>;
 
 const EMAIL_RE = /.+@.+\..+/;
+const DOCUMENT_RE = /^[A-Za-z0-9-]{5,}$/;
 
-/**
- * List/search guests in the caller's organization. Name search is a
- * case-insensitive `contains`; an email- or document-looking term additionally
- * runs an exact lookup-hash match (encrypted columns can't be `contains`-ed).
- */
-export async function listGuests(input: {
-  context: UserContext;
+export type GuestListOptions = {
+  /** Free text: case-insensitive `contains` on name/company; an email- or document-looking term also matches exactly (lookup hash). */
   search?: string;
   limit?: number;
-}): Promise<GuestProfile[]> {
-  requirePermissions(input.context, ["guests.read"]);
-  const organizationId = input.context.organizationId;
-  const take = Math.min(200, Math.max(1, input.limit ?? 100));
-  const term = (input.search ?? "").trim();
+  cursor?: string | null;
+};
 
-  if (!term) {
-    const rows = await prisma.guest.findMany({ where: { organizationId }, orderBy: { createdAt: "desc" }, take });
-    return rows.map(mapGuest);
+/**
+ * Guests of an organization, newest first with a stable (createdAt, id)
+ * cursor (REC-05 / QC-04). One query for the page + one count. Name/company
+ * search is a case-insensitive `contains`; an email- or document-looking term
+ * additionally runs an exact match that the Prisma encryption extension
+ * rewrites to the deterministic lookup-hash columns (encrypted columns can't
+ * be `contains`-ed) — the rewrite also applies inside OR branches.
+ *
+ * Authorization (guests.read) is enforced by the route manifest
+ * (security/route-permissions.ts) — this function takes the organizationId
+ * the handler already resolved from the caller's context.
+ */
+export async function listGuests(organizationId: string, options: GuestListOptions = {}): Promise<Page<GuestProfile>> {
+  const rawLimit = options.limit;
+  const limit = rawLimit === undefined || !Number.isFinite(rawLimit)
+    ? DEFAULT_PAGE_LIMIT
+    : Math.min(MAX_PAGE_LIMIT, Math.max(1, Math.floor(rawLimit)));
+  const term = (options.search ?? "").trim();
+
+  const filter: Prisma.GuestWhereInput = { organizationId, deletedAt: null };
+  if (term) {
+    const matches: Prisma.GuestWhereInput[] = [
+      { firstName: { contains: term, mode: "insensitive" } },
+      { surname1: { contains: term, mode: "insensitive" } },
+      { surname2: { contains: term, mode: "insensitive" } },
+      { company: { contains: term, mode: "insensitive" } }
+    ];
+    if (EMAIL_RE.test(term)) matches.push({ email: term });
+    if (DOCUMENT_RE.test(term)) matches.push({ documentNumber: term });
+    filter.OR = matches;
   }
 
-  const byId = new Map<string, GuestRow>();
-  const nameRows = await prisma.guest.findMany({
-    where: {
-      organizationId,
-      OR: [
-        { firstName: { contains: term, mode: "insensitive" } },
-        { surname1: { contains: term, mode: "insensitive" } },
-        { surname2: { contains: term, mode: "insensitive" } },
-        { company: { contains: term, mode: "insensitive" } }
-      ]
-    },
-    orderBy: { createdAt: "desc" },
-    take
-  });
-  for (const r of nameRows) byId.set(r.id, r);
-
-  // Exact match on encrypted columns via the extension's lookup-hash rewrite.
-  if (EMAIL_RE.test(term)) {
-    const emailRows = await prisma.guest.findMany({ where: { organizationId, email: term }, take });
-    for (const r of emailRows) byId.set(r.id, r);
-  }
-  if (/^[A-Za-z0-9-]{5,}$/.test(term)) {
-    const docRows = await prisma.guest.findMany({ where: { organizationId, documentNumber: term }, take });
-    for (const r of docRows) byId.set(r.id, r);
+  const cursor = decodeCursor(options.cursor ?? null);
+  let where: Prisma.GuestWhereInput = filter;
+  if (cursor) {
+    const k = new Date(cursor.k);
+    if (Number.isNaN(k.getTime())) {
+      throw new BadRequestError("El cursor de paginación no es válido.");
+    }
+    where = { AND: [filter, { OR: [{ createdAt: { lt: k } }, { createdAt: k, id: { lt: cursor.id } }] }] };
   }
 
-  return Array.from(byId.values()).slice(0, take).map(mapGuest);
+  const [rows, total] = await Promise.all([
+    prisma.guest.findMany({ where, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: limit + 1 }),
+    prisma.guest.count({ where: filter })
+  ]);
+  return buildPage(rows.map(mapGuest), limit, total, (guest) => guest.createdAt);
 }
 
 async function loadGuestRow(id: string, organizationId: string): Promise<GuestRow> {

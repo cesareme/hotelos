@@ -68,8 +68,13 @@ export async function getComplianceAssistant(propertyId: string) {
         temperature: 0.3
       });
       if (res.configured && res.text.trim()) { narrative = res.text.trim(); narrativeSource = "ai"; }
-    } catch {
-      // keep rules-based narrative on any provider error
+    } catch (err) {
+      // Best-effort: keep the rules-based narrative (narrativeSource "rules")
+      // on any provider error, but log it so a dead LLM provider is visible.
+      console.warn("[compliance.assistant] llm failed, rules fallback", {
+        propertyId,
+        error: err instanceof Error ? err.message : String(err)
+      });
     }
   }
 
