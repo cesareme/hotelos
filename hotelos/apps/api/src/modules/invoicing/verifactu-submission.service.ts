@@ -1,81 +1,238 @@
 import {
   buildVerifactuRegistroAlta,
+  buildVerifactuRegistroAnulacion,
+  computeInvoiceTotals,
+  computeVerifactuAnulacionHash,
+  figureForRegion,
+  isTransientVerifactuError,
+  isVerifactuSimulatedEndpoint,
+  normalizeTaxId,
+  normalizeTaxRegion,
+  parseTaxBreakdown,
+  parseTaxCode,
+  resolveVerifactuCredentials,
+  resolveVerifactuMode,
+  resolveVerifactuSoftware,
   submitVerifactuRegistro,
-  type VerifactuLineBreakdown,
-  type VerifactuRectificationInput
+  sumDesgloseQuotas,
+  VERIFACTU_ENDPOINTS,
+  VERIFACTU_TRANSIENT_ERROR_CODES,
+  type TaxFigure,
+  type TaxRegion,
+  type TbaiTerritory,
+  type VerifactuDesgloseGroup,
+  type VerifactuImpuesto,
+  type VerifactuInvoiceType,
+  type VerifactuPreviousRecord,
+  type VerifactuRectificationInput,
+  type VerifactuSoftwareBlock,
+  type VerifactuSubmissionMode,
+  type VerifactuSubmissionResponse
 } from "@hotelos/compliance";
 import { prisma } from "@hotelos/database";
+import type { Prisma } from "@hotelos/database";
 import type { EventEnvelope } from "@hotelos/shared";
 import { signSubmissionXml } from "../../lib/compliance-signing.js";
-import { ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { buildPage, DEFAULT_PAGE_LIMIT, decodeCursor, MAX_PAGE_LIMIT, type Page } from "../../lib/pagination.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { queueTbaiSubmission } from "./tbai-submission.service.js";
-import { queueIgicSubmission } from "./igic-submission.service.js";
 import { issuerForInvoice } from "./issuer-identity.service.js";
 
-// Software producer block of the registro (SistemaInformatico). This is the NIF
-// of the software PRODUCER (Anfitorio's legal owner), a different concept from
-// the invoice issuer (Invoice.issuerTaxId, see issuer-identity.service.ts).
-// VERIFACTU_SOFTWARE_NIF MUST be a real NIF before sending to AEAT — the
-// all-zero placeholder is only tolerated in development. Keep in sync with
-// apps/worker/src/scheduler.ts (same block, so a retry rebuilds the same XML).
-const SOFTWARE = {
-  nif: process.env.VERIFACTU_SOFTWARE_NIF ?? "B00000000",
-  name: "Anfitorio",
-  id: "ANFITORIO-VRF-01",
-  version: process.env.APP_VERSION ?? "0.1.0",
-  installNumber: process.env.VERIFACTU_INSTALL_NUMBER ?? "DEV-001"
+// VeriFactu queue (Tanda 3). One row per (invoice, registroType) in
+// verifactu_submissions: the RegistroAlta sent at issuance and, when the
+// invoice is cancelled, the RegistroAnulacion. The API is the ONLY executor
+// (the pg-boss `verifactu.retry` job was removed from apps/worker): live sends
+// go through the in-memory `submissionChain`, and `runDueVerifactuRetries`
+// (server.ts, every 120 s on the scheduler leader) retries, recovers orphaned
+// rows and reconciles invoices that never got a row — under a Postgres
+// advisory lock so two replicas can never sweep at once.
+//
+// Routing: Canarias reports IGIC through VeriFactu (Impuesto 03) like any
+// common-territory property; only the foral territories (Bizkaia, Gipuzkoa,
+// Araba — Property.fiscalTerritory, legacy Property.taxRegion) go to TicketBAI.
+
+type ChainDb = Pick<Prisma.TransactionClient, "invoice" | "property" | "organization">;
+type InvoiceRow = Prisma.InvoiceGetPayload<Record<string, never>>;
+type InvoiceLineRow = Prisma.InvoiceLineGetPayload<Record<string, never>>;
+type SubmissionRow = Prisma.VerifactuSubmissionGetPayload<Record<string, never>>;
+
+export type VerifactuRegistroType = "alta" | "anulacion";
+export type SubmissionRoute = "verifactu" | "tbai";
+
+const ACCEPTED_STATUSES: ReadonlySet<string> = new Set(["accepted", "accepted_with_errors"]);
+const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["failed", "abandoned", "rejected"]);
+const TBAI_TERRITORIES: ReadonlySet<string> = new Set<TbaiTerritory>(["bizkaia", "gipuzkoa", "araba"]);
+const IMPUESTO_BY_FIGURE: Record<TaxFigure, VerifactuImpuesto> = { IVA: "01", IPSI: "02", IGIC: "03" };
+// Same key the issuance path must take (see invoice.service.ts): one chain per property.
+const CHAIN_LOCK_SUFFIX = ":verifactu-chain";
+const SWEEP_LOCK_KEY = "verifactu.sweep";
+
+const RETRY_BATCH_SIZE = 25;
+// A row left in "submitting" longer than this was orphaned by a crash between
+// the upsert and the AEAT response (the in-memory chain is lost on restart).
+const STUCK_SUBMITTING_MS = 15 * 60_000;
+const RETRY_BACKOFF_MS = 5 * 60_000;
+// Configuration errors (no certificate / software block) are not AEAT
+// failures: they wait longer and never exhaust MAX_ATTEMPTS.
+const CONFIG_RETRY_BACKOFF_MS = 15 * 60_000;
+// After this many attempts a row goes terminal ("failed") instead of being
+// retried forever. Overridable per deployment with VERIFACTU_MAX_ATTEMPTS.
+const MAX_ATTEMPTS = parseMaxAttempts(process.env.VERIFACTU_MAX_ATTEMPTS);
+// Reconciliation (invoices with a huella but no row): no time window — a
+// wrap-around cursor over (createdAt, id) scans the whole table a page at a
+// time; the freshest invoices are left to the live chain (grace period).
+const RECONCILE_GRACE_MS = 5 * 60_000;
+const RECONCILE_BATCH_SIZE = 25;
+const RECONCILE_SCAN_PAGE_SIZE = 200;
+const RECONCILE_SCAN_MAX_PAGES = 10;
+// The sweep runs inside one interactive transaction that only holds the
+// advisory lock; the work itself uses the shared client. Generous timeout:
+// 25 retries + 25 reconciled altas + anulaciones, each capped by the
+// submitter's own network timeout.
+const SWEEP_TX_TIMEOUT_MS = 30 * 60_000;
+
+function parseMaxAttempts(raw: string | undefined): number {
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 12;
+}
+
+// ---------------------------------------------------------------------------
+// Routing
+// ---------------------------------------------------------------------------
+
+export type RoutableProperty = {
+  taxRegion: string | null | undefined;
+  province?: string | null;
+  fiscalTerritory?: string | null;
 };
+
+export type SubmissionRouteResolution = {
+  route: SubmissionRoute;
+  /** Set when route === "tbai". */
+  territory: TbaiTerritory | null;
+  /** Canonical common-territory region (contract A); null when unknown → treated as ES_PENINSULA_BALEARES. */
+  taxRegion: TaxRegion | null;
+};
+
+/**
+ * Where an invoice of this property is reported. Foral territories come from
+ * Property.fiscalTerritory (Tanda 3) with a fallback to the legacy
+ * Property.taxRegion values; everything else — Canarias included — is
+ * VeriFactu/AEAT with the Impuesto of its canonical region.
+ */
+export function submissionRouteForProperty(property: RoutableProperty): SubmissionRouteResolution {
+  const fiscal = (property.fiscalTerritory ?? "").trim().toLowerCase();
+  const legacy = (property.taxRegion ?? "").trim().toLowerCase();
+  const territory = TBAI_TERRITORIES.has(fiscal) ? (fiscal as TbaiTerritory) : TBAI_TERRITORIES.has(legacy) ? (legacy as TbaiTerritory) : null;
+  if (territory) return { route: "tbai", territory, taxRegion: null };
+  return { route: "verifactu", territory: null, taxRegion: normalizeTaxRegion(property.taxRegion, property.province) };
+}
+
+/** Legacy helper (string region only) kept for callers that predate fiscalTerritory. */
+export function submissionRouteForRegion(region: string | null | undefined): SubmissionRoute {
+  return submissionRouteForProperty({ taxRegion: region }).route;
+}
+
+// ---------------------------------------------------------------------------
+// Queue entry points
+// ---------------------------------------------------------------------------
 
 let submissionChain: Promise<void> = Promise.resolve();
 
-export function queueVerifactuSubmission(event: EventEnvelope): void {
-  if (event.eventType !== "InvoiceIssued") return;
+function enqueue(label: string, task: () => Promise<void>): Promise<void> {
   submissionChain = submissionChain.then(async () => {
     try {
-      await routeSubmissionByRegion(event);
+      await task();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      console.error(`[verifactu] failed to submit invoice ${event.entityId}: ${message}`);
+      console.error(`[verifactu] ${label}: ${message}`);
     }
   });
+  return submissionChain;
+}
+
+/** Resolves when every step queued so far has run (integration tests, graceful shutdown). */
+export function flushVerifactuQueue(): Promise<void> {
+  return submissionChain;
+}
+
+/**
+ * Domain-event hook (audit.service recordDomainEvent): InvoiceIssued queues
+ * the RegistroAlta, InvoiceCancelled the RegistroAnulacion. Both are
+ * idempotent on (invoiceId, registroType), so an explicit
+ * queueVerifactuAnulacion() from cancelInvoice plus this hook is harmless.
+ */
+export function queueVerifactuSubmission(event: EventEnvelope): void {
+  if (event.eventType === "InvoiceIssued") {
+    void enqueue(`failed to submit invoice ${event.entityId}`, () => routeSubmissionByRegion(event));
+    return;
+  }
+  if (event.eventType === "InvoiceCancelled" && event.entityId) {
+    queueVerifactuAnulacion(event.entityId);
+  }
 }
 
 async function routeSubmissionByRegion(event: EventEnvelope): Promise<void> {
   const invoiceId = event.entityId ?? "";
   if (!invoiceId) return;
-  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId }, select: { propertyId: true } });
   if (!invoice) return;
-  const property = await prisma.property.findUnique({ where: { id: invoice.propertyId } });
-  const region = property?.taxRegion ?? "mainland";
-  if (region === "canary") {
-    queueIgicSubmission(event);
-    return;
-  }
-  if (region === "bizkaia" || region === "gipuzkoa" || region === "araba") {
-    queueTbaiSubmission(event, region);
+  const property = await prisma.property.findUnique({
+    where: { id: invoice.propertyId },
+    select: { taxRegion: true, province: true, fiscalTerritory: true }
+  });
+  const resolution = submissionRouteForProperty(property ?? { taxRegion: null });
+  if (resolution.route === "tbai" && resolution.territory) {
+    queueTbaiSubmission(event, resolution.territory);
     return;
   }
   await submitForInvoice(invoiceId, event.organizationId, event.actorUserId);
 }
 
+/**
+ * Contract E: build, sign and send the RegistroAnulacion of a cancelled
+ * invoice. Runs after the alta in the serialized chain; if the alta is still
+ * pending it is sent first and the anulación waits (parked as retrying with
+ * errorCode ALTA_PENDING) until AEAT accepts it.
+ */
+export function queueVerifactuAnulacion(invoiceId: string): void {
+  void enqueue(`failed to submit anulación for invoice ${invoiceId}`, async () => {
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId }, select: { propertyId: true } });
+    if (!invoice) return;
+    const property = await prisma.property.findUnique({
+      where: { id: invoice.propertyId },
+      select: { organizationId: true, taxRegion: true, province: true, fiscalTerritory: true }
+    });
+    if (!property) return;
+    if (submissionRouteForProperty(property).route !== "verifactu") {
+      // TicketBAI cancellations (anulación TBAI) are a different record; the
+      // foral service does not implement them yet — say so instead of
+      // silently doing nothing.
+      console.warn(`[verifactu] invoice ${invoiceId} is routed to TicketBAI; anulación TBAI is not implemented (no registro sent).`);
+      return;
+    }
+    await submitAnulacionForInvoice(invoiceId, property.organizationId, undefined);
+  });
+}
+
 // Manual retry (POST /verifactu/submissions/:id/retry). Unlike the sweep it
-// also takes terminal rows — "failed" (MAX_ATTEMPTS exhausted) and "abandoned"
-// — and gives them a fresh budget: attempts back to 0, status "retrying" (so a
-// crash before the send is still recovered by the sweep) and no scheduled
-// retry. A row whose invoice can no longer be sent answers 409 with the reason
-// instead of being re-queued; an accepted one has nothing to retry.
+// also takes terminal rows — "failed" (MAX_ATTEMPTS exhausted), "abandoned",
+// AEAT "rejected" — and gives them a fresh budget: attempts back to 0, status
+// "retrying" (so a crash before the send is still recovered by the sweep) and
+// no scheduled retry. A row whose registro can no longer be sent answers 409
+// with the reason instead of being re-queued; an accepted one has nothing to retry.
 export async function retryVerifactuSubmission(submissionId: string): Promise<void> {
   const row = await prisma.verifactuSubmission.findUnique({ where: { id: submissionId } });
   if (!row) throw new NotFoundError("Envío VeriFactu no encontrado.");
-  if (row.status === "accepted") {
+  if (ACCEPTED_STATUSES.has(row.status)) {
     throw new ConflictError("El envío ya fue aceptado por AEAT; no procede reintentarlo.");
   }
   const invoice = await prisma.invoice.findUnique({
     where: { id: row.invoiceId },
-    select: { status: true, verifactuHash: true, invoiceNumber: true, deletedAt: true }
+    select: { status: true, verifactuHash: true, invoiceNumber: true, deletedAt: true, cancelledAt: true }
   });
-  const reason = unsubmittableReason(invoice);
+  const reason = unsubmittableReason(invoice, registroTypeOf(row));
   if (reason) throw new ConflictError(`No se puede reintentar el envío: ${reason}.`);
 
   const property = await prisma.property.findUnique({ where: { id: row.propertyId }, select: { organizationId: true } });
@@ -83,81 +240,45 @@ export async function retryVerifactuSubmission(submissionId: string): Promise<vo
     where: { id: row.id },
     data: { status: "retrying", attempts: 0, nextRetryAt: null }
   });
-  submissionChain = submissionChain.then(async () => {
+  void enqueue(`manual retry of submission ${row.id} failed`, async () => {
     try {
-      await submitForInvoice(row.invoiceId, property?.organizationId ?? "", undefined);
+      await dispatchRow(row, property?.organizationId ?? "");
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[verifactu.retry] failed: ${message}`);
       await recordUncountedFailure(row.id, err);
+      throw err;
     }
   });
 }
 
-const RETRY_BATCH_SIZE = 25;
-// A row left in "submitting" longer than this was orphaned by a crash between
-// the upsert and the AEAT response (the in-memory chain is lost on restart).
-const STUCK_SUBMITTING_MS = 15 * 60_000;
-const RETRY_BACKOFF_MS = 5 * 60_000;
-// After this many attempts a row goes terminal ("failed") instead of being
-// retried forever. Overridable per deployment with VERIFACTU_MAX_ATTEMPTS.
-const MAX_ATTEMPTS = parseMaxAttempts(process.env.VERIFACTU_MAX_ATTEMPTS);
-// Reconciliation of issued invoices that never got a submission row (crash
-// between issueInvoice() and the upsert): scan the last 72h, but leave the
-// freshest invoices to the live chain so the sweep does not race it.
-const RECONCILE_WINDOW_MS = 72 * 60 * 60_000;
-const RECONCILE_GRACE_MS = 5 * 60_000;
-const RECONCILE_BATCH_SIZE = 25;
-const RECONCILE_SCAN_PAGE_SIZE = 200;
-const RECONCILE_SCAN_MAX_PAGES = 10;
+// ---------------------------------------------------------------------------
+// Shared helpers
+// ---------------------------------------------------------------------------
 
-function parseMaxAttempts(raw: string | undefined): number {
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : 12;
+function registroTypeOf(row: { registroType: string }): VerifactuRegistroType {
+  return row.registroType === "anulacion" ? "anulacion" : "alta";
 }
 
-let retrySweepInFlight = false;
-
-export type VerifactuRetrySweepResult = {
-  due: number;
-  // Re-submitted through submitForInvoice (whatever AEAT answered).
-  retried: number;
-  // Threw during re-submission, or went terminal after MAX_ATTEMPTS.
-  failed: number;
-  // Went terminal because the invoice is gone / not issued / has no hash.
-  abandoned: number;
-  // Issued invoices with no submission row that were sent by reconciliation.
-  reconciled: number;
-};
-
-type SubmissionRow = { id: string; invoiceId: string; propertyId: string; attempts: number };
-type SubmissionRoute = "verifactu" | "igic" | "tbai";
-
-// Mirrors routeSubmissionByRegion: Canarias reports IGIC through its own
-// table and the foral territories through TicketBAI; everything else (mainland
-// and an unset region) is VeriFactu.
-function submissionRouteForRegion(region: string | null | undefined): SubmissionRoute {
-  if (region === "canary") return "igic";
-  if (region === "bizkaia" || region === "gipuzkoa" || region === "araba") return "tbai";
-  return "verifactu";
-}
-
-// Why an invoice can no longer be sent to AEAT (null when it can). Shared by
-// the live path and the sweep so both agree on what "submittable" means.
-function unsubmittableReason(
-  invoice: { status: string; verifactuHash: string | null; invoiceNumber: string | null; deletedAt: Date | null } | null
+// Why a registro can no longer be sent (null when it can). Shared by the live
+// path, the manual retry and the sweep so all agree on "submittable". An alta
+// stays sendable after the invoice is cancelled or rectified: the chain is
+// made of records, not of live invoices, and the anulación needs it.
+export function unsubmittableReason(
+  invoice: { status: string; verifactuHash: string | null; invoiceNumber: string | null; deletedAt: Date | null; cancelledAt?: Date | null } | null,
+  registroType: VerifactuRegistroType = "alta"
 ): string | null {
   if (!invoice) return "la factura ya no existe";
   if (invoice.deletedAt) return "la factura fue eliminada";
-  if (invoice.status !== "issued") return `la factura está en estado '${invoice.status}', no emitida`;
+  if (invoice.status === "draft") return "la factura está en borrador, no emitida";
   if (!invoice.verifactuHash) return "la factura no tiene huella VeriFactu";
   if (!invoice.invoiceNumber) return "la factura no tiene número";
+  if (registroType === "anulacion" && (invoice.status !== "cancelled" || !invoice.cancelledAt)) {
+    return `la factura está en estado '${invoice.status}', no anulada`;
+  }
   return null;
 }
 
-// Thrown by submitForInvoice for a failure after its upsert has already
-// counted the attempt: callers log/park it but must not increment `attempts`
-// a second time.
+// Thrown by submit* for a failure after the upsert has already counted the
+// attempt: callers log/park it but must not increment `attempts` a second time.
 class AttemptAlreadyCountedError extends Error {
   constructor(message: string) {
     super(message);
@@ -165,11 +286,10 @@ class AttemptAlreadyCountedError extends Error {
   }
 }
 
-// After submitForInvoice threw for an existing row: a failure before the
-// upsert (XML build, signing) has not been counted yet, so count it here with
-// the regular backoff — a permanently broken row must still reach
-// MAX_ATTEMPTS instead of retrying forever. A failure after the upsert was
-// already counted (and, for transport errors, parked) by submitForInvoice.
+// After submit* threw for an existing row: a failure before the upsert (XML
+// build, signing) has not been counted yet, so count it here with the regular
+// backoff — a permanently broken row must still reach MAX_ATTEMPTS instead of
+// retrying forever. A failure after the upsert was already counted.
 async function recordUncountedFailure(submissionId: string, error: unknown): Promise<void> {
   if (error instanceof AttemptAlreadyCountedError) return;
   const message = error instanceof Error ? error.message : String(error);
@@ -191,11 +311,13 @@ async function recordUncountedFailure(submissionId: string, error: unknown): Pro
 }
 
 // Terminal states are never reselected by the sweep (status filter) and keep
-// nextRetryAt null; the operator can still force a manual retry from the UI
-// (retryVerifactuSubmission resets the attempt counter).
-async function markTerminal(id: string, status: "abandoned" | "failed", errorMessage: string): Promise<void> {
+// nextRetryAt null; the operator can still force a manual retry from the UI.
+async function markTerminal(id: string, status: "abandoned" | "failed", errorMessage: string, errorCode?: string): Promise<void> {
   try {
-    await prisma.verifactuSubmission.update({ where: { id }, data: { status, errorMessage, nextRetryAt: null } });
+    await prisma.verifactuSubmission.update({
+      where: { id },
+      data: { status, errorMessage, nextRetryAt: null, ...(errorCode ? { errorCode } : {}) }
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[verifactu.retry] could not mark submission ${id} as ${status}: ${message}`);
@@ -210,21 +332,680 @@ async function organizationByProperty(propertyIds: string[]): Promise<Map<string
   return new Map(properties.map((p) => [p.id, p.organizationId]));
 }
 
-// In-process retry loop (same role as the pg-boss "verifactu.retry" job in
-// apps/worker), wired every 120s from server.ts on the scheduler leader:
-//   1. re-submit registros whose nextRetryAt elapsed plus rows orphaned
-//      mid-send, retiring poisoned rows (invoice gone / not issued / no hash)
-//      and rows past MAX_ATTEMPTS so they stop being reselected;
-//   2. reconcile issued invoices that never got a submission row.
-// Serialized through `submissionChain` so it never races a live submission of
-// the same invoice.
+function isConfigurationError(errorCode: string | null | undefined): boolean {
+  return !!errorCode && VERIFACTU_TRANSIENT_ERROR_CODES.includes(errorCode);
+}
+
+export type SubmissionOutcomeStatus = "accepted" | "accepted_with_errors" | "rejected" | "retrying";
+
+/**
+ * Persisted status for an AEAT/stub response. "rejected" is reserved for real
+ * AEAT rejections (error code from the response); transport failures and
+ * configuration gaps (NETWORK_*, CERT_NOT_CONFIGURED, SOFTWARE_NOT_CONFIGURED)
+ * are retryable and get a backoff.
+ */
+export function finalStatusForResponse(response: Pick<VerifactuSubmissionResponse, "status" | "errorCode">, now = Date.now()): {
+  status: SubmissionOutcomeStatus;
+  nextRetryAt: Date | null;
+} {
+  if (response.status === "accepted") return { status: "accepted", nextRetryAt: null };
+  if (response.status === "accepted_with_errors") return { status: "accepted_with_errors", nextRetryAt: null };
+  if (response.status === "rejected" && !isTransientVerifactuError(response.errorCode)) return { status: "rejected", nextRetryAt: null };
+  const backoff = isConfigurationError(response.errorCode) ? CONFIG_RETRY_BACKOFF_MS : RETRY_BACKOFF_MS;
+  return { status: "retrying", nextRetryAt: new Date(now + backoff) };
+}
+
+/**
+ * The SistemaInformatico block for this send. In sandbox an incomplete block
+ * (labelled defaults) is tolerated so the stub pipeline keeps working; in
+ * preproduction/production nothing is sent until the operator fixes the
+ * environment (SOFTWARE_NOT_CONFIGURED, retried with the config backoff).
+ */
+function resolveSoftwareForSend(mode: VerifactuSubmissionMode): { software: VerifactuSoftwareBlock; blocking: VerifactuSubmissionResponse | null } {
+  const resolution = resolveVerifactuSoftware();
+  if (mode !== "sandbox" && !resolution.ok) {
+    return {
+      software: resolution.software,
+      blocking: {
+        status: "rejected",
+        endpoint: VERIFACTU_ENDPOINTS[mode],
+        mode,
+        errorCode: "SOFTWARE_NOT_CONFIGURED",
+        errorMessage: `Bloque SistemaInformatico incompleto para el modo '${mode}': ${resolution.errors.join(" ")}`
+      }
+    };
+  }
+  return { software: resolution.software, blocking: null };
+}
+
+/**
+ * Desglose of an invoice (contract B): the breakdown persisted at issuance
+ * (Invoice.taxBreakdownJson) is the single source; invoices issued before
+ * Tanda 3 fall back to a per-line aggregation with the same grouping and
+ * rounding, deriving figure/impuesto from the line's taxFigure, its taxCode
+ * (ES_IVA_10 / ES_IGIC_7 / ES_IPSI_2 / ES_IVA_N1) or, last, the property's
+ * region. Pure apart from its inputs; exported for unit tests.
+ */
+export function desgloseForInvoice(
+  invoice: { taxBreakdownJson: unknown },
+  lines: Array<Pick<InvoiceLineRow, "taxCode" | "taxRate" | "total"> & { taxFigure?: string | null; taxCalificacion?: string | null }>,
+  taxRegion: TaxRegion | null
+): { groups: VerifactuDesgloseGroup[]; source: "breakdown" | "lines" } {
+  const persisted = parseTaxBreakdown(invoice.taxBreakdownJson);
+  if (persisted.length > 0) return { groups: persisted, source: "breakdown" };
+  const regionFigure = figureForRegion(taxRegion ?? "ES_PENINSULA_BALEARES");
+  const totals = computeInvoiceTotals(
+    lines.map((line) => {
+      const parsed = parseTaxCode(line.taxCode);
+      const lineFigure = line.taxFigure && line.taxFigure in IMPUESTO_BY_FIGURE ? (line.taxFigure as TaxFigure) : null;
+      const figure: TaxFigure = lineFigure ?? (parsed.figure !== "UNKNOWN" ? parsed.figure : regionFigure.figure);
+      const calificacion = line.taxCalificacion === "N1" || parsed.calificacion === "N1" ? "N1" : "S1";
+      return {
+        total: Number(line.total.toString()),
+        ratePercent: Number(line.taxRate.toString()),
+        figure,
+        impuesto: IMPUESTO_BY_FIGURE[figure],
+        calificacion
+      };
+    })
+  );
+  return { groups: totals.breakdown, source: "lines" };
+}
+
+export type VerifactuRecipientResolution = { recipient: { name: string; taxId: string } | null; warning: string | null };
+
+/**
+ * Destinatarios/IDDestinatario of an invoice: the recipient snapshot taken at
+ * creation (Invoice.customerName) or, for invoices created before the column,
+ * `legacyName` resolved from the folio / reservation. The NIF is NEVER used as
+ * the name: without a usable name the block is omitted and the send is
+ * flagged (AEAT marks an F1 without Destinatarios; a fabricated name would be
+ * worse). Anonymous / simplified invoices have no recipient. Pure.
+ */
+export function resolveVerifactuRecipient(
+  invoice: { customerTaxId: string | null; customerName?: string | null },
+  legacyName: string | null
+): VerifactuRecipientResolution {
+  const taxId = normalizeTaxId(invoice.customerTaxId);
+  if (!taxId) return { recipient: null, warning: null };
+  const name = invoice.customerName?.trim() || legacyName?.trim() || null;
+  if (!name || normalizeTaxId(name) === taxId) {
+    return {
+      recipient: null,
+      warning: `Destinatario ${taxId} sin nombre o razón social (customerName vacío y no resoluble desde folio/reserva): se envía sin bloque Destinatarios; AEAT lo marcará en una factura completa. Indica el nombre o razón social del destinatario.`
+    };
+  }
+  return { recipient: { name, taxId }, warning: null };
+}
+
+/** Legacy fallback (invoices created before Invoice.customerName): razón social of the reservation for company/agency invoices, else the folio guest's full name. */
+async function legacyRecipientName(invoice: InvoiceRow): Promise<string | null> {
+  const folio = invoice.folioId
+    ? await prisma.folio.findUnique({ where: { id: invoice.folioId }, select: { guestId: true, reservationId: true } })
+    : null;
+  const reservationId = invoice.reservationId ?? folio?.reservationId ?? null;
+  let name: string | null = null;
+  if (invoice.customerType !== "guest" && reservationId) {
+    const reservation = await prisma.reservation.findUnique({ where: { id: reservationId }, select: { companyName: true } });
+    name = reservation?.companyName?.trim() || null;
+  }
+  if (!name && folio?.guestId) {
+    const guest = await prisma.guest.findUnique({ where: { id: folio.guestId }, select: { firstName: true, surname1: true, surname2: true } });
+    name = guest ? [guest.firstName, guest.surname1, guest.surname2].filter((part) => !!part && part.trim().length > 0).join(" ").trim() || null : null;
+  }
+  return name;
+}
+
+/** Destinatarios/IDDestinatario for an identified customer (null for anonymous / simplified invoices). */
+async function recipientForInvoice(invoice: InvoiceRow): Promise<VerifactuRecipientResolution> {
+  if (!normalizeTaxId(invoice.customerTaxId)) return { recipient: null, warning: null };
+  const legacyName = invoice.customerName?.trim() ? null : await legacyRecipientName(invoice);
+  return resolveVerifactuRecipient(invoice, legacyName);
+}
+
+/**
+ * The record a huella points at. `previousInvoiceHash` may be an alta
+ * (Invoice.verifactuHash) or an anulación (Invoice.cancellationHash): both are
+ * links of the same chain. The IDEmisorFactura of the previous record is ITS
+ * NIF snapshot, never the current issuer.
+ */
+async function previousRecordByHash(db: ChainDb, propertyId: string, hash: string | null): Promise<VerifactuPreviousRecord | null> {
+  if (!hash) return null;
+  const previous = await db.invoice.findFirst({
+    where: { propertyId, OR: [{ verifactuHash: hash }, { cancellationHash: hash }] },
+    orderBy: [{ issuedAt: "desc" }, { id: "desc" }]
+  });
+  if (!previous || !previous.invoiceNumber || !previous.issuedAt) return null;
+  const issuer = await issuerForInvoice(previous, db);
+  return { emitterTaxId: issuer.taxId, invoiceNumber: previous.invoiceNumber, issuedAt: previous.issuedAt.toISOString(), hash };
+}
+
+/**
+ * Chain-tail rule shared by the anulación path and the legacy reconciliation:
+ * between the latest alta and the latest anulación (each already the newest
+ * of its kind), the anulación is the tail only when it was generated
+ * STRICTLY later; ties and a missing anulación go to the alta. Mirrors
+ * pickPreviousChainLink (invoice.service.ts) so both modules compute the same
+ * tail for one instant. Pure.
+ */
+export function chainTailIsAnulacion(altaGeneratedAt: number | null, anulacionGeneratedAt: number | null): boolean {
+  if (anulacionGeneratedAt === null) return false;
+  if (altaGeneratedAt === null) return true;
+  return anulacionGeneratedAt > altaGeneratedAt;
+}
+
+/**
+ * Chain tail of a property at instant `before`: the latest alta (by issuedAt)
+ * or anulación (by cancelledAt) generated up to that instant, excluding the
+ * anulación of `excludeInvoiceId` itself. Deterministic, so the anulación's
+ * RegistroAnterior is rebuilt identically on every retry.
+ */
+async function chainTailBefore(db: ChainDb, propertyId: string, before: Date, excludeInvoiceId: string): Promise<VerifactuPreviousRecord | null> {
+  const [alta, anulacion] = await Promise.all([
+    db.invoice.findFirst({
+      where: { propertyId, deletedAt: null, verifactuHash: { not: null }, issuedAt: { lte: before } },
+      orderBy: [{ issuedAt: "desc" }, { id: "desc" }]
+    }),
+    db.invoice.findFirst({
+      where: { propertyId, deletedAt: null, cancellationHash: { not: null }, cancelledAt: { lte: before }, id: { not: excludeInvoiceId } },
+      orderBy: [{ cancelledAt: "desc" }, { id: "desc" }]
+    })
+  ]);
+  const tail = chainTailIsAnulacion(alta?.issuedAt?.getTime() ?? null, anulacion?.cancelledAt?.getTime() ?? null) ? anulacion : alta;
+  if (!tail || !tail.invoiceNumber || !tail.issuedAt) return null;
+  const hash = tail === anulacion ? tail.cancellationHash : tail.verifactuHash;
+  if (!hash) return null;
+  const issuer = await issuerForInvoice(tail, db);
+  return { emitterTaxId: issuer.taxId, invoiceNumber: tail.invoiceNumber, issuedAt: tail.issuedAt.toISOString(), hash };
+}
+
+export class CancellationHashMismatchError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CancellationHashMismatchError";
+  }
+}
+
+export type PreparedAnulacion = {
+  hash: string;
+  canonical: string;
+  generatedAt: Date;
+  previous: VerifactuPreviousRecord | null;
+  emitterTaxId: string;
+  emitterName: string;
+};
+
+/**
+ * Compute (once) and persist Invoice.cancellationHash for a cancelled invoice,
+ * under the per-property chain lock. Rule: FechaHoraHusoGenRegistro =
+ * cancelledAt, previous = chain tail at cancelledAt. Idempotent: a stored hash
+ * that matches the rule is reused; one that does not (computed elsewhere with
+ * another previous link) is replaced as long as nothing chains onto it,
+ * otherwise CancellationHashMismatchError. cancelInvoice may call this inside
+ * its own transaction (pass `tx`) so the hash is committed with the cancel.
+ */
+export async function prepareVerifactuAnulacion(db: Prisma.TransactionClient, invoiceId: string): Promise<PreparedAnulacion | null> {
+  const current = await db.invoice.findUnique({ where: { id: invoiceId }, select: { propertyId: true } });
+  if (!current) return null;
+  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${current.propertyId + CHAIN_LOCK_SUFFIX}))`;
+  const invoice = await db.invoice.findUnique({ where: { id: invoiceId } });
+  if (!invoice || !invoice.cancelledAt || !invoice.issuedAt || !invoice.invoiceNumber || !invoice.verifactuHash || invoice.deletedAt) return null;
+
+  const issuer = await issuerForInvoice(invoice, db);
+  const previous = await chainTailBefore(db, invoice.propertyId, invoice.cancelledAt, invoice.id);
+  const computed = computeVerifactuAnulacionHash({
+    emitterTaxId: issuer.taxId,
+    invoiceNumber: invoice.invoiceNumber,
+    issuedAt: invoice.issuedAt.toISOString(),
+    previousHash: previous?.hash ?? null,
+    generatedAt: invoice.cancelledAt.toISOString()
+  });
+  const base = { canonical: computed.canonical, generatedAt: invoice.cancelledAt, previous, emitterTaxId: issuer.taxId, emitterName: issuer.legalName };
+
+  if (invoice.cancellationHash && invoice.cancellationHash !== computed.hash) {
+    const linked = await db.invoice.findFirst({
+      where: { propertyId: invoice.propertyId, previousInvoiceHash: invoice.cancellationHash },
+      select: { id: true, invoiceNumber: true }
+    });
+    if (linked) {
+      throw new CancellationHashMismatchError(
+        `La huella de anulación de ${invoice.invoiceNumber} se calculó con un eslabón anterior distinto y ${linked.invoiceNumber ?? linked.id} ya encadena sobre ella; no se puede reconstruir el RegistroAnulacion.`
+      );
+    }
+    console.warn(
+      `[verifactu] invoice ${invoice.invoiceNumber}: stored cancellationHash does not follow the chain rule (previous=${previous?.invoiceNumber ?? "none"}); replaced before sending.`
+    );
+  }
+  if (invoice.cancellationHash !== computed.hash) {
+    await db.invoice.update({ where: { id: invoice.id }, data: { cancellationHash: computed.hash } });
+  }
+  return { hash: computed.hash, ...base };
+}
+
+async function persistAttempt(
+  invoice: { id: string; propertyId: string },
+  registroType: VerifactuRegistroType,
+  signed: { signedXml: string; signatureMode: string; signedAt: string },
+  mode: VerifactuSubmissionMode,
+  software: VerifactuSoftwareBlock
+): Promise<SubmissionRow> {
+  const now = new Date();
+  const softwareJson = software as unknown as Prisma.InputJsonValue;
+  return prisma.verifactuSubmission.upsert({
+    where: { invoiceId_registroType: { invoiceId: invoice.id, registroType } },
+    update: {
+      status: "submitting",
+      xmlPayload: signed.signedXml,
+      attempts: { increment: 1 },
+      submittedAt: now,
+      signatureMode: signed.signatureMode,
+      signedAt: new Date(signed.signedAt),
+      mode,
+      softwareJson
+    },
+    create: {
+      invoiceId: invoice.id,
+      propertyId: invoice.propertyId,
+      registroType,
+      status: "submitting",
+      xmlPayload: signed.signedXml,
+      attempts: 1,
+      submittedAt: now,
+      signatureMode: signed.signatureMode,
+      signedAt: new Date(signed.signedAt),
+      mode,
+      softwareJson
+    }
+  });
+}
+
+/**
+ * Send a built registro and persist the outcome. From the upsert on the
+ * attempt is counted, so every failure is re-thrown as
+ * AttemptAlreadyCountedError; a transport failure parks the row with the
+ * regular backoff, and a failure of the final update leaves it "submitting"
+ * for the sweep's stuck-row path.
+ */
+async function sendRegistro(input: {
+  invoice: InvoiceRow;
+  registroType: VerifactuRegistroType;
+  xmlPayload: string;
+  mode: VerifactuSubmissionMode;
+  software: VerifactuSoftwareBlock;
+  blocking: VerifactuSubmissionResponse | null;
+  emitterTaxId: string;
+  organizationId: string;
+  actorUserId?: string;
+  warnings: string[];
+}): Promise<void> {
+  const { invoice, registroType } = input;
+  const credentials = resolveVerifactuCredentials();
+  const signed = await signSubmissionXml({
+    xml: input.xmlPayload,
+    certPath: credentials.signing?.certPath,
+    certPassphrase: credentials.signing?.certPassphrase ?? undefined
+  });
+  const submission = await persistAttempt(invoice, registroType, signed, input.mode, input.software);
+
+  let response: VerifactuSubmissionResponse | undefined;
+  let outcome: ReturnType<typeof finalStatusForResponse> = { status: "retrying", nextRetryAt: null };
+  try {
+    response =
+      input.blocking ??
+      (await submitVerifactuRegistro({
+        invoiceId: invoice.id,
+        invoiceNumber: invoice.invoiceNumber ?? "",
+        emitterTaxId: input.emitterTaxId,
+        // One CSV per registro (sandbox stub): the anulación never shares the alta's.
+        registroType,
+        xmlPayload: signed.signedXml,
+        transportXml: input.xmlPayload
+      }));
+    outcome = finalStatusForResponse(response);
+    await prisma.verifactuSubmission.update({
+      where: { id: submission.id },
+      data: {
+        status: outcome.status,
+        endpoint: response.endpoint,
+        mode: response.mode,
+        csvCode: response.csvCode ?? null,
+        acceptedHash: response.acceptedHash ?? null,
+        errorCode: response.errorCode ?? null,
+        errorMessage: response.errorMessage ?? null,
+        responseAck: response.rawResponse ?? null,
+        acknowledgedAt: ACCEPTED_STATUSES.has(outcome.status) ? new Date() : null,
+        nextRetryAt: outcome.nextRetryAt
+      }
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!response) {
+      await prisma.verifactuSubmission
+        .update({
+          where: { id: submission.id },
+          data: { status: "retrying", errorMessage: message, nextRetryAt: new Date(Date.now() + RETRY_BACKOFF_MS) }
+        })
+        .catch((persistError: unknown) => {
+          // QC-06: the row stays "submitting" and is rescued by the stuck-row sweep; log it.
+          const detail = persistError instanceof Error ? persistError.message : String(persistError);
+          console.error(`[verifactu] could not park submission ${submission.id} (invoice ${invoice.id}) as retrying: ${detail}`);
+        });
+    }
+    throw new AttemptAlreadyCountedError(message);
+  }
+
+  for (const warning of input.warnings) console.warn(`[verifactu] invoice ${invoice.invoiceNumber} (${registroType}): ${warning}`);
+  recordAuditEvent({
+    organizationId: input.organizationId,
+    propertyId: invoice.propertyId,
+    actorUserId: input.actorUserId,
+    actorType: "system",
+    action: "VERIFACTU_SUBMISSION",
+    entityType: "invoice",
+    entityId: invoice.id,
+    afterJson: {
+      submissionId: submission.id,
+      registroType,
+      mode: response.mode,
+      endpoint: response.endpoint,
+      simulated: isVerifactuSimulatedEndpoint(response.endpoint),
+      status: outcome.status,
+      csvCode: response.csvCode,
+      errorCode: response.errorCode,
+      errorMessage: response.errorMessage,
+      software: input.software,
+      warnings: input.warnings,
+      acknowledgedAt: ACCEPTED_STATUSES.has(outcome.status) ? new Date().toISOString() : undefined
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// RegistroAlta
+// ---------------------------------------------------------------------------
+
+type SubmitOutcome = "submitted" | "already_accepted" | "not_submittable" | "alta_pending";
+
+// Builds, signs and sends the RegistroAlta for one invoice. Reports what
+// happened so the sweep can retire rows it must not retry.
+async function submitForInvoice(invoiceId: string, organizationId: string, actorUserId?: string): Promise<SubmitOutcome> {
+  if (!invoiceId) return "not_submittable";
+  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+  if (!invoice || !invoice.verifactuHash || !invoice.invoiceNumber || unsubmittableReason(invoice, "alta") !== null) {
+    return "not_submittable";
+  }
+  const existing = await prisma.verifactuSubmission.findUnique({
+    where: { invoiceId_registroType: { invoiceId, registroType: "alta" } },
+    select: { status: true }
+  });
+  if (existing && ACCEPTED_STATUSES.has(existing.status)) return "already_accepted";
+
+  const property = await prisma.property.findUnique({
+    where: { id: invoice.propertyId },
+    select: { taxRegion: true, province: true, fiscalTerritory: true }
+  });
+  const route = submissionRouteForProperty(property ?? { taxRegion: null });
+  const mode = resolveVerifactuMode();
+  const { software, blocking } = resolveSoftwareForSend(mode);
+  const warnings: string[] = [];
+
+  // FISC-03: the identity the invoice was issued with (snapshot; QR nif= for
+  // legacy invoices; live resolver as the last resort). Never a regex over
+  // the property name — the huella must be reproducible.
+  const issuer = await issuerForInvoice(invoice);
+  const lines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
+  const desglose = desgloseForInvoice(invoice, lines, route.taxRegion);
+  if (desglose.source === "lines") warnings.push("Desglose reconstruido desde las líneas (factura sin taxBreakdownJson).");
+  const quotaSum = sumDesgloseQuotas(desglose.groups);
+  if (Math.abs(quotaSum - Number(invoice.taxTotal)) > 0.005) {
+    warnings.push(`CuotaTotal hasheada (${Number(invoice.taxTotal).toFixed(2)}) difiere de la suma del desglose (${quotaSum.toFixed(2)}).`);
+  }
+  const previous = await previousRecordByHash(prisma, invoice.propertyId, invoice.previousInvoiceHash);
+  if (invoice.previousInvoiceHash && !previous) {
+    warnings.push("RegistroAnterior no localizable para previousInvoiceHash; se envía sin el eslabón (AEAT lo marcará).");
+  }
+  const { recipient, warning: recipientWarning } = await recipientForInvoice(invoice);
+  if (recipientWarning) warnings.push(recipientWarning);
+
+  // Rectificativa: TipoRectificativa from Invoice.rectificationType — "I"
+  // (por diferencias) by default, which is what createRectifyingInvoice
+  // produces (negative / delta lines); "S" only when the invoice was issued
+  // as a full substitute, with the ORIGINAL's base/cuota as ImporteRectificacion.
+  let rectifiedRef: { invoiceNumber: string | null } | null = null;
+  let rectification: VerifactuRectificationInput | undefined;
+  if (invoice.rectifyingForId) {
+    const rectified = await prisma.invoice.findUnique({ where: { id: invoice.rectifyingForId } });
+    rectifiedRef = { invoiceNumber: rectified?.invoiceNumber ?? null };
+    if (rectified?.invoiceNumber && rectified.issuedAt) {
+      const rectifiedIssuer = await issuerForInvoice(rectified);
+      const type = invoice.rectificationType === "S" ? "S" : "I";
+      const originalTax = Number(rectified.taxTotal);
+      rectification = {
+        type,
+        rectifiedInvoices: [{ invoiceNumber: rectified.invoiceNumber, issueDate: rectified.issuedAt.toISOString(), emitterTaxId: rectifiedIssuer.taxId }],
+        ...(type === "S"
+          ? { importeRectificacion: { baseRectificada: Number(rectified.total) - originalTax, cuotaRectificada: originalTax } }
+          : {})
+      };
+    } else {
+      warnings.push("Factura rectificada sin número/fecha: se envía sin FacturasRectificadas.");
+    }
+  }
+  const description = rectifiedRef
+    ? `Factura rectificativa ${invoice.invoiceNumber} (rectifica ${rectifiedRef.invoiceNumber ?? "—"}, motivo ${invoice.rectifyingReasonCode ?? "R4"})`
+    : `Servicios hoteleros ${invoice.invoiceNumber}`;
+
+  const xmlPayload = buildVerifactuRegistroAlta({
+    emitterTaxId: issuer.taxId,
+    emitterName: issuer.legalName,
+    invoiceNumber: invoice.invoiceNumber,
+    issuedAt: invoice.issuedAt?.toISOString() ?? new Date().toISOString(),
+    invoiceType: (invoice.invoiceType as VerifactuInvoiceType) ?? "F1",
+    description,
+    invoiceTotal: Number(invoice.total),
+    vatTotal: Number(invoice.taxTotal),
+    breakdowns: desglose.groups,
+    previousHash: invoice.previousInvoiceHash,
+    previousInvoiceNumber: previous?.invoiceNumber ?? null,
+    previousIssuedAt: previous?.issuedAt ?? null,
+    previousEmitterTaxId: previous?.emitterTaxId ?? null,
+    currentHash: invoice.verifactuHash,
+    rectification,
+    recipient,
+    software
+  });
+
+  await sendRegistro({
+    invoice,
+    registroType: "alta",
+    xmlPayload,
+    mode,
+    software,
+    blocking,
+    emitterTaxId: issuer.taxId,
+    organizationId,
+    actorUserId,
+    warnings
+  });
+  return "submitted";
+}
+
+// ---------------------------------------------------------------------------
+// RegistroAnulacion
+// ---------------------------------------------------------------------------
+
+async function parkAnulacionBehindAlta(invoice: InvoiceRow, altaStatus: string | null): Promise<void> {
+  const terminal = altaStatus !== null && TERMINAL_STATUSES.has(altaStatus);
+  const message = terminal
+    ? `El RegistroAlta de ${invoice.invoiceNumber} terminó en '${altaStatus}'; la anulación no puede enviarse hasta que el alta sea aceptada (reintento manual del alta).`
+    : `El RegistroAlta de ${invoice.invoiceNumber} aún no ha sido aceptado por AEAT (${altaStatus ?? "sin envío"}); la anulación se enviará después.`;
+  const data = {
+    status: terminal ? "failed" : "retrying",
+    errorCode: "ALTA_PENDING",
+    errorMessage: message,
+    nextRetryAt: terminal ? null : new Date(Date.now() + RETRY_BACKOFF_MS)
+  };
+  await prisma.verifactuSubmission.upsert({
+    where: { invoiceId_registroType: { invoiceId: invoice.id, registroType: "anulacion" } },
+    update: data,
+    create: { invoiceId: invoice.id, propertyId: invoice.propertyId, registroType: "anulacion", attempts: 0, ...data }
+  });
+}
+
+// Builds, signs and sends the RegistroAnulacion for a cancelled invoice, after
+// making sure its alta was accepted (sending it first if needed).
+async function submitAnulacionForInvoice(invoiceId: string, organizationId: string, actorUserId?: string): Promise<SubmitOutcome> {
+  if (!invoiceId) return "not_submittable";
+  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+  if (!invoice || !invoice.verifactuHash || !invoice.invoiceNumber || !invoice.issuedAt || unsubmittableReason(invoice, "anulacion") !== null) {
+    return "not_submittable";
+  }
+  const existing = await prisma.verifactuSubmission.findUnique({
+    where: { invoiceId_registroType: { invoiceId, registroType: "anulacion" } },
+    select: { status: true }
+  });
+  if (existing && ACCEPTED_STATUSES.has(existing.status)) return "already_accepted";
+
+  const altaRow = () =>
+    prisma.verifactuSubmission.findUnique({ where: { invoiceId_registroType: { invoiceId, registroType: "alta" } }, select: { status: true } });
+  let alta = await altaRow();
+  if (!alta || !ACCEPTED_STATUSES.has(alta.status)) {
+    // The alta must reach AEAT before its anulación (chain order). Send it
+    // now if it is not terminal; the anulación waits otherwise.
+    if (!alta || !TERMINAL_STATUSES.has(alta.status)) {
+      try {
+        await submitForInvoice(invoiceId, organizationId, actorUserId);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[verifactu] alta before anulación of invoice ${invoiceId} failed: ${message}`);
+      }
+      alta = await altaRow();
+    }
+    if (!alta || !ACCEPTED_STATUSES.has(alta.status)) {
+      await parkAnulacionBehindAlta(invoice, alta?.status ?? null);
+      return "alta_pending";
+    }
+  }
+
+  const mode = resolveVerifactuMode();
+  const { software, blocking } = resolveSoftwareForSend(mode);
+  let prepared: PreparedAnulacion | null;
+  try {
+    prepared = await prisma.$transaction((tx) => prepareVerifactuAnulacion(tx, invoiceId));
+  } catch (error) {
+    if (error instanceof CancellationHashMismatchError) {
+      await prisma.verifactuSubmission.upsert({
+        where: { invoiceId_registroType: { invoiceId, registroType: "anulacion" } },
+        update: { status: "failed", errorCode: "CANCELLATION_HASH_MISMATCH", errorMessage: error.message, nextRetryAt: null },
+        create: {
+          invoiceId,
+          propertyId: invoice.propertyId,
+          registroType: "anulacion",
+          status: "failed",
+          errorCode: "CANCELLATION_HASH_MISMATCH",
+          errorMessage: error.message,
+          attempts: 0
+        }
+      });
+      console.error(`[verifactu] ${error.message}`);
+      return "not_submittable";
+    }
+    throw error;
+  }
+  if (!prepared) return "not_submittable";
+
+  const xmlPayload = buildVerifactuRegistroAnulacion({
+    emitterTaxId: prepared.emitterTaxId,
+    emitterName: prepared.emitterName,
+    invoiceNumber: invoice.invoiceNumber,
+    issuedAt: invoice.issuedAt.toISOString(),
+    previous: prepared.previous,
+    currentHash: prepared.hash,
+    generatedAt: prepared.generatedAt.toISOString(),
+    software
+  });
+
+  await sendRegistro({
+    invoice,
+    registroType: "anulacion",
+    xmlPayload,
+    mode,
+    software,
+    blocking,
+    emitterTaxId: prepared.emitterTaxId,
+    organizationId,
+    actorUserId,
+    warnings: prepared.previous ? [] : ["RegistroAnulacion enviado como primer registro de la cadena (sin eslabón anterior)."]
+  });
+  return "submitted";
+}
+
+async function dispatchRow(row: Pick<SubmissionRow, "invoiceId" | "registroType">, organizationId: string): Promise<SubmitOutcome> {
+  return registroTypeOf(row) === "anulacion"
+    ? submitAnulacionForInvoice(row.invoiceId, organizationId, undefined)
+    : submitForInvoice(row.invoiceId, organizationId, undefined);
+}
+
+// ---------------------------------------------------------------------------
+// Sweep (retries + reconciliation)
+// ---------------------------------------------------------------------------
+
+let retrySweepInFlight = false;
+
+export type VerifactuRetrySweepResult = {
+  due: number;
+  // Re-submitted through submit* (whatever AEAT answered).
+  retried: number;
+  // Threw during re-submission, or went terminal after MAX_ATTEMPTS.
+  failed: number;
+  // Went terminal because the invoice is gone / not issued / has no hash.
+  abandoned: number;
+  // Invoices with no submission row that were sent by reconciliation (altas + anulaciones).
+  reconciled: number;
+  // Invoices cancelled before Tanda 3 (no cancellation_hash) whose anulación
+  // huella was chained by reconcileLegacyCancellationHashes this tick.
+  legacyChained: number;
+  // Another replica holds the sweep lock (or this process is already sweeping).
+  skipped: boolean;
+};
+
+type DueRow = Pick<SubmissionRow, "id" | "invoiceId" | "propertyId" | "attempts" | "registroType" | "errorCode">;
+
+/**
+ * Sweep entry point (server.ts, every 120 s on the scheduler leader):
+ *   1. re-submit registros whose nextRetryAt elapsed — including rows parked
+ *      as "rejected" with a transient code (CERT_NOT_CONFIGURED,
+ *      SOFTWARE_NOT_CONFIGURED, NETWORK_*) — plus rows orphaned mid-send,
+ *      retiring poisoned rows and rows past MAX_ATTEMPTS;
+ *   2. chain the anulación huella of invoices cancelled before Tanda 3
+ *      (cancellation_hash NULL) in cancelled_at order under the chain lock;
+ *   3. reconcile invoices that never got their alta / anulación row.
+ * Runs under pg_try_advisory_xact_lock(hashtext('verifactu.sweep')) held by
+ * one interactive transaction, so a second replica (RUN_SCHEDULERS
+ * misconfigured) skips instead of double-sending; the lock is released with
+ * the transaction, also when the process dies.
+ */
 export async function runDueVerifactuRetries(now = new Date()): Promise<VerifactuRetrySweepResult> {
-  const result: VerifactuRetrySweepResult = { due: 0, retried: 0, failed: 0, abandoned: 0, reconciled: 0 };
-  if (retrySweepInFlight) return result;
+  const result: VerifactuRetrySweepResult = { due: 0, retried: 0, failed: 0, abandoned: 0, reconciled: 0, legacyChained: 0, skipped: false };
+  if (retrySweepInFlight) {
+    result.skipped = true;
+    return result;
+  }
   retrySweepInFlight = true;
   try {
-    await retryDueSubmissions(now, result);
-    await reconcileMissingSubmissions(now, result);
+    await prisma.$transaction(
+      async (tx) => {
+        const rows = await tx.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_xact_lock(hashtext(${SWEEP_LOCK_KEY})) AS locked`;
+        if (!rows[0]?.locked) {
+          result.skipped = true;
+          return;
+        }
+        await retryDueSubmissions(now, result);
+        await reconcileLegacyCancellationHashes(now, result);
+        await reconcileMissingSubmissions(now, result);
+      },
+      { timeout: SWEEP_TX_TIMEOUT_MS, maxWait: 5_000 }
+    );
     return result;
   } finally {
     retrySweepInFlight = false;
@@ -232,40 +1013,47 @@ export async function runDueVerifactuRetries(now = new Date()): Promise<Verifact
 }
 
 async function retryDueSubmissions(now: Date, result: VerifactuRetrySweepResult): Promise<void> {
-  const due: SubmissionRow[] = await prisma.verifactuSubmission.findMany({
+  const dueWindow = { OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }] };
+  const due: DueRow[] = await prisma.verifactuSubmission.findMany({
     where: {
       OR: [
-        { status: { in: ["retrying", "network_error"] }, OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }] },
+        { AND: [{ status: { in: ["retrying", "network_error"] } }, dueWindow] },
+        {
+          AND: [
+            { status: "rejected" },
+            { OR: [{ errorCode: { in: [...VERIFACTU_TRANSIENT_ERROR_CODES, "NETWORK"] } }, { errorCode: { startsWith: "NETWORK_" } }] },
+            dueWindow
+          ]
+        },
         { status: "submitting", updatedAt: { lte: new Date(now.getTime() - STUCK_SUBMITTING_MS) } }
       ]
     },
-    select: { id: true, invoiceId: true, propertyId: true, attempts: true },
+    select: { id: true, invoiceId: true, propertyId: true, attempts: true, registroType: true, errorCode: true },
     orderBy: { createdAt: "asc" },
     take: RETRY_BATCH_SIZE
   });
   if (due.length === 0) return;
   result.due = due.length;
 
-  // VerifactuSubmission has no Prisma relation to Invoice, so "invoice still
-  // issued with a hash" is a second query rather than a join. Rows that fail
-  // it go terminal right here: before, submitForInvoice returned silently,
-  // the row stayed "retrying" with an elapsed nextRetryAt and — selected
-  // oldest-first — a handful of them could starve every newer row forever.
+  // VerifactuSubmission has no Prisma relation to Invoice: a second query
+  // decides which rows are still sendable. Rows that are not go terminal here
+  // so they stop being reselected (oldest-first selection would otherwise let
+  // a handful of poisoned rows starve every newer one).
   const invoices = await prisma.invoice.findMany({
     where: { id: { in: due.map((row) => row.invoiceId) } },
-    select: { id: true, status: true, verifactuHash: true, invoiceNumber: true, deletedAt: true }
+    select: { id: true, status: true, verifactuHash: true, invoiceNumber: true, deletedAt: true, cancelledAt: true }
   });
   const invoiceById = new Map(invoices.map((invoice) => [invoice.id, invoice]));
 
-  const retryable: SubmissionRow[] = [];
+  const retryable: DueRow[] = [];
   for (const row of due) {
-    const reason = unsubmittableReason(invoiceById.get(row.invoiceId) ?? null);
+    const reason = unsubmittableReason(invoiceById.get(row.invoiceId) ?? null, registroTypeOf(row));
     if (reason) {
       await markTerminal(row.id, "abandoned", `Envío abandonado: ${reason}.`);
       result.abandoned += 1;
       continue;
     }
-    if (row.attempts >= MAX_ATTEMPTS) {
+    if (row.attempts >= MAX_ATTEMPTS && !isConfigurationError(row.errorCode)) {
       await markTerminal(
         row.id,
         "failed",
@@ -282,11 +1070,11 @@ async function retryDueSubmissions(now: Date, result: VerifactuRetrySweepResult)
   for (const row of retryable) {
     submissionChain = submissionChain.then(async () => {
       try {
-        const outcome = await submitForInvoice(row.invoiceId, orgByProperty.get(row.propertyId) ?? "", undefined);
+        const outcome = await dispatchRow(row, orgByProperty.get(row.propertyId) ?? "");
         if (outcome === "not_submittable") {
-          // The invoice changed between selection and execution (cancelled or
-          // rectified meanwhile): retire the row instead of counting a retry.
-          await markTerminal(row.id, "abandoned", "Envío abandonado: la factura dejó de estar emitida antes del reintento.");
+          // The invoice changed between selection and execution: retire the
+          // row instead of counting a retry.
+          await markTerminal(row.id, "abandoned", "Envío abandonado: la factura dejó de ser enviable antes del reintento.");
           result.abandoned += 1;
           return;
         }
@@ -294,7 +1082,7 @@ async function retryDueSubmissions(now: Date, result: VerifactuRetrySweepResult)
       } catch (error) {
         result.failed += 1;
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[verifactu.retry] submission ${row.id} failed: ${message}`);
+        console.error(`[verifactu.retry] submission ${row.id} (${row.registroType}) failed: ${message}`);
         await recordUncountedFailure(row.id, error);
       }
     });
@@ -302,95 +1090,227 @@ async function retryDueSubmissions(now: Date, result: VerifactuRetrySweepResult)
   await submissionChain;
 }
 
-// Recovery for the crash window between issueInvoice() and the submission
-// upsert: after a restart such an invoice is issued (number + hash) but has no
-// verifactu_submissions row and no entry in the in-memory chain, so nothing
-// would ever send it. Scan issued invoices of the last 72h oldest-first, skip
-// the ones routed to IGIC/TBAI (their own tables) and (re)submit up to 25 per
-// tick. The unique invoiceId in the upsert keeps this idempotent against the
-// live path; the grace period and the in-chain re-check avoid racing it.
-// VERIFACTU_MODE (sandbox / preproduction / production) is applied inside
-// submitVerifactuRegistro, so reconciled invoices follow the same mode.
+// ---------------------------------------------------------------------------
+// Legacy cancellations (invoices cancelled before Tanda 3, no cancellation_hash)
+// ---------------------------------------------------------------------------
+
+// How many legacy cancellations one sweep tick chains (all properties); the
+// rest wait for the next tick. Each one costs the prepareVerifactuAnulacion
+// queries inside one transaction per property.
+const LEGACY_CANCELLATION_BATCH_SIZE = 50;
+const LEGACY_CANCELLATION_TX_TIMEOUT_MS = 60_000;
+
+export type GeneratedRecord = { id: string; generatedAt: Date };
+
+function compareIds(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Chain order of registros: generation instant (issuedAt of an alta,
+ * cancelledAt of an anulación), then id as the tie-breaker. Stable copy. Pure.
+ */
+export function sortByGeneration<T extends GeneratedRecord>(rows: readonly T[]): T[] {
+  return [...rows].sort((a, b) => a.generatedAt.getTime() - b.generatedAt.getTime() || compareIds(a.id, b.id));
+}
+
+export type LegacyCancellation = { id: string; propertyId: string; cancelledAt: Date };
+
+/**
+ * Legacy cancellations grouped per property, each group in (cancelledAt asc,
+ * id asc) order — the order their anulación huellas must be chained in, so
+ * every anulación links to the record generated right before it and no two
+ * anulaciones share a RegistroAnterior. Groups keep the order of their
+ * earliest cancellation. Pure.
+ */
+export function orderLegacyCancellations<T extends LegacyCancellation>(rows: readonly T[]): Array<{ propertyId: string; rows: T[] }> {
+  const sorted = [...rows].sort((a, b) => a.cancelledAt.getTime() - b.cancelledAt.getTime() || compareIds(a.id, b.id));
+  const groups = new Map<string, T[]>();
+  for (const row of sorted) {
+    const group = groups.get(row.propertyId) ?? [];
+    group.push(row);
+    groups.set(row.propertyId, group);
+  }
+  return Array.from(groups, ([propertyId, group]) => ({ propertyId, rows: group }));
+}
+
+type LegacyCancellationRow = LegacyCancellation & { invoiceNumber: string | null };
+
+/**
+ * Invoices cancelled before cancelInvoice computed the anulación huella
+ * (status cancelled, cancellation_hash NULL) get it here, BEFORE the
+ * reconciliation below sends their RegistroAnulacion: per property, one
+ * transaction under the chain advisory lock (the same key issue / rectify /
+ * cancel take) walks them in cancelled_at order and lets
+ * prepareVerifactuAnulacion chain each onto the latest record — alta or
+ * anulación — generated before its cancelledAt, which now includes the
+ * legacy anulaciones chained just before it. Processing them by invoice
+ * creation order (what the row-less scan does) would let two anulaciones
+ * point at the same RegistroAnterior. Invoices that already carry a hash are
+ * never touched: what was sent stays as sent.
+ */
+async function reconcileLegacyCancellationHashes(now: Date, result: VerifactuRetrySweepResult): Promise<void> {
+  const graceEnd = new Date(now.getTime() - RECONCILE_GRACE_MS);
+  const rows = await prisma.invoice.findMany({
+    where: {
+      deletedAt: null,
+      status: "cancelled",
+      cancellationHash: null,
+      verifactuHash: { not: null },
+      invoiceNumber: { not: null },
+      cancelledAt: { not: null, lte: graceEnd }
+    },
+    select: { id: true, propertyId: true, invoiceNumber: true, cancelledAt: true },
+    orderBy: [{ cancelledAt: "asc" }, { id: "asc" }],
+    take: LEGACY_CANCELLATION_BATCH_SIZE
+  });
+  const legacy = rows.filter((row): row is LegacyCancellationRow => row.cancelledAt !== null);
+  if (legacy.length === 0) return;
+
+  for (const group of orderLegacyCancellations(legacy)) {
+    try {
+      const chained = await prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${group.propertyId + CHAIN_LOCK_SUFFIX}))`;
+          let count = 0;
+          for (const row of group.rows) {
+            const prepared = await prepareVerifactuAnulacion(tx, row.id);
+            if (!prepared) {
+              console.warn(`[verifactu.reconcile] legacy cancellation ${row.invoiceNumber ?? row.id}: not chainable (missing number, huella or cancelledAt); skipped.`);
+              continue;
+            }
+            count += 1;
+            console.info(
+              `[verifactu.reconcile] legacy cancellation ${row.invoiceNumber ?? row.id}: anulación huella chained after ${prepared.previous ? prepared.previous.invoiceNumber : "no previous record"} (cancelledAt=${row.cancelledAt.toISOString()}).`
+            );
+          }
+          return count;
+        },
+        { timeout: LEGACY_CANCELLATION_TX_TIMEOUT_MS, maxWait: 5_000 }
+      );
+      result.legacyChained += chained;
+    } catch (error) {
+      // QC-06: the whole property group rolls back (nothing half-chained) and
+      // is retried next tick; count and say why.
+      result.failed += 1;
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[verifactu.reconcile] legacy cancellation hashes of property ${group.propertyId} (${group.rows.length} invoices) failed: ${message}`);
+    }
+  }
+}
+
+// Wrap-around scan position over invoices ordered by (createdAt, id). Reset
+// to the start when a scan reaches the end, so every invoice — however old —
+// is re-checked periodically without a time window.
+let reconcileCursor: { createdAt: Date; id: string } | null = null;
+
+/** Test hook: restart the reconciliation scan from the beginning. */
+export function resetVerifactuReconcileCursor(): void {
+  reconcileCursor = null;
+}
+
+// Recovery for the crash windows between issueInvoice()/cancelInvoice() and
+// the submission upsert: such invoices carry a huella but have no row and no
+// entry in the in-memory chain, so nothing would ever send them. Scan a page
+// at a time from the cursor, skip the ones routed to TicketBAI (their own
+// table) and (re)submit up to 25 per tick. The unique (invoiceId,
+// registroType) keeps this idempotent against the live path; the grace period
+// and the in-chain re-check avoid racing it.
 async function reconcileMissingSubmissions(now: Date, result: VerifactuRetrySweepResult): Promise<void> {
-  const windowStart = new Date(now.getTime() - RECONCILE_WINDOW_MS);
   const graceEnd = new Date(now.getTime() - RECONCILE_GRACE_MS);
   const propertyCache = new Map<string, { organizationId: string; route: SubmissionRoute }>();
-  const missing: Array<{ id: string; propertyId: string }> = [];
-  let cursor: string | undefined;
+  const missing: Array<GeneratedRecord & { propertyId: string; registroType: VerifactuRegistroType }> = [];
 
   for (let page = 0; page < RECONCILE_SCAN_MAX_PAGES && missing.length < RECONCILE_BATCH_SIZE; page += 1) {
+    const cursor = reconcileCursor;
     const candidates = await prisma.invoice.findMany({
       where: {
-        status: "issued",
         deletedAt: null,
         verifactuHash: { not: null },
         invoiceNumber: { not: null },
-        issuedAt: { gte: windowStart, lte: graceEnd }
+        status: { in: ["issued", "cancelled", "rectified"] },
+        issuedAt: { lte: graceEnd },
+        ...(cursor ? { OR: [{ createdAt: { gt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { gt: cursor.id } }] } : {})
       },
-      select: { id: true, propertyId: true },
-      orderBy: [{ issuedAt: "asc" }, { id: "asc" }],
-      take: RECONCILE_SCAN_PAGE_SIZE,
-      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {})
+      select: { id: true, propertyId: true, status: true, issuedAt: true, cancelledAt: true, createdAt: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      take: RECONCILE_SCAN_PAGE_SIZE
     });
-    if (candidates.length === 0) break;
-    cursor = candidates[candidates.length - 1]!.id;
+    if (candidates.length === 0) {
+      reconcileCursor = null;
+      break;
+    }
+    const last = candidates[candidates.length - 1]!;
+    reconcileCursor = { createdAt: last.createdAt, id: last.id };
 
     const unknownPropertyIds = Array.from(new Set(candidates.map((c) => c.propertyId))).filter((id) => !propertyCache.has(id));
     if (unknownPropertyIds.length > 0) {
       const properties = await prisma.property.findMany({
         where: { id: { in: unknownPropertyIds } },
-        select: { id: true, organizationId: true, taxRegion: true }
+        select: { id: true, organizationId: true, taxRegion: true, province: true, fiscalTerritory: true }
       });
       for (const property of properties) {
-        propertyCache.set(property.id, {
-          organizationId: property.organizationId,
-          route: submissionRouteForRegion(property.taxRegion)
-        });
+        propertyCache.set(property.id, { organizationId: property.organizationId, route: submissionRouteForProperty(property).route });
       }
     }
 
     const existingRows = await prisma.verifactuSubmission.findMany({
       where: { invoiceId: { in: candidates.map((c) => c.id) } },
-      select: { invoiceId: true }
+      select: { invoiceId: true, registroType: true }
     });
-    const covered = new Set(existingRows.map((row) => row.invoiceId));
+    const covered = new Set(existingRows.map((row) => `${row.invoiceId}:${registroTypeOf(row)}`));
     for (const candidate of candidates) {
-      if (covered.has(candidate.id)) continue;
-      // Unknown property → unroutable; IGIC/TBAI regions live in their own tables.
+      // Unknown property → unroutable; TicketBAI regions live in their own table.
       if (propertyCache.get(candidate.propertyId)?.route !== "verifactu") continue;
-      missing.push(candidate);
+      if (!covered.has(`${candidate.id}:alta`)) {
+        missing.push({ id: candidate.id, propertyId: candidate.propertyId, registroType: "alta", generatedAt: candidate.issuedAt ?? candidate.createdAt });
+      }
+      if (candidate.status === "cancelled" && candidate.cancelledAt && candidate.cancelledAt <= graceEnd && !covered.has(`${candidate.id}:anulacion`)) {
+        missing.push({ id: candidate.id, propertyId: candidate.propertyId, registroType: "anulacion", generatedAt: candidate.cancelledAt });
+      }
       if (missing.length >= RECONCILE_BATCH_SIZE) break;
     }
-    if (candidates.length < RECONCILE_SCAN_PAGE_SIZE) break;
+    if (candidates.length < RECONCILE_SCAN_PAGE_SIZE) {
+      reconcileCursor = null;
+      break;
+    }
   }
   if (missing.length === 0) return;
 
-  for (const invoice of missing) {
-    const organizationId = propertyCache.get(invoice.propertyId)?.organizationId ?? "";
+  // Send in chain order (generation instant, not invoice creation): altas by
+  // issuedAt, anulaciones by cancelledAt. The huellas are already fixed
+  // (issuance / cancelInvoice / the legacy pass above), so this only keeps
+  // AEAT receiving each RegistroAnterior before the record that cites it.
+  for (const entry of sortByGeneration(missing)) {
+    const organizationId = propertyCache.get(entry.propertyId)?.organizationId ?? "";
     submissionChain = submissionChain.then(async () => {
       // The live chain may have created the row while this step waited its turn.
-      const existing = await prisma.verifactuSubmission.findUnique({ where: { invoiceId: invoice.id }, select: { id: true } });
+      const existing = await prisma.verifactuSubmission.findUnique({
+        where: { invoiceId_registroType: { invoiceId: entry.id, registroType: entry.registroType } },
+        select: { id: true }
+      });
       if (existing) return;
       try {
-        const outcome = await submitForInvoice(invoice.id, organizationId, undefined);
+        const outcome = await dispatchRow({ invoiceId: entry.id, registroType: entry.registroType }, organizationId);
         if (outcome === "submitted") result.reconciled += 1;
       } catch (error) {
         result.failed += 1;
         const message = error instanceof Error ? error.message : String(error);
-        console.error(`[verifactu.reconcile] invoice ${invoice.id} failed: ${message}`);
+        console.error(`[verifactu.reconcile] invoice ${entry.id} (${entry.registroType}) failed: ${message}`);
         // A failure after the upsert already created and counted the row.
         if (error instanceof AttemptAlreadyCountedError) return;
         // Leave a "retrying" row behind so the regular retry loop (and its
-        // MAX_ATTEMPTS cap) owns the invoice from here on, instead of the
-        // reconciliation re-scanning it every tick for 72h.
+        // MAX_ATTEMPTS cap) owns the registro from here on, instead of the
+        // reconciliation re-scanning it on every pass.
         const nextRetryAt = new Date(Date.now() + RETRY_BACKOFF_MS);
         await prisma.verifactuSubmission
           .upsert({
-            where: { invoiceId: invoice.id },
+            where: { invoiceId_registroType: { invoiceId: entry.id, registroType: entry.registroType } },
             update: { status: "retrying", errorMessage: message, attempts: { increment: 1 }, nextRetryAt },
             create: {
-              invoiceId: invoice.id,
-              propertyId: invoice.propertyId,
+              invoiceId: entry.id,
+              propertyId: entry.propertyId,
+              registroType: entry.registroType,
               status: "retrying",
               errorMessage: message,
               attempts: 1,
@@ -398,9 +1318,9 @@ async function reconcileMissingSubmissions(now: Date, result: VerifactuRetrySwee
             }
           })
           .catch((persistError: unknown) => {
-            // QC-06: without the row the invoice is re-scanned every tick for 72h.
+            // QC-06: without the row the invoice is re-scanned on every pass.
             const detail = persistError instanceof Error ? persistError.message : String(persistError);
-            console.error(`[verifactu.reconcile] could not park invoice ${invoice.id} as retrying: ${detail}`);
+            console.error(`[verifactu.reconcile] could not park invoice ${entry.id} (${entry.registroType}) as retrying: ${detail}`);
           });
       }
     });
@@ -408,274 +1328,23 @@ async function reconcileMissingSubmissions(now: Date, result: VerifactuRetrySwee
   await submissionChain;
 }
 
-type SubmitOutcome = "submitted" | "already_accepted" | "not_submittable";
+// ---------------------------------------------------------------------------
+// Read model
+// ---------------------------------------------------------------------------
 
-// Builds, signs and sends the registro for one invoice, upserting the
-// verifactu_submissions row (unique invoiceId → never two rows per invoice).
-// Reports what happened so the sweep can retire rows it must not retry; the
-// inline null checks duplicate unsubmittableReason() on purpose to narrow
-// `verifactuHash` / `invoiceNumber` for the payload below.
-async function submitForInvoice(invoiceId: string, organizationId: string, actorUserId?: string): Promise<SubmitOutcome> {
-  if (!invoiceId) return "not_submittable";
-  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
-  if (!invoice || !invoice.verifactuHash || !invoice.invoiceNumber || unsubmittableReason(invoice) !== null) {
-    return "not_submittable";
-  }
-
-  const existing = await prisma.verifactuSubmission.findUnique({ where: { invoiceId } });
-  if (existing && existing.status === "accepted") return "already_accepted";
-
-  // FISC-03: the identity the invoice was issued with (snapshot; QR nif= for
-  // legacy invoices; live resolver as the last resort, which applies the
-  // production 409 / sandbox placeholder policy). Never a regex over the
-  // property name — the huella must be reproducible.
-  const issuer = await issuerForInvoice(invoice);
-  const emitterTaxId = issuer.taxId;
-  const emitterName = issuer.legalName;
-  const lines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
-
-  let previousInvoiceNumber: string | null = null;
-  let previousIssuedAt: string | null = null;
-  if (invoice.previousInvoiceHash) {
-    const previous = await prisma.invoice.findFirst({
-      where: { propertyId: invoice.propertyId, verifactuHash: invoice.previousInvoiceHash },
-      select: { invoiceNumber: true, issuedAt: true }
-    });
-    previousInvoiceNumber = previous?.invoiceNumber ?? null;
-    previousIssuedAt = previous?.issuedAt?.toISOString() ?? null;
-  }
-
-  const breakdowns: VerifactuLineBreakdown[] = aggregateBreakdownsByRate(lines);
-
-  // Rectificativa support: if this invoice rectifies another, build the AEAT
-  // `<sum1:TipoRectificativa>` + `<sum1:FacturasRectificadas>` payload and
-  // also keep a human-readable mention in `DescripcionOperacion` for operator
-  // correlation. We default to TipoRectificativa="S" (sustitución) because
-  // our `createRectifyingInvoice` flow with fullReversal substitutes the
-  // original invoice in full. If a future "by-differences" flow is added,
-  // it should set type="I" and pass `importeRectificacion` deltas.
-  let rectifiedRef: { invoiceNumber?: string | null; issuedAt?: string | null } | null = null;
-  let rectification: VerifactuRectificationInput | undefined;
-  if (invoice.rectifyingForId) {
-    const rectified = await prisma.invoice.findUnique({
-      where: { id: invoice.rectifyingForId },
-      select: {
-        invoiceNumber: true,
-        issuedAt: true,
-        propertyId: true,
-        issuerTaxId: true,
-        issuerLegalName: true,
-        issuerTaxIdPlaceholder: true,
-        qrPayload: true
-      }
-    });
-    rectifiedRef = {
-      invoiceNumber: rectified?.invoiceNumber ?? null,
-      issuedAt: rectified?.issuedAt?.toISOString() ?? null
-    };
-    if (rectified?.invoiceNumber && rectified.issuedAt) {
-      // IDEmisorFactura of the rectified invoice is ITS snapshot (it may
-      // predate a NIF correction), not the current issuer.
-      const rectifiedIssuer = await issuerForInvoice(rectified);
-      rectification = {
-        type: "S",
-        rectifiedInvoices: [
-          {
-            invoiceNumber: rectified.invoiceNumber,
-            issueDate: rectified.issuedAt.toISOString(),
-            emitterTaxId: rectifiedIssuer.taxId
-          }
-        ]
-      };
-    }
-  }
-  const description = rectifiedRef
-    ? `Factura rectificativa ${invoice.invoiceNumber} (rectifica ${rectifiedRef.invoiceNumber ?? "—"}, motivo ${invoice.rectifyingReasonCode ?? "R4"})`
-    : `Servicios hoteleros ${invoice.invoiceNumber}`;
-
-  const xmlPayload = buildVerifactuRegistroAlta({
-    emitterTaxId,
-    emitterName,
-    invoiceNumber: invoice.invoiceNumber,
-    issuedAt: invoice.issuedAt?.toISOString() ?? new Date().toISOString(),
-    invoiceType: (invoice.invoiceType as "F1" | "F2" | "F3" | "R1" | "R2" | "R3" | "R4" | "R5") ?? "F1",
-    description,
-    invoiceTotal: Number(invoice.total),
-    vatTotal: Number(invoice.taxTotal),
-    breakdowns,
-    previousHash: invoice.previousInvoiceHash,
-    previousInvoiceNumber,
-    previousIssuedAt,
-    currentHash: invoice.verifactuHash,
-    rectification,
-    software: SOFTWARE
-  });
-
-  const signed = await signSubmissionXml({
-    xml: xmlPayload,
-    certPath: process.env.VERIFACTU_CERT_PATH,
-    certPassphrase: process.env.VERIFACTU_CERT_PASSPHRASE
-  });
-
-  const submission = await prisma.verifactuSubmission.upsert({
-    where: { invoiceId },
-    update: { status: "submitting", xmlPayload: signed.signedXml, attempts: { increment: 1 }, submittedAt: new Date(), signatureMode: signed.signatureMode, signedAt: new Date(signed.signedAt) },
-    create: {
-      invoiceId,
-      propertyId: invoice.propertyId,
-      status: "submitting",
-      xmlPayload: signed.signedXml,
-      attempts: 1,
-      submittedAt: new Date(),
-      signatureMode: signed.signatureMode,
-      signedAt: new Date(signed.signedAt)
-    }
-  });
-
-  // From here on the attempt is counted (upsert above), so every failure is
-  // re-thrown as AttemptAlreadyCountedError and callers do not count it
-  // again. A transport failure also parks the row with the regular backoff;
-  // a failure of the final update leaves it "submitting" for the sweep's
-  // stuck-row path, whose next upsert counts the next attempt on its own.
-  let response: Awaited<ReturnType<typeof submitVerifactuRegistro>> | undefined;
-  let finalStatus = "retrying";
-  try {
-    response = await submitVerifactuRegistro({
-      invoiceId,
-      invoiceNumber: invoice.invoiceNumber,
-      emitterTaxId,
-      xmlPayload: signed.signedXml
-    });
-
-    finalStatus =
-      response.status === "accepted"
-        ? "accepted"
-        : response.status === "accepted_with_errors"
-          ? "accepted_with_errors"
-          : response.status === "rejected"
-            ? "rejected"
-            : "retrying";
-
-    const nextRetryAt = finalStatus === "retrying" ? new Date(Date.now() + RETRY_BACKOFF_MS) : null;
-
-    await prisma.verifactuSubmission.update({
-      where: { id: submission.id },
-      data: {
-        status: finalStatus,
-        endpoint: response.endpoint,
-        csvCode: response.csvCode ?? null,
-        acceptedHash: response.acceptedHash ?? null,
-        errorCode: response.errorCode ?? null,
-        errorMessage: response.errorMessage ?? null,
-        responseAck: response.rawResponse ?? null,
-        acknowledgedAt: finalStatus === "accepted" ? new Date() : null,
-        nextRetryAt
-      }
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!response) {
-      await prisma.verifactuSubmission
-        .update({
-          where: { id: submission.id },
-          data: { status: "retrying", errorMessage: message, nextRetryAt: new Date(Date.now() + RETRY_BACKOFF_MS) }
-        })
-        .catch((persistError: unknown) => {
-          // QC-06: the row stays "submitting" and is rescued by the stuck-row sweep; log it.
-          const detail = persistError instanceof Error ? persistError.message : String(persistError);
-          console.error(`[verifactu] could not park submission ${submission.id} (invoice ${invoiceId}) as retrying: ${detail}`);
-        });
-    }
-    throw new AttemptAlreadyCountedError(message);
-  }
-
-  recordAuditEvent({
-    organizationId,
-    propertyId: invoice.propertyId,
-    actorUserId,
-    actorType: "system",
-    action: "VERIFACTU_SUBMISSION",
-    entityType: "invoice",
-    entityId: invoiceId,
-    afterJson: {
-      submissionId: submission.id,
-      endpoint: response.endpoint,
-      status: finalStatus,
-      csvCode: response.csvCode,
-      errorCode: response.errorCode,
-      errorMessage: response.errorMessage,
-      acknowledgedAt: finalStatus === "accepted" ? new Date().toISOString() : undefined
-    }
-  });
-  return "submitted";
-}
-
-function aggregateBreakdownsByRate(lines: Array<{ taxRate: { toString(): string }; total: { toString(): string }; taxCode: string }>): VerifactuLineBreakdown[] {
-  const grouped = new Map<string, VerifactuLineBreakdown>();
-  for (const line of lines) {
-    const ratePercent = Number(line.taxRate.toString());
-    const total = Number(line.total.toString());
-    const taxableBase = ratePercent > 0 ? total / (1 + ratePercent / 100) : total;
-    const taxAmount = total - taxableBase;
-    const key = `${line.taxCode}::${ratePercent}`;
-    const existing = grouped.get(key);
-    if (existing) {
-      existing.taxableBase += taxableBase;
-      existing.taxAmount += taxAmount;
-    } else {
-      grouped.set(key, { taxCode: line.taxCode, ratePercent, taxableBase, taxAmount });
-    }
-  }
-  return Array.from(grouped.values()).map((b) => ({
-    ...b,
-    taxableBase: Math.round(b.taxableBase * 100) / 100,
-    taxAmount: Math.round(b.taxAmount * 100) / 100
-  }));
-}
-
-export async function listVerifactuSubmissions(propertyId: string): Promise<Array<{
+export type VerifactuSubmissionView = {
   id: string;
   invoiceId: string;
   invoiceNumber?: string;
+  registroType: VerifactuRegistroType;
   status: string;
+  /** sandbox · preproduction · production at send time (null for rows older than Tanda 3). */
+  mode: string | null;
   endpoint?: string;
-  csvCode?: string;
-  errorCode?: string;
-  errorMessage?: string;
-  attempts: number;
-  submittedAt?: string;
-  acknowledgedAt?: string;
-}>> {
-  const rows = await prisma.verifactuSubmission.findMany({
-    where: { propertyId },
-    orderBy: { createdAt: "desc" },
-    take: 100
-  });
-  if (rows.length === 0) return [];
-  const invoiceIds = rows.map((r) => r.invoiceId);
-  const invoices = await prisma.invoice.findMany({ where: { id: { in: invoiceIds } }, select: { id: true, invoiceNumber: true } });
-  const numByInvoice = new Map(invoices.map((i) => [i.id, i.invoiceNumber ?? undefined]));
-  return rows.map((row) => ({
-    id: row.id,
-    invoiceId: row.invoiceId,
-    invoiceNumber: numByInvoice.get(row.invoiceId),
-    status: row.status,
-    endpoint: row.endpoint ?? undefined,
-    csvCode: row.csvCode ?? undefined,
-    errorCode: row.errorCode ?? undefined,
-    errorMessage: row.errorMessage ?? undefined,
-    attempts: row.attempts,
-    submittedAt: row.submittedAt?.toISOString(),
-    acknowledgedAt: row.acknowledgedAt?.toISOString()
-  }));
-}
-
-type VerifactuSubmissionView = {
-  id: string;
-  invoiceId: string;
-  invoiceNumber?: string;
-  status: string;
-  endpoint?: string;
+  /** True when the ACK came from the local stub (endpoint stub://…), never from AEAT. */
+  simulated: boolean;
+  signatureMode?: string;
+  signedAt?: string;
   csvCode?: string;
   acceptedHash?: string;
   errorCode?: string;
@@ -686,15 +1355,34 @@ type VerifactuSubmissionView = {
   submittedAt?: string;
   acknowledgedAt?: string;
   nextRetryAt?: string;
+  /** SistemaInformatico block the XML was built with. */
+  software: VerifactuSoftwareBlock | null;
+  /** Row creation (ISO); the list cursor key. */
+  createdAt: string;
 };
 
-function rowToView(row: any): VerifactuSubmissionView {
+export type VerifactuSubmissionListItem = Omit<VerifactuSubmissionView, "xmlPayload" | "responseAck" | "software"> & {
+  software: Pick<VerifactuSoftwareBlock, "nombreSistema" | "version" | "numeroInstalacion"> | null;
+};
+
+function softwareOf(row: { softwareJson: unknown }): VerifactuSoftwareBlock | null {
+  const raw = row.softwareJson;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as VerifactuSoftwareBlock;
+}
+
+function rowToView(row: SubmissionRow, invoiceNumber?: string | null): VerifactuSubmissionView {
   return {
     id: row.id,
     invoiceId: row.invoiceId,
-    invoiceNumber: row.invoiceNumber ?? undefined,
+    invoiceNumber: invoiceNumber ?? undefined,
+    registroType: registroTypeOf(row),
     status: row.status,
+    mode: row.mode ?? null,
     endpoint: row.endpoint ?? undefined,
+    simulated: isVerifactuSimulatedEndpoint(row.endpoint),
+    signatureMode: row.signatureMode ?? undefined,
+    signedAt: row.signedAt?.toISOString(),
     csvCode: row.csvCode ?? undefined,
     acceptedHash: row.acceptedHash ?? undefined,
     errorCode: row.errorCode ?? undefined,
@@ -704,25 +1392,88 @@ function rowToView(row: any): VerifactuSubmissionView {
     attempts: row.attempts,
     submittedAt: row.submittedAt?.toISOString(),
     acknowledgedAt: row.acknowledgedAt?.toISOString(),
-    nextRetryAt: row.nextRetryAt?.toISOString?.()
+    nextRetryAt: row.nextRetryAt?.toISOString(),
+    software: softwareOf(row),
+    createdAt: row.createdAt.toISOString()
   };
 }
 
-async function attachInvoiceNumber(row: any | null): Promise<VerifactuSubmissionView | null> {
-  if (!row) return null;
-  const invoice = await prisma.invoice.findUnique({
-    where: { id: row.invoiceId },
-    select: { invoiceNumber: true }
-  });
-  return rowToView({ ...row, invoiceNumber: invoice?.invoiceNumber ?? undefined });
+function toListItem(view: VerifactuSubmissionView): VerifactuSubmissionListItem {
+  const { xmlPayload: _xml, responseAck: _ack, software, ...rest } = view;
+  return {
+    ...rest,
+    software: software ? { nombreSistema: software.nombreSistema, version: software.version, numeroInstalacion: software.numeroInstalacion } : null
+  };
 }
 
-export async function getVerifactuSubmission(invoiceId: string): Promise<VerifactuSubmissionView | null> {
-  const row = await prisma.verifactuSubmission.findUnique({ where: { invoiceId } });
-  return attachInvoiceNumber(row);
+export type ListVerifactuSubmissionsOptions = {
+  /** Page size; defaults to DEFAULT_PAGE_LIMIT (100), clamped to MAX_PAGE_LIMIT (500). */
+  limit?: number;
+  /** Opaque cursor from a previous page's nextCursor (apps/api/src/lib/pagination.ts; malformed → 400). */
+  cursor?: string | null;
+  registroType?: VerifactuRegistroType;
+  status?: string;
+};
+
+export type VerifactuSubmissionPage = Page<VerifactuSubmissionListItem>;
+
+/**
+ * Submissions of a property (altas and anulaciones), newest first, without
+ * the XML bodies — paginated per the shared cursor contract (createdAt desc,
+ * id desc; `{ items, nextCursor, total }`, `total` over the filtered set).
+ * The route decides the body shape (pageBody: bare array unless the client
+ * asked for the envelope) and sets the X-Total-Count / X-Next-Cursor headers.
+ */
+export async function listVerifactuSubmissions(propertyId: string, options: ListVerifactuSubmissionsOptions = {}): Promise<VerifactuSubmissionPage> {
+  const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? DEFAULT_PAGE_LIMIT)), MAX_PAGE_LIMIT);
+  const cursor = decodeCursor(options.cursor ?? null);
+  const cursorDate = cursor ? new Date(cursor.k) : null;
+  if (cursorDate && Number.isNaN(cursorDate.getTime())) throw new BadRequestError("El cursor de paginación no es válido.");
+  const where: Prisma.VerifactuSubmissionWhereInput = {
+    propertyId,
+    ...(options.registroType ? { registroType: options.registroType } : {}),
+    ...(options.status ? { status: options.status } : {})
+  };
+  const pageWhere: Prisma.VerifactuSubmissionWhereInput =
+    cursor && cursorDate
+      ? { AND: [where, { OR: [{ createdAt: { lt: cursorDate } }, { createdAt: cursorDate, id: { lt: cursor.id } }] }] }
+      : where;
+  const [rows, total] = await Promise.all([
+    prisma.verifactuSubmission.findMany({ where: pageWhere, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: limit + 1 }),
+    prisma.verifactuSubmission.count({ where })
+  ]);
+  const invoiceIds = Array.from(new Set(rows.map((r) => r.invoiceId)));
+  const invoices = invoiceIds.length
+    ? await prisma.invoice.findMany({ where: { id: { in: invoiceIds } }, select: { id: true, invoiceNumber: true } })
+    : [];
+  const numByInvoice = new Map(invoices.map((i) => [i.id, i.invoiceNumber]));
+  const items = rows.map((row) => toListItem(rowToView(row, numByInvoice.get(row.invoiceId))));
+  return buildPage(items, limit, total, (item) => item.createdAt);
+}
+
+export type VerifactuInvoiceSubmissionView = VerifactuSubmissionView & {
+  /** The RegistroAnulacion of the same invoice, when one exists. */
+  anulacion: VerifactuSubmissionView | null;
+};
+
+/** The alta of an invoice (plus its anulación, if any); null when nothing was ever queued. */
+export async function getVerifactuSubmission(invoiceId: string): Promise<VerifactuInvoiceSubmissionView | null> {
+  const rows = await prisma.verifactuSubmission.findMany({ where: { invoiceId } });
+  if (rows.length === 0) return null;
+  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId }, select: { invoiceNumber: true } });
+  const alta = rows.find((row) => registroTypeOf(row) === "alta") ?? null;
+  const anulacion = rows.find((row) => registroTypeOf(row) === "anulacion") ?? null;
+  const primary = alta ?? anulacion;
+  if (!primary) return null;
+  return {
+    ...rowToView(primary, invoice?.invoiceNumber),
+    anulacion: alta && anulacion ? rowToView(anulacion, invoice?.invoiceNumber) : null
+  };
 }
 
 export async function getVerifactuSubmissionById(id: string): Promise<VerifactuSubmissionView | null> {
   const row = await prisma.verifactuSubmission.findUnique({ where: { id } });
-  return attachInvoiceNumber(row);
+  if (!row) return null;
+  const invoice = await prisma.invoice.findUnique({ where: { id: row.invoiceId }, select: { invoiceNumber: true } });
+  return rowToView(row, invoice?.invoiceNumber);
 }

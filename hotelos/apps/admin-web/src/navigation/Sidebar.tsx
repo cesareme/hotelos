@@ -112,19 +112,19 @@ const adminRouteScreenMap: Record<string, string> = {
   "/backoffice/reservations/:reservationId": "ReservationDetailWorkspace",
   "/backoffice/revenue": "RevenueHomeDashboard",
   "/backoffice/revenue/history-forecast": "RevenueHistoryForecastDashboard",
-  "/backoffice/revenue/rate-plans": "RevenueSettings",
+  "/backoffice/revenue/rate-plans": "RatePlans",
   "/backoffice/revenue/rate-grid": "RevenueRules",
   "/backoffice/revenue/recommendations": "RevenueRules",
   "/backoffice/revenue/forecast-explorer": "RevenueForecastExplorer",
   "/backoffice/revenue/demand-calendar": "DemandCalendarAdmin",
   "/backoffice/revenue/rate-shopper": "RateShopperSettings",
   "/backoffice/revenue/scenario-simulator": "RevenueAutomationRules",
-  "/backoffice/revenue/settings": "RevenueSettings",
+  "/backoffice/revenue/settings": "RevenueRules",
   "/backoffice/revenue/data-quality": "RevenueDataQuality",
-  "/backoffice/channel-manager": "ChannelManagerDashboard",
-  "/backoffice/channel-manager/channels": "ChannelManagerSettings",
+  "/backoffice/channel-manager": "ChannelAggregatorHub",
+  "/backoffice/channel-manager/channels": "ChannelAggregatorHub",
   "/backoffice/channel-manager/mappings": "ChannelMappings",
-  "/backoffice/channel-manager/sync-health": "ChannelManagerSettings",
+  "/backoffice/channel-manager/sync-health": "ChannelAggregatorHub",
   "/backoffice/channel-manager/parity-alerts": "RateShopperSettings",
   "/backoffice/billing": "BillingSettings",
   "/backoffice/billing/center": "BillingCenter",
@@ -132,9 +132,9 @@ const adminRouteScreenMap: Record<string, string> = {
   "/backoffice/payments": "PaymentSettings",
   "/backoffice/accounting": "AccountingSettings",
   "/backoffice/tax-settings": "TaxComplianceSettings",
-  "/backoffice/pos-outlets": "ModuleConfigurationCenter",
+  "/backoffice/pos-outlets": "ConfigurationCenterScreen",
   "/backoffice/procurement-inventory": "InventorySettings",
-  "/backoffice/assets-capex-energy": "ModuleConfigurationCenter",
+  "/backoffice/assets-capex-energy": "ConfigurationCenterScreen",
   "/backoffice/workforce": "WorkforceSettings",
   "/backoffice/safety-incidents": "SafetySettings",
   "/backoffice/users-roles": "UserRoleManager",
@@ -142,17 +142,19 @@ const adminRouteScreenMap: Record<string, string> = {
   "/backoffice/compliance/ses-hospedajes": "SesHospedajesSettings",
   "/backoffice/compliance/authority-routing": "AuthorityRoutingSettings",
   "/backoffice/compliance/guest-register-retention": "GuestRegisterRetentionSettings",
+  "/backoffice/compliance/taxes": "PropertyTaxesScreen",
   "/backoffice/developer": "DeveloperPortal",
   "/backoffice/guest-journey": "GuestJourneyWorkspace",
-  "/backoffice/guest-portal": "GuestPortalSettings",
-  "/backoffice/concierge-messaging": "AIGovernanceSettings",
+  "/backoffice/guest-portal": "GuestPortalSettingsReal",
+  "/backoffice/concierge-messaging": "AiGovernanceScreen",
   "/backoffice/analytics-reporting": "AnalyticsSettings",
   "/backoffice/reports": "ReportingCenter",
   "/backoffice/reports/reservations": "ReportingCenter",
   "/backoffice/reports/billing": "ReportingCenter",
   "/backoffice/security": "UserRoleManager",
-  "/backoffice/marketplace": "IntegrationMarketplaceHome",
-  "/backoffice/ai-governance": "AIGovernanceSettings",
+  "/backoffice/marketplace": "MarketplaceCatalog",
+  "/backoffice/ai-governance": "AiGovernanceScreen",
+  "/backoffice/ai/settings": "AISettings",
   "/backoffice/ai-setup": "AISetupCenter",
   "/backoffice/onboarding/projects": "OnboardingProjects",
   "/backoffice/onboarding/source-connections": "SourceConnections",
@@ -163,11 +165,20 @@ const adminRouteScreenMap: Record<string, string> = {
   "/backoffice/onboarding/cutover": "CutoverAssistant"
 };
 
-const revenueNavigationItems: BackOfficeNavItem[] = getModuleRouteItems("revenue_profit_engine", "admin").map((route) => ({
-  label: route.label,
-  screen: adminRouteScreenMap[route.path ?? ""] ?? "RevenueHomeDashboard",
-  roles: ["asset"] as Role[]
-}));
+// Screens that are honest placeholders today (makeModulePlaceholder in App.tsx).
+// They are listed ONLY in "Configuracion avanzada · Próximamente" carrying the
+// placeholder flag, so module-driven items must not re-surface them to the
+// asset persona with a "ready" label. (Comment deliberately avoids the literal
+// flag syntax: check-placeholder-budget.mjs counts it anywhere in this file.)
+const HONEST_PLACEHOLDER_SCREENS = new Set(["RevenueAutomationRules", "RevenueDataQuality", "ForecastSettings"]);
+
+const revenueNavigationItems: BackOfficeNavItem[] = getModuleRouteItems("revenue_profit_engine", "admin")
+  .map((route) => ({
+    label: route.label,
+    screen: adminRouteScreenMap[route.path ?? ""] ?? "RevenueHomeDashboard",
+    roles: ["asset"] as Role[]
+  }))
+  .filter((item) => !HONEST_PLACEHOLDER_SCREENS.has(item.screen));
 
 const pmsNavigationItems: BackOfficeNavItem[] = getModuleRouteItems("pms_core", "admin").map((route) => ({
   label: route.label,
@@ -377,6 +388,9 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
         title: "Fiscal",
         roles: R_OPS_ASSET,
         items: [
+          // Tanda 3: IVA/IGIC/IPSI profile of the property (tipos por categoría,
+          // calificación, base legal) — lote front-fiscal.
+          { label: "Impuestos (IVA/IGIC/IPSI)", screen: "PropertyTaxesScreen", roles: R_OPS_ASSET },
           { label: "VeriFactu", screen: "FiscalDashboard", roles: R_ASSET },
           { label: "AEAT (modelos)", screen: "FiscalDashboard", roles: R_ASSET },
           { label: "Modelo 303 (IVA trimestral)", screen: "Modelo303Screen", roles: R_ASSET },
@@ -395,7 +409,6 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           { label: "Spain Register · SES.HOSPEDAJES", screen: "SesHospedajesSettings", roles: R_OPS_ASSET },
           { label: "Spain Register · Enrutamiento a autoridades", screen: "AuthorityRoutingSettings", roles: R_OPS_ASSET },
           { label: "Spain Register · Retención", screen: "GuestRegisterRetentionSettings", roles: R_OPS_ASSET },
-          { label: "Spain Register · Mapeo de campos", screen: "GuestRegisterFieldMapping", roles: R_OPS_ASSET },
           { label: "Solicitudes RGPD (derechos del interesado)", screen: "GdprRequestsScreen", roles: R_OPS_ASSET }
         ]
       },
@@ -442,21 +455,13 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           { label: "Espacios y recursos", screen: "SpaceResourceSetupForm" },
           { label: "Departamentos", screen: "DepartmentSetupForm" },
           { label: "Categorías", screen: "CategoryManagerScreen" },
-          { label: "Campos personalizados", screen: "CustomFieldManagerScreen" },
-          // ----- Followups migrados desde whitelist (settings-hub) -----
-          // Gestores legacy en src/screens/{Department,RoomType,RoomInventory,
-          // DocumentTemplate}Manager.tsx. Son las pantallas reales (no las
-          // formas guiadas del wizard). Se anidan en "Configuración de
-          // propiedad" porque no existe un subgrupo "Configuración del hotel".
-          // TODO: mover a subgrupo Configuración del hotel cuando exista
-          { label: "Gestor de departamentos", screen: "DepartmentManager" },
-          // TODO: mover a subgrupo Configuración del hotel cuando exista
-          { label: "Gestor de tipos de habitación", screen: "RoomTypeManager" },
-          // TODO: mover a subgrupo Configuración del hotel cuando exista
-          { label: "Gestor de inventario de habitaciones", screen: "RoomInventoryManager" },
-          // Plantillas de documentos — administración de templates (facturas,
-          // contratos, etc.). Va bajo Back Office por ser una utilidad admin.
-          { label: "Plantillas de documentos", screen: "DocumentTemplateManager" }
+          { label: "Campos personalizados", screen: "CustomFieldManagerScreen" }
+          // Tanda 3: los "gestores" legacy (DepartmentManager, RoomTypeManager,
+          // RoomInventoryManager, DocumentTemplateManager) eran ScreenScaffold con
+          // datos inventados; se retiran. Los formularios reales son
+          // DepartmentSetupForm / RoomTypeSetupForm / RoomSetupForm de arriba y
+          // las plantillas viven en NotificationsScreen. Las claves siguen
+          // registradas en App.tsx como alias de esas pantallas reales.
         ]
       },
       {
@@ -465,24 +470,24 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
         items: [
           { label: "Configuración operativa (housekeeping)", screen: "HousekeepingSetupForm" },
           { label: "Configuración de mantenimiento", screen: "MaintenanceSetupForm" },
-          { label: "SOPs (configuración del módulo)", screen: "ModuleConfigurationCenter" },
           { label: "Espacios y puntos de venta", screen: "PropertyMapper" }
         ]
       },
       {
         title: "Ajustes comerciales",
         roles: R_ASSET,
+        // Manual (curated Spanish) entries go BEFORE the module-driven spread so
+        // dedupe keeps them. Retired in Tanda 3: "Ajustes de revenue",
+        // "Ajustes de channel manager" and "Comp-set de competidores" (scaffolds
+        // duplicating RatePlans / ChannelAggregatorHub / RateShopperSettings);
+        // "Reglas de automatización" and "Ajustes de forecast" moved to the
+        // honest-placeholder subgroup below.
         items: dedupe([
           { label: "Configuración de revenue", screen: "RevenueCategorySetupForm" },
-          { label: "Ajustes de revenue", screen: "RevenueSettings" },
-          ...revenueNavigationItems,
           { label: "Reglas de revenue", screen: "RevenueRules" },
-          { label: "Reglas de automatización", screen: "RevenueAutomationRules" },
-          { label: "Ajustes de forecast", screen: "ForecastSettings" },
-          { label: "Ajustes de channel manager", screen: "ChannelManagerSettings" },
           { label: "Mapeos de canales", screen: "ChannelMappings" },
-          { label: "Comp-set de competidores", screen: "CompetitorSet" },
-          { label: "Calendario de demanda (admin)", screen: "DemandCalendarAdmin" }
+          { label: "Calendario de demanda", screen: "DemandCalendarAdmin" },
+          ...revenueNavigationItems
         ])
       },
       {
@@ -493,7 +498,6 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           { label: "Contabilidad", screen: "AccountingSettings" },
           ...billingNavigationItems,
           { label: "Ajustes de facturación", screen: "BillingSettings" },
-          { label: "Secuencias de facturas", screen: "BillingSettings" },
           { label: "Pagos", screen: "PaymentSettings" },
           { label: "Ajustes fiscales", screen: "TaxComplianceSettings" }
         ])
@@ -516,15 +520,12 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
         items: [
           { label: "Marketplace de módulos", screen: "ModuleManager" },
           { label: "Módulos activos", screen: "ModuleManager" },
-          { label: "Configuración de módulos", screen: "ModuleConfigurationCenter" },
           { label: "Salud de módulos", screen: "ModuleHealthCenter" },
-          { label: "Marketplace de integraciones", screen: "IntegrationMarketplaceHome" },
-          { label: "Gestor de integraciones", screen: "IntegrationManager" },
-          // ----- Followups migrados desde whitelist (settings-hub) -----
-          // Catálogo del marketplace de apps de terceros (R_MGMT en Finanzas).
-          // Se replica aquí porque su hogar natural es la zona admin "Módulos
-          // e integraciones".
-          { label: "Marketplace de apps", screen: "MarketplaceCatalog" }
+          // Tanda 3: "Configuración de módulos" (ModuleConfigurationCenter),
+          // "Marketplace de integraciones" (IntegrationMarketplaceHome) y
+          // "Gestor de integraciones" (IntegrationManager) eran scaffolds con
+          // conexiones inventadas; ModuleManager + el catálogo real los cubren.
+          { label: "Marketplace de integraciones", screen: "MarketplaceCatalog" }
         ]
       },
       {
@@ -534,9 +535,10 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           { label: "Usuarios", screen: "UserRoleManager" },
           { label: "Roles", screen: "UserRoleManager" },
           { label: "Permisos", screen: "UserRoleManager" },
-          { label: "Seguridad", screen: "UserRoleManager" },
-          { label: "Organización", screen: "OrganizationSettings" },
-          { label: "Ajustes de la propiedad", screen: "PropertySettings" }
+          { label: "Seguridad", screen: "UserRoleManager" }
+          // Tanda 3: "Organización" y "Ajustes de la propiedad" eran scaffolds;
+          // el perfil legal/fiscal se edita en "Perfil de la propiedad"
+          // (PropertyProfileSetupForm) y los tenants en la Consola de tenants.
         ]
       },
       {
@@ -578,23 +580,24 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
         // Previous homes (now cleaned up):
         // - WorkforceSettings, SafetySettings ← "Ajustes operativos"
         // - GroupSettings, EventSpacesSettings, SalesSettings,
-        //   GuestPortalSettings, UpsellSettings, ReputationSettings,
-        //   SurveySettings, QualityWorkflowSettings, CRMSettings,
-        //   LoyaltySettings ← "Ajustes comerciales"
+        //   ReputationSettings, SurveySettings, QualityWorkflowSettings,
+        //   CRMSettings, LoyaltySettings ← "Ajustes comerciales"
         // - ProcurementSettings, InventorySettings ← "Ajustes financieros y fiscales"
         // - DeveloperPortal ← "Desarrollador y sistema"
+        // - RevenueAutomationRules, RevenueDataQuality, ForecastSettings ←
+        //   "Ajustes comerciales" (Tanda 3: former ScreenScaffold stubs)
+        // Retired in Tanda 3 (real screens exist): GuestPortalSettings →
+        // GuestPortalSettingsReal, UpsellSettings → UpsellsSettings.
         title: "Configuracion avanzada · Próximamente",
         roles: R_ADMIN_ONLY,
         items: [
           // Operativos (2)
           { label: "Ajustes de personal", screen: "WorkforceSettings", placeholder: true },
           { label: "Ajustes de seguridad", screen: "SafetySettings", placeholder: true },
-          // Comerciales (10)
+          // Comerciales (8)
           { label: "Ajustes de grupos", screen: "GroupSettings", placeholder: true },
           { label: "Ajustes de eventos", screen: "EventSpacesSettings", placeholder: true },
           { label: "Ajustes de ventas", screen: "SalesSettings", placeholder: true },
-          { label: "Ajustes del portal del huésped", screen: "GuestPortalSettings", placeholder: true },
-          { label: "Ajustes de upsells", screen: "UpsellSettings", placeholder: true },
           { label: "Ajustes de reputación", screen: "ReputationSettings", placeholder: true },
           { label: "Ajustes de encuestas", screen: "SurveySettings", placeholder: true },
           { label: "Ajustes del flujo de calidad", screen: "QualityWorkflowSettings", placeholder: true },
@@ -603,6 +606,10 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           // Financieros y fiscales (2)
           { label: "Ajustes de compras", screen: "ProcurementSettings", placeholder: true },
           { label: "Ajustes de inventario", screen: "InventorySettings", placeholder: true },
+          // Revenue (3) — sin endpoint propio todavía
+          { label: "Reglas de automatización de revenue", screen: "RevenueAutomationRules", placeholder: true },
+          { label: "Calidad de datos de revenue", screen: "RevenueDataQuality", placeholder: true },
+          { label: "Ajustes de forecast", screen: "ForecastSettings", placeholder: true },
           // Developer (1)
           { label: "Plataforma de desarrollador", screen: "DeveloperPortal", placeholder: true }
         ]

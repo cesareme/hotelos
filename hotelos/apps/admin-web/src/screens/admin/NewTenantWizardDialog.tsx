@@ -2,8 +2,12 @@
 //
 // 5-step modal dialog: org metadata, first property, owner user, modules /
 // plan, and a final confirmation that calls /admin/tenants POST. After a
-// successful create we show a result panel with temp password + invite link
-// (copyable) plus a "send invite by email" placeholder button.
+// successful create we show a result panel with the REAL outcome of the owner
+// invitation (Tanda 3 · CFG-P1-6): "enviada" only when the API's email
+// provider accepted it, otherwise the copyable single-use invite link to hand
+// over by another channel, plus a "Reenviar invitación" that calls
+// POST /admin/tenants/:orgId/users/:ownerUserId/reissue-invite. No temp
+// password is ever displayed (the API no longer needs to return one).
 //
 // Props:
 //   open       — controls visibility
@@ -21,7 +25,8 @@ import { createPortal } from "react-dom";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaInput } from "../../components/cocoa/CocoaInput";
 import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
-import { createTenant, type CreateTenantResponse } from "../../services/tenantAdminApi";
+import { createTenant, reissueTenantInvitation, type CreateTenantResponse } from "../../services/tenantAdminApi";
+import { copyText, describeDelivery, formatExpiry, type InvitationResult } from "../../services/authApi";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -140,11 +145,6 @@ function isStepValid(step: number, s: WizardState): boolean {
   return false;
 }
 
-async function copyToClipboard(value: string): Promise<boolean> {
-  if (typeof navigator === "undefined") return false;
-  try { await navigator.clipboard.writeText(value); return true; } catch { return false; }
-}
-
 // ---------------------------------------------------------------------------
 // Styles
 // ---------------------------------------------------------------------------
@@ -250,7 +250,10 @@ function StepOwner({ state, setState }: StepProps) {
       <Field label="Teléfono (opcional)">
         <CocoaInput value={state.ownerPhone} onChange={(v) => setState({ ...state, ownerPhone: v })} placeholder="+34 600 000 000" inputMode="tel" />
       </Field>
-      <p style={S.hintBox}>Recibirá un email con magic link + password temporal.</p>
+      <p style={S.hintBox}>
+        Recibirá un enlace de invitación de un solo uso (72 h) para crear su contraseña. Si el email saliente del servidor no está
+        configurado, al terminar podrás copiar el enlace y entregarlo por otro canal.
+      </p>
     </div>
   );
 }
@@ -338,7 +341,7 @@ function StepConfirm({ state }: { state: WizardState }) {
 function CopyRow({ label, value }: { label: string; value: string }) {
   const [copied, setCopied] = useState(false);
   const handleCopy = async () => {
-    if (await copyToClipboard(value)) {
+    if (await copyText(value)) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     }
@@ -356,14 +359,56 @@ function CopyRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SuccessPanel({ result, onClose }: { result: CreateTenantResponse; onClose: () => void }) {
-  const [sending, setSending] = useState(false);
-  const [sent, setSent] = useState(false);
-  const handleSendInvite = () => {
-    // Placeholder — real send-invite endpoint will be wired separately.
-    setSending(true);
-    window.setTimeout(() => { setSending(false); setSent(true); }, 600);
+const DELIVERY_BOX: Record<"ok" | "warn" | "error", CSSProperties> = {
+  ok: { background: "rgba(52, 199, 89, 0.10)", border: "1px solid rgba(52, 199, 89, 0.45)" },
+  warn: { background: "rgba(255, 159, 10, 0.10)", border: "1px solid rgba(255, 159, 10, 0.45)" },
+  error: { background: "rgba(255, 59, 48, 0.08)", border: "1px solid var(--cocoa-danger)" }
+};
+
+/**
+ * What the panel knows about the owner invitation. `delivery` is absent when
+ * the API only returned the legacy top-level `inviteLink` (pre-Tanda 3) — the
+ * banner then says the send state is unknown and shows the link.
+ */
+type InviteView = { inviteUrl?: string; expiresAt?: string; delivery?: InvitationResult["delivery"] };
+
+function inviteViewFromResult(result: CreateTenantResponse): InviteView | undefined {
+  if (result.invitation) return result.invitation;
+  if (result.inviteLink) return { inviteUrl: result.inviteLink };
+  return undefined;
+}
+
+/** Real outcome of the owner invitation (never "enviada" unless the provider accepted it). */
+function DeliveryBanner({ invitation, email }: { invitation: InviteView | undefined; email: string }) {
+  const delivery = describeDelivery(invitation?.delivery, email);
+  return (
+    <div role="status" style={{ ...S.hintBox, ...DELIVERY_BOX[delivery.tone], color: "var(--cocoa-label)" }}>
+      <strong>{delivery.title}</strong>
+      <div style={{ marginTop: 4, color: "var(--cocoa-label-secondary)" }}>{delivery.detail}</div>
+    </div>
+  );
+}
+
+function SuccessPanel({ result, ownerEmail, onClose }: { result: CreateTenantResponse; ownerEmail: string; onClose: () => void }) {
+  const [invitation, setInvitation] = useState<InviteView | undefined>(() => inviteViewFromResult(result));
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
+
+  const handleResend = async () => {
+    setResending(true);
+    setResendError(null);
+    try {
+      const next = await reissueTenantInvitation(result.organizationId, result.ownerUserId);
+      setInvitation(next);
+    } catch (err) {
+      setResendError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResending(false);
+    }
   };
+
+  const showLink = Boolean(invitation?.inviteUrl) && invitation?.delivery?.status !== "sent";
+
   return (
     <div style={S.col}>
       <div>
@@ -371,14 +416,17 @@ function SuccessPanel({ result, onClose }: { result: CreateTenantResponse; onClo
           Cliente creado
         </h3>
         <p style={{ margin: "6px 0 0 0", color: "var(--cocoa-label-secondary)" }}>
-          La organización quedó provisionada con propiedad y usuario propietario.
+          La organización quedó provisionada con propiedad y usuario propietario ({ownerEmail}). El propietario crea su contraseña
+          al aceptar la invitación.
         </p>
       </div>
-      <CopyRow label="Password temporal" value={result.tempPassword} />
-      <CopyRow label="Invite link" value={result.inviteLink} />
+      <DeliveryBanner invitation={invitation} email={ownerEmail} />
+      {showLink && invitation?.inviteUrl ? <CopyRow label="Enlace de invitación (un solo uso)" value={invitation.inviteUrl} /> : null}
+      {invitation?.expiresAt ? <p style={S.hint}>Caduca el {formatExpiry(invitation.expiresAt)}. Reenviar genera un enlace nuevo y anula este.</p> : null}
+      {resendError ? <p role="alert" style={S.errorBox}>{resendError}</p> : null}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
-        <CocoaButton variant="bordered" tone="accent" onClick={handleSendInvite} loading={sending} disabled={sent}>
-          {sent ? "Invitación enviada" : "Enviar invitación por email"}
+        <CocoaButton variant="bordered" tone="accent" onClick={handleResend} loading={resending}>
+          Reenviar invitación
         </CocoaButton>
         <CocoaButton variant="filled" tone="accent" onClick={onClose}>Cerrar</CocoaButton>
       </div>
@@ -481,7 +529,7 @@ export function NewTenantWizardDialog({ open, onClose, onCompleted }: NewTenantW
 
         <div style={S.body}>
           {result ? (
-            <SuccessPanel result={result} onClose={onClose} />
+            <SuccessPanel result={result} ownerEmail={state.ownerEmail.trim()} onClose={onClose} />
           ) : (
             <>
               {stepBody}

@@ -252,18 +252,12 @@ describe("Revenue Management and Channel Manager module", () => {
       "../apps/mobile/src/screens/revenue/RateParityAlertsScreen.tsx",
       "../apps/mobile/src/screens/revenue/ScenarioSimulatorScreen.tsx",
       "../apps/mobile/src/screens/revenue/RevenueAIInsightScreen.tsx",
-      "../apps/admin-web/src/screens/RevenueSettingsScreen.tsx",
-      "../apps/admin-web/src/screens/RevenueAutomationRulesScreen.tsx",
       "../apps/admin-web/src/screens/ChannelMappingsScreen.tsx",
       "../apps/admin-web/src/screens/RateShopperSettingsScreen.tsx",
-      "../apps/admin-web/src/screens/RevenueDataQualityScreen.tsx"
     ]) {
       assert.equal(existsSync(new URL(path, import.meta.url)), true);
     }
     for (const marker of [
-      "RevenueSettingsScreen",
-      "RevenueAutomationRulesScreen",
-      "ChannelManagerSettingsScreen",
       "ChannelMappingsScreen",
       "RateShopperSettingsScreen",
       // The Spanish label for "Revenue data quality" is "Calidad de datos".

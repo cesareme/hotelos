@@ -18,6 +18,8 @@ import {
 import type { UpdateReservationInput } from "../../schemas/reservations.schemas.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+// No import cycle: compliance.service (and its closure) never imports pms.service.
+import { queueSesBajaForReservation } from "../compliance/compliance.service.js";
 import { getReservationBalance, getFolioBalance } from "../folio/folio.service.js";
 import { createSystemHousekeepingTask } from "../housekeeping/housekeeping.service.js";
 import { getCurrentBusinessDate } from "../night-audit/night-audit.service.js";
@@ -1864,6 +1866,30 @@ export async function transitionReservation(input: {
   const after = await withPrimaryGuestId(updated);
   mirrorReservation(after);
 
+  // SES.HOSPEDAJES baja (RD 933/2021): a stay the MIR already holds must be
+  // revoked when the reservation is cancelled or no-shows. Best effort AFTER
+  // the status is persisted: the cancellation never fails because of SES — a
+  // failure is logged with correlation and audited (SES_BAJA_QUEUE_FAILED) so
+  // the compliance inbox / scheduler pick it up.
+  let sesBaja: Awaited<ReturnType<typeof queueSesBajaForReservation>> | null = null;
+  try {
+    sesBaja = await queueSesBajaForReservation({ context: input.context, reservationId: reservation.id, correlationId: input.correlationId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[pms] SES baja could not be queued for reservation ${reservation.id} (${input.status}, correlation ${input.correlationId}): ${message}`);
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: reservation.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "system",
+      action: "SES_BAJA_QUEUE_FAILED",
+      entityType: "reservation",
+      entityId: reservation.id,
+      afterJson: { status: input.status, error: message },
+      correlationId: input.correlationId
+    });
+  }
+
   recordAuditEvent({
     organizationId: input.context.organizationId,
     propertyId: reservation.propertyId,
@@ -1873,7 +1899,7 @@ export async function transitionReservation(input: {
     entityType: "reservation",
     entityId: after.id,
     beforeJson: before,
-    afterJson: { ...after, reason: input.reason },
+    afterJson: { ...after, reason: input.reason, sesBaja },
     deviceId: input.context.deviceId,
     correlationId: input.correlationId
   });
@@ -1884,7 +1910,7 @@ export async function transitionReservation(input: {
     entityType: "reservation",
     entityId: after.id,
     eventType: input.status === "cancelled" ? "ReservationCancelled" : "ReservationNoShow",
-    payload: { code: after.code, reason: input.reason },
+    payload: { code: after.code, reason: input.reason, sesBaja },
     actorType: "user",
     actorUserId: input.context.userId,
     correlationId: input.correlationId

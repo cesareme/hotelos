@@ -11,16 +11,18 @@
 // Every successful action emits an AuditEvent so the platform admin console
 // keeps a tamper-evident trail.
 
-import { createHash, randomBytes, randomInt } from "node:crypto";
+import { randomInt } from "node:crypto";
 import { prisma, hashPassword } from "@hotelos/database";
 import { HOTEL_MODULES } from "@hotelos/product";
 import type { PermissionKey } from "@hotelos/shared";
 import { requirePermissions } from "../auth/auth.service.js";
+import { createInvitation, reissueInvitation } from "../auth/invitations.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
+import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { applyRoleTemplate } from "../../lib/rbac-catalog.js";
-import { ensurePropertySettings, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
+import { ensurePropertySettings, ensurePropertyTaxes, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
 import { listPropertyModules } from "../product-modules/product-modules.service.js";
 
 // ────────────────────────────────────────────────────────────── permissions
@@ -115,6 +117,14 @@ export type CreateTenantInput = {
     type: string;
     municipality?: string;
     province?: string;
+    /** Tanda 3: canonical tax region (ES_PENINSULA_BALEARES · ES_CANARIAS · ES_CEUTA · ES_MELILLA); derived from the province when omitted. */
+    taxRegion?: string;
+    /** 5-digit Spanish postal code (validated). */
+    postalCode?: string;
+    /** 5-digit INE municipality code, same province as the postal code (validated). */
+    ineMunicipalityCode?: string;
+    /** Reporting territory: common (VeriFactu) · bizkaia · gipuzkoa · araba · navarra. */
+    fiscalTerritory?: string;
   };
   ownerUser: {
     email: string;
@@ -125,15 +135,39 @@ export type CreateTenantInput = {
   plan: TenantPlan;
 };
 
-export type CreateTenantResult = {
+export type InvitationDelivery = {
+  status: "sent" | "simulated" | "failed" | "disabled";
+  provider?: string;
+  errorMessage?: string;
+};
+
+export type TenantInvitationResult = {
+  /** Single-use accept-invite link; null only when the invitation could not be minted (see `error`). */
+  inviteLink: string | null;
+  invitation: {
+    expiresAt: string | null;
+    delivery: InvitationDelivery;
+    /** Set when invitations.service threw: the user exists, reissue from the tenant detail. */
+    error?: string;
+  };
+};
+
+export type CreateTenantResult = TenantInvitationResult & {
   organizationId: string;
   propertyId: string;
   ownerUserId: string;
   /** role_permissions rows granted to the Owner role from the shared "owner" template. */
   ownerPermissionsGranted: number;
-  tempPassword: string;
-  inviteLink: string;
+  /** Only when ADMIN_EXPOSE_TEMP_PASSWORD=true (never by default: the owner sets the password on accept-invite). */
+  tempPassword?: string;
+  /** Statutory tax catalogue provisioned for the property's region (contract C). */
+  taxProvisioning: { ok: boolean; taxRegion: string | null; provisioned?: number; skipped?: number; error?: string };
 };
+
+/** Temp passwords in clear text are opt-in for break-glass scenarios only. */
+function exposeTempPassword(): boolean {
+  return process.env.ADMIN_EXPOSE_TEMP_PASSWORD === "true";
+}
 
 // ─────────────────────────────────────────────── tenant metadata side-store
 //
@@ -173,51 +207,43 @@ function ensureMetadata(organizationId: string, defaults?: TenantMetadataDefault
   return meta;
 }
 
-// ──────────────────────────────────────────── invite-token side-store
+// ──────────────────────────────────────────── invitations
 //
-// No InviteToken Prisma model exists in the schema today. The spec says
-// "usa o crea InviteToken model si existe" — since it does not, we keep
-// hashed tokens in-process with a 72h TTL. Hash-only storage means a memory
-// dump cannot replay live invites. Replace with a Prisma model when one
-// lands; the public function signatures will not change.
+// Tanda 3 (CFG-P1-6): the in-process invite-token array is gone. Invitations are
+// persisted (user_invitations, hashed single-use token, 72 h TTL) and delivered by
+// modules/auth/invitations.service (contract G); this service only reports what
+// happened (delivery status + link) and never fails a tenant creation because an
+// email could not be sent.
 
-type InviteRecord = {
-  tokenHash: string;
+async function mintInvitation(input: {
   userId: string;
   organizationId: string;
-  expiresAt: number;
-  usedAt?: number;
-  createdAt: number;
-};
-
-const INVITE_TTL_MS = 72 * 60 * 60 * 1000;
-const inviteTokens: InviteRecord[] = [];
-
-function hashToken(token: string): string {
-  return createHash("sha256").update(token, "utf8").digest("hex");
-}
-
-function generateInviteToken(): string {
-  // 32 random bytes → 64 hex chars: 256 bits of entropy, URL-safe.
-  return randomBytes(32).toString("hex");
-}
-
-function createInviteRecord(input: { userId: string; organizationId: string }): { token: string; expiresAt: number } {
-  const token = generateInviteToken();
-  const expiresAt = Date.now() + INVITE_TTL_MS;
-  inviteTokens.push({
-    tokenHash: hashToken(token),
-    userId: input.userId,
-    organizationId: input.organizationId,
-    expiresAt,
-    createdAt: Date.now()
-  });
-  return { token, expiresAt };
-}
-
-function buildInviteLink(token: string): string {
-  const base = process.env.APP_BASE_URL?.trim() || "https://app.hotelos.local";
-  return `${base.replace(/\/+$/, "")}/accept-invite?token=${token}`;
+  propertyId: string | null;
+  roleId: string | null;
+  actorUserId: string | null;
+  correlationId?: string;
+}): Promise<TenantInvitationResult> {
+  try {
+    const created = await createInvitation({
+      userId: input.userId,
+      organizationId: input.organizationId,
+      propertyId: input.propertyId,
+      roleId: input.roleId,
+      actorUserId: input.actorUserId,
+      correlationId: input.correlationId
+    });
+    return { inviteLink: created.inviteUrl, invitation: { expiresAt: created.expiresAt, delivery: created.delivery } };
+  } catch (err) {
+    // Honest failure: the user row exists, the console can reissue; never a fake link.
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[tenant-admin] createInvitation failed", {
+      userId: input.userId,
+      organizationId: input.organizationId,
+      correlationId: input.correlationId,
+      error: message
+    });
+    return { inviteLink: null, invitation: { expiresAt: null, delivery: { status: "failed", errorMessage: message }, error: message } };
+  }
 }
 
 // ─────────────────────────────────────────────────────────── password gen
@@ -484,11 +510,30 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
 
   const existingUser = await prisma.user.findUnique({ where: { email: ownerEmail } });
   if (existingUser) {
-    throw new ConflictError(`A user with email ${ownerEmail} already exists.`);
+    throw new ConflictError(`Ya existe un usuario con el email ${ownerEmail}.`);
   }
 
-  const tempPassword = generateTempPassword();
-  const passwordHash = hashPassword(tempPassword);
+  // Tanda 3: fiscal location validated BEFORE any write (canonical region or 400,
+  // 5-digit CP / INE coherent by province, reporting territory); the region is derived
+  // from the province when the console did not send one.
+  const province = input.property.province?.trim() || null;
+  const fiscal = resolveFiscalLocation({
+    current: {},
+    patch: {
+      taxRegion: input.property.taxRegion,
+      postalCode: input.property.postalCode,
+      ineMunicipalityCode: input.property.ineMunicipalityCode,
+      fiscalTerritory: input.property.fiscalTerritory
+    },
+    province
+  });
+
+  // The owner is created as `invited` without a password: they choose it on
+  // accept-invite. Only ADMIN_EXPOSE_TEMP_PASSWORD=true keeps the legacy clear-text
+  // temporary password (active user forced to rotate on first login).
+  const expose = exposeTempPassword();
+  const tempPassword = expose ? generateTempPassword() : null;
+  const passwordHash = tempPassword ? hashPassword(tempPassword) : null;
   const country = input.organizationCountry?.trim() || "ES";
 
   const persisted = await prisma.$transaction(async (tx) => {
@@ -504,8 +549,12 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
         organizationId: organization.id,
         name: propertyName,
         municipality: input.property.municipality?.trim() || null,
-        province: input.property.province?.trim() || null,
-        country
+        province,
+        country,
+        taxRegion: fiscal.taxRegionToPersist,
+        postalCode: fiscal.postalCode,
+        ineMunicipalityCode: fiscal.ineMunicipalityCode,
+        fiscalTerritory: fiscal.fiscalTerritory
       }
     });
 
@@ -528,10 +577,11 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
         fullName: ownerFullName,
         phone: input.ownerUser.phone?.trim() || null,
         passwordHash,
-        // Force-change on next login: leave passwordChangedAt null so a
-        // session middleware can detect "temp password, must rotate".
         passwordChangedAt: null,
-        status: "active"
+        // Default: invited (no credential until accept-invite). Break-glass mode: active
+        // with a temporary password that the PASSWORD_CHANGE_REQUIRED guard forces to rotate.
+        status: expose ? "active" : "invited",
+        mustChangePassword: expose
       }
     });
 
@@ -555,7 +605,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       create: { userId: user.id, departmentId: department.id, roleLabel: "owner", active: true }
     });
 
-    return { organization, property, user, ownerPermissionsGranted: ownerTemplate.granted };
+    return { organization, property, user, ownerRole, ownerPermissionsGranted: ownerTemplate.granted };
   });
 
   // Seed module entitlements (best-effort: any unknown moduleCode is skipped
@@ -602,6 +652,28 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
   mirrorProperty(persisted.property);
   await listPropertyModules(persisted.property.id);
 
+  // Statutory tax catalogue for the region (contract C). Idempotent; a failure is
+  // reported in the result and the audit trail (readiness flags the missing rates)
+  // instead of leaving a half-created tenant behind a 500.
+  let taxProvisioning: CreateTenantResult["taxProvisioning"];
+  try {
+    const provisioned = await ensurePropertyTaxes({
+      propertyId: persisted.property.id,
+      organizationId: persisted.organization.id,
+      taxRegion: fiscal.taxRegionToPersist
+    });
+    taxProvisioning = { ok: true, ...provisioned };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[tenant-admin.createTenant] ensurePropertyTaxes failed", {
+      propertyId: persisted.property.id,
+      organizationId: persisted.organization.id,
+      taxRegion: fiscal.taxRegionToPersist,
+      error: message
+    });
+    taxProvisioning = { ok: false, taxRegion: fiscal.taxRegion, error: message };
+  }
+
   // Seed tenant metadata.
   const meta = ensureMetadata(persisted.organization.id, {
     status: "active",
@@ -612,9 +684,14 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
   for (const code of input.modulesEnabled) meta.modulesEnabled.add(code);
   meta.lastActivityAt = new Date().toISOString();
 
-  // Mint a single-use invite link (72h TTL, hash-only storage).
-  const invite = createInviteRecord({ userId: persisted.user.id, organizationId: persisted.organization.id });
-  const inviteLink = buildInviteLink(invite.token);
+  // Persisted single-use invitation (72 h TTL) + best-effort email (contract G).
+  const invitation = await mintInvitation({
+    userId: persisted.user.id,
+    organizationId: persisted.organization.id,
+    propertyId: persisted.property.id,
+    roleId: persisted.ownerRole.id,
+    actorUserId: input.context.userId ?? null
+  });
 
   recordAuditEvent({
     organizationId: persisted.organization.id,
@@ -629,11 +706,24 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       propertyName,
       propertyType: input.property.type,
       ownerEmail,
+      ownerStatus: expose ? "active" : "invited",
+      tempPasswordExposed: expose,
       plan: input.plan,
       modulesEnabled: input.modulesEnabled,
       ownerRoleTemplate: "owner",
       ownerPermissionsGranted: persisted.ownerPermissionsGranted,
-      inviteExpiresAt: new Date(invite.expiresAt).toISOString()
+      fiscal: {
+        taxRegion: fiscal.taxRegion,
+        taxRegionSource: fiscal.taxRegionSource,
+        fiscalTerritory: fiscal.fiscalTerritory,
+        postalCode: fiscal.postalCode,
+        ineMunicipalityCode: fiscal.ineMunicipalityCode
+      },
+      taxProvisioning,
+      // Never the link itself (it carries the token).
+      inviteExpiresAt: invitation.invitation.expiresAt,
+      inviteDelivery: invitation.invitation.delivery,
+      inviteError: invitation.invitation.error
     }
   });
 
@@ -642,52 +732,107 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
     propertyId: persisted.property.id,
     ownerUserId: persisted.user.id,
     ownerPermissionsGranted: persisted.ownerPermissionsGranted,
-    tempPassword,
-    inviteLink
+    ...(tempPassword ? { tempPassword } : {}),
+    inviteLink: invitation.inviteLink,
+    invitation: invitation.invitation,
+    taxProvisioning
   };
 }
 
-// ───────────────────────────────────────────────────── regenerateTempPassword
+// ───────────────────────────────────────────── reissueTenantUserInvitation
 
-export async function regenerateTempPassword(input: {
+export type ReissueTenantInviteResult = TenantInvitationResult & {
+  userId: string;
+  organizationId: string;
+  /** Only when ADMIN_EXPOSE_TEMP_PASSWORD=true (break-glass): a fresh temporary password, forced to rotate on login. */
+  newPassword?: string;
+};
+
+/**
+ * Tanda 3: replaces the clear-text "regenerate temp password". Revokes the user's
+ * live invitations and mints a new persisted one (contract G), so both an owner who
+ * never accepted and one who lost access get a working accept-invite link. When
+ * `orgId` is given the user must belong to it (opaque 404 otherwise: the console
+ * route is /admin/tenants/:orgId/users/:userId/reissue-invite).
+ */
+export async function reissueTenantUserInvitation(input: {
   context: UserContext;
   userId: string;
-}): Promise<{ newPassword: string }> {
+  orgId?: string;
+}): Promise<ReissueTenantInviteResult> {
   const { context, userId } = input;
   if (context) {
     guard(context);
   }
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user) {
-    throw new NotFoundError(`User not found: ${userId}`);
+  if (!user || (input.orgId !== undefined && user.organizationId !== input.orgId)) {
+    throw new NotFoundError(`Usuario no encontrado: ${userId}`);
   }
-  const newPassword = generateTempPassword();
-  const passwordHash = hashPassword(newPassword);
+  if (user.status === "disabled") {
+    throw new ConflictError("No se puede reenviar la invitación de un usuario desactivado.");
+  }
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: {
-      passwordHash,
-      // Null passwordChangedAt forces a change-on-next-login: any session
-      // middleware that inspects this field knows the temp credential is
-      // not a long-lived password.
-      passwordChangedAt: null,
-      failedLoginAttempts: 0,
-      lockedUntil: null
-    }
-  });
+  let newPassword: string | undefined;
+  if (exposeTempPassword()) {
+    // Break-glass: keep the legacy temporary credential, forced to rotate on next login.
+    newPassword = generateTempPassword();
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: hashPassword(newPassword),
+        passwordChangedAt: null,
+        mustChangePassword: true,
+        status: user.status === "invited" ? "active" : user.status,
+        failedLoginAttempts: 0,
+        lockedUntil: null
+      }
+    });
+  }
+
+  let result: TenantInvitationResult;
+  try {
+    const reissued = await reissueInvitation({ userId: user.id, organizationId: user.organizationId, actorUserId: context?.userId ?? null });
+    result = { inviteLink: reissued.inviteUrl, invitation: { expiresAt: reissued.expiresAt, delivery: reissued.delivery } };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[tenant-admin.reissueTenantUserInvitation] reissueInvitation failed", {
+      userId: user.id,
+      organizationId: user.organizationId,
+      error: message
+    });
+    result = { inviteLink: null, invitation: { expiresAt: null, delivery: { status: "failed", errorMessage: message }, error: message } };
+  }
 
   recordAuditEvent({
     organizationId: user.organizationId,
     actorUserId: context?.userId,
     actorType: context ? "user" : "system",
-    action: "TENANT_USER_TEMP_PASSWORD_REGENERATED",
+    action: "TENANT_USER_INVITATION_REISSUED",
     entityType: "user",
     entityId: user.id,
-    afterJson: { forcedChangeOnNextLogin: true }
+    afterJson: {
+      tempPasswordExposed: Boolean(newPassword),
+      inviteExpiresAt: result.invitation.expiresAt,
+      inviteDelivery: result.invitation.delivery,
+      inviteError: result.invitation.error
+    }
   });
 
-  return { newPassword };
+  return {
+    userId: user.id,
+    organizationId: user.organizationId,
+    ...(newPassword ? { newPassword } : {}),
+    ...result
+  };
+}
+
+/**
+ * Legacy name kept for the existing route (POST …/users/:userId/reset-password):
+ * same behaviour as reissueTenantUserInvitation — no clear-text password unless
+ * ADMIN_EXPOSE_TEMP_PASSWORD=true.
+ */
+export async function regenerateTempPassword(input: { context: UserContext; userId: string; orgId?: string }): Promise<ReissueTenantInviteResult> {
+  return reissueTenantUserInvitation(input);
 }
 
 // ──────────────────────────────────────────────────────── toggleTenantModule

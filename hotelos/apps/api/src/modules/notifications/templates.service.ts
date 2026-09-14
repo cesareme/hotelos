@@ -7,6 +7,7 @@
 
 import { prisma, type Prisma } from "@hotelos/database";
 import { listTemplateTokensForTemplate } from "./template-renderer.service.js";
+import { resolveSystemTemplate, systemTemplateToRecord } from "./system-templates.js";
 
 export type NotificationTemplateRecord = {
   id: string;
@@ -160,6 +161,11 @@ export async function deactivateTemplate(id: string): Promise<NotificationTempla
  * the property-scoped row first, then falls back to the org-wide default
  * (propertyId null). Language preference order: requested language, then "es"
  * (system default), then anything else for the same code/channel.
+ *
+ * Tanda 3: when the organization has NO active row for the (code, channel)
+ * pair, platform-level system templates (system-templates.ts: user_invitation,
+ * password_reset) are used so staff invitations and password resets work for a
+ * brand-new tenant without seeding. DB rows always win over the built-ins.
  */
 export async function resolveTemplate(input: {
   organizationId: string;
@@ -179,10 +185,26 @@ export async function resolveTemplate(input: {
       OR: [{ propertyId: input.propertyId ?? null }, { propertyId: null }]
     }
   });
-  if (candidates.length === 0) return null;
+  return pickTemplate(candidates as Row[], { propertyId: input.propertyId, language, code: input.code, channel: input.channel });
+}
 
-  // Sort: property-scoped wins over org-wide, then exact language match wins
-  // over "es" fallback, then any other language.
+/**
+ * Pure selection step of `resolveTemplate` (no I/O) so the ranking and the
+ * system-template fallback are unit-testable: property-scoped wins over
+ * org-wide, then exact language match wins over "es" fallback, then any other
+ * language. With no candidates at all, falls back to the built-in system
+ * template for the code/channel (or null when the platform has none).
+ */
+export function pickTemplate(
+  candidates: Row[],
+  input: { propertyId?: string | null; language?: string; code: string; channel: string }
+): NotificationTemplateRecord | null {
+  const language = input.language ?? "es";
+  if (candidates.length === 0) {
+    const system = resolveSystemTemplate({ code: input.code, channel: input.channel, language });
+    return system ? systemTemplateToRecord(system) : null;
+  }
+
   const scored = candidates
     .map((row) => {
       const propertyScore = row.propertyId === (input.propertyId ?? null) && row.propertyId !== null ? 2 : 1;
@@ -190,5 +212,7 @@ export async function resolveTemplate(input: {
       return { row, score: propertyScore * 10 + languageScore };
     })
     .sort((a, b) => b.score - a.score);
-  return toRecord(scored[0]!.row as Row);
+  return toRecord(scored[0]!.row);
 }
+
+export type { Row as NotificationTemplateRow };

@@ -55,7 +55,6 @@ describe("Spain Guest Register and SES.HOSPEDAJES compliance module", () => {
       "SesHospedajesSettings",
       "AuthorityRoutingSettings",
       "GuestRegisterRetentionSettings",
-      "GuestRegisterFieldMapping"
     ]) {
       assert.match(manifest + sidebar + app, new RegExp(screen));
     }
@@ -226,7 +225,6 @@ describe("Spain Guest Register and SES.HOSPEDAJES compliance module", () => {
       "apps/admin-web/src/screens/compliance/SesHospedajesSettingsScreen.tsx",
       "apps/admin-web/src/screens/compliance/AuthorityRoutingSettingsScreen.tsx",
       "apps/admin-web/src/screens/compliance/GuestRegisterRetentionSettingsScreen.tsx",
-      "apps/admin-web/src/screens/compliance/GuestRegisterFieldMappingScreen.tsx"
     ]) {
       assert.equal(exists(path), true);
     }

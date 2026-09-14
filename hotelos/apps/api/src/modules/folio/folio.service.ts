@@ -1,6 +1,8 @@
+import { categoryForLineType } from "@hotelos/compliance";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { demoStore, type FolioLineRecord, type FolioRecord, type PaymentRecord, type UserContext } from "../../lib/demo-store.js";
+import { TAX_CATEGORY_VALUES, type TaxCategoryValue } from "../../schemas/folios.schemas.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
@@ -180,6 +182,7 @@ function mapLine(row: NonNullable<Awaited<ReturnType<typeof prisma.folioLine.fin
     quantity: dec(row.quantity),
     unitPrice: dec(row.unitPrice),
     taxCode: row.taxCode ?? undefined,
+    taxCategory: row.taxCategory ?? null,
     total: dec(row.total),
     postedAt: row.postedAt.toISOString(),
     postedBy: row.postedBy ?? undefined
@@ -291,6 +294,22 @@ export async function getFolioBalance(folioId: string): Promise<FolioBalance> {
   };
 }
 
+/**
+ * Tanda 3: validate an optional fiscal-category override for a folio line
+ * against the indirect-tax catalogue (contract A). Returns the category to
+ * persist (null when none was requested) or throws a 400. Pure.
+ */
+export function validateFolioLineTaxCategory(lineType: string, taxCategory: string | null | undefined): string | null {
+  const requested = taxCategory?.trim();
+  if (!requested) return null;
+  if (!TAX_CATEGORY_VALUES.includes(requested as TaxCategoryValue) || categoryForLineType(lineType, requested) !== requested) {
+    throw new BadRequestError(
+      `Categoría fiscal no válida: «${requested}». Valores admitidos: ${TAX_CATEGORY_VALUES.join(", ")}.`
+    );
+  }
+  return requested;
+}
+
 export async function postFolioLine(input: {
   context: UserContext;
   folioId: string;
@@ -299,10 +318,13 @@ export async function postFolioLine(input: {
   quantity: number;
   unitPrice: number;
   taxCode?: string;
+  /** Tanda 3: optional fiscal-category override (validated against the catalogue). */
+  taxCategory?: string | null;
   correlationId: string;
 }): Promise<FolioLineRecord> {
   requirePermissions(input.context, ["folio.charge.post"]);
 
+  const taxCategory = validateFolioLineTaxCategory(input.type, input.taxCategory);
   const folio = await getOpenFolio(input.folioId);
   const propertyId = await resolveFolioPropertyId(input.folioId);
   const total = roundCurrency(input.quantity * input.unitPrice);
@@ -315,6 +337,7 @@ export async function postFolioLine(input: {
       quantity: input.quantity,
       unitPrice: input.unitPrice,
       taxCode: input.taxCode ?? null,
+      taxCategory,
       total,
       postedBy: input.context.userId
     }

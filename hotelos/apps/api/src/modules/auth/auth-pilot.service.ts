@@ -1,14 +1,19 @@
 // PILOT-D1 · Endurecimiento de autenticación para piloto real.
 //
 // Añade sobre el módulo auth original:
-//   1. createUser({...})         · onboarding de cuentas reales
+//   1. createUser({...})         · onboarding de cuentas reales (Tanda 3: sin
+//                                  contraseña → usuario 'invited' + invitación)
 //   2. validatePasswordPolicy()  · min 8, mayúsculas, número, especial
 //   3. lockout                   · 5 fallos consecutivos → 15min bloqueo
-//   4. password reset flow       · token TTL 15min + hashing
+//   4. password reset flow       · token TTL 15min + hashing + email
+//                                  'password_reset' (Tanda 3)
 //   5. recordSuccessfulLogin     · resetea contador, actualiza lastLoginAt
 //
 // El flujo de login original llama a estas funciones (modificación mínima
 // en loginWithEmailPassword) para que cualquier intento pase por el lockout.
+//
+// invitations.service.ts is imported dynamically (it imports assertPasswordPolicy
+// from here): keeps the module graph acyclic, same pattern auth.service uses.
 
 import { createHash, randomBytes } from "node:crypto";
 import { prisma, hashPassword } from "@hotelos/database";
@@ -16,7 +21,10 @@ import { isPlatformPermission } from "@hotelos/shared";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, UnauthorizedError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
+import { dispatch, type NotificationDeliveryRecord } from "../notifications/dispatcher.service.js";
+import { emailStatus } from "../notifications/providers/email.provider.js";
 import { hasPlatformAdminGrant, isPlatformAdmin, loadPermissionsForUserProperty } from "./auth.service.js";
+import type { InvitationDelivery, InvitationIssueResult } from "./invitations.service.js";
 
 const PASSWORD_MIN_LENGTH = 8;
 const MAX_FAILED_ATTEMPTS = 5;
@@ -69,7 +77,13 @@ export function assertPasswordPolicy(plain: string): void {
 export type CreateUserInput = {
   organizationId: string;
   email: string;
-  password: string;
+  /**
+   * Optional since Tanda 3: without it the account is created as 'invited'
+   * (no password hash) and an invitation email/link is issued so the employee
+   * picks their own password. With it (bootstrap/scripts) the account is
+   * active immediately, as before.
+   */
+  password?: string;
   fullName: string;
   phone?: string;
   // Asignación inicial a una property con un rol existente.
@@ -166,9 +180,22 @@ async function assertCreateUserTenancy(input: CreateUserInput): Promise<void> {
   }
 }
 
-export async function createUser(input: CreateUserInput): Promise<{ id: string; email: string; fullName: string }> {
-  // Política de contraseñas
-  assertPasswordPolicy(input.password);
+export type CreateUserResult = {
+  id: string;
+  email: string;
+  fullName: string;
+  status: "active" | "invited";
+  /** Present when no password was supplied: link + honest delivery status. */
+  invitation?: InvitationIssueResult;
+};
+
+export async function createUser(input: CreateUserInput): Promise<CreateUserResult> {
+  const password = typeof input.password === "string" && input.password.length > 0 ? input.password : null;
+
+  // Política de contraseñas (solo cuando el alta trae contraseña).
+  if (password !== null) {
+    assertPasswordPolicy(password);
+  }
 
   // Tenencia: org del actor, rol y propiedad de la misma org, sin escalada.
   await assertCreateUserTenancy(input);
@@ -179,16 +206,19 @@ export async function createUser(input: CreateUserInput): Promise<{ id: string; 
     throw new ConflictError("Ya existe un usuario con este email.");
   }
 
-  const passwordHash = hashPassword(input.password);
+  const status: CreateUserResult["status"] = password !== null ? "active" : "invited";
   const user = await prisma.user.create({
     data: {
       organizationId: input.organizationId,
       email: input.email.toLowerCase().trim(),
       fullName: input.fullName.trim(),
       phone: input.phone?.trim(),
-      passwordHash,
-      passwordChangedAt: new Date(),
-      status: "active"
+      // With a password chosen at creation there is nothing to rotate; an
+      // invited account has no hash until acceptInvitation sets one.
+      passwordHash: password !== null ? hashPassword(password) : null,
+      passwordChangedAt: password !== null ? new Date() : null,
+      mustChangePassword: false,
+      status
     }
   });
 
@@ -203,19 +233,36 @@ export async function createUser(input: CreateUserInput): Promise<{ id: string; 
     });
   }
 
+  const actorUserId = input.createdByUserId ?? input.actorContext?.userId ?? null;
   recordAuditEvent({
     organizationId: input.organizationId,
     propertyId: input.propertyId,
-    actorUserId: input.createdByUserId,
-    actorType: input.createdByUserId ? "user" : "system",
+    actorUserId: actorUserId ?? undefined,
+    actorType: actorUserId ? "user" : "system",
     action: "USER_CREATED",
     entityType: "user",
     entityId: user.id,
-    afterJson: { email: user.email, fullName: user.fullName, propertyId: input.propertyId, roleId: input.roleId },
+    afterJson: { email: user.email, fullName: user.fullName, status, propertyId: input.propertyId, roleId: input.roleId },
     correlationId: "create_user"
   });
 
-  return { id: user.id, email: user.email, fullName: user.fullName };
+  if (status === "active") {
+    return { id: user.id, email: user.email, fullName: user.fullName, status };
+  }
+
+  // Persisted first, invitation second: createInvitation never throws because
+  // of the email (delivery.status carries simulated/failed/disabled) — only a
+  // DB failure would surface here, and then the user row exists for a reissue.
+  const { createInvitation } = await import("./invitations.service.js");
+  const invitation = await createInvitation({
+    userId: user.id,
+    organizationId: input.organizationId,
+    propertyId: input.propertyId ?? null,
+    roleId: input.roleId ?? null,
+    actorUserId,
+    correlationId: "create_user"
+  });
+  return { id: user.id, email: user.email, fullName: user.fullName, status, invitation };
 }
 
 // ============================================================ lockout
@@ -288,18 +335,39 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
 }
 
+export const PASSWORD_RESET_TEMPLATE_CODE = "password_reset";
+
 export async function requestPasswordReset(input: { email: string }): Promise<{
-  // En producción este token va en email/SMS. Nunca lo devuelvas en API,
-  // solo lo logueamos para test en sandbox.
+  // The raw token travels ONLY in the 'password_reset' email. It is returned
+  // here solely under the explicit test flag AUTH_EXPOSE_RESET_TOKEN=true.
   resetTokenForTesting?: string;
   expiresAt: string;
+  /** Honest outcome of the email (sent | simulated | failed | disabled). */
+  delivery: InvitationDelivery;
 } | null> {
   const user = await prisma.user.findUnique({
     where: { email: input.email.toLowerCase().trim() },
-    select: { id: true, status: true, organizationId: true }
+    select: { id: true, status: true, organizationId: true, email: true, fullName: true }
   });
   // No revelar si el email existe (anti-enumeration). Siempre respondemos OK.
-  if (!user || user.status !== "active") {
+  if (!user) {
+    return null;
+  }
+
+  // Tanda 3: an invitee has no password to reset. "He olvidado mi contraseña"
+  // from an invited account re-sends the invitation instead (best-effort, same
+  // neutral HTTP response so the two cases are indistinguishable outside).
+  if (user.status === "invited") {
+    try {
+      const { reissueInvitation } = await import("./invitations.service.js");
+      await reissueInvitation({ userId: user.id, organizationId: user.organizationId, actorUserId: null });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[auth] could not reissue the invitation for invited user ${user.id}: ${message}`);
+    }
+    return null;
+  }
+  if (user.status !== "active") {
     return null;
   }
 
@@ -311,7 +379,7 @@ export async function requestPasswordReset(input: { email: string }): Promise<{
 
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MINUTES * 60 * 1000);
-  await prisma.passwordResetToken.create({
+  const tokenRow = await prisma.passwordResetToken.create({
     data: {
       userId: user.id,
       tokenHash: hashToken(token),
@@ -319,22 +387,66 @@ export async function requestPasswordReset(input: { email: string }): Promise<{
     }
   });
 
+  const delivery = await deliverPasswordResetEmail({ user, token, tokenRowId: tokenRow.id });
+
   recordAuditEvent({
     organizationId: user.organizationId,
     actorType: "system",
     action: "PASSWORD_RESET_REQUESTED",
     entityType: "user",
     entityId: user.id,
-    afterJson: { expiresAt: expiresAt.toISOString() },
+    afterJson: {
+      expiresAt: expiresAt.toISOString(),
+      delivery: { status: delivery.status, provider: delivery.provider ?? null, errorMessage: delivery.errorMessage ?? null }
+    },
     correlationId: "pwd_reset"
   });
 
   // The plain token is only surfaced under an explicit test flag — never keyed
   // on NODE_ENV, which a deploy can forget to set (AUTH-06).
   if (process.env.AUTH_EXPOSE_RESET_TOKEN === "true") {
-    return { resetTokenForTesting: token, expiresAt: expiresAt.toISOString() };
+    return { resetTokenForTesting: token, expiresAt: expiresAt.toISOString(), delivery };
   }
-  return { expiresAt: expiresAt.toISOString() };
+  return { expiresAt: expiresAt.toISOString(), delivery };
+}
+
+/**
+ * Best-effort 'password_reset' email through the notification dispatcher
+ * (system template fallback when the org has none). Never throws: the token
+ * row is already persisted, and the caller records the outcome in the audit
+ * event. The raw token is redacted from the stored delivery afterwards.
+ */
+async function deliverPasswordResetEmail(input: {
+  user: { id: string; organizationId: string; email: string; fullName: string };
+  token: string;
+  tokenRowId: string;
+}): Promise<InvitationDelivery> {
+  const { buildPasswordResetUrl, classifyDelivery, redactSecretInDelivery } = await import("./invitations.service.js");
+  const status = emailStatus();
+  let delivery: NotificationDeliveryRecord | null = null;
+  let failure: string | null = null;
+  try {
+    delivery = await dispatch({
+      organizationId: input.user.organizationId,
+      templateCode: PASSWORD_RESET_TEMPLATE_CODE,
+      channel: "email",
+      recipient: input.user.email,
+      notificationId: `pwd_reset:${input.tokenRowId}`,
+      language: "es",
+      variables: {
+        resetUrl: buildPasswordResetUrl(input.token),
+        userName: input.user.fullName,
+        expiryMinutes: RESET_TOKEN_TTL_MINUTES
+      }
+    });
+  } catch (error) {
+    // Honest catch (QC-06): logged and surfaced in delivery.errorMessage; the
+    // reset token stays valid for the AUTH_EXPOSE_RESET_TOKEN test path.
+    failure = error instanceof Error ? error.message : String(error);
+    console.error(`[auth] password reset email failed for user ${input.user.id}: ${failure}`);
+  }
+  await redactSecretInDelivery(delivery, input.token);
+  return classifyDelivery(delivery, failure, status);
 }
 
 export async function resetPassword(input: { token: string; newPassword: string }): Promise<{ userId: string }> {
@@ -361,6 +473,8 @@ export async function resetPassword(input: { token: string; newPassword: string 
       data: {
         passwordHash: newHash,
         passwordChangedAt: new Date(),
+        // A self-chosen password clears the forced-rotation flag (Tanda 3).
+        mustChangePassword: false,
         failedLoginAttempts: 0,
         lockedUntil: null
       }
@@ -418,7 +532,10 @@ export async function changeOwnPassword(input: {
     where: { id: input.userId },
     data: {
       passwordHash: newHash,
-      passwordChangedAt: new Date()
+      passwordChangedAt: new Date(),
+      // Tanda 3: rotating the temp password lifts the PASSWORD_CHANGE_REQUIRED
+      // guard (loadUserContext re-derives the flag on the next request).
+      mustChangePassword: false
     }
   });
   // SECURITY (audit 2026-06): invalidate all existing sessions on password

@@ -3,8 +3,11 @@ import {
   fetchInvoice,
   markInvoicePaid,
   sendInvoiceEmail,
-  type InvoiceFull
+  type InvoiceFull,
+  type InvoiceTaxBreakdownGroup
 } from "../../services/pmsCommerceApi";
+import { CALIFICACION_LABELS, isSuspiciousTaxLine, parseTaxCodeClient } from "../../services/taxesApi";
+import { toArray } from "../../utils/toArray";
 import { useToast } from "../../components/Toast";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 // TODO(cocoa): need CocoaStatusBadge — fallback to Aurora v2 StatusBadge.
@@ -144,25 +147,57 @@ export function InvoiceDetailScreen() {
     }));
   }, [invoice]);
 
-  // Tax breakdown: group lines by VAT rate and sum the taxable base + tax.
-  // The backend already provides taxRate per line, so we don't need to read
-  // tax-zone configuration here.
+  // Tax breakdown (Tanda 3): the persisted `invoice.taxBreakdown` (contract B,
+  // grouped by impuesto/calificación/tipo with per-group rounding) is the ONLY
+  // source shared with the VeriFactu XML and the PDF. Invoices issued before
+  // Tanda 3 have no breakdown: fall back to a client-side estimate and say so.
+  const persistedBreakdown = useMemo(() => toArray<InvoiceTaxBreakdownGroup>(invoice?.taxBreakdown), [invoice]);
+  const breakdownEstimated = persistedBreakdown.length === 0 && rows.length > 0;
   const taxBreakdown = useMemo(() => {
-    const map = new Map<string, { rate: number; base: number; tax: number; code: string }>();
+    if (persistedBreakdown.length > 0) {
+      return persistedBreakdown
+        .map((group) => ({
+          figure: group.figure,
+          calificacion: group.calificacion,
+          rate: Number(group.ratePercent) || 0,
+          base: Number(group.base) || 0,
+          tax: Number(group.quota) || 0,
+          code: `${group.figure} ${group.impuesto}`
+        }))
+        .sort((a, b) => a.rate - b.rate);
+    }
+    const map = new Map<string, { figure: string; calificacion: "S1" | "N1"; rate: number; base: number; tax: number; code: string }>();
     for (const line of rows) {
-      const rate = Number(line.taxRate) || 0;
-      const key = `${line.taxCode ?? ""}:${rate}`;
+      const parsed = parseTaxCodeClient(line.taxCode);
+      const calificacion = line.taxCalificacion ?? parsed.calificacion;
+      const rate = calificacion === "N1" ? 0 : Number(line.taxRate) || 0;
+      const figure = line.taxFigure ?? parsed.figure;
+      const key = `${figure}:${calificacion}:${rate}`;
       const lineTotal = Number(line.total) || 0;
       // line.total includes tax — derive base & tax components from the rate.
       const base = rate > 0 ? lineTotal / (1 + rate / 100) : lineTotal;
       const tax = lineTotal - base;
-      const current = map.get(key) ?? { rate, base: 0, tax: 0, code: line.taxCode ?? "" };
+      const current = map.get(key) ?? { figure, calificacion, rate, base: 0, tax: 0, code: line.taxCode ?? "" };
       current.base += base;
       current.tax += tax;
       map.set(key, current);
     }
     return Array.from(map.values()).sort((a, b) => a.rate - b.rate);
-  }, [rows]);
+  }, [rows, persistedBreakdown]);
+
+  // Figure(s) present on the invoice, for headings ("Desglose de IVA", "Total IGIC").
+  const figures = useMemo(() => {
+    const set = new Set<string>();
+    for (const group of taxBreakdown) if (group.figure && group.figure !== "UNKNOWN") set.add(group.figure);
+    return Array.from(set);
+  }, [taxBreakdown]);
+  const figureLabel = figures.length > 0 ? figures.join(" / ") : "IVA";
+
+  const suspiciousLines = useMemo(() => rows.filter((line) => isSuspiciousTaxLine(line)), [rows]);
+  const warnings = useMemo(
+    () => [...toArray<string>(invoice?.warnings), ...toArray<string>(invoice?.issuer?.warnings)],
+    [invoice]
+  );
 
   const subtotal = useMemo(() => {
     return taxBreakdown.reduce((sum, t) => sum + t.base, 0);
@@ -192,10 +227,35 @@ export function InvoiceDetailScreen() {
       },
       {
         key: "tax",
-        label: "IVA",
+        label: "Impuesto",
         align: "right",
-        width: "100px",
-        render: (row) => `${row.taxCode ?? "—"} (${fmtNumber(row.taxRate, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%)`
+        width: "150px",
+        render: (row) => {
+          const parsed = parseTaxCodeClient(row.taxCode);
+          const figure = row.taxFigure ?? (parsed.figure === "UNKNOWN" ? null : parsed.figure);
+          const calificacion = row.taxCalificacion ?? parsed.calificacion;
+          const suspicious = isSuspiciousTaxLine(row);
+          return (
+            <span style={{ display: "inline-flex", gap: "var(--cocoa-space-1)", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap" }}>
+              {calificacion === "N1" ? (
+                <span title={row.taxCode ?? undefined}>{figure ?? "—"} · no sujeta</span>
+              ) : (
+                <span title={row.taxCode ?? undefined}>
+                  {figure ?? row.taxCode ?? "—"} {fmtNumber(row.taxRate, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%
+                </span>
+              )}
+              {suspicious ? (
+                <span
+                  className="bo-status warn"
+                  style={{ textTransform: "none" }}
+                  title={`Línea sin tipo impositivo configurado (${row.taxCode ?? "sin código"}): revisa Impuestos de la propiedad`}
+                >
+                  sin tipo
+                </span>
+              ) : null}
+            </span>
+          );
+        }
       },
       {
         key: "subtotal",
@@ -209,12 +269,12 @@ export function InvoiceDetailScreen() {
   );
 
   // Tax breakdown columns
-  type TaxRow = { rate: number; base: number; tax: number; code: string; _key: string };
+  type TaxRow = { figure: string; calificacion: "S1" | "N1"; rate: number; base: number; tax: number; code: string; _key: string };
   const taxRows = useMemo<TaxRow[]>(
     () =>
       taxBreakdown.map((t, idx) => ({
         ...t,
-        _key: `${t.code}-${t.rate}-${idx}`
+        _key: `${t.code}-${t.calificacion}-${t.rate}-${idx}`
       })),
     [taxBreakdown]
   );
@@ -222,25 +282,30 @@ export function InvoiceDetailScreen() {
   const taxColumns = useMemo<CocoaTableColumn<TaxRow>[]>(
     () => [
       {
-        key: "code",
-        label: "Código",
-        render: (row) => row.code || "—"
+        key: "figure",
+        label: "Figura",
+        render: (row) => (row.figure === "UNKNOWN" ? <span className="bo-status warn" style={{ textTransform: "none" }}>sin figura</span> : <strong>{row.figure}</strong>)
+      },
+      {
+        key: "calificacion",
+        label: "Calificación",
+        render: (row) => CALIFICACION_LABELS[row.calificacion] ?? row.calificacion
       },
       {
         key: "rate",
         label: "Tipo",
         align: "right",
-        render: (row) => `${fmtNumber(row.rate, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%`
+        render: (row) => (row.calificacion === "N1" ? "—" : `${fmtNumber(row.rate, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}%`)
       },
       {
         key: "base",
-        label: "Base imponible",
+        label: "Base imponible / importe no sujeto",
         align: "right",
         render: (row) => fmtMoney(row.base, currency)
       },
       {
         key: "tax",
-        label: "Importe IVA",
+        label: "Cuota",
         align: "right",
         render: (row) => fmtMoney(row.tax, currency)
       }
@@ -571,6 +636,22 @@ export function InvoiceDetailScreen() {
         </CocoaCard>
       </div>
 
+      {warnings.length > 0 || suspiciousLines.length > 0 ? (
+        <div className="bo-status warn" style={{ textTransform: "none", display: "grid", gap: "var(--cocoa-space-1)" }}>
+          <strong>Avisos fiscales</strong>
+          <ul style={{ margin: 0, paddingLeft: "1.2em" }}>
+            {warnings.map((warning, index) => (
+              <li key={`w-${index}`}>{warning}</li>
+            ))}
+            {suspiciousLines.length > 0 && warnings.length === 0 ? (
+              <li>
+                {suspiciousLines.length} línea{suspiciousLines.length === 1 ? "" : "s"} sin tipo impositivo configurado (código {Array.from(new Set(suspiciousLines.map((line) => line.taxCode || "—"))).join(", ")}). La factura se calculó con cuota 0 €.
+              </li>
+            ) : null}
+          </ul>
+        </div>
+      ) : null}
+
       {/* --- Body: line items CocoaTable --- */}
       <div>
         <h3 style={{ marginBottom: "var(--cocoa-space-3)" }}>Líneas de factura</h3>
@@ -585,12 +666,17 @@ export function InvoiceDetailScreen() {
       {/* --- Tax breakdown CocoaTable --- */}
       {taxRows.length > 0 ? (
         <div>
-          <h3 style={{ marginBottom: "var(--cocoa-space-3)" }}>Desglose de IVA</h3>
+          <h3 style={{ marginBottom: "var(--cocoa-space-3)" }}>Desglose de {figureLabel}</h3>
+          {breakdownEstimated ? (
+            <p className="bo-muted" style={{ marginTop: 0 }}>
+              Desglose estimado a partir de las líneas: esta factura no tiene desglose persistido (emitida antes de la Tanda 3). Los importes oficiales son los del registro VeriFactu.
+            </p>
+          ) : null}
           <CocoaTable<TaxRow>
             columns={taxColumns}
             rows={taxRows}
             rowKey="_key"
-            emptyState="Sin desglose de IVA."
+            emptyState="Sin desglose."
           />
         </div>
       ) : null}
@@ -610,7 +696,7 @@ export function InvoiceDetailScreen() {
             <strong style={{ fontVariantNumeric: "tabular-nums" }}>{fmtMoney(subtotal, currency)}</strong>
           </div>
           <div className="bo-row">
-            <span>Total IVA</span>
+            <span>Total {figureLabel}</span>
             <strong style={{ fontVariantNumeric: "tabular-nums" }}>{fmtMoney(invoice.taxTotal, currency)}</strong>
           </div>
           <div className="bo-row">

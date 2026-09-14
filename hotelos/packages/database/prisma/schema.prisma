@@ -121,6 +121,11 @@ model Property {
   province              String?
   country               String   @default("ES")
   taxRegion             String?  @map("tax_region")
+  /// Tanda 3: postal code and INE municipality code (5 digits) — required by the SES.HOSPEDAJES establishment block.
+  postalCode            String?  @map("postal_code")
+  ineMunicipalityCode   String?  @map("ine_municipality_code")
+  /// Tanda 3: reporting territory ('common' → VeriFactu; 'bizkaia' | 'gipuzkoa' | 'araba' | 'navarra' → TicketBAI/foral).
+  fiscalTerritory       String?  @map("fiscal_territory")
   timezone              String   @default("Europe/Madrid")
   status                String   @default("open")
   sesHospedajesEnabled  Boolean  @default(false) @map("ses_hospedajes_enabled")
@@ -152,6 +157,8 @@ model User {
   lockedUntil          DateTime? @map("locked_until")
   lastLoginAt          DateTime? @map("last_login_at")
   passwordChangedAt    DateTime? @map("password_changed_at")
+  /// Tanda 3: set on temporary/reissued passwords; the API only allows change-password until cleared.
+  mustChangePassword   Boolean   @default(false) @map("must_change_password")
   createdAt            DateTime  @default(now()) @map("created_at")
   themePreference      String    @default("auto") @map("theme_preference")
   accentColor          String    @default("#007aff") @map("accent_color")
@@ -160,6 +167,27 @@ model User {
 
   @@index([organizationId])
   @@map("users")
+}
+
+/// Tanda 3 (CFG-P1-6): real user invitations — single-use hashed token, 72 h TTL, delivery tracked in notification_deliveries.
+model UserInvitation {
+  id              String    @id @default(cuid())
+  userId          String    @map("user_id")
+  organizationId  String    @map("organization_id")
+  propertyId      String?   @map("property_id")
+  roleId          String?   @map("role_id")
+  tokenHash       String    @unique @map("token_hash")
+  expiresAt       DateTime  @map("expires_at")
+  usedAt          DateTime? @map("used_at")
+  revokedAt       DateTime? @map("revoked_at")
+  createdByUserId String?   @map("created_by_user_id")
+  deliveryId      String?   @map("delivery_id")
+  deliveryStatus  String?   @map("delivery_status")
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  @@index([userId])
+  @@index([organizationId, createdAt])
+  @@map("user_invitations")
 }
 
 // PasswordResetToken — single-use token for password reset flow (PILOT-D1).
@@ -433,6 +461,12 @@ model PropertyComplianceSetting {
   ticketbaiEnabled        Boolean  @default(false) @map("ticketbai_enabled")
   siiEnabled              Boolean  @default(false) @map("sii_enabled")
   b2bEinvoiceEnabled      Boolean  @default(false) @map("b2b_einvoice_enabled")
+  /// Tanda 3: SES.HOSPEDAJES establishment registry number (per property, not per process).
+  sesRegistryNumber       String?  @map("ses_registry_number")
+  /// Tanda 3: tourist-tax treatment on invoices ('included_10' · 'not_subject' · 'none').
+  touristTaxTreatment     String?  @map("tourist_tax_treatment")
+  /// Tanda 3: explicit confirmation that IPSI rates were checked against the current municipal ordinance.
+  ipsiOrdinanceConfirmedAt DateTime? @map("ipsi_ordinance_confirmed_at")
   configurationJson       Json     @default("{}") @map("configuration_json")
   updatedAt               DateTime @updatedAt @map("updated_at")
 
@@ -448,8 +482,11 @@ model InvoiceSequence {
   padding      Int     @default(6)
   invoiceType  String  @map("invoice_type")
   active       Boolean @default(true)
+  /// Tanda 3 (FISC-09): fiscal year of the series (FAC-2027-000001 starts a new row); null only for legacy rows before backfill.
+  year         Int?
 
-  @@unique([propertyId, sequenceCode])
+  @@unique([propertyId, sequenceCode, year])
+  @@index([propertyId, sequenceCode])
   @@map("invoice_sequences")
 }
 
@@ -1413,9 +1450,17 @@ model UpsellOffer {
   offerType             String   @map("offer_type")
   price                 Decimal? @db.Decimal(12, 2)
   taxCode               String?  @map("tax_code")
+  /// Tanda 3 (CF-02): staff catalogue fields used by UpsellsSettingsScreen.
+  code                  String?
+  description           String?
+  currency              String   @default("EUR")
+  channel               String?
+  imageUrl              String?  @map("image_url")
+  taxCategory           String?  @map("tax_category")
   availabilityRulesJson Json     @default("{}") @map("availability_rules_json")
   active                Boolean  @default(true)
   createdAt             DateTime @default(now()) @map("created_at")
+  updatedAt             DateTime @default(now()) @updatedAt @map("updated_at")
 
   @@index([propertyId, active])
   @@map("upsell_offers")
@@ -2986,6 +3031,8 @@ model FolioLine {
   quantity    Decimal  @default(1) @db.Decimal(12, 2)
   unitPrice   Decimal  @map("unit_price") @db.Decimal(12, 2)
   taxCode     String?  @map("tax_code")
+  /// Tanda 3: optional fiscal-category override (validated against the catalogue); taxCode is legacy.
+  taxCategory String?  @map("tax_category")
   total       Decimal  @db.Decimal(12, 2)
   postedAt    DateTime @default(now()) @map("posted_at")
   postedBy    String?  @map("posted_by")
@@ -3041,6 +3088,8 @@ model Invoice {
   invoiceType         String        @map("invoice_type")
   customerType        String        @map("customer_type")
   customerTaxId       String?       @map("customer_tax_id")
+  /// Tanda 3 (cierre): recipient legal name for F1 invoices (VeriFactu Destinatarios/NombreRazon); snapshot at creation.
+  customerName        String?       @map("customer_name")
   status              InvoiceStatus @default(draft)
   issuedAt            DateTime?     @map("issued_at")
   total               Decimal       @default(0) @db.Decimal(12, 2)
@@ -3054,6 +3103,14 @@ model Invoice {
   verifactuHash       String?       @map("verifactu_hash")
   previousInvoiceHash String?       @map("previous_invoice_hash")
   qrPayload           String?       @map("qr_payload")
+  /// Tanda 3: grouped tax breakdown persisted at issue time (same numbers in XML, PDF and UI).
+  taxBreakdownJson    Json?         @map("tax_breakdown_json")
+  /// Tanda 3: VeriFactu TipoRectificativa ('I' diferencias · 'S' sustitución) for rectifying invoices.
+  rectificationType   String?       @map("rectification_type")
+  /// Tanda 3: chained hash of the RegistroAnulacion sent to AEAT when the invoice was cancelled.
+  cancellationHash    String?       @map("cancellation_hash")
+  /// Tanda 3: non-blocking fiscal warnings computed at creation/issue (e.g. lines without configured tax).
+  warningsJson        Json?         @map("warnings_json")
   // Tanda 2 · FISC-03/FISC-04/QC-03: issuer snapshot, source folio and payment state.
   // db push only (no migration): must enter the Tanda 4 squash baseline.
   issuerTaxId         String?       @map("issuer_tax_id")
@@ -3089,6 +3146,10 @@ model InvoiceLine {
   taxCode     String  @map("tax_code")
   taxRate     Decimal @map("tax_rate") @db.Decimal(5, 2)
   total       Decimal @db.Decimal(12, 2)
+  /// Tanda 3: fiscal category, VeriFactu calificación (S1/N1) and figure (IVA/IGIC/IPSI) resolved at creation.
+  taxCategory     String? @map("tax_category")
+  taxCalificacion String? @map("tax_calificacion")
+  taxFigure       String? @map("tax_figure")
 
   @@index([invoiceId])
   @@map("invoice_lines")
@@ -3518,6 +3579,8 @@ model GuestRegisterRecord {
   updatedAt                  DateTime         @updatedAt @map("updated_at")
 
   @@index([propertyId, status])
+  @@index([reservationId])
+  @@index([guestId])
   @@map("guest_register_records")
 }
 
@@ -3550,6 +3613,7 @@ model SesHospedajesSubmission {
 
   @@index([propertyId, status])
   @@index([guestRegisterRecordId])
+  @@index([reservationId])
   @@index([status, nextRetryAt])
   @@map("ses_hospedajes_submissions")
 }
@@ -3963,6 +4027,10 @@ model Tax {
   country         String   @default("ES")
   taxRegion       String   @map("tax_region")
   liabilityAccountCode String? @map("liability_account_code")
+  /// Tanda 3: VeriFactu <Impuesto> code for this figure (01 IVA · 02 IPSI · 03 IGIC).
+  verifactuImpuesto String? @map("verifactu_impuesto")
+  /// 'catalog' (provisioned from the statutory catalogue) or 'manual'.
+  source          String   @default("catalog")
   createdAt       DateTime @default(now()) @map("created_at")
 
   @@unique([organizationId, code, taxRegion])
@@ -3978,9 +4046,18 @@ model TaxRate {
   validFrom     DateTime  @map("valid_from") @db.Date
   validTo       DateTime? @map("valid_to") @db.Date
   active        Boolean   @default(true)
+  /// Tanda 3: fiscal category (accommodation · food_beverage · general_services · transport · tourist_tax · not_subject).
+  category      String?
+  /// VeriFactu CalificacionOperacion: S1 (sujeta) · N1 (no sujeta).
+  calificacion  String    @default("S1")
+  /// IPSI rates change by yearly ordinance: the readiness check demands explicit confirmation.
+  verifyAgainstOrdinance Boolean @default(false) @map("verify_against_ordinance")
+  source        String    @default("catalog")
+  legalBasis    String?   @map("legal_basis")
 
   @@unique([taxId, rateCode, appliesTo, validFrom])
   @@index([appliesTo, validFrom])
+  @@index([taxId, category, validFrom])
   @@map("tax_rates")
 }
 
@@ -4002,10 +4079,16 @@ model VerifactuSubmission {
   submittedAt     DateTime? @map("submitted_at")
   acknowledgedAt  DateTime? @map("acknowledged_at")
   nextRetryAt     DateTime? @map("next_retry_at")
+  /// Tanda 3: 'alta' (RegistroAlta) or 'anulacion' (RegistroAnulacion) — one row per registro per invoice.
+  registroType    String    @default("alta") @map("registro_type")
+  /// Fiscal mode at submission time (sandbox · preproduction · production).
+  mode            String?
+  /// Snapshot of the SistemaInformatico block used in the XML.
+  softwareJson    Json?     @map("software_json")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
-  @@unique([invoiceId])
+  @@unique([invoiceId, registroType])
   @@index([propertyId, status])
   @@index([status, nextRetryAt])
   @@map("verifactu_submissions")

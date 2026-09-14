@@ -14,6 +14,10 @@ export type ModuleRouteMapEntry = {
   admin: ModuleRouteMapItem[];
 };
 
+// Labels: the `admin` surface is rendered by apps/admin-web (Spanish UI) and its
+// entries win the Sidebar dedupe over manual items, so admin labels are Spanish.
+// The `mobile` surface keeps its original English labels (mobile app copy +
+// contract tests match on them). Descriptions are developer documentation.
 export const MODULE_ROUTE_MAP: Partial<Record<HotelModuleCode | "backoffice", ModuleRouteMapEntry>> = {
   pms_core: {
     mobile: [
@@ -22,9 +26,9 @@ export const MODULE_ROUTE_MAP: Partial<Record<HotelModuleCode | "backoffice", Mo
       { label: "Reservation Reports", route: "ReservationReports", permission: "analytics.read", description: "Arrivals, departures, cancellations, no-shows and pickup.", status: "ready" }
     ],
     admin: [
-      { label: "Reservations", path: "/backoffice/reservations", permission: "pms.reservation.read", description: "Reservation workspace with guest, journey, folio and actions.", status: "ready" },
-      { label: "Create Reservation", path: "/backoffice/reservations/new", permission: "pms.reservation.create", description: "Manual reservation creation connected to PMS APIs and categories.", status: "ready" },
-      { label: "Reservation Reports", path: "/backoffice/reports/reservations", permission: "analytics.read", description: "Operational reservation reporting and export.", status: "ready" }
+      { label: "Reservas", path: "/backoffice/reservations", permission: "pms.reservation.read", description: "Reservation workspace with guest, journey, folio and actions.", status: "ready" },
+      { label: "Crear reserva", path: "/backoffice/reservations/new", permission: "pms.reservation.create", description: "Manual reservation creation connected to PMS APIs and categories.", status: "ready" },
+      { label: "Informes de reservas", path: "/backoffice/reports/reservations", permission: "analytics.read", description: "Operational reservation reporting and export.", status: "ready" }
     ]
   },
   compliance_billing: {
@@ -33,9 +37,9 @@ export const MODULE_ROUTE_MAP: Partial<Record<HotelModuleCode | "backoffice", Mo
       { label: "Billing Reports", route: "BillingReports", permission: "analytics.read", description: "Invoice, payment and balance reporting.", status: "ready" }
     ],
     admin: [
-      { label: "Billing Center", path: "/backoffice/billing/center", permission: "billing.compliance.view", description: "Folio charges, payments, invoice drafts and issue workflow.", status: "ready" },
-      { label: "Invoices", path: "/backoffice/billing/invoices", permission: "invoice.issue", description: "Invoice draft, issue, cancel and rectifying workflow.", status: "ready" },
-      { label: "Billing Reports", path: "/backoffice/reports/billing", permission: "analytics.read", description: "Billing reports and exports.", status: "ready" }
+      { label: "Centro de facturación", path: "/backoffice/billing/center", permission: "billing.compliance.view", description: "Folio charges, payments, invoice drafts and issue workflow.", status: "ready" },
+      { label: "Facturas", path: "/backoffice/billing/invoices", permission: "invoice.issue", description: "Invoice draft, issue, cancel and rectifying workflow.", status: "ready" },
+      { label: "Informes de facturación", path: "/backoffice/reports/billing", permission: "analytics.read", description: "Billing reports and exports.", status: "ready" }
     ]
   },
   hotel_intelligence_platform: {
@@ -43,9 +47,9 @@ export const MODULE_ROUTE_MAP: Partial<Record<HotelModuleCode | "backoffice", Mo
       { label: "Reports", route: "Reports", permission: "analytics.read", description: "Operational, revenue, billing and owner reports.", status: "ready" }
     ],
     admin: [
-      { label: "Reports Center", path: "/backoffice/reports", permission: "analytics.read", description: "All report catalogs, report data and export workflow.", status: "ready" },
-      { label: "Reservation Reports", path: "/backoffice/reports/reservations", permission: "analytics.read", description: "Reservation KPIs and detailed reporting.", status: "ready" },
-      { label: "Billing Reports", path: "/backoffice/reports/billing", permission: "analytics.read", description: "Invoices, payments, folio balances and tax totals.", status: "ready" }
+      { label: "Centro de informes", path: "/backoffice/reports", permission: "analytics.read", description: "All report catalogs, report data and export workflow.", status: "ready" },
+      { label: "Informes de reservas", path: "/backoffice/reports/reservations", permission: "analytics.read", description: "Reservation KPIs and detailed reporting.", status: "ready" },
+      { label: "Informes de facturación", path: "/backoffice/reports/billing", permission: "analytics.read", description: "Invoices, payments, folio balances and tax totals.", status: "ready" }
     ]
   },
   backoffice: {
@@ -91,15 +95,15 @@ export const MODULE_ROUTE_MAP: Partial<Record<HotelModuleCode | "backoffice", Mo
       { label: "Data Quality", route: "RevenueSettings", permission: "revenue.read", description: "Readiness checks for snapshots, mappings, rate plans and forecast confidence.", status: "ready" }
     ],
     admin: [
-      { label: "Revenue Management", path: "/backoffice/revenue", permission: "revenue.read", description: "Commercial command center.", status: "ready" },
-      { label: "History & Forecast", path: "/backoffice/revenue/history-forecast", permission: "revenue.history_forecast.read", description: "KPI cards, charts and report table.", status: "ready" },
-      { label: "Rate Grid", path: "/backoffice/revenue/rate-grid", permission: "revenue.manage_rates", description: "Rates, inventory and restrictions.", status: "ready" },
-      { label: "Recommendations", path: "/backoffice/revenue/recommendations", permission: "revenue.recommend", description: "Approve, reject and simulate recommendations.", status: "ready" },
-      { label: "Forecast Explorer", path: "/backoffice/revenue/forecast-explorer", permission: "revenue.forecast.read", description: "Forecast confidence and drivers.", status: "ready" },
-      { label: "Demand Calendar", path: "/backoffice/revenue/demand-calendar", permission: "revenue.forecast.read", description: "Demand events and market signals.", status: "ready" },
-      { label: "Scenario Simulator", path: "/backoffice/revenue/scenario-simulator", permission: "revenue.recommend", description: "What-if commercial analysis.", status: "coming_soon" },
-      { label: "Revenue Settings", path: "/backoffice/revenue/settings", permission: "revenue.configure", description: "Rules, constraints and automation thresholds.", status: "ready" },
-      { label: "Data Quality", path: "/backoffice/revenue/data-quality", permission: "revenue.read", description: "Readiness checks before recommendations.", status: "ready" }
+      { label: "Gestión de revenue", path: "/backoffice/revenue", permission: "revenue.read", description: "Commercial command center.", status: "ready" },
+      { label: "Histórico y previsión", path: "/backoffice/revenue/history-forecast", permission: "revenue.history_forecast.read", description: "KPI cards, charts and report table.", status: "ready" },
+      { label: "Rate Grid (tarifas y restricciones)", path: "/backoffice/revenue/rate-grid", permission: "revenue.manage_rates", description: "Rates, inventory and restrictions.", status: "ready" },
+      { label: "Recomendaciones", path: "/backoffice/revenue/recommendations", permission: "revenue.recommend", description: "Approve, reject and simulate recommendations.", status: "ready" },
+      { label: "Explorador de forecast", path: "/backoffice/revenue/forecast-explorer", permission: "revenue.forecast.read", description: "Forecast confidence and drivers.", status: "ready" },
+      { label: "Calendario de demanda", path: "/backoffice/revenue/demand-calendar", permission: "revenue.forecast.read", description: "Demand events and market signals.", status: "ready" },
+      { label: "Simulador de escenarios", path: "/backoffice/revenue/scenario-simulator", permission: "revenue.recommend", description: "What-if commercial analysis.", status: "coming_soon" },
+      { label: "Ajustes de revenue", path: "/backoffice/revenue/settings", permission: "revenue.configure", description: "Rules, constraints and automation thresholds.", status: "ready" },
+      { label: "Calidad de datos", path: "/backoffice/revenue/data-quality", permission: "revenue.read", description: "Readiness checks before recommendations.", status: "ready" }
     ]
   },
   distribution_hub: {
@@ -110,10 +114,10 @@ export const MODULE_ROUTE_MAP: Partial<Record<HotelModuleCode | "backoffice", Mo
     ],
     admin: [
       { label: "Channel Manager", path: "/backoffice/channel-manager", permission: "channel_manager.read", description: "Channels, mappings and ARI sync.", status: "ready" },
-      { label: "Channels", path: "/backoffice/channel-manager/channels", permission: "channel_manager.manage", description: "Connect Booking.com, Expedia, Google and direct.", status: "ready" },
-      { label: "Mappings", path: "/backoffice/channel-manager/mappings", permission: "channel_manager.mappings.manage", description: "Internal room/rate plan to OTA mapping.", status: "ready" },
-      { label: "Sync Health", path: "/backoffice/channel-manager/sync-health", permission: "channel_manager.read", description: "ARI jobs, retry queue and failures.", status: "ready" },
-      { label: "Parity Alerts", path: "/backoffice/channel-manager/parity-alerts", permission: "channel_manager.read", description: "Direct vs OTA price mismatch alerts.", status: "ready" }
+      { label: "Canales", path: "/backoffice/channel-manager/channels", permission: "channel_manager.manage", description: "Connect Booking.com, Expedia, Google and direct.", status: "ready" },
+      { label: "Mapeos de canales", path: "/backoffice/channel-manager/mappings", permission: "channel_manager.mappings.manage", description: "Internal room/rate plan to OTA mapping.", status: "ready" },
+      { label: "Salud de sincronización", path: "/backoffice/channel-manager/sync-health", permission: "channel_manager.read", description: "ARI jobs, retry queue and failures.", status: "ready" },
+      { label: "Alertas de paridad", path: "/backoffice/channel-manager/parity-alerts", permission: "channel_manager.read", description: "Direct vs OTA price mismatch alerts.", status: "ready" }
     ]
   },
   guest_experience: {

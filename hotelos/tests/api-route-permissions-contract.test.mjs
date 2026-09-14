@@ -276,3 +276,239 @@ describe("API route permission manifest (AUTH-03)", () => {
     assert.match(docs, /service-level validation/);
   });
 });
+
+// ── Tanda 3 · server-rutas (cumplimiento sin atrezzo) ───────────────────────
+// The routes added for the indirect-tax profile, SES establishment/history,
+// the staff upsell catalogue and persisted staff invitations must be mapped
+// with the permissions agreed in the batch brief; the generic (a)/(b) checks
+// above already guarantee they are registered and not orphaned.
+const TANDA3_ROUTES = [
+  ["GET", "/backoffice/properties/:propertyId/taxes", ["compliance.configure"], "medium"],
+  ["PUT", "/backoffice/properties/:propertyId/taxes/rates", ["compliance.configure"], "high"],
+  ["POST", "/backoffice/properties/:propertyId/taxes/provision", ["compliance.configure"], "high"],
+  ["GET", "/properties/:propertyId/ses/submissions", ["guest_register.read"], "medium"],
+  ["GET", "/properties/:propertyId/ses/establishment", ["guest_register.read"], "medium"],
+  ["GET", "/properties/:propertyId/upsell-offers", ["guest_self_service.read"], "low"],
+  ["POST", "/properties/:propertyId/upsell-offers", ["guest_self_service.manage"], "medium"],
+  ["PATCH", "/upsell-offers/:id", ["guest_self_service.manage"], "medium"],
+  ["POST", "/backoffice/properties/:propertyId/users/invite", ["users.invite"], "high"],
+  ["GET", "/backoffice/properties/:propertyId/roles", ["users.invite"], "medium"],
+  ["POST", "/backoffice/properties/:propertyId/users/:userId/reissue-invite", ["users.invite"], "high"],
+  ["POST", "/admin/tenants/:orgId/users/:userId/reissue-invite", ["admin.tenants.manage"], "critical"],
+  ["GET", "/notifications/email-status", ["users.invite"], "low"],
+  ["GET", "/auth/invitations/:token", [], "public"],
+  ["POST", "/auth/accept-invite", [], "public"]
+];
+
+describe("Tanda 3 · server-rutas: manifest entries, public invitation leg and guards", () => {
+  it("maps every Tanda 3 route with the agreed permissions and risk level", () => {
+    const mismatches = [];
+    for (const [method, path, permissions, riskLevel] of TANDA3_ROUTES) {
+      const entry = manifest.find((e) => e.method === method && e.path === path);
+      if (!entry) {
+        mismatches.push(`${method} ${path}: missing from routePermissionManifest`);
+        continue;
+      }
+      const actual = entry.permissions.map((p) => p.key);
+      if (JSON.stringify(actual) !== JSON.stringify(permissions) || entry.riskLevel !== riskLevel) {
+        mismatches.push(
+          `${method} ${path}: expected ${JSON.stringify(permissions)}/${riskLevel}, got ${JSON.stringify(actual)}/${entry.riskLevel}`
+        );
+      }
+    }
+    assert.deepEqual(mismatches, [], `Tanda 3 manifest drift:\n${mismatches.join("\n")}`);
+  });
+
+  it("accepts PUT registrations (manifest type + extractor)", () => {
+    assert.match(manifestSource, /method:\s*"GET"\s*\|\s*"POST"\s*\|\s*"PATCH"\s*\|\s*"DELETE"\s*\|\s*"PUT"/);
+    assert.ok(
+      registered.some((r) => r.method === "PUT" && r.path === "/backoffice/properties/:propertyId/taxes/rates"),
+      "PUT /backoffice/properties/:propertyId/taxes/rates not extracted from server.ts"
+    );
+  });
+
+  it("keeps the invitation leg public in both the manifest and the staff auth hook", () => {
+    // Manifest 'public' is not enough: without PUBLIC_PREFIXES the auth hook
+    // answers 401 as soon as HOTELOS_ALLOW_DEMO_AUTH is off (recon
+    // invitaciones-usuarios · "Rutas públicas de auth no están en PUBLIC_PREFIXES").
+    for (const prefix of ["/auth/invitations", "/auth/accept-invite"]) {
+      assert.match(
+        authContextSource,
+        new RegExp(`"${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`),
+        `${prefix} missing from PUBLIC_PREFIXES in lib/auth-context.ts`
+      );
+    }
+    assert.match(
+      server,
+      /app\.post\("\/auth\/accept-invite",\s*\{\s*config:\s*\{\s*rateLimit:\s*\{\s*max:\s*5/,
+      "POST /auth/accept-invite must carry the 5/min hard limit like /auth/reset-password"
+    );
+  });
+
+  it("gates temp-password sessions with PASSWORD_CHANGE_REQUIRED after the auth context, honouring is404 and the allowlist", () => {
+    const authAt = server.indexOf("registerAuthContext(app);");
+    const guardAt = server.indexOf("throw passwordChangeRequiredError();");
+    const permissionGateAt = server.indexOf("assertRoutePermission({");
+    assert.ok(authAt >= 0 && guardAt > authAt, "PASSWORD_CHANGE_REQUIRED guard must sit after registerAuthContext(app)");
+    assert.ok(guardAt < permissionGateAt, "PASSWORD_CHANGE_REQUIRED guard must run before the permission gate");
+    const hookStart = server.lastIndexOf('app.addHook("preHandler"', guardAt);
+    const hookBody = server.slice(hookStart, guardAt);
+    assert.match(hookBody, /if \(request\.is404\) return;/, "guard must short-circuit unknown routes (404)");
+    assert.match(hookBody, /request\.isAuthenticated/, "guard must only apply to real sessions");
+    assert.match(hookBody, /mustChangePassword/, "guard must read userContext.mustChangePassword");
+    assert.match(hookBody, /request\.routeOptions\.url/, "guard must match the route template, not the raw URL");
+    assert.match(hookBody, /isPasswordChangeAllowedRoute\(/, "guard must honour PASSWORD_CHANGE_ALLOWLIST through isPasswordChangeAllowedRoute");
+    assert.match(
+      server,
+      /isPasswordChangeAllowedRoute,[^;]*passwordChangeRequiredError,[^;]*from "\.\/lib\/auth-context\.js"/,
+      "allowlist helper and error builder must come from lib/auth-context.ts"
+    );
+    // The allowlist, the code and the 403 live next to each other in the auth
+    // module (lote invitaciones); the guard only decides WHEN to throw.
+    assert.match(authContextSource, /export const PASSWORD_CHANGE_ALLOWLIST/, "lib/auth-context.ts must export PASSWORD_CHANGE_ALLOWLIST");
+    assert.match(authContextSource, /export function isPasswordChangeAllowedRoute/);
+    assert.match(authContextSource, /export function passwordChangeRequiredError/);
+    assert.match(authContextSource, /"PASSWORD_CHANGE_REQUIRED"/);
+  });
+
+  it("refuses to boot outside sandbox with an invalid VeriFactu SistemaInformatico block and exposes it on /health", () => {
+    const startAt = server.indexOf("const app = await buildApiServer();");
+    const listenAt = server.indexOf("await app.listen({ port, host });");
+    assert.ok(startAt >= 0 && listenAt > startAt, "start() block not found");
+    const boot = server.slice(startAt, listenAt);
+    assert.match(boot, /resolveVerifactuSoftware\(\)/, "boot must validate the software block");
+    assert.match(boot, /verifactuMode !== "sandbox"/, "fail-fast only outside sandbox");
+    assert.match(boot, /process\.exit\(1\)/, "invalid block outside sandbox must abort the boot");
+    assert.match(boot, /app\.log\.warn\(/, "sandbox must only warn");
+    const healthAt = server.indexOf('app.get("/health"');
+    const healthBody = server.slice(healthAt, server.indexOf('app.get("/metrics"', healthAt));
+    assert.match(healthBody, /software:\s*\{\s*ok:\s*verifactuSoftware\.ok,\s*errors:\s*verifactuSoftware\.errors\s*\}/);
+  });
+
+  it("documents the Tanda 3 routes", () => {
+    for (const expected of [
+      "/backoffice/properties/:propertyId/taxes",
+      "/properties/:propertyId/ses/establishment",
+      "/properties/:propertyId/upsell-offers",
+      "/auth/accept-invite",
+      "PASSWORD_CHANGE_REQUIRED",
+      "SES_ESTABLISHMENT_INCOMPLETE"
+    ]) {
+      assert.ok(docs.includes(expected), `docs/api-contracts.md must mention ${expected}`);
+    }
+  });
+});
+
+// ── Tanda 3 · cierre (server-rutas) ─────────────────────────────────────────
+// Static pins for the closing fixes; the behaviour itself is exercised by
+// tests/integration/api-integration.test.mts (app.inject against Postgres).
+
+/** Source of one inline route handler: from its registration to the first `\n  });` (2-space close). */
+function handlerSource(registration) {
+  const start = server.indexOf(registration);
+  assert.ok(start >= 0, `${registration} not found in server.ts`);
+  const end = server.indexOf("\n  });", start);
+  assert.ok(end > start, `end of ${registration} not found`);
+  return server.slice(start, end);
+}
+
+describe("Tanda 3 · cierre (server-rutas): dangling promises, process guards, demo gate, pagination", () => {
+  it("awaits every SES parte under its own try/catch in POST /properties/:propertyId/ses/submissions", () => {
+    // The unawaited `records.map(queueSesHospedajesSubmission(...))` returned
+    // empty promises and turned every 409 into an unhandledRejection that took
+    // the :3000 process down (verificación adversarial T3).
+    const handler = handlerSource('app.post("/properties/:propertyId/ses/submissions"');
+    assert.doesNotMatch(handler, /records\.map\(/, "partes must be iterated sequentially, not mapped to promises");
+    assert.match(handler, /for \(const record of records\) \{[\s\S]*try \{[\s\S]*await queueSesHospedajesSubmission\(\{[\s\S]*\} catch \(error\) \{/);
+    assert.match(handler, /if \(!\(error instanceof HttpError\)\) throw error;/, "only typed HTTP errors are per-parte outcomes (honest catch)");
+    assert.match(handler, /request\.log\.warn\(/, "a failed parte must be logged with correlation");
+    for (const expected of ["SES_NO_GUEST_REGISTER_RECORDS", "SES_QUEUE_FAILED", "submissions.length === 0", 'status: "failed"', "failed"]) {
+      assert.ok(handler.includes(expected), `SES handler must carry ${expected}`);
+    }
+    assert.doesNotMatch(handler, /"no_records"/, "a reservation without partes is a typed 409, not a 200");
+  });
+
+  it("installs unhandledRejection / uncaughtException guards on the listen path only (never inside buildApiServer)", () => {
+    const startAt = server.indexOf("const app = await buildApiServer();");
+    const listenAt = server.indexOf("await app.listen({ port, host });");
+    assert.ok(startAt >= 0 && listenAt > startAt, "start() block not found");
+    const boot = server.slice(startAt, listenAt);
+    const rejectionAt = boot.indexOf('process.on("unhandledRejection"');
+    const exceptionAt = boot.indexOf('process.on("uncaughtException"');
+    assert.ok(rejectionAt >= 0, "unhandledRejection guard missing");
+    assert.ok(exceptionAt > rejectionAt, "uncaughtException guard missing (or ordered before the rejection one)");
+    const rejectionHandler = boot.slice(rejectionAt, exceptionAt);
+    assert.match(rejectionHandler, /app\.log\.error\(\{ err: reason \}/, "the rejection must be logged with its trace");
+    assert.doesNotMatch(rejectionHandler, /process\.exit/, "an unhandled rejection must NOT exit the process");
+    const exceptionHandler = boot.slice(exceptionAt, boot.indexOf("// Tanda 3 (verifactu)", exceptionAt));
+    assert.match(exceptionHandler, /app\.log\.fatal\(\{ err: error \}/);
+    assert.match(exceptionHandler, /setTimeout\(exit, /, "uncaughtException must exit(1) deferred, after the trace is flushed");
+    assert.match(exceptionHandler, /process\.exit\(1\)/);
+    assert.match(boot, /reportProcessErrorToSentry/, "both guards report to Sentry when configured");
+    // buildApiServer is what tests boot: it must not touch process handlers.
+    const build = server.slice(server.indexOf("export async function buildApiServer"), startAt);
+    assert.doesNotMatch(build, /process\.on\("unhandledRejection"|process\.on\("uncaughtException"/);
+  });
+
+  it("refuses the token-less demo fallback on high/critical routes inside the permission preHandler (H1)", () => {
+    const gateCall = server.indexOf("assertRoutePermission({");
+    const hookStart = server.lastIndexOf('app.addHook("preHandler"', gateCall);
+    const hookHead = server.slice(hookStart, gateCall);
+    assert.match(hookHead, /if \(request\.is404\) return;/, "is404 short-circuit must stay first");
+    assert.match(hookHead, /if \(!request\.isAuthenticated\) \{/, "gate must key on the fallback flag, not on the token header");
+    assert.match(hookHead, /routeRiskLevel\(request\.method, routePath\)/);
+    assert.match(hookHead, /risk === "high" \|\| risk === "critical"/);
+    assert.match(hookHead, /throw new UnauthorizedError\("Authentication required\."\)/);
+    assert.match(server, /import \{ assertRoutePermission, routeRiskLevel \} from "\.\/security\/route-permissions\.js"/);
+    assert.match(manifestSource, /export type RiskLevel = ApiRoutePermission\["riskLevel"\];/);
+    assert.match(manifestSource, /export function routeRiskLevel\(method: string, path: string\): RiskLevel \| null \{/);
+    // Every PUBLIC_PREFIXES route is riskLevel "public": the gate can never
+    // reach a token-less public route (guest portal, login, oauth callback…).
+    const publicPrefixes = [...authContextSource.slice(authContextSource.indexOf("const PUBLIC_PREFIXES"), authContextSource.indexOf("];", authContextSource.indexOf("const PUBLIC_PREFIXES"))).matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(publicPrefixes.length >= 10, "PUBLIC_PREFIXES not parsed");
+    const gatedPublic = manifest.filter(
+      (entry) => publicPrefixes.some((prefix) => entry.path === prefix || entry.path.startsWith(`${prefix}/`)) && (entry.riskLevel === "high" || entry.riskLevel === "critical")
+    );
+    assert.deepEqual(gatedPublic.map(routeKey), [], "a public-prefix route mapped high/critical would be refused without a token");
+  });
+
+  it("documents H4 (anonymous unknown path → 401 in production, anti-enumeration) next to the auth gate", () => {
+    const registerBody = authContextSource.slice(authContextSource.indexOf("export function registerAuthContext"));
+    assert.match(registerBody, /H4 \(Tanda 3 · cierre/);
+    assert.match(registerBody, /anti-enumeration/);
+    assert.match(registerBody, /if \(!allowDemoFallback && !isPublicRoute\(request\.url\)\) \{\s*throw Object\.assign\(new Error\("Authentication required\."\), \{ statusCode: 401 \}\);/);
+  });
+
+  it("forwards taxCategory from CreateFolioLineSchema to postFolioLine (H2)", () => {
+    const handler = handlerSource('app.post("/folios/:id/lines"');
+    assert.match(handler, /taxCategory: body\.taxCategory/);
+  });
+
+  it("paginates GET /properties/:propertyId/verifactu/submissions with the shared contract (cursor, filters, envelope)", () => {
+    // listVerifactuSubmissions returns a real `Page` (createdAt desc, id desc,
+    // `total` over the filtered set) and decodes the opaque cursor itself, so
+    // the handler only parses the query, forwards limit/cursor/filters and
+    // shapes the answer — no hand-rolled single page, no second count query.
+    const handler = handlerSource('app.get("/properties/:propertyId/verifactu/submissions"');
+    assert.match(handler, /parsePageQuery\(request\.query as Record<string, unknown>, \{ limit: 100, max: 500 \}\)/);
+    assert.match(handler, /parse\(VerifactuSubmissionListQuerySchema, request\.query \?\? \{\}, "query"\)/);
+    assert.match(
+      handler,
+      /listVerifactuSubmissions\(params\.propertyId, \{\s*limit: page\.limit,\s*cursor: page\.cursor,\s*registroType: filters\.registroType,\s*status: filters\.status\s*\}\)/,
+      "limit, cursor and both filters must reach the service"
+    );
+    assert.doesNotMatch(handler, /prisma\.verifactuSubmission\.count\(/, "total comes from the service page, not a second count");
+    assert.doesNotMatch(handler, /nextCursor: null/, "the cursor comes from the service page, never forced to null");
+    assert.match(handler, /reply\.headers\(pageHeaders\(result\)\);\s*return pageBody\(result, page\);/);
+    const service = readApi("modules/invoicing/verifactu-submission.service.ts");
+    assert.match(service, /export async function listVerifactuSubmissions\(propertyId: string, options: ListVerifactuSubmissionsOptions = \{\}\): Promise<VerifactuSubmissionPage> \{/);
+    assert.match(service, /export type VerifactuSubmissionPage = Page<VerifactuSubmissionListItem>;/);
+    assert.match(server, /const VerifactuSubmissionListQuerySchema = z\.object\(\{\s*status: z\.string\(\)\.trim\(\)\.min\(1\)\.max\(40\)\.optional\(\),\s*registroType: z\.enum\(\["alta", "anulacion"\]\)\.optional\(\)\s*\}\);/);
+  });
+
+  it("answers 201 on POST /properties/:propertyId/upsell-offers", () => {
+    const handler = handlerSource('app.post("/properties/:propertyId/upsell-offers"');
+    assert.match(handler, /async \(request, reply\) =>/);
+    assert.match(handler, /reply\.code\(201\);\s*return view;/);
+  });
+});

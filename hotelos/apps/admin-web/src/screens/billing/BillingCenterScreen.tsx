@@ -12,12 +12,26 @@ import {
   saveInvoiceBranding,
   sendInvoiceEmail,
   type AdminReservation,
+  type CreateInvoiceDraftLine,
   type FolioBalance,
   type InvoiceDraft,
   type InvoiceFull,
-  type InvoiceListSummary
+  type InvoiceListSummary,
+  type InvoiceTaxBreakdownGroup
 } from "../../services/pmsCommerceApi";
 import { ApiError } from "../../services/api-client";
+import {
+  TAX_CATEGORY_LABELS,
+  TAX_CATEGORY_OPTIONS,
+  buildTaxCodeClient,
+  fetchPropertyTaxes,
+  isSuspiciousTaxLine,
+  rateForCategory,
+  type PropertyTaxProfile,
+  type TaxCategory
+} from "../../services/taxesApi";
+import { toArray } from "../../utils/toArray";
+import { navigateTo } from "../../lib/navigate";
 import { useToast } from "../../components/Toast";
 import { exportToCsv, type CsvColumn } from "../../lib/csv";
 import { logBreadcrumb } from "../../lib/breadcrumb";
@@ -90,6 +104,63 @@ function deriveInvoiceUiStatus(invoice: InvoiceDraft): InvoiceUiStatus {
   return "draft";
 }
 
+// --- Manual draft lines (Tanda 3) -------------------------------------------
+// Each line carries a fiscal category; the rate comes from the property's tax
+// profile (GET /backoffice/properties/:id/taxes) so the draft never invents a
+// percentage. Prices are GROSS (tax included), like folio lines.
+type DraftLineInput = { key: string; description: string; quantity: string; unitPrice: string; taxCategory: TaxCategory };
+
+function newDraftLine(category: TaxCategory = "accommodation"): DraftLineInput {
+  return { key: `line-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, description: "", quantity: "1", unitPrice: "", taxCategory: category };
+}
+
+const round2 = (value: number): number => Math.round(value * 100) / 100;
+
+function resolveDraftLines(lines: DraftLineInput[], profile: PropertyTaxProfile | null): { lines: CreateInvoiceDraftLine[]; total: number; taxTotal: number; missing: TaxCategory[] } {
+  const resolved: CreateInvoiceDraftLine[] = [];
+  const missing = new Set<TaxCategory>();
+  let total = 0;
+  let taxTotal = 0;
+  for (const line of lines) {
+    const quantity = Number(line.quantity.replace(",", "."));
+    const unitPrice = Number(line.unitPrice.replace(",", "."));
+    if (!line.description.trim() || !Number.isFinite(quantity) || quantity <= 0 || !Number.isFinite(unitPrice)) continue;
+    const rate = rateForCategory(profile, line.taxCategory);
+    if (!rate || !profile) {
+      missing.add(line.taxCategory);
+      continue;
+    }
+    const lineTotal = round2(quantity * unitPrice);
+    const percent = rate.calificacion === "N1" ? 0 : rate.ratePercent;
+    const base = percent > 0 ? round2(lineTotal / (1 + percent / 100)) : lineTotal;
+    resolved.push({
+      description: line.description.trim(),
+      quantity,
+      unitPrice,
+      taxCode: buildTaxCodeClient(profile.figure, percent, rate.calificacion),
+      taxRate: percent,
+      taxCategory: line.taxCategory,
+      total: lineTotal
+    });
+    total = round2(total + lineTotal);
+    taxTotal = round2(taxTotal + (lineTotal - base));
+  }
+  return { lines: resolved, total, taxTotal, missing: Array.from(missing) };
+}
+
+/** 409 TAX_NOT_CONFIGURED payload from POST /invoices/:id/issue (contract D · taxReadinessForInvoice). */
+type IssueBlock = { code: string; message: string; lines: string[]; hint?: string };
+
+function readIssueBlock(error: unknown): IssueBlock | null {
+  if (!(error instanceof ApiError) || error.status !== 409) return null;
+  const details = (error.details ?? {}) as { code?: unknown; lines?: unknown; blocking?: unknown; hint?: unknown };
+  if (details.code !== "TAX_NOT_CONFIGURED") return null;
+  const lines = toArray<unknown>(details.lines ?? details.blocking).map((entry) =>
+    typeof entry === "string" ? entry : entry && typeof entry === "object" ? JSON.stringify(entry) : String(entry)
+  );
+  return { code: "TAX_NOT_CONFIGURED", message: error.message, lines, hint: typeof details.hint === "string" ? details.hint : undefined };
+}
+
 export function BillingCenterScreen() {
   const { showToast } = useToast();
   const [reservations, setReservations] = useState<AdminReservation[]>([]);
@@ -102,6 +173,12 @@ export function BillingCenterScreen() {
   const [loadingMoreInvoices, setLoadingMoreInvoices] = useState(false);
   const [draftTotal, setDraftTotal] = useState("272");
   const [draftTaxTotal, setDraftTaxTotal] = useState("24.73");
+  const [draftLines, setDraftLines] = useState<DraftLineInput[]>([]);
+  const [taxProfile, setTaxProfile] = useState<PropertyTaxProfile | null>(null);
+  const [taxProfileError, setTaxProfileError] = useState<string | null>(null);
+  // Invoices whose issue was refused with 409 TAX_NOT_CONFIGURED: "Emitir" stays
+  // disabled (with the reason as tooltip) until the tax profile is fixed.
+  const [issueBlocks, setIssueBlocks] = useState<Record<string, IssueBlock>>({});
   const [customerType, setCustomerType] = useState<InvoiceDraft["customerType"]>("guest");
   const [invoiceType, setInvoiceType] = useState<InvoiceDraft["invoiceType"]>("full");
   const [customerTaxId, setCustomerTaxId] = useState("");
@@ -162,6 +239,15 @@ export function BillingCenterScreen() {
         setLegalFooter(b.legalFooter ?? "");
       })
       .catch(() => undefined);
+    void fetchPropertyTaxes(PROPERTY_ID)
+      .then((profile) => {
+        setTaxProfile(profile);
+        setTaxProfileError(null);
+      })
+      .catch((error: unknown) => {
+        setTaxProfile(null);
+        setTaxProfileError(error instanceof Error ? error.message : "Perfil fiscal no disponible.");
+      });
     const selected = reservationResponse.find((reservation) => reservation.id === selectedReservationId) ?? reservationResponse[0];
     if (selected) {
       setSelectedReservationId(selected.id);
@@ -191,17 +277,31 @@ export function BillingCenterScreen() {
       taxTotal: Number(draftTaxTotal)
     });
     try {
+      const resolvedDraft = resolveDraftLines(draftLines, taxProfile);
+      if (draftLines.length > 0 && resolvedDraft.missing.length > 0) {
+        const message = `Sin tipo impositivo para ${resolvedDraft.missing.map((category) => TAX_CATEGORY_LABELS[category].toLowerCase()).join(", ")}: configura Impuestos de la propiedad antes de crear el borrador.`;
+        setStatus(message);
+        showToast(message, { variant: "error" });
+        return;
+      }
+      if (draftLines.length > 0 && resolvedDraft.lines.length === 0) {
+        showToast("Completa la descripción, cantidad y precio de al menos una línea.", { variant: "error" });
+        return;
+      }
+      const useLines = resolvedDraft.lines.length > 0;
       const draft = await createInvoiceDraft({
         propertyId: PROPERTY_ID,
         invoiceType,
         customerType,
         customerTaxId: customerTaxId || undefined,
-        total: Number(draftTotal),
-        taxTotal: Number(draftTaxTotal)
+        total: useLines ? resolvedDraft.total : Number(draftTotal),
+        taxTotal: useLines ? resolvedDraft.taxTotal : Number(draftTaxTotal),
+        ...(useLines ? { lines: resolvedDraft.lines } : {})
       });
       setInvoices((current) => [draft, ...current]);
       setStatus(`Borrador ${draft.id} creado. La emisión requiere permiso invoice.issue y confirmación.`);
       showToast(`Borrador ${draft.id} creado`, { variant: "success" });
+      if (useLines) setDraftLines([]);
     } catch (error) {
       const message = error instanceof Error ? error.message : "No se pudo crear el borrador.";
       setStatus(message);
@@ -220,6 +320,15 @@ export function BillingCenterScreen() {
       setStatus(`Factura ${issued.invoiceNumber ?? issued.id} emitida con huella VeriFactu.`);
       showToast(`Factura ${issued.invoiceNumber ?? issued.id} emitida`, { variant: "success" });
     } catch (error) {
+      const block = readIssueBlock(error);
+      if (block) {
+        setIssueBlocks((current) => ({ ...current, [invoiceId]: block }));
+        const detail = block.lines.length > 0 ? ` Líneas afectadas: ${block.lines.join("; ")}.` : "";
+        const message = `${block.message}${detail}${block.hint ? ` ${block.hint}` : " Configura los tipos en Impuestos de la propiedad y vuelve a intentarlo."}`;
+        setStatus(message);
+        showToast(block.message, { variant: "error" });
+        return;
+      }
       const message = error instanceof Error ? error.message : "No se pudo emitir la factura.";
       setStatus(message);
       showToast(message, { variant: "error" });
@@ -848,12 +957,12 @@ export function BillingCenterScreen() {
 
         <section className="bo-card">
           <div className="bo-card-head">
-            <h3>Invoice draft</h3>
+            <h3>Borrador de factura</h3>
             <span className="bo-chip">POST /invoices/drafts</span>
           </div>
           <div className="bo-grid two">
             <label className="bo-form-field">
-              <span>Invoice type</span>
+              <span>Tipo de factura</span>
               <CocoaSelect
                 value={invoiceType}
                 onChange={(value) => setInvoiceType(value as InvoiceDraft["invoiceType"])}
@@ -866,7 +975,7 @@ export function BillingCenterScreen() {
               />
             </label>
             <label className="bo-form-field">
-              <span>Customer type</span>
+              <span>Tipo de cliente</span>
               <CocoaSelect
                 value={customerType}
                 onChange={(value) => setCustomerType(value as InvoiceDraft["customerType"])}
@@ -877,38 +986,105 @@ export function BillingCenterScreen() {
                 ]}
               />
             </label>
-            <label className="bo-form-field">
-              <span>Total</span>
-              <CocoaInput
-                value={draftTotal}
-                onChange={setDraftTotal}
-                type="number"
-                inputMode="decimal"
-              />
-            </label>
-            <label className="bo-form-field">
-              <span>Tax total</span>
-              <CocoaInput
-                value={draftTaxTotal}
-                onChange={setDraftTaxTotal}
-                type="number"
-                inputMode="decimal"
-              />
-            </label>
+            {draftLines.length === 0 ? (
+              <>
+                <label className="bo-form-field">
+                  <span>Total (impuesto incluido)</span>
+                  <CocoaInput
+                    value={draftTotal}
+                    onChange={setDraftTotal}
+                    type="number"
+                    inputMode="decimal"
+                  />
+                </label>
+                <label className="bo-form-field">
+                  <span>Cuota de impuesto</span>
+                  <CocoaInput
+                    value={draftTaxTotal}
+                    onChange={setDraftTaxTotal}
+                    type="number"
+                    inputMode="decimal"
+                  />
+                </label>
+              </>
+            ) : null}
           </div>
           <label className="bo-form-field">
-            <span>Customer tax ID</span>
+            <span>NIF/CIF del cliente</span>
             <CocoaInput value={customerTaxId} onChange={setCustomerTaxId} />
           </label>
+
+          <div className="bo-card-head" style={{ marginTop: "var(--cocoa-space-2)" }}>
+            <h4 style={{ margin: 0 }}>Líneas del borrador</h4>
+            <span className="bo-chip" title={taxProfileError ?? undefined}>
+              {taxProfile ? `${taxProfile.figure} · ${taxProfile.taxRegion ?? "sin región"}` : "perfil fiscal no disponible"}
+            </span>
+          </div>
+          {draftLines.length === 0 ? (
+            <p className="bo-muted" style={{ marginTop: 0 }}>
+              Sin líneas: el borrador se crea con una línea resumen a partir del total y la cuota. Añade líneas para elegir la categoría fiscal de cada concepto.
+            </p>
+          ) : null}
+          {draftLines.map((line) => {
+            const rate = rateForCategory(taxProfile, line.taxCategory);
+            return (
+              <div key={line.key} className="bo-grid" style={{ gridTemplateColumns: "2fr 70px 110px 1.4fr auto", gap: "var(--cocoa-space-2)", alignItems: "end", marginBottom: "var(--cocoa-space-2)" }}>
+                <label className="bo-form-field">
+                  <span>Concepto</span>
+                  <CocoaInput value={line.description} onChange={(value) => setDraftLines((current) => current.map((row) => (row.key === line.key ? { ...row, description: value } : row)))} placeholder="Alojamiento 2 noches" />
+                </label>
+                <label className="bo-form-field">
+                  <span>Cant.</span>
+                  <CocoaInput value={line.quantity} onChange={(value) => setDraftLines((current) => current.map((row) => (row.key === line.key ? { ...row, quantity: value } : row)))} type="number" inputMode="decimal" />
+                </label>
+                <label className="bo-form-field">
+                  <span>Precio (bruto)</span>
+                  <CocoaInput value={line.unitPrice} onChange={(value) => setDraftLines((current) => current.map((row) => (row.key === line.key ? { ...row, unitPrice: value } : row)))} type="number" inputMode="decimal" />
+                </label>
+                <label className="bo-form-field">
+                  <span>Categoría fiscal{rate ? ` · ${rate.calificacion === "N1" ? "no sujeta" : `${rate.ratePercent} %`}` : " · sin tipo"}</span>
+                  <CocoaSelect
+                    value={line.taxCategory}
+                    onChange={(value) => setDraftLines((current) => current.map((row) => (row.key === line.key ? { ...row, taxCategory: value as TaxCategory } : row)))}
+                    options={TAX_CATEGORY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                  />
+                </label>
+                <CocoaButton variant="plain" size="small" tone="destructive" onClick={() => setDraftLines((current) => current.filter((row) => row.key !== line.key))}>
+                  Quitar
+                </CocoaButton>
+              </div>
+            );
+          })}
+          {draftLines.length > 0 ? (
+            (() => {
+              const resolved = resolveDraftLines(draftLines, taxProfile);
+              return (
+                <p className="bo-muted" style={{ marginTop: 0 }}>
+                  Total {fmtEur(resolved.total)} · cuota {fmtEur(resolved.taxTotal)}
+                  {resolved.missing.length > 0 ? (
+                    <span className="bo-status warn" style={{ marginLeft: "var(--cocoa-space-2)", textTransform: "none" }}>
+                      sin tipo para {resolved.missing.map((category) => TAX_CATEGORY_LABELS[category].toLowerCase()).join(", ")}
+                    </span>
+                  ) : null}
+                </p>
+              );
+            })()
+          ) : null}
+          <div className="bo-actions">
+            <CocoaButton variant="plain" size="small" onClick={() => setDraftLines((current) => [...current, newDraftLine(current.length === 0 ? "accommodation" : "general_services")])}>
+              + Añadir línea
+            </CocoaButton>
+          </div>
+
           <div className="bo-actions">
             <CocoaButton variant="filled" tone="accent" onClick={handleCreateDraft}>
-              Create invoice draft
+              Crear borrador
             </CocoaButton>
-            <CocoaButton
-              variant="plain"
-              onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "FinanceComplianceSetupForm" }))}
-            >
-              Configure invoice sequences
+            <CocoaButton variant="plain" onClick={() => navigateTo("BillingSettings")}>
+              Series de facturación
+            </CocoaButton>
+            <CocoaButton variant="plain" onClick={() => navigateTo("PropertyTaxesScreen")}>
+              Impuestos de la propiedad
             </CocoaButton>
           </div>
         </section>
@@ -1254,13 +1430,22 @@ export function BillingCenterScreen() {
                 Enviar por email
               </CocoaButton>
               {preview.status === "draft" ? (
-                <CocoaButton
-                  variant="filled"
-                  tone="accent"
-                  onClick={() => void handleIssue(preview.id)}
+                <span
+                  title={
+                    issueBlocks[preview.id]
+                      ? `${issueBlocks[preview.id].message}${issueBlocks[preview.id].lines.length ? ` · ${issueBlocks[preview.id].lines.join("; ")}` : ""}`
+                      : undefined
+                  }
                 >
-                  Emitir factura
-                </CocoaButton>
+                  <CocoaButton
+                    variant="filled"
+                    tone="accent"
+                    onClick={() => void handleIssue(preview.id)}
+                    disabled={Boolean(issueBlocks[preview.id])}
+                  >
+                    Emitir factura
+                  </CocoaButton>
+                </span>
               ) : null}
               {previewMarkable ? (
                 <CocoaButton
@@ -1325,22 +1510,53 @@ export function BillingCenterScreen() {
             </div>
           </div>
 
+          {issueBlocks[preview.id] ? (
+            <div className="bo-status error" style={{ textTransform: "none", marginTop: "var(--cocoa-space-3)" }}>
+              Emisión bloqueada (TAX_NOT_CONFIGURED): {issueBlocks[preview.id].message}
+              {issueBlocks[preview.id].lines.length ? ` Líneas: ${issueBlocks[preview.id].lines.join("; ")}.` : ""}{" "}
+              <CocoaButton variant="plain" size="small" onClick={() => navigateTo("PropertyTaxesScreen")}>
+                Configurar impuestos
+              </CocoaButton>
+            </div>
+          ) : null}
+          {toArray<string>(preview.warnings).length > 0 ? (
+            <div className="bo-status warn" style={{ textTransform: "none", marginTop: "var(--cocoa-space-3)", display: "grid", gap: 2 }}>
+              {toArray<string>(preview.warnings).map((warning, index) => (
+                <span key={`${index}-${warning}`}>{warning}</span>
+              ))}
+            </div>
+          ) : null}
+
           <table className="bo-table" style={{ marginTop: "var(--cocoa-space-3)" }}>
-            <thead><tr><th>Descripción</th><th style={{ textAlign: "right" }}>Cant.</th><th style={{ textAlign: "right" }}>Precio</th><th>Imp.</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
+            <thead><tr><th>Descripción</th><th style={{ textAlign: "right" }}>Cant.</th><th style={{ textAlign: "right" }}>Precio</th><th>Impuesto</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
             <tbody>
               {preview.lines.map((line, i) => (
                 <tr key={line.id ?? i}>
                   <td>{line.description}</td>
                   <td style={{ textAlign: "right" }}>{line.quantity}</td>
                   <td style={{ textAlign: "right" }}>{line.unitPrice}</td>
-                  <td>{line.taxCode} ({line.taxRate}%)</td>
+                  <td>
+                    {line.taxCalificacion === "N1" ? `${line.taxFigure ?? ""} no sujeta` : `${line.taxFigure ?? line.taxCode} ${line.taxRate}%`}
+                    {isSuspiciousTaxLine(line) ? (
+                      <span className="bo-status warn" style={{ marginLeft: 6, textTransform: "none" }} title={`Sin tipo impositivo configurado (${line.taxCode})`}>
+                        sin tipo
+                      </span>
+                    ) : null}
+                  </td>
                   <td style={{ textAlign: "right" }}>{line.total}</td>
                 </tr>
               ))}
             </tbody>
           </table>
           <div style={{ textAlign: "right", marginTop: "var(--cocoa-space-2)" }}>
-            <div className="bo-muted">IVA: {fmtEur(preview.taxTotal)}</div>
+            {toArray<InvoiceTaxBreakdownGroup>(preview.taxBreakdown).map((group, index) => (
+              <div className="bo-muted" key={`${group.figure}-${group.calificacion}-${group.ratePercent}-${index}`}>
+                {group.figure} {group.calificacion === "N1" ? "no sujeta" : `${group.ratePercent}%`}: base {fmtEur(group.base)} · cuota {fmtEur(group.quota)}
+              </div>
+            ))}
+            <div className="bo-muted">
+              {preview.lines.find((line) => line.taxFigure)?.taxFigure ?? taxProfile?.figure ?? "Impuesto"}: {fmtEur(preview.taxTotal)}
+            </div>
             <div><strong>Total: {fmtEur(preview.total)}</strong></div>
           </div>
 

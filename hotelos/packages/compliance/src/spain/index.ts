@@ -8,3 +8,5 @@ export * from "./tbai/tbai.js";
 export * from "./igic/igic.js";
 export * from "./ses-hospedajes/xml.js";
 export * from "./ses-hospedajes/submitter.js";
+export * from "./invoice-totals.js";
+export * from "./indirect-tax.js";

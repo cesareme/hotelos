@@ -9,68 +9,99 @@ export {
   RoomMappingReviewScreen
 } from "./OnboardingInteractive";
 
-const sharedCards = [
-  { title: "Human review", status: "warn" as const, body: "AI suggestions stay pending until a user approves, rejects or edits them. AI cannot apply migration directly." },
-  { title: "Dry-run required", status: "ok" as const, body: "Every apply action requires a dry-run result with create, update, link and skip counts." },
-  { title: "Sensitive data controls", status: "ok" as const, body: "Uploaded files are encrypted, raw payment card data is rejected and sensitive previews are permission-gated." }
+// Tanda 3 (cierre): the 16 scaffold screens below are honest placeholders.
+// Every one of them renders the `pendingNote` banner, Spanish copy and NO
+// invented status tags or metrics — the cards describe the rules each step
+// will enforce, never the state of a property. The `screen: "…"` keys and the
+// exported component names are route contracts (App.tsx / Sidebar.tsx) and
+// stay exactly as they were.
+
+const EYEBROW = "Onboarding con IA y migración";
+
+/** Default banner: the step is not wired to services/onboardingApi.ts yet. */
+const ONBOARDING_PENDING_NOTE =
+  "Pantalla en construcción: este paso aún no está conectado al API de onboarding y no muestra datos de tu propiedad.";
+
+type OnboardingCard = { title: string; body: string; actions?: ScreenScaffoldAction[] };
+
+const sharedCards: OnboardingCard[] = [
+  {
+    title: "Revisión humana",
+    body: "Las sugerencias de la IA quedan pendientes hasta que una persona las aprueba, rechaza o edita. La IA no aplica la migración directamente."
+  },
+  {
+    title: "Dry-run obligatorio",
+    body: "Cada acción de aplicar exige un resultado de dry-run con el recuento de creaciones, actualizaciones, enlaces y omisiones."
+  },
+  {
+    title: "Control de datos sensibles",
+    body: "Los ficheros subidos se cifran, los datos de tarjeta en bruto se rechazan y las vistas previas sensibles requieren permiso."
+  }
 ];
 
 function OnboardingScreen(props: {
   title: string;
   summary: string;
-  cards?: ScreenScaffoldProps["cards"];
+  cards?: OnboardingCard[];
   nav?: ScreenScaffoldAction[];
+  /** Custom "under construction" wording; the onboarding default applies otherwise. */
+  pendingNote?: string;
 }) {
   const baseCards = props.cards ?? sharedCards;
-  const cards = props.nav?.length
+  const cards: ScreenScaffoldProps["cards"] = props.nav?.length
     ? [
         ...baseCards,
         {
-          title: "Continue the journey",
-          status: "ok" as const,
-          body: "Move to the next step of the AI onboarding & migration pipeline.",
+          title: "Continuar el recorrido",
+          body: "Ir al siguiente paso del onboarding asistido por IA y de la migración.",
           actions: props.nav
         }
       ]
     : baseCards;
-  return <ScreenScaffold eyebrow="AI Onboarding & Migration" title={props.title} summary={props.summary} cards={cards} />;
+  return (
+    <ScreenScaffold
+      eyebrow={EYEBROW}
+      title={props.title}
+      summary={props.summary}
+      cards={cards}
+      pendingNote={props.pendingNote ?? ONBOARDING_PENDING_NOTE}
+    />
+  );
 }
 
 export function AISetupCenterScreen() {
+  // Tanda 3: no invented project metrics ("62%", "84% confidence", "blocked").
+  // The screen is a navigation hub for the AI onboarding flow until the
+  // onboarding API (services/onboardingApi.ts) is wired here.
   return (
     <OnboardingScreen
-      title="AI Setup Center"
-      summary="Start or continue AI-powered implementation projects: source PMS connection, uploads, extraction, mapping, review, dry-run, migration batches and go-live readiness."
+      title="Centro de setup de IA"
+      summary="Inicia o continúa una implantación asistida por IA: conexión con el PMS de origen, subida de ficheros, extracción, mapeo, revisión, dry-run, lotes de migración y preparación para el go-live."
+      pendingNote="Pantalla en construcción: aquí no se muestran datos de tu propiedad; los proyectos de onboarding reales se gestionan desde las pantallas enlazadas."
       cards={[
         {
-          title: "Anfitorio Demo Onboarding Project",
-          metric: "62%",
-          status: "warn",
-          body: "Source: Generic PMS exports. Next action: review revenue history totals and approve low-risk room mappings.",
+          title: "Proyecto de onboarding",
+          body: "Revisa los proyectos de migración, sube los ficheros de origen y lanza la comprobación de calidad de datos.",
           actions: [
-            { label: "Continue AI Setup", screen: "OnboardingProjects" },
-            { label: "Upload files", screen: "FileUploadAndClassification" },
-            { label: "Run data quality", screen: "OnboardingDataQualityReview" }
+            { label: "Proyectos de onboarding", screen: "OnboardingProjects" },
+            { label: "Subir ficheros", screen: "FileUploadAndClassification" },
+            { label: "Calidad de datos", screen: "OnboardingDataQualityReview" }
           ]
         },
         {
-          title: "Property Blueprint",
-          metric: "84% confidence",
-          status: "ok",
-          body: "AI found 1 building, 4 floors, 70 rooms, 4 room types and 3 non-room resources.",
+          title: "Plano de la propiedad",
+          body: "Revisa edificios, plantas, habitaciones, tipos y recursos detectados antes de aplicarlos.",
           actions: [
-            { label: "Review blueprint", screen: "PropertyBlueprintReview" },
-            { label: "Room mapping review", screen: "RoomMappingReview" }
+            { label: "Revisar plano", screen: "PropertyBlueprintReview" },
+            { label: "Revisión de mapeo de habitaciones", screen: "RoomMappingReview" }
           ]
         },
         {
           title: "Go-live",
-          metric: "blocked",
-          status: "error",
-          body: "SES.HOSPEDAJES settings and revenue report total validation are blocking production readiness.",
+          body: "Comprueba los bloqueos pendientes y el plan de cutover antes de pasar a producción.",
           actions: [
-            { label: "Open readiness", screen: "OnboardingGoLiveReadiness" },
-            { label: "Open cutover assistant", screen: "CutoverAssistant" }
+            { label: "Preparación para el go-live", screen: "OnboardingGoLiveReadiness" },
+            { label: "Asistente de cutover", screen: "CutoverAssistant" }
           ]
         }
       ]}
@@ -81,12 +112,12 @@ export function AISetupCenterScreen() {
 export function OnboardingProjectListScreen() {
   return (
     <OnboardingScreen
-      title="Onboarding Projects"
-      summary="All AI setup and migration projects, source systems, go-live targets, owners, confidence and blocking issue counts."
+      title="Proyectos de onboarding"
+      summary="Proyectos de implantación y migración asistidos por IA: sistema de origen, fecha objetivo de go-live, responsables, confianza de la extracción y número de incidencias bloqueantes."
       nav={[
-        { label: "Open project detail", screen: "OnboardingProjectDetail" },
-        { label: "Connect a source", screen: "SourceConnections" },
-        { label: "Back to AI Setup Center", screen: "AISetupCenter" }
+        { label: "Abrir el detalle del proyecto", screen: "OnboardingProjectDetail" },
+        { label: "Conectar un origen", screen: "SourceConnections" },
+        { label: "Volver al centro de setup de IA", screen: "AISetupCenter" }
       ]}
     />
   );
@@ -95,13 +126,13 @@ export function OnboardingProjectListScreen() {
 export function OnboardingProjectDetailScreen() {
   return (
     <OnboardingScreen
-      title="Onboarding Project Detail"
-      summary="Project progress, source connections, uploaded files, extracted entities, mapping queue, migration batches and next setup action."
+      title="Detalle del proyecto de onboarding"
+      summary="Progreso del proyecto, conexiones de origen, ficheros subidos, entidades extraídas, cola de mapeo, lotes de migración y siguiente acción de configuración."
       nav={[
-        { label: "Source connections", screen: "SourceConnections" },
-        { label: "Upload files", screen: "FileUploadAndClassification" },
-        { label: "Migration batches", screen: "MigrationBatches" },
-        { label: "Go-live readiness", screen: "OnboardingGoLiveReadiness" }
+        { label: "Conexiones de origen", screen: "SourceConnections" },
+        { label: "Subir ficheros", screen: "FileUploadAndClassification" },
+        { label: "Lotes de migración", screen: "MigrationBatches" },
+        { label: "Preparación para el go-live", screen: "OnboardingGoLiveReadiness" }
       ]}
     />
   );
@@ -110,11 +141,11 @@ export function OnboardingProjectDetailScreen() {
 export function SourceConnectionScreen() {
   return (
     <OnboardingScreen
-      title="Source Connections"
-      summary="Connect or stub Mews, Oracle OPERA/OHIP, Cloudbeds, Apaleo, generic OpenAPI, CSV/XLSX/PDF and manual setup sources."
+      title="Conexiones de origen"
+      summary="Conecta o simula los orígenes de datos: Mews, Oracle OPERA/OHIP, Cloudbeds, Apaleo, OpenAPI genérico, ficheros CSV/XLSX/PDF y configuración manual."
       nav={[
-        { label: "Next: upload files", screen: "FileUploadAndClassification" },
-        { label: "Back to project", screen: "OnboardingProjectDetail" }
+        { label: "Siguiente: subir ficheros", screen: "FileUploadAndClassification" },
+        { label: "Volver al proyecto", screen: "OnboardingProjectDetail" }
       ]}
     />
   );
@@ -123,16 +154,25 @@ export function SourceConnectionScreen() {
 export function PropertyBlueprintReviewScreen() {
   return (
     <OnboardingScreen
-      title="Property Blueprint Review"
-      summary="Review buildings, floors, zones, rooms, spaces, inventory resources, housekeeping sections, maintenance areas and QR setup."
+      title="Revisión del plano de la propiedad"
+      summary="Revisa edificios, plantas, zonas, habitaciones, espacios, recursos de inventario, secciones de housekeeping, áreas de mantenimiento y configuración de códigos QR."
       cards={[
-        { title: "Room Walk Setup", status: "ok", body: "Voice transcript parsing can suggest room ranges, floor, zone, room type, storage and out-of-order state, but creation is blocked until human confirmation." },
-        { title: "Floor plan AI mapping", status: "warn", body: "Floor plans are assistive only. Room labels, public spaces and emergency-exit hints require manual review and cannot be used for legal or safety compliance without validation." },
-        { title: "Blueprint preview", status: "ok", body: "Demo preview: 1 building, 4 floors, 70 rooms, 3 non-room resources and 2 operating zones." }
+        {
+          title: "Alta por recorrido de habitaciones",
+          body: "La transcripción de voz puede sugerir rangos de habitaciones, planta, zona, tipo, almacenes y estado fuera de servicio, pero no se crea nada sin confirmación humana."
+        },
+        {
+          title: "Mapeo de planos con IA",
+          body: "Los planos son solo una ayuda. Las etiquetas de habitaciones, los espacios públicos y las salidas de emergencia requieren revisión manual y no sirven para cumplimiento legal o de seguridad sin validación."
+        },
+        {
+          title: "Vista previa del plano",
+          body: "Cuando el proyecto tenga un plano extraído, aquí se listarán los edificios, plantas, habitaciones y recursos detectados para su aprobación."
+        }
       ]}
       nav={[
-        { label: "Next: room mapping review", screen: "RoomMappingReview" },
-        { label: "Back to extraction review", screen: "AIExtractionReview" }
+        { label: "Siguiente: revisión de mapeo de habitaciones", screen: "RoomMappingReview" },
+        { label: "Volver a la revisión de extracción", screen: "AIExtractionReview" }
       ]}
     />
   );
@@ -141,11 +181,11 @@ export function PropertyBlueprintReviewScreen() {
 export function RatePlanMappingReviewScreen() {
   return (
     <OnboardingScreen
-      title="Rate Plan Mapping Review"
-      summary="Map old PMS rate codes to Anfitorio rate plans, restrictions, derivations and min/max rules."
+      title="Revisión de mapeo de planes de tarifa"
+      summary="Mapea los códigos de tarifa del PMS anterior a los planes de tarifa de Anfitorio, con sus restricciones, derivaciones y reglas de mínimo y máximo."
       nav={[
-        { label: "Next: channel mapping review", screen: "ChannelMappingReview" },
-        { label: "Back to room mapping", screen: "RoomMappingReview" }
+        { label: "Siguiente: revisión de mapeo de canales", screen: "ChannelMappingReview" },
+        { label: "Volver al mapeo de habitaciones", screen: "RoomMappingReview" }
       ]}
     />
   );
@@ -154,16 +194,25 @@ export function RatePlanMappingReviewScreen() {
 export function ReservationImportReviewScreen() {
   return (
     <OnboardingScreen
-      title="Reservation Import Review"
-      summary="Review future reservations, assigned resources, guests, deposits, balances, dates and conflicts before importing live bookings."
+      title="Revisión de importación de reservas"
+      summary="Revisa reservas futuras, recursos asignados, huéspedes, depósitos, saldos, fechas y conflictos antes de importar reservas en vivo."
       cards={[
-        { title: "Human review queue", status: "warn", body: "Pending, low-confidence, high-risk, missing-data, financial and compliance mappings are pulled into a dedicated review queue." },
-        { title: "Apply blocked", status: "error", body: "Migration apply remains blocked while the human review queue contains pending items." },
-        { title: "Delta conflict policy", status: "warn", body: "Go-live delta reservations and balances use source-watermark dry-runs and manual conflict review." }
+        {
+          title: "Cola de revisión humana",
+          body: "Los mapeos pendientes, de baja confianza, de alto riesgo, con datos incompletos, financieros o de cumplimiento pasan a una cola de revisión dedicada."
+        },
+        {
+          title: "Aplicación bloqueada con revisiones pendientes",
+          body: "La aplicación de la migración se bloquea mientras la cola de revisión humana tenga elementos pendientes."
+        },
+        {
+          title: "Política de conflictos del delta",
+          body: "Las reservas y saldos del delta de go-live usan dry-runs con marca de agua del origen y revisión manual de conflictos."
+        }
       ]}
       nav={[
-        { label: "Next: guest import review", screen: "GuestImportReview" },
-        { label: "Open human review queue", screen: "AiHumanReviewQueueScreen" }
+        { label: "Siguiente: revisión de importación de huéspedes", screen: "GuestImportReview" },
+        { label: "Abrir la cola de revisión humana", screen: "AiHumanReviewQueueScreen" }
       ]}
     />
   );
@@ -172,11 +221,11 @@ export function ReservationImportReviewScreen() {
 export function GuestImportReviewScreen() {
   return (
     <OnboardingScreen
-      title="Guest Import Review"
-      summary="Review guest profiles, duplicate detection, minimization options and sensitive-field visibility before migration."
+      title="Revisión de importación de huéspedes"
+      summary="Revisa perfiles de huésped, detección de duplicados, opciones de minimización y visibilidad de campos sensibles antes de migrar."
       nav={[
-        { label: "Next: data quality review", screen: "OnboardingDataQualityReview" },
-        { label: "Back to reservation import", screen: "ReservationImportReview" }
+        { label: "Siguiente: revisión de calidad de datos", screen: "OnboardingDataQualityReview" },
+        { label: "Volver a la importación de reservas", screen: "ReservationImportReview" }
       ]}
     />
   );
@@ -185,11 +234,11 @@ export function GuestImportReviewScreen() {
 export function ChannelMappingReviewScreen() {
   return (
     <OnboardingScreen
-      title="Channel Mapping Review"
-      summary="Map source channel room/rate codes to Anfitorio channels, room types, rate plans and ARI sync readiness."
+      title="Revisión de mapeo de canales"
+      summary="Mapea los códigos de habitación y tarifa de los canales de origen a los canales, tipos de habitación y planes de tarifa de Anfitorio, y comprueba la preparación de la sincronización ARI."
       nav={[
-        { label: "Next: revenue history import", screen: "RevenueHistoryImportReview" },
-        { label: "Back to rate plan mapping", screen: "RatePlanMappingReview" }
+        { label: "Siguiente: importación del histórico de ingresos", screen: "RevenueHistoryImportReview" },
+        { label: "Volver al mapeo de planes de tarifa", screen: "RatePlanMappingReview" }
       ]}
     />
   );
@@ -198,11 +247,11 @@ export function ChannelMappingReviewScreen() {
 export function RevenueHistoryImportReviewScreen() {
   return (
     <OnboardingScreen
-      title="Revenue History Import Review"
-      summary="Classify and extract History & Forecast reports into revenue daily and forecast snapshots, with total validation before apply."
+      title="Revisión de importación del histórico de ingresos"
+      summary="Clasifica y extrae los informes de History & Forecast en ingresos diarios e instantáneas de previsión, con validación de totales antes de aplicar."
       nav={[
-        { label: "Next: data quality review", screen: "OnboardingDataQualityReview" },
-        { label: "Back to channel mapping", screen: "ChannelMappingReview" }
+        { label: "Siguiente: revisión de calidad de datos", screen: "OnboardingDataQualityReview" },
+        { label: "Volver al mapeo de canales", screen: "ChannelMappingReview" }
       ]}
     />
   );
@@ -211,11 +260,11 @@ export function RevenueHistoryImportReviewScreen() {
 export function ComplianceSetupReviewScreen() {
   return (
     <OnboardingScreen
-      title="Compliance Setup Review"
-      summary="Suggest Spain guest register, authority routing, SES.HOSPEDAJES, invoice/tax region and retention setup from legal profile data."
+      title="Revisión de la configuración de cumplimiento"
+      summary="Propone, a partir del perfil legal, la configuración del registro de viajeros, el enrutamiento a las autoridades, SES.HOSPEDAJES, la región fiscal de facturación y la retención de datos."
       nav={[
-        { label: "Next: data quality review", screen: "OnboardingDataQualityReview" },
-        { label: "SES.HOSPEDAJES settings", screen: "SesHospedajesSettings" }
+        { label: "Siguiente: revisión de calidad de datos", screen: "OnboardingDataQualityReview" },
+        { label: "Ajustes de SES.HOSPEDAJES", screen: "SesHospedajesSettings" }
       ]}
     />
   );
@@ -224,16 +273,25 @@ export function ComplianceSetupReviewScreen() {
 export function DataQualityReviewScreen() {
   return (
     <OnboardingScreen
-      title="Data Quality Review"
-      summary="Blocking, warning and info checks for rooms, rate plans, reservations, channels, guest duplicates, compliance and revenue reports."
+      title="Revisión de calidad de datos"
+      summary="Comprobaciones bloqueantes, avisos e informativas sobre habitaciones, planes de tarifa, reservas, canales, duplicados de huéspedes, cumplimiento e informes de ingresos."
       cards={[
-        { title: "Blocking checks", status: "error", body: "Duplicate room numbers, rooms without room type, future reservations without guest, missing channel mappings, SES.HOSPEDAJES setup and History & Forecast totals mismatch block go-live." },
-        { title: "Warnings", status: "warn", body: "Guest duplicates, missing payment provider, forecast gaps and rate plans without rate days require review but can be handled by operating policy." },
-        { title: "Apply gate", status: "ok", body: "Migration apply requires completed dry-run, explicit human confirmation, zero blocking issues and zero pending mapping reviews." }
+        {
+          title: "Comprobaciones bloqueantes",
+          body: "Números de habitación duplicados, habitaciones sin tipo, reservas futuras sin huésped, mapeos de canal ausentes, configuración de SES.HOSPEDAJES incompleta y descuadres en los totales de History & Forecast bloquean el go-live."
+        },
+        {
+          title: "Avisos",
+          body: "Duplicados de huéspedes, proveedor de pago ausente, huecos en la previsión y planes de tarifa sin días tarifados requieren revisión, pero pueden resolverse por política operativa."
+        },
+        {
+          title: "Condición para aplicar",
+          body: "Aplicar la migración exige un dry-run completado, confirmación humana explícita, cero incidencias bloqueantes y cero revisiones de mapeo pendientes."
+        }
       ]}
       nav={[
-        { label: "Next: dry-run result", screen: "DryRunResult" },
-        { label: "Open human review queue", screen: "AiHumanReviewQueueScreen" }
+        { label: "Siguiente: resultado del dry-run", screen: "DryRunResult" },
+        { label: "Abrir la cola de revisión humana", screen: "AiHumanReviewQueueScreen" }
       ]}
     />
   );
@@ -242,16 +300,25 @@ export function DataQualityReviewScreen() {
 export function DryRunResultScreen() {
   return (
     <OnboardingScreen
-      title="Dry-Run Result"
-      summary="Preview objects to create, update, link or skip, plus warnings and conflicts. Applying stays disabled until this is reviewed."
+      title="Resultado del dry-run"
+      summary="Vista previa de los objetos a crear, actualizar, enlazar u omitir, con avisos y conflictos. Aplicar permanece deshabilitado hasta revisar este resultado."
       cards={[
-        { title: "Import application order", status: "ok", body: "Property blueprint, compliance settings, rooms, spaces, inventory resources, rates, restrictions, channels, channel mappings, guests, companies, reservations, revenue history and users/roles." },
-        { title: "Accounting rule", status: "warn", body: "Historical invoices and revenue reports import as read-only history or analytics snapshots unless explicitly approved as ledger migration." },
-        { title: "Review blockers", status: "error", body: "Blocked batches cannot be applied. Review-required batches must be approved, rejected or edited before apply." }
+        {
+          title: "Orden de aplicación de la importación",
+          body: "Plano de la propiedad, ajustes de cumplimiento, habitaciones, espacios, recursos de inventario, tarifas, restricciones, canales, mapeos de canal, huéspedes, empresas, reservas, histórico de ingresos y usuarios/roles."
+        },
+        {
+          title: "Regla contable",
+          body: "Las facturas históricas y los informes de ingresos se importan como histórico de solo lectura o instantáneas analíticas, salvo aprobación explícita como migración contable."
+        },
+        {
+          title: "Bloqueos de revisión",
+          body: "Los lotes bloqueados no se pueden aplicar. Los lotes que requieren revisión deben aprobarse, rechazarse o editarse antes de aplicar."
+        }
       ]}
       nav={[
-        { label: "Next: migration batches", screen: "MigrationBatches" },
-        { label: "Back to data quality", screen: "OnboardingDataQualityReview" }
+        { label: "Siguiente: lotes de migración", screen: "MigrationBatches" },
+        { label: "Volver a la calidad de datos", screen: "OnboardingDataQualityReview" }
       ]}
     />
   );
@@ -260,11 +327,11 @@ export function DryRunResultScreen() {
 export function MigrationBatchScreen() {
   return (
     <OnboardingScreen
-      title="Migration Batches"
-      summary="Controlled apply and safe rollback batches for property blueprint, rooms, rates, reservations, guests, channels and revenue history."
+      title="Lotes de migración"
+      summary="Lotes de aplicación controlada y reversión segura para el plano de la propiedad, habitaciones, tarifas, reservas, huéspedes, canales e histórico de ingresos."
       nav={[
-        { label: "Next: go-live readiness", screen: "OnboardingGoLiveReadiness" },
-        { label: "Back to dry-run result", screen: "DryRunResult" }
+        { label: "Siguiente: preparación para el go-live", screen: "OnboardingGoLiveReadiness" },
+        { label: "Volver al resultado del dry-run", screen: "DryRunResult" }
       ]}
     />
   );
@@ -273,17 +340,26 @@ export function MigrationBatchScreen() {
 export function GoLiveReadinessScreen() {
   return (
     <OnboardingScreen
-      title="Go-Live Readiness"
-      summary="Readiness score, blocking issues, cutover checklist, freeze window, delta import, rollback plan and final approval status."
+      title="Preparación para el go-live"
+      summary="Puntuación de preparación, incidencias bloqueantes, checklist de cutover, ventana de congelación, importación del delta, plan de reversión y estado de la aprobación final."
       cards={[
-        { title: "Cutover plan", status: "warn", body: "T-30 discovery, T-14 test import, T-7 staff review, T-2 export rehearsal, T-1 freeze, go-live delta import and T+1 checks are tracked." },
-        { title: "Go-live blocked", status: "error", body: "Blocking data quality issues stop final approval until SES.HOSPEDAJES setup and History & Forecast total validation are resolved." },
-        { title: "Rollback policy", status: "ok", body: "Rollback is allowed only for safe batches that are not locked by live activity; audit events are always created." }
+        {
+          title: "Plan de cutover",
+          body: "Se hace seguimiento de las etapas T-30 descubrimiento, T-14 importación de prueba, T-7 revisión con el equipo, T-2 ensayo de exportación, T-1 congelación, importación del delta en el go-live y comprobaciones T+1."
+        },
+        {
+          title: "Condiciones de bloqueo del go-live",
+          body: "Las incidencias bloqueantes de calidad de datos impiden la aprobación final hasta resolver la configuración de SES.HOSPEDAJES y la validación de totales de History & Forecast."
+        },
+        {
+          title: "Política de reversión",
+          body: "Solo se permite revertir lotes seguros que no estén bloqueados por actividad en vivo; siempre se generan eventos de auditoría."
+        }
       ]}
       nav={[
-        { label: "Open cutover assistant", screen: "CutoverAssistant" },
-        { label: "Back to migration batches", screen: "MigrationBatches" },
-        { label: "SES.HOSPEDAJES settings", screen: "SesHospedajesSettings" }
+        { label: "Abrir el asistente de cutover", screen: "CutoverAssistant" },
+        { label: "Volver a los lotes de migración", screen: "MigrationBatches" },
+        { label: "Ajustes de SES.HOSPEDAJES", screen: "SesHospedajesSettings" }
       ]}
     />
   );
@@ -292,16 +368,25 @@ export function GoLiveReadinessScreen() {
 export function CutoverAssistantScreen() {
   return (
     <OnboardingScreen
-      title="Cutover Assistant"
-      summary="T-30 through T+1 cutover stages: discovery, test import, training, freeze, delta import, arrival/balance/channel validation and first night audit."
+      title="Asistente de cutover"
+      summary="Etapas de cutover de T-30 a T+1: descubrimiento, importación de prueba, formación, congelación, importación del delta, validación de llegadas, saldos y canales, y auditoría de la primera noche."
       cards={[
-        { title: "Delta import dry-run", status: "warn", body: "Final PMS changes are previewed from a source watermark. The delta plan is dry-run only until go-live approval and manager confirmation." },
-        { title: "Conflict policies", status: "ok", body: "Reservations and channel deltas can use source-wins-after-freeze. Folios and balances require manual review." },
-        { title: "First night audit", status: "ok", body: "The cutover plan keeps first night audit as an explicit go-live day validation step." }
+        {
+          title: "Dry-run de la importación del delta",
+          body: "Los últimos cambios del PMS se previsualizan desde una marca de agua del origen. El plan del delta es solo dry-run hasta la aprobación del go-live y la confirmación del responsable."
+        },
+        {
+          title: "Políticas de conflicto",
+          body: "Las reservas y los deltas de canal pueden usar «gana el origen tras la congelación». Los folios y saldos requieren revisión manual."
+        },
+        {
+          title: "Auditoría de la primera noche",
+          body: "El plan de cutover mantiene la auditoría de la primera noche como paso de validación explícito del día del go-live."
+        }
       ]}
       nav={[
-        { label: "Back to go-live readiness", screen: "OnboardingGoLiveReadiness" },
-        { label: "Back to AI Setup Center", screen: "AISetupCenter" }
+        { label: "Volver a la preparación para el go-live", screen: "OnboardingGoLiveReadiness" },
+        { label: "Volver al centro de setup de IA", screen: "AISetupCenter" }
       ]}
     />
   );

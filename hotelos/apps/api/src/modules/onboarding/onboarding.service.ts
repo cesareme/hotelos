@@ -6,6 +6,9 @@ import { prisma } from "@hotelos/database";
 import { normalizeTaxId, spanishTaxIdValidationMessage } from "@hotelos/compliance";
 import type { PermissionKey } from "@hotelos/shared";
 import { BadRequestError } from "../../lib/http-error.js";
+import { ensurePropertyTaxes } from "../../lib/tenant-hydration.js";
+import { invalidateTaxCache } from "../accounting/tax-rate.service.js";
+import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
 import {
   buildHistoryForecastImportPreview,
   buildHumanReviewQueue,
@@ -1068,6 +1071,25 @@ async function materialiseOnboardingProject(
     throw new BadRequestError(`targetProperty.organizationTaxId no es un NIF/CIF válido («${rawOrganizationTaxId}»): ${taxIdProblem}`);
   }
   const organizationTaxId = rawOrganizationTaxId ? normalizeTaxId(rawOrganizationTaxId) : null;
+  const propertyId = String(targetProperty.id ?? `prop_${projectId}`);
+  // Tanda 3: fiscal location validated BEFORE any write and merged non-destructively over
+  // the existing property (an import that omits the region keeps / canonicalises the current
+  // one, or derives it from the province); free-text regions are a 400, never persisted.
+  const existingProperty = await prisma.property.findUnique({
+    where: { id: propertyId },
+    select: { taxRegion: true, province: true, postalCode: true, ineMunicipalityCode: true, fiscalTerritory: true }
+  });
+  const province = targetProperty.province ? String(targetProperty.province).trim() : existingProperty?.province ?? null;
+  const fiscal = resolveFiscalLocation({
+    current: existingProperty ?? {},
+    patch: {
+      taxRegion: targetProperty.taxRegion ? String(targetProperty.taxRegion) : null,
+      postalCode: targetProperty.postalCode ? String(targetProperty.postalCode) : null,
+      ineMunicipalityCode: targetProperty.ineMunicipalityCode ? String(targetProperty.ineMunicipalityCode) : null,
+      fiscalTerritory: targetProperty.fiscalTerritory ? String(targetProperty.fiscalTerritory) : null
+    },
+    province: province || null
+  });
   // Ensure the organization exists (an existing organization keeps its own NIF).
   await prisma.organization.upsert({
     where: { id: organizationId },
@@ -1080,7 +1102,6 @@ async function materialiseOnboardingProject(
     }
   });
 
-  const propertyId = String(targetProperty.id ?? `prop_${projectId}`);
   await prisma.property.upsert({
     where: { id: propertyId },
     update: {
@@ -1088,9 +1109,12 @@ async function materialiseOnboardingProject(
       legalName: targetProperty.legalName ? String(targetProperty.legalName) : null,
       address: targetProperty.address ? String(targetProperty.address) : null,
       municipality: targetProperty.municipality ? String(targetProperty.municipality) : null,
-      province: targetProperty.province ? String(targetProperty.province) : null,
+      province: province || null,
       country: String(targetProperty.country ?? "ES"),
-      taxRegion: targetProperty.taxRegion ? String(targetProperty.taxRegion) : null,
+      taxRegion: fiscal.taxRegionToPersist,
+      postalCode: fiscal.postalCode,
+      ineMunicipalityCode: fiscal.ineMunicipalityCode,
+      fiscalTerritory: fiscal.fiscalTerritory,
       status: "open"
     },
     create: {
@@ -1100,13 +1124,34 @@ async function materialiseOnboardingProject(
       legalName: targetProperty.legalName ? String(targetProperty.legalName) : null,
       address: targetProperty.address ? String(targetProperty.address) : null,
       municipality: targetProperty.municipality ? String(targetProperty.municipality) : null,
-      province: targetProperty.province ? String(targetProperty.province) : null,
+      province: province || null,
       country: String(targetProperty.country ?? "ES"),
-      taxRegion: targetProperty.taxRegion ? String(targetProperty.taxRegion) : null,
+      taxRegion: fiscal.taxRegionToPersist,
+      postalCode: fiscal.postalCode,
+      ineMunicipalityCode: fiscal.ineMunicipalityCode,
+      fiscalTerritory: fiscal.fiscalTerritory,
       timezone: String(targetProperty.timezone ?? "Europe/Madrid"),
       status: "open"
     }
   });
+  // The tax resolver caches region/rates per property: drop them and (re)provision the
+  // statutory catalogue for the imported region (contract C, idempotent). A provisioning
+  // failure is reported in the result — the import itself succeeded — never swallowed.
+  invalidateTaxCache(propertyId);
+  let taxProvisioning: { ok: boolean; taxRegion: string | null; provisioned?: number; skipped?: number; error?: string };
+  try {
+    const provisioned = await ensurePropertyTaxes({ propertyId, organizationId, taxRegion: fiscal.taxRegionToPersist });
+    taxProvisioning = { ok: true, ...provisioned };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[onboarding.materialise] ensurePropertyTaxes failed", {
+      projectId,
+      propertyId,
+      taxRegion: fiscal.taxRegionToPersist,
+      error: message
+    });
+    taxProvisioning = { ok: false, taxRegion: fiscal.taxRegion, error: message };
+  }
 
   // Approved room_type mappings: sourceCode -> target room type name.
   const approvedRoomTypeMappings = engineMappingSuggestions.filter(
@@ -1212,6 +1257,14 @@ async function materialiseOnboardingProject(
   return {
     propertyId,
     organizationId,
+    fiscal: {
+      taxRegion: fiscal.taxRegion,
+      taxRegionSource: fiscal.taxRegionSource,
+      fiscalTerritory: fiscal.fiscalTerritory,
+      postalCode: fiscal.postalCode,
+      ineMunicipalityCode: fiscal.ineMunicipalityCode
+    },
+    taxProvisioning,
     counts: {
       roomTypes: roomTypeIdBySourceCode.size,
       rooms: roomsCreated,

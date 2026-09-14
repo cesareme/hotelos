@@ -1,23 +1,19 @@
+// LEGACY (Tanda 3): the "ATC registro de facturas" this service targets does
+// not exist — Canarias is common territory and RD 1007/2023 applies to it:
+// a Canarian property reports its invoices to AEAT through VeriFactu with
+// Impuesto=03 (IGIC), which is what verifactu-submission.service.ts does now
+// (routeSubmissionByRegion no longer has an "igic" branch). Nothing enqueues
+// here any more; the read endpoints (list/get) keep serving the existing
+// igic_submissions rows (0 in the demo) and the manual retry still works so
+// an operator can drain leftovers. Do not wire new callers; remove together
+// with packages/compliance/src/spain/igic once the table is empty.
 import { buildIgicXml, submitIgicRegistro } from "@hotelos/compliance";
 import { prisma } from "@hotelos/database";
-import type { EventEnvelope } from "@hotelos/shared";
 import { signSubmissionXml } from "../../lib/compliance-signing.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { issuerForInvoice } from "./issuer-identity.service.js";
 
 let igicChain: Promise<void> = Promise.resolve();
-
-export function queueIgicSubmission(event: EventEnvelope): void {
-  if (event.eventType !== "InvoiceIssued") return;
-  igicChain = igicChain.then(async () => {
-    try {
-      await submitIgicForInvoice(event.entityId ?? "", event.organizationId, event.actorUserId);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[igic] failed to submit invoice ${event.entityId}: ${message}`);
-    }
-  });
-}
 
 export async function submitIgicForInvoice(invoiceId: string, organizationId: string, actorUserId?: string): Promise<void> {
   if (!invoiceId) return;

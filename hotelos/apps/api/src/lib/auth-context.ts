@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { verifyJwt } from "@hotelos/database";
 import { loadIsPlatformAdmin, loadUserContext } from "../modules/auth/auth.service.js";
 import { demoStore, type UserContext } from "./demo-store.js";
+import { HttpError } from "./http-error.js";
 
 // The demo fallback (no token → usr_123) does not go through loadUserContext,
 // so it must derive `isPlatformAdmin` from the REAL DB grants itself. Memoized
@@ -59,8 +60,20 @@ declare module "fastify" {
 //     consent. It carries no bearer token; its CSRF protection is the `state`
 //     parameter that handleEmailOAuthCallback validates. Mapped as public in
 //     routePermissionManifest as well.
+//   - `/auth/forgot-password`, `/auth/reset-password`, `/auth/password-policy`
+//     (Tanda 3 · invitaciones): the manifest already marked them `public`, but
+//     without this list a production box (HOTELOS_ALLOW_DEMO_AUTH unset)
+//     answered 401 before the handler ran, so nobody could recover a password.
+//   - `/auth/invitations/:token` and `/auth/accept-invite` (Tanda 3): the
+//     invitee has no account yet; the single-use token in the body/path is the
+//     credential (invitations.service validates hash, expiry and single use).
 const PUBLIC_PREFIXES = [
   "/auth/login",
+  "/auth/forgot-password",
+  "/auth/reset-password",
+  "/auth/password-policy",
+  "/auth/accept-invite",
+  "/auth/invitations",
   "/health",
   "/channel-manager/_sandbox",
   "/guest-portal/sign-in",
@@ -78,9 +91,56 @@ const PUBLIC_PREFIXES = [
  * (e.g. guest-portal sign-in) must not be checked against a staff org.
  */
 export function isPublicRoute(url: string): boolean {
+  return matchesPrefixList(url, PUBLIC_PREFIXES);
+}
+
+function matchesPrefixList(url: string, prefixes: readonly string[]): boolean {
   // Strip query string so `/path?x=1` still matches the `/path` prefix.
-  const path = url.split("?")[0];
-  return PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+  const path = url.split("?")[0] ?? "";
+  return prefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+// ─── Forced password rotation (Tanda 3 · invitaciones) ───────────────────────
+//
+// A user whose context carries `mustChangePassword: true` (temp password from
+// createTenant / regenerateTempPassword, or a set password never rotated) may
+// only reach the routes below until they call POST /auth/change-password. The
+// guard itself is a preHandler mounted in server.ts (lote server-rutas):
+//
+//   if (request.isAuthenticated && request.userContext.mustChangePassword &&
+//       !isPasswordChangeAllowedRoute(request.url)) throw passwordChangeRequiredError();
+//
+// The list is prefix-matched exactly like PUBLIC_PREFIXES (`/users/me` also
+// covers `/users/me/preferences`). `/auth/login` and `/health` are public
+// anyway; they are listed so the intent is explicit and the guard stays cheap.
+export const PASSWORD_CHANGE_ALLOWLIST: readonly string[] = [
+  "/auth/change-password",
+  "/auth/password-policy",
+  "/auth/login",
+  "/auth/sessions",
+  "/users/me",
+  "/health"
+];
+
+/** Machine-readable code carried in `details.code` of the 403 the guard throws. */
+export const PASSWORD_CHANGE_REQUIRED_CODE = "PASSWORD_CHANGE_REQUIRED" as const;
+
+/** True when the route may be served to a user who still has to rotate their password. */
+export function isPasswordChangeAllowedRoute(url: string): boolean {
+  return matchesPrefixList(url, PASSWORD_CHANGE_ALLOWLIST);
+}
+
+/**
+ * The 403 the guard throws. Built here (not in server.ts) so the message and
+ * the `details.code` the front branches on live next to the allowlist.
+ */
+export function passwordChangeRequiredError(): HttpError {
+  return new HttpError(
+    403,
+    "Debes cambiar tu contraseña temporal antes de continuar.",
+    true,
+    { code: PASSWORD_CHANGE_REQUIRED_CODE, changePasswordPath: "/auth/change-password" }
+  );
 }
 
 /**
@@ -143,9 +203,19 @@ export function registerAuthContext(app: FastifyInstance): void {
     // HOTELOS_ALLOW_DEMO_AUTH=true is explicitly set — an intentional, revocable
     // choice — regardless of NODE_ENV. Production compose never sets this flag.
     const allowDemoFallback = process.env.HOTELOS_ALLOW_DEMO_AUTH === "true";
+    // H4 (Tanda 3 · cierre, documented on purpose): this hook runs BEFORE routing
+    // is consulted, so in production (no demo flag) a request without a token
+    // gets 401 even when the path does not exist — never 404. That is the
+    // intended anti-enumeration behaviour: an anonymous caller must not be able
+    // to tell registered routes from typos. The 404 for unknown paths is only
+    // reachable once a caller is authenticated (or, in demo mode, through the
+    // fallback context). Pinned by tests/integration/api-integration.test.mts.
     if (!allowDemoFallback && !isPublicRoute(request.url)) {
       throw Object.assign(new Error("Authentication required."), { statusCode: 401 });
     }
+    // Note for the permission preHandler (server.ts, H1): the fallback context
+    // below is flagged `isAuthenticated = false`; routes mapped as riskLevel
+    // `high` / `critical` refuse it with 401 even when the demo flag is on.
     // Fresh object per request: the tenant guard may re-point organizationId
     // for platform admins and must never mutate the shared demoStore context.
     // Without the demo flag this context only reaches public routes, so skip

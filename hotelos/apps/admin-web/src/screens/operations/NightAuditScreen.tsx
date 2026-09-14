@@ -16,10 +16,9 @@
 import { useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { LoadingBlock, ErrorState } from "../../components/States";
+import { apiRequest } from "../../services/api-client";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
-
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
 type Status = "ok" | "warning" | "blocker";
 
@@ -118,8 +117,7 @@ export function NightAuditScreen() {
     if (!preflight?.canClose) return;
     setBusy(true);
     try {
-      const res = await fetch(`${API_BASE}/properties/${propertyId}/night-audit/run`, { method: "POST" });
-      if (!res.ok) throw new Error(`${res.status}`);
+      await apiRequest<unknown>(`/properties/${encodeURIComponent(propertyId)}/night-audit/run`, { method: "POST" });
       setToast({ kind: "ok", text: "Night audit ejecutado. Día cerrado." });
       showToast("Night audit ejecutado. Día cerrado.", { variant: "success" });
     } catch (err) {

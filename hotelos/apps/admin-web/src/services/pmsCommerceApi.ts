@@ -521,7 +521,24 @@ export function fetchInvoices(propertyId: string, query?: InvoiceListQuery): Pro
   });
 }
 
-export function createInvoiceDraft(payload: Omit<InvoiceDraft, "id" | "status">): Promise<InvoiceDraft> {
+/** Manual draft line (POST /invoices/drafts · CreateInvoiceDraftSchema.lines[]). Prices are gross (tax included). */
+export type CreateInvoiceDraftLine = {
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  taxCode?: string;
+  taxRate: number;
+  total: number;
+  /** Tanda 3: fiscal category the API resolves against the property's tax profile (contract A TaxCategory). */
+  taxCategory?: string;
+};
+
+export type CreateInvoiceDraftPayload = Omit<InvoiceDraft, "id" | "status"> & {
+  lines?: CreateInvoiceDraftLine[];
+  currencyCode?: string;
+};
+
+export function createInvoiceDraft(payload: CreateInvoiceDraftPayload): Promise<InvoiceDraft> {
   return apiRequest<InvoiceDraft>(`/invoices/drafts`, { method: "POST", body: payload });
 }
 
@@ -553,21 +570,46 @@ export function saveInvoiceBranding(
   return apiRequest<InvoiceIssuer>(`/properties/${propertyId}/invoice-branding`, { method: "PATCH", body });
 }
 
+// Tanda 3 · indirect taxes: the per-line figure / category / calificación and
+// the persisted breakdown (Invoice.taxBreakdownJson, contract B) — the ONLY
+// source the XML, PDF and UI use for bases and quotas. Optional because
+// invoices issued before Tanda 3 do not carry them.
+export type InvoiceTaxFigure = "IVA" | "IGIC" | "IPSI";
+export type InvoiceTaxCalificacion = "S1" | "N1";
+export type InvoiceTaxBreakdownGroup = {
+  figure: InvoiceTaxFigure;
+  impuesto: "01" | "02" | "03";
+  calificacion: InvoiceTaxCalificacion;
+  ratePercent: number;
+  base: number;
+  quota: number;
+};
+
+export type InvoiceLineFull = {
+  id?: string;
+  description: string;
+  quantity: number;
+  unitPrice: number;
+  taxCode: string;
+  taxRate: number;
+  total: number;
+  taxCategory?: string | null;
+  taxCalificacion?: InvoiceTaxCalificacion | null;
+  taxFigure?: InvoiceTaxFigure | null;
+};
+
 export type InvoiceFull = InvoiceDraft & {
-  issuer?: InvoiceIssuer;
+  issuer?: InvoiceIssuer & { warnings?: string[] };
   rectifyingForId?: string;
   rectifyingReasonCode?: RectifyingReasonCode;
   cancelledAt?: string;
   invoiceType: InvoiceDraft["invoiceType"] | RectifyingReasonCode;
-  lines: Array<{
-    id?: string;
-    description: string;
-    quantity: number;
-    unitPrice: number;
-    taxCode: string;
-    taxRate: number;
-    total: number;
-  }>;
+  lines: InvoiceLineFull[];
+  /** Persisted breakdown grouped by (impuesto, calificación, tipo); absent on pre-Tanda-3 invoices. */
+  taxBreakdown?: InvoiceTaxBreakdownGroup[] | null;
+  /** Non-blocking tax problems (lines without a configured rate, IPSI unconfirmed…). */
+  warnings?: string[];
+  rectificationType?: "I" | "S" | null;
 };
 
 export function fetchInvoice(invoiceId: string): Promise<InvoiceFull> {

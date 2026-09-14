@@ -16,9 +16,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { apiRequest } from "../../services/api-client";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
-
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
 type ActionKind =
   | "open_reservation"
@@ -115,12 +114,10 @@ export function FrontDeskCopilotScreen() {
     setBusy(true);
     setTurns((prev) => [...prev, { type: "user", text: question, ts: Date.now() }]);
     try {
-      const res = await fetch(`${API_BASE}/copilot/ask`, {
+      const answer = await apiRequest<CopilotAnswer>("/copilot/ask", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ propertyId, question })
+        body: { propertyId, question }
       });
-      const answer = (await res.json()) as CopilotAnswer;
       setTurns((prev) => [...prev, { type: "assistant", answer, ts: Date.now() }]);
     } catch (err) {
       setTurns((prev) => [

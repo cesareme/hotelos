@@ -8,10 +8,25 @@ import { z } from "zod";
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}/, "must be YYYY-MM-DD");
 
 // POST /invoices/:id/rectify — Spanish "factura rectificativa" (R1-R5).
+const TAX_CATEGORY_VALUES = ["accommodation", "food_beverage", "general_services", "transport", "tourist_tax", "not_subject"] as const;
+
 export const RectifyInvoiceSchema = z.object({
   reasonCode: z.enum(["R1", "R2", "R3", "R4", "R5"], {
     errorMap: () => ({ message: "reasonCode must be R1, R2, R3, R4, or R5" })
   }),
+  /** VeriFactu TipoRectificativa: 'I' (diferencias, default) or 'S' (sustitución, requires substituteLines). */
+  rectificationType: z.enum(["I", "S"]).optional(),
+  substituteLines: z
+    .array(
+      z.object({
+        description: z.string().min(1).max(500),
+        quantity: z.number().positive(),
+        unitPrice: z.number().finite(),
+        lineType: z.string().max(40).optional(),
+        taxCategory: z.enum(TAX_CATEGORY_VALUES).optional()
+      })
+    )
+    .optional(),
   lineAdjustments: z
     .array(
       z.object({

@@ -327,8 +327,9 @@ las últimas 24h.
    VERIFACTU_MODE=preproduction
    VERIFACTU_CERT_PATH=/opt/hotelos/certs/cliente-verifactu.p12
    VERIFACTU_CERT_PASSPHRASE=<pass-del-pkcs12>
-   VERIFACTU_SOFTWARE_NIF=<nif-de-la-empresa-emisora>
-   VERIFACTU_INSTALL_NUMBER=<install-id-asignado-por-AEAT>
+   VERIFACTU_SOFTWARE_NAME=<razón-social-del-PRODUCTOR-del-software>   # titular de Anfitorio, no el hotel
+   VERIFACTU_SOFTWARE_NIF=<nif-del-PRODUCTOR-del-software>              # no el NIF del hotel emisor (ese va en Organization.taxId)
+   VERIFACTU_INSTALL_NUMBER=<identificador-de-instalación-que-asigna-el-PRODUCTOR>   # AEAT no lo asigna; ver docs/compliance/verifactu-declaracion-responsable.md
    ```
 4. Reinicia el API y comprueba `/compliance/health` — `readyForReal: true`
    para verifactu.

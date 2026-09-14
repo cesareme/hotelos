@@ -1,39 +1,36 @@
 // Upsells — catálogo de ofertas adicionales que se muestran al huésped antes
 // y durante la estancia (room upgrade, early check-in, late check-out, parking,
-// breakfast add-on, spa credit). Reemplaza el placeholder genérico.
+// breakfast add-on, spa credit).
+//
+// Tanda 3 · CF-02: la pantalla lee y escribe sobre Prisma UpsellOffer a través
+// de las rutas staff (services/upsellsApi.ts). La categoría de la UI se guarda
+// como `offerType`; la categoría fiscal (`taxCategory`) decide el tipo de IVA /
+// IGIC / IPSI que aplicará el folio cuando se venda la oferta.
 
-import { useEffect, useMemo, useState } from "react";
-import { useApiData } from "../../hooks/useApiData";
-import { getActivePropertyId } from "../../services/activeProperty";
-import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
-import { apiRequest } from "../../services/api-client";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useActiveProperty } from "../../services/activeProperty";
+import { LoadingBlock, EmptyState, ErrorState, Spinner } from "../../components/States";
 import { useToast } from "../../components/Toast";
+import {
+  createUpsellOffer,
+  listUpsellOffers,
+  patchUpsellOffer,
+  toUpsellOfferInput,
+  type UpsellOffer
+} from "../../services/upsellsApi";
 
-const PROPERTY_ID = getActivePropertyId();
+type Draft = Omit<UpsellOffer, "id"> & { id: string | null };
 
-type UpsellOffer = {
-  id: string;
-  code: string;
-  name: string;
-  description?: string | null;
-  price: number;
-  currency: string;
-  category: string;
-  active: boolean;
-  channel?: string | null; // "pre_stay" | "in_stay" | "checkout" | "kiosk"
-  imageUrl?: string | null;
-};
-
-const CATEGORIES: Array<{ value: string; label: string; icon: string }> = [
-  { value: "upgrade", label: "Upgrade de habitación", icon: "⬆" },
-  { value: "early_checkin", label: "Check-in temprano", icon: "🌅" },
-  { value: "late_checkout", label: "Check-out tardío", icon: "🌇" },
-  { value: "breakfast", label: "Desayuno", icon: "🥐" },
-  { value: "parking", label: "Parking", icon: "🅿" },
-  { value: "spa", label: "Spa / wellness", icon: "💆" },
-  { value: "transfer", label: "Traslado aeropuerto", icon: "🚗" },
-  { value: "amenity", label: "Amenities", icon: "🎁" },
-  { value: "experience", label: "Experiencia local", icon: "🗺" }
+const CATEGORIES: Array<{ value: string; label: string; icon: string; defaultTaxCategory: string }> = [
+  { value: "upgrade", label: "Upgrade de habitación", icon: "⬆", defaultTaxCategory: "accommodation" },
+  { value: "early_checkin", label: "Check-in temprano", icon: "🌅", defaultTaxCategory: "accommodation" },
+  { value: "late_checkout", label: "Check-out tardío", icon: "🌇", defaultTaxCategory: "accommodation" },
+  { value: "breakfast", label: "Desayuno", icon: "🥐", defaultTaxCategory: "food_beverage" },
+  { value: "parking", label: "Parking", icon: "🅿", defaultTaxCategory: "general_services" },
+  { value: "spa", label: "Spa / wellness", icon: "💆", defaultTaxCategory: "general_services" },
+  { value: "transfer", label: "Traslado aeropuerto", icon: "🚗", defaultTaxCategory: "transport" },
+  { value: "amenity", label: "Amenities", icon: "🎁", defaultTaxCategory: "general_services" },
+  { value: "experience", label: "Experiencia local", icon: "🗺", defaultTaxCategory: "general_services" }
 ];
 
 const CHANNELS = [
@@ -43,75 +40,131 @@ const CHANNELS = [
   { value: "kiosk", label: "Kiosko self check-in" }
 ];
 
+// Categorías fiscales del catálogo (packages/compliance/src/spain/indirect-tax.ts).
+// El tipo concreto (10 % / 21 % IVA, 7 % IGIC, 2 % / 4 % IPSI) lo resuelve el API
+// según la región fiscal de la propiedad; aquí solo se elige el concepto.
+const TAX_CATEGORIES = [
+  { value: "accommodation", label: "Alojamiento (tipo reducido de hostelería)" },
+  { value: "food_beverage", label: "Restauración / F&B (tipo reducido de hostelería)" },
+  { value: "general_services", label: "Servicios generales (spa, parking, salas… tipo general)" },
+  { value: "transport", label: "Transporte de viajeros" },
+  { value: "not_subject", label: "No sujeto (indemnizaciones)" }
+];
+
 function fmtMoney(n: number, currency = "EUR"): string {
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
+  try {
+    return new Intl.NumberFormat("es-ES", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
+  } catch {
+    // Unknown ISO code typed by the user — fall back to a plain number.
+    return `${n.toFixed(2)} ${currency}`;
+  }
+}
+
+function defaultTaxCategory(category: string): string {
+  return CATEGORIES.find((c) => c.value === category)?.defaultTaxCategory ?? "general_services";
+}
+
+function newDraft(): Draft {
+  return {
+    id: null,
+    code: "",
+    name: "",
+    description: null,
+    price: 0,
+    currency: "EUR",
+    category: "upgrade",
+    active: true,
+    channel: "pre_stay",
+    imageUrl: null,
+    taxCategory: defaultTaxCategory("upgrade")
+  };
 }
 
 export function UpsellsSettingsScreen() {
   const { showToast } = useToast();
-  // Reusamos los advanced records (módulo "guest_self_service" + entityType "upsell_offers")
-  // que ya existen — la UI siempre fue placeholder.
-  const offersData = useApiData<{ items: UpsellOffer[] }>(
-    `/properties/${PROPERTY_ID}/guest-self-service/upsell_offers`,
-    { pollIntervalMs: 0 }
-  );
+  const { propertyId } = useActiveProperty();
   const [items, setItems] = useState<UpsellOffer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
-  const [editing, setEditing] = useState<UpsellOffer | null>(null);
+  const [editing, setEditing] = useState<Draft | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      setItems(await listUpsellOffers(propertyId));
+    } catch (e) {
+      setLoadError(e instanceof Error ? e.message : "No se pudo cargar el catálogo de upsells.");
+    } finally {
+      setLoading(false);
+    }
+  }, [propertyId]);
 
   useEffect(() => {
-    if (offersData.data?.items) setItems(offersData.data.items);
-  }, [offersData.data]);
+    void load();
+  }, [load]);
 
   const stats = useMemo(() => {
     const active = items.filter((i) => i.active).length;
-    const byChannel: Record<string, number> = {};
-    for (const o of items) {
-      const k = o.channel ?? "any";
-      byChannel[k] = (byChannel[k] ?? 0) + 1;
-    }
-    return { total: items.length, active, byChannel };
+    const channels = new Set(items.map((o) => o.channel ?? "any"));
+    return { total: items.length, active, channels: channels.size };
   }, [items]);
 
   function startNew() {
-    setEditing({
-      id: `new_${Date.now()}`,
-      code: "",
-      name: "",
-      price: 0,
-      currency: "EUR",
-      category: "upgrade",
-      active: true,
-      channel: "pre_stay"
-    });
+    setMsg(null);
+    setEditing(newDraft());
   }
 
-  async function save(offer: UpsellOffer) {
+  function startEdit(offer: UpsellOffer) {
+    setMsg(null);
+    setEditing({ ...offer });
+  }
+
+  async function save(draft: Draft) {
     setBusy(true);
     setMsg(null);
     try {
-      const isNew = offer.id.startsWith("new_");
-      const path = isNew
-        ? `/properties/${PROPERTY_ID}/guest-self-service/upsell_offers`
-        : `/properties/${PROPERTY_ID}/guest-self-service/upsell_offers/${offer.id}`;
-      await apiRequest(path, {
-        method: isNew ? "POST" : "PATCH",
-        body: { ...offer, id: undefined }
-      });
-      const okMsg = isNew ? "Oferta creada" : "Oferta actualizada";
+      const { id, ...fields } = draft;
+      const input = toUpsellOfferInput(fields);
+      if (!input.name) throw new Error("El nombre de la oferta es obligatorio.");
+      if (input.price < 0) throw new Error("El precio no puede ser negativo.");
+      if (id) await patchUpsellOffer(id, input);
+      else await createUpsellOffer(propertyId, input);
+      const okMsg = id ? "Oferta actualizada" : "Oferta creada";
       setMsg(okMsg);
       setEditing(null);
-      offersData.refresh();
       showToast(okMsg, { variant: "success" });
+      await load();
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Error guardando";
+      const message = e instanceof Error ? e.message : "No se pudo guardar la oferta.";
       setMsg(message);
       showToast(message, { variant: "error" });
     } finally {
       setBusy(false);
     }
   }
+
+  async function toggleActive(offer: UpsellOffer) {
+    setBusy(true);
+    setMsg(null);
+    try {
+      await patchUpsellOffer(offer.id, { active: !offer.active });
+      showToast(offer.active ? `«${offer.name}» pausada` : `«${offer.name}» activada`, { variant: "success" });
+      await load();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "No se pudo cambiar el estado de la oferta.";
+      setMsg(message);
+      showToast(message, { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const newOfferButton = (
+    <button type="button" className="primary" onClick={startNew} disabled={busy}>+ Nueva oferta</button>
+  );
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -122,11 +175,11 @@ export function UpsellsSettingsScreen() {
           </p>
           <h2 style={{ color: "var(--ink)" }}>Catálogo de ofertas adicionales</h2>
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Define qué se ofrece al huésped antes y durante la estancia (upgrade, parking, breakfast…),
-            por qué canal y a qué precio. El portal y el kiosko leen este catálogo.
+            Define qué se ofrece al huésped antes y durante la estancia (upgrade, parking, desayuno…),
+            por qué canal y a qué precio. El portal, el kiosko y el panel de upsells leen este catálogo.
           </p>
         </div>
-        <button type="button" className="primary" onClick={startNew}>+ Nueva oferta</button>
+        {newOfferButton}
       </header>
 
       {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
@@ -135,7 +188,7 @@ export function UpsellsSettingsScreen() {
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
             <span className="rev-kpi-label">Ofertas totales</span>
-            <span className="bo-status info">catalogo</span>
+            <span className="bo-status info">catálogo</span>
           </div>
           <div className="rev-kpi-value">{stats.total}</div>
         </article>
@@ -151,25 +204,40 @@ export function UpsellsSettingsScreen() {
             <span className="rev-kpi-label">Canales</span>
             <span className="bo-status info">distintos</span>
           </div>
-          <div className="rev-kpi-value">{Object.keys(stats.byChannel).length}</div>
+          <div className="rev-kpi-value">{stats.channels}</div>
         </article>
       </div>
 
       {editing ? (
         <article className="bo-card" style={{ background: "var(--surface)" }}>
           <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>{editing.id.startsWith("new_") ? "Nueva oferta" : "Editar oferta"}</h3>
-            <button type="button" onClick={() => setEditing(null)}>Cancelar</button>
+            <h3 style={{ color: "var(--ink)" }}>{editing.id ? "Editar oferta" : "Nueva oferta"}</h3>
+            <button type="button" onClick={() => setEditing(null)} disabled={busy}>Cancelar</button>
           </div>
-          <form onSubmit={(e) => { e.preventDefault(); void save(editing); }} style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save(editing);
+            }}
+            style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}
+          >
             <label>Código
-              <input value={editing.code} onChange={(e) => setEditing({ ...editing, code: e.target.value })} required />
+              <input value={editing.code} onChange={(e) => setEditing({ ...editing, code: e.target.value.toUpperCase() })} placeholder="UPG-SUITE" />
             </label>
             <label>Nombre
               <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} required />
             </label>
             <label>Categoría
-              <select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })}>
+              <select
+                value={editing.category}
+                onChange={(e) => {
+                  const category = e.target.value;
+                  // Keep the fiscal category in sync unless the user already overrode it.
+                  const prevDefault = defaultTaxCategory(editing.category);
+                  const taxCategory = editing.taxCategory && editing.taxCategory !== prevDefault ? editing.taxCategory : defaultTaxCategory(category);
+                  setEditing({ ...editing, category, taxCategory });
+                }}
+              >
                 {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.icon} {c.label}</option>)}
               </select>
             </label>
@@ -178,11 +246,19 @@ export function UpsellsSettingsScreen() {
                 {CHANNELS.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
               </select>
             </label>
-            <label>Precio
-              <input type="number" step="0.01" value={editing.price} onChange={(e) => setEditing({ ...editing, price: Number(e.target.value) })} required />
+            <label>Precio (impuestos incluidos)
+              <input type="number" step="0.01" min="0" value={editing.price} onChange={(e) => setEditing({ ...editing, price: Number(e.target.value) })} required />
             </label>
             <label>Moneda
               <input value={editing.currency} onChange={(e) => setEditing({ ...editing, currency: e.target.value.toUpperCase() })} maxLength={3} />
+            </label>
+            <label>Categoría fiscal
+              <select value={editing.taxCategory ?? defaultTaxCategory(editing.category)} onChange={(e) => setEditing({ ...editing, taxCategory: e.target.value })}>
+                {TAX_CATEGORIES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </label>
+            <label>Imagen (URL)
+              <input value={editing.imageUrl ?? ""} onChange={(e) => setEditing({ ...editing, imageUrl: e.target.value })} placeholder="https://…" />
             </label>
             <label style={{ gridColumn: "1 / -1" }}>Descripción
               <textarea rows={2} value={editing.description ?? ""} onChange={(e) => setEditing({ ...editing, description: e.target.value })} />
@@ -203,29 +279,47 @@ export function UpsellsSettingsScreen() {
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
           <h3 style={{ color: "var(--ink)" }}>Catálogo</h3>
-          <span className="bo-chip">{items.length}</span>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span className="bo-chip">{items.length}</span>
+            <button type="button" className="ghost" onClick={() => void load()} disabled={loading} title="Recargar">↻</button>
+          </div>
         </div>
-        {offersData.loading && items.length === 0 ? <LoadingBlock label="Cargando catálogo…" /> : items.length === 0 ? (
-          <EmptyState title="Sin ofertas" message="Aún no hay upsells configurados. Empieza con un upgrade o late check-out — los más rentables." />
+        {loading && items.length === 0 ? (
+          <LoadingBlock label="Cargando catálogo…" />
+        ) : loadError ? (
+          <ErrorState title="No se pudo cargar el catálogo" message={loadError} onRetry={() => void load()} />
+        ) : items.length === 0 ? (
+          <EmptyState
+            title="Sin ofertas en esta propiedad"
+            message="Aún no hay upsells configurados. Empieza con un upgrade o un late check-out: son los más rentables. Hasta que exista al menos una oferta activa, el panel de upsells y el portal del huésped no mostrarán nada."
+            actions={newOfferButton}
+          />
         ) : (
           <div className="rev-report-wrap">
             <table className="cm-table">
               <thead>
-                <tr><th>Código</th><th>Nombre</th><th>Categoría</th><th>Canal</th><th>Precio</th><th>Estado</th><th></th></tr>
+                <tr><th>Código</th><th>Nombre</th><th>Categoría</th><th>Canal</th><th>Precio</th><th>Fiscal</th><th>Estado</th><th></th></tr>
               </thead>
               <tbody>
                 {items.map((o) => {
                   const cat = CATEGORIES.find((c) => c.value === o.category);
                   const ch = CHANNELS.find((c) => c.value === o.channel);
+                  const tax = TAX_CATEGORIES.find((t) => t.value === o.taxCategory);
                   return (
                     <tr key={o.id}>
-                      <td className="mono"><strong>{o.code}</strong></td>
+                      <td className="mono"><strong>{o.code || "—"}</strong></td>
                       <td>{o.name}</td>
                       <td>{cat ? `${cat.icon} ${cat.label}` : o.category}</td>
                       <td>{ch?.label ?? o.channel ?? "—"}</td>
                       <td className="mono">{fmtMoney(o.price, o.currency)}</td>
+                      <td className="bo-muted" style={{ fontSize: 12 }}>{tax ? tax.label.split(" (")[0] : o.taxCategory ?? "—"}</td>
                       <td><span className={`bo-status ${o.active ? "ok" : "info"}`} style={{ fontSize: 10 }}>{o.active ? "activa" : "pausada"}</span></td>
-                      <td><button type="button" onClick={() => setEditing(o)}>Editar</button></td>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        <button type="button" onClick={() => startEdit(o)} disabled={busy}>Editar</button>{" "}
+                        <button type="button" className="ghost" onClick={() => void toggleActive(o)} disabled={busy}>
+                          {o.active ? "Pausar" : "Activar"}
+                        </button>
+                      </td>
                     </tr>
                   );
                 })}

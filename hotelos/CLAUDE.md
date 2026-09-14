@@ -241,6 +241,26 @@ node scripts/check-discoverability.mjs
    VeriFactu. Detalle: addendum Tanda 2 en
    `docs/audits/AUDITORIA-360-2026-09-13.md`.
 
+10. **Tanda 3 (auditoría 360, 2026-09-14):** cumplimiento sin atrezzo — impuestos
+    por región según normativa (`docs/compliance/IMPUESTOS-INDIRECTOS-ES-2026.md`;
+    catálogo `packages/compliance/src/spain/indirect-tax.ts`, resolutor
+    `apps/api/src/modules/accounting/tax-rate.service.ts`, nunca `UNKNOWN`;
+    API `/backoffice/properties/:id/taxes`), totales por grupo persistidos en
+    `Invoice.taxBreakdownJson` (única fuente para XML/PDF/UI), series por año
+    (`allocateInvoiceNumber`), cadena VeriFactu bajo advisory lock con
+    anulaciones (`RegistroAnulacion`) y rectificativas I/S,
+    `resolveVerifactuSoftware()` (el API aborta fuera de sandbox si no está
+    declarado; ver `docs/compliance/verifactu-declaracion-responsable.md`),
+    SES/registro de viajeros Prisma-first con establecimiento real
+    (`resolveSesEstablishment`, 409 `SES_ESTABLISHMENT_INCOMPLETE`), invitaciones
+    reales (`user_invitations`, `/auth/accept-invite`, `mustChangePassword` solo
+    por flag explícito), rutas staff de upsells, front sin `fetch` crudo
+    (contract test) y scaffolds retirados/cableados. El fallback demo sin token
+    NO alcanza rutas de riesgo alto/crítico (401). Backfills:
+    `backfill:taxes --apply`, `backfill:guest-register --apply`. Deuda: Faranda
+    con NIF/razón social contaminados (corrección manual), fixtures AUDIT-T3,
+    anulaciones legadas bifurcadas en sandbox, TS6059 en compliance/worker.
+
 ## Docs prioritarios
 
 Antes de tomar decisiones de producto, lee:

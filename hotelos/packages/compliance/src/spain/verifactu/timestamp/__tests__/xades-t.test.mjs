@@ -1,8 +1,9 @@
 // Unit tests for XAdES-T integration.
 //
 // Run with Node 22.6+ (type-stripping is on by default in Node 23.6+):
-//   node --experimental-strip-types --test \
-//     packages/compliance/src/spain/verifactu/timestamp/__tests__/xades-t.test.mjs
+//   node --experimental-strip-types --import \
+//     ./packages/compliance/src/spain/verifactu/__tests__/register-ts-loader.mjs \
+//     --test packages/compliance/src/spain/verifactu/timestamp/__tests__/xades-t.test.mjs
 //
 // Tests cover:
 //   - TimeStampReq DER shape

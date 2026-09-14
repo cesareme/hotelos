@@ -42,7 +42,6 @@ describe("HotelOS Flow UI/UX shift", () => {
       // existing deep link still resolves.
       "../apps/admin-web/src/screens/channelManager/ChannelAggregatorHub.tsx",
       "../apps/admin-web/src/screens/backoffice/SetupCenterScreen.tsx",
-      "../apps/admin-web/src/screens/marketplace/IntegrationMarketplaceHome.tsx",
       "../packages/ui/src/components/SmartTipCard.tsx",
       "../packages/ui/src/components/CommandPalette.tsx",
       "../packages/ui/src/components/GlobalSearchCommand.tsx",

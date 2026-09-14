@@ -15,6 +15,7 @@
 
 import { useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { apiRequest } from "../../services/api-client";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { LoadingBlock, EmptyState, ErrorState } from "../../components/States";
 import { useToast } from "../../components/Toast";
@@ -52,8 +53,6 @@ type HkData = {
   rooms: HkRoom[];
 };
 
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
-
 const PRIORITY_STYLE: Record<Priority, { label: string; bg: string; ink: string; border: string }> = {
   urgent: { label: "URGENTE", bg: "#fee2e2", ink: "#991b1b", border: "#d23b3b" },
   high: { label: "ALTA", bg: "#fef3c7", ink: "#92400e", border: "#d29b00" },
@@ -76,14 +75,12 @@ function HkChip({ status }: { status?: string }) {
   return <span className="bo-chip">{label}</span>;
 }
 
-async function postAction(url: string, body?: unknown): Promise<{ ok: boolean; message?: string }> {
+// Writes go through apiRequest so they carry the session JWT and are audited
+// as the logged-in housekeeper (Tanda 3 · CF-05). ApiError.message is the
+// Spanish message from the API error envelope.
+async function postAction(path: string, body?: unknown): Promise<{ ok: boolean; message?: string }> {
   try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: body ? JSON.stringify(body) : undefined
-    });
-    if (!res.ok) return { ok: false, message: `${res.status} ${await res.text().catch(() => "")}` };
+    await apiRequest<unknown>(path, { method: "POST", body });
     return { ok: true };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : "Error" };
@@ -109,7 +106,7 @@ export function HousekeepingMobileScreen() {
   async function setHkStatus(room: HkRoom, status: string) {
     setBusy(room.roomId);
     setToast(null);
-    const result = await postAction(`${API_BASE}/rooms/${room.roomId}/housekeeping-status`, { status });
+    const result = await postAction(`/rooms/${encodeURIComponent(room.roomId)}/housekeeping-status`, { status });
     setBusy(null);
     setToast(
       result.ok
@@ -129,7 +126,7 @@ export function HousekeepingMobileScreen() {
     const description = window.prompt(`Hab. ${room.roomNumber} · Describe la incidencia (avería, falta amenity, etc.)`);
     if (!description?.trim()) return;
     setBusy(room.roomId);
-    const result = await postAction(`${API_BASE}/work-orders`, {
+    const result = await postAction("/work-orders", {
       roomNumber: room.roomNumber,
       title: `Hab. ${room.roomNumber}: ${description.slice(0, 80)}`,
       description,

@@ -38,7 +38,8 @@ type HotelSpec = {
   address: string;
   municipality: string;
   province: string;
-  taxRegion: string; // for VeriFactu vs TBAI routing
+  taxRegion: "ES_PENINSULA_BALEARES" | "ES_CANARIAS" | "ES_CEUTA" | "ES_MELILLA"; // indirect-tax figure (IVA / IGIC / IPSI)
+  fiscalTerritory: "common" | "bizkaia" | "gipuzkoa" | "araba" | "navarra"; // reporting route: VeriFactu vs TBAI
   timezone: string;
   ccaaCode: "MAD" | "CAT" | "AND" | "VC" | "EUSK" | "BAL";
   establishmentClass: string; // p.ej. 5_estrellas, 4_estrellas, lujo_5e
@@ -77,7 +78,8 @@ const HOTELS: HotelSpec[] = [
     address: "Gran Vía 28",
     municipality: "Madrid",
     province: "Madrid",
-    taxRegion: "common", // VeriFactu
+    taxRegion: "ES_PENINSULA_BALEARES",
+    fiscalTerritory: "common", // VeriFactu
     timezone: "Europe/Madrid",
     ccaaCode: "MAD",
     establishmentClass: "4_estrellas",
@@ -110,7 +112,8 @@ const HOTELS: HotelSpec[] = [
     address: "Passeig Marítim 47",
     municipality: "Barcelona",
     province: "Barcelona",
-    taxRegion: "common",
+    taxRegion: "ES_PENINSULA_BALEARES",
+    fiscalTerritory: "common",
     timezone: "Europe/Madrid",
     ccaaCode: "CAT",
     establishmentClass: "4_estrellas",
@@ -145,7 +148,8 @@ const HOTELS: HotelSpec[] = [
     address: "Calle Cuna 12",
     municipality: "Sevilla",
     province: "Sevilla",
-    taxRegion: "common",
+    taxRegion: "ES_PENINSULA_BALEARES",
+    fiscalTerritory: "common",
     timezone: "Europe/Madrid",
     ccaaCode: "AND",
     establishmentClass: "4_estrellas",
@@ -175,7 +179,8 @@ const HOTELS: HotelSpec[] = [
     address: "Av. Bulevar Príncipe Alfonso de Hohenlohe s/n",
     municipality: "Marbella",
     province: "Málaga",
-    taxRegion: "common",
+    taxRegion: "ES_PENINSULA_BALEARES",
+    fiscalTerritory: "common",
     timezone: "Europe/Madrid",
     ccaaCode: "AND",
     establishmentClass: "5_estrellas",
@@ -214,7 +219,8 @@ const HOTELS: HotelSpec[] = [
     address: "Av. de Aragón 30",
     municipality: "Valencia",
     province: "Valencia",
-    taxRegion: "common",
+    taxRegion: "ES_PENINSULA_BALEARES",
+    fiscalTerritory: "common",
     timezone: "Europe/Madrid",
     ccaaCode: "VC",
     establishmentClass: "4_estrellas",
@@ -246,7 +252,8 @@ const HOTELS: HotelSpec[] = [
     address: "Alameda de Mazarredo 17",
     municipality: "Bilbao",
     province: "Bizkaia", // → TBAI Bizkaia
-    taxRegion: "bizkaia",
+    taxRegion: "ES_PENINSULA_BALEARES", // Bizkaia applies IVA; the foral route lives in fiscalTerritory
+    fiscalTerritory: "bizkaia",
     timezone: "Europe/Madrid",
     ccaaCode: "EUSK",
     establishmentClass: "4_estrellas",
@@ -276,7 +283,8 @@ const HOTELS: HotelSpec[] = [
     address: "Carretera de Cala d'Or s/n",
     municipality: "Felanitx",
     province: "Illes Balears",
-    taxRegion: "common",
+    taxRegion: "ES_PENINSULA_BALEARES",
+    fiscalTerritory: "common",
     timezone: "Europe/Madrid",
     ccaaCode: "BAL",
     establishmentClass: "5_estrellas",
@@ -316,7 +324,8 @@ const HOTELS: HotelSpec[] = [
     address: "Cuesta de Gomérez 8",
     municipality: "Granada",
     province: "Granada",
-    taxRegion: "common",
+    taxRegion: "ES_PENINSULA_BALEARES",
+    fiscalTerritory: "common",
     timezone: "Europe/Madrid",
     ccaaCode: "AND",
     establishmentClass: "4_estrellas",
@@ -594,6 +603,7 @@ async function seedProperty(spec: HotelSpec) {
       province: spec.province,
       country: "ES",
       taxRegion: spec.taxRegion,
+      fiscalTerritory: spec.fiscalTerritory,
       timezone: spec.timezone,
       status: "open"
     },
@@ -603,7 +613,8 @@ async function seedProperty(spec: HotelSpec) {
       address: spec.address,
       municipality: spec.municipality,
       province: spec.province,
-      taxRegion: spec.taxRegion
+      taxRegion: spec.taxRegion,
+      fiscalTerritory: spec.fiscalTerritory
     }
   });
 

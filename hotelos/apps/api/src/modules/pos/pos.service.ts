@@ -511,7 +511,21 @@ export async function addPosLine(input: { ticketId: string; name: string; quanti
 }
 
 type RoomChargeTarget = { roomId: string; reservationId: string; folioId: string };
-type PostedFolioLine = { id: string; folioId: string; total: number; postedAt: Date };
+type PostedFolioLine = { id: string; folioId: string; total: number; postedAt: Date; taxCategory: PosTaxCategory };
+
+/** Fiscal category of a room charge (Tanda 3): food & beverage outlets vs general services (spa, shop…). */
+export type PosTaxCategory = "food_beverage" | "general_services";
+
+// Outlet types whose tickets are restaurant / bar / room-service consumption
+// (hostelería: IVA 10 %, IGIC 7 %, IPSI 2 %). Anything else (spa, shop,
+// laundry…) is a general service (IVA 21 %, IGIC 7 %, IPSI 4 %).
+const FOOD_BEVERAGE_OUTLET_TYPES: ReadonlySet<string> = new Set(["restaurant", "bar", "cafe", "cafeteria", "roomservice", "room_service", "minibar", "breakfast"]);
+
+/** Tax category a ticket takes when charged to the room, from its outlet type. Pure. */
+export function taxCategoryForOutlet(outletType: string | null | undefined): PosTaxCategory {
+  const code = (outletType ?? "").trim().toLowerCase();
+  return FOOD_BEVERAGE_OUTLET_TYPES.has(code) ? "food_beverage" : "general_services";
+}
 
 /**
  * Transactional core of folio.service `postFolioLine` (open-folio guard + line
@@ -520,15 +534,21 @@ type PostedFolioLine = { id: string; folioId: string; total: number; postedAt: D
  * transaction client today; once it does, this helper should be replaced by
  * `postFolioLine({ ..., tx })`. The post-commit side effects it performs
  * (routing, audit event, domain event) are replayed by closePosTicket.
+ *
+ * Tanda 3: the line keeps the historical type "minibar" (posting rules and
+ * reports key on it) but carries FolioLine.taxCategory derived from the
+ * outlet — food_beverage for restaurant / bar / café / room service, else
+ * general_services — which is what invoicing resolves the rate from.
  */
 async function postRoomChargeTx(
   tx: Prisma.TransactionClient,
-  input: { folioId: string; description: string; amount: number; postedBy: string }
+  input: { folioId: string; description: string; amount: number; postedBy: string; outletType?: string | null }
 ): Promise<PostedFolioLine> {
   const folio = await tx.folio.findUnique({ where: { id: input.folioId }, select: { id: true, status: true } });
   if (!folio) throw new NotFoundError("El folio no existe.");
   if (folio.status !== "open") throw new ConflictError("El folio está cerrado; no admite más cargos ni movimientos.");
   const total = round2(input.amount);
+  const taxCategory = taxCategoryForOutlet(input.outletType);
   const created = await tx.folioLine.create({
     data: {
       folioId: folio.id,
@@ -537,12 +557,13 @@ async function postRoomChargeTx(
       quantity: 1,
       unitPrice: total,
       taxCode: null,
+      taxCategory,
       total,
       postedBy: input.postedBy
     },
     select: { id: true, folioId: true, total: true, postedAt: true }
   });
-  return { id: created.id, folioId: created.folioId, total: dec(created.total), postedAt: created.postedAt };
+  return { id: created.id, folioId: created.folioId, total: dec(created.total), postedAt: created.postedAt, taxCategory };
 }
 
 export async function closePosTicket(input: {
@@ -597,7 +618,13 @@ export async function closePosTicket(input: {
     });
     if (closed.count === 0) throw ticketAlreadyClosed(ticket.id);
     if (!target) return null;
-    return postRoomChargeTx(tx, { folioId: target.folioId, description, amount: ticket.total, postedBy: input.context.userId });
+    return postRoomChargeTx(tx, {
+      folioId: target.folioId,
+      description,
+      amount: ticket.total,
+      postedBy: input.context.userId,
+      outletType: outletCode(ticket.outletId)
+    });
   });
 
   if (posted && target) {
@@ -613,6 +640,7 @@ export async function closePosTicket(input: {
       id: posted.id,
       folioId: finalLine?.folioId ?? posted.folioId,
       type: "minibar",
+      taxCategory: posted.taxCategory,
       description,
       quantity: 1,
       unitPrice: posted.total,

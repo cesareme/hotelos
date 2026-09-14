@@ -1,26 +1,10 @@
-const API_BASE_URL = import.meta.env.VITE_API_URL ?? "http://127.0.0.1:3000";
+// Back Office API client (Setup Center, property setup forms, configuration
+// categories). Every call goes through `apiRequest` so it carries the session
+// JWT, the tenant context and the shared 401 handling (Tanda 3 · CF-05). Errors
+// surface as `ApiError` (extends Error, carries `.status`), so callers that only
+// read `error.message` keep working.
 
-export type BackOfficeDashboard = {
-  setupProgress: number;
-  goLiveReadiness: "ready" | "blocked";
-  blockingIssues: Array<{ checkCode: string; message: string; severity: string }>;
-  activeModules: number;
-  modulesNeedingConfiguration: unknown[];
-  integrationErrors: number;
-  roomsMapped: number;
-  invoiceSequenceStatus: string;
-  paymentProviderStatus: string;
-  aiStatus: string;
-  recommendedNextAction: string;
-};
-
-export async function fetchBackOfficeDashboard(propertyId: string): Promise<BackOfficeDashboard> {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/dashboard`);
-  if (!response.ok) {
-    throw new Error("Unable to load Back Office dashboard.");
-  }
-  return response.json() as Promise<BackOfficeDashboard>;
-}
+import { apiRequest } from "./api-client";
 
 export type PropertySetupFormField = {
   key: string;
@@ -130,104 +114,58 @@ export type ConfigurationCategoryGroup = {
   categories: ConfigurationCategory[];
 };
 
-export async function fetchPropertySetupForms(propertyId: string): Promise<{ propertyId: string; forms: PropertySetupForm[] }> {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/property-setup/forms`);
-  if (!response.ok) {
-    throw new Error("Unable to load property setup forms.");
-  }
-  return response.json() as Promise<{ propertyId: string; forms: PropertySetupForm[] }>;
-}
-
-export async function fetchManualSetupOptions(propertyId: string): Promise<{ propertyId: string; coverage: ManualSetupCoverage; setupSummary: ManualSetupSummary; options: ManualSetupOption[] }> {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/manual-setup/options`);
-  if (!response.ok) {
-    throw new Error("Unable to load manual setup options.");
-  }
-  return response.json() as Promise<{ propertyId: string; coverage: ManualSetupCoverage; setupSummary: ManualSetupSummary; options: ManualSetupOption[] }>;
-}
-
-export async function fetchManualSetupOption(propertyId: string, optionCode: string): Promise<{
+export type ManualSetupOptionsResponse = {
   propertyId: string;
-  option: ManualSetupOption;
-  latestSubmission?: unknown;
-  submissions: unknown[];
-  databaseBinding: { readEndpoint?: string; saveEndpoint?: string; targetTables: string[]; inputCategories: string[] };
-}> {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/manual-setup/${optionCode}`);
-  if (!response.ok) {
-    throw new Error("Unable to load manual setup option.");
-  }
-  return response.json() as Promise<{
-    propertyId: string;
-    option: ManualSetupOption;
-    latestSubmission?: unknown;
-    submissions: unknown[];
-    databaseBinding: { readEndpoint?: string; saveEndpoint?: string; targetTables: string[]; inputCategories: string[] };
-  }>;
+  coverage: ManualSetupCoverage;
+  setupSummary: ManualSetupSummary;
+  options: ManualSetupOption[];
+};
+
+const propertyPath = (propertyId: string) => `/backoffice/properties/${encodeURIComponent(propertyId)}`;
+
+export function fetchPropertySetupForms(propertyId: string): Promise<{ propertyId: string; forms: PropertySetupForm[] }> {
+  return apiRequest<{ propertyId: string; forms: PropertySetupForm[] }>(`${propertyPath(propertyId)}/property-setup/forms`);
 }
 
-export async function saveManualSetupOption(propertyId: string, optionCode: string, payload: Record<string, unknown>) {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/manual-setup/${optionCode}`, {
+export function fetchManualSetupOptions(propertyId: string): Promise<ManualSetupOptionsResponse> {
+  return apiRequest<ManualSetupOptionsResponse>(`${propertyPath(propertyId)}/manual-setup/options`);
+}
+
+export function saveManualSetupOption(propertyId: string, optionCode: string, payload: Record<string, unknown>): Promise<unknown> {
+  return apiRequest<unknown>(`${propertyPath(propertyId)}/manual-setup/${encodeURIComponent(optionCode)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: payload
   });
-  if (!response.ok) {
-    throw new Error("Unable to save manual setup option.");
-  }
-  return response.json();
 }
 
-export async function fetchPropertySetupForm(propertyId: string, formCode: string): Promise<PropertySetupForm> {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/property-setup/forms/${formCode}`);
-  if (!response.ok) {
-    throw new Error("Unable to load property setup form.");
-  }
-  return response.json() as Promise<PropertySetupForm>;
+export function fetchPropertySetupForm(propertyId: string, formCode: string): Promise<PropertySetupForm> {
+  return apiRequest<PropertySetupForm>(`${propertyPath(propertyId)}/property-setup/forms/${encodeURIComponent(formCode)}`);
 }
 
-export async function savePropertySetupForm(propertyId: string, formCode: string, payload: Record<string, unknown>) {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/property-setup/forms/${formCode}`, {
+export function savePropertySetupForm(propertyId: string, formCode: string, payload: Record<string, unknown>): Promise<unknown> {
+  return apiRequest<unknown>(`${propertyPath(propertyId)}/property-setup/forms/${encodeURIComponent(formCode)}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: payload
   });
-  if (!response.ok) {
-    throw new Error("Unable to save property setup form.");
-  }
-  return response.json();
 }
 
-export async function fetchConfigurationCategories(propertyId: string): Promise<{ propertyId: string; groups: ConfigurationCategoryGroup[] }> {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/configuration/categories`);
-  if (!response.ok) {
-    throw new Error("Unable to load configuration categories.");
-  }
-  return response.json() as Promise<{ propertyId: string; groups: ConfigurationCategoryGroup[] }>;
+export function fetchConfigurationCategories(propertyId: string): Promise<{ propertyId: string; groups: ConfigurationCategoryGroup[] }> {
+  return apiRequest<{ propertyId: string; groups: ConfigurationCategoryGroup[] }>(`${propertyPath(propertyId)}/configuration/categories`);
 }
 
-export async function fetchConfigurationCategory(propertyId: string, categoryCode: string): Promise<ConfigurationCategory> {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/configuration/categories/${categoryCode}`);
-  if (!response.ok) {
-    throw new Error("Unable to load configuration category.");
-  }
-  return response.json() as Promise<ConfigurationCategory>;
+export function fetchConfigurationCategory(propertyId: string, categoryCode: string): Promise<ConfigurationCategory> {
+  return apiRequest<ConfigurationCategory>(`${propertyPath(propertyId)}/configuration/categories/${encodeURIComponent(categoryCode)}`);
 }
 
-export async function createConfigurationCategoryOption(
+export function createConfigurationCategoryOption(
   propertyId: string,
   categoryCode: string,
   option: Record<string, unknown>
 ): Promise<ConfigurationCategoryOption> {
-  const response = await fetch(`${API_BASE_URL}/backoffice/properties/${propertyId}/configuration/categories/${categoryCode}/options`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(option)
-  });
-  if (!response.ok) {
-    throw new Error("Unable to save category option.");
-  }
-  return response.json() as Promise<ConfigurationCategoryOption>;
+  return apiRequest<ConfigurationCategoryOption>(
+    `${propertyPath(propertyId)}/configuration/categories/${encodeURIComponent(categoryCode)}/options`,
+    { method: "POST", body: option }
+  );
 }
 
 export const backOfficeEndpoints = {

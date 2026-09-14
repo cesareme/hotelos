@@ -1,19 +1,47 @@
 export type ScreenScaffoldAction = string | { label: string; screen?: string; href?: string };
 
+// Canonical semantic tones. Legacy screens may still pass a free-form string,
+// which is rendered verbatim (no invented translation).
+export type ScreenScaffoldStatus = "ok" | "warn" | "error" | "info";
+
 export type ScreenScaffoldProps = {
   title: string;
   eyebrow: string;
   summary: string;
+  /**
+   * Honest "under construction" notice. When set, the scaffold renders a
+   * visible banner so nobody mistakes static copy for property data. Pass
+   * `true` for the default wording (`PENDING_SCREEN_NOTE`) or a custom string.
+   */
+  pendingNote?: string | boolean;
   cards: Array<{
     title: string;
     metric?: string;
-    // Status is rendered as a tag. The first 4 values are the canonical
-    // semantic tones; the rest are free-form labels used by legacy screens.
-    status?: "ok" | "warn" | "error" | "info" | string;
+    // Status is rendered as a Spanish tag; only the 4 canonical tones get a
+    // label mapping, anything else is shown as-is (legacy free-form labels).
+    status?: ScreenScaffoldStatus | string;
     body: string;
     actions?: ScreenScaffoldAction[];
   }>;
 };
+
+/** Default copy for `pendingNote: true`. */
+export const PENDING_SCREEN_NOTE = "Pantalla en construcción: los datos mostrados no proceden de tu propiedad.";
+
+const STATUS_LABELS: Record<ScreenScaffoldStatus, string> = {
+  ok: "Correcto",
+  warn: "Atención",
+  error: "Error",
+  info: "Info"
+};
+
+function isCanonicalStatus(status: string): status is ScreenScaffoldStatus {
+  return status in STATUS_LABELS;
+}
+
+function statusLabel(status: string): string {
+  return isCanonicalStatus(status) ? STATUS_LABELS[status] : status;
+}
 
 function actionToLabel(action: ScreenScaffoldAction): string {
   return typeof action === "string" ? action : action.label;
@@ -38,6 +66,7 @@ function handleAction(action: ScreenScaffoldAction) {
 }
 
 export function ScreenScaffold(props: ScreenScaffoldProps) {
+  const pendingNote = props.pendingNote === true ? PENDING_SCREEN_NOTE : props.pendingNote || null;
   return (
     <section className="bo-card">
       <div className="bo-card-head">
@@ -45,15 +74,32 @@ export function ScreenScaffold(props: ScreenScaffoldProps) {
           <p className="bo-muted">{props.eyebrow}</p>
           <h2>{props.title}</h2>
         </div>
-        <span className="bo-chip">Back Office</span>
       </div>
+      {pendingNote ? (
+        <p
+          role="note"
+          className="bo-muted"
+          style={{
+            margin: "0 0 var(--space-4)",
+            padding: "var(--space-3) var(--space-4)",
+            borderLeft: "3px solid var(--warn-ink)",
+            background: "var(--warn-bg)",
+            color: "var(--warn-ink)",
+            borderRadius: "var(--radius-md)",
+            textTransform: "none",
+            fontSize: 13
+          }}
+        >
+          {pendingNote}
+        </p>
+      ) : null}
       <p>{props.summary}</p>
       <div className="bo-grid two">
         {props.cards.map((card) => (
           <article className="bo-card" key={card.title}>
             <div className="bo-card-head">
               <h3>{card.title}</h3>
-              {card.status ? <span className={`bo-status ${card.status}`}>{card.status}</span> : null}
+              {card.status ? <span className={`bo-status ${card.status}`}>{statusLabel(card.status)}</span> : null}
             </div>
             {card.metric ? <div className="bo-metric">{card.metric}</div> : null}
             <p>{card.body}</p>

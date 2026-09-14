@@ -15,7 +15,6 @@ const adminStyles = readFileSync(new URL("../apps/admin-web/src/styles.css", imp
 const backOfficeDashboard = readFileSync(new URL("../apps/admin-web/src/screens/BackOfficeDashboard.tsx", import.meta.url), "utf8");
 const propertyMapper = readFileSync(new URL("../apps/admin-web/src/screens/PropertyMapper.tsx", import.meta.url), "utf8");
 const aiSettings = readFileSync(new URL("../apps/admin-web/src/screens/AISettings.tsx", import.meta.url), "utf8");
-const departmentManager = readFileSync(new URL("../apps/admin-web/src/screens/DepartmentManager.tsx", import.meta.url), "utf8");
 const mobileSummary = readFileSync(new URL("../apps/mobile/src/screens/settings/BackOfficeSetupScreen.tsx", import.meta.url), "utf8");
 const docs = readFileSync(new URL("../docs/backoffice-addendum.md", import.meta.url), "utf8");
 
@@ -25,23 +24,15 @@ describe("Back Office hotel setup layer", () => {
       "BackOfficeDashboard",
       "PropertySetupWizard",
       "GoLiveChecklist",
-      "OrganizationSettings",
-      "PropertySettings",
       "PropertyMapper",
-      "RoomTypeManager",
-      "RoomInventoryManager",
-      "DepartmentManager",
       "UserRoleManager",
       "ModuleManager",
-      "ModuleConfigurationCenter",
       "ModuleHealthCenter",
-      "IntegrationManager",
       "TaxComplianceSettings",
       "BillingSettings",
       "AccountingSettings",
       "PaymentSettings",
       "AISettings",
-      "DocumentTemplateManager",
       "AuditLogViewer"
     ]) {
       assert.equal(existsSync(new URL(`../apps/admin-web/src/screens/${screen}.tsx`, import.meta.url)), true);
@@ -248,10 +239,8 @@ describe("Back Office hotel setup layer", () => {
 
     assert.match(mobileSummary, /Back Office/);
     assert.match(mobileSummary, /Go-live blockers/);
-    assert.match(aiSettings, /AI Setup Assistant/);
-    assert.match(aiSettings, /Preview before apply/);
-    assert.match(departmentManager, /Housekeeping configuration/);
-    assert.match(departmentManager, /Maintenance configuration/);
+    assert.match(aiSettings, /ai-settings/);
+    assert.match(aiSettings, /defaultAutomationLevel/);
     assert.match(docs, /The Back Office is the configuration and control center/);
   });
 

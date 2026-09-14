@@ -9,6 +9,56 @@ let cachedToken: string | null = null;
 let cachedPermissions: string[] | null = null;
 let inFlightLogin: Promise<string> | null = null;
 
+// ---------------------------------------------------------------------------
+// Forced password rotation (Tanda 3 · CFG-P1-6)
+//
+// A session opened with a temporary password gets 403 + details.code
+// "PASSWORD_CHANGE_REQUIRED" on every route outside the API allowlist. Instead
+// of N red cards, apiRequest records the state here and fires a window event
+// so auth/PublicAuthRoutes.tsx can swap the shell for ChangePasswordScreen.
+// The state is module-level (not persisted): a reload derives it again from
+// the stored user (`mustChangePassword`) or from the next 403.
+// ---------------------------------------------------------------------------
+
+export const PASSWORD_CHANGE_REQUIRED_CODE = "PASSWORD_CHANGE_REQUIRED";
+export const PASSWORD_CHANGE_REQUIRED_EVENT = "hotelos-password-change-required";
+
+let passwordChangeRequired = false;
+
+function isPasswordChangeRequiredDetails(details: unknown): boolean {
+  return (
+    typeof details === "object" &&
+    details !== null &&
+    (details as { code?: unknown }).code === PASSWORD_CHANGE_REQUIRED_CODE
+  );
+}
+
+function markPasswordChangeRequired(): void {
+  if (passwordChangeRequired) return;
+  passwordChangeRequired = true;
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent(PASSWORD_CHANGE_REQUIRED_EVENT));
+  }
+}
+
+/** True once the API has answered PASSWORD_CHANGE_REQUIRED for this session. */
+export function isPasswordChangeRequired(): boolean {
+  return passwordChangeRequired;
+}
+
+/** Reset after a successful change (the API revokes the session anyway) or a logout. */
+export function clearPasswordChangeRequired(): void {
+  passwordChangeRequired = false;
+}
+
+/** Subscribe to the rotation requirement; returns the unsubscribe function. */
+export function onPasswordChangeRequired(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => undefined;
+  const handler = () => callback();
+  window.addEventListener(PASSWORD_CHANGE_REQUIRED_EVENT, handler);
+  return () => window.removeEventListener(PASSWORD_CHANGE_REQUIRED_EVENT, handler);
+}
+
 // Demo/dev fallback: when there's no logged-in user we transparently log in
 // with the seeded demo account so the API can serve mock data while the UI
 // is being built. This must NOT run in production builds — production always
@@ -69,7 +119,9 @@ export async function getCurrentUserPermissions(): Promise<string[]> {
 }
 
 export type RequestOptions = {
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  /** Surface a 401 as an ApiError instead of clearing the session (change-password form). */
+  keepSessionOn401?: boolean;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   body?: unknown;
   query?: Record<string, string | number | undefined>;
   signal?: AbortSignal;
@@ -118,14 +170,67 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     signal: options.signal
   });
   logBreadcrumb(`api.${method}.${path}`, "api", { method, path, status: response.status });
+  if (response.status === 401 && options.keepSessionOn401) {
+    const text = await response.text();
+    let message = text;
+    try {
+      message = (JSON.parse(text) as { message?: string }).message ?? text;
+    } catch {
+      /* raw body */
+    }
+    throw new ApiError(message || "No autorizado.", 401);
+  }
   if (response.status === 401) {
     cachedToken = null;
     cachedPermissions = null;
     inFlightLogin = null;
     // Clear stored session + notify listeners so AuthGate redirects to login.
+    passwordChangeRequired = false;
     clearSession();
     throw new ApiError("Authentication expired. Refresh the page.", 401);
   }
+  if (!response.ok) {
+    const text = await response.text();
+    let message = text;
+    let correlationId: string | undefined;
+    let details: unknown;
+    try {
+      const parsed = JSON.parse(text) as { message?: string; correlationId?: string; details?: unknown };
+      message = parsed.message ?? text;
+      correlationId = parsed.correlationId;
+      details = parsed.details;
+    } catch {
+      /* keep raw body as the message */
+    }
+    if (response.status === 403 && isPasswordChangeRequiredDetails(details)) {
+      markPasswordChangeRequired();
+    }
+    throw new ApiError(message || `HTTP ${response.status}`, response.status, correlationId, details);
+  }
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
+}
+
+export function apiBase(): string { return API_BASE; }
+
+// ---------------------------------------------------------------------------
+// Public requests (no session, no demo fallback): invitations, password reset.
+// Kept here so the no-raw-fetch contract test has a single fetch() owner.
+// ---------------------------------------------------------------------------
+export type PublicRequestOptions = {
+  method?: "GET" | "POST";
+  body?: unknown;
+  signal?: AbortSignal;
+};
+
+export async function publicRequest<T>(path: string, options: PublicRequestOptions = {}): Promise<T> {
+  const method = options.method ?? "GET";
+  const response = await fetch(`${apiBase()}${path}`, {
+    method,
+    headers: options.body ? { "Content-Type": "application/json" } : undefined,
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: options.signal
+  });
   if (!response.ok) {
     const text = await response.text();
     let message = text;
@@ -144,5 +249,3 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
-
-export function apiBase(): string { return API_BASE; }

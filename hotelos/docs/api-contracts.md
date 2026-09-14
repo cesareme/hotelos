@@ -11,6 +11,9 @@ API edge permissions are declared in `apps/api/src/security/route-permissions.ts
 - High-risk operational actions name the same permissions as the service layer.
 - Critical actions such as refunds, invoice issue/cancel, journal posting, room blocking, and AI confirmation execution require high-risk or role-specific permissions.
 - The manifest is additive to service-level validation; backend tools still validate business rules, property scope, confirmations, and audit events.
+- `PUT` is an accepted verb (Tanda 3): it is used for idempotent overrides such as `PUT /backoffice/properties/:propertyId/taxes/rates` and fails closed like any other mutation when unmapped.
+- Forced password rotation (Tanda 3 · CFG-P1-6): a session opened with a temporary password (`User.mustChangePassword`) may only call the routes in `PASSWORD_CHANGE_ALLOWLIST` (`apps/api/src/lib/auth-context.ts`: change-password, password-policy, `/users/me/*`, sessions). Any other route answers `403` with `details.code = "PASSWORD_CHANGE_REQUIRED"`; the front redirects to the change-password screen. Public routes and unknown paths (404) are not gated.
+- Boot policy (Tanda 3 · VeriFactu): `resolveVerifactuSoftware()` validates the `SistemaInformatico` block (producer NIF, `IdSistemaInformatico`, version, installation number). With `VERIFACTU_MODE` other than `sandbox` an invalid block aborts the boot (`process.exit(1)`, like AUTH-04); in sandbox it only logs a warning. `GET /health` exposes it as `checks.verifactu.software = { ok, errors }`.
 
 ## Audit Integrity
 
@@ -42,6 +45,8 @@ Additional app-shell and security endpoints:
 - `POST /auth/sessions/:id/revoke`
 - `POST /auth/mfa/challenge`
 - `POST /auth/mfa/verify`
+- `GET /auth/invitations/:token` (public, rate-limited 30/min): `{ email, fullName, organizationName, propertyName, roleName, expiresAt }` for a pending staff invitation. Unknown, expired, used and revoked tokens all answer the same generic `404` (no enumeration oracle).
+- `POST /auth/accept-invite` (public, rate-limited 5/min): `{ token, password, deviceId? }` sets the password (policy violations → `400` with the policy message), activates the user, consumes the token and returns the same shape as `POST /auth/login` (`token`, `sessionId`, `user`, `property`).
 - `GET /users/me/properties`
 - `GET /properties`
 - `GET /notifications`
@@ -218,6 +223,19 @@ PMS Core is enabled by default and cannot be disabled. Optional modules validate
 
 Integration connection config may include only operational settings. Credentials are stored in a secret manager and referenced through `credentialsSecretRef`; plaintext credentials are rejected.
 
+## Upsell Offers (Tanda 3 · CF-02)
+
+Staff catalogue over Prisma `UpsellOffer` — the same table `GET /dashboards/upsells` aggregates. The former front paths under `/guest-self-service/upsell_offers` never existed.
+
+- `GET /properties/:propertyId/upsell-offers` (`guest_self_service.read`)
+- `POST /properties/:propertyId/upsell-offers` (`guest_self_service.manage`) — body `{ name, offerType, price?, currency? (ISO 4217, default EUR), taxCategory?, code?, description?, channel?: pre_stay | in_stay | checkout | kiosk, imageUrl?, active?, availabilityRulesJson? }`; writes `UpsellOfferCreated`.
+- `PATCH /upsell-offers/:id` (`guest_self_service.manage`) — partial update of the same fields (empty body → `400`); tenant-guarded through the `upsellOffer` resolver; writes `UpsellOfferUpdated`.
+
+## Notifications And Platform Console (Tanda 3)
+
+- `GET /notifications/email-status` (`users.invite`): `{ configured, provider, from, mode: "real" | "simulated" | "disabled" }` so invitation screens show a copyable link instead of a fake "sent" when email is not configured.
+- `POST /admin/tenants/:orgId/users/:userId/reissue-invite` (`admin.tenants.manage`): replaces the clear-text temporary password flow with a persisted invitation the owner accepts through `POST /auth/accept-invite`.
+
 ## Real Estate, Assets, And Owner Dashboard
 
 - `GET /properties/:propertyId/assets`
@@ -242,6 +260,9 @@ Capex approval requires `asset.capex.approve`. Room profitability rolls up reser
 - `POST /guest-register-records/:id/queue-ses`
 - `GET /properties/:propertyId/ses-hospedajes/submissions`
 - `PATCH /ses-hospedajes/submissions/:id/status`
+- `GET /properties/:propertyId/ses/submissions` (Prisma pipeline, `guest_register.read`): cursor-paginated history of what was sent to the MIR — bare array by default, `{ items, nextCursor, total }` with `?cursor=` / `?envelope=1`, `X-Total-Count` / `X-Next-Cursor` headers always, optional `?status=` filter.
+- `GET /properties/:propertyId/ses/establishment` (`guest_register.read`): `{ ok, missing[], establishment: { registryNumber, taxId, legalName, address, municipality, municipalityCode, province, postalCode, country } }` — the block the SES XML carries, resolved from the property, its organization and the compliance settings, never from environment defaults.
+- `POST /properties/:propertyId/ses/submissions` answers `409` with `details.code = "SES_ESTABLISHMENT_INCOMPLETE"` and the same `missing` list when the establishment profile is incomplete.
 - `GET /audit-events`
 - `GET /events`
 - `GET /ai/tool-calls`
@@ -296,7 +317,9 @@ Guest register records retain required extracted fields and signature references
 - `POST /backoffice/properties/:propertyId/maintenance-areas/:areaId/rooms`
 - `PATCH /backoffice/properties/:propertyId/maintenance-rules/:ruleCode`
 - `GET /backoffice/properties/:propertyId/users`
-- `POST /backoffice/properties/:propertyId/users/invite`
+- `POST /backoffice/properties/:propertyId/users/invite` — body `{ email, fullName, phone?, roleId, mfaRequired? }` (validated, `400`). Creates the user as `invited` with the role, persists an invitation token (`user_invitations`, 72 h) and returns `{ user, invitation: { inviteUrl, expiresAt, delivery: { status: "sent" | "simulated" | "failed" | "disabled", provider?, errorMessage? } } }`; the user creation never fails because of the email.
+- `GET /backoffice/properties/:propertyId/roles` — roles of the property's organization for the invite selector (`GET /backoffice/roles` is the static template catalogue).
+- `POST /backoffice/properties/:propertyId/users/:userId/reissue-invite` — revokes the previous tokens and issues a new invitation (same response as the invite). The user must belong to the property's organization (opaque `404` otherwise).
 - `POST /backoffice/properties/:propertyId/users/:userId/disable`
 - `GET /backoffice/roles`
 - `GET /backoffice/permissions`
@@ -306,6 +329,9 @@ Guest register records retain required extracted fields and signature references
 - `PATCH /backoffice/properties/:propertyId/compliance-settings`
 - `GET /backoffice/properties/:propertyId/billing-settings`
 - `PATCH /backoffice/properties/:propertyId/billing-settings`
+- `GET /backoffice/properties/:propertyId/taxes` (`compliance.configure`) — indirect-tax profile: canonical `taxRegion` (`ES_PENINSULA_BALEARES` | `ES_CANARIAS` | `ES_CEUTA` | `ES_MELILLA`), `regionSource`, `figure` (IVA/IGIC/IPSI), `impuesto` (01/02/03), `touristTaxTreatment`, `rates[]` per fiscal category (`ratePercent`, `calificacion` S1/N1, `source` db|catalog, `legalBasis`, `verifyAgainstOrdinance`, `validFrom`), `ipsiOrdinanceConfirmedAt` and `warnings[]`.
+- `PUT /backoffice/properties/:propertyId/taxes/rates` (`compliance.configure`, high) — body `{ category, ratePercent (0..100, 2 decimals), calificacion?: "S1" | "N1", validFrom?: YYYY-MM-DD }`; idempotent override of one category, returns the refreshed profile.
+- `POST /backoffice/properties/:propertyId/taxes/provision` (`compliance.configure`, high) — idempotent provisioning of the statutory catalogue for the property's region: `{ taxRegion, provisioned, skipped, profile }`.
 - `GET /backoffice/properties/:propertyId/accounting-settings`
 - `PATCH /backoffice/properties/:propertyId/accounting-settings`
 - `GET /backoffice/properties/:propertyId/ai-settings`

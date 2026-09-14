@@ -6,6 +6,13 @@
 
 import { z } from "zod";
 
+// Fiscal categories of the indirect-tax catalogue (Tanda 3, contract A
+// TaxCategory in packages/compliance/src/spain/indirect-tax.ts). A folio line
+// may override the category its type implies (POS food & beverage, tourist
+// tax, not-subject penalties); the service re-validates against the catalogue.
+export const TAX_CATEGORY_VALUES = ["accommodation", "food_beverage", "general_services", "transport", "tourist_tax", "not_subject"] as const;
+export type TaxCategoryValue = (typeof TAX_CATEGORY_VALUES)[number];
+
 // POST /folios/:id/lines — accept the "lines" wire shape AND the simplified
 // charge body documented in the task spec. We treat the line-item form as
 // canonical.
@@ -14,7 +21,10 @@ export const CreateFolioLineSchema = z.object({
   description: z.string().min(1, "required").max(500),
   quantity: z.number().positive("must be > 0"),
   unitPrice: z.number().nonnegative("must be >= 0"),
-  taxCode: z.string().optional()
+  // Legacy free-text code (ignored by invoicing since Tanda 3; kept for callers).
+  taxCode: z.string().optional(),
+  // Optional fiscal-category override, validated against the catalogue.
+  taxCategory: z.enum(TAX_CATEGORY_VALUES).optional()
 });
 
 export type CreateFolioLineInput = z.infer<typeof CreateFolioLineSchema>;

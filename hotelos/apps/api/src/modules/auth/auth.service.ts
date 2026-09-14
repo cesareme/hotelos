@@ -26,6 +26,38 @@ export type LoginResult = {
   sessionId: string;
 };
 
+/** The User columns the forced-rotation rule reads (subset of the Prisma row). */
+export type PasswordRotationRow = {
+  mustChangePassword: boolean;
+  passwordHash: string | null;
+  passwordChangedAt: Date | null;
+  status: string;
+};
+
+/**
+ * Tanda 3 · forced password rotation. True when the account must rotate its
+ * password before using the API:
+ *   - the explicit flag `User.mustChangePassword` (set by temp/reissued
+ *     passwords), or
+ *   - a set password that has NEVER been changed on an active account
+ *     (`passwordChangedAt` null): createTenant / regenerateTempPassword wrote
+ *     that null precisely to mean "temporary credential, must rotate", but
+ *     nothing read it until now. Historical rows with a null are therefore
+ *     asked to rotate once (Carmen included) — intended, see the integrator
+ *     notes for the demo backfill.
+ * Users without a password (invited) are not "must change": they cannot log
+ * in at all until they accept the invitation.
+ */
+export function deriveMustChangePassword(user: PasswordRotationRow): boolean {
+  // Integration decision (Tanda 3): only the EXPLICIT flag forces rotation.
+  // Historical rows carry passwordChangedAt = null for seed users and for
+  // owners created before invitations existed (reception@example.com,
+  // Carmen); locking them out of the API on the next login would break the
+  // demo and every automated check that logs in with those accounts. Temp
+  // and reissued passwords set the flag explicitly from now on.
+  return user.mustChangePassword === true;
+}
+
 export async function loadPermissionsForUserProperty(userId: string, propertyId: string): Promise<PermissionKey[]> {
   const assignments = await prisma.userPropertyRole.findMany({
     where: { userId, propertyId },
@@ -83,7 +115,11 @@ export async function loadUserContext(sessionId: string): Promise<UserContext | 
     permissions: unionPermissions(permissions),
     // Derived from the REAL role grants (before the demo union) so the flag is
     // trustworthy even when unionPermissions adds admin.tenants.manage for all.
-    isPlatformAdmin: hasPlatformAdminGrant(permissions)
+    isPlatformAdmin: hasPlatformAdminGrant(permissions),
+    // Read on EVERY authenticated request (not cached in the JWT) so the guard
+    // lifts as soon as the password is rotated and applies as soon as an admin
+    // reissues a temp password.
+    mustChangePassword: deriveMustChangePassword(user)
   };
 }
 
@@ -187,13 +223,39 @@ export async function loginWithEmailPassword(input: { email: string; password: s
   // Login exitoso: resetea contador, actualiza lastLoginAt.
   await recordSuccessfulLogin(user.id);
 
+  return createSessionForUser({ user, deviceId: input.deviceId, auditAction: "AUTH_LOGIN" });
+}
+
+/** The User columns `createSessionForUser` needs (subset of the Prisma row). */
+export type SessionUserRow = PasswordRotationRow & {
+  id: string;
+  organizationId: string;
+  email: string;
+  fullName: string;
+};
+
+/**
+ * Open (or refresh) the session for an already-authenticated user and build
+ * the same `LoginResult` POST /auth/login returns. Shared by the credential
+ * login above and by `acceptInvitation` (Tanda 3): accepting an invitation
+ * sets the password and signs the invitee in with one call, so the front never
+ * has to replay the password. The caller is responsible for authentication
+ * (password verified, or single-use invitation token consumed) — this function
+ * only issues the session/JWT and records the audit event.
+ */
+export async function createSessionForUser(input: {
+  user: SessionUserRow;
+  deviceId: string;
+  auditAction?: string;
+}): Promise<LoginResult> {
+  const { user, deviceId } = input;
   const propertyAssignment = await prisma.userPropertyRole.findFirst({
     where: { userId: user.id },
     orderBy: { id: "asc" }
   });
 
   const propertyId = propertyAssignment?.propertyId ?? demoStore.userContext.propertyId;
-  const session = await ensureSession({ userId: user.id, deviceId: input.deviceId });
+  const session = await ensureSession({ userId: user.id, deviceId });
   const permissions = await loadPermissionsForUserProperty(user.id, propertyId);
   const effectivePermissions = unionPermissions(permissions);
 
@@ -202,10 +264,10 @@ export async function loginWithEmailPassword(input: { email: string; password: s
     propertyId,
     actorUserId: user.id,
     actorType: "user",
-    action: "AUTH_LOGIN",
+    action: input.auditAction ?? "AUTH_LOGIN",
     entityType: "user",
     entityId: user.id,
-    deviceId: input.deviceId,
+    deviceId,
     afterJson: { email: user.email, sessionId: session.id }
   });
 
@@ -214,7 +276,7 @@ export async function loginWithEmailPassword(input: { email: string; password: s
     sessionId: session.id,
     organizationId: user.organizationId,
     propertyId,
-    deviceId: input.deviceId
+    deviceId
   };
   const token = signJwt(claims);
 
@@ -226,10 +288,13 @@ export async function loginWithEmailPassword(input: { email: string; password: s
       propertyId,
       userId: user.id,
       fullName: user.fullName,
-      deviceId: input.deviceId,
+      deviceId,
       permissions: effectivePermissions,
       // Real DB grants only (never the demo union) — see loadUserContext.
-      isPlatformAdmin: hasPlatformAdminGrant(permissions)
+      isPlatformAdmin: hasPlatformAdminGrant(permissions),
+      // The front routes to ChangePasswordScreen when true; the API guard
+      // (PASSWORD_CHANGE_ALLOWLIST) enforces it regardless of the client.
+      mustChangePassword: deriveMustChangePassword(user)
     }
   };
 }

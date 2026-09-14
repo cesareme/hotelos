@@ -38,6 +38,8 @@ export type UserRecord = {
   fullName: string;
   status: "active" | "invited" | "disabled";
   mfaEnabled: boolean;
+  /** Tanda 3: temp/reissued password pending rotation (mirror of User.mustChangePassword). */
+  mustChangePassword?: boolean;
 };
 
 export type DeviceRecord = {
@@ -680,6 +682,8 @@ export type FolioLineRecord = {
   quantity: number;
   unitPrice: number;
   taxCode?: string;
+  /** Tanda 3: fiscal category override resolved against the catalogue (null = derived from type). */
+  taxCategory?: string | null;
   total: number;
   postedAt: string;
   postedBy?: string;
@@ -1593,6 +1597,13 @@ export type UserContext = {
   permissions: PermissionKey[];
   /** Granted through REAL roles in the database (never the demo union): may act across organizations. */
   isPlatformAdmin?: boolean;
+  /**
+   * Tanda 3: true when the account must rotate its password before using the
+   * API (User.mustChangePassword, or a set password never changed — temp
+   * credential). Only /auth/change-password and the PASSWORD_CHANGE_ALLOWLIST
+   * routes (lib/auth-context.ts) are served while it is true.
+   */
+  mustChangePassword?: boolean;
 };
 
 export type DemoStore = {

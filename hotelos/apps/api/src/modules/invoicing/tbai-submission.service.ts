@@ -1,21 +1,65 @@
-import { buildTbaiXml, computeTbaiHash, submitTbaiRegistro, type TbaiTerritory } from "@hotelos/compliance";
+import { buildTbaiXml, computeTbaiHash, resolveVerifactuSoftware, submitTbaiRegistro, type TbaiTerritory } from "@hotelos/compliance";
 import { prisma } from "@hotelos/database";
 import type { EventEnvelope } from "@hotelos/shared";
 import { signSubmissionXml } from "../../lib/compliance-signing.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { issuerForInvoice } from "./issuer-identity.service.js";
 
-// Software producer block (NIF of the software PRODUCER, not the invoice
-// issuer). TBAI_SOFTWARE_NIF MUST be a real NIF before sending to a hacienda
-// foral — the all-zero placeholder is only tolerated in development.
-const TBAI_SOFTWARE = {
-  nif: process.env.TBAI_SOFTWARE_NIF ?? "B00000000",
-  name: "HotelOS",
-  licenseKey: process.env.TBAI_LICENSE_KEY ?? "TBAI-LIC-HOTELOS-001",
-  developerName: "HotelOS SL",
-  softwareName: "HotelOS TicketBAI",
-  version: "0.1.0"
+// TicketBAI <Software> block. The producer identity (NIF, razón social,
+// product name, version) is the SAME declared for VeriFactu — one
+// resolveVerifactuSoftware() for both (contract E) — plus the two TBAI-only
+// values, validated against the TicketBAI XSD lengths:
+//   TBAI_LICENSE_KEY     LicenciaTBAI granted by the diputación foral (≤20)   required in TBAI_MODE=production
+//   TBAI_DEVICE_SERIAL   NumSerieDispositivo of this installation (≤30)      defaults to VERIFACTU_INSTALL_NUMBER
+// Blank values count as absent. In production a missing/invalid value blocks
+// the send (row parked as rejected with SOFTWARE_NOT_CONFIGURED); sandbox
+// tolerates the labelled defaults so the stub pipeline keeps working.
+const TBAI_LICENSE_MAX = 20;
+const TBAI_DEVICE_SERIAL_MAX = 30;
+const TBAI_LICENSE_DEFAULT = "TBAI-LIC-SIN-CONFIGURAR";
+
+export type TbaiSoftwareBlock = {
+  nif: string;
+  name: string;
+  licenseKey: string;
+  developerName: string;
+  softwareName: string;
+  version: string;
+  /** NumSerieDispositivo — needs buildTbaiXml support (today the compliance builder emits a literal). */
+  deviceSerial: string;
 };
+
+function readEnv(env: NodeJS.ProcessEnv, name: string): string | null {
+  const raw = env[name];
+  if (raw === undefined || raw === null) return null;
+  const trimmed = String(raw).trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+export function resolveTbaiSoftware(env: NodeJS.ProcessEnv = process.env): { ok: boolean; errors: string[]; software: TbaiSoftwareBlock } {
+  const base = resolveVerifactuSoftware(env);
+  const errors = [...base.errors];
+  const licenseKey = readEnv(env, "TBAI_LICENSE_KEY");
+  if (!licenseKey) errors.push("Falta TBAI_LICENSE_KEY (licencia TicketBAI concedida por la diputación foral).");
+  else if (licenseKey.length > TBAI_LICENSE_MAX) errors.push(`TBAI_LICENSE_KEY supera los ${TBAI_LICENSE_MAX} caracteres del XSD (${licenseKey.length}).`);
+  const deviceSerial = readEnv(env, "TBAI_DEVICE_SERIAL") ?? base.software.numeroInstalacion;
+  if (deviceSerial.length > TBAI_DEVICE_SERIAL_MAX) {
+    errors.push(`TBAI_DEVICE_SERIAL (NumSerieDispositivo) supera los ${TBAI_DEVICE_SERIAL_MAX} caracteres del XSD (${deviceSerial.length}).`);
+  }
+  return {
+    ok: errors.length === 0,
+    errors,
+    software: {
+      nif: base.software.nif,
+      name: base.software.nombreSistema,
+      licenseKey: licenseKey ?? TBAI_LICENSE_DEFAULT,
+      developerName: base.software.nombreRazon,
+      softwareName: base.software.nombreSistema,
+      version: base.software.version,
+      deviceSerial
+    }
+  };
+}
 
 let tbaiChain: Promise<void> = Promise.resolve();
 
@@ -77,6 +121,9 @@ export async function submitTbaiForInvoice(invoiceId: string, organizationId: st
     return { ratePercent: rate, taxableBase: Math.round(base * 100) / 100, taxAmount: Math.round(taxAmount * 100) / 100 };
   });
 
+  const tbaiMode = process.env.TBAI_MODE === "production" ? "production" : "sandbox";
+  const tbaiSoftware = resolveTbaiSoftware();
+
   const xml = buildTbaiXml({
     territory,
     emitterTaxId,
@@ -92,7 +139,7 @@ export async function submitTbaiForInvoice(invoiceId: string, organizationId: st
     previousInvoiceNumber: previousInvoiceMeta?.invoiceNumber ?? null,
     previousIssuedAt: previousInvoiceMeta?.issuedAt?.toISOString() ?? null,
     currentHash,
-    software: TBAI_SOFTWARE
+    software: tbaiSoftware.software
   });
 
   const signed = await signSubmissionXml({
@@ -107,8 +154,24 @@ export async function submitTbaiForInvoice(invoiceId: string, organizationId: st
     create: { invoiceId, propertyId: invoice.propertyId, territory, status: "submitting", xmlPayload: signed.signedXml, attempts: 1, submittedAt: new Date(), tbaiHash: currentHash, previousTbaiHash: previousTbai?.tbaiHash ?? null }
   });
 
-  const response = await submitTbaiRegistro({ territory, invoiceNumber: invoice.invoiceNumber, emitterTaxId, xmlPayload: signed.signedXml });
-  const finalStatus = response.status === "accepted" ? "accepted" : response.status === "rejected" ? "rejected" : "retrying";
+  // Production sends need the real producer block; a half-configured one is
+  // an operator error, not a hacienda rejection — park it as retryable.
+  const response =
+    tbaiMode === "production" && !tbaiSoftware.ok
+      ? {
+          status: "rejected" as const,
+          territory,
+          endpoint: `tbai:${territory}`,
+          errorCode: "SOFTWARE_NOT_CONFIGURED",
+          errorMessage: `Bloque Software TicketBAI incompleto: ${tbaiSoftware.errors.join(" ")}`
+        }
+      : await submitTbaiRegistro({ territory, invoiceNumber: invoice.invoiceNumber, emitterTaxId, xmlPayload: signed.signedXml });
+  const finalStatus =
+    response.status === "accepted"
+      ? "accepted"
+      : response.status === "rejected" && response.errorCode !== "SOFTWARE_NOT_CONFIGURED"
+        ? "rejected"
+        : "retrying";
 
   await prisma.tbaiSubmission.update({
     where: { id: submission.id },

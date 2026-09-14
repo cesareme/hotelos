@@ -1,14 +1,28 @@
 import type { HotelModuleCode } from "@hotelos/product";
 import { getHotelModuleManifest, getManualSetupOption, HOTEL_MODULES, MANUAL_SETUP_COVERAGE_SUMMARY, MANUAL_SETUP_OPTIONS } from "@hotelos/product";
-import { PERMISSIONS, ROLE_PERMISSION_MAP, type AuditEvent, type PermissionKey } from "@hotelos/shared";
+import { PERMISSIONS, ROLE_PERMISSION_MAP, isPlatformPermission, type AuditEvent, type PermissionKey } from "@hotelos/shared";
+import { existsSync } from "node:fs";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { createInvitation, getPendingInvitations, type PendingInvitationInfo } from "../auth/invitations.service.js";
 import { ensurePropertyModulePersisted, listPropertyModules } from "../product-modules/product-modules.service.js";
+import { getPropertyTaxProfile, invalidateTaxCache } from "../accounting/tax-rate.service.js";
+import { resolveSesEstablishment } from "../compliance/ses-submission.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
-import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
+import { ensurePropertyTaxes } from "../../lib/tenant-hydration.js";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
-import { normalizeTaxId, spanishTaxIdValidationMessage } from "@hotelos/compliance";
+import {
+  describeSesEstablishmentIssue,
+  isValidSpanishTaxId,
+  normalizeTaxId,
+  normalizeTaxRegion,
+  resolveVerifactuSoftware,
+  spanishTaxIdValidationMessage,
+  type TaxCategory,
+  type TaxRegion
+} from "@hotelos/compliance";
 import {
   demoStore,
   type AccountingSettingsRecord,
@@ -849,9 +863,12 @@ type PropertySetupFormField = {
     | "json";
   required?: boolean;
   categoryCode?: string;
-  options?: string[];
+  /** Plain strings (value === label) or canonical `{ value, label }` pairs (persisted value ≠ human label). */
+  options?: Array<string | PropertySetupFormOption>;
   mapsTo?: string;
 };
+
+export type PropertySetupFormOption = { value: string; label: string };
 
 type PropertySetupFormDefinition = {
   code: string;
@@ -866,6 +883,433 @@ type PropertySetupFormDefinition = {
   fields: PropertySetupFormField[];
   dataQualityChecks: string[];
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Tanda 3 (readiness-backoffice) · pure fiscal-profile and series helpers.
+// No I/O: unit-tested in __tests__/fiscal-profile.test.mts and
+// __tests__/invoice-series-policy.test.mts. Every writer of Property.taxRegion /
+// postalCode / ineMunicipalityCode / fiscalTerritory (profile form, compliance
+// settings, createTenant, bootstrap, onboarding import) goes through
+// resolveFiscalLocation so the four surfaces share one validation contract.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Canonical tax-region select (value persisted in Property.taxRegion, label shown by the wizard). */
+export const TAX_REGION_OPTIONS: readonly PropertySetupFormOption[] = [
+  { value: "ES_PENINSULA_BALEARES", label: "Península y Baleares (IVA)" },
+  { value: "ES_CANARIAS", label: "Canarias (IGIC)" },
+  { value: "ES_CEUTA", label: "Ceuta (IPSI)" },
+  { value: "ES_MELILLA", label: "Melilla (IPSI)" }
+];
+
+export const FISCAL_TERRITORIES = ["common", "bizkaia", "gipuzkoa", "araba", "navarra"] as const;
+export type FiscalTerritory = (typeof FISCAL_TERRITORIES)[number];
+
+/** Reporting territory select: territorio común → VeriFactu (AEAT); forales → TicketBAI / Hacienda Foral. */
+export const FISCAL_TERRITORY_OPTIONS: readonly PropertySetupFormOption[] = [
+  { value: "common", label: "Territorio común (AEAT · VeriFactu)" },
+  { value: "bizkaia", label: "Bizkaia (TicketBAI)" },
+  { value: "gipuzkoa", label: "Gipuzkoa (TicketBAI)" },
+  { value: "araba", label: "Araba/Álava (TicketBAI)" },
+  { value: "navarra", label: "Navarra (Hacienda Foral)" }
+];
+
+/** Tourist-tax engine `ccaaCode` values (TouristTaxRate.ccaaCode) plus the explicit "none". */
+export const TOURISM_TAX_REGION_CODES = ["CAT", "BAL", "EUSK"] as const;
+export type TourismTaxRegionCode = (typeof TOURISM_TAX_REGION_CODES)[number];
+
+export const TOURISM_TAX_REGION_OPTIONS: readonly PropertySetupFormOption[] = [
+  { value: "none", label: "Sin tasa turística autonómica" },
+  { value: "CAT", label: "Cataluña (IEET)" },
+  { value: "BAL", label: "Illes Balears (ITS)" },
+  { value: "EUSK", label: "Euskadi (tasa turística)" }
+];
+
+export const TOURIST_TAX_TREATMENTS = ["included_10", "not_subject", "none"] as const;
+export type TouristTaxTreatmentCode = (typeof TOURIST_TAX_TREATMENTS)[number];
+
+const POSTAL_CODE_PATTERN = /^\d{5}$/;
+const INE_MUNICIPALITY_CODE_PATTERN = /^\d{5}$/;
+/** Spanish province codes 01–52 (CP prefix and INE province code share the numbering). */
+const PROVINCE_CODE_PATTERN = /^(0[1-9]|[1-4]\d|5[0-2])$/;
+
+const hasText = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+
+/** Attach a machine-readable payload to a typed HTTP error (HttpError.details is forwarded on 4xx bodies). */
+function withDetails<T extends { details?: unknown }>(error: T, details: Record<string, unknown>): T {
+  error.details = details;
+  return error;
+}
+
+/** Spanish postal code: exactly 5 digits with a real province prefix (01–52). Throws 400 otherwise. */
+export function validatePostalCode(raw: string): string {
+  const value = raw.trim();
+  if (!POSTAL_CODE_PATTERN.test(value) || !PROVINCE_CODE_PATTERN.test(value.slice(0, 2))) {
+    throw new BadRequestError(`Código postal no válido («${raw.trim()}»): deben ser 5 dígitos y empezar por el código de provincia (01–52).`);
+  }
+  return value;
+}
+
+/** INE municipality code: 5 digits = 2 (province) + 3 (municipality). Throws 400 otherwise. */
+export function validateIneMunicipalityCode(raw: string): string {
+  const value = raw.trim();
+  if (!INE_MUNICIPALITY_CODE_PATTERN.test(value) || !PROVINCE_CODE_PATTERN.test(value.slice(0, 2))) {
+    throw withDetails(
+      new BadRequestError(
+        `Código INE de municipio no válido («${raw.trim()}»): deben ser 5 dígitos (2 de provincia + 3 de municipio) y la provincia debe coincidir con la del código postal.`
+      ),
+      { code: "INE_MUNICIPALITY_CODE_INVALID", ineMunicipalityCode: raw.trim() }
+    );
+  }
+  return value;
+}
+
+/**
+ * CP and INE code must belong to the same province (same two-digit prefix). Throws 400
+ * otherwise; the message states the rule so the PATCH caller knows what to fix.
+ */
+export function assertPostalAndIneCoherent(postalCode: string | null, ineMunicipalityCode: string | null): void {
+  if (!postalCode || !ineMunicipalityCode) return;
+  const postalProvinceCode = postalCode.slice(0, 2);
+  const ineProvinceCode = ineMunicipalityCode.slice(0, 2);
+  if (postalProvinceCode !== ineProvinceCode) {
+    throw withDetails(
+      new BadRequestError(
+        `El código postal (${postalCode}) y el código INE (${ineMunicipalityCode}) pertenecen a provincias distintas (${postalProvinceCode} ≠ ${ineProvinceCode}): el código INE de municipio debe coincidir con la provincia del código postal (mismos dos primeros dígitos).`
+      ),
+      { code: "POSTAL_INE_PROVINCE_MISMATCH", postalCode, ineMunicipalityCode, postalProvinceCode, ineProvinceCode }
+    );
+  }
+}
+
+/** SES.HOSPEDAJES establishment registry number: 3–64 alphanumeric characters or hyphens (e.g. H-CO-000123). */
+const SES_REGISTRY_NUMBER_PATTERN = /^[A-Za-z0-9-]{3,64}$/;
+
+/** Trimmed SES registry number; 400 (details.code SES_REGISTRY_NUMBER_INVALID) when it does not match the pattern. */
+export function validateSesRegistryNumber(raw: string): string {
+  const value = raw.trim();
+  if (!SES_REGISTRY_NUMBER_PATTERN.test(value)) {
+    throw withDetails(
+      new BadRequestError(
+        `Número de registro SES.HOSPEDAJES no válido («${value}»): entre 3 y 64 caracteres alfanuméricos o guiones, sin espacios.`
+      ),
+      { code: "SES_REGISTRY_NUMBER_INVALID", sesRegistryNumber: value, minLength: 3, maxLength: 64 }
+    );
+  }
+  return value;
+}
+
+/**
+ * Three-state text field of a PATCH body: `undefined` (key absent) → no change,
+ * `null` or blank text → clear (null), any other text → trimmed value. Numbers are
+ * accepted as text (postal codes typed as JSON numbers); anything else is a 400.
+ */
+export function normalizeClearablePatchField(raw: unknown, fieldName: string): string | null | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === null) return null;
+  if (typeof raw === "number" && Number.isFinite(raw)) return String(raw);
+  if (typeof raw !== "string") {
+    throw withDetails(new BadRequestError(`${fieldName} debe ser texto o null (null vacía el campo).`), {
+      code: "PATCH_FIELD_TYPE_INVALID",
+      field: fieldName,
+      receivedType: typeof raw
+    });
+  }
+  const value = raw.trim();
+  return value.length > 0 ? value : null;
+}
+
+/** Case-insensitive normalisation of the reporting territory; null when unrecognised. */
+export function normalizeFiscalTerritory(raw: string | null | undefined): FiscalTerritory | null {
+  if (!hasText(raw)) return null;
+  const value = raw.trim().toLowerCase();
+  const aliases: Record<string, FiscalTerritory> = {
+    common: "common",
+    comun: "common",
+    "común": "common",
+    aeat: "common",
+    verifactu: "common",
+    bizkaia: "bizkaia",
+    vizcaya: "bizkaia",
+    gipuzkoa: "gipuzkoa",
+    guipuzcoa: "gipuzkoa",
+    "guipúzcoa": "gipuzkoa",
+    araba: "araba",
+    alava: "araba",
+    "álava": "araba",
+    "araba/álava": "araba",
+    navarra: "navarra",
+    nafarroa: "navarra"
+  };
+  return aliases[value] ?? null;
+}
+
+/**
+ * Tourism-tax region as the engine's ccaaCode. Accepts the legacy wizard labels
+ * ("Catalonia", "Balearic Islands", "None"). Returns "none" for an explicit
+ * "no tax", the code, or null when unrecognised.
+ */
+export function normalizeTourismTaxRegion(raw: string | null | undefined): TourismTaxRegionCode | "none" | null {
+  if (!hasText(raw)) return null;
+  const value = raw.trim().toLowerCase();
+  const aliases: Record<string, TourismTaxRegionCode | "none"> = {
+    none: "none",
+    ninguna: "none",
+    "sin tasa": "none",
+    cat: "CAT",
+    catalonia: "CAT",
+    "cataluña": "CAT",
+    catalunya: "CAT",
+    ieet: "CAT",
+    bal: "BAL",
+    "balearic islands": "BAL",
+    baleares: "BAL",
+    "illes balears": "BAL",
+    "islas baleares": "BAL",
+    its: "BAL",
+    eusk: "EUSK",
+    euskadi: "EUSK",
+    "país vasco": "EUSK",
+    "pais vasco": "EUSK",
+    "basque country": "EUSK"
+  };
+  return aliases[value] ?? null;
+}
+
+export function normalizeTouristTaxTreatment(raw: string | null | undefined): TouristTaxTreatmentCode | null {
+  if (!hasText(raw)) return null;
+  const value = raw.trim().toLowerCase() as TouristTaxTreatmentCode;
+  return (TOURIST_TAX_TREATMENTS as readonly string[]).includes(value) ? value : null;
+}
+
+export type FiscalLocationFields = {
+  taxRegion?: string | null;
+  postalCode?: string | null;
+  ineMunicipalityCode?: string | null;
+  fiscalTerritory?: string | null;
+};
+
+export type FiscalLocation = {
+  /** Canonical region when one could be resolved (input, canonicalised existing value or province). */
+  taxRegion: TaxRegion | null;
+  /** Where the canonical region came from; null when nothing could be resolved. */
+  taxRegionSource: "input" | "existing" | "province" | null;
+  /** Value to persist: canonical region, the untouched legacy value when unresolvable, or null — never "". */
+  taxRegionToPersist: string | null;
+  postalCode: string | null;
+  ineMunicipalityCode: string | null;
+  fiscalTerritory: FiscalTerritory | null;
+};
+
+export type FiscalLocationDeps = {
+  normalizeTaxRegion: (raw: string | null | undefined, province?: string | null) => TaxRegion | null;
+};
+
+const FORAL_TERRITORIES: readonly FiscalTerritory[] = ["bizkaia", "gipuzkoa", "araba", "navarra"];
+
+/**
+ * Non-destructive merge of the fiscal-location fields (profile form, compliance
+ * settings, tenant creation, bootstrap, onboarding import):
+ *   · an explicit non-empty value wins and is validated (400 when invalid);
+ *   · an empty / missing value keeps the current one (canonicalised when the
+ *     legacy spelling is recognised, derived from the province when empty);
+ *   · "" is never persisted (the root cause of the ES_UNKNOWN_0 invoices).
+ * `clearOnNull` (compliance-settings PATCH only): an explicit `null` / "" for
+ * postalCode, ineMunicipalityCode or fiscalTerritory CLEARS the stored value
+ * instead of keeping it — a key that is absent (`undefined`) still keeps it.
+ * taxRegion is never cleared this way (the resolver needs a region; Property
+ * keeps its canonical/derived value).
+ * `deps` is injectable so the pure contract is unit-testable without the
+ * statutory catalogue module.
+ */
+export function resolveFiscalLocation(
+  input: { current: FiscalLocationFields; patch: FiscalLocationFields; province?: string | null; clearOnNull?: boolean },
+  deps: FiscalLocationDeps = { normalizeTaxRegion }
+): FiscalLocation {
+  const current = input.current;
+  const patch = input.patch;
+  const province = hasText(input.province) ? input.province.trim() : null;
+  /** true when the patch explicitly asks to empty the field (only in clearOnNull mode). */
+  const clears = (value: string | null | undefined): boolean => input.clearOnNull === true && value !== undefined && !hasText(value);
+
+  let taxRegion: TaxRegion | null = null;
+  let taxRegionSource: FiscalLocation["taxRegionSource"] = null;
+  let taxRegionToPersist: string | null = null;
+  if (hasText(patch.taxRegion)) {
+    // Explicit input is validated on its own (no province fallback: garbage must not
+    // silently become "the province's region").
+    const canonical = deps.normalizeTaxRegion(patch.taxRegion.trim(), null);
+    if (!canonical) {
+      throw new BadRequestError(
+        `Región fiscal no reconocida («${patch.taxRegion.trim()}»). Valores admitidos: ${TAX_REGION_OPTIONS.map((option) => option.value).join(", ")}.`
+      );
+    }
+    taxRegion = canonical;
+    taxRegionSource = "input";
+    taxRegionToPersist = canonical;
+  } else if (hasText(current.taxRegion)) {
+    const canonical = deps.normalizeTaxRegion(current.taxRegion.trim(), province);
+    taxRegion = canonical;
+    taxRegionSource = canonical ? "existing" : null;
+    // Unrecognised legacy value: keep it as-is (never blank another writer's data).
+    taxRegionToPersist = canonical ?? current.taxRegion.trim();
+  } else if (province) {
+    const canonical = deps.normalizeTaxRegion(null, province);
+    taxRegion = canonical;
+    taxRegionSource = canonical ? "province" : null;
+    taxRegionToPersist = canonical;
+  }
+
+  const postalCode = hasText(patch.postalCode)
+    ? validatePostalCode(patch.postalCode)
+    : clears(patch.postalCode)
+      ? null
+      : hasText(current.postalCode)
+        ? current.postalCode.trim()
+        : null;
+  const ineMunicipalityCode = hasText(patch.ineMunicipalityCode)
+    ? validateIneMunicipalityCode(patch.ineMunicipalityCode)
+    : clears(patch.ineMunicipalityCode)
+      ? null
+      : hasText(current.ineMunicipalityCode)
+        ? current.ineMunicipalityCode.trim()
+        : null;
+  assertPostalAndIneCoherent(postalCode, ineMunicipalityCode);
+
+  let fiscalTerritory: FiscalTerritory | null = null;
+  if (hasText(patch.fiscalTerritory)) {
+    fiscalTerritory = normalizeFiscalTerritory(patch.fiscalTerritory);
+    if (!fiscalTerritory) {
+      throw new BadRequestError(
+        `Territorio fiscal no reconocido («${patch.fiscalTerritory.trim()}»). Valores admitidos: ${FISCAL_TERRITORIES.join(", ")}.`
+      );
+    }
+  } else if (!clears(patch.fiscalTerritory) && hasText(current.fiscalTerritory)) {
+    fiscalTerritory = normalizeFiscalTerritory(current.fiscalTerritory);
+  }
+  if (fiscalTerritory && FORAL_TERRITORIES.includes(fiscalTerritory) && taxRegion && taxRegion !== "ES_PENINSULA_BALEARES") {
+    throw new BadRequestError(
+      `El territorio foral ${fiscalTerritory} solo es coherente con la región fiscal ES_PENINSULA_BALEARES (IVA), no con ${taxRegion}.`
+    );
+  }
+
+  return { taxRegion, taxRegionSource, taxRegionToPersist, postalCode, ineMunicipalityCode, fiscalTerritory };
+}
+
+// ── Invoice series (FISC-09) ────────────────────────────────────────────────
+
+/** Series codes the allocator understands (contract D: allocateInvoiceNumber series). */
+export const CANONICAL_SERIES_CODES = ["FAC", "SIM", "REC"] as const;
+
+/** Wizard/back-office invoice types → AEAT TipoFactura family stored in InvoiceSequence.invoiceType. */
+export function seriesInvoiceType(raw: string): "F1" | "F2" | "F3" | "R" | "R1" | "R2" | "R3" | "R4" | "R5" {
+  const value = raw.trim();
+  const aliases: Record<string, "F1" | "F2" | "R"> = {
+    full: "F1",
+    completa: "F1",
+    simplified: "F2",
+    simplificada: "F2",
+    rectifying: "R",
+    rectificativa: "R",
+    credit_note: "R",
+    abono: "R"
+  };
+  const mapped = aliases[value.toLowerCase()];
+  if (mapped) return mapped;
+  if (/^(F[123]|R[1-5]?)$/.test(value.toUpperCase())) return value.toUpperCase() as ReturnType<typeof seriesInvoiceType>;
+  throw new BadRequestError(
+    `Tipo de factura no reconocido («${value}»). Valores admitidos: full (F1), simplified (F2), rectifying / credit_note (R) o los códigos AEAT F1, F2, F3, R1–R5.`
+  );
+}
+
+/** FAC ↔ F1, SIM ↔ F2, REC ↔ R*: the allocator picks the series by code, so the pair must agree. Throws 400. */
+export function assertSeriesCodeMatchesType(sequenceCode: string, invoiceType: string): void {
+  const code = sequenceCode.trim().toUpperCase();
+  const expected: Record<string, RegExp> = { FAC: /^F[13]$/, SIM: /^F2$/, REC: /^R[1-5]?$/ };
+  const rule = expected[code];
+  if (rule && !rule.test(invoiceType)) {
+    throw new BadRequestError(`La serie ${code} solo admite facturas de tipo ${code === "FAC" ? "F1/F3" : code === "SIM" ? "F2" : "R (rectificativas)"}; recibido ${invoiceType}.`);
+  }
+}
+
+/** Year embedded in a legacy prefix such as "FAC-2026-" (null when the prefix carries none). */
+export function sequenceYearFromPrefix(prefix: string | null | undefined): number | null {
+  if (!prefix) return null;
+  const match = /(?:^|\D)(20\d{2})(?:\D|$)/.exec(prefix);
+  return match ? Number(match[1]) : null;
+}
+
+/** Calendar year in Europe/Madrid (an issue at 00:30 on 1 January belongs to the new year, not to UTC's). */
+export function madridYear(date: Date = new Date()): number {
+  return Number(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/Madrid", year: "numeric" }).format(date));
+}
+
+/** Series year: explicit `year` → year of the prefix → current Madrid year. Throws 400 on an out-of-range year. */
+export function resolveSequenceYear(input: { year?: number | null; prefix?: string | null; now?: Date }): number {
+  if (input.year !== undefined && input.year !== null) {
+    if (!Number.isInteger(input.year) || input.year < 2000 || input.year > 2100) {
+      throw new BadRequestError(`El ejercicio de la serie no es válido («${input.year}»): debe ser un año entre 2000 y 2100.`);
+    }
+    return input.year;
+  }
+  return sequenceYearFromPrefix(input.prefix) ?? madridYear(input.now);
+}
+
+/** Highest issued number (numeric suffix) among the invoice numbers of a series prefix; null when none. */
+export function maxIssuedNumber(invoiceNumbers: Array<string | null | undefined>, prefix: string): number | null {
+  let max: number | null = null;
+  for (const number of invoiceNumbers) {
+    if (!number || !number.startsWith(prefix)) continue;
+    const suffix = number.slice(prefix.length);
+    if (!/^\d+$/.test(suffix)) continue;
+    const value = Number(suffix);
+    if (max === null || value > max) max = value;
+  }
+  return max;
+}
+
+export type InvoiceSequencePatchViolation = {
+  code: "SERIES_PREFIX_LOCKED" | "SERIES_PADDING_LOCKED" | "SERIES_NEXT_NUMBER_BELOW_ISSUED";
+  field: "prefix" | "padding" | "nextNumber";
+  message: string;
+};
+
+/**
+ * Policy for editing a series that already has issued invoices: prefix and
+ * padding are frozen (renumbering a live series breaks the VeriFactu chain and
+ * the unique invoice numbers) and nextNumber can never drop to an already
+ * issued number. A series without issued invoices is freely editable.
+ */
+export function invoiceSequencePatchViolations(input: {
+  existing: { prefix: string | null; padding: number; nextNumber: number };
+  patch: { prefix?: string | null; padding?: number; nextNumber?: number };
+  issued: { count: number; maxNumber: number | null };
+}): InvoiceSequencePatchViolation[] {
+  const violations: InvoiceSequencePatchViolation[] = [];
+  if (input.issued.count === 0) return violations;
+  if (input.patch.prefix !== undefined && (input.patch.prefix ?? null) !== (input.existing.prefix ?? null)) {
+    violations.push({
+      code: "SERIES_PREFIX_LOCKED",
+      field: "prefix",
+      message: `No se puede cambiar el prefijo de una serie con ${input.issued.count} factura(s) emitida(s); crea una serie nueva para el próximo ejercicio.`
+    });
+  }
+  if (input.patch.padding !== undefined && input.patch.padding !== input.existing.padding) {
+    violations.push({
+      code: "SERIES_PADDING_LOCKED",
+      field: "padding",
+      message: `No se puede cambiar el número de dígitos de una serie con ${input.issued.count} factura(s) emitida(s).`
+    });
+  }
+  const floor = (input.issued.maxNumber ?? 0) + 1;
+  if (input.patch.nextNumber !== undefined && input.patch.nextNumber < floor) {
+    violations.push({
+      code: "SERIES_NEXT_NUMBER_BELOW_ISSUED",
+      field: "nextNumber",
+      message: `El siguiente número (${input.patch.nextNumber}) no puede ser inferior a ${floor}: la serie ya tiene emitida la ${input.issued.maxNumber}.`
+    });
+  }
+  return violations;
+}
 
 const categoryDefinitions: CategoryDefinitionRecord[] = [
   { id: "catdef_room_type_categories", code: "room_type_categories", name: "Room type categories", categoryGroup: "Rooms", entityType: "room_type", mode: "property_extendable", valueSchemaJson: {}, isCore: true, active: true, sortOrder: 5 },
@@ -953,10 +1397,11 @@ export const PROPERTY_SETUP_FORM_DEFINITIONS: PropertySetupFormDefinition[] = [
       { key: "taxId", label: "Tax ID", inputType: "text", required: true, mapsTo: "organizations.tax_id" },
       { key: "address", label: "Address", inputType: "textarea", required: true, mapsTo: "properties.address" },
       { key: "country", label: "Country", inputType: "select", required: true, options: ["ES", "PT", "FR", "IT"], mapsTo: "properties.country" },
-      { key: "region", label: "Region", inputType: "text", mapsTo: "properties.tax_region" },
       { key: "province", label: "Province", inputType: "text", mapsTo: "properties.province" },
       { key: "city", label: "City", inputType: "text", required: true, mapsTo: "properties.municipality" },
-      { key: "postalCode", label: "Postal code", inputType: "text", mapsTo: "property_setup_form_submissions.payload_json.postalCode" },
+      // Tanda 3 (FISC-08): postal code and INE municipality code live on Property (SES establishment block).
+      { key: "postalCode", label: "Postal code", inputType: "text", mapsTo: "properties.postal_code" },
+      { key: "ineMunicipalityCode", label: "INE municipality code", inputType: "text", mapsTo: "properties.ine_municipality_code" },
       { key: "phone", label: "Contact phone", inputType: "text", mapsTo: "property_setup_form_submissions.payload_json.phone" },
       { key: "email", label: "Contact email", inputType: "text", mapsTo: "property_setup_form_submissions.payload_json.email" },
       { key: "website", label: "Website", inputType: "text", mapsTo: "property_setup_form_submissions.payload_json.website" },
@@ -967,11 +1412,13 @@ export const PROPERTY_SETUP_FORM_DEFINITIONS: PropertySetupFormDefinition[] = [
       { key: "timezone", label: "Timezone", inputType: "select", required: true, options: ["Europe/Madrid", "Europe/Lisbon", "Europe/Paris"], mapsTo: "properties.timezone" },
       { key: "currency", label: "Currency", inputType: "select", required: true, options: ["EUR", "GBP", "USD"], mapsTo: "property_setup_form_submissions.payload_json.currency" },
       { key: "language", label: "Language", inputType: "select", options: ["es", "en", "ca", "fr"], mapsTo: "property_setup_form_submissions.payload_json.language" },
-      { key: "taxRegion", label: "Tax region", inputType: "select", options: ["Mainland Spain", "Canary Islands", "Ceuta", "Melilla"], mapsTo: "properties.tax_region" },
-      { key: "tourismTaxRegion", label: "Tourism tax region", inputType: "select", options: ["None", "Catalonia", "Balearic Islands"], mapsTo: "property_compliance_settings.tourism_tax_region" },
+      // Tanda 3: canonical values (value persisted, label displayed) — the wizard used to persist the English label.
+      { key: "taxRegion", label: "Tax region", inputType: "select", options: [...TAX_REGION_OPTIONS], mapsTo: "properties.tax_region" },
+      { key: "fiscalTerritory", label: "Fiscal territory (reporting route)", inputType: "select", options: [...FISCAL_TERRITORY_OPTIONS], mapsTo: "properties.fiscal_territory" },
+      { key: "tourismTaxRegion", label: "Tourism tax region", inputType: "select", options: [...TOURISM_TAX_REGION_OPTIONS], mapsTo: "property_compliance_settings.tourism_tax_region" },
       { key: "businessDateRules", label: "Business date rules", inputType: "textarea", mapsTo: "property_setup_form_submissions.payload_json.businessDateRules" }
     ],
-    dataQualityChecks: ["legal_profile_complete", "timezone_configured", "tax_region_configured"]
+    dataQualityChecks: ["issuer_legal_name_set", "issuer_tax_id_valid", "property_fiscal_address_complete", "timezone_configured", "tax_region_configured"]
   },
   {
     code: "building",
@@ -1222,7 +1669,8 @@ export const PROPERTY_SETUP_FORM_DEFINITIONS: PropertySetupFormDefinition[] = [
     setupStepCode: "tax_and_compliance",
     inputCategories: ["Tax codes", "Payment method categories", "Invoice sequences", "Compliance settings", "Retention rules"],
     fields: [
-      { key: "taxRegion", label: "Tax region", inputType: "text", required: true, mapsTo: "property_compliance_settings.tax_region" },
+      // Tanda 3: same canonical select as the profile form; persisted on Property AND mirrored to compliance settings.
+      { key: "taxRegion", label: "Tax region", inputType: "select", required: true, options: [...TAX_REGION_OPTIONS], mapsTo: "properties.tax_region" },
       { key: "authorityType", label: "Authority type", inputType: "select", required: true, options: ["ses_hospedajes", "mossos", "ertzaintza", "manual", "other"], mapsTo: "property_compliance_settings.configuration_json.authorityType" },
       { key: "paymentMethodCategory", label: "Payment method category", inputType: "text", categoryCode: "payment_method_categories", mapsTo: "property_category_options.payment_method_categories" },
       { key: "invoiceSequenceCode", label: "Invoice sequence code", inputType: "text", required: true, mapsTo: "invoice_sequences.sequence_code" },
@@ -1555,16 +2003,63 @@ function validatePropertySetupPayload(definition: PropertySetupFormDefinition, p
     .map((field) => `${field.label} es obligatorio.`);
 }
 
+/** Columns of Property that only exist in Prisma (the PropertyRecord mirror predates Tanda 3). */
+async function propertyFiscalColumns(propertyId: string): Promise<{
+  taxRegion: string | null;
+  province: string | null;
+  postalCode: string | null;
+  ineMunicipalityCode: string | null;
+  fiscalTerritory: string | null;
+}> {
+  const row = await prisma.property.findUnique({
+    where: { id: propertyId },
+    select: { taxRegion: true, province: true, postalCode: true, ineMunicipalityCode: true, fiscalTerritory: true }
+  });
+  return row ?? { taxRegion: null, province: null, postalCode: null, ineMunicipalityCode: null, fiscalTerritory: null };
+}
+
+/** Current values of the property_profile form keyed by field key (canonical codes; "" when unset). */
+async function propertyProfileFormValues(
+  propertyId: string,
+  property: PropertyRecord,
+  organization: OrganizationRecord,
+  compliance: PropertyComplianceSettingsRecord
+): Promise<Record<string, string>> {
+  const fiscal = await propertyFiscalColumns(propertyId);
+  const taxRegion = normalizeTaxRegion(fiscal.taxRegion ?? property.taxRegion ?? null, fiscal.province ?? property.province ?? null);
+  const tourismTaxRegion = normalizeTourismTaxRegion(compliance.tourismTaxRegion);
+  return {
+    name: property.name,
+    legalName: property.legalName ?? "",
+    taxId: organization.taxId ?? "",
+    address: property.address ?? "",
+    country: property.country,
+    province: property.province ?? "",
+    city: property.municipality ?? "",
+    postalCode: fiscal.postalCode ?? "",
+    ineMunicipalityCode: fiscal.ineMunicipalityCode ?? "",
+    timezone: property.timezone,
+    taxRegion: taxRegion ?? "",
+    fiscalTerritory: normalizeFiscalTerritory(fiscal.fiscalTerritory) ?? "",
+    tourismTaxRegion: tourismTaxRegion ?? ""
+  };
+}
+
 async function formExistingData(propertyId: string, formCode: string) {
   switch (formCode) {
     case "property_profile": {
       // Persistencia tanda 2: la vista de "datos existentes" confirma el guardado →
       // lee Prisma (fallback in-memory) para que sobreviva al reinicio.
       const property = await requireProperty(propertyId);
+      const organization = await requireOrganization(property.organizationId);
+      const compliance = await getComplianceSettings(propertyId);
       return {
         property,
-        organization: await requireOrganization(property.organizationId),
-        compliance: await getComplianceSettings(propertyId)
+        organization,
+        compliance,
+        // Tanda 3: form-key → current value map so the wizard PRELOADS instead of starting
+        // blank (a blank save used to overwrite taxRegion with ""). Canonical codes only.
+        values: await propertyProfileFormValues(propertyId, property, organization, compliance)
       };
     }
     // Fase 0 (Opción A): estructura de propiedad servida desde Prisma (fuente de verdad).
@@ -1611,8 +2106,30 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       // The organization is the property's OWN organization (never demoStore.organization /
       // org_123): writing the legal profile of one tenant must not touch another tenant's row.
       const organization = await requireOrganization(property.organizationId);
-      const before = { property: { ...property }, organization: { ...organization } };
+      const currentFiscal = await propertyFiscalColumns(property.id);
+      const before = { property: { ...property, ...currentFiscal }, organization: { ...organization } };
       // Persistencia tanda 2: Prisma primero (Property + Organization), después espejo.
+      // Tanda 3: fiscal-location fields are NON-destructive (empty input keeps the
+      // current value, "" is never persisted) and validated: canonical region (400 when
+      // unrecognised), 5-digit CP / INE coherent by province, reporting territory.
+      const nextProvince = payloadText(payload, "province", property.province ?? "");
+      const fiscal = resolveFiscalLocation({
+        current: currentFiscal,
+        patch: {
+          taxRegion: payloadText(payload, "taxRegion") || payloadText(payload, "region"),
+          postalCode: payloadText(payload, "postalCode"),
+          ineMunicipalityCode: payloadText(payload, "ineMunicipalityCode"),
+          fiscalTerritory: payloadText(payload, "fiscalTerritory")
+        },
+        province: nextProvince || null
+      });
+      const tourismTaxRegionInput = payloadText(payload, "tourismTaxRegion");
+      const tourismTaxRegion = tourismTaxRegionInput ? normalizeTourismTaxRegion(tourismTaxRegionInput) : undefined;
+      if (tourismTaxRegionInput && !tourismTaxRegion) {
+        throw new BadRequestError(
+          `Región de tasa turística no reconocida («${tourismTaxRegionInput}»). Valores admitidos: ${TOURISM_TAX_REGION_OPTIONS.map((option) => option.value).join(", ")}.`
+        );
+      }
       const nextProperty: PropertyRecord = {
         ...property,
         name: payloadText(payload, "name", property.name),
@@ -1620,9 +2137,9 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
         address: payloadText(payload, "address", property.address ?? ""),
         country: payloadText(payload, "country", property.country),
         municipality: payloadText(payload, "city", property.municipality ?? ""),
-        province: payloadText(payload, "province", property.province ?? ""),
+        province: nextProvince,
         timezone: payloadText(payload, "timezone", property.timezone),
-        taxRegion: payloadText(payload, "taxRegion", payloadText(payload, "region", property.taxRegion ?? ""))
+        taxRegion: fiscal.taxRegionToPersist ?? undefined
       };
       const legalNameInput = payloadText(payload, "legalName");
       // FISC-03: the profile form is the ONLY writer of Organization.taxId, the
@@ -1648,9 +2165,12 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
         legalName: nextProperty.legalName ?? null,
         address: nextProperty.address ?? null,
         municipality: nextProperty.municipality ?? null,
-        province: nextProperty.province ?? null,
+        province: nextProperty.province || null,
         country: nextProperty.country,
-        taxRegion: nextProperty.taxRegion ?? null,
+        taxRegion: fiscal.taxRegionToPersist,
+        postalCode: fiscal.postalCode,
+        ineMunicipalityCode: fiscal.ineMunicipalityCode,
+        fiscalTerritory: fiscal.fiscalTerritory,
         timezone: nextProperty.timezone
       };
       // upsert: tolera properties que solo existen en el seed in-memory (p.ej. prop_456).
@@ -1682,15 +2202,56 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       if (existingCompliance) {
         const nextCompliance: PropertyComplianceSettingsRecord = {
           ...existingCompliance.settings,
-          taxRegion: payloadText(payload, "taxRegion", existingCompliance.settings.taxRegion ?? ""),
-          tourismTaxRegion: payloadText(payload, "tourismTaxRegion", existingCompliance.settings.tourismTaxRegion ?? ""),
+          // Mirror of Property.taxRegion (canonical); never "" (undefined → NULL).
+          taxRegion: fiscal.taxRegionToPersist ?? undefined,
+          tourismTaxRegion:
+            tourismTaxRegion === undefined
+              ? existingCompliance.settings.tourismTaxRegion || undefined
+              : tourismTaxRegion === "none" || tourismTaxRegion === null
+                ? undefined
+                : tourismTaxRegion,
           updatedAt: nowIso()
         };
         const persisted = await persistComplianceSettings(nextCompliance);
         compliance = mirrorRecord(demoStore.propertyComplianceSettings, persisted, byPropertyId(input.propertyId));
       }
-      audit({ ...input, action: "PropertyProfileUpdated", entityType: "property", entityId: property.id, beforeJson: before, afterJson: { property, organization: nextOrganization, compliance } });
-      return { targetEntityType: "property", targetEntityId: property.id, result: property };
+      // The tax resolver caches region + rates per property: drop them so the next folio
+      // line / invoice uses the region just saved, then (re)provision the statutory
+      // catalogue for that region (idempotent; contract C). Provisioning failure is
+      // reported, never hidden: the profile IS saved, readiness will flag the missing rates.
+      invalidateTaxCache(property.id);
+      let taxProvisioning: { ok: boolean; taxRegion: string | null; provisioned?: number; skipped?: number; error?: string };
+      try {
+        const provisioned = await ensurePropertyTaxes({ propertyId: property.id, organizationId: property.organizationId, taxRegion: fiscal.taxRegionToPersist });
+        taxProvisioning = { ok: true, ...provisioned };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn("[backoffice.property_profile] ensurePropertyTaxes failed after profile save", {
+          propertyId: property.id,
+          correlationId: input.correlationId,
+          taxRegion: fiscal.taxRegionToPersist,
+          error: message
+        });
+        taxProvisioning = { ok: false, taxRegion: fiscal.taxRegion, error: message };
+      }
+      const fiscalAfter = {
+        taxRegion: fiscal.taxRegion,
+        taxRegionSource: fiscal.taxRegionSource,
+        fiscalTerritory: fiscal.fiscalTerritory,
+        postalCode: fiscal.postalCode,
+        ineMunicipalityCode: fiscal.ineMunicipalityCode,
+        tourismTaxRegion: compliance?.tourismTaxRegion ?? null,
+        taxProvisioning
+      };
+      audit({
+        ...input,
+        action: "PropertyProfileUpdated",
+        entityType: "property",
+        entityId: property.id,
+        beforeJson: before,
+        afterJson: { property: { ...property, ...fiscalAfter }, organization: nextOrganization, compliance }
+      });
+      return { targetEntityType: "property", targetEntityId: property.id, result: { ...property, ...fiscalAfter } };
     }
     case "building": {
       const building = await createBuilding({
@@ -1877,7 +2438,8 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       const compliance = await patchComplianceSettings({
         ...input,
         patch: {
-          taxRegion: payloadText(payload, "taxRegion"),
+          // Tanda 3: an empty select keeps the current region (never persists "").
+          taxRegion: payloadText(payload, "taxRegion") || undefined,
           configurationJson: {
             authorityType: payloadText(payload, "authorityType"),
             retentionRule: payloadText(payload, "retentionRule"),
@@ -1885,12 +2447,14 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
           }
         }
       });
+      const invoicePrefix = payloadText(payload, "invoicePrefix");
       const billing = await patchBillingSettings({
         ...input,
         invoiceSequence: {
           sequenceCode: payloadText(payload, "invoiceSequenceCode"),
           invoiceType: payloadText(payload, "invoiceType", "full") as InvoiceSequenceRecord["invoiceType"],
-          prefix: payloadText(payload, "invoicePrefix"),
+          // Only an explicit prefix reaches the series (an empty one would collide with the prefix lock).
+          ...(invoicePrefix ? { prefix: invoicePrefix } : {}),
           active: true
         }
       });
@@ -2680,6 +3244,55 @@ export async function recalculateReadiness(input: BackOfficeMutationInput) {
   return await computeReadiness(input);
 }
 
+// ── Applicability of SES.HOSPEDAJES / VeriFactu (Tanda 3 closure) ───────────
+// A flag nobody switched on must not hide an obligation the hotel is already
+// meeting in practice: an establishment that has sent partes to the MIR, or has
+// issued invoices, is subject to the checks whatever the flag says.
+
+/** SES usage window: submissions created within the last N days count as "in use". */
+export const SES_USAGE_WINDOW_DAYS = 180;
+
+export type ComplianceApplicability = {
+  /** The obligation's checks apply (flag on OR real usage). */
+  applies: boolean;
+  byFlag: boolean;
+  byUsage: boolean;
+  usageCount: number;
+  /**
+   * Set only when the obligation applies by usage with the flag OFF, e.g.
+   * "activo por uso: 3 envíos; el flag sesHospedajesEnabled está desactivado".
+   * Appended to every check message of that obligation so the operator sees why it applies.
+   */
+  usageNote: string | null;
+};
+
+/**
+ * Pure rule: applies = flagEnabled || usageCount > 0. `usageLabel` is the plural noun of
+ * the usage evidence ("envíos", "facturas emitidas"); `windowLabel` (optional) qualifies
+ * the count ("últimos 180 días") without breaking the canonical note text.
+ */
+export function resolveComplianceApplicability(input: {
+  flagEnabled: boolean;
+  usageCount: number;
+  flagName: string;
+  usageLabel: string;
+  windowLabel?: string;
+}): ComplianceApplicability {
+  const byFlag = input.flagEnabled === true;
+  const usageCount = Number.isFinite(input.usageCount) && input.usageCount > 0 ? Math.floor(input.usageCount) : 0;
+  const byUsage = usageCount > 0;
+  const usageNote =
+    byUsage && !byFlag
+      ? `activo por uso: ${usageCount} ${input.usageLabel}; el flag ${input.flagName} está desactivado${input.windowLabel ? ` (${input.windowLabel})` : ""}`
+      : null;
+  return { applies: byFlag || byUsage, byFlag, byUsage, usageCount, usageNote };
+}
+
+/** Appends the usage note (when any) to a check message: "<message> Nota: <note>." */
+export function withUsageNote(message: string, applicability: ComplianceApplicability): string {
+  return applicability.usageNote ? `${message} Nota: ${applicability.usageNote}.` : message;
+}
+
 /**
  * Recomputes and persists every readiness check for the property. Shared by the explicit
  * recalculation endpoint and by go-live approval, which must never decide on stale or missing
@@ -2712,73 +3325,344 @@ async function computeReadiness(input: BackOfficeMutationInput) {
     (await prisma.user.count({
       where: { id: { in: assignedUserIds }, organizationId: property.organizationId, status: "active" }
     })) > 0;
-  const hasInvoiceSequence = demoStore.invoiceSequences.some((sequence) => sequence.propertyId === input.propertyId && sequence.active);
-  const paymentProviderConnected = demoStore.integrationConnections.some((connection) => {
-    const provider = demoStore.integrationProviders.find((candidate) => candidate.id === connection.providerId);
-    return connection.propertyId === input.propertyId && connection.status === "connected" && provider?.code.includes("payments");
-  });
+  // Tanda 3 ("cumplimiento sin atrezzo"): every fiscal fact comes from Prisma or the real
+  // environment — no in-memory mirrors, no flags nobody writes. Each check carries a
+  // relatedEntityType/Id so the UI can deep-link to the form that fixes it.
+  const sesUsageSince = new Date(Date.now() - SES_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+  const [organizationRow, fiscalColumns, complianceRow, activeSequences, connectedIntegrations, sesSubmissionCount, issuedInvoiceCount] =
+    await Promise.all([
+      prisma.organization.findUnique({ where: { id: property.organizationId }, select: { legalName: true, taxId: true, name: true } }),
+      propertyFiscalColumns(input.propertyId),
+      prisma.propertyComplianceSetting.findUnique({
+        where: { propertyId: input.propertyId },
+        select: { ipsiOrdinanceConfirmedAt: true, sesRegistryNumber: true }
+      }),
+      prisma.invoiceSequence.findMany({
+        where: { propertyId: input.propertyId, active: true },
+        select: { sequenceCode: true, prefix: true, year: true, invoiceType: true }
+      }),
+      prisma.integrationConnection.findMany({ where: { propertyId: input.propertyId, status: "connected" }, select: { providerId: true } }),
+      // Real usage (any status: a queued or rejected parte is still an obligation in flight).
+      prisma.sesHospedajesSubmission.count({ where: { propertyId: input.propertyId, createdAt: { gte: sesUsageSince } } }),
+      // Issued, cancelled and rectified invoices all exist in the fiscal chain; drafts do not.
+      prisma.invoice.count({ where: { propertyId: input.propertyId, status: { in: ["issued", "cancelled", "rectified"] } } })
+    ]);
+  const paymentProviderConnected = await paymentProviderConnectedFor(input.propertyId, connectedIntegrations.map((row) => row.providerId));
 
-  const checks = [
+  // Applicability = flag OR real usage (resolveComplianceApplicability, unit-tested). When
+  // it applies by usage only, every check of that obligation carries the note.
+  const sesApplicability = resolveComplianceApplicability({
+    flagEnabled: Boolean(complianceSettings?.sesHospedajesEnabled || property.sesHospedajesEnabled),
+    usageCount: sesSubmissionCount,
+    flagName: "sesHospedajesEnabled",
+    usageLabel: "envíos",
+    windowLabel: `últimos ${SES_USAGE_WINDOW_DAYS} días`
+  });
+  const verifactuApplicability = resolveComplianceApplicability({
+    flagEnabled: Boolean(complianceSettings?.verifactuEnabled || property.verifactuEnabled),
+    usageCount: issuedInvoiceCount,
+    flagName: "verifactuEnabled",
+    usageLabel: "facturas emitidas"
+  });
+  const sesEnabled = sesApplicability.applies;
+  const verifactuEnabled = verifactuApplicability.applies;
+  const verifactuMode = integrationModeFromEnv(process.env.VERIFACTU_MODE);
+  const sesMode = integrationModeFromEnv(process.env.SES_HOSPEDAJES_MODE);
+  const verifactuCert = certificateEnvStatus(process.env.VERIFACTU_CERT_PATH, process.env.VERIFACTU_CERT_PASSPHRASE);
+  const sesCert = certificateEnvStatus(process.env.SES_HOSPEDAJES_CERT_PATH, process.env.SES_HOSPEDAJES_CERT_PASSPHRASE);
+
+  // Issuer identity (Organization is the single writer of the NIF — issuer-identity.service).
+  const issuerTaxId = normalizeTaxId(organizationRow?.taxId);
+  const issuerTaxIdValid = isValidSpanishTaxId(issuerTaxId);
+  const issuerLegalName = (organizationRow?.legalName ?? "").trim() || (property.legalName ?? "").trim();
+
+  // Fiscal address (SES establishment block + invoice header).
+  const addressMissing = (
+    [
+      ["address", property.address],
+      ["municipality", property.municipality],
+      ["province", property.province],
+      ["postalCode", fiscalColumns.postalCode]
+    ] as Array<[string, string | null | undefined]>
+  )
+    .filter(([, value]) => !hasText(value))
+    .map(([key]) => key);
+  const fiscalAddressRequired = sesEnabled || verifactuEnabled;
+
+  // Tax region + statutory rates actually provisioned (contract C: never UNKNOWN, but a
+  // property is only "configured" when its region is explicit and the rates exist in DB).
+  const taxProfile = await getPropertyTaxProfile(input.propertyId);
+  const requiredCategories: TaxCategory[] = ["accommodation", "food_beverage", "general_services"];
+  const provisionedCategories = new Set(taxProfile.rates.filter((rate) => rate.source !== "catalog").map((rate) => rate.category));
+  const missingCategories = requiredCategories.filter((category) => !provisionedCategories.has(category));
+  const taxRegionExplicit = taxProfile.taxRegion !== null && taxProfile.regionSource !== "default";
+  const taxRegionConfigured = taxRegionExplicit && missingCategories.length === 0;
+  const isIpsiRegion = taxProfile.taxRegion === "ES_CEUTA" || taxProfile.taxRegion === "ES_MELILLA";
+  const ipsiConfirmed = Boolean(complianceRow?.ipsiOrdinanceConfirmedAt ?? taxProfile.ipsiOrdinanceConfirmedAt);
+
+  // Series of the current fiscal year (FISC-09): the allocator opens FAC-<year> lazily on the
+  // first issue, so a missing row is a warning, not a blocker.
+  const currentYear = madridYear();
+  const hasCurrentYearSeries = activeSequences.some(
+    (sequence) =>
+      (sequence.year ?? sequenceYearFromPrefix(sequence.prefix)) === currentYear &&
+      (sequence.sequenceCode.toUpperCase() === "FAC" || /^F/.test(sequence.invoiceType))
+  );
+
+  // SES establishment profile (contract F) and VeriFactu software declaration (contract E).
+  const sesEstablishment = sesEnabled ? await resolveSesEstablishment(input.propertyId) : null;
+  const software = verifactuEnabled ? resolveVerifactuSoftware() : null;
+  const verifactuRealMode = verifactuEnabled && verifactuMode !== "sandbox";
+  const sesRealMode = sesEnabled && sesMode !== "sandbox";
+
+  const propertyRef = { relatedEntityType: "property", relatedEntityId: property.id } as const;
+  const organizationRef = { relatedEntityType: "organization", relatedEntityId: property.organizationId } as const;
+  const complianceRef = { relatedEntityType: "property_compliance_settings", relatedEntityId: complianceSettings?.id } as const;
+  const envRef = { relatedEntityType: "env", relatedEntityId: undefined } as const;
+
+  const checks: ReadinessCheckInput[] = [
     {
-      checkCode: "legal_profile_complete",
-      status: property.legalName && property.taxRegion && property.timezone ? "pass" : "fail",
+      checkCode: "issuer_legal_name_set",
+      status: issuerLegalName ? "pass" : "fail",
       severity: "blocking",
-      message: "Property legal name, tax ID, address and timezone must be configured."
+      message: issuerLegalName
+        ? `Razón social del emisor: ${issuerLegalName}.`
+        : "Falta la razón social del emisor (Organización › razón social o Perfil del establecimiento › nombre legal).",
+      ...organizationRef
+    },
+    {
+      checkCode: "issuer_tax_id_valid",
+      status: issuerTaxIdValid ? "pass" : "fail",
+      severity: "blocking",
+      message: issuerTaxIdValid
+        ? `NIF/CIF del emisor válido (${issuerTaxId}).`
+        : issuerTaxId
+          ? `El NIF/CIF del emisor (${issuerTaxId}) no supera la validación (letra/dígito de control): ${spanishTaxIdValidationMessage(issuerTaxId) ?? ""}`.trim()
+          : "Falta el NIF/CIF del emisor: sin él las facturas salen con NIF de relleno (sandbox) o se bloquean (producción).",
+      ...organizationRef
+    },
+    {
+      checkCode: "property_fiscal_address_complete",
+      status: addressMissing.length === 0 ? "pass" : fiscalAddressRequired ? "fail" : "warning",
+      severity: fiscalAddressRequired ? "blocking" : "warning",
+      message: withUsageNote(
+        withUsageNote(
+          addressMissing.length === 0
+            ? "Dirección fiscal completa (dirección, municipio, provincia y código postal)."
+            : `Dirección fiscal incompleta: faltan ${addressMissing.join(", ")}. ${fiscalAddressRequired ? "Obligatoria con SES.HOSPEDAJES o VeriFactu activados." : "Necesaria antes de activar SES.HOSPEDAJES o VeriFactu."}`,
+          sesApplicability
+        ),
+        verifactuApplicability
+      ),
+      ...propertyRef
+    },
+    {
+      checkCode: "timezone_configured",
+      status: hasText(property.timezone) ? "pass" : "fail",
+      severity: "blocking",
+      message: hasText(property.timezone) ? `Zona horaria: ${property.timezone}.` : "Falta la zona horaria del establecimiento (cierre nocturno y fechas fiscales).",
+      ...propertyRef
+    },
+    {
+      checkCode: "tax_region_configured",
+      status: taxRegionConfigured ? "pass" : "fail",
+      severity: "blocking",
+      message: taxRegionConfigured
+        ? `Región fiscal ${taxProfile.taxRegion} (${taxProfile.figure}) con tipos vigentes para alojamiento, restauración y servicios.`
+        : !taxRegionExplicit
+          ? `Región fiscal sin configurar (${taxProfile.taxRegion ? `derivada por defecto: ${taxProfile.taxRegion}` : "desconocida"}): elige Península y Baleares, Canarias, Ceuta o Melilla en el perfil del establecimiento.${taxProfile.warnings.length > 0 ? ` ${taxProfile.warnings.join(" ")}` : ""}`
+          : `Faltan tipos vigentes en la base de datos para ${missingCategories.join(", ")} (región ${taxProfile.taxRegion}): guarda el perfil o pulsa «Provisionar impuestos».`,
+      ...propertyRef
+    },
+    {
+      checkCode: "ipsi_ordinance_confirmed",
+      status: !isIpsiRegion || ipsiConfirmed ? "pass" : "fail",
+      severity: isIpsiRegion ? "blocking" : "info",
+      message: !isIpsiRegion
+        ? "No aplica: el IPSI solo rige en Ceuta y Melilla."
+        : ipsiConfirmed
+          ? "Tipos del IPSI confirmados contra la ordenanza municipal vigente."
+          : "Los tipos del IPSI cambian por ordenanza anual: confirma en Cumplimiento › Fiscal que los tipos aplicados coinciden con la ordenanza vigente.",
+      ...complianceRef
     },
     {
       checkCode: "default_building_exists",
       status: hasActiveBuilding ? "pass" : "fail",
       severity: "blocking",
-      message: "At least one building or default building is required."
+      message: hasActiveBuilding ? "Existe al menos un edificio activo." : "Se necesita al menos un edificio (o edificio por defecto).",
+      ...propertyRef
     },
     {
       checkCode: "room_type_exists",
       status: roomTypeCount > 0 ? "pass" : "fail",
       severity: "blocking",
-      message: "At least one active room type is required."
+      message: roomTypeCount > 0 ? `${roomTypeCount} tipo(s) de habitación activos.` : "Se necesita al menos un tipo de habitación activo.",
+      ...propertyRef
     },
     {
       checkCode: "sellable_room_exists",
       status: sellableRoomCount > 0 ? "pass" : "fail",
       severity: "blocking",
-      message: "At least one active sellable room with a room type is required."
+      message: sellableRoomCount > 0 ? `${sellableRoomCount} habitación(es) vendibles activas.` : "Se necesita al menos una habitación activa y vendible con tipo asignado.",
+      ...propertyRef
     },
     {
       checkCode: "admin_user_exists",
       status: hasAdminUser ? "pass" : "fail",
       severity: "blocking",
-      message: "At least one active admin or manager user is required."
+      message: hasAdminUser ? "Hay al menos un usuario activo asignado al establecimiento." : "Se necesita al menos un usuario activo (administrador o gerente) asignado al establecimiento.",
+      ...propertyRef
     },
     {
       checkCode: "invoice_sequence_configured",
-      status: !modules.includes("compliance_billing") || hasInvoiceSequence ? "pass" : "fail",
+      status: !modules.includes("compliance_billing") || activeSequences.length > 0 ? "pass" : "fail",
       severity: "blocking",
-      message: "Invoice sequence is required when Compliance Billing is enabled."
+      message: !modules.includes("compliance_billing")
+        ? "No aplica: el módulo de facturación y cumplimiento no está activado."
+        : activeSequences.length > 0
+          ? `Series de facturación activas: ${activeSequences.map((sequence) => `${sequence.sequenceCode}${sequence.year ? `/${sequence.year}` : ""}`).join(", ")}.`
+          : "Se necesita al menos una serie de facturación activa (FAC) con el módulo de facturación activado.",
+      relatedEntityType: "invoice_sequence",
+      relatedEntityId: undefined
+    },
+    {
+      checkCode: "invoice_series_current_year",
+      status: hasCurrentYearSeries ? "pass" : "warning",
+      severity: "warning",
+      message: hasCurrentYearSeries
+        ? `Serie de facturas completas del ejercicio ${currentYear} disponible.`
+        : `No hay serie FAC del ejercicio ${currentYear}: se abrirá automáticamente (FAC-${currentYear}-000001) en la primera emisión del año; créala antes si quieres fijar prefijo o numeración.`,
+      relatedEntityType: "invoice_sequence",
+      relatedEntityId: undefined
     },
     {
       checkCode: "payment_provider_connected",
       status: !modules.includes("payment_vault") || paymentProviderConnected ? "pass" : "fail",
       severity: "blocking",
-      message: "Payment provider is required when Payment Vault is enabled."
+      message: !modules.includes("payment_vault")
+        ? "No aplica: el módulo Payment Vault no está activado."
+        : paymentProviderConnected
+          ? "Pasarela de pago conectada."
+          : "Se necesita una pasarela de pago conectada con el módulo Payment Vault activado.",
+      relatedEntityType: "integration_connection",
+      relatedEntityId: undefined
+    },
+    {
+      checkCode: "ses_establishment_profile",
+      status: !sesEnabled ? "pass" : sesEstablishment?.ok ? "pass" : "fail",
+      severity: sesEnabled ? "blocking" : "info",
+      message: withUsageNote(
+        !sesEnabled
+          ? "No aplica: SES.HOSPEDAJES desactivado para este establecimiento y sin envíos en los últimos 180 días."
+          : sesEstablishment?.ok
+            ? `Bloque Establecimiento SES completo (registro ${sesEstablishment.establishment.registryNumber}, INE ${sesEstablishment.establishment.municipalityCode}).`
+            : `Datos del establecimiento incompletos para SES.HOSPEDAJES (nunca se envían valores por defecto): ${(sesEstablishment?.missing ?? []).map(describeSesEstablishmentIssue).join(" ")}`,
+        sesApplicability
+      ),
+      ...propertyRef
     },
     {
       checkCode: "ses_hospedajes_credentials",
-      status:
-        !complianceSettings?.sesHospedajesEnabled || complianceSettings.configurationJson.sesCredentialsConfigured === true
-          ? "pass"
-          : "fail",
-      severity: "blocking",
-      message: "SES.HOSPEDAJES configuration must be completed when Spain compliance is enabled."
+      status: !sesEnabled ? "pass" : sesRealMode && sesCert.configured && sesCert.exists ? "pass" : "fail",
+      severity: sesEnabled ? "blocking" : "info",
+      message: withUsageNote(
+        !sesEnabled
+          ? "No aplica: SES.HOSPEDAJES desactivado para este establecimiento y sin envíos en los últimos 180 días."
+          : !sesRealMode
+            ? `SES_HOSPEDAJES_MODE=${sesMode}: los partes se envían a un simulador, no al MIR. Configura preproduction/production con certificado antes del go-live.`
+            : !sesCert.configured
+              ? `SES en modo ${sesMode} sin certificado: ${sesCert.reason}.`
+              : !sesCert.exists
+                ? "SES_HOSPEDAJES_CERT_PATH apunta a un fichero inexistente."
+                : `SES.HOSPEDAJES en modo ${sesMode} con certificado configurado.`,
+        sesApplicability
+      ),
+      ...envRef
+    },
+    {
+      checkCode: "verifactu_software_declared",
+      status: !verifactuEnabled ? "pass" : software?.ok ? "pass" : verifactuRealMode ? "fail" : "warning",
+      severity: verifactuRealMode ? "blocking" : verifactuEnabled ? "warning" : "info",
+      message: withUsageNote(
+        !verifactuEnabled
+          ? "No aplica: VeriFactu desactivado para este establecimiento y sin facturas emitidas."
+          : software?.ok
+            ? `Bloque SistemaInformatico declarado (${software.software.nombreRazon} · NIF ${software.software.nif} · ${software.software.nombreSistema} ${software.software.version}).`
+            : `Bloque SistemaInformatico incompleto (${(software?.errors ?? []).join("; ")}). ${verifactuRealMode ? "Bloquea el envío real a AEAT." : "En sandbox se envía con valores de relleno."}`,
+        verifactuApplicability
+      ),
+      ...envRef
+    },
+    {
+      checkCode: "platform_certificate_notice",
+      status: verifactuCert.configured || sesCert.configured ? "warning" : "pass",
+      severity: "info",
+      message:
+        verifactuCert.configured || sesCert.configured
+          ? "El certificado configurado (VERIFACTU_CERT_PATH / SES_HOSPEDAJES_CERT_PATH) es de la plataforma, no del hotel: cada obligado tributario debe firmar con su propio certificado antes de emitir en producción."
+          : "Sin certificado configurado en el entorno: los envíos a AEAT/MIR se firman con un stub (solo sandbox).",
+      ...envRef
     }
-  ] as const;
+  ];
 
-  // Sequential upserts keep the canonical check order (getReadiness sorts by createdAt).
+  // Sequential upserts keep the canonical check order (getReadiness sorts by createdAt);
+  // codes that no longer exist (legal_profile_complete was split into atomic checks) are
+  // removed so a stale "fail" row cannot block go-live forever.
   const records: PropertyReadinessCheckRecord[] = [];
   for (const check of checks) {
     records.push(await upsertReadinessCheck(input.propertyId, check));
   }
+  const currentCodes = checks.map((check) => check.checkCode);
+  await prisma.propertyReadinessCheck.deleteMany({ where: { propertyId: input.propertyId, checkCode: { notIn: currentCodes } } });
+  for (let index = demoStore.propertyReadinessChecks.length - 1; index >= 0; index -= 1) {
+    const candidate = demoStore.propertyReadinessChecks[index]!;
+    if (candidate.propertyId === input.propertyId && !currentCodes.includes(candidate.checkCode)) {
+      demoStore.propertyReadinessChecks.splice(index, 1);
+    }
+  }
   audit({ ...input, action: "PropertyReadinessRecalculated", entityType: "property", entityId: input.propertyId, afterJson: records });
   return await getReadiness(input.propertyId);
+}
+
+type ReadinessCheckInput = Omit<PropertyReadinessCheckRecord, "id" | "propertyId" | "createdAt" | "updatedAt">;
+
+type IntegrationEnvMode = "sandbox" | "preproduction" | "production";
+
+function integrationModeFromEnv(raw: string | undefined): IntegrationEnvMode {
+  return raw === "production" || raw === "preproduction" ? raw : "sandbox";
+}
+
+/** Same rule as compliance-health.service checkCert: placeholder / blank env = not configured. */
+function certificateEnvStatus(pathEnv: string | undefined, passEnv: string | undefined): { configured: boolean; exists: boolean; reason?: string } {
+  const placeholder = (value: string | undefined) => !value || value === "change-me";
+  if (placeholder(pathEnv)) return { configured: false, exists: false, reason: "variable de ruta del certificado no configurada" };
+  if (placeholder(passEnv)) return { configured: false, exists: false, reason: "passphrase del certificado no configurada" };
+  return { configured: true, exists: existsSync(pathEnv!) };
+}
+
+/**
+ * Payment gateway connected: Prisma first (integration_connections/providers/categories);
+ * the in-memory seed connection (iconn_mock_payments of prop_123) is only a fallback for
+ * the seed-only property, never for a real hotel.
+ */
+async function paymentProviderConnectedFor(propertyId: string, connectedProviderIds: string[]): Promise<boolean> {
+  if (connectedProviderIds.length > 0) {
+    const providers = await prisma.integrationProvider.findMany({
+      where: { id: { in: connectedProviderIds } },
+      select: { code: true, categoryId: true }
+    });
+    if (providers.some((provider) => provider.code.toLowerCase().includes("payment"))) return true;
+    const categoryIds = providers.map((provider) => provider.categoryId);
+    if (categoryIds.length > 0) {
+      const categories = await prisma.integrationCategory.findMany({ where: { id: { in: categoryIds } }, select: { code: true } });
+      if (categories.some((category) => category.code.toLowerCase().includes("payment"))) return true;
+    }
+  }
+  if (propertyId !== demoStore.property.id) return false;
+  return demoStore.integrationConnections.some((connection) => {
+    const provider = demoStore.integrationProviders.find((candidate) => candidate.id === connection.providerId);
+    return connection.propertyId === propertyId && connection.status === "connected" && Boolean(provider?.code.includes("payments"));
+  });
 }
 
 export async function approveGoLive(input: BackOfficeMutationInput) {
@@ -4000,45 +4884,220 @@ export async function listBackOfficeUsers(propertyId: string) {
       (candidate) => candidate.userId === row.userId && candidate.departmentId === row.departmentId
     );
   }
-  return users.map((user) => ({
-    ...user,
-    departments: demoStore.userDepartments
-      .filter((assignment) => assignment.userId === user.id && assignment.active)
-      .map((assignment) => ({
-        ...assignment,
-        department: demoStore.departments.find((department) => department.id === assignment.departmentId)
-      }))
-  }));
+  // Invited users carry the state of their latest pending invitation (expiry, how the
+  // email went out, whether it already expired) so the list can offer "Reenviar". The
+  // token never travels here: inviteUrl is always null (reissue mints a fresh link).
+  const invitedIds = users.filter((user) => user.status === "invited").map((user) => user.id);
+  const pendingByUser = await getPendingInvitations(invitedIds);
+  return users.map((user) => {
+    const pendingInvitation = pendingInvitationView(user.status === "invited" ? pendingByUser.get(user.id) : undefined);
+    return {
+      ...user,
+      pendingInvitation,
+      departments: demoStore.userDepartments
+        .filter((assignment) => assignment.userId === user.id && assignment.active)
+        .map((assignment) => ({
+          ...assignment,
+          department: demoStore.departments.find((department) => department.id === assignment.departmentId)
+        }))
+    };
+  });
 }
 
+/** Pending-invitation summary of an `invited` user in the users list; never carries the token. */
+export type BackOfficePendingInvitationView = {
+  expiresAt: string;
+  deliveryStatus: string | null;
+  /** true when expiresAt is in the past: the admin must reissue before the invitee can accept. */
+  expired: boolean;
+  /** Always null in the list (the single-use link is only returned by invite/reissue). */
+  inviteUrl: null;
+};
+
+/**
+ * Pure projection of getPendingInvitations() for the users list: only the expiry,
+ * the delivery state and the expired flag survive; the token (or anything derived
+ * from it) never does — `inviteUrl` is a literal null so the client renders
+ * "Reenviar" instead of a link. Null for a user without a pending (unused,
+ * unrevoked) invitation. Unit-tested in __tests__/backoffice-users.test.mts.
+ */
+export function pendingInvitationView(pending: PendingInvitationInfo | null | undefined): BackOfficePendingInvitationView | null {
+  if (!pending) return null;
+  return {
+    expiresAt: pending.expiresAt,
+    deliveryStatus: pending.deliveryStatus ?? null,
+    expired: pending.expired === true,
+    inviteUrl: null
+  };
+}
+
+/**
+ * Roles of the property's organization that a back-office invite may assign
+ * (Prisma; platform-scoped roles — admin.* / platform.* keys — are excluded:
+ * a hotel user is never a platform admin). Feeds the role select of the invite drawer.
+ */
+export async function listPropertyRoles(propertyId: string): Promise<Array<{ id: string; name: string; permissionsCount: number }>> {
+  const property = await requireProperty(propertyId);
+  const roles = await prisma.role.findMany({ where: { organizationId: property.organizationId }, orderBy: { name: "asc" } });
+  if (roles.length === 0) return [];
+  const grants = await prisma.rolePermission.findMany({
+    where: { roleId: { in: roles.map((role) => role.id) } },
+    select: { roleId: true, permissionId: true }
+  });
+  const permissionIds = Array.from(new Set(grants.map((grant) => grant.permissionId)));
+  const permissions = permissionIds.length > 0
+    ? await prisma.permission.findMany({ where: { id: { in: permissionIds } }, select: { id: true, key: true } })
+    : [];
+  const keyById = new Map(permissions.map((permission) => [permission.id, permission.key]));
+  const summary = new Map<string, { count: number; platformScoped: boolean }>();
+  for (const grant of grants) {
+    const entry = summary.get(grant.roleId) ?? { count: 0, platformScoped: false };
+    entry.count += 1;
+    const key = keyById.get(grant.permissionId);
+    if (key && isPlatformPermission(key)) entry.platformScoped = true;
+    summary.set(grant.roleId, entry);
+  }
+  return roles
+    .filter((role) => !(summary.get(role.id)?.platformScoped ?? false))
+    .map((role) => ({ id: role.id, name: role.name, permissionsCount: summary.get(role.id)?.count ?? 0 }));
+}
+
+/** Role of the property's organization, safe to hand to a hotel user (opaque 404 cross-org, 403 platform scope). */
+async function requireAssignableRole(organizationId: string, roleId: string, context: UserContext): Promise<{ id: string; name: string }> {
+  const role = await prisma.role.findUnique({ where: { id: roleId }, select: { id: true, name: true, organizationId: true } });
+  if (!role || role.organizationId !== organizationId) {
+    throw new NotFoundError("Rol no encontrado.");
+  }
+  if (!context.isPlatformAdmin) {
+    const grants = await prisma.rolePermission.findMany({ where: { roleId: role.id }, select: { permissionId: true } });
+    if (grants.length > 0) {
+      const permissions = await prisma.permission.findMany({
+        where: { id: { in: grants.map((grant) => grant.permissionId) } },
+        select: { key: true }
+      });
+      if (permissions.some((permission) => isPlatformPermission(permission.key))) {
+        throw new ForbiddenError("Solo un administrador de plataforma puede asignar este rol.");
+      }
+    }
+  }
+  return { id: role.id, name: role.name };
+}
+
+export type InvitationDeliveryView = {
+  status: "sent" | "simulated" | "failed" | "disabled";
+  provider?: string;
+  errorMessage?: string;
+};
+
+export type BackOfficeInvitationView = {
+  /** Single-use accept-invite link (carries the token): shown when the email is simulated/failed so the admin can hand it over. */
+  inviteUrl: string | null;
+  expiresAt: string | null;
+  delivery: InvitationDeliveryView;
+  /** Set only when the invitation itself could not be created (the user exists; use "reissue"). */
+  error?: string;
+};
+
+/**
+ * MFA requirement of a new invitee: strictly `mfaRequired === true`. Absent, false,
+ * null, "true" or 1 all mean false — an invitee has no second factor enrolled yet,
+ * so anything short of an explicit boolean opt-in must not lock them out on first
+ * login. Unit-tested in __tests__/backoffice-users.test.mts.
+ */
+export function inviteMfaEnabled(mfaRequired: unknown): boolean {
+  return mfaRequired === true;
+}
+
+/**
+ * Tanda 3 (CFG-P1-6): a real invitation. Creates the user as `invited` (no
+ * password: they choose it on accept), assigns the role in the same transaction
+ * and mints a persisted single-use token (contract G). The email is best-effort:
+ * its delivery status travels in the response, never as an exception — the user
+ * and role exist regardless.
+ *
+ * `mfaRequired` is opt-in: `mfaEnabled` is true only when the body says
+ * `mfaRequired: true`; absent or false → false. An invitee has no second factor
+ * enrolled yet, so defaulting to "required" would lock them out on first login.
+ */
 export async function inviteBackOfficeUser(input: BackOfficeMutationInput & {
   email: string;
   fullName: string;
   phone?: string;
+  /** Require MFA for this user (default false). */
   mfaRequired?: boolean;
-}) {
+  roleId?: string;
+}): Promise<{ user: UserRecord & { roleId: string; roleName: string }; invitation: BackOfficeInvitationView }> {
   requirePermissions(input.context, ["users.invite"]);
   const property = await requireProperty(input.propertyId);
+  const email = (input.email ?? "").trim().toLowerCase();
+  if (!email || !email.includes("@")) {
+    throw new BadRequestError("El email del usuario invitado es obligatorio y debe ser válido.");
+  }
+  const fullName = (input.fullName ?? "").trim();
+  if (!fullName) {
+    throw new BadRequestError("El nombre completo del usuario invitado es obligatorio.");
+  }
+  if (!hasText(input.roleId)) {
+    // Without a role the invitee would get 403 on every route in production (no demo permission union).
+    throw new BadRequestError("El rol es obligatorio: elige uno de los roles de la organización (GET /backoffice/properties/:propertyId/roles).");
+  }
+  const role = await requireAssignableRole(property.organizationId, input.roleId.trim(), input.context);
   // User.email es unique en la BD: 409 explícito en vez de un P2002 opaco.
-  const duplicateInPrisma = await prisma.user.findUnique({ where: { email: input.email }, select: { id: true } });
-  if (duplicateInPrisma || demoStore.users.some((user) => user.email === input.email)) {
-    throw new ConflictError("User email must be unique.");
+  const duplicateInPrisma = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+  if (duplicateInPrisma || demoStore.users.some((user) => user.email.toLowerCase() === email)) {
+    throw withDetails(new ConflictError("Ya existe un usuario con ese email."), { code: "USER_EMAIL_TAKEN", email });
   }
   const user: UserRecord = {
     id: createId("usr"),
     organizationId: property.organizationId,
-    email: input.email,
-    phone: input.phone,
-    fullName: input.fullName,
+    email,
+    phone: input.phone?.trim() || undefined,
+    fullName,
     status: "invited",
-    mfaEnabled: input.mfaRequired ?? true
+    // Opt-in only (see the docblock and inviteMfaEnabled): absent/false → false.
+    mfaEnabled: inviteMfaEnabled(input.mfaRequired)
   };
-  // Persistencia tanda 2: Prisma primero (mismo id, sin passwordHash — se fija
-  // al aceptar la invitación), después espejo.
-  await prisma.user.create({ data: userToDbRow(user) });
+  // Prisma first (same id, no passwordHash — set by acceptInvitation), user + role
+  // assignment atomically, then the in-memory mirror.
+  await prisma.$transaction(async (tx) => {
+    await tx.user.create({ data: { ...userToDbRow(user), passwordHash: null, mustChangePassword: false } });
+    await tx.userPropertyRole.create({ data: { userId: user.id, propertyId: property.id, roleId: role.id } });
+  });
   demoStore.users.push(user);
-  audit({ ...input, action: "UserInvited", entityType: "user", entityId: user.id, afterJson: user });
-  return user;
+
+  let invitation: BackOfficeInvitationView;
+  try {
+    const created = await createInvitation({
+      userId: user.id,
+      organizationId: property.organizationId,
+      propertyId: property.id,
+      roleId: role.id,
+      actorUserId: input.context.userId,
+      correlationId: input.correlationId
+    });
+    invitation = { inviteUrl: created.inviteUrl, expiresAt: created.expiresAt, delivery: created.delivery };
+  } catch (err) {
+    // The user and role are persisted: report the failure (never a fake "sent") and let
+    // the admin reissue from the user list.
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[backoffice.inviteBackOfficeUser] createInvitation failed", {
+      userId: user.id,
+      propertyId: property.id,
+      correlationId: input.correlationId,
+      error: message
+    });
+    invitation = { inviteUrl: null, expiresAt: null, delivery: { status: "failed", errorMessage: message }, error: message };
+  }
+
+  audit({
+    ...input,
+    action: "UserInvited",
+    entityType: "user",
+    entityId: user.id,
+    // Never the invite URL (it carries the token): status + expiry only.
+    afterJson: { ...user, roleId: role.id, roleName: role.name, invitation: { expiresAt: invitation.expiresAt, delivery: invitation.delivery, error: invitation.error } }
+  });
+  return { user: { ...user, roleId: role.id, roleName: role.name }, invitation };
 }
 
 export async function disableBackOfficeUser(input: BackOfficeMutationInput & { userId: string }) {
@@ -4077,81 +5136,350 @@ export function listPermissionCatalog() {
  * defaults derived from the property (flagged `provisioned: false`); the row is
  * only created by the first PATCH. The demoStore record is a mirror.
  */
-export async function getComplianceSettings(propertyId: string) {
-  const { settings, provisioned } = await resolveComplianceSettings(propertyId);
-  return { ...settings, provisioned };
+/**
+ * Tanda 3 columns that live only in Prisma (the in-memory PropertyComplianceSettingsRecord
+ * predates them). The nullable text fields are ALWAYS present in the GET/PATCH body
+ * (`null` when empty, never omitted) so a client can tell "not set" from "unknown key"
+ * and send `null` back to clear them. taxRegion keeps the record's `undefined` convention.
+ */
+type ComplianceFiscalExtras = {
+  /** Canonical region resolved from Property (input → legacy spelling → province); undefined when unknown. */
+  taxRegion?: string;
+  /** Raw Property.taxRegion as stored (diagnostics for legacy values). */
+  taxRegionRaw?: string;
+  fiscalTerritory: string | null;
+  postalCode: string | null;
+  ineMunicipalityCode: string | null;
+  sesRegistryNumber: string | null;
+  touristTaxTreatment: string | null;
+  ipsiOrdinanceConfirmed: boolean;
+  ipsiOrdinanceConfirmedAt: string | null;
+};
+
+async function complianceFiscalExtras(propertyId: string): Promise<ComplianceFiscalExtras> {
+  const [fiscal, row] = await Promise.all([
+    propertyFiscalColumns(propertyId),
+    prisma.propertyComplianceSetting.findUnique({
+      where: { propertyId },
+      select: { sesRegistryNumber: true, touristTaxTreatment: true, ipsiOrdinanceConfirmedAt: true }
+    })
+  ]);
+  const taxRegion = normalizeTaxRegion(fiscal.taxRegion, fiscal.province);
+  return {
+    taxRegion: taxRegion ?? undefined,
+    taxRegionRaw: fiscal.taxRegion ?? undefined,
+    fiscalTerritory: normalizeFiscalTerritory(fiscal.fiscalTerritory),
+    postalCode: fiscal.postalCode ?? null,
+    ineMunicipalityCode: fiscal.ineMunicipalityCode ?? null,
+    sesRegistryNumber: row?.sesRegistryNumber ?? null,
+    touristTaxTreatment: row?.touristTaxTreatment ?? null,
+    ipsiOrdinanceConfirmed: Boolean(row?.ipsiOrdinanceConfirmedAt),
+    ipsiOrdinanceConfirmedAt: row?.ipsiOrdinanceConfirmedAt?.toISOString() ?? null
+  };
 }
 
-export async function patchComplianceSettings(input: BackOfficeMutationInput & { patch: Partial<PropertyComplianceSettingsRecord> }) {
+export async function getComplianceSettings(propertyId: string) {
+  const { settings, provisioned } = await resolveComplianceSettings(propertyId);
+  const extras = await complianceFiscalExtras(propertyId);
+  // `taxRegion` exposed is the CANONICAL region (Property is the resolver's source); the
+  // compliance row only mirrors it.
+  return { ...settings, provisioned, ...extras };
+}
+
+/**
+ * PATCH body. The four nullable text fields are three-state: key absent (`undefined`)
+ * → unchanged; `null` or "" → cleared; text → validated and stored. `taxRegion` stays
+ * non-destructive (null/"" keeps the current/derived region).
+ */
+export type CompliancePatch = Partial<PropertyComplianceSettingsRecord> & {
+  fiscalTerritory?: string | null;
+  postalCode?: string | null;
+  ineMunicipalityCode?: string | null;
+  sesRegistryNumber?: string | null;
+  touristTaxTreatment?: string | null;
+  /** true → ipsiOrdinanceConfirmedAt = now; false → cleared. */
+  ipsiOrdinanceConfirmed?: boolean;
+};
+
+export async function patchComplianceSettings(input: BackOfficeMutationInput & { patch: CompliancePatch }) {
   requirePermissions(input.context, ["compliance.configure"]);
+  const property = await requireProperty(input.propertyId);
   const { settings: current, provisioned } = await resolveComplianceSettings(input.propertyId);
-  const before = { ...current };
-  // Identity fields are never patchable; everything else merges over the current values.
-  const { id: _id, propertyId: _propertyId, updatedAt: _updatedAt, ...patch } = input.patch;
-  const next: PropertyComplianceSettingsRecord = { ...current, ...patch, id: current.id, propertyId: input.propertyId, updatedAt: nowIso() };
-  // Prisma first (upsert by propertyId: creates the row with defaults + patch when missing), then mirror.
+  const currentFiscal = await propertyFiscalColumns(input.propertyId);
+  const before = { ...current, ...currentFiscal };
+  // Identity fields are never patchable; the Tanda 3 fiscal fields are validated and
+  // persisted on Property / the new compliance columns; everything else merges over the
+  // current values.
+  const {
+    id: _id,
+    propertyId: _propertyId,
+    updatedAt: _updatedAt,
+    taxRegion: taxRegionInput,
+    fiscalTerritory: rawFiscalTerritory,
+    postalCode: rawPostalCode,
+    ineMunicipalityCode: rawIne,
+    sesRegistryNumber: rawSesRegistry,
+    touristTaxTreatment: touristTaxTreatmentInput,
+    ipsiOrdinanceConfirmed,
+    tourismTaxRegion: tourismTaxRegionInput,
+    ...patch
+  } = input.patch;
+
+  // undefined → unchanged · null / "" → clear · text → validate. The INE municipality
+  // code must belong to the same province as the postal code (resolveFiscalLocation
+  // rejects the pair with POSTAL_INE_PROVINCE_MISMATCH otherwise).
+  const postalCodeInput = normalizeClearablePatchField(rawPostalCode, "postalCode");
+  const ineInput = normalizeClearablePatchField(rawIne, "ineMunicipalityCode");
+  const fiscalTerritoryInput = normalizeClearablePatchField(rawFiscalTerritory, "fiscalTerritory");
+  const sesRegistryInput = normalizeClearablePatchField(rawSesRegistry, "sesRegistryNumber");
+
+  const fiscal = resolveFiscalLocation({
+    current: currentFiscal,
+    patch: { taxRegion: taxRegionInput, postalCode: postalCodeInput, ineMunicipalityCode: ineInput, fiscalTerritory: fiscalTerritoryInput },
+    province: currentFiscal.province ?? property.province ?? null,
+    clearOnNull: true
+  });
+  const tourismTaxRegion = hasText(tourismTaxRegionInput) ? normalizeTourismTaxRegion(tourismTaxRegionInput) : undefined;
+  if (hasText(tourismTaxRegionInput) && !tourismTaxRegion) {
+    throw new BadRequestError(
+      `Región de tasa turística no reconocida («${tourismTaxRegionInput.trim()}»). Valores admitidos: ${TOURISM_TAX_REGION_OPTIONS.map((option) => option.value).join(", ")}.`
+    );
+  }
+  const touristTaxTreatment = hasText(touristTaxTreatmentInput) ? normalizeTouristTaxTreatment(touristTaxTreatmentInput) : undefined;
+  if (hasText(touristTaxTreatmentInput) && !touristTaxTreatment) {
+    throw new BadRequestError(
+      `Tratamiento de la tasa turística no reconocido («${touristTaxTreatmentInput.trim()}»). Valores admitidos: ${TOURIST_TAX_TREATMENTS.join(", ")}.`
+    );
+  }
+  if (ipsiOrdinanceConfirmed !== undefined && typeof ipsiOrdinanceConfirmed !== "boolean") {
+    throw new BadRequestError("ipsiOrdinanceConfirmed debe ser un booleano.");
+  }
+  // sesRegistryNumber: undefined → unchanged, null → cleared, text → 3..64 [A-Za-z0-9-].
+  const sesRegistryNumber = sesRegistryInput === undefined || sesRegistryInput === null ? sesRegistryInput : validateSesRegistryNumber(sesRegistryInput);
+
+  const next: PropertyComplianceSettingsRecord = {
+    ...current,
+    ...patch,
+    id: current.id,
+    propertyId: input.propertyId,
+    // Mirror of the canonical Property.taxRegion; never "".
+    taxRegion: fiscal.taxRegionToPersist ?? undefined,
+    tourismTaxRegion:
+      tourismTaxRegion === undefined
+        ? current.tourismTaxRegion || undefined
+        : tourismTaxRegion === "none" || tourismTaxRegion === null
+          ? undefined
+          : tourismTaxRegion,
+    updatedAt: nowIso()
+  };
+
+  // Prisma first: Property fiscal columns (only when the property row exists; seed-only
+  // properties keep the mirror), then the compliance row (upsert by propertyId: creates the
+  // row with defaults + patch when missing) and its Tanda 3 columns, then mirrors.
+  const regionChanged = (currentFiscal.taxRegion ?? null) !== fiscal.taxRegionToPersist;
+  const propertyRow = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { id: true } });
+  if (propertyRow) {
+    await prisma.property.update({
+      where: { id: input.propertyId },
+      data: {
+        taxRegion: fiscal.taxRegionToPersist,
+        fiscalTerritory: fiscal.fiscalTerritory,
+        postalCode: fiscal.postalCode,
+        ineMunicipalityCode: fiscal.ineMunicipalityCode
+      }
+    });
+  }
+  property.taxRegion = fiscal.taxRegionToPersist ?? undefined;
   const persisted = await persistComplianceSettings(next);
+  const extrasData: Prisma.PropertyComplianceSettingUncheckedUpdateInput = {};
+  if (sesRegistryNumber !== undefined) extrasData.sesRegistryNumber = sesRegistryNumber;
+  if (touristTaxTreatment !== undefined) extrasData.touristTaxTreatment = touristTaxTreatment;
+  if (ipsiOrdinanceConfirmed !== undefined) extrasData.ipsiOrdinanceConfirmedAt = ipsiOrdinanceConfirmed ? new Date() : null;
+  if (Object.keys(extrasData).length > 0) {
+    await prisma.propertyComplianceSetting.update({ where: { propertyId: input.propertyId }, data: extrasData });
+  }
   const settings = mirrorRecord(demoStore.propertyComplianceSettings, persisted, byPropertyId(input.propertyId));
+
+  // Region / rates are cached by the tax resolver: invalidate, then (re)provision the
+  // statutory catalogue for the region (idempotent — existing rows are kept; a hotel
+  // whose region was set without rows gets them here). Failure reported, not hidden.
+  invalidateTaxCache(input.propertyId);
+  let taxProvisioning: { ok: boolean; taxRegion: string | null; regionChanged: boolean; provisioned?: number; skipped?: number; error?: string };
+  if (propertyRow) {
+    try {
+      const result = await ensurePropertyTaxes({ propertyId: input.propertyId, organizationId: property.organizationId, taxRegion: fiscal.taxRegionToPersist });
+      taxProvisioning = { ok: true, taxRegion: result.taxRegion, regionChanged, provisioned: result.provisioned, skipped: result.skipped };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[backoffice.patchComplianceSettings] ensurePropertyTaxes failed", {
+        propertyId: input.propertyId,
+        correlationId: input.correlationId,
+        taxRegion: fiscal.taxRegionToPersist,
+        error: message
+      });
+      taxProvisioning = { ok: false, taxRegion: fiscal.taxRegion, regionChanged, error: message };
+    }
+  } else {
+    // Seed-only property (no Prisma row): nothing to provision against.
+    taxProvisioning = { ok: false, taxRegion: fiscal.taxRegion, regionChanged, error: "La propiedad no existe en la base de datos; no se provisionan impuestos." };
+  }
+
+  const extras = await complianceFiscalExtras(input.propertyId);
   audit({
     ...input,
     action: provisioned ? "TaxSettingsUpdated" : "TaxSettingsProvisioned",
     entityType: "property_compliance_settings",
     entityId: settings.id,
     beforeJson: before,
-    afterJson: settings
+    afterJson: { ...settings, ...extras, taxProvisioning }
   });
-  return { ...settings, provisioned: true };
+  return { ...settings, provisioned: true, ...extras, taxProvisioning };
 }
+
+/** Invoice numbers already allocated under a series prefix (issued, cancelled and rectified all count: their numbers are taken). */
+async function issuedNumbersForPrefix(propertyId: string, prefix: string): Promise<{ count: number; maxNumber: number | null }> {
+  if (!prefix) return { count: 0, maxNumber: null };
+  const rows = await prisma.invoice.findMany({
+    where: { propertyId, invoiceNumber: { startsWith: prefix } },
+    select: { invoiceNumber: true }
+  });
+  const numbers = rows.map((row) => row.invoiceNumber);
+  return { count: numbers.filter((number) => number?.startsWith(prefix)).length, maxNumber: maxIssuedNumber(numbers, prefix) };
+}
+
+export type InvoiceSequenceView = InvoiceSequenceRecord & {
+  /** Fiscal year of the series (FISC-09); null only for legacy rows not yet backfilled. */
+  year: number | null;
+  /** Invoice numbers already allocated under the prefix — when > 0 prefix/padding are locked and nextNumber has a floor. */
+  issuedCount: number;
+  maxIssuedNumber: number | null;
+  locked: boolean;
+};
 
 export async function getBillingSettings(propertyId: string) {
   // Persistencia tanda 2: Prisma primero, merge con los registros solo-seed.
-  const rows = await prisma.invoiceSequence.findMany({ where: { propertyId } });
+  const rows = await prisma.invoiceSequence.findMany({ where: { propertyId }, orderBy: [{ sequenceCode: "asc" }, { year: "desc" }] });
   const mapped = rows.map(mapInvoiceSequenceRow);
   for (const sequence of mapped) mirrorRecord(demoStore.invoiceSequences, sequence);
+  const yearById = new Map(rows.map((row) => [row.id, row.year]));
+  const prefixById = new Map(rows.map((row) => [row.id, row.prefix]));
+  const merged = mergeById(mapped, demoStore.invoiceSequences.filter((sequence) => sequence.propertyId === propertyId));
+  const invoiceSequences: InvoiceSequenceView[] = [];
+  for (const sequence of merged) {
+    const prefix = prefixById.get(sequence.id) ?? sequence.prefix ?? "";
+    const issued = await issuedNumbersForPrefix(propertyId, prefix);
+    invoiceSequences.push({
+      ...sequence,
+      year: yearById.get(sequence.id) ?? sequenceYearFromPrefix(prefix),
+      issuedCount: issued.count,
+      maxIssuedNumber: issued.maxNumber,
+      locked: issued.count > 0
+    });
+  }
   return {
-    invoiceSequences: mergeById(mapped, demoStore.invoiceSequences.filter((sequence) => sequence.propertyId === propertyId)),
+    invoiceSequences,
+    currentYear: madridYear(),
     complianceBilling: getModuleConfiguration(propertyId, "compliance_billing")
   };
 }
 
-export async function patchBillingSettings(input: BackOfficeMutationInput & { invoiceSequence?: Partial<InvoiceSequenceRecord> }) {
+export type InvoiceSequencePatch = Partial<Omit<InvoiceSequenceRecord, "invoiceType">> & {
+  /** Wizard value (full · simplified · rectifying · credit_note) or AEAT code (F1 · F2 · F3 · R · R1–R5). */
+  invoiceType?: string;
+  /** Fiscal year of the series; defaults to the year in the prefix, then the current Madrid year. */
+  year?: number | null;
+};
+
+/**
+ * Tanda 3 (FISC-09): series are keyed by (propertyId, sequenceCode, year). Editing a
+ * series that already has invoices cannot change prefix/padding nor lower nextNumber
+ * below the highest issued number (409 SERIES_* with details); invoiceType is stored
+ * as the AEAT family (F1 / F2 / R) and must agree with the canonical series code.
+ */
+export async function patchBillingSettings(input: BackOfficeMutationInput & { invoiceSequence?: InvoiceSequencePatch }) {
   requirePermissions(input.context, ["billing.configure"]);
-  if (!input.invoiceSequence?.sequenceCode || !input.invoiceSequence.invoiceType) {
+  await requireProperty(input.propertyId);
+  const patch = input.invoiceSequence;
+  if (!hasText(patch?.sequenceCode) || !hasText(patch?.invoiceType)) {
     throw new BadRequestError("El código de la serie de facturación y el tipo de factura son obligatorios.");
   }
-  const patch = input.invoiceSequence;
-  const existing = demoStore.invoiceSequences.find(
-    (candidate) => candidate.propertyId === input.propertyId && candidate.sequenceCode === patch.sequenceCode
-  );
-  const before = existing ? { ...existing } : undefined;
-  // Persistencia tanda 2: upsert por (propertyId, sequenceCode) — Prisma
-  // primero, conservando el id del registro seed si la fila no existía en la BD.
-  const update: Prisma.InvoiceSequenceUncheckedUpdateInput = {};
-  if (patch.prefix !== undefined) update.prefix = patch.prefix;
+  const sequenceCode = patch.sequenceCode.trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{1,12}$/.test(sequenceCode)) {
+    throw new BadRequestError(`Código de serie no válido («${patch.sequenceCode}»): usa hasta 12 caracteres alfanuméricos (p.ej. FAC, SIM, REC).`);
+  }
+  const invoiceType = seriesInvoiceType(patch.invoiceType);
+  assertSeriesCodeMatchesType(sequenceCode, invoiceType);
+  if (patch.nextNumber !== undefined && (!Number.isInteger(patch.nextNumber) || patch.nextNumber < 1)) {
+    throw new BadRequestError("El siguiente número de la serie debe ser un entero mayor o igual que 1.");
+  }
+  if (patch.padding !== undefined && (!Number.isInteger(patch.padding) || patch.padding < 1 || patch.padding > 10)) {
+    throw new BadRequestError("El número de dígitos de la serie debe estar entre 1 y 10.");
+  }
+  const prefixInput = patch.prefix === undefined ? undefined : hasText(patch.prefix) ? patch.prefix.trim() : null;
+  const year = resolveSequenceYear({ year: patch.year, prefix: prefixInput ?? undefined });
+  if (prefixInput && sequenceYearFromPrefix(prefixInput) !== null && sequenceYearFromPrefix(prefixInput) !== year) {
+    throw new BadRequestError(`El prefijo «${prefixInput}» lleva el año ${sequenceYearFromPrefix(prefixInput)} pero la serie es del ejercicio ${year}.`);
+  }
+
+  // Legacy rows (year NULL, pre-backfill) whose prefix carries this year are adopted in
+  // place so the compound unique (propertyId, sequenceCode, year) finds them.
+  const legacy = await prisma.invoiceSequence.findFirst({ where: { propertyId: input.propertyId, sequenceCode, year: null } });
+  if (legacy && (sequenceYearFromPrefix(legacy.prefix) ?? year) === year) {
+    await prisma.invoiceSequence.update({ where: { id: legacy.id }, data: { year } });
+  }
+  const where = { propertyId_sequenceCode_year: { propertyId: input.propertyId, sequenceCode, year } };
+  const existingRow = await prisma.invoiceSequence.findUnique({ where });
+  const before = existingRow ? mapInvoiceSequenceRow(existingRow) : undefined;
+
+  if (existingRow) {
+    const issued = await issuedNumbersForPrefix(input.propertyId, existingRow.prefix ?? "");
+    const violations = invoiceSequencePatchViolations({
+      existing: { prefix: existingRow.prefix, padding: existingRow.padding, nextNumber: existingRow.nextNumber },
+      patch: { prefix: prefixInput, padding: patch.padding, nextNumber: patch.nextNumber },
+      issued
+    });
+    if (violations.length > 0) {
+      throw withDetails(new ConflictError(violations.map((violation) => violation.message).join(" ")), {
+        code: violations[0]!.code,
+        violations,
+        issuedCount: issued.count,
+        maxIssuedNumber: issued.maxNumber
+      });
+    }
+  }
+
+  const update: Prisma.InvoiceSequenceUncheckedUpdateInput = { invoiceType };
+  if (prefixInput !== undefined) update.prefix = prefixInput;
   if (patch.nextNumber !== undefined) update.nextNumber = patch.nextNumber;
   if (patch.padding !== undefined) update.padding = patch.padding;
-  if (patch.invoiceType !== undefined) update.invoiceType = patch.invoiceType;
   if (patch.active !== undefined) update.active = patch.active;
+  const seedOnly = demoStore.invoiceSequences.find(
+    (candidate) => candidate.propertyId === input.propertyId && candidate.sequenceCode === sequenceCode
+  );
   const row = await prisma.invoiceSequence.upsert({
-    where: { propertyId_sequenceCode: { propertyId: input.propertyId, sequenceCode: patch.sequenceCode! } },
+    where,
     update,
     create: {
-      id: existing?.id ?? createId("seq"),
+      id: existingRow?.id ?? seedOnly?.id ?? createId("seq"),
       propertyId: input.propertyId,
-      sequenceCode: patch.sequenceCode!,
-      prefix: patch.prefix ?? null,
+      sequenceCode,
+      prefix: prefixInput ?? `${sequenceCode}-${year}-`,
       nextNumber: patch.nextNumber ?? 1,
       padding: patch.padding ?? 6,
-      invoiceType: patch.invoiceType!,
-      active: patch.active ?? true
+      invoiceType,
+      active: patch.active ?? true,
+      year
     }
   });
-  const sequence = mirrorRecord(
-    demoStore.invoiceSequences,
-    mapInvoiceSequenceRow(row),
-    (candidate) => candidate.propertyId === input.propertyId && candidate.sequenceCode === patch.sequenceCode
-  );
-  audit({ ...input, action: before ? "InvoiceSequenceUpdated" : "InvoiceSequenceCreated", entityType: "invoice_sequence", entityId: sequence.id, beforeJson: before, afterJson: sequence });
+  const sequence = mirrorRecord(demoStore.invoiceSequences, mapInvoiceSequenceRow(row), (candidate) => candidate.id === row.id);
+  audit({
+    ...input,
+    action: before ? "InvoiceSequenceUpdated" : "InvoiceSequenceCreated",
+    entityType: "invoice_sequence",
+    entityId: sequence.id,
+    beforeJson: before,
+    afterJson: { ...sequence, year: row.year }
+  });
   return getBillingSettings(input.propertyId);
 }
 

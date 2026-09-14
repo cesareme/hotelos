@@ -13,6 +13,7 @@
 
 import { useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { EmptyState, ErrorState } from "../../components/States";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
@@ -132,7 +133,6 @@ async function executeAction(
   drawerCtx: { openCheckIn: (id: string) => void; openCheckOut: (id: string) => void }
 ): Promise<{ ok: boolean; message?: string }> {
   const { kind, payload } = action;
-  const base = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
   try {
     switch (kind) {
       case "start_checkin": {
@@ -178,13 +178,14 @@ async function executeAction(
         const reservationId = payload?.reservationId;
         const roomId = payload?.roomId;
         if (!reservationId || !roomId) return { ok: false, message: "Datos incompletos" };
-        const res = await fetch(`${base}/reservations/${reservationId}/assign-room`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ roomId })
-        });
-        if (!res.ok) {
+        try {
+          await apiRequest<unknown>(`/reservations/${encodeURIComponent(String(reservationId))}/assign-room`, {
+            method: "POST",
+            body: { roomId }
+          });
+        } catch {
           // Fallback: navigate to detail screen so the user can do it manually.
+          // A 401 has already cleared the session inside apiRequest.
           navigateTo("ReservationDetailWorkspace");
           return { ok: false, message: "Asigna desde la reserva" };
         }
@@ -193,12 +194,12 @@ async function executeAction(
       case "mark_no_show": {
         const reservationId = payload?.reservationId;
         if (!reservationId) return { ok: false, message: "Falta reservationId" };
-        const res = await fetch(`${base}/reservations/${reservationId}/no-show`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({})
-        });
-        if (!res.ok) {
+        try {
+          await apiRequest<unknown>(`/reservations/${encodeURIComponent(String(reservationId))}/no-show`, {
+            method: "POST",
+            body: {}
+          });
+        } catch {
           navigateTo("ReservationDetailWorkspace");
           return { ok: false, message: "Marca desde la reserva" };
         }

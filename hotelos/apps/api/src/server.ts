@@ -32,14 +32,15 @@ import fastifyCors from "@fastify/cors";
 import fastifyRateLimit from "@fastify/rate-limit";
 import type { ChatAttachmentDraft, CheckInFromScanRequest, GuestIdentityFields, RateGridBulkUpdateRequest, RateGridPushRequest } from "@hotelos/shared";
 import type { HotelModuleCode } from "@hotelos/product";
-import { isValidSpanishTaxId } from "@hotelos/compliance";
+import { isValidSpanishTaxId, resolveVerifactuSoftware, type TaxCategory } from "@hotelos/compliance";
+import type { Prisma } from "@hotelos/database";
 import type { HotelOsToolName } from "@hotelos/ai-tools";
 import { buildHealthResponse, OBSERVABILITY_HEADERS, SERVICE_NAMES } from "@hotelos/config";
 import { createId } from "./lib/ids.js";
 import { demoStore, type PropertyRecord, type UserContext } from "./lib/demo-store.js";
-import { isPublicRoute, registerAuthContext } from "./lib/auth-context.js";
+import { isPasswordChangeAllowedRoute, isPublicRoute, passwordChangeRequiredError, registerAuthContext } from "./lib/auth-context.js";
 import { isSchedulerLeader } from "./lib/scheduler-leader.js";
-import { BadRequestError, ConflictError, ForbiddenError, NotFoundError, statusCodeForError } from "./lib/http-error.js";
+import { BadRequestError, ConflictError, ForbiddenError, HttpError, NotFoundError, UnauthorizedError, statusCodeForError } from "./lib/http-error.js";
 import { pageBody, pageHeaders, parsePageQuery } from "./lib/pagination.js";
 import {
   assertEntityAccess,
@@ -130,7 +131,7 @@ import {
   getGroupsPickupSummary,
   releaseExpiredGroupBlocks
 } from "./modules/sales/commercial-sales.service.js";
-import { assertRoutePermission } from "./security/route-permissions.js";
+import { assertRoutePermission, routeRiskLevel } from "./security/route-permissions.js";
 import { requestSignIn as guestPortalRequestSignIn, signOut as guestPortalSignOut } from "./modules/guest-portal/guest-portal-auth.service.js";
 import {
   GuestPortalAuthError,
@@ -138,7 +139,7 @@ import {
   submitPreCheckIn as guestPortalSubmitPreCheckIn,
   submitServiceRequest as guestPortalSubmitServiceRequest
 } from "./modules/guest-portal/guest-portal.service.js";
-import { hydrateAuditChainFromPostgres, verifyAuditIntegrity, verifyDomainEventIntegrity } from "./modules/audit/audit.service.js";
+import { hydrateAuditChainFromPostgres, recordAuditEvent, verifyAuditIntegrity, verifyDomainEventIntegrity } from "./modules/audit/audit.service.js";
 import { getCurrentBusinessDate, listNightAuditRuns, runNightAudit } from "./modules/night-audit/night-audit.service.js";
 import { closeFiscalPeriod, listFiscalPeriods, openFiscalPeriod, reopenFiscalPeriod } from "./modules/accounting/fiscal-period.service.js";
 import {
@@ -277,7 +278,13 @@ import {
   retryDelivery as retryNotificationDelivery,
   templateStats as notificationTemplateStats
 } from "./modules/notifications/dispatcher.service.js";
-import { getSesSubmission, listSesSubmissions, retrySesSubmission, runDueSesSubmissions } from "./modules/compliance/ses-submission.service.js";
+import { getSesSubmission, listSesSubmissions, resolveSesEstablishment, retrySesSubmission, runDueSesSubmissions } from "./modules/compliance/ses-submission.service.js";
+// Tanda 3 (server-rutas): contracts of the parallel lots — indirect-tax
+// profile (iva-catalogo), tax provisioning (tenant-hydration) and persisted
+// staff invitations (invitaciones-api).
+import { getPropertyTaxProfile, upsertPropertyTaxRate } from "./modules/accounting/tax-rate.service.js";
+import { ensurePropertyTaxes } from "./lib/tenant-hydration.js";
+import { acceptInvitation, emailStatus, getInvitationByToken, reissueInvitation } from "./modules/auth/invitations.service.js";
 import {
   acknowledgeRequest as gdprAcknowledgeRequest,
   createGdprRequest,
@@ -405,6 +412,107 @@ const isReservationStatus = (v: string): v is ReservationStatusValue =>
   (RESERVATION_STATUSES as readonly string[]).includes(v);
 // NOTE: `parse()` takes ZodSchema<T> (input === output), so no transform/default
 // here — the csv is validated as a string and split by the handler.
+// ---- Tanda 3 (server-rutas) body/query schemas -----------------------------
+// Fiscal categories of packages/compliance indirect-tax.ts (contract A). Typed
+// against the package so a catalogue change fails the typecheck here instead of
+// silently accepting a category the resolver does not know.
+const TAX_CATEGORIES = [
+  "accommodation",
+  "food_beverage",
+  "general_services",
+  "transport",
+  "tourist_tax",
+  "not_subject"
+] as const satisfies readonly TaxCategory[];
+const twoDecimals = (value: number): boolean => Math.round(value * 100) / 100 === value;
+const UpsertTaxRateSchema = z.object({
+  category: z.enum(TAX_CATEGORIES),
+  ratePercent: z.number().min(0).max(100).refine(twoDecimals, { message: "ratePercent admite como máximo 2 decimales" }),
+  calificacion: z.enum(["S1", "N1"]).optional(),
+  validFrom: isoDateOnly.optional()
+});
+const InviteBackOfficeUserSchema = z.object({
+  email: z.string().trim().email().max(200),
+  fullName: z.string().trim().min(1).max(120),
+  phone: z.string().trim().max(40).optional(),
+  // A staff user without a role holds zero permissions in production (AUTH-07):
+  // the role is part of the invitation, not an afterthought.
+  roleId: z.string().trim().min(1).max(80),
+  mfaRequired: z.boolean().optional()
+});
+const InvitationTokenParamsSchema = z.object({ token: z.string().trim().min(16).max(512) });
+const AcceptInviteSchema = z.object({
+  token: z.string().trim().min(16).max(512),
+  // The password policy (length, classes, common list) is enforced by the
+  // service with its own 400 message; zod only guards the shape.
+  password: z.string().min(1).max(200),
+  deviceId: z.string().trim().min(1).max(120).optional()
+});
+const SesSubmissionListQuerySchema = z.object({
+  status: z.string().trim().min(1).max(40).optional()
+});
+// Tanda 3 (cierre · server-rutas): filters of GET /properties/:propertyId/verifactu/submissions.
+// `limit` / `cursor` / `envelope` are parsed by parsePageQuery, not here.
+const VerifactuSubmissionListQuerySchema = z.object({
+  status: z.string().trim().min(1).max(40).optional(),
+  registroType: z.enum(["alta", "anulacion"]).optional()
+});
+const UPSELL_CHANNELS = ["pre_stay", "in_stay", "checkout", "kiosk"] as const;
+const UpsellOfferFieldsSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  offerType: z.string().trim().min(1).max(60),
+  price: z.number().min(0).max(999999.99).refine(twoDecimals, { message: "price admite como máximo 2 decimales" }).nullable(),
+  taxCategory: z.enum(TAX_CATEGORIES).nullable(),
+  code: z.string().trim().min(1).max(60).nullable(),
+  description: z.string().trim().max(2000).nullable(),
+  currency: z.string().trim().regex(/^[A-Z]{3}$/, "currency debe ser un código ISO 4217 (p. ej. EUR)"),
+  channel: z.enum(UPSELL_CHANNELS).nullable(),
+  imageUrl: z.string().trim().url().max(2048).nullable(),
+  active: z.boolean(),
+  availabilityRulesJson: z.record(z.unknown())
+});
+const CreateUpsellOfferSchema = UpsellOfferFieldsSchema.partial().required({ name: true, offerType: true });
+const PatchUpsellOfferSchema = UpsellOfferFieldsSchema.partial();
+type UpsellOfferRow = {
+  id: string;
+  propertyId: string;
+  name: string;
+  offerType: string;
+  price: { toString(): string } | null;
+  taxCode: string | null;
+  taxCategory: string | null;
+  code: string | null;
+  description: string | null;
+  currency: string;
+  channel: string | null;
+  imageUrl: string | null;
+  availabilityRulesJson: unknown;
+  active: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+};
+/** API shape of an upsell offer: Decimal → number, dates → ISO. */
+function upsellOfferView(row: UpsellOfferRow) {
+  return {
+    id: row.id,
+    propertyId: row.propertyId,
+    name: row.name,
+    offerType: row.offerType,
+    price: row.price === null ? null : Number(row.price.toString()),
+    currency: row.currency,
+    taxCategory: row.taxCategory,
+    taxCode: row.taxCode,
+    code: row.code,
+    description: row.description,
+    channel: row.channel,
+    imageUrl: row.imageUrl,
+    active: row.active,
+    availabilityRulesJson: row.availabilityRulesJson ?? {},
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
+  };
+}
+
 const ReservationListQuerySchema = z.object({
   // csv of ReservationStatus, e.g. status=confirmed,checked_in
   status: z
@@ -442,6 +550,8 @@ const isoMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "month debe tener f
 const MeetingPackQuerySchema = z.object({
   month: isoMonth.optional()
 });
+// Tanda 3 (cierre): optional recipient name when issuing a draft that carries a NIF (VeriFactu F1 Destinatarios).
+const IssueInvoiceBodySchema = z.object({ customerName: z.string().trim().min(1).max(500).optional() });
 const BudgetVarianceQuerySchema = z.object({
   month: isoMonth.optional()
 });
@@ -731,6 +841,7 @@ import {
   getSetupProgress,
   listCategoryTemplates,
   inviteBackOfficeUser,
+  listPropertyRoles,
   listBackOfficeAudit,
   listBackOfficeAiSuggestions,
   listBackOfficeModules,
@@ -1059,14 +1170,49 @@ export async function buildApiServer() {
 
   registerAuthContext(app);
 
+  // Tanda 3 (CFG-P1-6) · forced password rotation. A user whose session was
+  // opened with a temporary password (User.mustChangePassword, carried in the
+  // context by loadUserContext) may only reach the routes needed to rotate it
+  // (PASSWORD_CHANGE_ALLOWLIST in lib/auth-context.ts: change-password,
+  // password-policy, /users/me/*, sessions…, prefix-matched like
+  // PUBLIC_PREFIXES). Everything else answers the 403 built next to the
+  // allowlist (details.code = PASSWORD_CHANGE_REQUIRED) so the front redirects
+  // to the change-password screen instead of showing a permissions error. Only
+  // real sessions are gated (the demo fallback is never a temp-password login);
+  // public routes and unknown paths (404) are left alone. Mounted BEFORE the
+  // permission gate: a user who must rotate first gets that answer, not a 403
+  // about permissions they may also lack.
+  app.addHook("preHandler", async (request) => {
+    if (request.is404) return;
+    if (!request.isAuthenticated || !request.userContext?.mustChangePassword) return;
+    const routePath = request.routeOptions.url ?? request.url.split("?")[0];
+    if (isPublicRoute(routePath) || isPasswordChangeAllowedRoute(routePath)) return;
+    throw passwordChangeRequiredError();
+  });
+
   app.addHook("preHandler", async (request) => {
     // P6: Fastify runs app-level hooks for the not-found route too. An
     // unknown path has no manifest entry, so strict RBAC turned every typo
     // into a 403; let it reach setNotFoundHandler (404) instead.
     if (request.is404) return;
+    const routePath = request.routeOptions.url ?? request.url.split("?")[0];
+    // H1 (Tanda 3 · cierre): the token-less demo fallback (HOTELOS_ALLOW_DEMO_AUTH
+    // → isAuthenticated=false with the demoStore super-user) only stands in for
+    // reads and low/medium writes. A `high` / `critical` route — cancel an
+    // invoice, refund, send to AEAT/MIR, go-live, rotate secrets… — needs a real
+    // session even in demo mode: a verifier cancelled a real Faranda invoice
+    // without any token (irreversible). Public routes carry riskLevel "public"
+    // and are never gated here; without the demo flag the auth hook already
+    // answered 401 before this point, so this only bites the demo fallback.
+    if (!request.isAuthenticated) {
+      const risk = routeRiskLevel(request.method, routePath);
+      if (risk === "high" || risk === "critical") {
+        throw new UnauthorizedError("Authentication required.");
+      }
+    }
     assertRoutePermission({
       method: request.method,
-      path: request.routeOptions.url ?? request.url.split("?")[0],
+      path: routePath,
       // SECURITY (audit 2026-06 · NUEVO-2): default-deny. If no userContext is
       // present, evaluate against an EMPTY permission set — never the demoStore
       // super-user (which holds every permission). Defense in depth behind the
@@ -1157,7 +1303,13 @@ export async function buildApiServer() {
     // Production-grade health: ejecuta sub-checks reales y combina su estado.
     // Mantenemos el shape antiguo (`buildHealthResponse`) además del nuevo
     // para no romper consumidores existentes (smoke tests, dashboards…).
-    type SubCheck = { ok: boolean; latencyMs?: number; message?: string };
+    type SubCheck = {
+      ok: boolean;
+      latencyMs?: number;
+      message?: string;
+      /** VeriFactu SistemaInformatico block (Tanda 3): valid or the list of config errors. */
+      software?: { ok: boolean; errors: string[] };
+    };
     const checks: Record<string, SubCheck> = {};
 
     // database: SELECT 1 + latencyMs medido con performance.now()
@@ -1190,10 +1342,16 @@ export async function buildApiServer() {
       checks.sentry = { ok: true, message: "disabled" };
     }
 
-    // verifactu: reporta el modo configurado (sandbox por defecto)
+    // verifactu: modo configurado (sandbox por defecto) + validez del bloque
+    // SistemaInformatico (NIF del productor, IdSistemaInformatico, versión,
+    // número de instalación…). Fuera de sandbox un bloque inválido impide el
+    // arranque (ver start() abajo); aquí se expone para el readiness fiscal.
+    const verifactuMode = process.env.VERIFACTU_MODE ?? "sandbox";
+    const verifactuSoftware = resolveVerifactuSoftware();
     checks.verifactu = {
-      ok: true,
-      message: `mode=${process.env.VERIFACTU_MODE ?? "sandbox"}`
+      ok: verifactuSoftware.ok || verifactuMode === "sandbox",
+      message: `mode=${verifactuMode}`,
+      software: { ok: verifactuSoftware.ok, errors: verifactuSoftware.errors }
     };
 
     // sesHospedajes: reporta el modo configurado (sandbox por defecto)
@@ -1368,6 +1526,35 @@ export async function buildApiServer() {
     return resetPassword(body);
   });
 
+  // Tanda 3 (CFG-P1-6) · Staff invitation, public leg. The token in the URL is
+  // the only credential: unknown, expired, used and revoked tokens all get the
+  // same generic 404 (no enumeration oracle), and the lookup is rate-limited.
+  app.get("/auth/invitations/:token", {
+    config: { rateLimit: { max: 30, timeWindow: "1 minute" } }
+  }, async (request) => {
+    const params = parse(InvitationTokenParamsSchema, request.params, "params");
+    const invitation = await getInvitationByToken(params.token);
+    if (!invitation) throw new NotFoundError("La invitación no es válida o ha caducado.");
+    return invitation;
+  });
+
+  // Tanda 3 (CFG-P1-6) · Accept the invitation: sets the password (policy →
+  // 400 from the service), activates the user, consumes the token and opens a
+  // session. Same response shape as POST /auth/login so the front can call
+  // setSession() directly. Hard limit like /auth/reset-password.
+  app.post("/auth/accept-invite", {
+    config: { rateLimit: { max: 5, timeWindow: "1 minute" } }
+  }, async (request) => {
+    const body = parse(AcceptInviteSchema, request.body);
+    const result = await acceptInvitation({ token: body.token, password: body.password, deviceId: body.deviceId });
+    return {
+      token: result.token,
+      sessionId: result.sessionId,
+      user: result.user,
+      property: await resolveSessionProperty(result.user.propertyId)
+    };
+  });
+
   // PILOT-D1 · Cambio de contraseña del usuario logueado
   app.post("/auth/change-password", async (request) => {
     const body = parse(ChangePasswordSchema, request.body);
@@ -1427,6 +1614,9 @@ export async function buildApiServer() {
           province: z.string().max(100).optional(),
           country: z.string().length(2).optional(),
           taxRegion: z.string().max(40).optional(),
+          postalCode: z.string().regex(/^\d{5}$/).optional(),
+          ineMunicipalityCode: z.string().regex(/^\d{5}$/).optional(),
+          fiscalTerritory: z.enum(["common", "bizkaia", "gipuzkoa", "araba", "navarra"]).optional(),
           timezone: z.string().max(60).optional(),
           sesHospedajesEnabled: z.boolean().optional(),
           verifactuEnabled: z.boolean().optional()
@@ -3738,14 +3928,38 @@ export async function buildApiServer() {
     return listBackOfficeUsers(params.propertyId);
   });
 
+  // Tanda 3 (CFG-P1-6): the invitation now carries the role and produces a
+  // persisted token + email delivery state (see inviteBackOfficeUser). The
+  // body is validated here (400) instead of trusting the client shape.
   app.post("/backoffice/properties/:propertyId/users/invite", async (request) => {
     const params = request.params as { propertyId: string };
-    const body = request.body as Omit<Parameters<typeof inviteBackOfficeUser>[0], "context" | "propertyId" | "correlationId">;
+    const body = parse(InviteBackOfficeUserSchema, request.body);
     return inviteBackOfficeUser({
       context: request.userContext,
       propertyId: params.propertyId,
       ...body,
       correlationId: createId("corr")
+    });
+  });
+
+  // Roles of the property's organization (Prisma `Role`), for the invite role
+  // selector. `GET /backoffice/roles` below is the static template catalogue.
+  app.get("/backoffice/properties/:propertyId/roles", async (request) => {
+    const params = request.params as { propertyId: string };
+    return listPropertyRoles(params.propertyId);
+  });
+
+  // Re-issue a pending invitation: revokes the previous tokens, creates a new
+  // one and re-sends the email (or returns the copyable link when email is
+  // simulated/failed). The user must hang from THIS property's organization
+  // (confused-deputy check through the `user` resolver, opaque 404).
+  app.post("/backoffice/properties/:propertyId/users/:userId/reissue-invite", async (request) => {
+    const params = request.params as { propertyId: string; userId: string };
+    const owner = await assertEntityAccess(request, { entity: "user", id: params.userId, propertyId: params.propertyId });
+    return reissueInvitation({
+      userId: params.userId,
+      organizationId: owner.organizationId,
+      actorUserId: request.userContext.userId ?? null
     });
   });
 
@@ -3810,6 +4024,39 @@ export async function buildApiServer() {
       invoiceSequence: body.invoiceSequence,
       correlationId: createId("corr")
     });
+  });
+
+  // Tanda 3 (iva-catalogo) · Indirect-tax profile of the property: canonical
+  // region (IVA/IGIC/IPSI), statutory or overridden rate per fiscal category
+  // with its source and legal basis, tourist-tax treatment and warnings.
+  app.get("/backoffice/properties/:propertyId/taxes", async (request) => {
+    const params = request.params as { propertyId: string };
+    return getPropertyTaxProfile(params.propertyId);
+  });
+
+  // Override of one category's rate for the property (idempotent PUT: the
+  // service upserts the TaxRate row for (org, region, category, validFrom)).
+  // Returns the refreshed profile so the screen re-renders from one source.
+  app.put("/backoffice/properties/:propertyId/taxes/rates", async (request) => {
+    const params = request.params as { propertyId: string };
+    const body = parse(UpsertTaxRateSchema, request.body);
+    await upsertPropertyTaxRate({
+      propertyId: params.propertyId,
+      category: body.category,
+      ratePercent: body.ratePercent,
+      calificacion: body.calificacion,
+      validFrom: body.validFrom,
+      actorUserId: request.userContext.userId
+    });
+    return getPropertyTaxProfile(params.propertyId);
+  });
+
+  // (Re)provision the statutory catalogue for the property's region. Idempotent:
+  // existing rows are kept (`skipped`), missing ones are created (`provisioned`).
+  app.post("/backoffice/properties/:propertyId/taxes/provision", async (request) => {
+    const params = request.params as { propertyId: string };
+    const result = await ensurePropertyTaxes({ propertyId: params.propertyId });
+    return { ...result, profile: await getPropertyTaxProfile(params.propertyId) };
   });
 
   app.get("/backoffice/properties/:propertyId/accounting-settings", async (request) => {
@@ -4089,7 +4336,7 @@ export async function buildApiServer() {
       openMaintenanceTasks: await (await import("@hotelos/database")).prisma.workOrder.count({ where: { propertyId: params.propertyId, status: { notIn: ["resolved", "closed"] } } }),
       guestMessages: 0,
       unpaidBalances: Math.round(unpaidBalances * 100) / 100,
-      failedComplianceRecords: getComplianceInbox(params.propertyId).length,
+      failedComplianceRecords: (await getComplianceInbox(params.propertyId)).length,
       todayRevenue: Math.round(todayRevenue * 100) / 100,
       aiDailyBriefing:
         arrivalsToday > 0
@@ -4611,6 +4858,9 @@ export async function buildApiServer() {
       quantity: body.quantity,
       unitPrice: body.unitPrice,
       taxCode: body.taxCode,
+      // Tanda 3 (cierre · H2): the fiscal-category override was validated by the
+      // schema and then dropped here, so every line fell back to the type map.
+      taxCategory: body.taxCategory,
       correlationId: createId("corr")
     });
   });
@@ -4698,6 +4948,7 @@ export async function buildApiServer() {
       folioId: params.id,
       customerType: body.customerType,
       customerTaxId: body.customerTaxId,
+      customerName: body.customerName,
       invoiceType: body.invoiceType,
       // The schema accepts both spellings; forwarding only one let `currency`
       // silently fall back to EUR and skip the FX validation.
@@ -4718,8 +4969,10 @@ export async function buildApiServer() {
   app.post("/invoices/:id/issue", async (request) => {
     const params = request.params as { id: string };
     await assertBillingAccess(request, "invoice", params.id);
+    const issueBody = parse(IssueInvoiceBodySchema, request.body ?? {});
     return issueInvoice({
       context: request.userContext,
+      customerName: issueBody.customerName,
       invoiceId: params.id,
       correlationId: createId("corr")
     });
@@ -4747,6 +5000,8 @@ export async function buildApiServer() {
       reasonCode: body.reasonCode as RectifyingReasonCode,
       lineAdjustments: body.lineAdjustments as unknown as RectifyingLineAdjustment[] | undefined,
       fullReversal: body.fullReversal,
+      rectificationType: body.rectificationType,
+      substituteLines: body.substituteLines,
       correlationId: createId("corr")
     });
   });
@@ -6049,7 +6304,7 @@ export async function buildApiServer() {
       propertyName?: string; propertyType?: string;
       municipality?: string; province?: string;
       organizationName?: string; organizationCountry?: string;
-      property?: { name?: string; type?: string; municipality?: string; province?: string };
+      property?: { name?: string; type?: string; municipality?: string; province?: string; taxRegion?: string; postalCode?: string; ineMunicipalityCode?: string; fiscalTerritory?: string };
       ownerUser?: { email?: string; fullName?: string; phone?: string };
       modulesEnabled?: string[];
     };
@@ -6063,7 +6318,11 @@ export async function buildApiServer() {
         type: body.property?.type ?? body.propertyType ?? "hotel",
         // el wizard (NewTenantWizardDialog) envía municipality/province PLANOS
         municipality: body.property?.municipality ?? body.municipality,
-        province: body.property?.province ?? body.province
+        province: body.property?.province ?? body.province,
+        taxRegion: body.property?.taxRegion,
+        postalCode: body.property?.postalCode,
+        ineMunicipalityCode: body.property?.ineMunicipalityCode,
+        fiscalTerritory: body.property?.fiscalTerritory
       },
       ownerUser: {
         email: ownerEmail,
@@ -6075,7 +6334,19 @@ export async function buildApiServer() {
       plan: body.plan === "pro" || body.plan === "enterprise" ? body.plan : "starter"
     });
   });
-  app.post('/admin/tenants/:orgId/users/:userId/reset-password', async (request) => regenerateTempPassword({ context: request.userContext, userId: (request.params as any).userId }));
+  app.post('/admin/tenants/:orgId/users/:userId/reset-password', async (request) => regenerateTempPassword({ context: request.userContext, userId: (request.params as { userId: string; orgId: string }).userId, orgId: (request.params as { userId: string; orgId: string }).orgId }));
+  // Tanda 3 (CFG-P1-6): re-issue the owner/user invitation of a tenant from the
+  // platform console (replaces the clear-text temp password flow). The service
+  // checks user.organizationId === orgId; the org itself is granted first.
+  app.post('/admin/tenants/:orgId/users/:userId/reissue-invite', async (request) => {
+    const params = request.params as { orgId: string; userId: string };
+    await assertEntityAccess(request, { entity: "organization", id: params.orgId });
+    return reissueInvitation({
+      userId: params.userId,
+      organizationId: params.orgId,
+      actorUserId: request.userContext.userId ?? null
+    });
+  });
   app.patch('/admin/tenants/:orgId/modules/:moduleCode', async (request) => toggleTenantModule({ context: request.userContext, orgId: (request.params as any).orgId, moduleCode: (request.params as any).moduleCode, enabled: ((request.body as any).enabled === true) }));
   app.get('/admin/tenants/:orgId/audit-log', async (request) => getTenantAuditLog({ context: request.userContext, orgId: (request.params as any).orgId, limit: Number((request.query as any).limit ?? 50) }));
 
@@ -6454,9 +6725,25 @@ export async function buildApiServer() {
     });
   });
 
-  app.get("/properties/:propertyId/verifactu/submissions", async (request) => {
+  // Tanda 3 (cierre · server-rutas): shared pagination contract (lib/pagination.ts)
+  // on the VeriFactu history — bare array by default, `{ items, nextCursor, total }`
+  // with ?cursor= / ?envelope=1, X-Total-Count always and X-Next-Cursor while
+  // more rows exist, optional ?status= / ?registroType=. listVerifactuSubmissions
+  // already returns a `Page` (createdAt desc, id desc; `total` over the filtered
+  // set) and decodes the opaque cursor itself, so a malformed one is the
+  // contract's 400 — the handler only parses the query and shapes the answer.
+  app.get("/properties/:propertyId/verifactu/submissions", async (request, reply) => {
     const params = request.params as { propertyId: string };
-    return listVerifactuSubmissions(params.propertyId);
+    const page = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const filters = parse(VerifactuSubmissionListQuerySchema, request.query ?? {}, "query");
+    const result = await listVerifactuSubmissions(params.propertyId, {
+      limit: page.limit,
+      cursor: page.cursor,
+      registroType: filters.registroType,
+      status: filters.status
+    });
+    reply.headers(pageHeaders(result));
+    return pageBody(result, page);
   });
 
   app.get("/invoices/:id/verifactu", async (request) => {
@@ -6476,18 +6763,57 @@ export async function buildApiServer() {
     return listIgicSubmissions(params.propertyId);
   });
 
-  app.get("/properties/:propertyId/ses/submissions", async (request) => {
+  // Tanda 3 (QC-01): SES history from Prisma with the shared cursor pagination
+  // (bare array by default, `{ items, nextCursor, total }` with ?cursor=/?envelope=1,
+  // X-Total-Count / X-Next-Cursor always). Optional ?status= filter.
+  app.get("/properties/:propertyId/ses/submissions", async (request, reply) => {
     const params = request.params as { propertyId: string };
-    return listSesSubmissions(params.propertyId);
+    const page = parsePageQuery(request.query as Record<string, unknown>, { limit: 100, max: 500 });
+    const filters = parse(SesSubmissionListQuerySchema, request.query ?? {}, "query");
+    const result = await listSesSubmissions(params.propertyId, {
+      limit: page.limit,
+      // Contract (F) types the cursor as `string | undefined`; parsePageQuery yields null for "no cursor".
+      cursor: page.cursor ?? undefined,
+      status: filters.status
+    });
+    reply.headers(pageHeaders(result));
+    return pageBody(result, page);
+  });
+
+  // Tanda 3 (FISC-08): the establishment block the SES XML would carry (NIF,
+  // legal name, registry number, address, INE municipality, postal code…) and
+  // the list of missing fields. The POST below answers 409 with
+  // details.code = SES_ESTABLISHMENT_INCOMPLETE and the same `missing` list.
+  app.get("/properties/:propertyId/ses/establishment", async (request) => {
+    const params = request.params as { propertyId: string };
+    return resolveSesEstablishment(params.propertyId);
   });
 
   // Parte de viajeros SES.HOSPEDAJES: encola el envío del registro de una reserva
   // por el pipeline real (persiste en Prisma `SesHospedajesSubmission`). Antes esta
   // ruta NO existía — el check-in (QuickCheckInDrawer) hacía POST aquí y recibía un
   // 404 tragado en silencio, con UI de éxito falsa (auditoría 2026-06 · crítico SES).
-  // Encola los registros ya creados de la reserva; si aún no hay ninguno, devuelve
-  // estado claro en vez de fallar. El envío real al MIR requiere además
-  // SES_HOSPEDAJES_MODE=production + certificado (hoy stub sandbox).
+  // Encola los registros ya creados de la reserva. El envío real al MIR requiere
+  // además SES_HOSPEDAJES_MODE=production + certificado (hoy stub sandbox).
+  //
+  // Tanda 3 (cierre · CRÍTICO): the previous version mapped the partes to
+  // `queueSesHospedajesSubmission(...)` WITHOUT awaiting: the body carried empty
+  // promises and every rejection (409 SES_ESTABLISHMENT_INCOMPLETE on Faranda)
+  // became an unhandledRejection that took the :3000 process down. Each parte is
+  // now awaited under its own try/catch (honest catch, QC-06): typed HTTP errors
+  // are per-parte outcomes reported in `failed[]`; anything else (DB down, bug)
+  // aborts the request with a 500 and its trace. Response:
+  //   { status: "queued" | "partial", queued, submissions[{ id, guestRegisterRecordId,
+  //     submissionType, status }], failed[{ guestRegisterRecordId, code, message,
+  //     missing, submissionId }] }
+  //   · no partes → 409 SES_NO_GUEST_REGISTER_RECORDS
+  //   · every parte failed with the SAME code → 409 with that code and the same
+  //     details the single-record route raises (missing[], submissionId…) plus the
+  //     summary (status "failed", queued 0, failed[]), so QuickCheckInDrawer keeps
+  //     branching on details.code;
+  //   · every parte failed with MIXED codes → 409 SES_QUEUE_FAILED with failed[].
+  //   A total failure is never a 200 with status "failed": callers that only check
+  //   `res.ok` would repeat the silent-success bug this route was created to fix.
   app.post("/properties/:propertyId/ses/submissions", async (request) => {
     const params = request.params as { propertyId: string };
     const body = (request.body ?? {}) as { reservationId?: string };
@@ -6496,19 +6822,74 @@ export async function buildApiServer() {
       throw new BadRequestError("reservationId es obligatorio para el parte de viajeros.");
     }
     await assertEntityAccess(request, { entity: "reservation", id: body.reservationId });
-    const records = listReservationGuestRegisterRecords(body.reservationId);
-    const submissions = records.map((record) =>
-      queueSesHospedajesSubmission({
-        context: request.userContext,
-        guestRegisterRecordId: record.id,
-        submissionType: "checkin",
-        correlationId: createId("corr")
-      })
-    );
+    const records = await listReservationGuestRegisterRecords(body.reservationId);
+    if (records.length === 0) {
+      const noRecords = new ConflictError("La reserva no tiene partes de viajeros que comunicar a SES.HOSPEDAJES.");
+      noRecords.details = { code: "SES_NO_GUEST_REGISTER_RECORDS", reservationId: body.reservationId, propertyId: params.propertyId };
+      throw noRecords;
+    }
+    type QueuedParte = { id: string; guestRegisterRecordId: string; submissionType: string; status: string };
+    type FailedParte = { guestRegisterRecordId: string; code: string; message: string; missing: string[]; submissionId: string | null };
+    const submissions: QueuedParte[] = [];
+    const failed: FailedParte[] = [];
+    for (const record of records) {
+      const correlationId = createId("corr");
+      try {
+        const view = await queueSesHospedajesSubmission({
+          context: request.userContext,
+          guestRegisterRecordId: record.id,
+          submissionType: "checkin",
+          correlationId
+        });
+        submissions.push({
+          id: view.id,
+          guestRegisterRecordId: view.guestRegisterRecordId,
+          submissionType: view.submissionType,
+          status: view.status
+        });
+      } catch (error) {
+        if (!(error instanceof HttpError)) throw error;
+        const details = (error.details && typeof error.details === "object" ? error.details : {}) as {
+          code?: unknown;
+          missing?: unknown;
+          submissionId?: unknown;
+        };
+        const entry: FailedParte = {
+          guestRegisterRecordId: record.id,
+          code: typeof details.code === "string" ? details.code : `HTTP_${error.statusCode}`,
+          message: error.message,
+          missing: Array.isArray(details.missing) ? details.missing.map(String) : [],
+          submissionId: typeof details.submissionId === "string" ? details.submissionId : null
+        };
+        failed.push(entry);
+        request.log.warn(
+          { err: error, reservationId: body.reservationId, guestRegisterRecordId: record.id, code: entry.code, correlationId },
+          "[ses] parte de viajeros could not be queued"
+        );
+      }
+    }
+    if (submissions.length === 0) {
+      const first = failed[0];
+      const sameCause = first !== undefined && failed.every((entry) => entry.code === first.code);
+      const summary = { status: "failed" as const, queued: 0, submissions, failed };
+      const conflict = new ConflictError(sameCause ? first.message : "Ningún parte de viajeros se pudo encolar.");
+      conflict.details = sameCause
+        ? {
+            code: first.code,
+            missing: first.missing,
+            submissionId: first.submissionId,
+            propertyId: params.propertyId,
+            reservationId: body.reservationId,
+            ...summary
+          }
+        : { code: "SES_QUEUE_FAILED", propertyId: params.propertyId, reservationId: body.reservationId, ...summary };
+      throw conflict;
+    }
     return {
-      status: submissions.length > 0 ? "queued" : "no_records",
+      status: failed.length === 0 ? ("queued" as const) : ("partial" as const),
       queued: submissions.length,
-      submissions
+      submissions,
+      failed
     };
   });
 
@@ -6984,6 +7365,101 @@ export async function buildApiServer() {
     const q = request.query as { propertyId?: string; from?: string; to?: string };
     return buildUpsellsDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, from: q.from, to: q.to });
   });
+
+  // Tanda 3 (CF-02) · Staff catalogue of upsell offers over Prisma UpsellOffer —
+  // the same table the dashboard above aggregates. No advanced-module gate: the
+  // catalogue is property data, the guest-facing purchase leg keeps its own.
+  app.get("/properties/:propertyId/upsell-offers", async (request) => {
+    const params = request.params as { propertyId: string };
+    const { prisma } = await import("@hotelos/database");
+    const rows = await prisma.upsellOffer.findMany({
+      where: { propertyId: params.propertyId },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }]
+    });
+    return rows.map(upsellOfferView);
+  });
+
+  app.post("/properties/:propertyId/upsell-offers", async (request, reply) => {
+    const params = request.params as { propertyId: string };
+    const body = parse(CreateUpsellOfferSchema, request.body);
+    const { prisma } = await import("@hotelos/database");
+    const row = await prisma.upsellOffer.create({
+      data: {
+        propertyId: params.propertyId,
+        name: body.name,
+        offerType: body.offerType,
+        price: body.price ?? null,
+        taxCategory: body.taxCategory ?? null,
+        code: body.code ?? null,
+        description: body.description ?? null,
+        currency: body.currency ?? "EUR",
+        channel: body.channel ?? null,
+        imageUrl: body.imageUrl ?? null,
+        active: body.active ?? true,
+        availabilityRulesJson: (body.availabilityRulesJson ?? {}) as Prisma.InputJsonObject
+      }
+    });
+    const view = upsellOfferView(row);
+    recordAuditEvent({
+      organizationId: request.userContext.organizationId,
+      propertyId: params.propertyId,
+      actorUserId: request.userContext.userId,
+      actorType: "user",
+      action: "UpsellOfferCreated",
+      entityType: "upsell_offer",
+      entityId: row.id,
+      afterJson: view,
+      correlationId: createId("corr")
+    });
+    // Tanda 3 (cierre): a created resource answers 201, like the other POST
+    // catalogues; the body stays the same UpsellOfferRecord.
+    reply.code(201);
+    return view;
+  });
+
+  app.patch("/upsell-offers/:id", async (request) => {
+    const params = request.params as { id: string };
+    const propertyId = await assertPropertyEntityAccess(request, { entity: "upsellOffer", id: params.id });
+    const body = parse(PatchUpsellOfferSchema, request.body);
+    if (Object.keys(body).length === 0) {
+      throw new BadRequestError("No hay cambios que aplicar a la oferta.");
+    }
+    const { prisma } = await import("@hotelos/database");
+    const before = await prisma.upsellOffer.findUnique({ where: { id: params.id } });
+    if (!before) throw new NotFoundError("Oferta de upsell no encontrada.");
+    const row = await prisma.upsellOffer.update({
+      where: { id: params.id },
+      data: {
+        ...(body.name !== undefined ? { name: body.name } : {}),
+        ...(body.offerType !== undefined ? { offerType: body.offerType } : {}),
+        ...(body.price !== undefined ? { price: body.price } : {}),
+        ...(body.taxCategory !== undefined ? { taxCategory: body.taxCategory } : {}),
+        ...(body.code !== undefined ? { code: body.code } : {}),
+        ...(body.description !== undefined ? { description: body.description } : {}),
+        ...(body.currency !== undefined ? { currency: body.currency } : {}),
+        ...(body.channel !== undefined ? { channel: body.channel } : {}),
+        ...(body.imageUrl !== undefined ? { imageUrl: body.imageUrl } : {}),
+        ...(body.active !== undefined ? { active: body.active } : {}),
+        ...(body.availabilityRulesJson !== undefined
+          ? { availabilityRulesJson: body.availabilityRulesJson as Prisma.InputJsonObject }
+          : {})
+      }
+    });
+    const view = upsellOfferView(row);
+    recordAuditEvent({
+      organizationId: request.userContext.organizationId,
+      propertyId,
+      actorUserId: request.userContext.userId,
+      actorType: "user",
+      action: "UpsellOfferUpdated",
+      entityType: "upsell_offer",
+      entityId: row.id,
+      beforeJson: upsellOfferView(before),
+      afterJson: view,
+      correlationId: createId("corr")
+    });
+    return view;
+  });
   app.get("/dashboards/surveys", async (request) => {
     const q = request.query as { propertyId?: string; days?: string };
     return buildSurveysDashboard({ propertyId: q.propertyId ?? request.userContext.propertyId, days: q.days ? Number(q.days) : undefined });
@@ -7318,6 +7794,10 @@ export async function buildApiServer() {
       language: body.language
     });
   });
+
+  // Tanda 3 (CFG-P1-6): outbound email mode (real / simulated / disabled) so the
+  // invitation screens can show a copyable link instead of a fake "sent".
+  app.get("/notifications/email-status", async () => emailStatus());
 
   app.get("/notifications/template-stats", async (request) => {
     const q = request.query as { organizationId?: string; propertyId?: string; days?: string };
@@ -7822,6 +8302,65 @@ if (entryFile === argFile) {
   const tips = await hydrateAuditChainFromPostgres();
   console.log(`[audit] hydrated chain tips: audit=${tips.auditTail?.slice(0, 12) ?? "<empty>"} event=${tips.eventTail?.slice(0, 12) ?? "<empty>"}`);
   const app = await buildApiServer();
+
+  // Tanda 3 (cierre · CRÍTICO SES): a rejected promise nobody awaited (the old
+  // `records.map(queueSesHospedajesSubmission…)` in POST /ses/submissions) took
+  // the whole process down — Node treats an unhandled rejection as an uncaught
+  // exception. A leaked rejection is logged with its trace (and reported to
+  // Sentry when configured) and the process KEEPS serving: the request that
+  // leaked it already got its answer, and exiting would punish every other
+  // client. An uncaughtException is different — the process state is unknown —
+  // so we still exit(1), but only after the trace is out and Sentry flushed
+  // (deferred fail-fast) instead of the silent crash the verifier saw. Only the
+  // listen path installs these hooks: tests booting buildApiServer keep the
+  // runner's own handlers.
+  const reportProcessErrorToSentry = async (error: unknown): Promise<void> => {
+    if (!sentryInitialized) return;
+    try {
+      const Sentry = await import("@sentry/node");
+      Sentry.captureException(error);
+      await Sentry.flush(2000);
+    } catch (sentryError) {
+      // Sentry failing must never mask the original error already logged above.
+      app.log.warn({ err: sentryError }, "[process] could not report to Sentry");
+    }
+  };
+  process.on("unhandledRejection", (reason) => {
+    app.log.error({ err: reason }, "[process] unhandledRejection (process kept alive; fix the missing await)");
+    void reportProcessErrorToSentry(reason);
+  });
+  process.on("uncaughtException", (error) => {
+    app.log.fatal({ err: error }, "[process] uncaughtException — exiting with code 1 once the trace is flushed");
+    const exit = () => process.exit(1);
+    // Hard deadline so a hung Sentry transport cannot keep a broken process alive.
+    const deadline = setTimeout(exit, 3000);
+    void reportProcessErrorToSentry(error).finally(() => {
+      clearTimeout(deadline);
+      setTimeout(exit, 250);
+    });
+  });
+
+  // Tanda 3 (verifactu) · fail fast like AUTH-04: outside sandbox an invalid
+  // SistemaInformatico block (producer NIF, IdSistemaInformatico, version,
+  // installation number…) would put unacceptable registros on the AEAT chain,
+  // so the API refuses to boot. In sandbox the stub accepts anything: warn only.
+  {
+    const verifactuMode = process.env.VERIFACTU_MODE ?? "sandbox";
+    const software = resolveVerifactuSoftware();
+    if (!software.ok) {
+      if (verifactuMode !== "sandbox") {
+        app.log.error(
+          { verifactuMode, errors: software.errors },
+          "[verifactu] bloque SistemaInformatico inválido — abortando arranque (VERIFACTU_MODE != sandbox)"
+        );
+        process.exit(1);
+      }
+      app.log.warn(
+        { verifactuMode, errors: software.errors },
+        "[verifactu] bloque SistemaInformatico incompleto (solo aviso en sandbox)"
+      );
+    }
+  }
   await app.listen({ port, host });
 
   // HA gate (audit 2026-06 · #13): the five schedulers below must run on EXACTLY

@@ -2,6 +2,9 @@
 // pre-check-in/check-out online, y qué funciones se ofrecen al huésped.
 
 import { useState } from "react";
+import { useApiData } from "../../hooks/useApiData";
+import { useActiveProperty } from "../../services/activeProperty";
+import type { UpsellsDashboardKpis } from "../../services/upsellsApi";
 
 type PortalConfig = {
   brandName: string;
@@ -60,13 +63,23 @@ const FEATURE_KPIS = {
   averageCompletionMinutes: 4.2,
   signatureUploadSuccessRate: 94.1,
   messagingResponseMinutes: 12,
-  upsellConversionRate: 8.6,
   recommendationsViewsLast30d: 1842
 };
 
+function navigateTo(screen: string) {
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
+  }
+}
+
 export function GuestPortalSettingsScreen() {
+  const { propertyId } = useActiveProperty();
   const [config, setConfig] = useState<PortalConfig>(INITIAL_CONFIG);
   const [msg, setMsg] = useState<string | null>(null);
+  // Tanda 3 · CF-02: the upsell conversion KPI comes from the real dashboard
+  // (Prisma UpsellImpression / GuestUpsellPurchase, last 30 days), not a constant.
+  const upsells = useApiData<{ kpis: UpsellsDashboardKpis }>("/dashboards/upsells", { query: { propertyId } });
+  const upsellKpis = upsells.data?.kpis ?? null;
 
   function toggleLanguage(code: string) {
     setConfig((prev) => ({
@@ -107,9 +120,31 @@ export function GuestPortalSettingsScreen() {
           <div className="rev-kpi-head"><span className="rev-kpi-label">Tiempo medio completar</span></div>
           <div className="rev-kpi-value">{FEATURE_KPIS.averageCompletionMinutes} min</div>
         </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Conversión upsells</span><span className="bo-status info">RevPAR +</span></div>
-          <div className="rev-kpi-value">{FEATURE_KPIS.upsellConversionRate.toFixed(1)} %</div>
+        <article
+          className={`rev-kpi ${upsells.error ? "rev-kpi-warn" : "rev-kpi-ok"}`}
+          role="button"
+          tabIndex={0}
+          title="Abrir el panel de upsells"
+          style={{ cursor: "pointer" }}
+          onClick={() => navigateTo("UpsellsDashboard")}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") navigateTo("UpsellsDashboard");
+          }}
+        >
+          <div className="rev-kpi-head">
+            <span className="rev-kpi-label">Conversión upsells</span>
+            <span className={`bo-status ${upsells.error ? "warn" : "info"}`}>{upsells.error ? "sin datos" : "últimos 30 d"}</span>
+          </div>
+          <div className="rev-kpi-value">
+            {upsells.loading && !upsellKpis ? "…" : upsellKpis ? `${upsellKpis.conversionRatePct.toFixed(1)} %` : "—"}
+          </div>
+          {upsellKpis ? (
+            <small className="bo-muted">
+              {upsellKpis.conversions30d} conversiones / {upsellKpis.offersShown30d} impresiones · {upsellKpis.activeOffers} ofertas activas
+            </small>
+          ) : upsells.error ? (
+            <small className="bo-muted">{upsells.error}</small>
+          ) : null}
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head"><span className="rev-kpi-label">Recomendaciones vistas</span></div>

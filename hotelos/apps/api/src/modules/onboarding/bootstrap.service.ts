@@ -18,7 +18,8 @@ import { recordAuditEvent } from "../audit/audit.service.js";
 import { BadRequestError, ForbiddenError } from "../../lib/http-error.js";
 import { assertPasswordPolicy } from "../auth/auth-pilot.service.js";
 import { applyRoleTemplate, syncPermissionCatalog } from "../../lib/rbac-catalog.js";
-import { ensurePropertySettings, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
+import { ensurePropertySettings, ensurePropertyTaxes, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
+import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
 
 // ───────────────────────────────────────────────── permisos del piloto
 // Tanda 1: la lista copiada a mano (79 claves, 4 de ellas fuera del catálogo)
@@ -44,7 +45,14 @@ export type BootstrapInput = {
     municipality?: string;
     province?: string;
     country?: string;
+    /** Tanda 3: canonical tax region (ES_PENINSULA_BALEARES · ES_CANARIAS · ES_CEUTA · ES_MELILLA); derived from the province when omitted. */
     taxRegion?: string;
+    /** 5-digit Spanish postal code (validated). */
+    postalCode?: string;
+    /** 5-digit INE municipality code, same province as the postal code (validated). */
+    ineMunicipalityCode?: string;
+    /** Reporting territory: common (VeriFactu) · bizkaia · gipuzkoa · araba · navarra. */
+    fiscalTerritory?: string;
     timezone?: string;
     sesHospedajesEnabled?: boolean;
     verifactuEnabled?: boolean;
@@ -63,6 +71,8 @@ export type BootstrapResult = {
   userId: string;
   ownerRoleId: string;
   permissionsSeeded: number;
+  /** Tanda 3: statutory tax catalogue provisioned for the property's region (contract C). */
+  taxProvisioning: { ok: boolean; taxRegion: string | null; provisioned?: number; skipped?: number; error?: string };
   message: string;
 };
 
@@ -120,6 +130,20 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
     throw new BadRequestError(`organization.taxId no es un NIF/CIF válido («${rawTaxId}»): ${taxIdProblem}`);
   }
   const organizationTaxId = rawTaxId ? normalizeTaxId(rawTaxId) : undefined;
+  // Tanda 3: fiscal location validated before any write — canonical region (400 when
+  // unrecognised; derived from the province when omitted), 5-digit CP / INE coherent by
+  // province, reporting territory. Never persists "" or a free-text region.
+  const province = input.property.province?.trim() || null;
+  const fiscal = resolveFiscalLocation({
+    current: {},
+    patch: {
+      taxRegion: input.property.taxRegion,
+      postalCode: input.property.postalCode,
+      ineMunicipalityCode: input.property.ineMunicipalityCode,
+      fiscalTerritory: input.property.fiscalTerritory
+    },
+    province
+  });
 
   const passwordHash = hashPassword(input.adminUser.password);
 
@@ -141,9 +165,12 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
         legalName: input.property.legalName?.trim(),
         address: input.property.address?.trim(),
         municipality: input.property.municipality?.trim(),
-        province: input.property.province?.trim(),
+        province: province ?? undefined,
         country: input.property.country?.trim() || "ES",
-        taxRegion: input.property.taxRegion?.trim(),
+        taxRegion: fiscal.taxRegionToPersist,
+        postalCode: fiscal.postalCode,
+        ineMunicipalityCode: fiscal.ineMunicipalityCode,
+        fiscalTerritory: fiscal.fiscalTerritory,
         timezone: input.property.timezone?.trim() || "Europe/Madrid",
         sesHospedajesEnabled: input.property.sesHospedajesEnabled ?? false,
         verifactuEnabled: input.property.verifactuEnabled ?? false
@@ -203,6 +230,28 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
   mirrorOrganization(result.organization);
   mirrorProperty(result.property);
 
+  // Catálogo estatutario de impuestos para la región (contrato C). Idempotente; un
+  // fallo se devuelve en el resultado y queda en auditoría (el readiness lo señala)
+  // en vez de dejar el piloto a medias tras un 500.
+  let taxProvisioning: BootstrapResult["taxProvisioning"];
+  try {
+    const provisioned = await ensurePropertyTaxes({
+      propertyId: result.property.id,
+      organizationId: result.organizationId,
+      taxRegion: fiscal.taxRegionToPersist
+    });
+    taxProvisioning = { ok: true, ...provisioned };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[bootstrap] ensurePropertyTaxes failed", {
+      propertyId: result.property.id,
+      taxRegion: fiscal.taxRegionToPersist,
+      correlationId: "bootstrap",
+      error: message
+    });
+    taxProvisioning = { ok: false, taxRegion: fiscal.taxRegion, error: message };
+  }
+
   recordAuditEvent({
     organizationId: result.organizationId,
     propertyId: result.propertyId,
@@ -215,7 +264,15 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
       organizationName: input.organization.name,
       propertyName: input.property.name,
       adminEmail: input.adminUser.email,
-      permissionsSeeded: result.permissionsSeeded
+      permissionsSeeded: result.permissionsSeeded,
+      fiscal: {
+        taxRegion: fiscal.taxRegion,
+        taxRegionSource: fiscal.taxRegionSource,
+        fiscalTerritory: fiscal.fiscalTerritory,
+        postalCode: fiscal.postalCode,
+        ineMunicipalityCode: fiscal.ineMunicipalityCode
+      },
+      taxProvisioning
     },
     correlationId: "bootstrap"
   });
@@ -226,6 +283,7 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
     userId: result.userId,
     ownerRoleId: result.ownerRoleId,
     permissionsSeeded: result.permissionsSeeded,
+    taxProvisioning,
     message: "Piloto inicializado. El endpoint /onboarding/bootstrap queda deshabilitado a partir de ahora."
   };
 }

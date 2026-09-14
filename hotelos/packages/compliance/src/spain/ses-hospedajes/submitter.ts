@@ -34,6 +34,34 @@ function generateAck(externalRef: string): string {
   return createHash("sha256").update(`ses|${externalRef}`).digest("hex").toUpperCase().slice(0, 20);
 }
 
+function xmlTextOf(xml: string, tag: string): string | null {
+  const match = new RegExp(`<(?:ses:)?${tag}>([^<]*)</(?:ses:)?${tag}>`).exec(xml);
+  return match ? match[1]!.trim() : null;
+}
+
+/**
+ * Sandbox stand-in for the MIR schema validation of the Establecimiento block
+ * (FISC-08): a 5-digit INE municipality code, a 5-digit postal code and a
+ * non-empty address are mandatory. Before Tanda 3 the stub accepted the
+ * hardcoded Madrid defaults silently; now the demo fails loudly so a hotel
+ * cannot believe its partes were accepted with someone else's address.
+ */
+export function validateSandboxEstablishment(xml: string): { ok: true } | { ok: false; errorMessage: string } {
+  const municipality = xmlTextOf(xml, "CodigoMunicipio");
+  if (municipality === null || !/^\d{5}$/.test(municipality)) {
+    return { ok: false, errorMessage: `Stub: CodigoMunicipio debe ser un código INE de 5 dígitos (recibido "${municipality ?? ""}").` };
+  }
+  const postalCode = xmlTextOf(xml, "CodigoPostal");
+  if (postalCode === null || !/^\d{5}$/.test(postalCode)) {
+    return { ok: false, errorMessage: `Stub: CodigoPostal debe tener 5 dígitos (recibido "${postalCode ?? ""}").` };
+  }
+  const address = xmlTextOf(xml, "Direccion");
+  if (address === null || address === "") {
+    return { ok: false, errorMessage: "Stub: Direccion del establecimiento vacía." };
+  }
+  return { ok: true };
+}
+
 export async function submitSesHospedajesComunicacion(input: SesSubmissionRequest): Promise<SesSubmissionResponse> {
   const mode = pickMode();
   const endpoint = ENDPOINTS[mode];
@@ -44,6 +72,10 @@ export async function submitSesHospedajesComunicacion(input: SesSubmissionReques
     }
     if (!/<(?:ses:)?NumeroDocumento>/.test(input.xmlPayload)) {
       return { status: "rejected", endpoint, errorCode: "MISSING_DOCUMENT", errorMessage: "Stub: at least one Persona must have NumeroDocumento." };
+    }
+    const establishment = validateSandboxEstablishment(input.xmlPayload);
+    if (!establishment.ok) {
+      return { status: "rejected", endpoint, errorCode: "MALFORMED_ESTABLISHMENT", errorMessage: establishment.errorMessage };
     }
     const ack = generateAck(input.externalReference);
     return {

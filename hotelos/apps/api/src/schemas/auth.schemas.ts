@@ -38,7 +38,8 @@ export type ChangePasswordInput = z.infer<typeof ChangePasswordSchema>;
 export const CreateUserSchema = z.object({
   organizationId: z.string().min(1),
   email: z.string().email(),
-  password: z.string().min(8),
+  /** Tanda 3: optional — without it the user is created as 'invited' and receives an invitation. */
+  password: z.string().min(8).optional(),
   fullName: z.string().min(1).max(120),
   phone: z.string().max(40).optional(),
   propertyId: z.string().optional(),

@@ -43,11 +43,15 @@ import { ErrorState, LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
 import {
   fetchTenantAuditLog,
+  fetchTenantDetail,
   fetchTenants,
-  resetTempPassword,
+  findTenantOwner,
+  reissueTenantInvitation,
   type TenantStatus,
   type TenantSummary
 } from "../../services/tenantAdminApi";
+import { copyText, describeDelivery, formatExpiry, type InvitationResult } from "../../services/authApi";
+import { CocoaInput } from "../../components/cocoa/CocoaInput";
 import { NewTenantWizardDialog } from "./NewTenantWizardDialog";
 
 // ---------------------------------------------------------------------------
@@ -248,10 +252,10 @@ const tileDetailStyle: CSSProperties = {
 interface RowActionsProps {
   tenant: TenantSummary;
   onViewDetail: (t: TenantSummary) => void;
-  onResetPasswordOwner: (t: TenantSummary) => void;
+  onReissueOwnerInvite: (t: TenantSummary) => void;
 }
 
-function RowActions({ tenant, onViewDetail, onResetPasswordOwner }: RowActionsProps) {
+function RowActions({ tenant, onViewDetail, onReissueOwnerInvite }: RowActionsProps) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
 
   const handleClose = () => setAnchor(null);
@@ -262,9 +266,9 @@ function RowActions({ tenant, onViewDetail, onResetPasswordOwner }: RowActionsPr
     handleClose();
   };
 
-  const handleResetPassword = (event: React.MouseEvent<HTMLButtonElement>) => {
+  const handleReissueInvite = (event: React.MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
-    onResetPasswordOwner(tenant);
+    onReissueOwnerInvite(tenant);
     handleClose();
   };
 
@@ -298,18 +302,40 @@ function RowActions({ tenant, onViewDetail, onResetPasswordOwner }: RowActionsPr
           <button
             type="button"
             role="menuitem"
-            style={kebabItemStyle(true)}
-            onClick={handleResetPassword}
+            style={kebabItemStyle(false)}
+            onClick={handleReissueInvite}
             onMouseEnter={(e) =>
-              (e.currentTarget.style.background = "rgba(255, 59, 48, 0.08)")
+              (e.currentTarget.style.background = "var(--cocoa-background-control)")
             }
             onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
           >
-            Reset password owner
+            Reenviar invitación al owner
           </button>
         </div>
       </CocoaPopover>
     </>
+  );
+}
+
+/** Read-only value + copy button (Cocoa styling) for the owner invite link. */
+function CopyRow({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    if (await copyText(value)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>{label}</span>
+      <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+        <CocoaInput value={value} onChange={() => undefined} />
+        <CocoaButton variant="bordered" tone="neutral" size="regular" onClick={handleCopy}>
+          {copied ? "Copiado" : "Copiar"}
+        </CocoaButton>
+      </div>
+    </div>
   );
 }
 
@@ -345,6 +371,10 @@ export function TenantAdminConsoleScreen() {
   const [selectedTenant, setSelectedTenant] = useState<TenantSummary | null>(null);
   const [newTenantOpen, setNewTenantOpen] = useState<boolean>(false);
   const [detailDrawerOpen, setDetailDrawerOpen] = useState<boolean>(false);
+
+  // Owner invitation re-issued from the drawer: real delivery state + link.
+  const [ownerInviteBusy, setOwnerInviteBusy] = useState<boolean>(false);
+  const [ownerInvite, setOwnerInvite] = useState<{ email: string; invitation: InvitationResult } | null>(null);
 
   // Activity tab state — global audit log filterable by tenant.
   const [activityFilter, setActivityFilter] = useState<string>("");
@@ -403,16 +433,45 @@ export function TenantAdminConsoleScreen() {
 
   const handleViewDetail = (t: TenantSummary) => {
     setSelectedTenant(t);
+    setOwnerInvite(null);
     setDetailDrawerOpen(true);
   };
 
-  const handleResetPasswordOwner = async (t: TenantSummary) => {
-    // The backend expects (orgId, ownerUserId). We don't have the owner id
-    // from the summary alone, so this fires a fetch of the detail. The full
-    // flow lives in the detail drawer; this kebab action surfaces the same
-    // confirmation by opening the drawer with a flag.
+  // The summary row has no owner userId: resolve it from the tenant detail
+  // (role "Owner", else the first user) and re-issue THAT user's invitation.
+  // The former literal "owner" userId was a guaranteed 404 (audit 2026-09-14).
+  const reissueOwnerInvite = async (t: TenantSummary) => {
+    setOwnerInviteBusy(true);
+    try {
+      const detail = await fetchTenantDetail(t.organizationId);
+      const owner = findTenantOwner(detail.users);
+      if (!owner) {
+        showToast(`El tenant ${t.name ?? t.organizationId} no tiene usuarios a los que invitar.`, { variant: "error" });
+        return;
+      }
+      const invitation = await reissueTenantInvitation(t.organizationId, owner.id);
+      setOwnerInvite({ email: owner.email, invitation });
+      if (invitation.delivery?.status === "sent") {
+        showToast(`Invitación enviada a ${owner.email}.`, { variant: "success" });
+      } else {
+        showToast(`${describeDelivery(invitation.delivery).title}.`, { variant: "info", duration: 6000 });
+      }
+    } catch (err) {
+      // QC-06: the outcome is always reported — never swallowed.
+      showToast(
+        err instanceof Error ? `No se pudo reenviar la invitación: ${err.message}` : "No se pudo reenviar la invitación.",
+        { variant: "error" }
+      );
+    } finally {
+      setOwnerInviteBusy(false);
+    }
+  };
+
+  const handleReissueOwnerInvite = (t: TenantSummary) => {
     setSelectedTenant(t);
+    setOwnerInvite(null);
     setDetailDrawerOpen(true);
+    void reissueOwnerInvite(t);
   };
 
   const columns = useMemo<CocoaTableColumn<TenantSummary>[]>(() => {
@@ -485,7 +544,7 @@ export function TenantAdminConsoleScreen() {
           <RowActions
             tenant={row}
             onViewDetail={handleViewDetail}
-            onResetPasswordOwner={handleResetPasswordOwner}
+            onReissueOwnerInvite={handleReissueOwnerInvite}
           />
         )
       }
@@ -820,27 +879,38 @@ export function TenantAdminConsoleScreen() {
               País: {selectedTenant.country || "—"} · Creado:{" "}
               {fmtDate(selectedTenant.createdAt)}
             </p>
+            {ownerInvite ? (() => {
+              const delivery = describeDelivery(ownerInvite.invitation.delivery, ownerInvite.email);
+              const showLink = ownerInvite.invitation.delivery?.status !== "sent" && Boolean(ownerInvite.invitation.inviteUrl);
+              return (
+                <div
+                  role="status"
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    padding: "10px 12px",
+                    borderRadius: "var(--cocoa-radius-md)",
+                    border: "1px solid var(--cocoa-separator)",
+                    background: "var(--cocoa-background-control)"
+                  }}
+                >
+                  <strong style={{ color: "var(--cocoa-label)" }}>{delivery.title}</strong>
+                  <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>{delivery.detail}</span>
+                  {showLink ? <CopyRow label="Enlace de invitación (un solo uso)" value={ownerInvite.invitation.inviteUrl} /> : null}
+                  <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-tertiary)" }}>
+                    Caduca el {formatExpiry(ownerInvite.invitation.expiresAt)}.
+                  </span>
+                </div>
+              );
+            })() : null}
             <CocoaButton
               variant="bordered"
-              tone="destructive"
-              onClick={async () => {
-                // "owner" is a role alias resolved server-side until the tenant
-                // detail endpoint exposes the owner userId. QC-06: the outcome is
-                // always reported — never swallowed.
-                try {
-                  await resetTempPassword(selectedTenant.organizationId, "owner");
-                  showToast(`Contraseña temporal del owner de ${selectedTenant.name ?? selectedTenant.organizationId} restablecida.`, {
-                    variant: "success"
-                  });
-                } catch (err) {
-                  showToast(
-                    err instanceof Error ? `No se pudo restablecer la contraseña: ${err.message}` : "No se pudo restablecer la contraseña.",
-                    { variant: "error" }
-                  );
-                }
-              }}
+              tone="accent"
+              loading={ownerInviteBusy}
+              onClick={() => void reissueOwnerInvite(selectedTenant)}
             >
-              Reset password owner
+              Reenviar invitación al owner
             </CocoaButton>
           </div>
         ) : null}

@@ -1,86 +1,193 @@
+// SES.HOSPEDAJES submission pipeline (Tanda 3 · QC-01 / FISC-08).
+//
+// Single source of truth for every comunicación sent to the MIR:
+//   * queueSesSubmission creates the `SesHospedajesSubmission` row SYNCHRONOUSLY
+//     (status queued, real id) and returns it — the id the front / check-in
+//     command receives is the one `/ses/submissions/:id` serves. Processing is
+//     serialised on an in-process chain and updates that same row by id.
+//   * TipoComunicacion is derived (alta → modificación once the MIR accepted a
+//     communication for the reservation → baja on cancellation).
+//   * ReferenciaExterna is deterministic: `CODIGO_RESERVA-TIPO-INTENTO`.
+//   * The establishment block comes from Property + PropertyComplianceSetting +
+//     the issuer identity; there are NO defaults. An incomplete establishment
+//     leaves a `failed` row (SES_ESTABLISHMENT_INCOMPLETE · missing[]) and the
+//     queue call raises a 409 with `details.missing`; those rows are retried
+//     automatically by the scheduler once the profile is complete.
+//   * Retries reuse the row (attempts++), the scheduler acts with a per-property
+//     system context, and overdue communications (RD 933/2021 · 24 h) emit one
+//     AuthoritySubmissionOverdue event each.
+//   * The parte mirrors the MIR outcome (guestRegisterStatusForSesOutcome): an
+//     accepted alta/modificación leaves it `accepted`, an accepted baja leaves
+//     it `annulled`. The scheduler reconciles partes whose status drifted from
+//     their SES history (reconcileGuestRegisterStatus), e.g. a baja accepted
+//     before this mapping existed.
+
 import {
   buildSesHospedajesXml,
+  deriveSesSubmissionType,
+  describeSesEstablishmentIssue,
+  nextSesExternalReference,
+  SES_ESTABLISHMENT_INCOMPLETE_CODE,
   submitSesHospedajesComunicacion,
+  validateSesEstablishment,
+  type SesEstablishmentIssue,
   type SesGuest,
-  type SesSubmissionRecord
+  type SesSubmissionRecord,
+  type SesSubmissionType
 } from "@hotelos/compliance";
-import { prisma } from "@hotelos/database";
+import { prisma, type Prisma } from "@hotelos/database";
 import { signSubmissionXml } from "../../lib/compliance-signing.js";
 import type { UserContext } from "../../lib/demo-store.js";
+import { BadRequestError, ConflictError, HttpError, NotFoundError } from "../../lib/http-error.js";
+import { buildPage, decodeCursor, MAX_PAGE_LIMIT, type Page } from "../../lib/pagination.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
-import { ConflictError } from "../../lib/http-error.js";
-import { requireIssuerIdentity } from "../invoicing/issuer-identity.service.js";
+import { ISSUER_TAX_ID_MISSING_CODE, requireIssuerIdentity, resolveIssuerIdentity } from "../invoicing/issuer-identity.service.js";
 
-let sesChain: Promise<void> = Promise.resolve();
+type SesRow = Awaited<ReturnType<typeof prisma.sesHospedajesSubmission.findUniqueOrThrow>>;
+type SesStatus = SesRow["status"];
+type GuestRegisterStatus = Awaited<ReturnType<typeof prisma.guestRegisterRecord.findUniqueOrThrow>>["status"];
 
-export function queueSesSubmission(input: {
-  guestRegisterRecordId: string;
-  reservationId?: string;
-  submissionType?: "alta" | "modificacion" | "baja";
-  context: UserContext;
-  correlationId: string;
-}): void {
-  sesChain = sesChain.then(async () => {
-    try {
-      await processSubmission(input);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error(`[ses] failed to process submission for ${input.guestRegisterRecordId}: ${message}`);
-    }
-  });
-}
+const SES_STATUSES: ReadonlySet<string> = new Set(["queued", "sent", "accepted", "rejected", "failed", "annulled", "retrying"]);
 
-export async function retrySesSubmission(submissionId: string, context: UserContext): Promise<void> {
-  const row = await prisma.sesHospedajesSubmission.findUnique({ where: { id: submissionId } });
-  if (!row) throw new Error("SES submission was not found.");
-  sesChain = sesChain.then(() =>
-    processSubmission({
-      guestRegisterRecordId: row.guestRegisterRecordId,
-      reservationId: row.reservationId ?? undefined,
-      submissionType: (row.submissionType ?? "alta") as "alta" | "modificacion" | "baja",
-      context,
-      correlationId: `retry_${Date.now()}`
-    }).catch((err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[ses.retry] failed: ${message}`);
-    })
-  );
+/** RD 933/2021: a comunicación not accepted 24 h after it was queued is overdue. */
+export const SES_OVERDUE_MS = 24 * 60 * 60 * 1000;
+/** Network/transient failures are retried this often (nextRetryAt). */
+const SES_RETRY_DELAY_MS = 10 * 60_000;
+/** Safety cap on automatic retries; a manual retry (retrySesSubmission) still works. */
+const SES_MAX_ATTEMPTS = Number(process.env.SES_MAX_ATTEMPTS ?? 10);
+/** `failed` rows with one of these codes are re-queued by the scheduler once the profile passes. */
+export const SES_RECOVERABLE_ERROR_CODES: readonly string[] = [SES_ESTABLISHMENT_INCOMPLETE_CODE, ISSUER_TAX_ID_MISSING_CODE];
+/** Statuses the pipeline still owes an answer for (in flight). */
+const SES_OPEN_STATUSES: readonly SesStatus[] = ["queued", "sent", "retrying"];
+/** Everything the MIR has not accepted and nobody annulled: the legal 24 h clock keeps running on these. */
+const SES_UNRESOLVED_STATUSES: readonly SesStatus[] = ["queued", "sent", "retrying", "failed", "rejected"];
+
+export { SES_ESTABLISHMENT_INCOMPLETE_CODE };
+
+// ───────────────────────────────────────────── parte status ↔ SES outcome (pure)
+
+/** TipoComunicacion that revokes a registration at the MIR. */
+export const SES_BAJA_TYPE = "baja";
+
+/** A baja in one of these statuses already revoked the registration it followed. */
+export const SES_BAJA_DONE_STATUSES: readonly SesStatus[] = ["accepted", "annulled"];
+
+/**
+ * A baja in one of these statuses is in flight or parked for retry. The
+ * scheduler / manual retry reuse the row, so it still reaches the MIR and
+ * revokes whatever registration the MIR holds at that moment: queuing another
+ * baja for the same parte would communicate it twice.
+ */
+export const SES_BAJA_PENDING_STATUSES: readonly SesStatus[] = ["queued", "sent", "retrying", "failed"];
+
+/**
+ * Every baja status that leaves no room for a new baja (done + pending). Only
+ * a `rejected` baja (the MIR refused it) does. How they apply depends on the
+ * ORDER of the history — see selectGuestRegisterRecordsForSesBaja.
+ */
+export const SES_BAJA_BLOCKING_STATUSES: readonly SesStatus[] = [...SES_BAJA_PENDING_STATUSES, ...SES_BAJA_DONE_STATUSES];
+
+export type SesHistoryEntry = { submissionType: string; status: SesStatus };
+
+/** Parte statuses the SES pipeline owns; reconciliation never touches the others (draft, signed, expired…). */
+const SES_OWNED_RECORD_STATUSES: readonly GuestRegisterStatus[] = ["queued", "submitted", "accepted", "rejected", "failed", "annulled"];
+
+/**
+ * Parte status mirrored once a comunicación reaches `status`. The mapping
+ * depends on the TipoComunicacion: an accepted alta/modificación means the
+ * guest is registered at the MIR (`accepted`), an accepted baja means that
+ * registration was revoked (`annulled` · ComplianceStatus.annulled), never
+ * `accepted`. Exhaustive over SubmissionStatus (schema.prisma).
+ */
+export function guestRegisterStatusForSesOutcome(input: SesHistoryEntry): GuestRegisterStatus {
+  switch (input.status) {
+    case "accepted":
+      return input.submissionType === SES_BAJA_TYPE ? "annulled" : "accepted";
+    case "rejected":
+      return "rejected";
+    case "failed":
+      return "failed";
+    case "annulled":
+      return "annulled";
+    case "queued":
+      return "queued";
+    case "sent":
+    case "retrying":
+      return "submitted";
+  }
 }
 
 /**
- * SES Hospedajes scheduler tick (P2/compliance go-live). Two jobs:
- *   1. Retry every submission stuck in "retrying" whose nextRetryAt has elapsed
- *      (previously nothing polled nextRetryAt).
- *   2. Report submissions still not accepted 24h after creation — the RD 933/2021
- *      legal deadline — so they can be surfaced/alerted.
- * Idempotent and safe to run on an interval.
+ * Parte status implied by its whole SES history (oldest first). Precedence:
+ *   1. an in-flight comunicación (queued/sent/retrying) — the newest one — the
+ *      pipeline owns the parte until the MIR answers;
+ *   2. the MIR-side truth: the LAST accepted comunicación decides (baja →
+ *      annulled, alta/modificación → accepted), even if a later baja was
+ *      rejected or failed (the guest is still registered; the inbox shows it);
+ *   3. with nothing accepted, the newest outcome (rejected / failed / annulled).
+ * Null for a parte without SES history: nothing to reconcile.
  */
-export async function runDueSesSubmissions(context: UserContext): Promise<{ retried: number; overdue: number }> {
-  const now = new Date();
-  const due = await prisma.sesHospedajesSubmission.findMany({
-    where: { status: "retrying", nextRetryAt: { lte: now } },
-    select: { id: true },
-    take: 50
-  });
-  for (const s of due) {
-    try {
-      await retrySesSubmission(s.id, context);
-    } catch (error) {
-      console.error(`[ses.scheduler] retry ${s.id} failed:`, error instanceof Error ? error.message : error);
-    }
-  }
-  const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-  const overdue = await prisma.sesHospedajesSubmission.count({
-    where: { status: { notIn: ["accepted"] }, createdAt: { lt: dayAgo } }
-  });
-  return { retried: due.length, overdue };
+export function deriveGuestRegisterStatusFromSesHistory(history: readonly SesHistoryEntry[]): GuestRegisterStatus | null {
+  if (history.length === 0) return null;
+  const open = history.filter((entry) => SES_OPEN_STATUSES.includes(entry.status));
+  if (open.length > 0) return guestRegisterStatusForSesOutcome(open[open.length - 1]);
+  const accepted = history.filter((entry) => entry.status === "accepted");
+  if (accepted.length > 0) return guestRegisterStatusForSesOutcome(accepted[accepted.length - 1]);
+  return guestRegisterStatusForSesOutcome(history[history.length - 1]);
 }
 
-export async function getSesSubmission(submissionId: string): Promise<unknown | null> {
-  const row = await prisma.sesHospedajesSubmission.findUnique({ where: { id: submissionId } });
-  if (!row) return null;
+function withDetails<T extends HttpError>(error: T, details: unknown): T {
+  error.details = details;
+  return error;
+}
+
+function asJson(value: unknown): Prisma.InputJsonValue {
+  return value as Prisma.InputJsonValue;
+}
+
+function jsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+// ───────────────────────────────────────────── views
+
+export type SesSubmissionView = {
+  id: string;
+  propertyId: string;
+  guestRegisterRecordId: string;
+  reservationId: string | null;
+  externalReference: string | null;
+  submissionType: string;
+  status: SesStatus;
+  endpoint: string | null;
+  acknowledgementCode: string | null;
+  trackingNumber: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  /** Establishment fields that blocked the communication (SES_ESTABLISHMENT_INCOMPLETE). */
+  missing: string[];
+  attempts: number;
+  signatureMode: string | null;
+  correlationId: string | null;
+  /** Not accepted 24 h after being queued (RD 933/2021). */
+  overdue: boolean;
+  submittedAt: string | undefined;
+  acknowledgedAt: string | undefined;
+  nextRetryAt: string | undefined;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export function isSesSubmissionOverdue(row: Pick<SesRow, "status" | "createdAt">, now: Date = new Date()): boolean {
+  return SES_UNRESOLVED_STATUSES.includes(row.status) && row.createdAt.getTime() < now.getTime() - SES_OVERDUE_MS;
+}
+
+export function toSesSubmissionView(row: SesRow, now: Date = new Date()): SesSubmissionView {
+  const response = jsonObject(row.responsePayloadJson);
+  const missing = Array.isArray(response.missing) ? response.missing.map(String) : [];
   return {
     id: row.id,
+    propertyId: row.propertyId,
     guestRegisterRecordId: row.guestRegisterRecordId,
     reservationId: row.reservationId,
     externalReference: row.externalReference,
@@ -91,43 +198,407 @@ export async function getSesSubmission(submissionId: string): Promise<unknown | 
     trackingNumber: row.trackingNumber,
     errorCode: row.errorCode,
     errorMessage: row.errorMessage,
+    missing,
     attempts: row.attempts,
-    xmlPayload: row.xmlPayload,
-    responseAck: row.responseAck,
+    signatureMode: row.signatureMode,
+    correlationId: row.correlationId,
+    overdue: isSesSubmissionOverdue(row, now),
     submittedAt: row.submittedAt?.toISOString(),
     acknowledgedAt: row.acknowledgedAt?.toISOString(),
     nextRetryAt: row.nextRetryAt?.toISOString(),
-    createdAt: row.createdAt.toISOString()
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString()
   };
 }
 
-async function processSubmission(input: {
+// ───────────────────────────────────────────── establishment (contract F)
+
+export type SesEstablishmentResolution = {
+  ok: boolean;
+  missing: SesEstablishmentIssue[];
+  /** Non-blocking notes (sandbox placeholder NIF, production NIF problem…). */
+  warnings: string[];
+  establishment: {
+    registryNumber: string | null;
+    taxId: string | null;
+    legalName: string | null;
+    address: string | null;
+    municipality: string | null;
+    municipalityCode: string | null;
+    province: string | null;
+    postalCode: string | null;
+    country: string;
+  };
+};
+
+/**
+ * Establishment block for the SES comunicación, resolved from the property
+ * profile (address, INE code, postal code…), the per-property registry number
+ * (PropertyComplianceSetting.sesRegistryNumber) and the issuer identity
+ * (NIF / razón social, same policy as invoices). Never falls back to defaults:
+ * whatever is missing is listed in `missing` so the hotel fixes its profile.
+ */
+export async function resolveSesEstablishment(propertyId: string): Promise<SesEstablishmentResolution> {
+  const [property, setting] = await Promise.all([
+    prisma.property.findUnique({
+      where: { id: propertyId },
+      select: {
+        id: true,
+        legalName: true,
+        address: true,
+        municipality: true,
+        province: true,
+        postalCode: true,
+        ineMunicipalityCode: true,
+        country: true
+      }
+    }),
+    prisma.propertyComplianceSetting.findUnique({ where: { propertyId }, select: { sesRegistryNumber: true } })
+  ]);
+  if (!property) throw new NotFoundError("Propiedad no encontrada.");
+
+  const warnings: string[] = [];
+  let taxId: string | null = null;
+  let legalName: string | null = property.legalName?.trim() || null;
+  try {
+    const issuer = await requireIssuerIdentity(propertyId);
+    taxId = issuer.taxId;
+    legalName = issuer.legalName;
+    if (issuer.placeholder) {
+      warnings.push("NIF de sandbox (placeholder): configura el NIF real de la organización antes de pasar a modo real.");
+    }
+  } catch (error) {
+    // Production without a checksum-valid NIF: same 409 policy as invoicing.
+    // The establishment is reported as incomplete (taxId) instead of thrown so
+    // the caller sees every missing field at once.
+    if (!(error instanceof ConflictError)) throw error;
+    warnings.push(error.message);
+    const identity = await resolveIssuerIdentity(propertyId);
+    if (identity) legalName = identity.legalName;
+  }
+
+  const establishment: SesEstablishmentResolution["establishment"] = {
+    registryNumber: setting?.sesRegistryNumber?.trim() || null,
+    taxId,
+    legalName,
+    address: property.address?.trim() || null,
+    municipality: property.municipality?.trim() || null,
+    municipalityCode: property.ineMunicipalityCode?.trim() || null,
+    province: property.province?.trim() || null,
+    postalCode: property.postalCode?.trim() || null,
+    country: property.country?.trim() || "ES"
+  };
+  const validation = validateSesEstablishment(establishment);
+  return { ok: validation.ok, missing: validation.missing, warnings, establishment };
+}
+
+function establishmentErrorCode(missing: SesEstablishmentIssue[]): string {
+  return missing.length === 1 && missing[0] === "taxId" ? ISSUER_TAX_ID_MISSING_CODE : SES_ESTABLISHMENT_INCOMPLETE_CODE;
+}
+
+function establishmentErrorMessage(missing: SesEstablishmentIssue[]): string {
+  return `El establecimiento no está completo para SES.HOSPEDAJES: ${missing.map(describeSesEstablishmentIssue).join(" ")}`;
+}
+
+// ───────────────────────────────────────────── actor context
+
+/**
+ * Actor for jobs that run without a request (scheduler, retries): the
+ * property's organization with a system user, so audit and domain events are
+ * attributed to the right tenant instead of the demo org.
+ */
+export async function systemContextForProperty(propertyId: string): Promise<UserContext | null> {
+  const property = await prisma.property.findUnique({ where: { id: propertyId }, select: { id: true, organizationId: true } });
+  if (!property) return null;
+  return {
+    organizationId: property.organizationId,
+    propertyId: property.id,
+    userId: "system",
+    fullName: "Programador SES.HOSPEDAJES",
+    deviceId: "scheduler",
+    permissions: []
+  };
+}
+
+// ───────────────────────────────────────────── queue / process
+
+let sesChain: Promise<void> = Promise.resolve();
+
+function schedule(submissionId: string, context: UserContext, correlationId: string): void {
+  sesChain = sesChain.then(async () => {
+    try {
+      await processSubmission({ submissionId, context, correlationId });
+    } catch (error) {
+      // Honest catch (QC-06): the failure is persisted on the row so the SES
+      // dashboard shows it, and logged with correlation — never swallowed.
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ses] processing failed for submission ${submissionId} (correlation ${correlationId}): ${message}`);
+      await prisma.sesHospedajesSubmission
+        .update({
+          where: { id: submissionId },
+          data: { status: "failed", errorCode: "PROCESSING_ERROR", errorMessage: message, nextRetryAt: null }
+        })
+        .catch((persistError: unknown) => {
+          console.error(`[ses] could not persist processing failure for ${submissionId}:`, persistError instanceof Error ? persistError.message : persistError);
+        });
+    }
+  });
+}
+
+/**
+ * True when the MIR currently holds a registration for the reservation: the
+ * newest accepted comunicación is an alta/modificación. An accepted baja
+ * revokes it, so the next comunicación is derived as a fresh alta (and
+ * annulAuthorityCommunication does not queue a second baja).
+ */
+export async function hasAcceptedSesSubmission(reservationId: string): Promise<boolean> {
+  const latestAccepted = await prisma.sesHospedajesSubmission.findFirst({
+    where: { reservationId, status: "accepted" },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: { submissionType: true }
+  });
+  return latestAccepted !== null && latestAccepted.submissionType !== SES_BAJA_TYPE;
+}
+
+export async function queueSesSubmission(input: {
   guestRegisterRecordId: string;
   reservationId?: string;
-  submissionType?: "alta" | "modificacion" | "baja";
+  /** Explicit A/M/B; derived from the reservation history when omitted. */
+  submissionType?: SesSubmissionType;
+  /** Business trigger (legacy API values); only `cancellation` changes the derivation. */
+  trigger?: "reservation" | "checkin" | "cancellation";
   context: UserContext;
   correlationId: string;
-}): Promise<void> {
+}): Promise<SesSubmissionView> {
   const record = await prisma.guestRegisterRecord.findUnique({
-    where: { id: input.guestRegisterRecordId }
+    where: { id: input.guestRegisterRecordId },
+    select: { id: true, propertyId: true, reservationId: true, recordType: true, status: true }
   });
-  if (!record) {
-    console.error(`[ses] guest register record ${input.guestRegisterRecordId} not found.`);
-    return;
-  }
-
+  if (!record) throw new NotFoundError("Registro de viajero no encontrado.");
   const reservationId = input.reservationId ?? record.reservationId;
   if (!reservationId) {
-    console.error(`[ses] no reservation linked to guest register record ${record.id}; skipping submission.`);
-    return;
+    throw withDetails(new ConflictError("El parte de viajeros no está vinculado a ninguna reserva."), { code: "RESERVATION_MISSING", guestRegisterRecordId: record.id });
+  }
+  const reservation = await prisma.reservation.findUnique({ where: { id: reservationId }, select: { id: true, status: true } });
+  if (!reservation) throw new NotFoundError("Reserva no encontrada.");
+
+  const submissionType =
+    input.submissionType ??
+    deriveSesSubmissionType({
+      trigger: input.trigger ?? null,
+      reservationStatus: reservation.status,
+      recordType: record.recordType,
+      hasAcceptedPrevious: await hasAcceptedSesSubmission(reservationId)
+    });
+
+  const establishment = await resolveSesEstablishment(record.propertyId);
+  if (!establishment.ok) {
+    const errorCode = establishmentErrorCode(establishment.missing);
+    const errorMessage = establishmentErrorMessage(establishment.missing);
+    const blocked = await prisma.sesHospedajesSubmission.create({
+      data: {
+        propertyId: record.propertyId,
+        guestRegisterRecordId: record.id,
+        reservationId,
+        submissionType,
+        status: "failed",
+        requestPayloadJson: asJson({ reason: errorCode, trigger: input.trigger ?? null }),
+        responsePayloadJson: asJson({ missing: establishment.missing, warnings: establishment.warnings }),
+        errorCode,
+        errorMessage,
+        attempts: 0,
+        nextRetryAt: null,
+        correlationId: input.correlationId
+      }
+    });
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: record.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "system",
+      action: "SES_HOSPEDAJES_SUBMISSION_BLOCKED",
+      entityType: "ses_hospedajes_submission",
+      entityId: blocked.id,
+      afterJson: { errorCode, missing: establishment.missing, submissionType },
+      correlationId: input.correlationId
+    });
+    throw withDetails(new ConflictError(errorMessage), {
+      code: errorCode,
+      missing: establishment.missing,
+      submissionId: blocked.id,
+      propertyId: record.propertyId
+    });
   }
 
+  const row = await prisma.sesHospedajesSubmission.create({
+    data: {
+      propertyId: record.propertyId,
+      guestRegisterRecordId: record.id,
+      reservationId,
+      submissionType,
+      status: "queued",
+      requestPayloadJson: asJson({ trigger: input.trigger ?? null, queuedBy: input.context.userId }),
+      correlationId: input.correlationId
+    }
+  });
+  await mirrorGuestRegisterStatus(record.id, "queued");
+
+  recordAuditEvent({
+    organizationId: input.context.organizationId,
+    propertyId: record.propertyId,
+    actorUserId: input.context.userId,
+    actorType: "system",
+    action: "SES_HOSPEDAJES_SUBMISSION_QUEUED",
+    entityType: "ses_hospedajes_submission",
+    entityId: row.id,
+    afterJson: { submissionType, guestRegisterRecordId: record.id, reservationId },
+    correlationId: input.correlationId
+  });
+  recordDomainEvent({
+    organizationId: input.context.organizationId,
+    propertyId: record.propertyId,
+    entityType: "guest_register_record",
+    entityId: record.id,
+    eventType: "SesHospedajesSubmissionQueued",
+    payload: { submissionId: row.id, submissionType },
+    actorType: "system",
+    actorUserId: input.context.userId,
+    correlationId: input.correlationId
+  });
+
+  schedule(row.id, input.context, input.correlationId);
+  return toSesSubmissionView(row);
+}
+
+export async function retrySesSubmission(submissionId: string, context?: UserContext): Promise<SesSubmissionView> {
+  const row = await prisma.sesHospedajesSubmission.findUnique({ where: { id: submissionId } });
+  if (!row) throw new NotFoundError("Envío SES no encontrado.");
+  if (row.status === "accepted") throw new ConflictError("El envío ya fue aceptado por el MIR; no se puede reintentar.");
+  const actor = context ?? (await systemContextForProperty(row.propertyId));
+  if (!actor) throw new NotFoundError("Propiedad no encontrada.");
+  const requeued = await prisma.sesHospedajesSubmission.update({
+    where: { id: row.id },
+    data: { status: "queued", nextRetryAt: null }
+  });
+  schedule(row.id, actor, `retry_${row.id}_${row.attempts + 1}`);
+  return toSesSubmissionView(requeued);
+}
+
+async function mirrorGuestRegisterStatus(recordId: string, status: GuestRegisterStatus): Promise<void> {
+  await prisma.guestRegisterRecord.updateMany({ where: { id: recordId }, data: { status } });
+}
+
+/**
+ * Re-derive the parte status from its persisted SES history and write it when
+ * it drifted (e.g. a baja accepted while the mirror still mapped every
+ * acceptance to `accepted`). Only pipeline-owned statuses are rewritten; a
+ * draft/signed/expired parte is never touched. Conditional write (status we
+ * read in the WHERE) so a concurrent pipeline update wins. Returns the change,
+ * or null when nothing was written.
+ */
+export async function reconcileGuestRegisterStatus(recordId: string): Promise<{ from: GuestRegisterStatus; to: GuestRegisterStatus } | null> {
+  const [record, history] = await Promise.all([
+    prisma.guestRegisterRecord.findUnique({ where: { id: recordId }, select: { id: true, status: true } }),
+    prisma.sesHospedajesSubmission.findMany({
+      where: { guestRegisterRecordId: recordId },
+      select: { submissionType: true, status: true },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }]
+    })
+  ]);
+  if (!record || !SES_OWNED_RECORD_STATUSES.includes(record.status)) return null;
+  const derived = deriveGuestRegisterStatusFromSesHistory(history);
+  if (!derived || derived === record.status) return null;
+  const written = await prisma.guestRegisterRecord.updateMany({ where: { id: record.id, status: record.status }, data: { status: derived } });
+  return written.count === 1 ? { from: record.status, to: derived } : null;
+}
+
+async function failSubmission(input: {
+  row: Pick<SesRow, "id" | "guestRegisterRecordId" | "propertyId">;
+  context: UserContext;
+  correlationId: string;
+  errorCode: string;
+  errorMessage: string;
+  response?: Record<string, unknown>;
+}): Promise<void> {
+  await prisma.sesHospedajesSubmission.update({
+    where: { id: input.row.id },
+    data: {
+      status: "failed",
+      errorCode: input.errorCode,
+      errorMessage: input.errorMessage,
+      responsePayloadJson: input.response ? asJson(input.response) : undefined,
+      nextRetryAt: null
+    }
+  });
+  await mirrorGuestRegisterStatus(input.row.guestRegisterRecordId, "failed");
+  console.error(`[ses] submission ${input.row.id} failed (${input.errorCode}, correlation ${input.correlationId}): ${input.errorMessage}`);
+  recordAuditEvent({
+    organizationId: input.context.organizationId,
+    propertyId: input.row.propertyId,
+    actorUserId: input.context.userId,
+    actorType: "system",
+    action: "SES_HOSPEDAJES_SUBMISSION_FAILED",
+    entityType: "ses_hospedajes_submission",
+    entityId: input.row.id,
+    afterJson: { errorCode: input.errorCode, errorMessage: input.errorMessage, ...(input.response ?? {}) },
+    correlationId: input.correlationId
+  });
+  recordDomainEvent({
+    organizationId: input.context.organizationId,
+    propertyId: input.row.propertyId,
+    entityType: "guest_register_record",
+    entityId: input.row.guestRegisterRecordId,
+    eventType: "AuthoritySubmissionFailed",
+    payload: { submissionId: input.row.id, errorCode: input.errorCode, ...(input.response ?? {}) },
+    actorType: "system",
+    actorUserId: input.context.userId,
+    correlationId: input.correlationId
+  });
+}
+
+async function processSubmission(input: { submissionId: string; context: UserContext; correlationId: string }): Promise<void> {
+  const row = await prisma.sesHospedajesSubmission.findUnique({ where: { id: input.submissionId } });
+  if (!row) {
+    console.error(`[ses] submission ${input.submissionId} not found (correlation ${input.correlationId}).`);
+    return;
+  }
+  if (row.status === "accepted" || row.status === "annulled") return; // idempotent: nothing left to send
+
+  const record = await prisma.guestRegisterRecord.findUnique({ where: { id: row.guestRegisterRecordId } });
+  if (!record) {
+    await failSubmission({ row, context: input.context, correlationId: input.correlationId, errorCode: "GUEST_REGISTER_RECORD_NOT_FOUND", errorMessage: "El parte de viajeros ya no existe." });
+    return;
+  }
+  const reservationId = row.reservationId ?? record.reservationId;
+  if (!reservationId) {
+    await failSubmission({ row, context: input.context, correlationId: input.correlationId, errorCode: "RESERVATION_MISSING", errorMessage: "El parte de viajeros no está vinculado a ninguna reserva." });
+    return;
+  }
   const [property, reservation, primaryGuestLink] = await Promise.all([
-    prisma.property.findUnique({ where: { id: record.propertyId } }),
+    prisma.property.findUnique({ where: { id: row.propertyId }, select: { id: true } }),
     prisma.reservation.findUnique({ where: { id: reservationId } }),
     prisma.reservationGuest.findFirst({ where: { reservationId, isPrimary: true } })
   ]);
-  if (!property || !reservation) return;
+  if (!property || !reservation) {
+    await failSubmission({ row, context: input.context, correlationId: input.correlationId, errorCode: "RESERVATION_NOT_FOUND", errorMessage: "La reserva o la propiedad del parte ya no existen." });
+    return;
+  }
+
+  // FISC-08: establishment resolved live, never defaulted. A missing NIF in
+  // production (ISSUER_TAX_ID_MISSING) or any other missing field leaves a
+  // failed row the scheduler re-queues once the profile is complete.
+  const establishment = await resolveSesEstablishment(property.id);
+  if (!establishment.ok) {
+    await failSubmission({
+      row,
+      context: input.context,
+      correlationId: input.correlationId,
+      errorCode: establishmentErrorCode(establishment.missing),
+      errorMessage: establishmentErrorMessage(establishment.missing),
+      response: { missing: establishment.missing, warnings: establishment.warnings }
+    });
+    return;
+  }
 
   const allLinks = await prisma.reservationGuest.findMany({ where: { reservationId } });
   const guestIds = allLinks.map((l) => l.guestId);
@@ -135,90 +606,70 @@ async function processSubmission(input: {
   const primaryGuestId = primaryGuestLink?.guestId ?? record.guestId ?? undefined;
 
   const sesGuests: SesGuest[] = [];
-  // Primary guest first.
   const primary = guests.find((g) => g.id === primaryGuestId);
   if (primary) {
-    sesGuests.push(toSesGuest({
-      documentType: primary.documentType ?? record.documentType ?? "DNI",
-      documentNumber: primary.documentNumber ?? record.documentNumber ?? "",
-      documentSupportNumber: record.documentSupportNumber ?? undefined,
-      firstName: primary.firstName,
-      surname1: primary.surname1 ?? "",
-      surname2: primary.surname2 ?? undefined,
-      dateOfBirth: primary.dateOfBirth?.toISOString().slice(0, 10) ?? record.dateOfBirth?.toISOString().slice(0, 10) ?? "1900-01-01",
-      nationality: primary.nationality ?? record.nationality ?? "ESP",
-      phone: primary.phone ?? record.phoneMobile ?? undefined,
-      email: primary.email ?? record.email ?? undefined,
-      residenceAddress: primary.residenceAddress ?? record.residenceFullAddress ?? undefined
-    }));
+    sesGuests.push(
+      toSesGuest({
+        documentType: primary.documentType ?? record.documentType ?? "DNI",
+        documentNumber: primary.documentNumber ?? record.documentNumber ?? "",
+        documentSupportNumber: primary.documentSupportNumber ?? record.documentSupportNumber ?? undefined,
+        firstName: primary.firstName,
+        surname1: primary.surname1 ?? record.surname1 ?? "",
+        surname2: primary.surname2 ?? record.surname2 ?? undefined,
+        dateOfBirth: primary.dateOfBirth?.toISOString().slice(0, 10) ?? record.dateOfBirth?.toISOString().slice(0, 10) ?? "1900-01-01",
+        nationality: primary.nationality ?? record.nationality ?? "ESP",
+        phone: primary.mobilePhone ?? primary.phone ?? record.phoneMobile ?? record.phoneLandline ?? undefined,
+        email: primary.email ?? record.email ?? undefined,
+        residenceAddress: primary.residenceAddress ?? record.residenceFullAddress ?? undefined
+      })
+    );
   }
   for (const guest of guests) {
     if (guest.id === primaryGuestId) continue;
-    sesGuests.push(toSesGuest({
-      documentType: guest.documentType ?? "DNI",
-      documentNumber: guest.documentNumber ?? "",
-      firstName: guest.firstName,
-      surname1: guest.surname1 ?? "",
-      surname2: guest.surname2 ?? undefined,
-      dateOfBirth: guest.dateOfBirth?.toISOString().slice(0, 10) ?? "1900-01-01",
-      nationality: guest.nationality ?? "ESP",
-      phone: guest.phone ?? undefined,
-      email: guest.email ?? undefined,
-      residenceAddress: guest.residenceAddress ?? undefined
-    }));
+    sesGuests.push(
+      toSesGuest({
+        documentType: guest.documentType ?? "DNI",
+        documentNumber: guest.documentNumber ?? "",
+        documentSupportNumber: guest.documentSupportNumber ?? undefined,
+        firstName: guest.firstName,
+        surname1: guest.surname1 ?? "",
+        surname2: guest.surname2 ?? undefined,
+        dateOfBirth: guest.dateOfBirth?.toISOString().slice(0, 10) ?? "1900-01-01",
+        nationality: guest.nationality ?? "ESP",
+        phone: guest.mobilePhone ?? guest.phone ?? undefined,
+        email: guest.email ?? undefined,
+        residenceAddress: guest.residenceAddress ?? undefined
+      })
+    );
   }
-
   if (sesGuests.length === 0) {
-    console.error(`[ses] no guests resolved for record ${record.id}; skipping submission.`);
+    await failSubmission({ row, context: input.context, correlationId: input.correlationId, errorCode: "NO_GUESTS", errorMessage: "La reserva no tiene huéspedes vinculados que comunicar." });
     return;
   }
 
-  const submissionType = (input.submissionType ?? "alta") as "alta" | "modificacion" | "baja";
-  const externalReference = `${reservation.code}-${submissionType}-${Date.now()}`;
+  const submissionType = row.submissionType as SesSubmissionType;
+  // Deterministic `CODIGO_RESERVA-TIPO-INTENTO`: next attempt after every
+  // reference already used for this reservation + type (siblings and retries).
+  const siblings = await prisma.sesHospedajesSubmission.findMany({
+    where: { reservationId, submissionType },
+    select: { externalReference: true }
+  });
+  const externalReference = nextSesExternalReference(reservation.code, submissionType, siblings.map((s) => s.externalReference));
 
-  // FISC-03: a comunicación is not an invoice (no snapshot), so the
-  // establishment identity is resolved live with the same policy as issuance:
-  // fiscal production mode without a valid NIF is a hard stop. Inside this job
-  // that stop is persisted as a "failed" row with the reason (visible in the
-  // SES dashboard, no infinite retry) instead of being thrown away.
-  let issuer: Awaited<ReturnType<typeof requireIssuerIdentity>>;
-  try {
-    issuer = await requireIssuerIdentity(property.id);
-  } catch (error) {
-    if (!(error instanceof ConflictError)) throw error;
-    console.error(`[ses] cannot submit ${externalReference} for property ${property.id}: ${error.message}`);
-    await prisma.sesHospedajesSubmission.create({
-      data: {
-        propertyId: property.id,
-        guestRegisterRecordId: record.id,
-        reservationId,
-        externalReference,
-        submissionType,
-        status: "failed",
-        requestPayloadJson: { reason: "ISSUER_TAX_ID_MISSING" } as object,
-        errorCode: "ISSUER_TAX_ID_MISSING",
-        errorMessage: error.message,
-        attempts: 0,
-        nextRetryAt: null,
-        correlationId: input.correlationId
-      }
-    });
-    return;
-  }
-
+  const e = establishment.establishment;
   const submissionRecord: SesSubmissionRecord = {
     submissionType,
     externalReference,
     establishment: {
-      taxId: issuer.taxId,
-      legalName: issuer.legalName,
-      registryNumber: process.env.SES_REGISTRY_NUMBER ?? `REG-${property.id}`,
+      taxId: e.taxId!,
+      legalName: e.legalName!,
+      registryNumber: e.registryNumber!,
       registryType: "establecimiento_turistico",
-      address: property.address ?? "Demo address",
-      municipalityCode: process.env.SES_MUNICIPALITY_CODE ?? "28079",
-      province: property.province ?? "Madrid",
-      postalCode: process.env.SES_POSTAL_CODE ?? "28001",
-      country: property.country ?? "ES"
+      address: e.address!,
+      municipalityCode: e.municipalityCode!,
+      province: e.province!,
+      postalCode: e.postalCode!,
+      country: e.country
     },
     contract: {
       contractRef: reservation.code,
@@ -242,33 +693,30 @@ async function processSubmission(input: {
     certPassphrase: process.env.SES_HOSPEDAJES_CERT_PASSPHRASE
   });
 
-  const submission = await prisma.sesHospedajesSubmission.upsert({
-    where: { externalReference },
-    update: {
-      status: "queued",
+  // Guest PII stays in the signed XML only; the request snapshot keeps the
+  // establishment + contract (no document numbers, e-mails or phones).
+  await prisma.sesHospedajesSubmission.update({
+    where: { id: row.id },
+    data: {
+      externalReference,
+      status: "sent",
+      requestPayloadJson: asJson({
+        establishment: submissionRecord.establishment,
+        contract: submissionRecord.contract,
+        guestCount: sesGuests.length,
+        guestRegisterRecordId: record.id
+      }),
       xmlPayload: signed.signedXml,
       attempts: { increment: 1 },
       submittedAt: new Date(),
       signatureMode: signed.signatureMode,
       signedAt: new Date(signed.signedAt),
-      correlationId: input.correlationId
-    },
-    create: {
-      propertyId: property.id,
-      guestRegisterRecordId: record.id,
-      reservationId,
-      externalReference,
-      submissionType,
-      status: "queued",
-      requestPayloadJson: submissionRecord as unknown as object,
-      xmlPayload: signed.signedXml,
-      attempts: 1,
-      submittedAt: new Date(),
-      signatureMode: signed.signatureMode,
-      signedAt: new Date(signed.signedAt),
-      correlationId: input.correlationId
+      correlationId: input.correlationId,
+      errorCode: null,
+      errorMessage: null
     }
   });
+  await mirrorGuestRegisterStatus(record.id, "submitted");
 
   const response = await submitSesHospedajesComunicacion({
     externalReference,
@@ -276,30 +724,39 @@ async function processSubmission(input: {
     xmlPayload: signed.signedXml
   });
 
-  const finalStatus =
-    response.status === "accepted"
+  const attempts = row.attempts + 1;
+  const exhausted = response.status === "network_error" && attempts >= SES_MAX_ATTEMPTS;
+  const finalStatus: SesStatus =
+    response.status === "accepted" || response.status === "accepted_with_warnings"
       ? "accepted"
-      : response.status === "accepted_with_warnings"
-        ? "accepted"
-        : response.status === "rejected"
-          ? "rejected"
+      : response.status === "rejected"
+        ? "rejected"
+        : exhausted
+          ? "failed"
           : "retrying";
 
   await prisma.sesHospedajesSubmission.update({
-    where: { id: submission.id },
+    where: { id: row.id },
     data: {
       status: finalStatus,
       endpoint: response.endpoint,
       acknowledgementCode: response.acknowledgementCode ?? null,
       trackingNumber: response.trackingNumber ?? null,
-      errorCode: response.errorCode ?? null,
-      errorMessage: response.errorMessage ?? null,
+      errorCode: exhausted ? "MAX_ATTEMPTS_EXCEEDED" : (response.errorCode ?? null),
+      errorMessage: exhausted ? `Sin respuesta del MIR tras ${attempts} intentos: ${response.errorMessage ?? "error de red"}.` : (response.errorMessage ?? null),
       responseAck: response.rawResponse ?? null,
-      responsePayloadJson: response.rawResponse ? ({ ack: response.rawResponse } as object) : undefined,
+      responsePayloadJson: asJson({
+        ack: response.rawResponse ?? null,
+        status: response.status,
+        warnings: establishment.warnings
+      }),
       acknowledgedAt: finalStatus === "accepted" ? new Date() : null,
-      nextRetryAt: finalStatus === "retrying" ? new Date(Date.now() + 10 * 60_000) : null
+      nextRetryAt: finalStatus === "retrying" ? new Date(Date.now() + SES_RETRY_DELAY_MS) : null
     }
   });
+  // An accepted baja leaves the parte `annulled`, an accepted alta/modificación `accepted`.
+  const guestRegisterStatus = guestRegisterStatusForSesOutcome({ submissionType, status: finalStatus });
+  await mirrorGuestRegisterStatus(record.id, guestRegisterStatus);
 
   recordAuditEvent({
     organizationId: input.context.organizationId,
@@ -310,10 +767,12 @@ async function processSubmission(input: {
     entityType: "guest_register_record",
     entityId: record.id,
     afterJson: {
-      submissionId: submission.id,
+      submissionId: row.id,
       externalReference,
       submissionType,
       status: finalStatus,
+      guestRegisterStatus,
+      attempts,
       acknowledgementCode: response.acknowledgementCode,
       trackingNumber: response.trackingNumber,
       errorCode: response.errorCode,
@@ -321,14 +780,27 @@ async function processSubmission(input: {
     },
     correlationId: input.correlationId
   });
-
   recordDomainEvent({
     organizationId: input.context.organizationId,
     propertyId: property.id,
     entityType: "guest_register_record",
     entityId: record.id,
-    eventType: finalStatus === "accepted" ? "AuthoritySubmissionAccepted" : finalStatus === "rejected" ? "AuthoritySubmissionRejected" : "AuthoritySubmissionPending",
-    payload: { submissionId: submission.id, submissionType, acknowledgementCode: response.acknowledgementCode, trackingNumber: response.trackingNumber, status: finalStatus },
+    eventType:
+      finalStatus === "accepted"
+        ? "AuthoritySubmissionAccepted"
+        : finalStatus === "rejected"
+          ? "AuthoritySubmissionRejected"
+          : finalStatus === "failed"
+            ? "AuthoritySubmissionFailed"
+            : "AuthoritySubmissionPending",
+    payload: {
+      submissionId: row.id,
+      submissionType,
+      externalReference,
+      acknowledgementCode: response.acknowledgementCode,
+      trackingNumber: response.trackingNumber,
+      status: finalStatus
+    },
     actorType: "system",
     actorUserId: input.context.userId,
     correlationId: input.correlationId
@@ -349,7 +821,8 @@ function toSesGuest(input: {
   residenceAddress?: string;
 }): SesGuest {
   const docType = input.documentType?.toUpperCase();
-  const mapped: SesGuest["documentType"] = docType === "NIE" ? "NIE" : docType === "PASSPORT" || docType === "PASAPORTE" ? "PASSPORT" : docType === "TIE" ? "TIE" : "DNI";
+  const mapped: SesGuest["documentType"] =
+    docType === "NIE" ? "NIE" : docType === "PASSPORT" || docType === "PASAPORTE" ? "PASSPORT" : docType === "TIE" ? "TIE" : "DNI";
   return {
     documentType: mapped,
     documentNumber: input.documentNumber,
@@ -365,26 +838,255 @@ function toSesGuest(input: {
   };
 }
 
-export async function listSesSubmissions(propertyId: string): Promise<unknown[]> {
-  const rows = await prisma.sesHospedajesSubmission.findMany({
-    where: { propertyId },
-    orderBy: { createdAt: "desc" },
-    take: 100
+// ───────────────────────────────────────────── scheduler
+
+export type SesSchedulerResult = {
+  /** `retrying` rows whose nextRetryAt elapsed and were re-queued. */
+  retried: number;
+  /** `failed` rows with a recoverable code re-queued because the establishment now passes. */
+  recovered: number;
+  /** Recoverable rows left alone because their property profile is still incomplete. */
+  blocked: number;
+  /** Open rows older than 24 h (RD 933/2021). */
+  overdue: number;
+  /** Overdue rows that emitted AuthoritySubmissionOverdue in this tick (once per row). */
+  overdueNotified: number;
+  /** Partes with an accepted baja whose status drifted from `annulled` and were rewritten from their SES history. */
+  reconciled: number;
+  failed: Array<{ id: string; error: string }>;
+};
+
+/**
+ * SES Hospedajes scheduler tick (5 min). Idempotent and safe on an interval:
+ *   1. re-queue `retrying` rows whose nextRetryAt elapsed;
+ *   2. re-queue `failed` rows with a recoverable code (establishment / NIF)
+ *      once resolveSesEstablishment passes for their property;
+ *   3. emit AuthoritySubmissionOverdue ONCE per open row older than 24 h and
+ *      report the total so /compliance/health and the inbox can surface it;
+ *   4. reconcile partes with an accepted baja that are not `annulled` (status
+ *      drift from before the per-type mirror) from their SES history.
+ * The `context` argument is ignored: every action runs with the system context
+ * of the row's property (organizationId from Prisma), never the demo user.
+ */
+export async function runDueSesSubmissions(_context?: UserContext): Promise<SesSchedulerResult> {
+  const now = new Date();
+  const result: SesSchedulerResult = { retried: 0, recovered: 0, blocked: 0, overdue: 0, overdueNotified: 0, reconciled: 0, failed: [] };
+  const contexts = new Map<string, UserContext | null>();
+  const contextFor = async (propertyId: string): Promise<UserContext | null> => {
+    if (!contexts.has(propertyId)) contexts.set(propertyId, await systemContextForProperty(propertyId));
+    return contexts.get(propertyId) ?? null;
+  };
+
+  const due = await prisma.sesHospedajesSubmission.findMany({
+    where: { status: "retrying", nextRetryAt: { lte: now } },
+    select: { id: true, propertyId: true },
+    take: 50
   });
-  return rows.map((r) => ({
-    id: r.id,
-    guestRegisterRecordId: r.guestRegisterRecordId,
-    reservationId: r.reservationId,
-    externalReference: r.externalReference,
-    submissionType: r.submissionType,
-    status: r.status,
-    endpoint: r.endpoint,
-    acknowledgementCode: r.acknowledgementCode,
-    trackingNumber: r.trackingNumber,
-    errorCode: r.errorCode,
-    errorMessage: r.errorMessage,
-    attempts: r.attempts,
-    submittedAt: r.submittedAt?.toISOString(),
-    acknowledgedAt: r.acknowledgedAt?.toISOString()
-  }));
+  for (const s of due) {
+    try {
+      const actor = await contextFor(s.propertyId);
+      if (!actor) throw new Error("property not found");
+      await retrySesSubmission(s.id, actor);
+      result.retried++;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ses.scheduler] retry ${s.id} failed: ${message}`);
+      result.failed.push({ id: s.id, error: message });
+    }
+  }
+
+  const recoverable = await prisma.sesHospedajesSubmission.findMany({
+    where: { status: "failed", errorCode: { in: [...SES_RECOVERABLE_ERROR_CODES] } },
+    select: { id: true, propertyId: true },
+    orderBy: { createdAt: "asc" },
+    take: 50
+  });
+  const establishmentOk = new Map<string, boolean>();
+  for (const s of recoverable) {
+    try {
+      if (!establishmentOk.has(s.propertyId)) {
+        establishmentOk.set(s.propertyId, (await resolveSesEstablishment(s.propertyId)).ok);
+      }
+      if (!establishmentOk.get(s.propertyId)) {
+        result.blocked++;
+        continue;
+      }
+      const actor = await contextFor(s.propertyId);
+      if (!actor) throw new Error("property not found");
+      await retrySesSubmission(s.id, actor);
+      result.recovered++;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ses.scheduler] recovery of ${s.id} failed: ${message}`);
+      result.failed.push({ id: s.id, error: message });
+    }
+  }
+
+  const overdueRows = await prisma.sesHospedajesSubmission.findMany({
+    where: { status: { in: [...SES_UNRESOLVED_STATUSES] }, createdAt: { lt: new Date(now.getTime() - SES_OVERDUE_MS) } },
+    select: { id: true, propertyId: true, guestRegisterRecordId: true, submissionType: true, createdAt: true, responsePayloadJson: true }
+  });
+  result.overdue = overdueRows.length;
+  for (const s of overdueRows) {
+    const response = jsonObject(s.responsePayloadJson);
+    if (typeof response.overdueNotifiedAt === "string") continue;
+    try {
+      const actor = await contextFor(s.propertyId);
+      if (!actor) throw new Error("property not found");
+      recordDomainEvent({
+        organizationId: actor.organizationId,
+        propertyId: s.propertyId,
+        entityType: "ses_hospedajes_submission",
+        entityId: s.id,
+        eventType: "AuthoritySubmissionOverdue",
+        payload: { submissionId: s.id, guestRegisterRecordId: s.guestRegisterRecordId, submissionType: s.submissionType, queuedAt: s.createdAt.toISOString(), deadlineHours: 24 },
+        actorType: "system",
+        actorUserId: actor.userId,
+        correlationId: `ses_overdue_${s.id}`
+      });
+      await prisma.sesHospedajesSubmission.update({
+        where: { id: s.id },
+        data: { responsePayloadJson: asJson({ ...response, overdueNotifiedAt: now.toISOString() }) }
+      });
+      result.overdueNotified++;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ses.scheduler] overdue notification for ${s.id} failed: ${message}`);
+      result.failed.push({ id: s.id, error: message });
+    }
+  }
+
+  // 4. Accepted bajas whose parte is still not `annulled`: cheap in steady
+  // state (one query returns nothing once every parte matches its history).
+  const acceptedBajas = await prisma.sesHospedajesSubmission.findMany({
+    where: { submissionType: SES_BAJA_TYPE, status: "accepted" },
+    select: { guestRegisterRecordId: true, propertyId: true },
+    distinct: ["guestRegisterRecordId"],
+    take: 200
+  });
+  const drifted = acceptedBajas.length
+    ? await prisma.guestRegisterRecord.findMany({
+        where: { id: { in: acceptedBajas.map((s) => s.guestRegisterRecordId) }, status: { in: SES_OWNED_RECORD_STATUSES.filter((status) => status !== "annulled") } },
+        select: { id: true }
+      })
+    : [];
+  const propertyByRecord = new Map(acceptedBajas.map((s) => [s.guestRegisterRecordId, s.propertyId]));
+  for (const record of drifted) {
+    try {
+      const change = await reconcileGuestRegisterStatus(record.id);
+      if (!change) continue;
+      result.reconciled++;
+      const propertyId = propertyByRecord.get(record.id);
+      const actor = propertyId ? await contextFor(propertyId) : null;
+      if (!actor || !propertyId) throw new Error("property not found");
+      recordAuditEvent({
+        organizationId: actor.organizationId,
+        propertyId,
+        actorUserId: actor.userId,
+        actorType: "system",
+        action: "SES_GUEST_REGISTER_STATUS_RECONCILED",
+        entityType: "guest_register_record",
+        entityId: record.id,
+        beforeJson: { status: change.from },
+        afterJson: { status: change.to, reason: "accepted_baja" },
+        correlationId: `ses_reconcile_${record.id}`
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[ses.scheduler] reconciliation of parte ${record.id} failed: ${message}`);
+      result.failed.push({ id: record.id, error: message });
+    }
+  }
+
+  return result;
+}
+
+// ───────────────────────────────────────────── reads
+
+export async function getSesSubmission(submissionId: string): Promise<(SesSubmissionView & { xmlPayload: string | null; responseAck: string | null; warnings: string[] }) | null> {
+  const row = await prisma.sesHospedajesSubmission.findUnique({ where: { id: submissionId } });
+  if (!row) return null;
+  const response = jsonObject(row.responsePayloadJson);
+  return {
+    ...toSesSubmissionView(row),
+    xmlPayload: row.xmlPayload,
+    responseAck: row.responseAck,
+    warnings: Array.isArray(response.warnings) ? response.warnings.map(String) : []
+  };
+}
+
+/** Contract F: cursor-paginated list (newest first) — see lib/pagination.ts. */
+export async function listSesSubmissions(
+  propertyId: string,
+  options: { limit?: number; cursor?: string; status?: string } = {}
+): Promise<Page<SesSubmissionView>> {
+  const limit = Math.min(Math.max(1, Math.trunc(options.limit ?? 100)), MAX_PAGE_LIMIT);
+  if (options.status !== undefined && !SES_STATUSES.has(options.status)) {
+    throw new BadRequestError(`Estado de envío SES no válido: ${options.status}.`);
+  }
+  const cursor = decodeCursor(options.cursor ?? null);
+  const where: Prisma.SesHospedajesSubmissionWhereInput = {
+    propertyId,
+    ...(options.status ? { status: options.status as SesStatus } : {})
+  };
+  const cursorWhere: Prisma.SesHospedajesSubmissionWhereInput = cursor
+    ? { OR: [{ createdAt: { lt: new Date(cursor.k) } }, { createdAt: new Date(cursor.k), id: { lt: cursor.id } }] }
+    : {};
+  const [rows, total] = await Promise.all([
+    prisma.sesHospedajesSubmission.findMany({
+      where: { AND: [where, cursorWhere] },
+      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+      take: limit + 1
+    }),
+    prisma.sesHospedajesSubmission.count({ where })
+  ]);
+  const now = new Date();
+  return buildPage(
+    rows.map((row) => toSesSubmissionView(row, now)),
+    limit,
+    total,
+    (row) => row.createdAt
+  );
+}
+
+export type SesInboxIssue = {
+  status: string;
+  issue: string;
+  recordId: string;
+  submissionId: string;
+  /** Older than the 24 h legal deadline and still not accepted. */
+  overdue: boolean;
+  deadline: string;
+};
+
+/** Issues the compliance inbox shows for SES: failed / rejected / retrying rows and overdue open ones. */
+export async function listSesInboxIssues(propertyId: string): Promise<SesInboxIssue[]> {
+  const now = new Date();
+  const rows = await prisma.sesHospedajesSubmission.findMany({
+    where: {
+      propertyId,
+      OR: [
+        { status: { in: ["failed", "rejected", "retrying"] } },
+        { status: { in: [...SES_OPEN_STATUSES] }, createdAt: { lt: new Date(now.getTime() - SES_OVERDUE_MS) } }
+      ]
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200
+  });
+  return rows.map((row) => {
+    const overdue = isSesSubmissionOverdue(row, now);
+    const base = {
+      recordId: row.guestRegisterRecordId,
+      submissionId: row.id,
+      overdue,
+      deadline: "24h (RD 933/2021)"
+    };
+    if (row.status === "failed" || row.status === "rejected") {
+      return { ...base, status: row.status, issue: row.errorMessage ?? `Envío SES.HOSPEDAJES ${row.status === "failed" ? "fallido" : "rechazado"}.` };
+    }
+    if (row.status === "retrying") {
+      return { ...base, status: overdue ? "overdue" : "retrying", issue: `Envío SES.HOSPEDAJES pendiente de reintento${row.errorMessage ? `: ${row.errorMessage}` : "."}` };
+    }
+    return { ...base, status: "overdue", issue: `Envío SES.HOSPEDAJES sin aceptar más de 24 h (${row.submissionType}, encolado ${row.createdAt.toISOString()}).` };
+  });
 }

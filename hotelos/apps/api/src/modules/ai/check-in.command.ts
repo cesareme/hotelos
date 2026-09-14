@@ -56,7 +56,7 @@ export async function createCheckInFromScanConfirmation(input: {
   }
 
   const completeness = checkGuestRegisterCompleteness(input.request.documentExtractedFields);
-  const guestRegisterRecord = prepareGuestRegisterRecord({
+  const guestRegisterRecord = await prepareGuestRegisterRecord({
     context: input.context,
     propertyId: input.request.propertyId,
     reservationId: reservation.id,
@@ -119,7 +119,7 @@ export async function executeConfirmation(input: {
   confirmationId: string;
   signatureObjectKey: string;
   correlationId: string;
-}): Promise<{ status: "executed"; reservationId: string; roomId: string; queuedSubmissionId: string }> {
+}): Promise<{ status: "executed"; reservationId: string; roomId: string; queuedSubmissionId: string | null; warnings?: string[] }> {
   const confirmation = demoStore.pendingConfirmations.find((candidate) => candidate.id === input.confirmationId);
   if (!confirmation) {
     throw new Error("Confirmation was not found.");
@@ -129,7 +129,7 @@ export async function executeConfirmation(input: {
     throw new Error("Guest signature is required before executing check-in.");
   }
 
-  markGuestRegisterSigned({
+  await markGuestRegisterSigned({
     context: input.context,
     guestRegisterRecordId: confirmation.guestRegisterRecordId,
     signatureObjectKey: input.signatureObjectKey,
@@ -144,12 +144,32 @@ export async function executeConfirmation(input: {
     correlationId: input.correlationId
   });
 
-  const submission = queueSesHospedajesSubmission({
-    context: input.context,
-    guestRegisterRecordId: confirmation.guestRegisterRecordId,
-    submissionType: "checkin",
-    correlationId: input.correlationId
-  });
+  // Tanda 3: the SES row is created synchronously in Prisma; its id is the one
+  // /ses/submissions/:id serves. A 409 SES_ESTABLISHMENT_INCOMPLETE propagates.
+  // The check-in itself is done and the guest register is signed: an
+  // incomplete SES establishment profile (409 SES_ESTABLISHMENT_INCOMPLETE)
+  // must not undo that nor silence the welcome message. The failed row exists
+  // in Prisma and is re-queued by the scheduler once the profile is fixed.
+  let submission: Awaited<ReturnType<typeof queueSesHospedajesSubmission>> | null = null;
+  let sesWarning: string | null = null;
+  try {
+    submission = await queueSesHospedajesSubmission({
+      context: input.context,
+      guestRegisterRecordId: confirmation.guestRegisterRecordId,
+      submissionType: "checkin",
+      correlationId: input.correlationId
+    });
+  } catch (error) {
+    const details = (error as { details?: { code?: string; missing?: string[]; submissionId?: string } }).details;
+    if (details?.code !== "SES_ESTABLISHMENT_INCOMPLETE") throw error;
+    sesWarning = `Parte SES no enviado: faltan datos del establecimiento (${(details.missing ?? []).join(", ")}).`;
+    console.warn("[ai.check-in] SES submission blocked by incomplete establishment profile", {
+      reservationId: reservation.id,
+      correlationId: input.correlationId,
+      missing: details.missing ?? []
+    });
+    if (details.submissionId) submission = { id: details.submissionId } as Awaited<ReturnType<typeof queueSesHospedajesSubmission>>;
+  }
 
   sendWelcomeMessage({
     context: input.context,
@@ -164,6 +184,7 @@ export async function executeConfirmation(input: {
     status: "executed",
     reservationId: reservation.id,
     roomId: confirmation.roomId,
-    queuedSubmissionId: submission.id
+    queuedSubmissionId: submission?.id ?? null,
+    ...(sesWarning ? { warnings: [sesWarning] } : {})
   };
 }

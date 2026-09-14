@@ -13,11 +13,38 @@
 
 import type { ProviderSendInput, ProviderSendResult } from "./types.js";
 
-export function isEmailConfigured(): boolean {
-  const provider = (process.env.EMAIL_PROVIDER ?? "").toLowerCase();
-  const key = process.env.EMAIL_PROVIDER_KEY ?? "";
-  const from = process.env.EMAIL_FROM ?? "";
+export function isEmailConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  const provider = (env.EMAIL_PROVIDER ?? "").trim().toLowerCase();
+  const key = (env.EMAIL_PROVIDER_KEY ?? "").trim();
+  const from = (env.EMAIL_FROM ?? "").trim();
   return Boolean(provider && key && key !== "change-me" && from);
+}
+
+export type EmailStatus = {
+  configured: boolean;
+  provider: string | null;
+  from: string | null;
+  /**
+   * real      → a provider is configured; sends go out for real.
+   * simulated → no provider outside production; sends are recorded as
+   *             "SIMULADO" deliveries and nothing leaves the box.
+   * disabled  → no provider in production; sends are recorded as failed.
+   */
+  mode: "real" | "simulated" | "disabled";
+};
+
+/**
+ * Honest summary of the outgoing-email configuration (Tanda 3 · invitaciones).
+ * Exposed by GET /notifications/email-status so the UI can say "enlace copiable,
+ * el email no está configurado" instead of pretending an invitation was sent.
+ * Never returns the API key.
+ */
+export function emailStatus(env: NodeJS.ProcessEnv = process.env): EmailStatus {
+  const configured = isEmailConfigured(env);
+  const provider = (env.EMAIL_PROVIDER ?? "").trim().toLowerCase() || null;
+  const from = (env.EMAIL_FROM ?? "").trim() || null;
+  const mode: EmailStatus["mode"] = configured ? "real" : env.NODE_ENV === "production" ? "disabled" : "simulated";
+  return { configured, provider, from, mode };
 }
 
 export async function send(input: ProviderSendInput): Promise<ProviderSendResult> {

@@ -355,6 +355,11 @@ const RESOLVERS = {
   menuItem: byProperty("Plato no encontrado.", (id) =>
     prisma.menuItem.findUnique({ where: { id }, select: selectProperty })
   ),
+  // Tanda 3 (CF-02): staff upsell catalogue — `PATCH /upsell-offers/:id` is
+  // addressed by entity id only, so the row's property is the tenant owner.
+  upsellOffer: byProperty("Oferta de upsell no encontrada.", (id) =>
+    prisma.upsellOffer.findUnique({ where: { id }, select: selectProperty })
+  ),
   conversation: byProperty("Conversación no encontrada.", (id) =>
     prisma.conversation.findUnique({ where: { id }, select: selectProperty })
   ),
@@ -522,6 +527,11 @@ const RESOLVERS = {
       return mirror ? { organizationId: mirror.organizationId, inMemory: true } : null;
     }
   } satisfies Resolver,
+  // Tanda 3 (CFG-P1-6): persisted staff invitations hang from the organization
+  // of the invited user (the token itself is never an entity id on a route).
+  userInvitation: byOrganization("Invitación no encontrada.", (id) =>
+    prisma.userInvitation.findUnique({ where: { id }, select: selectOrganization })
+  ),
   guest: byOrganization("Huésped no encontrado.", (id) =>
     prisma.guest.findUnique({ where: { id }, select: selectOrganization })
   ),
@@ -692,8 +702,10 @@ const RESOLVERS = {
   sesSubmission: {
     notFound: "Envío SES no encontrado.",
     resolve: async (id) => {
-      const row = demoStore.sesSubmissions.find((candidate) => candidate.id === id);
-      return row ? { propertyId: row.propertyId, inMemory: true } : null;
+      // Tanda 3: SES submissions live in Prisma (ids are cuids); the in-memory
+      // list is gone, so an unknown id is simply not found.
+      const row = await prisma.sesHospedajesSubmission.findUnique({ where: { id }, select: { propertyId: true } });
+      return row ? { propertyId: row.propertyId } : null;
     }
   } satisfies Resolver,
   pendingConfirmation: {

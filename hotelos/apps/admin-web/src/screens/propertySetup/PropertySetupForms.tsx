@@ -23,6 +23,21 @@ import {
   type PropertySetupForm,
   type PropertySetupFormField
 } from "../../services/backofficeApi";
+import { FISCAL_TERRITORY_OPTIONS, TAX_REGION_OPTIONS, TOURISM_TAX_REGION_OPTIONS, normalizeTaxRegionClient } from "../../services/taxesApi";
+
+// Tanda 3: select options are canonical {value, label} pairs (the API
+// definition serves them for taxRegion / tourismTaxRegion / fiscalTerritory;
+// legacy fields still send plain strings). Both shapes are accepted.
+type FieldOption = string | { value: string; label: string };
+type SetupField = Omit<PropertySetupFormField, "options"> & { options?: FieldOption[] };
+
+function optionsOf(field: SetupField): Array<{ value: string; label: string }> {
+  return (field.options ?? []).map((option) => (typeof option === "string" ? { value: option, label: option } : option));
+}
+
+const TAX_REGION_FIELD_OPTIONS: FieldOption[] = TAX_REGION_OPTIONS.map((option) => ({ value: option.value, label: option.label }));
+const TOURISM_TAX_FIELD_OPTIONS: FieldOption[] = TOURISM_TAX_REGION_OPTIONS.filter((option) => option.value !== "").map((option) => ({ value: option.value, label: option.label }));
+const FISCAL_TERRITORY_FIELD_OPTIONS: FieldOption[] = FISCAL_TERRITORY_OPTIONS.map((option) => ({ value: option.value, label: option.label }));
 
 type FormDefinition = {
   code: string;
@@ -32,7 +47,7 @@ type FormDefinition = {
   description: string;
   targetTable: string;
   inputCategories: string[];
-  fields: PropertySetupFormField[];
+  fields: SetupField[];
   checks: string[];
 };
 
@@ -44,7 +59,7 @@ type PropertySetupFormView = {
   description: string;
   targetTable: string;
   inputCategories: string[];
-  fields: PropertySetupFormField[];
+  fields: SetupField[];
   checks: string[];
   status?: string;
   permission?: string;
@@ -71,6 +86,7 @@ const forms: FormDefinition[] = [
       { key: "province", label: "Provincia", inputType: "text" },
       { key: "city", label: "Localidad", inputType: "text", required: true },
       { key: "postalCode", label: "Código postal", inputType: "text" },
+      { key: "ineMunicipalityCode", label: "Código INE del municipio", inputType: "text" },
       { key: "phone", label: "Teléfono de contacto", inputType: "text" },
       { key: "email", label: "Correo de contacto", inputType: "text" },
       { key: "website", label: "Sitio web", inputType: "text" },
@@ -80,11 +96,12 @@ const forms: FormDefinition[] = [
       { key: "checkOutTime", label: "Hora de salida por defecto", inputType: "text" },
       { key: "timezone", label: "Zona horaria", inputType: "select", options: ["Europe/Madrid", "Europe/Lisbon", "Europe/Paris"], required: true },
       { key: "currency", label: "Moneda", inputType: "select", options: ["EUR", "GBP", "USD"], required: true },
-      { key: "taxRegion", label: "Región fiscal", inputType: "select", options: ["Mainland Spain", "Canary Islands", "Ceuta", "Melilla"] },
-      { key: "tourismTaxRegion", label: "Región de tasa turística", inputType: "select", options: ["None", "Catalonia", "Balearic Islands"] },
+      { key: "taxRegion", label: "Región fiscal", inputType: "select", options: TAX_REGION_FIELD_OPTIONS, required: true },
+      { key: "fiscalTerritory", label: "Territorio foral (ruta de envío de facturas)", inputType: "select", options: FISCAL_TERRITORY_FIELD_OPTIONS },
+      { key: "tourismTaxRegion", label: "Región de tasa turística", inputType: "select", options: TOURISM_TAX_FIELD_OPTIONS },
       { key: "businessDateRules", label: "Reglas de fecha de negocio", inputType: "textarea" }
     ],
-    checks: ["La razón social, el NIF/CIF y la dirección deben estar completos.", "La zona horaria y las reglas de fecha de negocio determinan la hora del cierre nocturno (night audit)."]
+    checks: ["La razón social, el NIF/CIF y la dirección deben estar completos.", "La región fiscal determina la figura del impuesto (IVA, IGIC o IPSI) y provisiona los tipos del catálogo al guardar.", "El código INE y el código postal los exige SES.HOSPEDAJES para dar de alta el establecimiento.", "La zona horaria y las reglas de fecha de negocio determinan la hora del cierre nocturno (night audit)."]
   },
   {
     code: "building",
@@ -293,7 +310,7 @@ const forms: FormDefinition[] = [
     targetTable: "property_compliance_settings + invoice_sequences",
     inputCategories: ["Códigos de impuesto", "Categorías de método de pago", "Series de facturación", "Ajustes de cumplimiento", "Reglas de retención"],
     fields: [
-      { key: "taxRegion", label: "Región fiscal", inputType: "text", required: true },
+      { key: "taxRegion", label: "Región fiscal", inputType: "select", options: TAX_REGION_FIELD_OPTIONS, required: true },
       { key: "authorityType", label: "Tipo de autoridad", inputType: "select", options: ["ses_hospedajes", "mossos", "ertzaintza", "manual"], required: true },
       { key: "paymentMethodCategory", label: "Categoría de método de pago", inputType: "text" },
       { key: "invoiceSequenceCode", label: "Código de serie de factura", inputType: "text", required: true },
@@ -360,7 +377,7 @@ function apiFormToView(form: PropertySetupForm): PropertySetupFormView {
     description: form.description,
     targetTable: form.targetEntityType,
     inputCategories: form.inputCategories,
-    fields: form.fields,
+    fields: form.fields as SetupField[],
     checks: form.dataQualityChecks,
     status: form.status,
     permission: form.permission,
@@ -368,6 +385,99 @@ function apiFormToView(form: PropertySetupForm): PropertySetupFormView {
     submissions: form.submissions,
     dataQuality: form.dataQuality
   };
+}
+
+/**
+ * Keeps the Spanish local labels but lets the API definition win whenever it
+ * serves canonical {value, label} options for a select (single source of
+ * truth for tax region / tourism tax region / fiscal territory).
+ */
+function mergeFieldOptions(local: SetupField[], api: SetupField[] | undefined): SetupField[] {
+  if (!api?.length) return local;
+  const byKey = new Map(api.map((field) => [field.key, field] as const));
+  const merged = local.map((field) => {
+    const remote = byKey.get(field.key);
+    const remoteObjects = remote?.options?.some((option) => typeof option === "object") ?? false;
+    return remoteObjects ? { ...field, options: remote!.options } : field;
+  });
+  // Fields the API knows and the local catalog does not (new columns) are appended.
+  for (const field of api) {
+    if (!merged.some((candidate) => candidate.key === field.key) && field.inputType !== "json") merged.push(field);
+  }
+  return merged;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function pickText(record: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "number") return String(value);
+  }
+  return "";
+}
+
+/**
+ * Pre-fills the form from GET …/forms/:code `existingData` (Tanda 3). Only the
+ * property-level forms are edit forms; the structural ones (buildings, rooms…)
+ * return a LIST of existing records and stay create forms.
+ */
+function initialValuesFor(formCode: string, existingData: unknown): Record<string, unknown> {
+  const data = asRecord(existingData);
+  if (formCode === "property_profile") {
+    const property = asRecord(data.property);
+    const organization = asRecord(data.organization);
+    const compliance = asRecord(data.compliance);
+    const complianceCfg = asRecord(compliance.configurationJson);
+    const values: Record<string, unknown> = {
+      name: pickText(property, "name"),
+      legalName: pickText(property, "legalName") || pickText(organization, "legalName"),
+      taxId: pickText(organization, "taxId"),
+      address: pickText(property, "address"),
+      country: pickText(property, "country") || "ES",
+      province: pickText(property, "province"),
+      city: pickText(property, "municipality", "city"),
+      postalCode: pickText(property, "postalCode") || pickText(complianceCfg, "postalCode"),
+      ineMunicipalityCode: pickText(property, "ineMunicipalityCode") || pickText(complianceCfg, "ineMunicipalityCode"),
+      timezone: pickText(property, "timezone"),
+      taxRegion: normalizeTaxRegionClient(pickText(property, "taxRegion") || pickText(compliance, "taxRegion"), pickText(property, "province")) ?? "",
+      fiscalTerritory: pickText(property, "fiscalTerritory") || pickText(compliance, "fiscalTerritory") || "common",
+      tourismTaxRegion: pickText(compliance, "tourismTaxRegion")
+    };
+    return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== ""));
+  }
+  if (formCode === "finance_compliance_setup") {
+    const compliance = asRecord(data.compliance);
+    const complianceCfg = asRecord(compliance.configurationJson);
+    const billing = asRecord(data.billing);
+    const sequences = Array.isArray(billing.invoiceSequences) ? (billing.invoiceSequences as Array<Record<string, unknown>>) : [];
+    const active = sequences.find((sequence) => sequence.active === true) ?? sequences[0];
+    const values: Record<string, unknown> = {
+      taxRegion: normalizeTaxRegionClient(pickText(compliance, "taxRegion")) ?? "",
+      authorityType: pickText(complianceCfg, "authorityType"),
+      invoiceSequenceCode: active ? pickText(active, "sequenceCode") : "",
+      invoiceType: active ? pickText(active, "invoiceType") : "",
+      retentionRule: pickText(complianceCfg, "retentionRule"),
+      submissionMode: pickText(complianceCfg, "submissionMode")
+    };
+    return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== ""));
+  }
+  if (formCode === "ai_setup") {
+    const settings = asRecord(data.settings);
+    const cfg = asRecord(settings.configurationJson);
+    const values: Record<string, unknown> = {
+      aiEnabled: typeof settings.aiEnabled === "boolean" ? settings.aiEnabled : undefined,
+      defaultAutomationLevel: pickText(settings, "defaultAutomationLevel"),
+      guestFacingDisclosure: pickText(settings, "guestFacingDisclosure"),
+      voiceLocales: Array.isArray(settings.voiceLocales) ? settings.voiceLocales : undefined,
+      documentImageRetentionPolicy: pickText(cfg, "documentImageRetentionPolicy")
+    };
+    return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== "" && value !== undefined));
+  }
+  return {};
 }
 
 // Input constraints for free-text fields the API validates strictly. The
@@ -391,20 +501,42 @@ const TEXT_FIELD_CONSTRAINTS: Record<
 };
 
 function fieldControl(
-  field: PropertySetupFormField,
+  field: SetupField,
   value: unknown,
   setValue: (key: string, value: unknown) => void
 ) {
   if (field.inputType === "select") {
+    const options = optionsOf(field);
+    const current = typeof value === "string" ? value : "";
+    const hasObjects = (field.options ?? []).some((option) => typeof option === "object");
+    if (!hasObjects) {
+      return (
+        <FormSelect
+          key={field.key}
+          label={field.label}
+          options={options.map((option) => option.value)}
+          required={field.required}
+          value={current}
+          onChange={(nextValue) => setValue(field.key, nextValue)}
+        />
+      );
+    }
+    // Canonical value/label select: the stored value is the code, the user
+    // sees the label. An unrecognised stored value is kept as an extra option
+    // so the form never silently blanks it.
+    const known = options.some((option) => option.value === current);
     return (
-      <FormSelect
-        key={field.key}
-        label={field.label}
-        options={field.options ?? ["Demo option"]}
-        required={field.required}
-        value={typeof value === "string" ? value : ""}
-        onChange={(nextValue) => setValue(field.key, nextValue)}
-      />
+      <FormField key={field.key} label={field.label} required={field.required}>
+        <select aria-label={field.label} value={current} onChange={(event) => setValue(field.key, event.currentTarget.value)}>
+          <option value="">Seleccionar...</option>
+          {options.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+          {current && !known ? <option value={current}>Valor actual: {current}</option> : null}
+        </select>
+      </FormField>
     );
   }
   if (field.inputType === "multi_select") {
@@ -412,7 +544,7 @@ function fieldControl(
       <FormMultiSelect
         key={field.key}
         label={field.label}
-        options={field.options ?? ["Demo option"]}
+        options={optionsOf(field).map((option) => option.value)}
         value={Array.isArray(value) ? value.map(String) : typeof value === "string" && value ? value.split(",").map((item) => item.trim()).filter(Boolean) : []}
         onChange={(nextValue) => setValue(field.key, nextValue)}
       />
@@ -477,12 +609,17 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
         const apiView = apiFormToView(payload);
         setForm({
           ...fallbackForm,
+          fields: mergeFieldOptions(fallbackForm.fields, apiView.fields),
           status: apiView.status,
           permission: apiView.permission,
           existingData: apiView.existingData,
           submissions: apiView.submissions,
           dataQuality: apiView.dataQuality
         });
+        // Tanda 3: pre-fill the edit forms from the persisted data so saving a
+        // single field no longer overwrites the rest with "" (the wizard used
+        // to send taxRegion "" and wipe the property's fiscal region).
+        setValues(initialValuesFor(formCode, apiView.existingData));
       })
       .catch(() => {
         if (!mounted) return;
@@ -509,7 +646,10 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
     }
     setSaveState("saving");
     try {
-      const response = await savePropertySetupForm(getActivePropertyId(), form.code, values);
+      // Never send "" for untouched fields: the API keeps the current value
+      // when a key is absent, but persists an empty string when it is present.
+      const payload = Object.fromEntries(Object.entries(values).filter(([, v]) => !(typeof v === "string" && v.trim() === "")));
+      const response = await savePropertySetupForm(getActivePropertyId(), form.code, payload);
       setSaveState("saved");
       void response;
       setSaveMessage(`${form.title}: guardado correctamente.`);

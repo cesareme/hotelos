@@ -2,6 +2,11 @@ import { lazy, Suspense, useEffect, useMemo, useState, type ComponentType, type 
 import { BackOfficeLayout } from "./layouts/BackOfficeLayout";
 import { LoginScreen } from "./screens/auth/LoginScreen";
 import { ForgotPasswordScreen } from "./screens/auth/ForgotPasswordScreen";
+// Public (unauthenticated) routes — /accept-invite, /reset-password — and the
+// forced password rotation (ChangePasswordScreen). Rendered as a wrapper around
+// the AuthGate (contract I): it shows the public screen instead of the shell
+// when the pathname matches, and its children (the protected app) otherwise.
+import { PublicAuthRoutes } from "./auth/PublicAuthRoutes";
 import { clearSession, getUser, onAuthChange, type AuthUser } from "./services/auth-storage";
 import { ensureActiveProperty } from "./services/activeProperty";
 // Eager imports: critical-path screens and screens referenced at module scope
@@ -34,32 +39,18 @@ const AccountingSettings = lazyNamed(() => import("./screens/AccountingSettings"
 const AISettings = lazyNamed(() => import("./screens/AISettings"), "AISettings");
 const AuditLogViewer = lazyNamed(() => import("./screens/AuditLogViewer"), "AuditLogViewer");
 const BillingSettings = lazyNamed(() => import("./screens/BillingSettings"), "BillingSettings");
-const DepartmentManager = lazyNamed(() => import("./screens/DepartmentManager"), "DepartmentManager");
-const DocumentTemplateManager = lazyNamed(() => import("./screens/DocumentTemplateManager"), "DocumentTemplateManager");
 const GoLiveChecklist = lazyNamed(() => import("./screens/GoLiveChecklist"), "GoLiveChecklist");
-const IntegrationManager = lazyNamed(() => import("./screens/IntegrationManager"), "IntegrationManager");
-const ModuleConfigurationCenter = lazyNamed(() => import("./screens/ModuleConfigurationCenter"), "ModuleConfigurationCenter");
 const ModuleHealthCenter = lazyNamed(() => import("./screens/ModuleHealthCenter"), "ModuleHealthCenter");
 const ModuleManager = lazyNamed(() => import("./screens/ModuleManager"), "ModuleManager");
-const OrganizationSettings = lazyNamed(() => import("./screens/OrganizationSettings"), "OrganizationSettings");
 const PaymentSettings = lazyNamed(() => import("./screens/PaymentSettings"), "PaymentSettings");
 const PropertyMapper = lazyNamed(() => import("./screens/PropertyMapper"), "PropertyMapper");
-const PropertySettings = lazyNamed(() => import("./screens/PropertySettings"), "PropertySettings");
 const PropertySetupWizard = lazyNamed(() => import("./screens/PropertySetupWizard"), "PropertySetupWizard");
-const RoomInventoryManager = lazyNamed(() => import("./screens/RoomInventoryManager"), "RoomInventoryManager");
-const RoomTypeManager = lazyNamed(() => import("./screens/RoomTypeManager"), "RoomTypeManager");
 const TaxComplianceSettings = lazyNamed(() => import("./screens/TaxComplianceSettings"), "TaxComplianceSettings");
 const UserRoleManager = lazyNamed(() => import("./screens/UserRoleManager"), "UserRoleManager");
-const ChannelManagerSettingsScreen = lazyNamed(() => import("./screens/ChannelManagerSettingsScreen"), "ChannelManagerSettingsScreen");
 const ChannelMappingsScreen = lazyNamed(() => import("./screens/ChannelMappingsScreen"), "ChannelMappingsScreen");
-const CompetitorSetScreen = lazyNamed(() => import("./screens/CompetitorSetScreen"), "CompetitorSetScreen");
 const DemandCalendarAdminScreen = lazyNamed(() => import("./screens/DemandCalendarAdminScreen"), "DemandCalendarAdminScreen");
-const ForecastSettingsScreen = lazyNamed(() => import("./screens/ForecastSettingsScreen"), "ForecastSettingsScreen");
 const RateShopperSettingsScreen = lazyNamed(() => import("./screens/RateShopperSettingsScreen"), "RateShopperSettingsScreen");
-const RevenueAutomationRulesScreen = lazyNamed(() => import("./screens/RevenueAutomationRulesScreen"), "RevenueAutomationRulesScreen");
-const RevenueDataQualityScreen = lazyNamed(() => import("./screens/RevenueDataQualityScreen"), "RevenueDataQualityScreen");
 const RevenueRulesScreen = lazyNamed(() => import("./screens/RevenueRulesScreen"), "RevenueRulesScreen");
-const RevenueSettingsScreen = lazyNamed(() => import("./screens/RevenueSettingsScreen"), "RevenueSettingsScreen");
 
 // fiscal
 const FiscalSubmissionsCenter = lazyNamed(() => import("./screens/fiscal/FiscalSubmissionsCenter"), "FiscalSubmissionsCenter");
@@ -145,7 +136,6 @@ const WebhooksAdminScreen = lazyNamed(() => import("./screens/developer/Webhooks
 const ApiReferenceScreen = lazyNamed(() => import("./screens/developer/ApiReferenceScreen"), "ApiReferenceScreen");
 const DeveloperAppsScreen = lazyNamed(() => import("./screens/developer/DeveloperAppsScreen"), "DeveloperAppsScreen");
 const MarketplaceCatalogScreen = lazyNamed(() => import("./screens/marketplace/MarketplaceCatalogScreen"), "MarketplaceCatalogScreen");
-const IntegrationMarketplaceHome = lazyNamed(() => import("./screens/marketplace/IntegrationMarketplaceHome"), "IntegrationMarketplaceHome");
 
 // modules / sustainability / fiscal / etc
 const UpsellsSettingsScreen = lazyNamed(() => import("./screens/upsells/UpsellsSettingsScreen"), "UpsellsSettingsScreen");
@@ -237,10 +227,11 @@ const CustomFieldSetupForm = lazyNamed(() => import("./screens/propertySetup/Pro
 
 // compliance secondary
 const AuthorityRoutingSettingsScreen = lazyNamed(() => import("./screens/compliance/AuthorityRoutingSettingsScreen"), "AuthorityRoutingSettingsScreen");
-const GuestRegisterFieldMappingScreen = lazyNamed(() => import("./screens/compliance/GuestRegisterFieldMappingScreen"), "GuestRegisterFieldMappingScreen");
 const GuestRegisterRetentionSettingsScreen = lazyNamed(() => import("./screens/compliance/GuestRegisterRetentionSettingsScreen"), "GuestRegisterRetentionSettingsScreen");
 const GuestRegisterSettingsScreen = lazyNamed(() => import("./screens/compliance/GuestRegisterSettingsScreen"), "GuestRegisterSettingsScreen");
 const SesHospedajesSettingsScreen = lazyNamed(() => import("./screens/compliance/SesHospedajesSettingsScreen"), "SesHospedajesSettingsScreen");
+// Tanda 3 (lote front-fiscal): IVA/IGIC/IPSI profile per property.
+const PropertyTaxesScreen = lazyNamed(() => import("./screens/compliance/PropertyTaxesScreen"), "PropertyTaxesScreen");
 
 // onboarding multi-export module (one chunk for all onboarding screens)
 const AIExtractionReviewScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "AIExtractionReviewScreen");
@@ -265,8 +256,6 @@ const SourceConnectionScreen = lazyNamed(() => import("./screens/onboarding/Onbo
 
 const SETUP_AI_LABEL = "Abrir configuración de IA";
 const CRMSettingsModule = makeModulePlaceholder({ moduleName: "CRM", dashboardScreen: "CrmDashboard", dashboardLabel: "Abrir tablero CRM", relatedScreens: [{ label: "Configuración de huéspedes", screen: "PropertyProfileSetupForm" }] });
-const GuestSegmentsModule = makeModulePlaceholder({ moduleName: "Segmentos de huéspedes", dashboardScreen: "CrmDashboard", dashboardLabel: "Abrir tablero CRM" });
-const CampaignManagerModule = makeModulePlaceholder({ moduleName: "Campañas", dashboardScreen: "CrmDashboard", dashboardLabel: "Abrir tablero CRM" });
 const LoyaltySettingsModule = makeModulePlaceholder({ moduleName: "Fidelización", dashboardScreen: "LoyaltyDashboard", dashboardLabel: "Abrir tablero de fidelización" });
 const DuplicateGuestReviewModule = makeModulePlaceholder({ moduleName: "Revisión de duplicados", dashboardScreen: "CrmDashboard", dashboardLabel: "Abrir tablero CRM", setupScreen: "AISetupCenter", setupLabel: SETUP_AI_LABEL });
 const SalesPipelineModule = makeModulePlaceholder({ moduleName: "Pipeline de ventas", dashboardScreen: "SalesPipelineDashboard", dashboardLabel: "Abrir pipeline de ventas" });
@@ -281,9 +270,6 @@ const SupplierSettingsModule = makeModulePlaceholder({ moduleName: "Proveedores"
 const InventorySettingsModule = makeModulePlaceholder({ moduleName: "Inventario", dashboardScreen: "InventoryDashboard", dashboardLabel: "Abrir tablero de inventario" });
 const ProcurementSettingsModule = makeModulePlaceholder({ moduleName: "Compras", dashboardScreen: "ProcurementDashboard", dashboardLabel: "Abrir tablero de compras" });
 const ProcurementRulesModule = makeModulePlaceholder({ moduleName: "Reglas de compras", dashboardScreen: "ProcurementDashboard", dashboardLabel: "Abrir tablero de compras" });
-const GuestPortalSettingsModule = makeModulePlaceholder({ moduleName: "Portal del huésped", dashboardScreen: "GuestJourneyWorkspace", dashboardLabel: "Abrir recorrido del huésped" });
-const KioskSettingsModule = makeModulePlaceholder({ moduleName: "Kiosco", dashboardScreen: "GuestJourneyWorkspace", dashboardLabel: "Abrir recorrido del huésped" });
-const UpsellSettingsModule = makeModulePlaceholder({ moduleName: "Ventas adicionales", dashboardScreen: "UpsellsDashboard", dashboardLabel: "Abrir tablero de upsells" });
 const DigitalKeySettingsModule = makeModulePlaceholder({ moduleName: "Llave digital", dashboardScreen: "GuestJourneyWorkspace", dashboardLabel: "Abrir recorrido del huésped" });
 const ReputationSettingsModule = makeModulePlaceholder({ moduleName: "Reputación", dashboardScreen: "ReputationDashboard", dashboardLabel: "Abrir tablero de reputación" });
 const SurveySettingsModule = makeModulePlaceholder({ moduleName: "Encuestas", dashboardScreen: "SurveysDashboard", dashboardLabel: "Abrir Encuestas / NPS" });
@@ -298,20 +284,27 @@ const EmergencyContactsSettingsModule = makeModulePlaceholder({ moduleName: "Con
 const AnalyticsSettingsModule = makeModulePlaceholder({ moduleName: "Analítica", dashboardScreen: "AnalyticsCenterDashboard", dashboardLabel: "Abrir centro de analítica" });
 const MetricDefinitionsModule = makeModulePlaceholder({ moduleName: "Definiciones de métricas", dashboardScreen: "AnalyticsCenterDashboard", dashboardLabel: "Abrir centro de analítica" });
 const ScheduledReportsModule = makeModulePlaceholder({ moduleName: "Informes programados", dashboardScreen: "AnalyticsCenterDashboard", dashboardLabel: "Abrir centro de analítica", relatedScreens: [{ label: "Centro de informes", screen: "ReportingCenter" }] });
-const DataQualityCenterModule = makeModulePlaceholder({ moduleName: "Calidad de datos", dashboardScreen: "RevenueDataQuality", dashboardLabel: "Abrir calidad de datos" });
 const DeveloperPortalModule = makeModulePlaceholder({ moduleName: "Plataforma de desarrollador", dashboardScreen: "AuditLogViewer", dashboardLabel: "Abrir registro de auditoría", status: "warn", statusLabel: "vista previa" });
 const ApiAppsModule = makeModulePlaceholder({ moduleName: "Apps de API", dashboardScreen: "AuditLogViewer", dashboardLabel: "Abrir registro de auditoría", status: "warn", statusLabel: "vista previa" });
 const WebhooksModule = makeModulePlaceholder({ moduleName: "Webhooks", dashboardScreen: "AuditLogViewer", dashboardLabel: "Abrir registro de auditoría", status: "warn", statusLabel: "vista previa" });
 const WebhookSubscriptionsModule = makeModulePlaceholder({ moduleName: "Suscripciones de webhooks", dashboardScreen: "AuditLogViewer", dashboardLabel: "Abrir registro de auditoría", status: "warn", statusLabel: "vista previa" });
 const ApiUsageLogsModule = makeModulePlaceholder({ moduleName: "Registros de uso de API", dashboardScreen: "AuditLogViewer", dashboardLabel: "Abrir registro de auditoría" });
 const PartnerCertificationModule = makeModulePlaceholder({ moduleName: "Certificación de partners", dashboardScreen: "AuditLogViewer", dashboardLabel: "Abrir registro de auditoría", status: "warn", statusLabel: "vista previa" });
-const AIGovernanceSettingsModule = makeModulePlaceholder({ moduleName: "Gobernanza de IA", setupScreen: "AISetupCenter", setupLabel: SETUP_AI_LABEL, dashboardScreen: "AISettings", dashboardLabel: "Ajustes de IA" });
 const AIToolRegistryModule = makeModulePlaceholder({ moduleName: "Catálogo de herramientas de IA", setupScreen: "AISetupCenter", setupLabel: SETUP_AI_LABEL });
 const AIPromptVersionsModule = makeModulePlaceholder({ moduleName: "Versiones de prompts de IA", setupScreen: "AISetupCenter", setupLabel: SETUP_AI_LABEL });
 const AIEvaluationsModule = makeModulePlaceholder({ moduleName: "Evaluaciones de IA", setupScreen: "AISetupCenter", setupLabel: SETUP_AI_LABEL });
 const AIIncidentLogModule = makeModulePlaceholder({ moduleName: "Registro de incidentes de IA", setupScreen: "AISetupCenter", setupLabel: SETUP_AI_LABEL, dashboardScreen: "AuditLogViewer", dashboardLabel: "Abrir registro de auditoría" });
 const AIHumanReviewQueueModule = makeModulePlaceholder({ moduleName: "Cola de revisión humana", setupScreen: "AISetupCenter", setupLabel: SETUP_AI_LABEL });
 const AICostDashboardModule = makeModulePlaceholder({ moduleName: "Costes de IA", dashboardScreen: "AnalyticsCenterDashboard", dashboardLabel: "Abrir centro de analítica" });
+// Tanda 3: former ScreenScaffold stubs (English copy + invented status) with no
+// backing endpoint yet. They are honest placeholders now (admin-only entries in
+// Sidebar "Configuracion avanzada · Próximamente") that point at the real
+// revenue surfaces. Scaffold files RevenueAutomationRulesScreen.tsx,
+// RevenueDataQualityScreen.tsx and ForecastSettingsScreen.tsx are no longer
+// imported.
+const RevenueAutomationRulesModule = makeModulePlaceholder({ moduleName: "Reglas de automatización de revenue", summary: "Automatización de tarifas y restricciones con umbrales de aprobación. Hoy las reglas se gestionan desde Reglas de revenue.", dashboardScreen: "RevenueRules", dashboardLabel: "Abrir reglas de revenue" });
+const RevenueDataQualityModule = makeModulePlaceholder({ moduleName: "Calidad de datos de revenue", summary: "Comprobaciones de preparación (snapshots, mapeos, planes tarifarios, confianza del forecast) antes de emitir recomendaciones.", dashboardScreen: "RevenueHomeDashboard", dashboardLabel: "Abrir inicio de revenue" });
+const ForecastSettingsModule = makeModulePlaceholder({ moduleName: "Ajustes de forecast", summary: "Horizonte, modelo y umbrales de confianza de la previsión. La precisión del forecast se consulta en el explorador.", dashboardScreen: "RevenueForecastExplorer", dashboardLabel: "Abrir explorador de forecast" });
 
 const FiscalDashboardWired = () => <FiscalDashboard onNavigate={(s) => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: s }))} />;
 const ComplianceInboxWired = () => <ComplianceInbox onNavigate={(s) => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: s }))} />;
@@ -417,6 +410,7 @@ const SCREEN_COMPONENTS = {
   WebhooksAdmin: WebhooksAdminScreen,
   ApiReferenceScreen: ApiReferenceScreen,
   UpsellsSettings: UpsellsSettingsScreen,
+  PropertyTaxesScreen,
   MessagingConnections: MessagingConnectionsScreen,
   MarketplaceCatalog: MarketplaceCatalogScreen,
   DeveloperApps: DeveloperAppsScreen,
@@ -440,17 +434,11 @@ const SCREEN_COMPONENTS = {
   AiOwnerSummaryScreen,
   EmailConnectors: EmailConnectorsScreen,
   BillingSettings,
-  DepartmentManager,
-  DocumentTemplateManager,
   GoLiveChecklist,
-  IntegrationManager,
-  ModuleConfigurationCenter,
   ModuleHealthCenter,
   ModuleManager,
-  OrganizationSettings,
   PaymentSettings,
   PropertyMapper,
-  PropertySettings,
   PropertySetupWizard,
   PropertySetupHomeScreen,
   PropertyProfileSetupForm,
@@ -478,11 +466,8 @@ const SCREEN_COMPONENTS = {
   BillingCenter: BillingCenterScreen,
   FolioDetail: FolioDetailScreen,
   ReportingCenter: ReportingCenterScreen,
-  RoomInventoryManager,
-  RoomTypeManager,
   TaxComplianceSettings,
   UserRoleManager,
-  RevenueSettings: RevenueSettingsScreen,
   SetupCenterScreen,
   ConfigurationCenterScreen,
   ConfigurationPropertyProfileForm,
@@ -508,7 +493,6 @@ const SCREEN_COMPONENTS = {
   // (OTA aggregator). The key is kept pointing at the real screen so any
   // existing deep-link still resolves.
   ChannelManagerDashboard: ChannelAggregatorHub,
-  IntegrationMarketplaceHome,
   RevenueHomeDashboard,
   RevenueMeeting: RevenueMeetingScreen,
   RateGridEditorScreen: RateGridEditorScreen,
@@ -519,21 +503,18 @@ const SCREEN_COMPONENTS = {
   RevenueComparisonDashboard,
   RevenueExportCenter,
   RevenueRules: RevenueRulesScreen,
-  RevenueAutomationRules: RevenueAutomationRulesScreen,
-  AutomationRules: RevenueAutomationRulesScreen,
-  ChannelManagerSettings: ChannelManagerSettingsScreen,
+  RevenueAutomationRules: RevenueAutomationRulesModule,
+  AutomationRules: RevenueAutomationRulesModule,
   ChannelMappings: ChannelMappingsScreen,
   RateShopperSettings: RateShopperSettingsScreen,
-  CompetitorSet: CompetitorSetScreen,
   DemandCalendarAdmin: DemandCalendarAdminScreen,
-  ForecastSettings: ForecastSettingsScreen,
-  RevenueDataQuality: RevenueDataQualityScreen,
+  ForecastSettings: ForecastSettingsModule,
+  RevenueDataQuality: RevenueDataQualityModule,
   RevenueRecommendationRules: RevenueRulesScreen,
   GuestRegisterSettings: GuestRegisterSettingsScreen,
   SesHospedajesSettings: SesHospedajesSettingsScreen,
   AuthorityRoutingSettings: AuthorityRoutingSettingsScreen,
   GuestRegisterRetentionSettings: GuestRegisterRetentionSettingsScreen,
-  GuestRegisterFieldMapping: GuestRegisterFieldMappingScreen,
   AISetupCenter: AISetupCenterScreen,
   OnboardingProjects: OnboardingProjectListScreen,
   OnboardingProjectDetail: OnboardingProjectDetailScreen,
@@ -555,8 +536,6 @@ const SCREEN_COMPONENTS = {
   OnboardingGoLiveReadiness: OnboardingGoLiveReadinessScreen,
   CutoverAssistant: CutoverAssistantScreen,
   CRMSettings: CRMSettingsModule,
-  GuestSegments: GuestSegmentsModule,
-  CampaignManager: CampaignManagerModule,
   LoyaltySettings: LoyaltySettingsModule,
   DuplicateGuestReview: DuplicateGuestReviewModule,
   SalesPipeline: SalesPipelineModule,
@@ -571,9 +550,6 @@ const SCREEN_COMPONENTS = {
   InventorySettings: InventorySettingsModule,
   ProcurementSettings: ProcurementSettingsModule,
   ProcurementRules: ProcurementRulesModule,
-  GuestPortalSettings: GuestPortalSettingsModule,
-  KioskSettings: KioskSettingsModule,
-  UpsellSettings: UpsellSettingsModule,
   DigitalKeySettings: DigitalKeySettingsModule,
   ReputationSettings: ReputationSettingsModule,
   SurveySettings: SurveySettingsModule,
@@ -588,20 +564,50 @@ const SCREEN_COMPONENTS = {
   AnalyticsSettings: AnalyticsSettingsModule,
   MetricDefinitions: MetricDefinitionsModule,
   ScheduledReports: ScheduledReportsModule,
-  DataQualityCenter: DataQualityCenterModule,
   DeveloperPortal: DeveloperPortalModule,
   ApiApps: ApiAppsModule,
   Webhooks: WebhooksModule,
   WebhookSubscriptions: WebhookSubscriptionsModule,
   ApiUsageLogs: ApiUsageLogsModule,
   PartnerCertification: PartnerCertificationModule,
-  AIGovernanceSettings: AIGovernanceSettingsModule,
   AIToolRegistry: AIToolRegistryModule,
   AIPromptVersions: AIPromptVersionsModule,
   AIEvaluations: AIEvaluationsModule,
   AIIncidentLog: AIIncidentLogModule,
   AIHumanReviewQueue: AIHumanReviewQueueModule,
-  AICostDashboard: AICostDashboardModule
+  AICostDashboard: AICostDashboardModule,
+  // ---------------------------------------------------------------------------
+  // Tanda 3 · retired keys kept as aliases of the REAL screen (same pattern as
+  // ChannelManagerDashboard above): deep links, FrontDeskDashboard first-run
+  // chips, guide tours and the v2 sidebar config still resolve. The scaffold
+  // files behind them (ScreenScaffold stubs with invented status and English
+  // copy: DepartmentManager.tsx, RoomTypeManager.tsx, RoomInventoryManager.tsx,
+  // DocumentTemplateManager.tsx, PropertySettings.tsx, OrganizationSettings.tsx,
+  // ChannelManagerSettingsScreen.tsx, CompetitorSetScreen.tsx,
+  // RevenueSettingsScreen.tsx, IntegrationManager.tsx,
+  // marketplace/IntegrationMarketplaceHome.tsx, ModuleConfigurationCenter.tsx,
+  // compliance/GuestRegisterFieldMappingScreen.tsx) were deleted.
+  DepartmentManager: DepartmentSetupForm,
+  RoomTypeManager: RoomTypeSetupForm,
+  RoomInventoryManager: RoomSetupForm,
+  DocumentTemplateManager: NotificationsScreen,
+  PropertySettings: PropertyProfileSetupForm,
+  OrganizationSettings: PropertyProfileSetupForm,
+  ChannelManagerSettings: ChannelAggregatorHub,
+  CompetitorSet: RateShopperSettingsScreen,
+  RevenueSettings: RatePlansScreen,
+  IntegrationManager: MarketplaceCatalogScreen,
+  IntegrationMarketplaceHome: MarketplaceCatalogScreen,
+  ModuleConfigurationCenter: ModuleManager,
+  GuestRegisterFieldMapping: GuestRegisterSettingsScreen,
+  // Former makeModulePlaceholder duplicates of screens that already exist for
+  // real under the "*Real" keys: resolve straight to the real screen.
+  GuestSegments: GuestSegmentsScreen,
+  CampaignManager: CampaignManagerScreen,
+  GuestPortalSettings: GuestPortalSettingsScreen,
+  KioskSettings: KioskSettingsScreen,
+  UpsellSettings: UpsellsSettingsScreen,
+  AIGovernanceSettings: AiGovernanceScreen
 };
 
 // Type-only export: the registry itself stays private so no module can import
@@ -805,16 +811,22 @@ export function App() {
     setActiveScreen(target.screen);
   }
 
+  // Public auth flows (invitation acceptance, password reset, forced password
+  // change) render INSTEAD of the protected shell: PublicAuthRoutes owns the
+  // pathname/session check and only renders its children (the AuthGate) when
+  // no public screen applies.
   return (
     <CocoaGlobalProvider>
       <ToastProvider>
-        <AuthGate>
-          <BackOfficeLayout activeScreen={activeScreen} onSelect={selectScreen}>
-            <Suspense fallback={<LoadingBlock label="Cargando pantalla…" />}>
-              <ActiveScreen />
-            </Suspense>
-          </BackOfficeLayout>
-        </AuthGate>
+        <PublicAuthRoutes>
+          <AuthGate>
+            <BackOfficeLayout activeScreen={activeScreen} onSelect={selectScreen}>
+              <Suspense fallback={<LoadingBlock label="Cargando pantalla…" />}>
+                <ActiveScreen />
+              </Suspense>
+            </BackOfficeLayout>
+          </AuthGate>
+        </PublicAuthRoutes>
         <ToastHost />
       </ToastProvider>
     </CocoaGlobalProvider>

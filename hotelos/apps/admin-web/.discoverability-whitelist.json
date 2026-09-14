@@ -1,5 +1,5 @@
 {
-  "$comment": "Screens intentionally absent from sidebar. Adding entries here is a deliberate choice — review semestralmente. Each block is documented with the rationale: dialogs/drawers launched from a parent screen, drill-down detail views accessed by clicking a row, sub-forms inside wizard-style screens, auth flows, dev/preview tools, utility components, and known follow-ups still to be routed via a settings hub.",
+  "$comment": "Screens intentionally absent from sidebar. Adding entries here is a deliberate choice — review semestralmente. Each block is documented with the rationale: dialogs/drawers launched from a parent screen, drill-down detail views accessed by clicking a row, sub-forms inside wizard-style screens, auth flows, dev/preview tools, utility components, and known follow-ups still to be routed via a settings hub. 2026-09 (Tanda 3): purged 8 entries that were already reachable from the sidebar (GuestRegisterFieldMappingScreen — deleted —, GuestRegisterRetentionSettingsScreen, GuestRegisterSettingsScreen, SesHospedajesSettingsScreen, AuthorityRoutingSettingsScreen, AISetupCenterScreen, OperationsHomeScreen, OwnerHomeScreen, FileUploadAndClassificationScreen). GuestSegmentsScreen, GuestPortalSettingsScreen, KioskSettingsScreen, CampaignManagerScreen and QualityCasesScreen ARE in the sidebar but under the '*Real' keys (GuestSegmentsReal…), which check-sidebar-coverage cannot match to the file name, so they stay listed here.",
   "screens": [
     "GroupDetailDialog",
     "GroupsPickupCard",
@@ -32,6 +32,9 @@
     "PropertySetupHomeScreen",
     "LoginScreen",
     "ForgotPasswordScreen",
+    "AcceptInviteScreen",
+    "ResetPasswordScreen",
+    "ChangePasswordScreen",
     "CocoaLoginScreen",
     "CocoaShowcaseScreen",
     "CocoaGalleryScreen",
@@ -44,22 +47,14 @@
     "ApiReferenceScreen",
     "PersonaGuideScreen",
     "PersonaLandingScreen",
-    "FileUploadAndClassificationScreen",
-    "AISetupCenterScreen",
-    "GuestRegisterFieldMappingScreen",
-    "GuestRegisterRetentionSettingsScreen",
-    "GuestRegisterSettingsScreen",
-    "SesHospedajesSettingsScreen",
-    "AuthorityRoutingSettingsScreen",
-    "OperationsHomeScreen",
-    "OwnerHomeScreen",
-    "GuestSegmentsScreen",
-    "KioskSettingsScreen",
-    "CampaignManagerScreen",
-    "QualityCasesScreen",
     "TenantDetailScreen",
     "NewTenantWizardDialog",
     "ResetPasswordConfirmDialog",
-    "InviteUserDialog"
+    "InviteUserDialog",
+    "GuestSegmentsScreen",
+    "GuestPortalSettingsScreen",
+    "KioskSettingsScreen",
+    "CampaignManagerScreen",
+    "QualityCasesScreen"
   ]
 }

@@ -9,7 +9,11 @@
 //   - General      → plan / status / módulos activos (toggle) / properties
 //                    count / users count / billing summary cards.
 //   - Propiedades  → table of properties with "Añadir propiedad".
-//   - Usuarios     → table of users with "Invitar usuario" + reset password.
+//   - Usuarios     → table of users (rol, estado) with "Reenviar invitación"
+//                    (POST /admin/tenants/:orgId/users/:userId/reissue-invite):
+//                    a new single-use link that revokes the previous ones and
+//                    whose real email delivery state is shown — never a
+//                    clear-text temp password (Tanda 3 · CFG-P1-6).
 //   - Módulos      → checklist (CocoaSwitch) calling `toggleModule`.
 //   - Audit log    → scrollable table of recent tenant events.
 //
@@ -23,16 +27,19 @@ import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaSwitch } from "../../components/cocoa/CocoaSwitch";
 import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
+import { CocoaInput } from "../../components/cocoa/CocoaInput";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { useToast } from "../../components/Toast";
 import {
   fetchTenantDetail,
   fetchTenantAuditLog,
   toggleModule,
-  resetTempPassword,
+  reissueTenantInvitation,
   type TenantDetail,
-  type TenantStatus
+  type TenantStatus,
+  type TenantUserSummary
 } from "../../services/tenantAdminApi";
+import { copyText, describeDelivery, formatExpiry, type InvitationResult } from "../../services/authApi";
 
 export interface TenantDetailScreenProps {
   orgId: string;
@@ -72,6 +79,40 @@ const STATUS_LABEL: Record<string, string> = {
   suspended: "Suspendido",
   archived: "Archivado"
 };
+
+const USER_STATUS_TONE: Record<string, "ok" | "warn" | "info" | "error"> = {
+  active: "ok",
+  invited: "warn",
+  disabled: "error"
+};
+
+const USER_STATUS_LABEL: Record<string, string> = {
+  active: "Activo",
+  invited: "Invitado · pendiente",
+  disabled: "Desactivado"
+};
+
+/** Read-only value + copy button (Cocoa styling). */
+function CopyRow({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    if (await copyText(value)) {
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    }
+  };
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>{label}</span>
+      <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+        <CocoaInput value={value} onChange={() => undefined} />
+        <CocoaButton variant="bordered" tone="neutral" size="regular" onClick={handleCopy}>
+          {copied ? "Copiado" : "Copiar"}
+        </CocoaButton>
+      </div>
+    </div>
+  );
+}
 
 function fmtDate(v?: string | null): string {
   if (!v) return "—";
@@ -149,6 +190,8 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
   // optimistic patch is round-tripping to the backend.
   const [moduleBusy, setModuleBusy] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  // Last re-issued invitation (link + real delivery state), shown under the users table.
+  const [inviteResult, setInviteResult] = useState<{ userId: string; email: string; invitation: InvitationResult } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -226,16 +269,19 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
     }
   }
 
-  async function handleResetPassword(userId: string, userLabel: string) {
+  async function handleReissueInvite(user: TenantUserSummary) {
     setBusy(true);
     try {
-      const res = await resetTempPassword(orgId, userId);
-      showToast(
-        `Password temporal reseteado para ${userLabel}: ${res.newPassword}`,
-        { variant: "success", duration: 12000 }
-      );
+      const invitation = await reissueTenantInvitation(orgId, user.id);
+      if (invitation.delivery?.status === "sent") {
+        showToast(`Invitación enviada a ${user.email}`, { variant: "success" });
+      } else {
+        showToast(`${describeDelivery(invitation.delivery).title}.`, { variant: "info", duration: 6000 });
+      }
+      setInviteResult({ userId: user.id, email: user.email, invitation });
+      void load();
     } catch (e) {
-      const message = e instanceof Error ? e.message : "No se pudo resetear el password.";
+      const message = e instanceof Error ? e.message : "No se pudo reenviar la invitación.";
       showToast(message, { variant: "error" });
     } finally {
       setBusy(false);
@@ -243,9 +289,10 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
   }
 
   function handleInviteUser() {
-    // Hook point for the parent to wire up the real invite flow.
-    // TODO(backend): wire to /admin/tenants/:orgId/users invite endpoint.
-    showToast("Invitar usuario: flujo aún no implementado.", { variant: "info" });
+    // Honest: there is no POST /admin/tenants/:orgId/users yet. Additional
+    // staff is invited from the property's "Usuarios y seguridad" screen
+    // (UserRoleManager → POST /backoffice/properties/:id/users/invite).
+    showToast("Invita a más usuarios desde «Usuarios y seguridad» de la propiedad (con rol). Desde la consola solo se reenvía la invitación del owner.", { variant: "info", duration: 7000 });
   }
 
   function handleAddProperty() {
@@ -331,36 +378,43 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
 
   // -- User table columns ---------------------------------------------------
 
-  const userColumns: CocoaTableColumn<Record<string, unknown>>[] = [
+  const userColumns: CocoaTableColumn<TenantUserSummary>[] = [
     {
       key: "fullName",
       label: "Nombre",
-      render: (row) => <strong>{getString(row, "fullName") || getString(row, "name") || "—"}</strong>
+      render: (row) => <strong>{row.fullName || "—"}</strong>
     },
-    { key: "email", label: "Email", render: (row) => getString(row, "email") || "—" },
-    { key: "role", label: "Rol", render: (row) => getString(row, "role") || "—" },
+    { key: "email", label: "Email", render: (row) => row.email || "—" },
+    { key: "role", label: "Rol", render: (row) => (row.roles.length > 0 ? row.roles.join(", ") : "—") },
+    {
+      key: "status",
+      label: "Estado",
+      render: (row) => (
+        <span className={`bo-status ${USER_STATUS_TONE[row.status] ?? "info"}`} style={{ fontSize: 11, textTransform: "none" }}>
+          {USER_STATUS_LABEL[row.status] ?? row.status}
+        </span>
+      )
+    },
     {
       key: "lastLoginAt",
       label: "Último acceso",
-      render: (row) => fmtDateShort(getString(row, "lastLoginAt") || getString(row, "lastSignInAt") || null)
+      render: (row) => fmtDateShort(row.lastLoginAt ?? null)
     },
     {
       key: "actions",
       label: "",
       align: "right",
       render: (row) => {
-        const userId = getString(row, "id") || getString(row, "userId");
-        const label = getString(row, "email") || getString(row, "fullName") || userId;
-        if (!userId) return null;
+        if (!row.id || row.status === "disabled") return null;
         return (
           <CocoaButton
             size="small"
             variant="bordered"
             tone="neutral"
             disabled={busy}
-            onClick={() => void handleResetPassword(userId, label)}
+            onClick={() => void handleReissueInvite(row)}
           >
-            Resetear password
+            {row.status === "invited" ? "Reenviar invitación" : "Nuevo enlace de acceso"}
           </CocoaButton>
         );
       }
@@ -399,7 +453,7 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
   ];
 
   const properties = Array.isArray(tenant.properties) ? tenant.properties : [];
-  const users = Array.isArray(tenant.users) ? tenant.users : [];
+  const users: TenantUserSummary[] = Array.isArray(tenant.users) ? tenant.users : [];
 
   // -- Header ----------------------------------------------------------------
 
@@ -592,21 +646,42 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
                 Usuarios
               </h3>
               <p style={{ margin: "4px 0 0", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-subheadline)" }}>
-                Empleados y administradores con acceso al tenant. Resetear password genera una contraseña temporal de un solo uso.
+                Empleados y administradores con acceso al tenant. «Reenviar invitación» genera un enlace de un solo uso (72 h) para
+                que la persona cree su contraseña y anula los enlaces anteriores; también sirve para restaurar el acceso de un usuario activo.
               </p>
             </div>
-            <CocoaButton variant="filled" tone="accent" onClick={handleInviteUser}>
+            <CocoaButton variant="bordered" tone="neutral" onClick={handleInviteUser}>
               Invitar usuario
             </CocoaButton>
           </div>
           <CocoaCard variant="bordered" padding="none">
-            <CocoaTable<Record<string, unknown>>
+            <CocoaTable<TenantUserSummary>
               columns={userColumns}
               rows={users}
-              rowKey={(r) => getString(r, "id") || getString(r, "userId") || getString(r, "email")}
+              rowKey={(r) => r.id || r.email}
               emptyState="Este tenant todavía no tiene usuarios."
             />
           </CocoaCard>
+          {inviteResult ? (() => {
+            const delivery = describeDelivery(inviteResult.invitation.delivery, inviteResult.email);
+            const showLink = inviteResult.invitation.delivery?.status !== "sent" && Boolean(inviteResult.invitation.inviteUrl);
+            return (
+              <CocoaCard variant="bordered" padding="md">
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div>
+                    <strong style={{ color: "var(--cocoa-label)" }}>{delivery.title}</strong>
+                    <p style={{ margin: "4px 0 0", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-subheadline)" }}>
+                      {delivery.detail}
+                    </p>
+                  </div>
+                  {showLink ? <CopyRow label="Enlace de invitación (un solo uso)" value={inviteResult.invitation.inviteUrl} /> : null}
+                  <p style={{ margin: 0, color: "var(--cocoa-label-tertiary)", fontSize: "var(--cocoa-fs-caption)" }}>
+                    Caduca el {formatExpiry(inviteResult.invitation.expiresAt)}.
+                  </p>
+                </div>
+              </CocoaCard>
+            );
+          })() : null}
         </div>
       ) : null}
 

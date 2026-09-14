@@ -14,14 +14,27 @@
 // Un único CTA "Hacer check-in" ejecuta:
 //   - POST /reservations/:id/assign-room (si hay que reasignar)
 //   - POST /reservations/:id/check-in
-//   - (background) /properties/:id/ses/submissions
+//   - POST /properties/:id/ses/submissions → { status, queued, submissions[], failed[] }
+//     (Tanda 3 · cierre): el resultado se lee de verdad. «Encolado» solo si
+//     queued > 0 y failed vacío; un 409 SES_ESTABLISHMENT_INCOMPLETE
+//     (details.missing) o entradas en failed[] se muestran con los campos que
+//     faltan y un enlace a Ajustes fiscales. Nunca «enviado» en falso.
 // Mostramos cronómetro: la directriz exige < 90 s.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useToast } from "../../components/Toast";
 import { LoadingBlock } from "../../components/States";
 import { apiRequest } from "../../services/api-client";
+import {
+  queueSesSubmissions,
+  sesEstablishmentIssueLabel,
+  sesFailureMessages,
+  sesQueueOutcomeFromError,
+  sesQueueOutcomeFromResponse,
+  type SesQueueOutcome
+} from "../../services/complianceApi";
 import { logBreadcrumb } from "../../lib/breadcrumb";
+import { navigateTo } from "../../lib/navigate";
 
 // =============================================================== shapes
 
@@ -105,6 +118,26 @@ function nightsBetween(arrival: string, departure: string): number {
   return Math.max(0, Math.round((d - a) / 86400000));
 }
 
+function missingLabels(missing: string[]): string {
+  return missing.map(sesEstablishmentIssueLabel).join(", ");
+}
+
+/** Toast copy for a non-queued SES outcome (the queued case has its own success toast). */
+function sesOutcomeToast(outcome: SesQueueOutcome): string {
+  switch (outcome.kind) {
+    case "queued":
+      return `Parte de viajeros encolado en SES.HOSPEDAJES (${outcome.queued}).`;
+    case "no_records":
+      return "La reserva no tiene registros de viajeros: no se ha encolado ningún parte SES. Completa el registro de viajeros.";
+    case "partial":
+      return `Parte SES: ${outcome.queued} encolado${outcome.queued === 1 ? "" : "s"}, ${outcome.failed.length} sin encolar${outcome.missing.length > 0 ? ` (faltan: ${missingLabels(outcome.missing)})` : ""}.`;
+    case "incomplete":
+      return `Parte SES no encolado: faltan datos del establecimiento${outcome.missing.length > 0 ? ` (${missingLabels(outcome.missing)})` : ""}. Complétalos en Ajustes fiscales.`;
+    case "error":
+      return `Parte SES no encolado${outcome.code ? ` (${outcome.code})` : ""}: ${outcome.message} Revísalo en la bandeja de cumplimiento.`;
+  }
+}
+
 // =============================================================== component
 
 export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: QuickCheckInProps) {
@@ -130,6 +163,8 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [completed, setCompleted] = useState<{ elapsedSeconds: number } | null>(null);
+  // Real result of the SES queue call after the check-in (null until then).
+  const [sesOutcome, setSesOutcome] = useState<SesQueueOutcome | null>(null);
 
   // Cronómetro — empieza al abrir, congela al completar.
   const [tick, setTick] = useState(0);
@@ -305,23 +340,31 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
         method: "POST",
         body: { roomId: selectedRoomId, signatureObjectKey: "sig_drawer_checkin" }
       });
-      // 4) Parte de viajeros SES (no bloqueante, pero YA no silencioso): si el
-      // envío no se puede encolar, se avisa al operador en vez de fingir éxito.
-      void apiRequest(`/properties/${reservation.propertyId}/ses/submissions`, {
-        method: "POST",
-        body: { reservationId: reservation.id }
-      }).catch(() => {
-        showToast(
-          "Check-in hecho, pero el parte de viajeros (SES) no se pudo enviar. Revísalo en Cumplimiento.",
-          { variant: "error" }
-        );
-      });
+      // 4) Parte de viajeros SES.HOSPEDAJES. The check-in is already done; the
+      // queue response is read honestly (queued > 0 and no failed record) and
+      // a 409 SES_ESTABLISHMENT_INCOMPLETE / failed[] is surfaced with the
+      // missing establishment fields instead of a fake "enviado".
+      let ses: SesQueueOutcome;
+      try {
+        ses = sesQueueOutcomeFromResponse(await queueSesSubmissions(reservation.propertyId, reservation.id));
+      } catch (sesError) {
+        ses = sesQueueOutcomeFromError(sesError);
+      }
+      setSesOutcome(ses);
+      logBreadcrumb("checkin.ses", "mutation", { reservationId: reservation.id, outcome: ses.kind });
 
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+      const elapsedText = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
       setCompleted({ elapsedSeconds: elapsed });
       onCompleted?.({ reservationId: reservation.id, elapsedSeconds: elapsed });
-      showToast(`Check-in completado en ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`, { variant: "success" });
-      window.setTimeout(() => onClose(), 2500);
+      if (ses.kind === "queued") {
+        showToast(`Check-in completado en ${elapsedText} · parte de viajeros encolado en SES (${ses.queued}).`, { variant: "success" });
+        window.setTimeout(() => onClose(), 2500);
+      } else {
+        // The drawer stays open: the operator must see what SES is missing.
+        showToast(`Check-in completado en ${elapsedText}.`, { variant: "success" });
+        showToast(sesOutcomeToast(ses), { variant: ses.kind === "no_records" ? "info" : "error", duration: 9000 });
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Error ejecutando check-in";
       setError(message);
@@ -389,7 +432,7 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
           ) : !reservation ? (
             <p className="bo-status error">No se encontró la reserva.</p>
           ) : completed ? (
-            <CompletedView elapsed={elapsedLabel} guest={fmtName(guest)} roomNumber={selectedRoom?.number} />
+            <CompletedView elapsed={elapsedLabel} guest={fmtName(guest)} roomNumber={selectedRoom?.number} ses={sesOutcome} />
           ) : (
             <>
               {/* STEP 1: huésped + alertas */}
@@ -569,9 +612,9 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
               </Section>
 
               {/* STEP 4: compliance */}
-              <Section title="4 · Cumplimiento" badge="Auto" badgeTone="info">
+              <Section title="4 · Cumplimiento" badge="Al confirmar" badgeTone="info">
                 <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "var(--ink)" }}>
-                  <li>Parte viajeros (SES Hospedajes) se envía automáticamente al confirmar.</li>
+                  <li>Al confirmar se encola el parte de viajeros (SES.HOSPEDAJES); aquí verás el resultado real del encolado.</li>
                   <li>Firma digital aplicada con sello "sig_drawer_checkin".</li>
                   <li>Política de cancelación: {reservation.cancellationPolicyCode ?? "estándar"}.</li>
                 </ul>
@@ -658,7 +701,99 @@ function Section({
   );
 }
 
-function CompletedView({ elapsed, guest, roomNumber }: { elapsed: string; guest: string; roomNumber?: string }) {
+/** Real SES queue outcome after the check-in: never claims "enviado" unless every record was queued. */
+function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
+  if (!outcome) {
+    return (
+      <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
+        Sin resultado del parte de viajeros todavía.
+      </p>
+    );
+  }
+  if (outcome.kind === "queued") {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
+        <span className="bo-status ok">Parte de viajeros encolado en SES.HOSPEDAJES ({outcome.queued})</span>
+        <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
+          Encolado no es aceptado: el envío real al MIR se ve en el Centro de envíos. Esta ventana se cierra automáticamente.
+        </p>
+      </div>
+    );
+  }
+  const tone = outcome.kind === "no_records" ? "warn" : "error";
+  const title =
+    outcome.kind === "no_records"
+      ? "No se ha encolado ningún parte de viajeros"
+      : outcome.kind === "partial"
+        ? `Parte SES parcial: ${outcome.queued} encolado${outcome.queued === 1 ? "" : "s"}, ${outcome.failed.length} sin encolar`
+        : outcome.kind === "incomplete"
+          ? "Parte SES no encolado: faltan datos del establecimiento"
+          : "Parte SES no encolado";
+  const missing = outcome.kind === "partial" || outcome.kind === "incomplete" ? outcome.missing : [];
+  const detail =
+    outcome.kind === "no_records"
+      ? "La reserva no tiene registros de viajeros (SES_NO_GUEST_REGISTER_RECORDS). Completa el registro de viajeros y vuelve a encolar el parte desde la bandeja de cumplimiento."
+      : outcome.kind === "error"
+        ? `${outcome.message}${outcome.code ? ` (${outcome.code})` : ""}`
+        : outcome.kind === "incomplete" && missing.length === 0
+          ? outcome.message
+          : null;
+  // Per-parte server messages (failed[]), verbatim; the one already used as `detail` is not repeated.
+  const failed = outcome.kind === "partial" || outcome.kind === "incomplete" || outcome.kind === "error" ? outcome.failed : [];
+  const headlineMessage = outcome.kind === "incomplete" || outcome.kind === "error" ? outcome.message : null;
+  const failureMessages = sesFailureMessages(failed).filter((message) => message !== headlineMessage);
+  const failedCount = failed.length;
+  return (
+    <div
+      style={{
+        width: "100%",
+        textAlign: "left",
+        padding: "8px 10px",
+        borderLeft: `3px solid ${tone === "error" ? "var(--danger, #d23b3b)" : "var(--warn, #d29b00)"}`,
+        background: "var(--surface-elevated, rgba(0,0,0,0.03))",
+        borderRadius: 6,
+        fontSize: 13,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6
+      }}
+    >
+      <span className={`bo-status ${tone}`} style={{ alignSelf: "flex-start" }}>{title}</span>
+      {missing.length > 0 ? (
+        <ul style={{ margin: 0, paddingLeft: 18 }}>
+          {missing.map((issue) => (
+            <li key={issue}>{sesEstablishmentIssueLabel(issue)}</li>
+          ))}
+        </ul>
+      ) : null}
+      {detail ? <div className="bo-muted" style={{ fontSize: 12 }}>{detail}</div> : null}
+      {failureMessages.length > 0 ? (
+        <div className="bo-muted" style={{ fontSize: 12 }}>
+          Motivo{failedCount === 1 ? "" : "s"} del servidor ({failedCount} parte{failedCount === 1 ? "" : "s"} sin encolar):
+          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+            {failureMessages.map((message) => (
+              <li key={message}>{message}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+        {outcome.kind === "incomplete" || outcome.kind === "partial" ? (
+          <button type="button" onClick={() => navigateTo("TaxComplianceSettings")}>Ajustes fiscales</button>
+        ) : null}
+        {outcome.kind === "no_records" ? (
+          <button type="button" onClick={() => navigateTo("GuestRegisterSettings")}>Registro de huéspedes</button>
+        ) : null}
+        <button type="button" className="ghost" onClick={() => navigateTo("ComplianceInbox")}>Bandeja de cumplimiento</button>
+      </div>
+      <div className="bo-muted" style={{ fontSize: 12 }}>
+        El check-in sí se ha realizado. Esta ventana no se cierra sola para que puedas revisar el parte.
+      </div>
+    </div>
+  );
+}
+
+function CompletedView({ elapsed, guest, roomNumber, ses }: { elapsed: string; guest: string; roomNumber?: string; ses: SesQueueOutcome | null }) {
   return (
     <div
       style={{
@@ -676,9 +811,7 @@ function CompletedView({ elapsed, guest, roomNumber }: { elapsed: string; guest:
         {guest} alojado en {roomNumber ? `Hab. ${roomNumber}` : "su habitación"}.
       </p>
       <div className="bo-status ok">⏱ {elapsed} · objetivo &lt; 1:30</div>
-      <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-        El parte viajeros se envía a SES en background. Esta ventana se cierra automáticamente.
-      </p>
+      <SesOutcomeBlock outcome={ses} />
     </div>
   );
 }

@@ -7,7 +7,11 @@ import { ForbiddenError } from "../lib/http-error.js";
 const loggedUnmappedGets = new Set<string>();
 
 export type ApiRoutePermission = {
-  method: "GET" | "POST" | "PATCH" | "DELETE";
+  // Tanda 3 (server-rutas): PUT added for the idempotent tax-rate override
+  // (`PUT /backoffice/properties/:propertyId/taxes/rates`). The contract test
+  // extractor and `assertRoutePermission` compare the upper-cased verb, so a
+  // PUT registration without an entry fails closed like any other mutation.
+  method: "GET" | "POST" | "PATCH" | "DELETE" | "PUT";
   path: string;
   permissions: PermissionKey[];
   riskLevel: "public" | "low" | "medium" | "high" | "critical";
@@ -21,6 +25,13 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/auth/reset-password", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/auth/change-password", permissions: [], riskLevel: "low" },
   { method: "GET", path: "/auth/password-policy", permissions: [], riskLevel: "public" },
+  // Tanda 3 (CFG-P1-6) · staff invitations: the token IS the credential. Both
+  // routes are public here AND in PUBLIC_PREFIXES (lib/auth-context.ts) —
+  // without the second half they answer 401 as soon as HOTELOS_ALLOW_DEMO_AUTH
+  // is off. GET answers a generic 404 for unknown/expired/used tokens; POST is
+  // rate-limited 5/min like /auth/reset-password.
+  { method: "GET", path: "/auth/invitations/:token", permissions: [], riskLevel: "public" },
+  { method: "POST", path: "/auth/accept-invite", permissions: [], riskLevel: "public" },
   // Bootstrap del piloto: público (gated por BOOTSTRAP_TOKEN + first-run check)
   { method: "GET", path: "/onboarding/bootstrap/status", permissions: [], riskLevel: "public" },
   { method: "POST", path: "/onboarding/bootstrap", permissions: [], riskLevel: "public" },
@@ -500,6 +511,16 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   },
   { method: "GET", path: "/backoffice/properties/:propertyId/users", permissions: ["users.read"], riskLevel: "medium" },
   { method: "POST", path: "/backoffice/properties/:propertyId/users/invite", permissions: ["users.invite"], riskLevel: "high" },
+  // Tanda 3 (CFG-P1-6): roles of the property's organization for the invite
+  // role selector, and re-issue of a pending invitation (revokes the previous
+  // tokens, sends a new email / returns a copyable link).
+  { method: "GET", path: "/backoffice/properties/:propertyId/roles", permissions: ["users.invite"], riskLevel: "medium" },
+  {
+    method: "POST",
+    path: "/backoffice/properties/:propertyId/users/:userId/reissue-invite",
+    permissions: ["users.invite"],
+    riskLevel: "high"
+  },
   { method: "POST", path: "/backoffice/properties/:propertyId/users/:userId/disable", permissions: ["users.disable"], riskLevel: "high" },
   { method: "GET", path: "/backoffice/roles", permissions: ["roles.manage"], riskLevel: "medium" },
   { method: "GET", path: "/backoffice/permissions", permissions: ["permissions.manage"], riskLevel: "medium" },
@@ -524,6 +545,13 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   },
   { method: "GET", path: "/backoffice/properties/:propertyId/billing-settings", permissions: ["billing.configure"], riskLevel: "high" },
   { method: "PATCH", path: "/backoffice/properties/:propertyId/billing-settings", permissions: ["billing.configure"], riskLevel: "critical" },
+  // Tanda 3 (iva-catalogo) · indirect-tax profile per property. The read shares
+  // the compliance-settings read gate (compliance.configure) — the same screen
+  // group (Cumplimiento › Fiscal) and the same data owner; the override and the
+  // re-provision change what every future invoice charges, hence high.
+  { method: "GET", path: "/backoffice/properties/:propertyId/taxes", permissions: ["compliance.configure"], riskLevel: "medium" },
+  { method: "PUT", path: "/backoffice/properties/:propertyId/taxes/rates", permissions: ["compliance.configure"], riskLevel: "high" },
+  { method: "POST", path: "/backoffice/properties/:propertyId/taxes/provision", permissions: ["compliance.configure"], riskLevel: "high" },
   {
     method: "GET",
     path: "/backoffice/properties/:propertyId/accounting-settings",
@@ -954,6 +982,13 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/dashboards/crm", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/dashboards/loyalty", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/dashboards/upsells", permissions: ["analytics.read"], riskLevel: "low" },
+  // Tanda 3 (CF-02) · staff catalogue of upsell offers over Prisma UpsellOffer
+  // (the only source the dashboard above reads). The former front paths under
+  // /guest-self-service/upsell_offers never existed (404). PATCH is by entity
+  // id → tenant guard through the `upsellOffer` resolver in lib/tenancy.ts.
+  { method: "GET", path: "/properties/:propertyId/upsell-offers", permissions: ["guest_self_service.read"], riskLevel: "low" },
+  { method: "POST", path: "/properties/:propertyId/upsell-offers", permissions: ["guest_self_service.manage"], riskLevel: "medium" },
+  { method: "PATCH", path: "/upsell-offers/:id", permissions: ["guest_self_service.manage"], riskLevel: "medium" },
   { method: "GET", path: "/dashboards/surveys", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/dashboards/quality", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/dashboards/safety", permissions: ["analytics.read"], riskLevel: "low" },
@@ -989,6 +1024,10 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/notifications/deliveries/:id/retry", permissions: ["notifications.manage"], riskLevel: "medium" },
   { method: "POST", path: "/notifications/dispatch", permissions: ["notifications.manage"], riskLevel: "high" },
   { method: "GET", path: "/notifications/template-stats", permissions: [], riskLevel: "low" },
+  // Tanda 3 (CFG-P1-6): whether outbound email is real, simulated or disabled,
+  // so invitation screens show a copyable link instead of a fake "sent".
+  // Gated like the invitation itself (users.invite): it reveals provider config.
+  { method: "GET", path: "/notifications/email-status", permissions: ["users.invite"], riskLevel: "low" },
   // Sprint 50 — AI Human Review Queue (HITL). Reads gated by AI governance read;
   // decisions require the high-risk confirmation permission.
   { method: "GET", path: "/ai-operations/review/queue", permissions: ["ai_governance.read"], riskLevel: "medium" },
@@ -1099,6 +1138,9 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/admin/tenants/:orgId/audit-log", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "high" },
   { method: "POST", path: "/admin/tenants", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
   { method: "POST", path: "/admin/tenants/:orgId/users/:userId/reset-password", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
+  // Tanda 3 (CFG-P1-6): replaces the clear-text temp password with a persisted
+  // invitation (user_invitations) the owner accepts through /auth/accept-invite.
+  { method: "POST", path: "/admin/tenants/:orgId/users/:userId/reissue-invite", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
   { method: "PATCH", path: "/admin/tenants/:orgId/modules/:moduleCode", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
   // Rate Grid V2 (rutas sin prefijo /revenue que usa RateGridEditorScreen).
   { method: "GET", path: "/properties/:propertyId/rate-grid", permissions: ["revenue.read"], riskLevel: "medium" },
@@ -1192,12 +1234,33 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/accounting/fiscal-periods", permissions: ["analytics.read"], riskLevel: "medium" },
   { method: "GET", path: "/accounting/reports/modelo-303", permissions: ["analytics.read"], riskLevel: "medium" },
   { method: "GET", path: "/accounting/reports/modelo-390", permissions: ["analytics.read"], riskLevel: "medium" },
-  // SES submissions (legacy path; mirrors /properties/:propertyId/ses-hospedajes/submissions).
-  { method: "GET", path: "/properties/:propertyId/ses/submissions", permissions: ["compliance.ses.submit"], riskLevel: "medium" }
+  // SES submissions (Prisma pipeline, Tanda 3 · QC-01/FISC-08). Reads share the
+  // guest-register read key: the history of what was sent to the MIR is the
+  // same audience as the traveller records themselves (compliance role +
+  // reception), while queueing/retrying keeps compliance.ses.submit. The
+  // establishment view reports which fiscal-address fields are still missing
+  // (the POST answers 409 SES_ESTABLISHMENT_INCOMPLETE with the same list).
+  { method: "GET", path: "/properties/:propertyId/ses/submissions", permissions: ["guest_register.read"], riskLevel: "medium" },
+  { method: "GET", path: "/properties/:propertyId/ses/establishment", permissions: ["guest_register.read"], riskLevel: "medium" }
 ];
 
 export function findRoutePermission(method: string, path: string): ApiRoutePermission | undefined {
   return routePermissionManifest.find((route) => route.method === method.toUpperCase() && route.path === path);
+}
+
+export type RiskLevel = ApiRoutePermission["riskLevel"];
+
+/**
+ * H1 (Tanda 3 · cierre): risk level of a registered route, or `null` when the
+ * route has no manifest entry (unknown paths, which the preHandler skips via
+ * `request.is404` anyway). server.ts uses it to refuse the token-less demo
+ * fallback (HOTELOS_ALLOW_DEMO_AUTH → `request.isAuthenticated === false`) on
+ * `high` / `critical` routes with a 401: the fallback only stands in for reads
+ * and low/medium writes; cancelling an invoice, refunding, sending to AEAT/MIR
+ * or going live needs a real session even in demo mode.
+ */
+export function routeRiskLevel(method: string, path: string): RiskLevel | null {
+  return findRoutePermission(method, path)?.riskLevel ?? null;
 }
 
 // AUTH-03: strict mode means a GET without a manifest entry is refused (403)

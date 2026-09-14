@@ -3,6 +3,16 @@ import { hashPassword } from "../src/password.js";
 // Relative import (tsx strips the type-only deps of registry.ts at runtime):
 // keeps the AI tool registry in sync with the canonical code catalog on seed.
 import { TOOL_DEFINITIONS } from "../../ai-tools/src/registry.js";
+// Statutory indirect-tax catalogue (Tanda 3): the demo properties are
+// provisioned from it instead of literal rates (see provisionTaxes below).
+import {
+  TAX_CATEGORIES,
+  TAX_FIGURE_NAMES,
+  figureForRegion,
+  rateCodeFor,
+  statutoryRate,
+  type TaxRegion
+} from "../../compliance/src/spain/indirect-tax.js";
 
 const prisma = new PrismaClient();
 
@@ -100,6 +110,54 @@ const DEMO_PERMISSIONS = [
   "users.read"
 ];
 
+const CATALOG_VALID_FROM = new Date("2000-01-01T00:00:00.000Z");
+
+async function provisionTaxes(organizationId: string, region: TaxRegion): Promise<void> {
+  const { figure, impuesto } = figureForRegion(region);
+  const tax = await prisma.tax.upsert({
+    where: { organizationId_code_taxRegion: { organizationId, code: figure, taxRegion: region } },
+    update: { verifactuImpuesto: impuesto },
+    create: {
+      organizationId,
+      code: figure,
+      name: TAX_FIGURE_NAMES[figure],
+      country: "ES",
+      taxRegion: region,
+      liabilityAccountCode: "477",
+      verifactuImpuesto: impuesto,
+      source: "catalog"
+    }
+  });
+  const existing = await prisma.taxRate.findMany({
+    where: { taxId: tax.id, active: true, category: { in: [...TAX_CATEGORIES] } },
+    select: { category: true, appliesTo: true }
+  });
+  const covered = new Set(existing.filter((r) => r.appliesTo === r.category || r.appliesTo === "*").map((r) => r.category));
+  for (const category of TAX_CATEGORIES) {
+    if (covered.has(category)) continue;
+    const spec = statutoryRate(region, category);
+    const rateCode = rateCodeFor(figure, spec.percent, spec.calificacion);
+    await prisma.taxRate.upsert({
+      where: { taxId_rateCode_appliesTo_validFrom: { taxId: tax.id, rateCode, appliesTo: category, validFrom: CATALOG_VALID_FROM } },
+      update: { active: true, validTo: null, category, calificacion: spec.calificacion, verifyAgainstOrdinance: spec.verifyAgainstOrdinance, legalBasis: spec.legalBasis },
+      create: {
+        taxId: tax.id,
+        rateCode,
+        ratePercent: spec.percent,
+        appliesTo: category,
+        validFrom: CATALOG_VALID_FROM,
+        validTo: null,
+        active: true,
+        category,
+        calificacion: spec.calificacion,
+        verifyAgainstOrdinance: spec.verifyAgainstOrdinance,
+        source: "catalog",
+        legalBasis: spec.legalBasis
+      }
+    });
+  }
+}
+
 async function main() {
   await prisma.organization.upsert({
     where: { id: "org_123" },
@@ -115,14 +173,17 @@ async function main() {
 
   await prisma.property.upsert({
     where: { id: "prop_123" },
-    update: {},
+    // Canonical tax region (Tanda 3): converge the legacy "Madrid" value on re-seed.
+    update: { taxRegion: "ES_PENINSULA_BALEARES", fiscalTerritory: "common" },
     create: {
       id: "prop_123",
       organizationId: "org_123",
       name: "Anfitorio Madrid Centro",
       legalName: "Anfitorio Madrid Centro SL",
       country: "ES",
-      taxRegion: "Madrid",
+      province: "Madrid",
+      taxRegion: "ES_PENINSULA_BALEARES",
+      fiscalTerritory: "common",
       timezone: "Europe/Madrid",
       sesHospedajesEnabled: true,
       verifactuEnabled: true
@@ -201,84 +262,31 @@ async function main() {
   // Demo Canary Islands property for IGIC testing
   await prisma.property.upsert({
     where: { id: "prop_canary" },
-    update: {},
+    // Canonical tax region (Tanda 3): converge the legacy "canary" value on re-seed.
+    update: { taxRegion: "ES_CANARIAS", fiscalTerritory: "common" },
     create: {
       id: "prop_canary",
       organizationId: "org_123",
       name: "Anfitorio Tenerife Sur",
       legalName: "Anfitorio Tenerife Sur SL",
       country: "ES",
-      taxRegion: "canary",
+      province: "Santa Cruz de Tenerife",
+      taxRegion: "ES_CANARIAS",
+      fiscalTerritory: "common",
       timezone: "Atlantic/Canary",
       sesHospedajesEnabled: true,
       verifactuEnabled: true
     }
   });
 
-  // Spanish tax catalog: mainland IVA, Canary IGIC, Ceuta/Melilla IPSI
-  const taxes = [
-    { code: "IVA", name: "Impuesto sobre el Valor Añadido", taxRegion: "mainland", liabilityAccountCode: "477" },
-    { code: "IGIC", name: "Impuesto General Indirecto Canario", taxRegion: "canary", liabilityAccountCode: "477" },
-    { code: "IPSI", name: "Impuesto sobre la Producción, los Servicios y la Importación", taxRegion: "ceuta", liabilityAccountCode: "477" },
-    { code: "IPSI", name: "Impuesto sobre la Producción, los Servicios y la Importación", taxRegion: "melilla", liabilityAccountCode: "477" }
-  ];
-  for (const tax of taxes) {
-    await prisma.tax.upsert({
-      where: { organizationId_code_taxRegion: { organizationId: "org_123", code: tax.code, taxRegion: tax.taxRegion } },
-      update: {},
-      create: { organizationId: "org_123", ...tax, country: "ES" }
-    });
-  }
-
-  // Effective tax rates per line type per region. Codes:
-  //   room/breakfast → 10% IVA (mainland), 7% IGIC (canary), 4% IPSI (ceuta/melilla)
-  //   minibar/parking → 21% IVA, 15% IGIC (Tipo incrementado), 8% IPSI
-  //   adjustment → 0%
-  const rates: Array<{ taxRegion: string; code: string; appliesTo: string; rate: number }> = [
-    { taxRegion: "mainland", code: "general", appliesTo: "room", rate: 10 },
-    { taxRegion: "mainland", code: "general", appliesTo: "breakfast", rate: 10 },
-    { taxRegion: "mainland", code: "general", appliesTo: "parking", rate: 21 },
-    { taxRegion: "mainland", code: "general", appliesTo: "minibar", rate: 21 },
-    { taxRegion: "mainland", code: "zero", appliesTo: "adjustment", rate: 0 },
-    { taxRegion: "canary", code: "general", appliesTo: "room", rate: 7 },
-    { taxRegion: "canary", code: "general", appliesTo: "breakfast", rate: 7 },
-    { taxRegion: "canary", code: "incrementado", appliesTo: "parking", rate: 15 },
-    { taxRegion: "canary", code: "incrementado", appliesTo: "minibar", rate: 15 },
-    { taxRegion: "canary", code: "zero", appliesTo: "adjustment", rate: 0 },
-    { taxRegion: "ceuta", code: "general", appliesTo: "room", rate: 4 },
-    { taxRegion: "ceuta", code: "general", appliesTo: "breakfast", rate: 4 },
-    { taxRegion: "ceuta", code: "general", appliesTo: "parking", rate: 8 },
-    { taxRegion: "ceuta", code: "general", appliesTo: "minibar", rate: 8 },
-    { taxRegion: "melilla", code: "general", appliesTo: "room", rate: 4 },
-    { taxRegion: "melilla", code: "general", appliesTo: "breakfast", rate: 4 },
-    { taxRegion: "melilla", code: "general", appliesTo: "parking", rate: 8 },
-    { taxRegion: "melilla", code: "general", appliesTo: "minibar", rate: 8 }
-  ];
-  for (const rate of rates) {
-    const tax = await prisma.tax.findFirst({
-      where: { organizationId: "org_123", taxRegion: rate.taxRegion }
-    });
-    if (!tax) continue;
-    await prisma.taxRate.upsert({
-      where: {
-        taxId_rateCode_appliesTo_validFrom: {
-          taxId: tax.id,
-          rateCode: rate.code,
-          appliesTo: rate.appliesTo,
-          validFrom: new Date("2000-01-01")
-        }
-      },
-      update: {},
-      create: {
-        taxId: tax.id,
-        rateCode: rate.code,
-        ratePercent: rate.rate,
-        appliesTo: rate.appliesTo,
-        validFrom: new Date("2000-01-01"),
-        active: true
-      }
-    });
-  }
+  // Spanish indirect-tax catalogue (Tanda 3): one Tax per (organization,
+  // figure, canonical region) and one TaxRate per fiscal category, provisioned
+  // from packages/compliance/src/spain/indirect-tax.ts — no literal rates here.
+  // prop_123 → ES_PENINSULA_BALEARES (IVA) · prop_canary → ES_CANARIAS (IGIC).
+  // Same shape as ensurePropertyTaxes (apps/api/src/lib/tenant-hydration.ts);
+  // idempotent: categories that already have an active row are left as they are.
+  await provisionTaxes("org_123", "ES_PENINSULA_BALEARES");
+  await provisionTaxes("org_123", "ES_CANARIAS");
 
   // Spanish PGC (Plan General de Contabilidad) chart of accounts for a hotel.
   // Covers Sprint 22 (commission), Sprint 24 (payroll), Sprint 25 (year-end close)
