@@ -10,6 +10,7 @@
 // Las métricas de envío/apertura/ingresos no existen aún en la API, así que la
 // tabla muestra solo campos reales (segmento, canal, tipo, estado, fecha).
 
+import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createCampaign,
@@ -22,6 +23,7 @@ import {
 } from "../../services/crmApi";
 import { EmptyState, ErrorState, LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
+import { date } from "../../lib/format";
 
 const CHANNEL_ICON: Record<string, string> = {
   email: "📧",
@@ -60,7 +62,7 @@ const CAMPAIGN_TYPES = [
 ];
 
 const CHANNELS = [
-  { value: "email", label: "Email" },
+  { value: "email", label: "Correo electrónico" },
   { value: "whatsapp", label: "WhatsApp" },
   { value: "sms", label: "SMS" },
   { value: "push", label: "Push" }
@@ -84,9 +86,7 @@ function subjectOf(campaign: CrmCampaign): string | null {
 }
 
 function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "2-digit" });
+  return date(iso, "medium");
 }
 
 function errMsg(err: unknown): string {
@@ -94,6 +94,8 @@ function errMsg(err: unknown): string {
 }
 
 export function CampaignManagerScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const [campaigns, setCampaigns] = useState<CrmCampaign[]>([]);
   const [segments, setSegments] = useState<CrmSegment[]>([]);
@@ -196,10 +198,14 @@ export function CampaignManagerScreen() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Comercial · Marketing
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Campañas de marketing</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
+                Comercial · Clientes y fidelización
+              </p>
+              <h2 style={{ color: "var(--ink)" }}>Campañas de marketing</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             Cada campaña une un <strong>segmento CRM</strong> con una <strong>plantilla</strong> y un <strong>canal</strong>.
             El motor de mensajería omnichannel se encarga del envío, con cascada de fallback si el canal primario falla.

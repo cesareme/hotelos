@@ -1,5 +1,7 @@
+import { useTabHost } from "../tabs/TabHost";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
+import { dateTime, percent } from "../../lib/format";
 
 type SurveysDashboardData = {
   kpis: {
@@ -30,12 +32,7 @@ const EMPTY: SurveysDashboardData = {
 };
 
 function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString();
-  } catch {
-    return iso;
-  }
+  return dateTime(iso);
 }
 
 function npsKpiClass(nps: number): string {
@@ -67,6 +64,8 @@ function sentimentPillClass(sentiment?: string): string {
 }
 
 export function SurveysDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<SurveysDashboardData>(
     "/dashboards/surveys",
     { pollIntervalMs: 300000 }
@@ -89,8 +88,12 @@ export function SurveysDashboard() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Guest experience</div>
-          <h1 className="bo-page-title">Surveys & NPS</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Comercial · Reputación y calidad</div>
+              <h1 className="bo-page-title">Encuestas</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Métricas de las encuestas post-estancia: NPS de los últimos 90 días, tasa de respuesta,
             distribución de puntuaciones, comentarios recientes y temas más mencionados.
@@ -98,7 +101,7 @@ export function SurveysDashboard() {
           </p>
         </div>
         <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => refresh()}>↻ Refresh</button>
+          <button type="button" className="ghost" onClick={() => refresh()}>↻ Actualizar</button>
         </div>
       </div>
 
@@ -120,7 +123,7 @@ export function SurveysDashboard() {
         </article>
         <article className={`rev-kpi ${kpis.responseRatePct >= 25 ? "rev-kpi-ok" : kpis.responseRatePct >= 10 ? "rev-kpi-warn" : "rev-kpi-error"}`}>
           <div className="rev-kpi-head"><span className="rev-kpi-label">Response rate</span></div>
-          <div className="rev-kpi-value">{kpis.responseRatePct.toFixed(1)}%</div>
+          <div className="rev-kpi-value">{percent(kpis.responseRatePct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</div>
           <div className="rev-kpi-delta">respuestas / salidas en ventana</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
@@ -149,7 +152,7 @@ export function SurveysDashboard() {
               <tr>
                 <th style={{ width: 130 }}>Categoría</th>
                 <th>Distribución</th>
-                <th style={{ width: 90, textAlign: "right" }}>Count</th>
+                <th style={{ width: 90, textAlign: "right" }}>Número</th>
                 <th style={{ width: 70, textAlign: "right" }}>%</th>
               </tr>
             </thead>
@@ -201,7 +204,7 @@ export function SurveysDashboard() {
               <tr>
                 <th style={{ width: 60 }}>Score</th>
                 <th>Volumen</th>
-                <th style={{ width: 90, textAlign: "right" }}>Count</th>
+                <th style={{ width: 90, textAlign: "right" }}>Número</th>
               </tr>
             </thead>
             <tbody>

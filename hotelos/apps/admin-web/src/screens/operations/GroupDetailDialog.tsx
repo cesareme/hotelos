@@ -19,6 +19,7 @@ import { useToast } from "../../components/Toast";
 import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
 import type { GroupBooking } from "../../services/groupsApi";
+import { date, money, percent, type CurrencyInput } from "../../lib/format";
 
 // ─── Tipos del pickup-summary de grupos (espejo del de allotments) ───────
 
@@ -105,16 +106,11 @@ function Field(props: { label: string; hint?: string; children: ReactNode }) {
 // ─── Helpers de formato ──────────────────────────────────────────────────
 
 function fmtDateEs(iso: string | undefined | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+  return date(iso, "medium");
 }
 
 function fmtDateShort(iso: string): string {
-  const d = new Date(`${iso}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "short" });
+  return date(iso, "dayMonth");
 }
 
 function daysFromToday(iso: string | undefined | null): number | null {
@@ -133,18 +129,12 @@ function dDaysLabel(n: number | null): string {
   return `hace ${Math.abs(n)} días`;
 }
 
-function fmtMoney(value: number | undefined | null, currency = "EUR"): string {
-  if (value == null || Number.isNaN(Number(value))) return "—";
-  try {
-    return new Intl.NumberFormat("es-ES", { style: "currency", currency, maximumFractionDigits: 2 }).format(Number(value));
-  } catch {
-    return `${value} ${currency}`;
-  }
+function fmtMoney(value: number | undefined | null, currency?: CurrencyInput): string {
+  return money(value, currency);
 }
 
 function fmtPct(value: number | undefined | null): string {
-  if (value == null || Number.isNaN(Number(value))) return "—";
-  return `${value}%`;
+  return percent(value);
 }
 
 const GROUP_TYPE_LABEL: Record<string, string> = {
@@ -950,12 +940,12 @@ function ResumenTab(props: {
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
           {editing ? (
             <>
-              <TextField label="Email" fieldKey="contactEmail" type="email" />
+              <TextField label="Correo electrónico" fieldKey="contactEmail" type="email" />
               <TextField label="Teléfono" fieldKey="contactPhone" type="tel" />
             </>
           ) : (
             <>
-              <Field label="Email">
+              <Field label="Correo electrónico">
                 {view.contactEmail ? (
                   <a
                     href={`mailto:${view.contactEmail}`}
@@ -1022,7 +1012,7 @@ function ResumenTab(props: {
               <input
                 type="text"
                 disabled
-                value={fmtMoney(view.contractedRate, view.currency ?? "EUR")}
+                value={fmtMoney(view.contractedRate, view.currency)}
                 style={{ ...inputStyle, opacity: 0.85 }}
               />
             </Field>
@@ -1089,9 +1079,9 @@ function ResumenTab(props: {
           threshold {exampleAttrition.threshold}%, si pickup baja a {exampleAttrition.examplePickupPct}%
           ({exampleAttrition.deficitRooms} hab por debajo) → penalización ≈
           {" "}<strong style={{ color: "var(--ink)" }}>
-            {fmtMoney(exampleAttrition.penaltyEur, view.currency ?? "EUR")}
+            {fmtMoney(exampleAttrition.penaltyEur, view.currency)}
           </strong>{" "}
-          ({exampleAttrition.penalty}% del déficit a tarifa {fmtMoney(exampleAttrition.rate, view.currency ?? "EUR")}).
+          ({exampleAttrition.penalty}% del déficit a tarifa {fmtMoney(exampleAttrition.rate, view.currency)}).
         </p>
       </fieldset>
 
@@ -1311,7 +1301,7 @@ function PickupTab(props: { group: GroupBooking; row: GroupPickupRow | null }) {
         >
           Pickup actual <strong>{row.pickupPct}%</strong> está por debajo del threshold{" "}
           <strong>{threshold}%</strong>. Penalización estimada{" "}
-          <strong>{fmtMoney(estimatedPenalty, group.currency ?? "EUR")}</strong>
+          <strong>{fmtMoney(estimatedPenalty, group.currency)}</strong>
           {" "}({penaltyPct}% del déficit, ~{deficitRooms} hab/día por debajo).
         </div>
       ) : null}
@@ -1415,7 +1405,7 @@ function Legend(props: { color: string; label: string }) {
   );
 }
 
-// ─── Tab 3 · Eventos (placeholder) ───────────────────────────────────────
+// ─── Tab 3 · Eventos (the events of a group live in Grupos y eventos) ─────────
 
 function EventosTab() {
   return (
@@ -1424,11 +1414,11 @@ function EventosTab() {
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: "32px 16px" }}>
         <span style={{ fontSize: 32, opacity: 0.4 }} aria-hidden>◌</span>
         <p style={{ margin: 0, fontSize: 14, color: "var(--ink)" }}>
-          Eventos asociados al grupo (próximamente).
+          Los eventos del grupo se gestionan en Grupos y eventos.
         </p>
         <p className="bo-muted" style={{ margin: 0, fontSize: 12, textAlign: "center", maxWidth: 380 }}>
-          Aquí verás el listado de eventos vinculados (banquetes, salas, F&amp;B, AV) cuando esté lista la
-          integración con el módulo de eventos.
+          Desde la fila del grupo, «Crear evento» abre el alta de banquetes, salas, F&amp;B y audiovisuales; el
+          listado de eventos se consulta en el tablero de Grupos y eventos.
         </p>
       </div>
     </fieldset>

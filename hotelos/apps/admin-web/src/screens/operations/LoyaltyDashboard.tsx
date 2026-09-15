@@ -1,5 +1,7 @@
+import { useTabHost } from "../tabs/TabHost";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
+import { dateTime, money, number, percent } from "../../lib/format";
 
 type LoyaltyDashboardData = {
   kpis: {
@@ -39,19 +41,15 @@ const EMPTY: LoyaltyDashboardData = {
 };
 
 function formatDate(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  return dateTime(iso);
 }
 
 function formatInt(n: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(Math.round(n));
+  return number(n, { maximumFractionDigits: 0 });
 }
 
 function formatEur(n: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n);
+  return money(n, { decimals: 0 });
 }
 
 function tierPillClass(tier: string): string {
@@ -63,6 +61,8 @@ function tierPillClass(tier: string): string {
 }
 
 export function LoyaltyDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<LoyaltyDashboardData>(
     "/dashboards/loyalty",
     { pollIntervalMs: 300000 }
@@ -76,22 +76,26 @@ export function LoyaltyDashboard() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Guest experience</div>
-          <h1 className="bo-page-title">Programa de fidelización</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Comercial · Clientes y fidelización</div>
+              <h1 className="bo-page-title">Fidelización</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Vista de solo lectura del programa de fidelización: miembros activos, distribución por niveles,
             puntos en circulación y altas recientes. Actualización automática cada 5 minutos.
           </p>
         </div>
         <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => refresh()}>↻ Refresh</button>
+          <button type="button" className="ghost" onClick={() => refresh()}>↻ Actualizar</button>
         </div>
       </div>
 
       {error ? (
         <section className="bo-card">
           <div className="bo-card-head">
-            <h3>Error loading loyalty data</h3>
+            <h3>Error al cargar la fidelización</h3>
             <span className="cm-pill cm-pill-error">error</span>
           </div>
           <p>{error}</p>
@@ -100,12 +104,12 @@ export function LoyaltyDashboard() {
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${kpis.activeMembers > 0 ? "rev-kpi-ok" : "rev-kpi-warn"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Active members</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Miembros activos</span></div>
           <div className="rev-kpi-value">{formatInt(kpis.activeMembers)}</div>
           <div className="rev-kpi-delta">miembros con status activo</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Points in circulation</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Puntos en circulación</span></div>
           <div className="rev-kpi-value">{formatInt(kpis.totalPointsInCirculation)}</div>
           <div className="rev-kpi-delta">saldo total acumulado</div>
         </article>
@@ -115,8 +119,8 @@ export function LoyaltyDashboard() {
           <div className="rev-kpi-delta">{formatInt(kpis.redemptions30dPointsBurned)} puntos canjeados</div>
         </article>
         <article className={`rev-kpi ${kpis.staysWithMemberPct >= 25 ? "rev-kpi-ok" : kpis.staysWithMemberPct >= 10 ? "rev-kpi-warn" : "rev-kpi-error"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Stays with member</span></div>
-          <div className="rev-kpi-value">{kpis.staysWithMemberPct.toFixed(1)}%</div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Estancias de miembros</span></div>
+          <div className="rev-kpi-value">{percent(kpis.staysWithMemberPct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</div>
           <div className="rev-kpi-delta">reservas con huésped fidelizado</div>
         </article>
       </section>
@@ -126,7 +130,7 @@ export function LoyaltyDashboard() {
           <div className="bo-card-head">
             <div>
               <p className="bo-muted">Distribución por nivel</p>
-              <h3>Members by tier</h3>
+              <h3>Miembros por nivel</h3>
             </div>
             <span className="bo-chip">{totalTierMembers} miembros activos</span>
           </div>
@@ -136,7 +140,7 @@ export function LoyaltyDashboard() {
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Tier</th>
+                  <th>Nivel</th>
                   <th style={{ textAlign: "right" }}>Miembros</th>
                   <th style={{ textAlign: "right" }}>% del total</th>
                   <th style={{ textAlign: "right" }}>Puntos</th>
@@ -163,7 +167,7 @@ export function LoyaltyDashboard() {
           <div className="bo-card-head">
             <div>
               <p className="bo-muted">Mayor saldo de puntos</p>
-              <h3>Top members</h3>
+              <h3>Principales miembros</h3>
             </div>
             <span className="bo-chip">{topMembers.length} · top 10</span>
           </div>
@@ -177,9 +181,9 @@ export function LoyaltyDashboard() {
               <thead>
                 <tr>
                   <th>Miembro</th>
-                  <th>Tier</th>
+                  <th>Nivel</th>
                   <th style={{ textAlign: "right" }}>Puntos</th>
-                  <th style={{ textAlign: "right" }}>Lifetime spend</th>
+                  <th style={{ textAlign: "right" }}>Gasto acumulado</th>
                 </tr>
               </thead>
               <tbody>
@@ -203,7 +207,7 @@ export function LoyaltyDashboard() {
         <div className="bo-card-head">
           <div>
             <p className="bo-muted">Últimas altas</p>
-            <h3>Recent enrollments</h3>
+            <h3>Altas recientes</h3>
           </div>
           <span className="bo-chip">{recentEnrollments.length} · {loading ? "cargando…" : "actualizado"}</span>
         </div>

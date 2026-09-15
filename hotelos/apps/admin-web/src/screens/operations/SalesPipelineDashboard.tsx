@@ -1,7 +1,15 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { date, money, percent, plural } from "../../lib/format";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ErrorState } from "../../components/States";
+import { ACTIONS, errorStateFor } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
 
 const PROPERTY_ID = getActivePropertyId();
+// Menu labels of the tree (Comercial › Ventas a empresas), never retyped here.
+const HEADER = treeHeaderFor("SalesPipelineDashboard", { eyebrow: "Comercial", title: "Ventas a empresas" });
+const LOAD_ERROR = errorStateFor("las ventas a empresas");
 
 type SalesPipelineDashboardData = {
   kpis: {
@@ -40,8 +48,6 @@ const EMPTY: SalesPipelineDashboardData = {
 const WON_STAGES = new Set(["won", "closed_won", "closed-won", "closedwon"]);
 const LOST_STAGES = new Set(["lost", "closed_lost", "closed-lost", "closedlost"]);
 
-const eurFormat = new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR" });
-
 function normaliseStage(stage: string): string {
   return stage.toLowerCase().replace(/[\s-]+/g, "_").trim();
 }
@@ -54,21 +60,15 @@ function stagePill(stage: string) {
 }
 
 function formatEur(value: number): string {
-  return eurFormat.format(value);
+  return money(value);
 }
 
 function formatDate(iso?: string): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString("es-ES");
-  } catch {
-    return iso;
-  }
+  return date(iso);
 }
 
 function formatProbability(p?: number): string {
-  if (p === undefined || p === null) return "—";
-  return `${Math.round(p * 100)}%`;
+  return percent(p, { ratio: true, maximumFractionDigits: 0 });
 }
 
 export function SalesPipelineDashboard() {
@@ -90,73 +90,63 @@ export function SalesPipelineDashboard() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Commercial · Sales</div>
-          <h1 className="bo-page-title">Sales pipeline</h1>
-          <p className="bo-page-subtitle">
-            Vista de solo lectura del pipeline comercial B2B: oportunidades abiertas, valor
-            ponderado, cuentas con mayor exposición y conversión del periodo. Datos agregados
-            desde oportunidades de venta y cuentas, con refresco automático cada dos minutos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
+      <CocoaPageHeader
+        eyebrow={HEADER.eyebrow}
+        title={HEADER.title}
+        subtitle="Embudo de ventas a empresas en solo lectura: oportunidades abiertas, valor ponderado, cuentas con más peso y conversión del periodo. Se calcula a partir de las oportunidades y las cuentas y se actualiza cada dos minutos."
+        actions={
           <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ Refresh
+            ↻ {ACTIONS.refresh}
           </button>
-        </div>
-      </div>
+        }
+      />
 
-      {state.error ? (
-        <section className="bo-card">
-          <p style={{ color: "var(--danger-ink)" }}>Couldn't load this view right now. Refresh to retry.</p>
-        </section>
-      ) : null}
+      {state.error ? <ErrorState title={LOAD_ERROR.title} message={LOAD_ERROR.message} onRetry={() => state.refresh()} /> : null}
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${openStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Open opportunities</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Oportunidades abiertas</span></div>
           <div className="rev-kpi-value">{kpis.openOpportunities}</div>
-          <div className="rev-kpi-delta">currently in pipeline</div>
+          <div className="rev-kpi-delta">en el embudo ahora mismo</div>
         </article>
         <article className={`rev-kpi ${pipelineStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Pipeline value</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Valor de la cartera</span></div>
           <div className="rev-kpi-value">{formatEur(kpis.pipelineValueEur)}</div>
-          <div className="rev-kpi-delta">sum of open opportunities</div>
+          <div className="rev-kpi-delta">suma de las oportunidades abiertas</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Weighted pipeline</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Cartera ponderada</span></div>
           <div className="rev-kpi-value">{formatEur(kpis.weightedPipelineEur)}</div>
-          <div className="rev-kpi-delta">value × probability</div>
+          <div className="rev-kpi-delta">valor × probabilidad</div>
         </article>
         <article className={`rev-kpi ${wonStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Closed won MTD</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Ganadas este mes</span></div>
           <div className="rev-kpi-value">{formatEur(kpis.closedWonMtdEur)}</div>
-          <div className="rev-kpi-delta">month-to-date</div>
+          <div className="rev-kpi-delta">desde el día 1 hasta hoy</div>
         </article>
         <article className={`rev-kpi ${conversionStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Conversion rate</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Tasa de conversión</span></div>
           <div className="rev-kpi-value">{kpis.conversionRatePct}%</div>
-          <div className="rev-kpi-delta">won / (won + lost) in period</div>
+          <div className="rev-kpi-delta">ganadas / (ganadas + perdidas) en el periodo</div>
         </article>
       </section>
 
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Pipeline by stage</h3>
-            <span className="bo-chip">{opportunitiesByStage.length} stages</span>
+            <h3>Cartera por fase</h3>
+            <span className="bo-chip">{plural(opportunitiesByStage.length, "fase", "fases", { withCount: true })}</span>
           </div>
           {opportunitiesByStage.length === 0 ? (
-            <p className="bo-muted">No opportunities yet for this property.</p>
+            <p className="bo-muted">Todavía no hay oportunidades en esta propiedad.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Stage</th>
-                  <th style={{ textAlign: "right" }}>Count</th>
-                  <th>Funnel</th>
-                  <th style={{ textAlign: "right" }}>Total value</th>
+                  <th>Fase</th>
+                  <th style={{ textAlign: "right" }}>Número</th>
+                  <th>Embudo</th>
+                  <th style={{ textAlign: "right" }}>Valor total</th>
                 </tr>
               </thead>
               <tbody>
@@ -175,7 +165,7 @@ export function SalesPipelineDashboard() {
                             width: `${widthPct}%`,
                             minWidth: row.count > 0 ? 4 : 0
                           }}
-                          aria-label={`${row.count} opportunities`}
+                          aria-label={plural(row.count, "oportunidad", "oportunidades", { withCount: true })}
                         />
                       </td>
                       <td style={{ textAlign: "right" }}>{formatEur(row.totalValue)}</td>
@@ -189,18 +179,18 @@ export function SalesPipelineDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Top accounts</h3>
-            <span className="bo-chip">top {topAccounts.length}</span>
+            <h3>Principales cuentas</h3>
+            <span className="bo-chip">{plural(topAccounts.length, "cuenta", "cuentas", { withCount: true })}</span>
           </div>
           {topAccounts.length === 0 ? (
-            <p className="bo-muted">No accounts with open opportunities.</p>
+            <p className="bo-muted">Sin cuentas con oportunidades abiertas.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Account</th>
-                  <th style={{ textAlign: "right" }}>Open</th>
-                  <th style={{ textAlign: "right" }}>Total value</th>
+                  <th>Cuenta</th>
+                  <th style={{ textAlign: "right" }}>Abiertas</th>
+                  <th style={{ textAlign: "right" }}>Valor total</th>
                 </tr>
               </thead>
               <tbody>
@@ -219,11 +209,11 @@ export function SalesPipelineDashboard() {
 
       <section className="bo-card">
         <div className="bo-card-head">
-          <h3>Recent opportunities</h3>
+          <h3>Oportunidades recientes</h3>
           <span className="bo-chip">{recentOpportunities.length}</span>
         </div>
         {recentOpportunities.length === 0 ? (
-          <p className="bo-muted">No recent opportunities.</p>
+          <p className="bo-muted">Sin oportunidades recientes.</p>
         ) : (
           <ul className="bo-list">
             {recentOpportunities.map((opp) => (
@@ -238,7 +228,7 @@ export function SalesPipelineDashboard() {
                 </div>
                 <small className="bo-muted">
                   {opp.accountName ? <>{opp.accountName} · </> : null}
-                  expected close: {formatDate(opp.expectedCloseDate)}
+                  cierre previsto: {formatDate(opp.expectedCloseDate)}
                 </small>
               </li>
             ))}

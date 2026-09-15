@@ -11,6 +11,7 @@ import {
   type PaymentMethod,
   type MealPlan
 } from "../../services/groupsApi";
+import { date } from "../../lib/format";
 
 // ─── Helpers locales (replicados para no acoplar con AllotmentsScreen) ──
 
@@ -136,10 +137,7 @@ function todayIso(offsetDays = 0): string {
 }
 
 function fmtDateEs(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+  return date(iso, "medium");
 }
 
 // ─── Componente principal ────────────────────────────────────────────────
@@ -521,7 +519,7 @@ export function NewGroupDialog(props: {
             </Field>
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Email">
+            <Field label="Correo electrónico">
               <input
                 type="email"
                 inputMode="email"

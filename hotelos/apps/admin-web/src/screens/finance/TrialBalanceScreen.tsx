@@ -1,6 +1,8 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -27,14 +29,12 @@ function todayIso(): string {
 }
 
 function fmt(amount: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true,
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2
-  }).format(amount);
+  return money(amount);
 }
 
 export function TrialBalanceScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const initialAsOf = useMemo(todayIso, []);
   const [asOf, setAsOf] = useState(initialAsOf);
   const [fromDate, setFromDate] = useState<string>("");
@@ -56,8 +56,12 @@ export function TrialBalanceScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Contabilidad · Balance de Sumas y Saldos</div>
-          <h1 className="bo-page-title">Balance de comprobación</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Finanzas · Estados contables</div>
+              <h1 className="bo-page-title">Balance de comprobación</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Agregación de los movimientos del libro diario por cuenta del Plan General Contable. Verifica
             que la partida doble cuadra: <strong>Total Debe = Total Haber</strong>.
@@ -65,7 +69,6 @@ export function TrialBalanceScreen() {
         </div>
         <div className="bo-page-head-actions">
           <button type="button" onClick={refresh}>↻ Recalcular</button>
-          <button type="button" className="ghost">Export CSV</button>
         </div>
       </div>
 

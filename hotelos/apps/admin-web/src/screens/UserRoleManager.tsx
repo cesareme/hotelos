@@ -37,7 +37,11 @@ import {
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../components/States";
 import { SidePanel, DetailRow } from "../components/SidePanel";
 import { useToast } from "../components/Toast";
+import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { ACTIONS } from "../content/actions";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 import { toArray } from "../utils/toArray";
+import { dateTime } from "../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -81,16 +85,7 @@ function statusBadge(user: BackOfficeUser): { tone: "ok" | "warn" | "error" | "i
 }
 
 function fmtDateTime(iso?: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+  return dateTime(iso, { style: "medium" });
 }
 
 function primaryRole(user: BackOfficeUser): string {
@@ -301,8 +296,12 @@ export function UserRoleManager() {
     }
   }
 
+  // Destructive action: the button opens a ConfirmDialog; only its confirm calls the API.
+  const [confirmDisable, setConfirmDisable] = useState(false);
+
   async function handleDisable() {
     if (!selected) return;
+    setConfirmDisable(false);
     setBusy(true);
     try {
       await apiRequest(`/backoffice/properties/${PROPERTY_ID}/users/${selected.id}/disable`, {
@@ -366,20 +365,18 @@ export function UserRoleManager() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Control de acceso</p>
-          <h2 style={{ color: "var(--ink)" }}>Gestión de usuarios y roles</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Invita usuarios con un rol, reenvía invitaciones pendientes y desactiva accesos. Todos los cambios quedan registrados en el log de auditoría.
-          </p>
-        </div>
-        <div className="bo-pill-row">
-          {busy ? <Spinner size="sm" /> : null}
-          <button type="button" onClick={() => refresh()} disabled={loading}>↻ Actualizar</button>
-          <button type="button" className="primary" onClick={() => setInviteOpen(true)} disabled={busy}>+ Invitar usuario</button>
-        </div>
-      </header>
+      <CocoaPageHeader
+        eyebrow="Configuración"
+        title="Usuarios y roles"
+        subtitle="Invita usuarios con un rol, reenvía invitaciones pendientes y desactiva accesos. Todos los cambios quedan en el registro de auditoría."
+        actions={
+          <div className="bo-pill-row">
+            {busy ? <Spinner size="sm" /> : null}
+            <button type="button" onClick={() => refresh()} disabled={loading}>↻ {ACTIONS.refresh}</button>
+            <button type="button" className="primary" onClick={() => setInviteOpen(true)} disabled={busy}>+ Invitar usuario</button>
+          </div>
+        }
+      />
 
       {loading && !data ? (
         <LoadingBlock label="Cargando usuarios…" />
@@ -400,7 +397,7 @@ export function UserRoleManager() {
           <div className="rev-report-wrap">
             <table className="cm-table">
               <thead>
-                <tr><th>Nombre</th><th>Email</th><th>Rol</th><th>Último login</th><th>Estado</th></tr>
+                <tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Último acceso</th><th>Estado</th></tr>
               </thead>
               <tbody>
                 {users.map((user) => {
@@ -531,10 +528,10 @@ export function UserRoleManager() {
                 <button
                   type="button"
                   disabled={busy}
-                  onClick={() => void handleDisable()}
+                  onClick={() => setConfirmDisable(true)}
                   style={{ borderColor: "var(--danger-ink, #c2413a)", color: "var(--danger-ink, #c2413a)" }}
                 >
-                  Desactivar
+                  {ACTIONS.deactivate}
                 </button>
               ) : null}
             </>
@@ -550,7 +547,7 @@ export function UserRoleManager() {
             </DetailRow>
             <DetailRow label="MFA">{selected.mfaEnabled ? "Marcado como requerido" : "No requerido"}</DetailRow>
             {selected.phone ? <DetailRow label="Teléfono">{selected.phone}</DetailRow> : null}
-            <DetailRow label="Último login">{fmtDateTime(selected.lastLoginAt)}</DetailRow>
+            <DetailRow label="Último acceso">{fmtDateTime(selected.lastLoginAt)}</DetailRow>
             <DetailRow label="ID"><code style={{ fontSize: 11 }}>{selected.id}</code></DetailRow>
 
             {selected.status === "invited" ? (
@@ -621,6 +618,16 @@ export function UserRoleManager() {
           </>
         ) : null}
       </SidePanel>
+      <ConfirmDialog
+        open={confirmDisable && selected !== null}
+        title={`¿Desactivar a ${selected?.fullName ?? "este usuario"}?`}
+        description="Perderá el acceso a esta propiedad de inmediato. Podrás volver a invitarle más adelante; la acción queda en el registro de auditoría."
+        confirmLabel={ACTIONS.deactivate}
+        cancelLabel={ACTIONS.cancel}
+        variant="danger"
+        onConfirm={() => void handleDisable()}
+        onCancel={() => setConfirmDisable(false)}
+      />
     </section>
   );
 }

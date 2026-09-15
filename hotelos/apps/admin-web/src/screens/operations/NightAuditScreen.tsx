@@ -19,6 +19,9 @@ import { LoadingBlock, ErrorState } from "../../components/States";
 import { apiRequest } from "../../services/api-client";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { date, dateTime } from "../../lib/format";
 
 type Status = "ok" | "warning" | "blocker";
 
@@ -61,15 +64,6 @@ function navigateTo(screen: string) {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
   }
-}
-
-function navigateToWithGuest(screen: string, guestId?: string) {
-  if (guestId && typeof window !== "undefined") {
-    const url = new URL(window.location.href);
-    url.searchParams.set("guestId", guestId);
-    window.history.pushState({}, "", url);
-  }
-  navigateTo(screen);
 }
 
 function fixActionFor(checkId: string): { label: string; onClick: () => void } | null {
@@ -133,21 +127,18 @@ export function NightAuditScreen() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Cierre del día · {propertyName}</div>
-          <h1 className="bo-page-title">Night audit guiado</h1>
-          <p className="bo-page-subtitle">
-            Checklist inteligente antes del cierre. Si algo bloquea, te dirá qué arreglar y dónde.
-            {preflight?.businessDate ? ` Fecha de negocio actual: ${preflight.businessDate}.` : null}
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          {ploading ? <span className="bo-status info">cargando</span> : null}
-          {perror ? <span className="bo-status error">{perror}</span> : null}
-          <button type="button" className="ghost" onClick={refresh}>↻</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow={`Hoy · ${propertyName}`}
+        title="Cierre del día"
+        subtitle={`Comprobaciones guiadas antes de cerrar: si algo bloquea, te dice qué arreglar y dónde.${preflight?.businessDate ? ` Fecha de negocio actual: ${date(preflight.businessDate)}.` : ""}`}
+        actions={
+          <>
+            {ploading ? <span className="bo-status info">{STATUS_LABELS.loading}</span> : null}
+            {perror ? <span className="bo-status error">{perror}</span> : null}
+            <button type="button" className="ghost" onClick={refresh} aria-label={ACTIONS.refresh} title={ACTIONS.refresh}>↻ {ACTIONS.refresh}</button>
+          </>
+        }
+      />
 
       {/* Banner principal — audit 2026-06 · #10: mientras el primer fetch no
           tiene datos, mostramos loading/error en vez del banner rojo engañoso
@@ -192,7 +183,7 @@ export function NightAuditScreen() {
               : "No puedes cerrar todavía"}
           </strong>
           <div className="bo-muted" style={{ fontSize: 13, marginTop: 4 }}>
-            {preflight?.blockingMessage ?? "Todos los chequeos críticos están en verde. Ejecuta el night audit cuando estés listo."}
+            {preflight?.blockingMessage ?? "Todas las comprobaciones críticas están en verde. Ejecuta el cierre del día cuando estés listo."}
           </div>
         </div>
         <button
@@ -201,7 +192,7 @@ export function NightAuditScreen() {
           disabled={!preflight?.canClose || busy}
           onClick={runAudit}
           style={{ minHeight: 48, fontSize: 14, fontWeight: 600, paddingLeft: 18, paddingRight: 18 }}
-          title={preflight?.canClose ? "Ejecuta el night audit y avanza la fecha de negocio" : "Resuelve los bloqueos primero"}
+          title={preflight?.canClose ? "Ejecuta el cierre del día y avanza la fecha de negocio" : "Resuelve los bloqueos primero"}
         >
           {busy ? "Procesando…" : "Cerrar día →"}
         </button>
@@ -345,7 +336,7 @@ export function NightAuditScreen() {
                     </span>
                   </td>
                   <td>{r.stepResults?.length ?? 0}</td>
-                  <td className="bo-muted">{r.completedAt ? new Date(r.completedAt).toLocaleString("es-ES") : "—"}</td>
+                  <td className="bo-muted">{dateTime(r.completedAt)}</td>
                 </tr>
               ))}
             </tbody>

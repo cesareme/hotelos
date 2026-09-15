@@ -167,7 +167,7 @@ export function AcceptInviteScreen({ token }: AcceptInviteScreenProps) {
       }
     >
       <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px", fontSize: 13 }}>
-        <dt style={{ color: "var(--ink-soft)" }}>Email</dt>
+        <dt style={{ color: "var(--ink-soft)" }}>Correo electrónico</dt>
         <dd style={{ margin: 0, color: "var(--ink)" }}>{invitation?.email}</dd>
         <dt style={{ color: "var(--ink-soft)" }}>Caduca</dt>
         <dd style={{ margin: 0, color: "var(--ink)" }}>{formatExpiry(invitation?.expiresAt)}</dd>

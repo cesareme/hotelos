@@ -7,7 +7,11 @@ const mobileNavigation = readFileSync(new URL("../packages/product/src/navigatio
 const mobileApp = readFileSync(new URL("../apps/mobile/App.tsx", import.meta.url), "utf8");
 const routeMap = readFileSync(new URL("../packages/product/src/navigation/module-route-map.ts", import.meta.url), "utf8");
 const adminRoutes = readFileSync(new URL("../apps/admin-web/src/routes/backoffice.routes.tsx", import.meta.url), "utf8");
-const adminSidebar = readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8");
+// Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (labels, keys, URLs and
+// the legacy /backoffice/* redirects live there), so the menu source is both files.
+const adminSidebar =
+  readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8");
 const uiIndex = readFileSync(new URL("../packages/ui/src/index.ts", import.meta.url), "utf8");
 const schema = readFileSync(new URL("../packages/database/prisma/schema.prisma", import.meta.url), "utf8");
 const localSeed = readFileSync(new URL("../packages/database/seeds/local-demo.seed.ts", import.meta.url), "utf8");
@@ -82,20 +86,24 @@ describe("HotelOS Flow UI/UX shift", () => {
     ]) {
       assert.match(routeMap + demoHtml, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
-    for (const path of [
-      "/backoffice",
-      "/backoffice/setup",
-      "/backoffice/timeline",
-      "/backoffice/revenue",
-      "/backoffice/revenue/history-forecast",
-      "/backoffice/channel-manager",
-      "/backoffice/channel-manager/mappings",
-      "/backoffice/guest-journey",
-      "/backoffice/marketplace",
-      "/backoffice/ai-governance"
+    // Tanda 5 · L1b: the old /backoffice/* paths are client-side redirects
+    // (NAV_TREE.legacyRoutes) to the URLs of the navigation tree.
+    const navTree = JSON.parse(readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8"));
+    for (const [from, to] of [
+      ["/backoffice", "/hoy"],
+      ["/backoffice/setup", "/configuracion/puesta-en-marcha"],
+      ["/backoffice/timeline", "/recepcion/reservas/cronograma"],
+      ["/backoffice/revenue", "/revenue"],
+      ["/backoffice/revenue/history-forecast", "/revenue/historico-prevision"],
+      ["/backoffice/channel-manager", "/comercial/canales"],
+      ["/backoffice/channel-manager/mappings", "/comercial/canales/correspondencias"],
+      ["/backoffice/guest-journey", "/recepcion/reservas/:id/recorrido"],
+      ["/backoffice/marketplace", "/configuracion/modulos/integraciones"],
+      ["/backoffice/ai-governance", "/configuracion/ia/gobernanza"]
     ]) {
-      assert.match(adminRoutes + adminSidebar, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.ok(navTree.legacyRoutes.some((route) => route.from === from && route.to === to), `${from} → ${to}`);
     }
+    assert.match(adminRoutes, /NAV_TREE\.legacyRoutes/);
   });
 
   it("generalizes inventory and seeds the local demo for exploration", () => {

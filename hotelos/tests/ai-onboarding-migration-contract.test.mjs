@@ -17,12 +17,14 @@ describe("AI Onboarding & Migration module", () => {
     const workers = read("apps/worker/src/index.ts");
 
     assert.match(moduleCodes, /"ai_onboarding_migration"/);
-    assert.match(manifest, /AI Onboarding & Migration/);
+    // Tanda 5: the manifest is Spanish and AISetupCenter is retired; the
+    // migration screens are dev-only under /desarrollo/migracion/*.
+    assert.match(manifest, /Migración asistida por IA/);
     assert.match(manifest, /onboarding\.upload/);
     assert.match(manifest, /AISetupWizard/);
     assert.match(permissions, /"onboarding\.manage_cutover"/);
-    assert.match(routeMap, /\/backoffice\/ai-setup/);
-    assert.match(routeMap, /Go-Live Readiness/);
+    assert.match(routeMap, /\/desarrollo\/migracion/);
+    assert.match(routeMap, /Salida en vivo/);
 
     [
       "classifyOnboardingFile",
@@ -133,7 +135,8 @@ describe("AI Onboarding & Migration module", () => {
     const moreScreen = read("apps/mobile/src/screens/more/MoreScreen.tsx");
     const setupCenter = read("apps/admin-web/src/screens/backoffice/SetupCenterScreen.tsx");
     const adminRoutes = read("apps/admin-web/src/routes/backoffice.routes.tsx");
-    const sidebar = read("apps/admin-web/src/navigation/Sidebar.tsx");
+    // Tanda 5 · L1b: the sidebar renders nav-tree.generated.json; AISetupCenter is retired there.
+    const sidebar = read("apps/admin-web/src/navigation/Sidebar.tsx") + read("apps/admin-web/src/navigation/nav-tree.generated.json");
     const demo = read("demo/public/index.html");
     const docs = read("docs/ai-onboarding-migration.md");
 
@@ -181,9 +184,18 @@ describe("AI Onboarding & Migration module", () => {
     assert.match(mobileApp, /GoLiveReadinessMobileScreen/);
     assert.match(localLauncher, /AI Setup Wizard/);
     assert.match(moreScreen, /ai_onboarding_migration/);
-    assert.match(setupCenter, /Start AI Setup/);
-    assert.match(adminRoutes, /\/backoffice\/ai-setup/);
-    assert.match(sidebar, /label: "Centro de setup de IA", screen: "AISetupCenter"/);
+    // Tanda 5 · L1b: the AI setup center retired into Configuración › Inteligencia
+    // artificial (nav-tree.generated.json → retired[].url); /backoffice/ai-setup is a
+    // client-side redirect and the hub no longer offers «Start AI Setup».
+    const tree = JSON.parse(read("apps/admin-web/src/navigation/nav-tree.generated.json"));
+    assert.doesNotMatch(setupCenter, /Start AI Setup|AISetupCenter/);
+    assert.ok(tree.retired.some((entry) => entry.screenKey === "AISetupCenter" && entry.url === "/configuracion/ia"));
+    assert.ok(tree.legacyRoutes.some((route) => route.from === "/backoffice/ai-setup" && route.to === "/configuracion/ia"));
+    assert.match(adminRoutes, /NAV_TREE\.legacyRoutes/);
+    for (const screen of ["OnboardingProjects", "FileUploadAndClassification", "AIExtractionReview", "MigrationBatches"]) {
+      assert.ok(tree.devOnly.some((entry) => entry.screenKey === screen && entry.url.startsWith("/desarrollo/migracion")), `${screen} dev-only`);
+    }
+    assert.match(sidebar, /"screenKey": "AISetupCenter",\s*"coveredBy": "PropertyAiScreen"/);
     assert.match(demo, /AI Setup Wizard/);
     assert.match(demo, /Dry-run result/);
     assert.match(demo, /Import application order/);

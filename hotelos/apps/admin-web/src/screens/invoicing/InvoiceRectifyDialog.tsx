@@ -5,6 +5,7 @@ import {
   type InvoiceFull,
   type RectifyingReasonCode
 } from "../../services/pmsCommerceApi";
+import { money } from "../../lib/format";
 
 const REASON_CODE_LABELS: Record<RectifyingReasonCode, string> = {
   R1: "R1 — Error fundado en derecho (art. 80.1, 80.2 LIVA)",
@@ -36,7 +37,7 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
   const [reasonCode, setReasonCode] = useState<RectifyingReasonCode>("R1");
   const [mode, setMode] = useState<"full" | "adjust">("full");
   const [issuedRectifying, setIssuedRectifying] = useState<InvoiceFull | null>(null);
-  const [status, setStatus] = useState<string>("Look up an issued invoice to rectify.");
+  const [status, setStatus] = useState<string>("Busca una factura emitida para rectificarla.");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -73,7 +74,7 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
     } catch (error) {
       setOriginal(null);
       setLines([]);
-      setStatus(error instanceof Error ? error.message : "Lookup failed.");
+      setStatus(error instanceof Error ? error.message : "No se ha encontrado la factura.");
     } finally {
       setBusy(false);
     }
@@ -106,7 +107,7 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
   async function handleIssue() {
     if (!original) return;
     setBusy(true);
-    setStatus("Issuing rectifying invoice…");
+    setStatus("Emitiendo la factura rectificativa…");
     try {
       const payload =
         mode === "full"
@@ -137,7 +138,7 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
       );
       onRectified?.(rectifying);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Unable to issue rectifying invoice.");
+      setStatus(error instanceof Error ? error.message : "No se ha podido emitir la factura rectificativa.");
     } finally {
       setBusy(false);
     }
@@ -147,15 +148,15 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
     <section className="bo-card">
       <div className="bo-card-head">
         <div>
-          <p className="bo-muted">Finance & Compliance</p>
-          <h2>Rectifying invoice (factura rectificativa)</h2>
+          <p className="bo-muted">Finanzas y cumplimiento</p>
+          <h2>Factura rectificativa</h2>
         </div>
         <span className="bo-chip">RD 1496/2003 · RD 87/2005</span>
       </div>
 
       <div className="bo-row" style={{ gap: "0.5rem", alignItems: "end" }}>
         <label className="bo-form-field" style={{ flex: 1 }}>
-          <span>Original invoice (id)</span>
+          <span>Factura original (identificador)</span>
           <input
             value={lookup}
             onChange={(event) => setLookup(event.target.value)}
@@ -163,11 +164,11 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
           />
         </label>
         <button type="button" onClick={() => void handleLookup(lookup)} disabled={!lookup.trim() || busy}>
-          Lookup
+          Buscar
         </button>
         {onClose ? (
           <button type="button" onClick={onClose} disabled={busy}>
-            Close
+            Cerrar
           </button>
         ) : null}
       </div>
@@ -178,12 +179,12 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
             <h3>
               {original.invoiceNumber ?? original.id} · {original.invoiceType} · {original.status}
             </h3>
-            <span className="bo-chip">{original.total} EUR · VAT {original.taxTotal}</span>
+            <span className="bo-chip">{money(original.total)} · IVA {money(original.taxTotal)}</span>
           </div>
 
           <div className="bo-grid two">
             <label className="bo-form-field">
-              <span>Reason code (motivo rectificación)</span>
+              <span>Motivo de la rectificación</span>
               <select
                 value={reasonCode}
                 onChange={(event) => setReasonCode(event.target.value as RectifyingReasonCode)}
@@ -196,23 +197,23 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
               </select>
             </label>
             <label className="bo-form-field">
-              <span>Strategy</span>
+              <span>Modo</span>
               <select value={mode} onChange={(event) => setMode(event.target.value as "full" | "adjust")}>
-                <option value="full">Full reversal (negate all lines)</option>
-                <option value="adjust">Adjust lines (delta only)</option>
+                <option value="full">Anulación completa (niega todas las líneas)</option>
+                <option value="adjust">Ajustar líneas (solo la diferencia)</option>
               </select>
             </label>
           </div>
 
-          <h4>Lines</h4>
+          <h4>Líneas</h4>
           {lines.length === 0 ? (
-            <p className="bo-muted">No lines on the original invoice.</p>
+            <p className="bo-muted">La factura original no tiene líneas.</p>
           ) : (
             lines.map((line, index) => (
               <div className="bo-row" key={line.lineId} style={{ gap: "0.5rem", alignItems: "end" }}>
                 <span style={{ flex: 2 }}>{line.description}</span>
                 <label className="bo-form-field" style={{ flex: 1 }}>
-                  <span>Quantity</span>
+                  <span>Cantidad</span>
                   <input
                     type="number"
                     step="any"
@@ -228,7 +229,7 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
                   />
                 </label>
                 <label className="bo-form-field" style={{ flex: 1 }}>
-                  <span>Unit price</span>
+                  <span>Precio unitario</span>
                   <input
                     type="number"
                     step="any"
@@ -251,9 +252,9 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
           )}
 
           <div className="bo-row" style={{ marginTop: "0.5rem" }}>
-            <span className="bo-muted">Preview delta</span>
+            <span className="bo-muted">Vista previa de la diferencia</span>
             <strong>
-              Total {deltaPreview.total} EUR · VAT {deltaPreview.taxTotal}
+              Total {money(deltaPreview.total)} · IVA {money(deltaPreview.taxTotal)}
             </strong>
           </div>
 
@@ -264,7 +265,7 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
               onClick={() => void handleIssue()}
               disabled={busy || original.status !== "issued"}
             >
-              Issue rectifying invoice
+              Emitir factura rectificativa
             </button>
           </div>
         </article>
@@ -273,19 +274,19 @@ export function InvoiceRectifyDialog({ initialInvoiceId, onClose, onRectified }:
       {issuedRectifying ? (
         <article className="bo-card" style={{ marginTop: "1rem", borderColor: "var(--bo-ok)" }}>
           <div className="bo-card-head">
-            <h3>Rectifying invoice issued</h3>
+            <h3>Factura rectificativa emitida</h3>
             <span className="bo-chip">{issuedRectifying.invoiceType}</span>
           </div>
           <p>
-            <strong>{issuedRectifying.invoiceNumber ?? issuedRectifying.id}</strong> · total {issuedRectifying.total} EUR · VAT
-            {" "}{issuedRectifying.taxTotal}
+            <strong>{issuedRectifying.invoiceNumber ?? issuedRectifying.id}</strong> · total {money(issuedRectifying.total)} · IVA{" "}
+            {money(issuedRectifying.taxTotal)}
           </p>
           <p>
-            VeriFactu hash: <code>{issuedRectifying.verifactuHash ?? "—"}</code>
+            Huella VeriFactu: <code>{issuedRectifying.verifactuHash ?? "—"}</code>
           </p>
           {issuedRectifying.qrPayload ? (
             <a className="bo-link" href={issuedRectifying.qrPayload} target="_blank" rel="noreferrer noopener">
-              View VeriFactu QR validation URL
+              Ver la URL de validación del QR VeriFactu
             </a>
           ) : null}
         </article>

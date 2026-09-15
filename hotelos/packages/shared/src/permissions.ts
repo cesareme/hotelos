@@ -7,10 +7,12 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   "pms.checkin.execute": "Execute guest check-in",
   "pms.checkout.execute": "Execute guest check-out",
   "folio.charge.post": "Post folio charges",
+  "folio.read": "Read folios, folio balances and routing rules",
   "payment.capture": "Capture payments",
   "payment.refund": "Refund payments",
   "invoice.issue": "Issue invoices",
   "invoice.cancel": "Cancel or rectify invoices",
+  "invoice.read": "Read invoices, invoice lists and rectification history",
   "housekeeping.task.manage": "Manage housekeeping tasks",
   "maintenance.workorder.manage": "Manage maintenance work orders",
   "asset.capex.approve": "Approve capex",
@@ -56,6 +58,8 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   "pos.order.charge_to_room": "Charge POS orders to rooms",
   "pos.order.pay": "Pay POS orders directly",
   "pos.product.manage": "Manage POS products",
+  "pos.read": "Read POS outlets, tickets and cash summaries",
+  "tourist_tax.read": "Read tourist tax rates and applications",
   "guest_experience.inbox.read": "Read guest experience inbox",
   "guest_experience.message.send": "Send guest messages",
   "guest_experience.ai_reply": "Draft AI guest replies",
@@ -151,6 +155,10 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   "workforce.payroll_export": "Export payroll data",
   "payroll.manage": "Manage payroll contracts, periods and payroll calculation runs",
   "banking.reconcile": "Manage bank accounts, statement imports and reconciliation matching",
+  "payroll.read": "Read payroll contracts, periods, payslips and exports",
+  "banking.read": "Read bank accounts, balances, statements and reconciliation status",
+  "commissions.read": "Read commission rules, accruals and summaries",
+  "accounting.read": "Read fiscal years, fiscal periods and exchange rates",
   "notifications.manage": "Manage notification templates, dispatch and delivery retries",
   "procurement.read": "Read procurement records",
   "procurement.manage": "Manage procurement records",
@@ -248,38 +256,63 @@ export const ORG_PERMISSION_KEYS: readonly PermissionKey[] = (Object.keys(PERMIS
 // what the boot-time backfill applies to template-named roles that still have
 // zero permissions. Templates are ORG scope only (structurally for owner/admin,
 // by construction for the hand-picked ones).
+//
+// Tanda 5 (L1a · rbac, 2026-09-15): the navigation tree of
+// pilots/tanda5-nav-tree.md §3 maps every menu token to templates
+// (direccion = owner+manager, recepcion = receptionist, pisos = housekeeper,
+// mantenimiento = maintenance, revenue = revenue, finanzas = accountant+
+// compliance, comercial = sales, fnb = fnb, admin = admin). §10 crossed the
+// main API route of every item/tab (apps/api/src/security/route-permissions.ts)
+// with these templates and found them too narrow: no template but owner/admin
+// could open a single /dashboards/* screen (analytics.read), i.e. "Mi día".
+// The deltas applied here follow least privilege:
+//   - READ keys of the item's domain are granted (analytics.read first).
+//   - A nominally-write key is granted only when it is the ONLY gate of the
+//     GET that opens a screen the template owns: folio.charge.post for
+//     accountant (posting to folios is billing work) and fnb (charge to room),
+//     compliance.ses.submit for receptionist (§11 task 12: reception signs and
+//     sends the SES traveller parts), compliance.gdpr.manage for manager and
+//     compliance (data-protection requests).
+//   - Tanda 5 (L1b · api-side, 2026-09-15): the GET routes that had no read
+//     key are now gated by folio.read (folios, balances, routing rules),
+//     pos.read (outlets, tickets, cash summary), tourist_tax.read (rates and
+//     applications), billing.compliance.view (VeriFactu / TicketBAI / IGIC
+//     submissions and the compliance inbox) and guest_register.read (guest
+//     register records, SES submissions). Every template whose token sees the
+//     screen holds the read key; the write keys above stay where they were
+//     (the boot top-up is additive: nothing is ever removed from a role).
+//   - Rejected (documented in tests/rbac-nav-contract.test.mjs JUSTIFIED_GAPS):
+//     accounting.journal.post for manager/compliance (only a POST needs it),
+//     folio.charge.post / billing.configure for compliance and
+//     compliance.configure / compliance.gdpr.manage / compliance.ses.submit
+//     for accountant (the sibling template of the same `finanzas` token holds
+//     them — assign both roles to one person when the hotel has no split),
+//     backoffice.access for receptionist (wrong attribution in the inventory),
+//     inventory.read for receptionist (moved to fnb, as §10 foresaw).
+//   - Tanda 5 (L1c · api, 2026-09-15): (1) modules.read in EVERY template —
+//     GET /backoffice/properties/:id/modules feeds the menu (modulesAny) and
+//     a 403 there hid every module-gated entry (Punto de venta, Cartas,
+//     Canales…) for the 8 templates without it; (2) invoice.read on the
+//     invoice GETs (were invoice.issue), payroll.read / banking.read /
+//     commissions.read / accounting.read on the finance GETs that were
+//     open to every template through analytics.read; (3) the read keys of
+//     the secondary GETs of visible screens (incidents.read +
+//     safety_checks.read, workforce.read, events.read, revenue.read for
+//     sales, ai_incidents.read for manager, pms.reservation.read for
+//     maintenance; accounting.read for receptionist: the compliance inbox
+//     warns about closing fiscal periods). Payroll and banking stay out of
+//     compliance (sister accountant of the finanzas token holds them:
+//     employee data, money).
+// The boot-time top-up (Role.templateKey, lib/rbac-catalog.ts) delivers every
+// key added here to the existing template roles; custom roles are never
+// touched. Keep any change additive.
 
 export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
   // Full organization scope: the hotel owner/administrator can do everything a
   // hotel can do, and nothing a platform operator can do.
   owner: [...ORG_PERMISSION_KEYS],
-  // TODO(product · César, Tanda 4 recon rbac-roles): the `manager` template
-  // (85 keys) reaches only 295 of the 755 gated routes of the manifest
-  // (apps/api/src/security/route-permissions.ts). A hotel manager with this
-  // template cannot open the dashboards (/dashboards ×33 need analytics.read),
-  // revenue, channel manager, CRM, groups, events, workforce, inventory,
-  // procurement, nor the back-office category/configuration screens, and 25 of
-  // its 85 keys gate no route today (distribution.*, payments.*,
-  // billing.invoice.*, pos.*, guest_experience.*, assets.*, capex.read/create,
-  // integrations.configure/view_logs, tax.configure, payments.configure).
-  // Proposed additive extension (≈85 → ~120 keys), NOT applied until César
-  // confirms — the boot-time top-up (Role.templateKey, lib/rbac-catalog.ts)
-  // will deliver it to every existing Manager role the moment it lands here:
-  //   analytics.read, analytics.export, revenue.read, revenue.forecast.read,
-  //   revenue.history_forecast.read, channel_manager.read, crm.read,
-  //   groups.read, groups.manage, events.read, events.manage, workforce.read,
-  //   workforce.schedule.manage, workforce.labor_cost.view, inventory.read,
-  //   procurement.read, purchase_orders.approve, reputation.read,
-  //   reputation.respond, quality_cases.read, quality_cases.manage,
-  //   surveys.read, incidents.read, incidents.manage, safety_checks.read,
-  //   energy.read, sustainability.read, configuration.read, categories.read,
-  //   custom_fields.read, compliance.gdpr.manage, rooms.manage,
-  //   room_types.manage, spaces.manage, departments.manage.
-  // Same review for `receptionist` (18 keys, 88/755 routes): the rack read
-  // needs housekeeping.task.manage, opening a work order needs
-  // maintenance.workorder.manage, and guest_register.export is a front-desk
-  // task. Keep any change additive: with templateKey only template roles are
-  // topped up; custom roles are never touched.
+  // Hotel director ("Dirección"): every operational surface plus the read side
+  // of revenue, distribution, CRM, groups and inventory (Tanda 5 §10).
   manager: [
     "pms.reservation.read",
     "pms.reservation.create",
@@ -365,7 +398,42 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "payroll.manage",
     "banking.reconcile",
     "notifications.manage",
-    "audit.read"
+    "audit.read",
+    // Tanda 5 §10 — read side of the tree the director sees (Mi día, Revenue,
+    // Canales, Clientes, Grupos, Ventas adicionales, Existencias, IA).
+    "analytics.read",
+    "ai_governance.read",
+    "revenue.read",
+    "revenue.forecast.read",
+    "revenue.history_forecast.read",
+    "channel_manager.read",
+    "crm.read",
+    "groups.read",
+    "guest_self_service.read",
+    "inventory.read",
+    // Protección de datos: the director is the data controller's delegate in a
+    // small hotel and the only gate of GET /gdpr/requests is this key (§10.2
+    // keeps the entry for direccion and removes it from recepcion).
+    "compliance.gdpr.manage",
+    // Tanda 5 (L1b · api-side): read keys of the GET routes that were gated by
+    // write keys (folio.charge.post → folio.read / pos.read / tourist_tax.read;
+    // compliance.ses.submit → billing.compliance.view / guest_register.read).
+    "folio.read",
+    "pos.read",
+    "tourist_tax.read",
+    // Tanda 5 (L1c · api): read keys of the GETs the director opens from
+    // the tree (Facturación, Nóminas, Conciliación, Comisiones, Tesorería,
+    // Seguridad, Personal, Nuevo evento, Gobernanza IA › Incidentes).
+    "invoice.read",
+    "payroll.read",
+    "banking.read",
+    "commissions.read",
+    "accounting.read",
+    "incidents.read",
+    "safety_checks.read",
+    "workforce.read",
+    "events.read",
+    "ai_incidents.read"
   ],
   receptionist: [
     "pms.reservation.read",
@@ -385,10 +453,55 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "guest_register.submit",
     "guest_experience.inbox.read",
     "guest_experience.message.send",
-    "ai.tool.execute"
+    "ai.tool.execute",
+    // Tanda 5 §10 — Mi día / Turno / Tablero (dashboards), Pendientes de la
+    // IA, Grupos y eventos (calendar), Planes de tarifas (quote a price).
+    "analytics.read",
+    "ai_governance.read",
+    "groups.read",
+    "revenue.read",
+    // Bandeja de cumplimiento: reception signs and sends the SES traveller
+    // parts (§11 task 12) and the inbox GET is gated by this key.
+    "compliance.ses.submit",
+    // Tanda 5 (L1b · api-side): read keys of the GET routes that were gated by
+    // write keys (folio.charge.post → folio.read / pos.read / tourist_tax.read;
+    // compliance.ses.submit → billing.compliance.view / guest_register.read).
+    // Reception opens Folios / Enrutamiento, the POS board, the tourist tax
+    // tab and the compliance inbox (VeriFactu status) from the tree.
+    "folio.read",
+    "pos.read",
+    "tourist_tax.read",
+    "billing.compliance.view",
+    // Tanda 5 (L1c · api): the menu needs the module list (modules.read);
+    // Facturación y cobros / Rectificativas list and open invoices
+    // (invoice.read); Seguridad e incidentes and «Nuevo evento» (salones)
+    // are visible to reception and their GETs were 403; the compliance inbox
+    // reads the fiscal periods to warn about a closing period
+    // (accounting.read: fiscal calendar and exchange rates, no amounts).
+    "modules.read",
+    "invoice.read",
+    "incidents.read",
+    "safety_checks.read",
+    "events.read",
+    "accounting.read"
   ],
-  housekeeper: ["housekeeping.task.manage", "ai.tool.execute"],
-  maintenance: ["maintenance.workorder.manage", "ai.tool.execute"],
+  // Tanda 5 §10 — Mi día (Operaciones), Reservas › Cronograma/Tablero.
+  // L1c: modules.read (menu), workforce.read (Personal y turnos).
+  housekeeper: ["housekeeping.task.manage", "ai.tool.execute", "analytics.read", "pms.reservation.read", "modules.read", "workforce.read"],
+  // Tanda 5 §10 — Mi día (Operaciones), Activos, Energía, Seguridad dashboards.
+  // L1c: modules.read (menu), pms.reservation.read (room numbers of the work
+  // orders: GET /properties/:p/rooms), incidents.read + safety_checks.read
+  // (Seguridad e incidentes), workforce.read (Personal y turnos).
+  maintenance: [
+    "maintenance.workorder.manage",
+    "ai.tool.execute",
+    "analytics.read",
+    "modules.read",
+    "pms.reservation.read",
+    "incidents.read",
+    "safety_checks.read",
+    "workforce.read"
+  ],
   accountant: [
     "pms.reservation.read",
     "invoice.issue",
@@ -398,7 +511,38 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "billing.configure",
     "audit.read",
     "ai.tool.execute",
-    "ai.high_risk.confirm"
+    "ai.high_risk.confirm",
+    // Tanda 5 §10 — Mi día (Dirección), Modelos AEAT, Estados contables,
+    // Tesorería, Conciliación (all /dashboards + /accounting/reports read),
+    // Informe IA del día, Perfil inicial / Categorías de ingresos
+    // (backoffice.access), Registro de viajeros (read), Existencias/Compras.
+    "analytics.read",
+    "ai_governance.read",
+    "backoffice.access",
+    "guest_register.read",
+    "inventory.read",
+    // Invoice compliance status (VeriFactu) is accounting's: read key held
+    // ahead of the L2 manifest fix (verifactu/submissions is gated today by
+    // compliance.ses.submit, which stays with the compliance template).
+    "billing.compliance.view",
+    // Posting charges/adjustments to folios is billing work (the template
+    // already issues and cancels invoices); kept after L1b for that reason.
+    "folio.charge.post",
+    // Tanda 5 (L1b · api-side): read keys of the GET routes that were gated by
+    // write keys (folio.charge.post → folio.read / pos.read / tourist_tax.read;
+    // compliance.ses.submit → billing.compliance.view / guest_register.read).
+    "folio.read",
+    "pos.read",
+    "tourist_tax.read",
+    // Tanda 5 (L1c · api): menu (modules.read); Facturación, Nóminas,
+    // Conciliación, Comisiones, Tesorería › Tipos de cambio, ejercicios y
+    // periodos fiscales (read side of the accountant screens).
+    "modules.read",
+    "invoice.read",
+    "payroll.read",
+    "banking.read",
+    "commissions.read",
+    "accounting.read"
   ],
   compliance: [
     "pms.reservation.read",
@@ -419,7 +563,31 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "tax.configure",
     "audit.read",
     "ai.tool.execute",
-    "ai.high_risk.confirm"
+    "ai.high_risk.confirm",
+    // Tanda 5 §10 — Mi día (Dirección), Modelos AEAT and reports, Informe IA
+    // del día, Perfil inicial / Categorías de ingresos, Existencias/Compras.
+    "analytics.read",
+    "ai_governance.read",
+    "backoffice.access",
+    "inventory.read",
+    // Protección de datos (DSAR, erasure): core compliance duty.
+    "compliance.gdpr.manage",
+    // Tanda 5 (L1b · api-side): read keys of the GET routes that were gated by
+    // write keys (folio.charge.post → folio.read / pos.read / tourist_tax.read;
+    // compliance.ses.submit → billing.compliance.view / guest_register.read).
+    // Finanzas token: Folios / Enrutamiento, POS board, Tasa turística and
+    // the VeriFactu / TicketBAI / IGIC status views (read-only; no money).
+    "folio.read",
+    "pos.read",
+    "tourist_tax.read",
+    "billing.compliance.view",
+    // Tanda 5 (L1c · api): menu (modules.read); Facturación y cobros
+    // (invoice.read), Comisiones, Tipos de cambio and the fiscal calendar
+    // (accounting.read). Nóminas and bank statements stay with accountant.
+    "modules.read",
+    "invoice.read",
+    "commissions.read",
+    "accounting.read"
   ],
   // Revenue / distribution manager: pricing, restrictions, channels, forecasts.
   revenue: [
@@ -455,7 +623,75 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "analytics.read",
     "analytics.export",
     "analytics.ai_ask",
-    "ai.tool.execute"
+    "ai.tool.execute",
+    // Tanda 5 §10 — Informe IA del día.
+    "ai_governance.read",
+    // Tanda 5 (L1c · api): the menu needs the module list.
+    "modules.read"
+  ],
+  // Tanda 5 (L1a · rbac) — Comercial/Ventas ("comercial" token, §3: 14 items in
+  // 5 categories): reservations for companies and groups, guests, groups and
+  // events, CRM/loyalty/campaigns, reputation and quality, upsells, sales
+  // pipeline, channels (read), commissions and reports. No money, no setup.
+  sales: [
+    "pms.reservation.read",
+    "pms.reservation.create",
+    "pms.reservation.modify",
+    "guests.read",
+    "guests.manage",
+    "groups.read",
+    "groups.manage",
+    "groups.block_inventory",
+    "events.read",
+    "events.manage",
+    "sales.pipeline.read",
+    "sales.pipeline.manage",
+    "crm.read",
+    "crm.manage_profiles",
+    "crm.manage_campaigns",
+    "crm.manage_loyalty",
+    "crm.export",
+    "reputation.read",
+    "reputation.respond",
+    "surveys.read",
+    "surveys.manage",
+    "quality_cases.read",
+    "quality_cases.manage",
+    "guest_self_service.read",
+    "guest_self_service.manage",
+    "channel_manager.read",
+    "channel_manager.parity.read",
+    "distribution.read",
+    "analytics.read",
+    "analytics.export",
+    "ai.tool.execute",
+    // Tanda 5 (L1c · api): menu (modules.read); Canales lists rate plans
+    // (revenue.read, GET /properties/:p/rate-plans); Comisiones (read).
+    "modules.read",
+    "revenue.read",
+    "commissions.read"
+  ],
+  // Tanda 5 (L1a · rbac) — Punto de venta / F&B ("fnb" token, §3: 5 items in 2
+  // categories): POS orders, charge to room, menus, stock counts, purchase
+  // requests, own shifts and time clock. folio.charge.post is the gate of
+  // charging consumption to a folio (POS reads use pos.read since L1b).
+  fnb: [
+    "pos.read",
+    "pos.order.create",
+    "pos.order.charge_to_room",
+    "pos.order.pay",
+    "pos.product.manage",
+    "folio.charge.post",
+    "inventory.read",
+    "inventory.stock_count",
+    "procurement.read",
+    "purchase_orders.create",
+    "workforce.read",
+    "workforce.timeclock.use",
+    "analytics.read",
+    "ai.tool.execute",
+    // Tanda 5 (L1c · api): the menu needs the module list (TPV, Cartas, Existencias are module-gated).
+    "modules.read"
   ],
   // Organization administrator: same scope as owner (platform keys excluded).
   admin: [...ORG_PERMISSION_KEYS]
@@ -471,7 +707,65 @@ export const ROLE_TEMPLATE_KEYS: readonly RoleKey[] = [
   "maintenance",
   "accountant",
   "compliance",
-  "revenue"
+  "revenue",
+  "sales",
+  "fnb"
+];
+
+/**
+ * Spanish role names for the template roles a hotel gets (Tanda 5 · L1a):
+ * what the invite selector, the user list and the role badge show, and the
+ * name `apps/api/src/scripts/reseed-property-roles.ts` gives to a template
+ * role it has to create. Every name resolves back to its template through
+ * the aliases of apps/api/src/lib/rbac-catalog.ts (resolveTemplateKeyForRoleName).
+ */
+export const ROLE_TEMPLATE_LABELS_ES: Record<RoleKey, string> = {
+  owner: "Propietario",
+  admin: "Administrador",
+  manager: "Dirección",
+  receptionist: "Recepción",
+  housekeeper: "Pisos",
+  maintenance: "Mantenimiento",
+  accountant: "Contabilidad",
+  compliance: "Cumplimiento",
+  revenue: "Revenue",
+  sales: "Comercial",
+  fnb: "Punto de venta"
+};
+
+/** One-line Spanish description per template (role selector help text). */
+export const ROLE_TEMPLATE_DESCRIPTIONS_ES: Record<RoleKey, string> = {
+  owner: "Todo el alcance del hotel: configuración, dinero, cumplimiento y usuarios.",
+  admin: "Mismo alcance que el propietario; pensado para la administración delegada.",
+  manager: "Dirección del hotel: operativa completa y lectura de revenue, canales, clientes y existencias.",
+  receptionist: "Recepción: reservas, llegadas y salidas, folios, huéspedes, partes de viajeros y mensajes.",
+  housekeeper: "Pisos: tareas de limpieza, estado de habitaciones y cronograma.",
+  maintenance: "Mantenimiento: partes de avería, activos, energía y seguridad.",
+  accountant: "Contabilidad: facturación, asientos, informes fiscales, tesorería y conciliación.",
+  compliance: "Cumplimiento: registro de viajeros, envíos a autoridades, impuestos y protección de datos.",
+  revenue: "Revenue: tarifas, restricciones, canales, previsión y recomendaciones.",
+  sales: "Comercial: ventas a empresas y grupos, clientes y fidelización, reputación y ventas adicionales.",
+  fnb: "Punto de venta y F&B: tickets, cargos a habitación, cartas, existencias y compras."
+};
+
+/**
+ * Templates that `reseed-property-roles` materialises in every organisation
+ * (one Role row per template, org scoped, assignable in every property).
+ * `admin` is deliberately absent: the organisation administrator template is
+ * full scope like owner, and §3 reserves the `admin` token for the platform
+ * administrator — a hotel does not need a second full-scope role by default.
+ */
+export const ORGANIZATION_TEMPLATE_ROLE_KEYS: readonly RoleKey[] = [
+  "owner",
+  "manager",
+  "receptionist",
+  "housekeeper",
+  "maintenance",
+  "accountant",
+  "compliance",
+  "revenue",
+  "sales",
+  "fnb"
 ];
 
 export function hasPermission(userPermissions: PermissionKey[], permission: PermissionKey): boolean {

@@ -13,6 +13,8 @@ import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
 import { CocoaPopover } from "../../components/cocoa/CocoaPopover";
+import { HOSTED_ACTIONS_ROW, useTabHost } from "../tabs/TabHost";
+import { date, dateTime, money, number, percent } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -62,37 +64,20 @@ const EMPTY: GroupsEventsDashboardData = {
   topAccounts: []
 };
 
-const eurFormat = new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR" });
-const numFormat = new Intl.NumberFormat("es-ES", { useGrouping: true });
-
 function formatEur(value: number): string {
-  return eurFormat.format(value);
+  return money(value);
 }
 
 function formatNumber(value: number): string {
-  return numFormat.format(value);
+  return number(value);
 }
 
 function formatDate(iso?: string): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString("es-ES");
-  } catch {
-    return iso;
-  }
+  return date(iso);
 }
 
 function formatDateTime(iso: string): string {
-  try {
-    return new Date(iso).toLocaleString("es-ES", {
-      day: "2-digit",
-      month: "short",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  } catch {
-    return iso;
-  }
+  return dateTime(iso, { style: "dayMonth" });
 }
 
 // -----------------------------------------------------------------------------
@@ -502,6 +487,7 @@ function RowKebab({ items }: RowKebabProps) {
 }
 
 export function GroupsEventsDashboard() {
+  const hosted = useTabHost() !== null;
   const state = useApiData<GroupsEventsDashboardData>(
     `/dashboards/groups-events?propertyId=${PROPERTY_ID}`,
     { pollIntervalMs: 120000 }
@@ -595,7 +581,7 @@ export function GroupsEventsDashboard() {
   const upcomingGroupColumns: CocoaTableColumn<UpcomingGroup>[] = [
     {
       key: "name",
-      label: "Group",
+      label: "Grupo",
       render: (g) => (
         <CocoaButton variant="plain" size="small" tone="accent" onClick={() => setDetailGroupId(g.id)}>
           {g.name}
@@ -604,23 +590,23 @@ export function GroupsEventsDashboard() {
     },
     {
       key: "arrivalDate",
-      label: "Arrival",
+      label: "Llegada",
       render: (g) => formatDate(g.arrivalDate)
     },
     {
       key: "departureDate",
-      label: "Departure",
+      label: "Salida",
       render: (g) => formatDate(g.departureDate)
     },
     {
       key: "roomsBlocked",
-      label: "Blocked",
+      label: "Bloqueadas",
       align: "right",
       render: (g) => formatNumber(g.roomsBlocked)
     },
     {
       key: "pickedUp",
-      label: "Picked up",
+      label: "Vendidas",
       align: "right",
       render: (g) => formatNumber(g.pickedUp)
     },
@@ -655,13 +641,13 @@ export function GroupsEventsDashboard() {
     },
     {
       key: "activeGroups",
-      label: "Active groups",
+      label: "Grupos activos",
       align: "right",
       render: (row) => formatNumber(row.activeGroups)
     },
     {
       key: "valueEur",
-      label: "Value",
+      label: "Valor",
       align: "right",
       render: (row) => formatEur(row.valueEur)
     }
@@ -677,7 +663,7 @@ export function GroupsEventsDashboard() {
   const headerActions = (
     <>
       <CocoaButton variant="bordered" tone="neutral" icon={<IconRefresh />} onClick={() => state.refresh()}>
-        Refresh
+        Actualizar
       </CocoaButton>
       <CocoaButton
         variant="bordered"
@@ -691,7 +677,7 @@ export function GroupsEventsDashboard() {
         tone="neutral"
         onClick={() => navigateScreen("Allotments")}
       >
-        Cupos / Allotments
+        Cupos
       </CocoaButton>
       <CocoaButton
         variant="bordered"
@@ -758,17 +744,21 @@ export function GroupsEventsDashboard() {
 
   return (
     <div style={screenStyle}>
-      <CocoaPageHeader
-        eyebrow="Commercial · Groups & Events"
-        title="Groups & Events"
-        subtitle="Vista de solo lectura de bloques de grupo y eventos del periodo: reservas de grupo activas, habitaciones bloqueadas y pickup, próximos eventos con espacio y asistentes esperados, ingresos F&B del mes y cuentas con mayor actividad. Refresco automático cada dos minutos."
-        actions={headerActions}
-      />
+      {hosted ? (
+        <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
+      ) : (
+        <CocoaPageHeader
+          eyebrow="Recepción · Grupos y eventos"
+          title="Grupos y eventos"
+          subtitle="Vista de solo lectura de bloques de grupo y eventos del periodo: reservas de grupo activas, habitaciones bloqueadas y pickup, próximos eventos con espacio y asistentes esperados, ingresos F&B del mes y cuentas con mayor actividad. Refresco automático cada dos minutos."
+          actions={headerActions}
+        />
+      )}
 
       {state.error ? (
         <CocoaCard variant="bordered" padding="md">
           <p style={{ color: "var(--cocoa-danger)", margin: 0, fontFamily: "var(--cocoa-font)", fontSize: "var(--cocoa-fs-body)" }}>
-            Couldn't load this view right now. Refresh to retry.
+            No hemos podido cargar esta vista. Inténtalo de nuevo.
           </p>
         </CocoaCard>
       ) : null}
@@ -777,27 +767,27 @@ export function GroupsEventsDashboard() {
           va detrás de un toggle "Mostrar más" porque pertenece al bloque de eventos. */}
       <KpiGrid>
         <KpiCard
-          label="Active group bookings"
+          label="Reservas de grupo activas"
           value={formatNumber(kpis.activeGroupBookings)}
-          caption="in progress or upcoming"
+          caption="en curso o próximas"
           status={groupsStatus}
         />
         <KpiCard
-          label="Rooms blocked"
+          label="Habitaciones bloqueadas"
           value={formatNumber(kpis.roomsBlockedTotal)}
-          caption="across active blocks"
+          caption="en los bloques activos"
           status={blockedStatus}
         />
         <KpiCard
           label="Pickup"
-          value={`${kpis.pickupPct}%`}
-          caption="picked up / blocked"
+          value={percent(kpis.pickupPct, { maximumFractionDigits: 0 })}
+          caption="vendidas / bloqueadas"
           status={pickupStatus}
         />
         <KpiCard
-          label="Upcoming events"
+          label="Próximos eventos"
           value={formatNumber(kpis.upcomingEvents)}
-          caption="current + next month"
+          caption="este mes y el siguiente"
           status={eventsStatus}
         />
       </KpiGrid>
@@ -812,9 +802,9 @@ export function GroupsEventsDashboard() {
       {showSecondaryKpis ? (
         <KpiGrid>
           <KpiCard
-            label="F&B revenue MTD"
+            label="Ingresos F&B del mes"
             value={formatEur(kpis.fAndBRevenueMtdEur)}
-            caption="events month-to-date"
+            caption="eventos, mes en curso"
             status={revenueStatus}
           />
         </KpiGrid>
@@ -823,12 +813,12 @@ export function GroupsEventsDashboard() {
       {/* DEV #5 — accordion: pickup card colapsable; usuario decide cuándo ver el detalle. */}
       <section style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)" }}>
         <DisclosureButton
-          label="Pickup de grupos · ciclo y release"
+          label="Captación de grupos · ciclo y liberación"
           expanded={pickupExpanded}
           onToggle={() => setPickupExpanded((v) => !v)}
           trailing={
             <span style={{ marginLeft: "var(--cocoa-space-2)", color: "var(--cocoa-label-tertiary)", fontWeight: 400 }}>
-              {pickupExpanded ? "Click para colapsar" : "Click para expandir"}
+              {pickupExpanded ? "Pulsa para plegar" : "Pulsa para desplegar"}
             </span>
           }
         />
@@ -836,9 +826,9 @@ export function GroupsEventsDashboard() {
       </section>
 
       <CocoaCard variant="bordered" padding="md">
-        <CardHeader title="Upcoming groups" badge={<NeutralBadge>{upcomingGroups.length} groups</NeutralBadge>} />
+        <CardHeader title="Próximos grupos" badge={<NeutralBadge>{upcomingGroups.length} grupos</NeutralBadge>} />
         {upcomingGroups.length === 0 ? (
-          <EmptyCaption>No upcoming group bookings in the period.</EmptyCaption>
+          <EmptyCaption>Sin reservas de grupo próximas en el periodo.</EmptyCaption>
         ) : (
           <CocoaTable<UpcomingGroup>
             columns={upcomingGroupColumns}
@@ -850,9 +840,9 @@ export function GroupsEventsDashboard() {
 
       <section style={twoColumnGridStyle}>
         <CocoaCard variant="bordered" padding="md">
-          <CardHeader title="Upcoming events" badge={<NeutralBadge>{upcomingEvents.length} events</NeutralBadge>} />
+          <CardHeader title="Próximos eventos" badge={<NeutralBadge>{upcomingEvents.length} eventos</NeutralBadge>} />
           {upcomingEvents.length === 0 ? (
-            <EmptyCaption>No events scheduled in the period.</EmptyCaption>
+            <EmptyCaption>Sin eventos programados en el periodo.</EmptyCaption>
           ) : (
             <ul style={eventListStyle}>
               {upcomingEvents.map((e) => (
@@ -865,7 +855,7 @@ export function GroupsEventsDashboard() {
                     ) : null}
                   </div>
                   <small style={eventCaptionStyle}>
-                    {e.spaceName ? <>{e.spaceName}</> : <>No space assigned</>}
+                    {e.spaceName ? <>{e.spaceName}</> : <>Sin espacio asignado</>}
                     {e.expectedAttendees !== undefined ? <> · {formatNumber(e.expectedAttendees)} pax</> : null}
                   </small>
                 </li>
@@ -875,9 +865,9 @@ export function GroupsEventsDashboard() {
         </CocoaCard>
 
         <CocoaCard variant="bordered" padding="md">
-          <CardHeader title="Top accounts" badge={<NeutralBadge>top {topAccounts.length}</NeutralBadge>} />
+          <CardHeader title="Principales cuentas" badge={<NeutralBadge>{topAccounts.length} principales</NeutralBadge>} />
           {topAccounts.length === 0 ? (
-            <EmptyCaption>No accounts with active group bookings.</EmptyCaption>
+            <EmptyCaption>Sin cuentas con reservas de grupo activas.</EmptyCaption>
           ) : (
             <CocoaTable<TopAccount>
               columns={topAccountColumns}

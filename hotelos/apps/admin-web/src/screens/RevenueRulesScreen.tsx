@@ -10,19 +10,26 @@ import {
   type PricingRule
 } from "../services/revenueApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../components/States";
+import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { ACTIONS } from "../content/actions";
+import { urlForScreen } from "../navigation/nav-tree";
+import { date, percent } from "../lib/format";
+import { treeHeaderFor } from "./tabs/tab-helpers";
+
+// Menu labels of the tree (Revenue › Reglas y recomendaciones), never retyped here.
+const HEADER = treeHeaderFor("RevenueRules", { eyebrow: "Revenue", title: "Reglas y recomendaciones" });
 
 function fmtDate(iso: string): string {
-  return new Date(`${iso}T00:00:00.000Z`).toLocaleDateString("es-ES", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
+  return date(iso, "weekdayShort");
 }
 // es-ES percentage with an explicit sign («+4,5 %», «−3 %»), never en-US.
-const pctFormat = new Intl.NumberFormat("es-ES", { signDisplay: "always", maximumFractionDigits: 1 });
 function fmtPct(value: number): string {
-  return `${pctFormat.format(value)}\u00a0%`;
+  return percent(value, { signDisplay: "always", maximumFractionDigits: 1 });
 }
-/** Deep link to the rate grid editor on the recommendation's night (the editor reads ?from&to). */
+/** Deep link to the rate grid (Revenue › Parrilla de tarifas, Tanda 5) on the recommendation's night (the editor reads ?from&to). */
 function rateGridHref(iso: string): string {
   const q = new URLSearchParams({ from: iso, to: iso });
-  return `/backoffice/revenue/rate-grid?${q.toString()}`;
+  return `${urlForScreen("RateGridEditorScreen") ?? "/revenue/parrilla"}?${q.toString()}`;
 }
 function statusPill(status: string): string {
   if (status === "applied") return "ok";
@@ -81,23 +88,19 @@ export function RevenueRulesScreen() {
 
   return (
     <section className="bo-card" style={{ display: "grid", gap: 16 }}>
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Revenue · Pricing</p>
-          <h2>Reglas y recomendaciones de BAR</h2>
-        </div>
-        <div className="bo-pill-row">
-          <button type="button" className="primary" disabled={busy || loading} onClick={() => run(() => generateRecommendations(), "Recomendaciones generadas.")}>
-            {busy ? <><Spinner size="sm" /> Generando…</> : "Generar recomendaciones"}
-          </button>
-          <button type="button" onClick={() => void load()} disabled={loading}>↻ Actualizar</button>
-        </div>
-      </div>
-      <p>
-        El motor combina la ocupación real (OTB), el comp-set y tus reglas de precio para recomendar el BAR por fecha. Cada
-        recomendación es explicable (mira los factores) y nada se aplica sin aprobación humana. Al aplicar, el BAR se escribe en
-        la parrilla de tarifas.
-      </p>
+      <CocoaPageHeader
+        eyebrow={HEADER.eyebrow}
+        title={HEADER.title}
+        subtitle="El motor combina la ocupación real, los precios de la competencia y tus reglas para recomendar la tarifa base por fecha. Cada recomendación explica sus factores y nada se aplica sin aprobación; al aplicarla, la tarifa se escribe en la parrilla."
+        actions={
+          <>
+            <button type="button" className="primary" disabled={busy || loading} onClick={() => run(() => generateRecommendations(), "Recomendaciones generadas.")}>
+              {busy ? <><Spinner size="sm" /> Generando…</> : "Generar recomendaciones"}
+            </button>
+            <button type="button" onClick={() => void load()} disabled={loading}>↻ {ACTIONS.refresh}</button>
+          </>
+        }
+      />
       {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
 
       {loading ? (
@@ -144,7 +147,7 @@ export function RevenueRulesScreen() {
                               <strong>{fmtDate(r.targetDate)}</strong>
                             </a>
                           </td>
-                          <td>{r.current?.occupancyPct != null ? `${pctFormat.format(r.current.occupancyPct).replace(/^\+/, "")}\u00a0%` : "—"}</td>
+                          <td>{percent(r.current?.occupancyPct, { maximumFractionDigits: 1 })}</td>
                           <td title={noBar ? "Sin BAR publicado en la parrilla para esta fecha" : undefined}>
                             {noBar ? "—" : money(r.current.bar as number)}
                             {noBar ? <small className="bo-muted" style={{ display: "block", textTransform: "none" }}>sin tarifario</small> : null}

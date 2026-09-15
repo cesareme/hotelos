@@ -1,4 +1,4 @@
-import { assertPermissions } from "@hotelos/shared";
+import { ROLE_TEMPLATE_KEYS, assertPermissions, isPlatformPermission } from "@hotelos/shared";
 import type { PermissionKey, RoleKey } from "@hotelos/shared";
 import { prisma, signJwt, verifyPassword, type JwtClaims } from "@hotelos/database";
 import {
@@ -77,7 +77,16 @@ export async function loadPermissionsForUserProperty(userId: string, propertyId:
   return Array.from(keys) as PermissionKey[];
 }
 
-function unionPermissions(prismaPerms: PermissionKey[]): PermissionKey[] {
+/** True when the demo permission union is enabled (explicit opt-in, see unionPermissions). */
+export function isDemoPermissionUnionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const nodeEnv = env.NODE_ENV;
+  return nodeEnv === "development" || nodeEnv === "dev" || env.HOTELOS_ALLOW_DEMO_AUTH === "true";
+}
+
+export function unionPermissions(
+  prismaPerms: PermissionKey[],
+  options: { demoMode?: boolean; baseline?: readonly PermissionKey[] } = {}
+): PermissionKey[] {
   // SECURITY (auditoría 2026-07): FAIL-SECURE. Antes el gate era
   // `NODE_ENV !== "production"` → un deploy que OLVIDARA fijar NODE_ENV le daba
   // a cualquier usuario TODOS los permisos del super-usuario demo. Ahora la
@@ -85,16 +94,22 @@ function unionPermissions(prismaPerms: PermissionKey[]): PermissionKey[] {
   // (entorno local/demo declarado) o HOTELOS_ALLOW_DEMO_AUTH=true (mismo flag
   // que habilita el fallback de auth demo). Con NODE_ENV ausente o cualquier
   // otro valor → solo permisos reales derivados de roles.
-  const env = process.env.NODE_ENV;
-  const demoMode =
-    env === "development" || env === "dev" || process.env.HOTELOS_ALLOW_DEMO_AUTH === "true";
+  const demoMode = options.demoMode ?? isDemoPermissionUnionEnabled();
   if (!demoMode) {
     return prismaPerms;
   }
   // Dev/demo only: union with the legacy demoStore baseline so route-permission
   // gates that use keys not yet seeded into the RolePermission table keep
   // working until the permission catalog is fully aligned.
-  const set = new Set<string>([...prismaPerms, ...demoStore.userContext.permissions]);
+  //
+  // Tanda 5 (L1c · api): the PLATFORM keys (admin.tenants.manage) never come
+  // from the union — only from a real grant. The baseline carries the key for
+  // the token-less demo fallback (auth-context.ts builds that context from the
+  // demoStore directly, so it keeps it); a REAL session of a hotel owner in
+  // dev used to read /admin/tenants/* of other organizations through it
+  // (isPlatformAdmin was already derived from the real grants; the gate was not).
+  const baseline = (options.baseline ?? demoStore.userContext.permissions).filter((key) => !isPlatformPermission(key));
+  const set = new Set<string>([...prismaPerms, ...baseline]);
   return Array.from(set) as PermissionKey[];
 }
 
@@ -103,8 +118,15 @@ export async function loadUserContext(sessionId: string): Promise<UserContext | 
   if (!session || session.status !== "active") return null;
   const user = await prisma.user.findUnique({ where: { id: session.userId } });
   if (!user || user.status !== "active") return null;
-  const assignment = await prisma.userPropertyRole.findFirst({ where: { userId: user.id }, orderBy: { id: "asc" } });
-  const propertyId = assignment?.propertyId ?? demoStore.userContext.propertyId;
+  // Every assignment: the first one (by id) is the active property, as before;
+  // the whole set is the property scope of the request (L1c, lib/tenancy.ts).
+  const assignments = await prisma.userPropertyRole.findMany({
+    where: { userId: user.id },
+    select: { propertyId: true },
+    orderBy: { id: "asc" }
+  });
+  const propertyId = assignments[0]?.propertyId ?? demoStore.userContext.propertyId;
+  const assignedPropertyIds = Array.from(new Set(assignments.map((assignment) => assignment.propertyId)));
   const permissions = await loadPermissionsForUserProperty(user.id, propertyId);
   return {
     organizationId: user.organizationId,
@@ -113,6 +135,7 @@ export async function loadUserContext(sessionId: string): Promise<UserContext | 
     fullName: user.fullName,
     deviceId: session.deviceId,
     permissions: unionPermissions(permissions),
+    assignedPropertyIds,
     // Derived from the REAL role grants (before the demo union) so the flag is
     // trustworthy even when unionPermissions adds admin.tenants.manage for all.
     isPlatformAdmin: hasPlatformAdminGrant(permissions),
@@ -335,6 +358,127 @@ export async function loadIsPlatformAdmin(userId: string, propertyId: string): P
 export async function isPlatformAdmin(context: UserContext): Promise<boolean> {
   if (typeof context.isPlatformAdmin === "boolean") return context.isPlatformAdmin;
   return loadIsPlatformAdmin(context.userId, context.propertyId);
+}
+
+// ---------------------------------------------------------------------------
+// GET /users/me (Tanda 5 · L1a · rbac)
+// ---------------------------------------------------------------------------
+
+export type CurrentUserPropertyRole = {
+  id: string;
+  name: string;
+  /** Shared template the role follows (ROLE_TEMPLATE_KEYS); null = custom role. */
+  templateKey: RoleKey | null;
+};
+
+export type CurrentUserProperty = {
+  id: string;
+  name: string;
+  organizationId: string;
+  /** Roles the user holds IN THIS property (user_property_roles), name order. */
+  roles: CurrentUserPropertyRole[];
+  /** Distinct template keys of those roles, in ROLE_TEMPLATE_KEYS order. */
+  templateKeys: RoleKey[];
+};
+
+export type CurrentUserProfile = {
+  userId: string;
+  email: string | null;
+  fullName: string;
+  organizationId: string;
+  organizationName: string | null;
+  /** Property the session context is bound to (first assignment, as loadUserContext). */
+  activePropertyId: string;
+  /** Effective permissions of the session context (demo union included in dev). */
+  permissions: PermissionKey[];
+  /**
+   * Permissions REALLY granted through roles in the active property (never
+   * the demo union): what the navigation filters by, so a receptionist on the
+   * dev API sees the receptionist menu and not the super-user one.
+   */
+  grantedPermissions: PermissionKey[];
+  /** Real DB grants only (never the demo union): may act across organizations. */
+  isPlatformAdmin: boolean;
+  mustChangePassword: boolean;
+  /** Template keys held in the active property (shortcut of properties[].templateKeys). */
+  templateKeys: RoleKey[];
+  properties: CurrentUserProperty[];
+};
+
+/** Known template keys, or null: a hand-edited template_key never reaches the client as a token. */
+function toTemplateKey(value: string | null | undefined): RoleKey | null {
+  if (!value) return null;
+  return (ROLE_TEMPLATE_KEYS as readonly string[]).includes(value) ? (value as RoleKey) : null;
+}
+
+function orderTemplateKeys(keys: Iterable<RoleKey | null>): RoleKey[] {
+  const held = new Set<RoleKey>();
+  for (const key of keys) if (key) held.add(key);
+  return ROLE_TEMPLATE_KEYS.filter((key) => held.has(key));
+}
+
+/**
+ * The signed-in user with the template of every role they hold, per property.
+ * The navigation tree (apps/admin-web/src/navigation/role-tokens.ts) derives
+ * its role tokens from `properties[].templateKeys` of the active property, so
+ * the menu follows the REAL assignment instead of a persona in localStorage.
+ * Reads user_property_roles for every property (not only the session one):
+ * the property switcher needs to know the token changes with the property.
+ * Users without a Prisma row (token-less demo fallback) get the context
+ * fields and an empty property list — never a 500.
+ */
+export async function getCurrentUserProfile(context: UserContext): Promise<CurrentUserProfile> {
+  const [user, assignments, grantedPermissions] = await Promise.all([
+    prisma.user.findUnique({
+      where: { id: context.userId },
+      select: { id: true, email: true, fullName: true, organizationId: true, mustChangePassword: true, passwordHash: true, passwordChangedAt: true, status: true }
+    }),
+    prisma.userPropertyRole.findMany({ where: { userId: context.userId }, select: { propertyId: true, roleId: true } }),
+    loadPermissionsForUserProperty(context.userId, context.propertyId)
+  ]);
+  const organizationId = user?.organizationId ?? context.organizationId;
+  const roleIds = Array.from(new Set(assignments.map((assignment) => assignment.roleId)));
+  const propertyIds = Array.from(new Set(assignments.map((assignment) => assignment.propertyId)));
+  const [organization, roles, properties] = await Promise.all([
+    prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true } }),
+    roleIds.length > 0
+      ? prisma.role.findMany({ where: { id: { in: roleIds } }, select: { id: true, name: true, templateKey: true } })
+      : Promise.resolve([]),
+    propertyIds.length > 0
+      ? prisma.property.findMany({ where: { id: { in: propertyIds } }, select: { id: true, name: true, organizationId: true }, orderBy: { name: "asc" } })
+      : Promise.resolve([])
+  ]);
+  const roleById = new Map(roles.map((role) => [role.id, role]));
+  const propertyRows: CurrentUserProperty[] = properties.map((property) => {
+    const held = assignments
+      .filter((assignment) => assignment.propertyId === property.id)
+      .map((assignment) => roleById.get(assignment.roleId))
+      .filter((role): role is { id: string; name: string; templateKey: string | null } => role !== undefined)
+      .map((role) => ({ id: role.id, name: role.name, templateKey: toTemplateKey(role.templateKey) }))
+      .sort((a, b) => a.name.localeCompare(b.name, "es"));
+    return {
+      id: property.id,
+      name: property.name,
+      organizationId: property.organizationId,
+      roles: held,
+      templateKeys: orderTemplateKeys(held.map((role) => role.templateKey))
+    };
+  });
+  const active = propertyRows.find((property) => property.id === context.propertyId);
+  return {
+    userId: context.userId,
+    email: user?.email ?? null,
+    fullName: user?.fullName ?? context.fullName,
+    organizationId,
+    organizationName: organization?.name ?? null,
+    activePropertyId: context.propertyId,
+    permissions: context.permissions,
+    grantedPermissions: grantedPermissions.slice().sort(),
+    isPlatformAdmin: await isPlatformAdmin(context),
+    mustChangePassword: user ? deriveMustChangePassword(user) : context.mustChangePassword === true,
+    templateKeys: active?.templateKeys ?? [],
+    properties: propertyRows
+  };
 }
 
 export async function registerDevice(input: {

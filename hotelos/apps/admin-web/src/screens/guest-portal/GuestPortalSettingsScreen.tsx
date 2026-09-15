@@ -1,10 +1,12 @@
 // Portal del huésped — configuración de branding, idiomas, ventanas de
 // pre-check-in/check-out online, y qué funciones se ofrecen al huésped.
 
+import { useTabHost } from "../tabs/TabHost";
 import { useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { useActiveProperty } from "../../services/activeProperty";
 import type { UpsellsDashboardKpis } from "../../services/upsellsApi";
+import { percent } from "../../lib/format";
 
 type PortalConfig = {
   brandName: string;
@@ -58,14 +60,6 @@ const AVAILABLE_LANGUAGES = [
   { code: "gl", name: "Galego" }
 ];
 
-const FEATURE_KPIS = {
-  preCheckInRate: 67.4,
-  averageCompletionMinutes: 4.2,
-  signatureUploadSuccessRate: 94.1,
-  messagingResponseMinutes: 12,
-  recommendationsViewsLast30d: 1842
-};
-
 function navigateTo(screen: string) {
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
@@ -73,6 +67,8 @@ function navigateTo(screen: string) {
 }
 
 export function GuestPortalSettingsScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { propertyId } = useActiveProperty();
   const [config, setConfig] = useState<PortalConfig>(INITIAL_CONFIG);
   const [msg, setMsg] = useState<string | null>(null);
@@ -97,10 +93,14 @@ export function GuestPortalSettingsScreen() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Experiencia del huésped · Portal
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Portal del huésped</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
+                Comercial · Ventas adicionales
+              </p>
+              <h2 style={{ color: "var(--ink)" }}>Portal del huésped</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             URL pública: <code>{config.customDomain ?? "huesped.hotelos.app/" + config.brandName.toLowerCase().replace(/\s+/g, "-")}</code>. Recibe magic-link por email tras confirmar la reserva.
           </p>
@@ -110,16 +110,10 @@ export function GuestPortalSettingsScreen() {
 
       {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
 
-      {/* KPIs en vivo del portal */}
+      {/* Real portal KPIs only: the upsell conversion comes from the API. The old
+          pre-check-in / completion-time / recommendations tiles were hardcoded
+          demo numbers (L1c: no fabricated figures on a hotelier's screen). */}
       <div className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">% pre-check-in online</span><span className="bo-status ok">últimos 30 d</span></div>
-          <div className="rev-kpi-value">{FEATURE_KPIS.preCheckInRate.toFixed(1)} %</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tiempo medio completar</span></div>
-          <div className="rev-kpi-value">{FEATURE_KPIS.averageCompletionMinutes} min</div>
-        </article>
         <article
           className={`rev-kpi ${upsells.error ? "rev-kpi-warn" : "rev-kpi-ok"}`}
           role="button"
@@ -136,7 +130,7 @@ export function GuestPortalSettingsScreen() {
             <span className={`bo-status ${upsells.error ? "warn" : "info"}`}>{upsells.error ? "sin datos" : "últimos 30 d"}</span>
           </div>
           <div className="rev-kpi-value">
-            {upsells.loading && !upsellKpis ? "…" : upsellKpis ? `${upsellKpis.conversionRatePct.toFixed(1)} %` : "—"}
+            {upsells.loading && !upsellKpis ? "…" : upsellKpis ? percent(upsellKpis.conversionRatePct, { minimumFractionDigits: 1, maximumFractionDigits: 1 }) : "—"}
           </div>
           {upsellKpis ? (
             <small className="bo-muted">
@@ -145,10 +139,6 @@ export function GuestPortalSettingsScreen() {
           ) : upsells.error ? (
             <small className="bo-muted">{upsells.error}</small>
           ) : null}
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Recomendaciones vistas</span></div>
-          <div className="rev-kpi-value">{FEATURE_KPIS.recommendationsViewsLast30d.toLocaleString("es-ES")}</div>
         </article>
       </div>
 

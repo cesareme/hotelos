@@ -1,0 +1,3479 @@
+{
+  "meta": {
+    "source": "pilots/tanda5-nav-tree.csv",
+    "generator": "scripts/build-nav-tree.mjs",
+    "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
+    "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
+    "counts": {
+      "csvRows": 262,
+      "categories": 9,
+      "items": 64,
+      "tabs": 80,
+      "devOnly": 20,
+      "retired": 72,
+      "aliases": 24,
+      "publicScreens": 2,
+      "legacyRoutes": 205
+    }
+  },
+  "categories": [
+    {
+      "key": "hoy",
+      "label": "Hoy",
+      "items": [
+        {
+          "screenKey": "FrontDeskDashboard",
+          "label": "Mi día",
+          "url": "/hoy",
+          "baseTab": "Recepción",
+          "roles": [
+            "direccion",
+            "recepcion",
+            "pisos",
+            "mantenimiento",
+            "revenue",
+            "finanzas",
+            "comercial",
+            "fnb",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "OperationsDirectorScreen",
+              "label": "Operaciones",
+              "url": "/hoy/operaciones",
+              "roles": [
+                "pisos",
+                "mantenimiento",
+                "fnb",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "GeneralManagerScreen",
+              "label": "Dirección",
+              "url": "/hoy/direccion",
+              "roles": [
+                "direccion",
+                "revenue",
+                "finanzas",
+                "comercial",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "OwnerHome",
+              "label": "Propietario",
+              "url": "/hoy/propietario",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "AssistantChat",
+          "label": "Asistente Anfitorio",
+          "url": "/asistente",
+          "baseTab": null,
+          "roles": [
+            "direccion",
+            "recepcion",
+            "pisos",
+            "mantenimiento",
+            "revenue",
+            "finanzas",
+            "comercial",
+            "fnb",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "ShiftManagerScreen",
+          "label": "Turno",
+          "url": "/hoy/turno",
+          "baseTab": null,
+          "roles": [
+            "recepcion",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "NightAuditScreen",
+          "label": "Cierre del día",
+          "url": "/hoy/cierre-del-dia",
+          "baseTab": null,
+          "roles": [
+            "recepcion",
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "AiOwnerSummaryScreen",
+          "label": "Informe IA del día",
+          "url": "/hoy/informe-ia",
+          "baseTab": null,
+          "roles": [
+            "direccion",
+            "revenue",
+            "finanzas",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "AiHumanReviewQueueScreen",
+          "label": "Pendientes de la IA",
+          "url": "/hoy/pendientes-ia",
+          "baseTab": null,
+          "roles": [
+            "recepcion",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        }
+      ]
+    },
+    {
+      "key": "recepcion",
+      "label": "Recepción",
+      "items": [
+        {
+          "screenKey": "ReservationWorkspace",
+          "label": "Reservas",
+          "url": "/recepcion/reservas",
+          "baseTab": null,
+          "roles": [
+            "recepcion",
+            "direccion",
+            "comercial",
+            "revenue",
+            "pisos",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "ReservationsListScreen",
+              "label": "Lista",
+              "url": "/recepcion/reservas/lista",
+              "roles": [
+                "recepcion",
+                "direccion",
+                "comercial",
+                "revenue",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "LiveTimelineWorkspace",
+              "label": "Cronograma",
+              "url": "/recepcion/reservas/cronograma",
+              "roles": [
+                "recepcion",
+                "pisos",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "RoomRackScreen",
+              "label": "Tablero de habitaciones",
+              "url": "/recepcion/reservas/tablero",
+              "roles": [
+                "recepcion",
+                "pisos",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "ReservationDetailWorkspace",
+              "label": "Detalle",
+              "url": "/recepcion/reservas/:id",
+              "roles": [
+                "recepcion",
+                "direccion",
+                "comercial",
+                "revenue",
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            },
+            {
+              "screenKey": "GuestJourneyWorkspace",
+              "label": "Recorrido",
+              "url": "/recepcion/reservas/:id/recorrido",
+              "roles": [
+                "recepcion",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            }
+          ]
+        },
+        {
+          "screenKey": "ReservationCreate",
+          "label": "Nueva reserva",
+          "url": "/recepcion/reservas/nueva",
+          "baseTab": "Formulario",
+          "roles": [
+            "recepcion",
+            "direccion",
+            "comercial",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "ReservationAgent",
+              "label": "Dictar (IA)",
+              "url": "/recepcion/reservas/nueva/dictar",
+              "roles": [
+                "recepcion",
+                "direccion",
+                "comercial",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "GuestsList",
+          "label": "Huéspedes",
+          "url": "/recepcion/huespedes",
+          "baseTab": "Listado",
+          "roles": [
+            "recepcion",
+            "direccion",
+            "comercial",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "GuestDetail",
+              "label": "Ficha",
+              "url": "/recepcion/huespedes/:id",
+              "roles": [
+                "recepcion",
+                "direccion",
+                "comercial",
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            },
+            {
+              "screenKey": "GuestTimelineScreen",
+              "label": "Cronología",
+              "url": "/recepcion/huespedes/:id/cronologia",
+              "roles": [
+                "recepcion",
+                "direccion",
+                "comercial",
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            }
+          ]
+        },
+        {
+          "screenKey": "ConciergeInboxDashboard",
+          "label": "Mensajes de huéspedes",
+          "url": "/recepcion/mensajes",
+          "baseTab": null,
+          "roles": [
+            "recepcion",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "GroupsEventsDashboard",
+          "label": "Grupos y eventos",
+          "url": "/recepcion/grupos",
+          "baseTab": "Resumen",
+          "roles": [
+            "recepcion",
+            "comercial",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "GroupsCalendarScreen",
+              "label": "Calendario",
+              "url": "/recepcion/grupos/calendario",
+              "roles": [
+                "recepcion",
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "Allotments",
+              "label": "Cupos",
+              "url": "/recepcion/grupos/cupos",
+              "roles": [
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "operaciones",
+      "label": "Operaciones",
+      "items": [
+        {
+          "screenKey": "HousekeepingDashboard",
+          "label": "Pisos",
+          "url": "/operaciones/pisos",
+          "baseTab": "Tablero",
+          "roles": [
+            "pisos",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "HousekeepingMobileScreen",
+              "label": "Mi turno",
+              "url": "/operaciones/pisos/mi-turno",
+              "roles": [
+                "pisos",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "HousekeepingSetupForm",
+              "label": "Ajustes",
+              "url": "/operaciones/pisos/ajustes",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "MaintenanceDashboard",
+          "label": "Mantenimiento",
+          "url": "/operaciones/mantenimiento",
+          "baseTab": "Tablero",
+          "roles": [
+            "mantenimiento",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "MaintenanceMobileScreen",
+              "label": "Mis averías",
+              "url": "/operaciones/mantenimiento/mis-averias",
+              "roles": [
+                "mantenimiento",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "MaintenanceSetupForm",
+              "label": "Ajustes",
+              "url": "/operaciones/mantenimiento/ajustes",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "PosDashboard",
+          "label": "Punto de venta",
+          "url": "/operaciones/tpv",
+          "baseTab": "Comandas",
+          "roles": [
+            "fnb",
+            "recepcion",
+            "direccion",
+            "finanzas",
+            "admin"
+          ],
+          "modulesAny": [
+            "outlet_pos"
+          ],
+          "tabs": [
+            {
+              "screenKey": "FnbMenu",
+              "label": "Cartas",
+              "url": "/operaciones/tpv/cartas",
+              "roles": [
+                "fnb",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "outlet_pos"
+              ]
+            },
+            {
+              "screenKey": "FnbInventory",
+              "label": "Existencias",
+              "url": "/operaciones/tpv/existencias",
+              "roles": [
+                "fnb",
+                "direccion",
+                "finanzas",
+                "admin"
+              ],
+              "modulesAny": [
+                "outlet_pos"
+              ]
+            }
+          ]
+        },
+        {
+          "screenKey": "WorkforceDashboard",
+          "label": "Personal y turnos",
+          "url": "/operaciones/personal",
+          "baseTab": null,
+          "roles": [
+            "direccion",
+            "pisos",
+            "mantenimiento",
+            "fnb",
+            "admin"
+          ],
+          "modulesAny": [
+            "workforce_labor"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "SafetyDashboard",
+          "label": "Seguridad e incidentes",
+          "url": "/operaciones/seguridad",
+          "baseTab": null,
+          "roles": [
+            "direccion",
+            "mantenimiento",
+            "recepcion",
+            "admin"
+          ],
+          "modulesAny": [
+            "safety_incident_management"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "ProcurementDashboard",
+          "label": "Compras e inventario",
+          "url": "/operaciones/compras",
+          "baseTab": "Compras",
+          "roles": [
+            "direccion",
+            "fnb",
+            "finanzas",
+            "admin"
+          ],
+          "modulesAny": [
+            "procurement_inventory"
+          ],
+          "tabs": [
+            {
+              "screenKey": "InventoryDashboard",
+              "label": "Inventario",
+              "url": "/operaciones/compras/inventario",
+              "roles": [
+                "direccion",
+                "fnb",
+                "finanzas",
+                "admin"
+              ],
+              "modulesAny": [
+                "procurement_inventory"
+              ]
+            }
+          ]
+        },
+        {
+          "screenKey": "AssetsDashboard",
+          "label": "Activos",
+          "url": "/operaciones/activos",
+          "baseTab": null,
+          "roles": [
+            "mantenimiento",
+            "direccion",
+            "finanzas",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "EnergyDashboard",
+          "label": "Energía y agua",
+          "url": "/operaciones/energia",
+          "baseTab": null,
+          "roles": [
+            "mantenimiento",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        }
+      ]
+    },
+    {
+      "key": "comercial",
+      "label": "Comercial",
+      "items": [
+        {
+          "screenKey": "CrmDashboard",
+          "label": "Clientes y fidelización",
+          "url": "/comercial/clientes",
+          "baseTab": "Clientes",
+          "roles": [
+            "comercial",
+            "direccion",
+            "recepcion",
+            "admin"
+          ],
+          "modulesAny": [
+            "guest_data_crm_loyalty"
+          ],
+          "tabs": [
+            {
+              "screenKey": "GuestSegmentsReal",
+              "label": "Segmentos",
+              "url": "/comercial/clientes/segmentos",
+              "roles": [
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "guest_data_crm_loyalty"
+              ]
+            },
+            {
+              "screenKey": "LoyaltyDashboard",
+              "label": "Fidelización",
+              "url": "/comercial/clientes/fidelizacion",
+              "roles": [
+                "comercial",
+                "direccion",
+                "recepcion",
+                "admin"
+              ],
+              "modulesAny": [
+                "guest_data_crm_loyalty"
+              ]
+            },
+            {
+              "screenKey": "LoyaltyProgram",
+              "label": "Programa",
+              "url": "/comercial/clientes/programa",
+              "roles": [
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "guest_data_crm_loyalty"
+              ]
+            },
+            {
+              "screenKey": "CampaignManagerReal",
+              "label": "Campañas",
+              "url": "/comercial/clientes/campanas",
+              "roles": [
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "guest_data_crm_loyalty"
+              ]
+            }
+          ]
+        },
+        {
+          "screenKey": "ReputationDashboard",
+          "label": "Reputación y calidad",
+          "url": "/comercial/reputacion",
+          "baseTab": "Reseñas",
+          "roles": [
+            "comercial",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "reputation_quality"
+          ],
+          "tabs": [
+            {
+              "screenKey": "SurveysDashboard",
+              "label": "Encuestas",
+              "url": "/comercial/reputacion/encuestas",
+              "roles": [
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "reputation_quality"
+              ]
+            },
+            {
+              "screenKey": "QualityDashboard",
+              "label": "Calidad",
+              "url": "/comercial/reputacion/calidad",
+              "roles": [
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "reputation_quality"
+              ]
+            }
+          ]
+        },
+        {
+          "screenKey": "UpsellsDashboard",
+          "label": "Ventas adicionales",
+          "url": "/comercial/ventas-adicionales",
+          "baseTab": "Ventas adicionales",
+          "roles": [
+            "recepcion",
+            "comercial",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "UpsellsSettings",
+              "label": "Ofertas",
+              "url": "/comercial/ventas-adicionales/ofertas",
+              "roles": [
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "GuestPortalSettingsReal",
+              "label": "Portal del huésped",
+              "url": "/comercial/ventas-adicionales/portal",
+              "roles": [
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "guest_self_service"
+              ]
+            }
+          ]
+        },
+        {
+          "screenKey": "SalesPipelineDashboard",
+          "label": "Ventas a empresas",
+          "url": "/comercial/ventas-empresas",
+          "baseTab": null,
+          "roles": [
+            "comercial",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "ChannelAggregatorHub",
+          "label": "Canales de venta",
+          "url": "/comercial/canales",
+          "baseTab": "Canales de venta",
+          "roles": [
+            "revenue",
+            "comercial",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "distribution_hub"
+          ],
+          "tabs": [
+            {
+              "screenKey": "ChannelMappings",
+              "label": "Correspondencias",
+              "url": "/comercial/canales/correspondencias",
+              "roles": [
+                "revenue",
+                "comercial",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "distribution_hub"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "revenue",
+      "label": "Revenue",
+      "items": [
+        {
+          "screenKey": "RevenueHomeDashboard",
+          "label": "Panel de revenue",
+          "url": "/revenue",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "revenue_profit_engine"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "RateGridEditorScreen",
+          "label": "Parrilla de tarifas",
+          "url": "/revenue/parrilla",
+          "baseTab": "Parrilla de tarifas",
+          "roles": [
+            "revenue",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "revenue_profit_engine"
+          ],
+          "tabs": [
+            {
+              "screenKey": "RateJournalScreen",
+              "label": "Historial",
+              "url": "/revenue/parrilla/historial",
+              "roles": [
+                "revenue",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "revenue_profit_engine"
+              ]
+            }
+          ]
+        },
+        {
+          "screenKey": "RatePlans",
+          "label": "Planes de tarifas",
+          "url": "/revenue/planes",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "direccion",
+            "recepcion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "RevenueRules",
+          "label": "Reglas y recomendaciones",
+          "url": "/revenue/reglas",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "revenue_profit_engine"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "RevenueHistoryForecastDashboard",
+          "label": "Histórico y previsión",
+          "url": "/revenue/historico-prevision",
+          "baseTab": "Histórico y previsión",
+          "roles": [
+            "revenue",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "revenue_profit_engine"
+          ],
+          "tabs": [
+            {
+              "screenKey": "RevenueHistoryForecastReport",
+              "label": "Informe",
+              "url": "/revenue/historico-prevision/informe",
+              "roles": [
+                "revenue",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "revenue_profit_engine"
+              ]
+            },
+            {
+              "screenKey": "RevenueForecastExplorer",
+              "label": "Explorador",
+              "url": "/revenue/historico-prevision/explorador",
+              "roles": [
+                "revenue",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "revenue_profit_engine"
+              ]
+            }
+          ]
+        },
+        {
+          "screenKey": "RevenueComparisonDashboard",
+          "label": "Comparativa",
+          "url": "/revenue/comparativa",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "revenue_profit_engine"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "RevenueMeeting",
+          "label": "Reunión de revenue",
+          "url": "/revenue/reunion",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "revenue_profit_engine"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "RateShopperSettings",
+          "label": "Competencia",
+          "url": "/revenue/competencia",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "revenue_profit_engine"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "DemandCalendarAdmin",
+          "label": "Calendario de demanda",
+          "url": "/revenue/calendario-demanda",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [
+            "revenue_profit_engine"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "CancellationPolicies",
+          "label": "Políticas de cancelación",
+          "url": "/revenue/politicas-cancelacion",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "direccion",
+            "recepcion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        }
+      ]
+    },
+    {
+      "key": "finanzas",
+      "label": "Finanzas",
+      "items": [
+        {
+          "screenKey": "BillingCenter",
+          "label": "Facturación y cobros",
+          "url": "/finanzas/facturacion",
+          "baseTab": "Facturación y cobros",
+          "roles": [
+            "recepcion",
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "FolioDetail",
+              "label": "Folio",
+              "url": "/finanzas/facturacion/folios/:id",
+              "roles": [
+                "recepcion",
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            },
+            {
+              "screenKey": "InvoiceRectificationsScreen",
+              "label": "Rectificativas",
+              "url": "/finanzas/facturacion/rectificativas",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "recepcion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "FolioRouting",
+              "label": "Enrutamiento de folios",
+              "url": "/finanzas/facturacion/enrutamiento",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "recepcion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "FinancePositionDashboard",
+          "label": "Tesorería",
+          "url": "/finanzas/tesoreria",
+          "baseTab": "Tesorería",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "ExchangeRatesScreen",
+              "label": "Tipos de cambio",
+              "url": "/finanzas/tesoreria/tipos-de-cambio",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "BankReconciliationScreen",
+          "label": "Conciliación bancaria",
+          "url": "/finanzas/conciliacion",
+          "baseTab": "Conciliación bancaria",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "BankingSpain",
+              "label": "Extractos y remesas",
+              "url": "/finanzas/conciliacion/extractos-remesas",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "TrialBalanceScreen",
+          "label": "Estados contables",
+          "url": "/finanzas/estados-contables",
+          "baseTab": "Balance de comprobación",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "BalanceSheetScreen",
+              "label": "Balance de situación",
+              "url": "/finanzas/estados-contables/balance",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "CashFlowScreen",
+              "label": "Flujos de efectivo",
+              "url": "/finanzas/estados-contables/flujos",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "YearEndCloseScreen",
+              "label": "Cierre de ejercicio",
+              "url": "/finanzas/estados-contables/cierre-ejercicio",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "CommissionsScreen",
+          "label": "Comisiones",
+          "url": "/finanzas/comisiones",
+          "baseTab": null,
+          "roles": [
+            "finanzas",
+            "direccion",
+            "comercial",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "PayrollScreen",
+          "label": "Nóminas",
+          "url": "/finanzas/nominas",
+          "baseTab": null,
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        }
+      ]
+    },
+    {
+      "key": "cumplimiento",
+      "label": "Cumplimiento",
+      "items": [
+        {
+          "screenKey": "ComplianceInbox",
+          "label": "Bandeja de cumplimiento",
+          "url": "/cumplimiento/bandeja",
+          "baseTab": null,
+          "roles": [
+            "recepcion",
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "ComplianceCenter",
+          "label": "Centro de cumplimiento",
+          "url": "/cumplimiento/centro",
+          "baseTab": null,
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "FiscalDashboard",
+          "label": "VeriFactu",
+          "url": "/cumplimiento/verifactu",
+          "baseTab": "VeriFactu",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "TbaiForal",
+              "label": "TicketBAI (forales)",
+              "url": "/cumplimiento/verifactu/ticketbai",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "FiscalSubmissionsCenter",
+          "label": "Envíos a autoridades",
+          "url": "/cumplimiento/envios",
+          "baseTab": null,
+          "roles": [
+            "finanzas",
+            "recepcion",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "Modelo303Screen",
+          "label": "Modelos AEAT",
+          "url": "/cumplimiento/modelos-aeat",
+          "baseTab": "Modelo 303",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "Modelo111Screen",
+              "label": "Modelo 111",
+              "url": "/cumplimiento/modelos-aeat/111",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "Modelo115Screen",
+              "label": "Modelo 115",
+              "url": "/cumplimiento/modelos-aeat/115",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "Modelo180Screen",
+              "label": "Modelo 180",
+              "url": "/cumplimiento/modelos-aeat/180",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "Modelo390Screen",
+              "label": "Modelo 390",
+              "url": "/cumplimiento/modelos-aeat/390",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "PropertyTaxesScreen",
+          "label": "Impuestos",
+          "url": "/cumplimiento/impuestos",
+          "baseTab": "IVA, IGIC e IPSI",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "TouristTax",
+              "label": "Tasa turística",
+              "url": "/cumplimiento/impuestos/tasa-turistica",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "GuestRegisterSettings",
+          "label": "Registro de viajeros",
+          "url": "/cumplimiento/registro-viajeros",
+          "baseTab": "Partes de entrada",
+          "roles": [
+            "recepcion",
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "SesHospedajesSettings",
+              "label": "SES.Hospedajes",
+              "url": "/cumplimiento/registro-viajeros/ses-hospedajes",
+              "roles": [
+                "recepcion",
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "AuthorityRoutingSettings",
+              "label": "Autoridades",
+              "url": "/cumplimiento/registro-viajeros/autoridades",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "GuestRegisterRetentionSettings",
+              "label": "Conservación",
+              "url": "/cumplimiento/registro-viajeros/conservacion",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "GdprRequestsScreen",
+          "label": "Protección de datos",
+          "url": "/cumplimiento/proteccion-datos",
+          "baseTab": null,
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "SustainabilityDashboard",
+          "label": "Sostenibilidad",
+          "url": "/cumplimiento/sostenibilidad",
+          "baseTab": "Panel",
+          "roles": [
+            "direccion",
+            "mantenimiento",
+            "finanzas",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "EsrsReport",
+              "label": "Informe ESRS",
+              "url": "/cumplimiento/sostenibilidad/esrs",
+              "roles": [
+                "direccion",
+                "finanzas",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "informes",
+      "label": "Informes",
+      "items": [
+        {
+          "screenKey": "ReportingCenter",
+          "label": "Centro de informes",
+          "url": "/informes",
+          "baseTab": "Centro de informes",
+          "roles": [
+            "recepcion",
+            "finanzas",
+            "direccion",
+            "revenue",
+            "comercial",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "RevenueExportCenter",
+              "label": "Exportaciones de revenue",
+              "url": "/informes/exportaciones-revenue",
+              "roles": [
+                "revenue",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [
+                "revenue_profit_engine"
+              ]
+            }
+          ]
+        },
+        {
+          "screenKey": "AnalyticsCenterDashboard",
+          "label": "Analítica",
+          "url": "/informes/analitica",
+          "baseTab": null,
+          "roles": [
+            "direccion",
+            "revenue",
+            "finanzas",
+            "admin"
+          ],
+          "modulesAny": [
+            "hotel_intelligence_platform"
+          ],
+          "tabs": []
+        },
+        {
+          "screenKey": "RoomProfitabilityDashboard",
+          "label": "Rentabilidad por habitación",
+          "url": "/informes/rentabilidad-habitacion",
+          "baseTab": null,
+          "roles": [
+            "direccion",
+            "revenue",
+            "finanzas",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "PortfolioDashboard",
+          "label": "Cartera de propiedades",
+          "url": "/informes/cartera",
+          "baseTab": "Cartera de propiedades",
+          "roles": [
+            "direccion",
+            "revenue",
+            "finanzas",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "PropertyDetailScreen",
+              "label": "Detalle",
+              "url": "/informes/cartera/:propiedad",
+              "roles": [
+                "direccion",
+                "revenue",
+                "finanzas",
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            }
+          ]
+        },
+        {
+          "screenKey": "ChannelPerformanceDashboard",
+          "label": "Rendimiento de canales",
+          "url": "/informes/canales",
+          "baseTab": null,
+          "roles": [
+            "revenue",
+            "comercial",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        }
+      ]
+    },
+    {
+      "key": "configuracion",
+      "label": "Configuración",
+      "items": [
+        {
+          "screenKey": "SetupCenterScreen",
+          "label": "Puesta en marcha",
+          "url": "/configuracion/puesta-en-marcha",
+          "baseTab": "Resumen",
+          "roles": [
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "GoLiveChecklist",
+              "label": "Salida en vivo",
+              "url": "/configuracion/puesta-en-marcha/salida-en-vivo",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "PropertyMapper",
+              "label": "Importar desde documentos",
+              "url": "/configuracion/puesta-en-marcha/importar-documentos",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "PropertyProfileSetupForm",
+          "label": "Propiedad",
+          "url": "/configuracion/propiedad",
+          "baseTab": "Perfil",
+          "roles": [
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "BuildingSetupForm",
+              "label": "Edificios",
+              "url": "/configuracion/propiedad/edificios",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "FloorSetupForm",
+              "label": "Plantas",
+              "url": "/configuracion/propiedad/plantas",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "ZoneSetupForm",
+              "label": "Zonas",
+              "url": "/configuracion/propiedad/zonas",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "DepartmentSetupForm",
+              "label": "Departamentos",
+              "url": "/configuracion/propiedad/departamentos",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "CategoryManagerScreen",
+              "label": "Categorías",
+              "url": "/configuracion/propiedad/categorias",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "CategoryDetailScreen",
+              "label": "Detalle de categoría",
+              "url": "/configuracion/propiedad/categorias/:codigo",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            },
+            {
+              "screenKey": "CategoryOptionForm",
+              "label": "Nueva opción",
+              "url": "/configuracion/propiedad/categorias/:codigo/opciones/nueva",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            },
+            {
+              "screenKey": "CustomFieldSetupForm",
+              "label": "Campos personalizados",
+              "url": "/configuracion/propiedad/campos-personalizados",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "RoomSetupForm",
+          "label": "Habitaciones y espacios",
+          "url": "/configuracion/habitaciones",
+          "baseTab": "Habitaciones",
+          "roles": [
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "RoomTypeSetupForm",
+              "label": "Tipos",
+              "url": "/configuracion/habitaciones/tipos",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "SpaceResourceSetupForm",
+              "label": "Espacios y recursos",
+              "url": "/configuracion/habitaciones/espacios",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "UserRoleManager",
+          "label": "Usuarios y roles",
+          "url": "/configuracion/usuarios",
+          "baseTab": null,
+          "roles": [
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": []
+        },
+        {
+          "screenKey": "NotificationsScreen",
+          "label": "Comunicaciones",
+          "url": "/configuracion/comunicaciones",
+          "baseTab": "Plantillas y envíos",
+          "roles": [
+            "direccion",
+            "recepcion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "EmailConnectors",
+              "label": "Correo entrante",
+              "url": "/configuracion/comunicaciones/correo-entrante",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "BillingSettings",
+          "label": "Facturación y pagos",
+          "url": "/configuracion/facturacion-pagos",
+          "baseTab": "Facturación",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "PaymentSettings",
+              "label": "Pagos",
+              "url": "/configuracion/facturacion-pagos/pagos",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "AccountingSettings",
+          "label": "Contabilidad y fiscal",
+          "url": "/configuracion/contabilidad-fiscal",
+          "baseTab": "Contabilidad",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "TaxComplianceSettings",
+              "label": "Fiscal",
+              "url": "/configuracion/contabilidad-fiscal/fiscal",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "FinanceComplianceSetupForm",
+              "label": "Perfil inicial",
+              "url": "/configuracion/contabilidad-fiscal/perfil-inicial",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "RevenueCategorySetupForm",
+              "label": "Categorías de ingresos",
+              "url": "/configuracion/contabilidad-fiscal/categorias-ingresos",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "ModuleManager",
+          "label": "Módulos e integraciones",
+          "url": "/configuracion/modulos",
+          "baseTab": "Módulos",
+          "roles": [
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "ModuleHealthCenter",
+              "label": "Salud",
+              "url": "/configuracion/modulos/salud",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "MarketplaceCatalog",
+              "label": "Integraciones",
+              "url": "/configuracion/modulos/integraciones",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "PropertyAiScreen",
+          "label": "Inteligencia artificial",
+          "url": "/configuracion/ia",
+          "baseTab": "Ajustes",
+          "roles": [
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "AiToolRegistryScreen",
+              "label": "Herramientas",
+              "url": "/configuracion/ia/herramientas",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "AiPipelineStatusScreen",
+              "label": "Actividad",
+              "url": "/configuracion/ia/actividad",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "AiGovernanceScreen",
+              "label": "Gobernanza",
+              "url": "/configuracion/ia/gobernanza",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "AiPropertySetupForm",
+              "label": "Alta de IA",
+              "url": "/configuracion/ia/alta",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "AuditLogViewer",
+          "label": "Sistema",
+          "url": "/configuracion/sistema",
+          "baseTab": "Auditoría",
+          "roles": [
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "WebhooksAdmin",
+              "label": "Webhooks",
+              "url": "/configuracion/sistema/webhooks",
+              "roles": [
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "DeveloperApps",
+              "label": "Aplicaciones",
+              "url": "/configuracion/sistema/aplicaciones",
+              "roles": [
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "ApiReferenceScreen",
+              "label": "Referencia de API",
+              "url": "/configuracion/sistema/api",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "TenantAdminConsoleScreen",
+              "label": "Organizaciones",
+              "url": "/configuracion/sistema/organizaciones",
+              "roles": [
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "TenantDetailScreen",
+              "label": "Organización",
+              "url": "/configuracion/sistema/organizaciones/:id",
+              "roles": [
+                "admin"
+              ],
+              "modulesAny": [],
+              "detail": true
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "legacyRoutes": [
+    {
+      "from": "/backoffice",
+      "to": "/hoy"
+    },
+    {
+      "from": "/backoffice/accounting",
+      "to": "/configuracion/contabilidad-fiscal"
+    },
+    {
+      "from": "/backoffice/ai-booking",
+      "to": "/recepcion/reservas/nueva/dictar"
+    },
+    {
+      "from": "/backoffice/ai-governance",
+      "to": "/configuracion/ia/gobernanza"
+    },
+    {
+      "from": "/backoffice/ai-operations/email-connectors",
+      "to": "/configuracion/comunicaciones/correo-entrante"
+    },
+    {
+      "from": "/backoffice/ai-operations/governance",
+      "to": "/configuracion/ia/gobernanza"
+    },
+    {
+      "from": "/backoffice/ai-operations/pipeline",
+      "to": "/configuracion/ia/actividad"
+    },
+    {
+      "from": "/backoffice/ai-operations/property",
+      "to": "/configuracion/ia"
+    },
+    {
+      "from": "/backoffice/ai-operations/review",
+      "to": "/hoy/pendientes-ia"
+    },
+    {
+      "from": "/backoffice/ai-operations/summary",
+      "to": "/hoy/informe-ia"
+    },
+    {
+      "from": "/backoffice/ai-operations/tools",
+      "to": "/configuracion/ia/herramientas"
+    },
+    {
+      "from": "/backoffice/ai-setup",
+      "to": "/configuracion/ia"
+    },
+    {
+      "from": "/backoffice/ai/settings",
+      "to": "/configuracion/ia"
+    },
+    {
+      "from": "/backoffice/analytics-reporting",
+      "to": "/informes/analitica"
+    },
+    {
+      "from": "/backoffice/assets-capex-energy",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/assistant",
+      "to": "/asistente"
+    },
+    {
+      "from": "/backoffice/billing",
+      "to": "/configuracion/facturacion-pagos"
+    },
+    {
+      "from": "/backoffice/billing/center",
+      "to": "/finanzas/facturacion"
+    },
+    {
+      "from": "/backoffice/billing/invoices",
+      "to": "/finanzas/facturacion"
+    },
+    {
+      "from": "/backoffice/channel-manager",
+      "to": "/comercial/canales"
+    },
+    {
+      "from": "/backoffice/channel-manager/aggregator",
+      "to": "/comercial/canales"
+    },
+    {
+      "from": "/backoffice/channel-manager/channels",
+      "to": "/comercial/canales"
+    },
+    {
+      "from": "/backoffice/channel-manager/mappings",
+      "to": "/comercial/canales/correspondencias"
+    },
+    {
+      "from": "/backoffice/channel-manager/parity-alerts",
+      "to": "/comercial/canales"
+    },
+    {
+      "from": "/backoffice/channel-manager/sync-health",
+      "to": "/comercial/canales"
+    },
+    {
+      "from": "/backoffice/channel-manager/sync-jobs",
+      "to": "/comercial/canales"
+    },
+    {
+      "from": "/backoffice/commercial/allotments",
+      "to": "/recepcion/grupos/cupos"
+    },
+    {
+      "from": "/backoffice/commercial/cancellation-policies",
+      "to": "/revenue/politicas-cancelacion"
+    },
+    {
+      "from": "/backoffice/commercial/rate-plans",
+      "to": "/revenue/planes"
+    },
+    {
+      "from": "/backoffice/commercial/tourist-tax",
+      "to": "/cumplimiento/impuestos/tasa-turistica"
+    },
+    {
+      "from": "/backoffice/compliance/authority-routing",
+      "to": "/cumplimiento/registro-viajeros/autoridades"
+    },
+    {
+      "from": "/backoffice/compliance/center",
+      "to": "/cumplimiento/centro"
+    },
+    {
+      "from": "/backoffice/compliance/gdpr-requests",
+      "to": "/cumplimiento/proteccion-datos"
+    },
+    {
+      "from": "/backoffice/compliance/guest-register-retention",
+      "to": "/cumplimiento/registro-viajeros/conservacion"
+    },
+    {
+      "from": "/backoffice/compliance/ses-hospedajes",
+      "to": "/cumplimiento/registro-viajeros/ses-hospedajes"
+    },
+    {
+      "from": "/backoffice/compliance/spain-guest-register",
+      "to": "/cumplimiento/registro-viajeros"
+    },
+    {
+      "from": "/backoffice/compliance/taxes",
+      "to": "/cumplimiento/impuestos"
+    },
+    {
+      "from": "/backoffice/concierge-messaging",
+      "to": "/configuracion/ia/gobernanza"
+    },
+    {
+      "from": "/backoffice/configuration",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/ai",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/ai/setup",
+      "to": "/configuracion/ia/alta"
+    },
+    {
+      "from": "/backoffice/configuration/buildings/new",
+      "to": "/configuracion/propiedad/edificios"
+    },
+    {
+      "from": "/backoffice/configuration/categories",
+      "to": "/configuracion/propiedad/categorias"
+    },
+    {
+      "from": "/backoffice/configuration/categories/:categoryCode",
+      "to": "/configuracion/propiedad/categorias/:codigo"
+    },
+    {
+      "from": "/backoffice/configuration/categories/:categoryCode/options/new",
+      "to": "/configuracion/propiedad/categorias/:codigo/opciones/nueva"
+    },
+    {
+      "from": "/backoffice/configuration/compliance",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/compliance/setup",
+      "to": "/configuracion/contabilidad-fiscal/perfil-inicial"
+    },
+    {
+      "from": "/backoffice/configuration/custom-fields",
+      "to": "/configuracion/propiedad/campos-personalizados"
+    },
+    {
+      "from": "/backoffice/configuration/departments",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/departments/new",
+      "to": "/configuracion/propiedad/departamentos"
+    },
+    {
+      "from": "/backoffice/configuration/finance",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/floors/new",
+      "to": "/configuracion/propiedad/plantas"
+    },
+    {
+      "from": "/backoffice/configuration/operations",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/operations/housekeeping",
+      "to": "/operaciones/pisos/ajustes"
+    },
+    {
+      "from": "/backoffice/configuration/operations/maintenance",
+      "to": "/operaciones/mantenimiento/ajustes"
+    },
+    {
+      "from": "/backoffice/configuration/property-profile",
+      "to": "/configuracion/propiedad"
+    },
+    {
+      "from": "/backoffice/configuration/revenue",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/revenue/setup",
+      "to": "/configuracion/contabilidad-fiscal/categorias-ingresos"
+    },
+    {
+      "from": "/backoffice/configuration/room-types/new",
+      "to": "/configuracion/habitaciones/tipos"
+    },
+    {
+      "from": "/backoffice/configuration/rooms-room-types",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/rooms/new",
+      "to": "/configuracion/habitaciones"
+    },
+    {
+      "from": "/backoffice/configuration/spaces-resources",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/configuration/spaces-resources/new",
+      "to": "/configuracion/habitaciones/espacios"
+    },
+    {
+      "from": "/backoffice/configuration/zones/new",
+      "to": "/configuracion/propiedad/zonas"
+    },
+    {
+      "from": "/backoffice/crm/segments",
+      "to": "/comercial/clientes/segmentos"
+    },
+    {
+      "from": "/backoffice/developer",
+      "to": "/configuracion/sistema"
+    },
+    {
+      "from": "/backoffice/developer/apps",
+      "to": "/configuracion/sistema/aplicaciones"
+    },
+    {
+      "from": "/backoffice/developer/webhooks",
+      "to": "/configuracion/sistema/webhooks"
+    },
+    {
+      "from": "/backoffice/energy/metering",
+      "to": "/operaciones/energia"
+    },
+    {
+      "from": "/backoffice/esrs/report",
+      "to": "/cumplimiento/sostenibilidad/esrs"
+    },
+    {
+      "from": "/backoffice/finance/balance-sheet",
+      "to": "/finanzas/estados-contables/balance"
+    },
+    {
+      "from": "/backoffice/finance/bank-reconciliation",
+      "to": "/finanzas/conciliacion"
+    },
+    {
+      "from": "/backoffice/finance/banking-spain",
+      "to": "/finanzas/conciliacion/extractos-remesas"
+    },
+    {
+      "from": "/backoffice/finance/cash-flow",
+      "to": "/finanzas/estados-contables/flujos"
+    },
+    {
+      "from": "/backoffice/finance/commissions",
+      "to": "/finanzas/comisiones"
+    },
+    {
+      "from": "/backoffice/finance/exchange-rates",
+      "to": "/finanzas/tesoreria/tipos-de-cambio"
+    },
+    {
+      "from": "/backoffice/finance/folio-routing",
+      "to": "/finanzas/facturacion/enrutamiento"
+    },
+    {
+      "from": "/backoffice/finance/invoice-rectifications",
+      "to": "/finanzas/facturacion/rectificativas"
+    },
+    {
+      "from": "/backoffice/finance/payroll",
+      "to": "/finanzas/nominas"
+    },
+    {
+      "from": "/backoffice/finance/trial-balance",
+      "to": "/finanzas/estados-contables"
+    },
+    {
+      "from": "/backoffice/finance/year-end-close",
+      "to": "/finanzas/estados-contables/cierre-ejercicio"
+    },
+    {
+      "from": "/backoffice/fiscal",
+      "to": "/cumplimiento/verifactu"
+    },
+    {
+      "from": "/backoffice/fiscal/inbox",
+      "to": "/cumplimiento/bandeja"
+    },
+    {
+      "from": "/backoffice/fiscal/modelo-111",
+      "to": "/cumplimiento/modelos-aeat/111"
+    },
+    {
+      "from": "/backoffice/fiscal/modelo-115",
+      "to": "/cumplimiento/modelos-aeat/115"
+    },
+    {
+      "from": "/backoffice/fiscal/modelo-180",
+      "to": "/cumplimiento/modelos-aeat/180"
+    },
+    {
+      "from": "/backoffice/fiscal/modelo-303",
+      "to": "/cumplimiento/modelos-aeat"
+    },
+    {
+      "from": "/backoffice/fiscal/modelo-390",
+      "to": "/cumplimiento/modelos-aeat/390"
+    },
+    {
+      "from": "/backoffice/fiscal/submissions",
+      "to": "/cumplimiento/envios"
+    },
+    {
+      "from": "/backoffice/fiscal/tbai-foral",
+      "to": "/cumplimiento/verifactu/ticketbai"
+    },
+    {
+      "from": "/backoffice/fnb/inventory",
+      "to": "/operaciones/tpv/existencias"
+    },
+    {
+      "from": "/backoffice/fnb/menu",
+      "to": "/operaciones/tpv/cartas"
+    },
+    {
+      "from": "/backoffice/guest-journey",
+      "to": "/recepcion/reservas/:id/recorrido"
+    },
+    {
+      "from": "/backoffice/guest-portal",
+      "to": "/recepcion/reservas/:id/recorrido"
+    },
+    {
+      "from": "/backoffice/guest-portal/settings",
+      "to": "/comercial/ventas-adicionales/portal"
+    },
+    {
+      "from": "/backoffice/guests",
+      "to": "/recepcion/huespedes"
+    },
+    {
+      "from": "/backoffice/guests/:guestId",
+      "to": "/recepcion/huespedes/:id"
+    },
+    {
+      "from": "/backoffice/home",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/kiosk/settings",
+      "to": "/comercial/ventas-adicionales/portal"
+    },
+    {
+      "from": "/backoffice/loyalty/program",
+      "to": "/comercial/clientes/programa"
+    },
+    {
+      "from": "/backoffice/manual-setup",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/marketing/campaigns",
+      "to": "/comercial/clientes/campanas"
+    },
+    {
+      "from": "/backoffice/marketplace",
+      "to": "/configuracion/modulos/integraciones"
+    },
+    {
+      "from": "/backoffice/marketplace/catalog",
+      "to": "/configuracion/modulos/integraciones"
+    },
+    {
+      "from": "/backoffice/messaging/connections",
+      "to": "/configuracion/comunicaciones"
+    },
+    {
+      "from": "/backoffice/modules",
+      "to": "/configuracion/modulos"
+    },
+    {
+      "from": "/backoffice/notifications",
+      "to": "/configuracion/comunicaciones"
+    },
+    {
+      "from": "/backoffice/onboarding/batches",
+      "to": "/desarrollo/migracion/lotes"
+    },
+    {
+      "from": "/backoffice/onboarding/channel-mapping",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/compliance-review",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/cutover",
+      "to": "/configuracion/puesta-en-marcha/salida-en-vivo"
+    },
+    {
+      "from": "/backoffice/onboarding/data-quality",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/dry-run",
+      "to": "/desarrollo/migracion/lotes"
+    },
+    {
+      "from": "/backoffice/onboarding/extraction-review",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/file-upload",
+      "to": "/desarrollo/migracion/ficheros"
+    },
+    {
+      "from": "/backoffice/onboarding/go-live",
+      "to": "/configuracion/puesta-en-marcha/salida-en-vivo"
+    },
+    {
+      "from": "/backoffice/onboarding/guest-import",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/import-review",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/project-detail",
+      "to": "/desarrollo/migracion"
+    },
+    {
+      "from": "/backoffice/onboarding/projects",
+      "to": "/desarrollo/migracion"
+    },
+    {
+      "from": "/backoffice/onboarding/property-blueprint",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/rate-plan-mapping",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/reservation-import",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/revenue-history",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/room-mapping",
+      "to": "/desarrollo/migracion/revision"
+    },
+    {
+      "from": "/backoffice/onboarding/source-connections",
+      "to": "/desarrollo/migracion"
+    },
+    {
+      "from": "/backoffice/operations/groups/calendar",
+      "to": "/recepcion/grupos/calendario"
+    },
+    {
+      "from": "/backoffice/ops/analytics-center",
+      "to": "/informes/analitica"
+    },
+    {
+      "from": "/backoffice/ops/assets",
+      "to": "/operaciones/activos"
+    },
+    {
+      "from": "/backoffice/ops/channel-performance",
+      "to": "/informes/canales"
+    },
+    {
+      "from": "/backoffice/ops/concierge",
+      "to": "/recepcion/mensajes"
+    },
+    {
+      "from": "/backoffice/ops/crm",
+      "to": "/comercial/clientes"
+    },
+    {
+      "from": "/backoffice/ops/energy",
+      "to": "/operaciones/energia"
+    },
+    {
+      "from": "/backoffice/ops/finance-position",
+      "to": "/finanzas/tesoreria"
+    },
+    {
+      "from": "/backoffice/ops/front-desk",
+      "to": "/hoy"
+    },
+    {
+      "from": "/backoffice/ops/groups-events",
+      "to": "/recepcion/grupos"
+    },
+    {
+      "from": "/backoffice/ops/housekeeping",
+      "to": "/operaciones/pisos"
+    },
+    {
+      "from": "/backoffice/ops/inventory",
+      "to": "/operaciones/compras/inventario"
+    },
+    {
+      "from": "/backoffice/ops/loyalty",
+      "to": "/comercial/clientes/fidelizacion"
+    },
+    {
+      "from": "/backoffice/ops/maintenance",
+      "to": "/operaciones/mantenimiento"
+    },
+    {
+      "from": "/backoffice/ops/operations-home",
+      "to": "/hoy/operaciones"
+    },
+    {
+      "from": "/backoffice/ops/pos",
+      "to": "/operaciones/tpv"
+    },
+    {
+      "from": "/backoffice/ops/procurement",
+      "to": "/operaciones/compras"
+    },
+    {
+      "from": "/backoffice/ops/quality",
+      "to": "/comercial/reputacion/calidad"
+    },
+    {
+      "from": "/backoffice/ops/reception-copilot",
+      "to": "/asistente"
+    },
+    {
+      "from": "/backoffice/ops/reputation",
+      "to": "/comercial/reputacion"
+    },
+    {
+      "from": "/backoffice/ops/room-profitability",
+      "to": "/informes/rentabilidad-habitacion"
+    },
+    {
+      "from": "/backoffice/ops/safety",
+      "to": "/operaciones/seguridad"
+    },
+    {
+      "from": "/backoffice/ops/sales-pipeline",
+      "to": "/comercial/ventas-empresas"
+    },
+    {
+      "from": "/backoffice/ops/surveys",
+      "to": "/comercial/reputacion/encuestas"
+    },
+    {
+      "from": "/backoffice/ops/sustainability",
+      "to": "/cumplimiento/sostenibilidad"
+    },
+    {
+      "from": "/backoffice/ops/upsells",
+      "to": "/comercial/ventas-adicionales"
+    },
+    {
+      "from": "/backoffice/ops/workforce",
+      "to": "/operaciones/personal"
+    },
+    {
+      "from": "/backoffice/owner-home",
+      "to": "/hoy/propietario"
+    },
+    {
+      "from": "/backoffice/payments",
+      "to": "/configuracion/facturacion-pagos/pagos"
+    },
+    {
+      "from": "/backoffice/portfolio",
+      "to": "/informes/cartera"
+    },
+    {
+      "from": "/backoffice/pos-outlets",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/procurement-inventory",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/property-detail",
+      "to": "/informes/cartera/:propiedad"
+    },
+    {
+      "from": "/backoffice/property-setup",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/property-setup/ai",
+      "to": "/configuracion/ia/alta"
+    },
+    {
+      "from": "/backoffice/property-setup/buildings",
+      "to": "/configuracion/propiedad/edificios"
+    },
+    {
+      "from": "/backoffice/property-setup/custom-fields",
+      "to": "/configuracion/propiedad/campos-personalizados"
+    },
+    {
+      "from": "/backoffice/property-setup/departments",
+      "to": "/configuracion/propiedad/departamentos"
+    },
+    {
+      "from": "/backoffice/property-setup/finance-compliance",
+      "to": "/configuracion/contabilidad-fiscal/perfil-inicial"
+    },
+    {
+      "from": "/backoffice/property-setup/floors",
+      "to": "/configuracion/propiedad/plantas"
+    },
+    {
+      "from": "/backoffice/property-setup/maintenance",
+      "to": "/operaciones/mantenimiento/ajustes"
+    },
+    {
+      "from": "/backoffice/property-setup/operations",
+      "to": "/operaciones/pisos/ajustes"
+    },
+    {
+      "from": "/backoffice/property-setup/property-profile",
+      "to": "/configuracion/propiedad"
+    },
+    {
+      "from": "/backoffice/property-setup/revenue",
+      "to": "/configuracion/contabilidad-fiscal/categorias-ingresos"
+    },
+    {
+      "from": "/backoffice/property-setup/room-types",
+      "to": "/configuracion/habitaciones/tipos"
+    },
+    {
+      "from": "/backoffice/property-setup/rooms",
+      "to": "/configuracion/habitaciones"
+    },
+    {
+      "from": "/backoffice/property-setup/spaces-resources",
+      "to": "/configuracion/habitaciones/espacios"
+    },
+    {
+      "from": "/backoffice/property-setup/zones",
+      "to": "/configuracion/propiedad/zonas"
+    },
+    {
+      "from": "/backoffice/quality/cases",
+      "to": "/comercial/reputacion/calidad"
+    },
+    {
+      "from": "/backoffice/reports",
+      "to": "/informes"
+    },
+    {
+      "from": "/backoffice/reports/billing",
+      "to": "/informes"
+    },
+    {
+      "from": "/backoffice/reports/reservations",
+      "to": "/informes"
+    },
+    {
+      "from": "/backoffice/reservations",
+      "to": "/recepcion/reservas"
+    },
+    {
+      "from": "/backoffice/reservations/:reservationId",
+      "to": "/recepcion/reservas/:id"
+    },
+    {
+      "from": "/backoffice/reservations/new",
+      "to": "/recepcion/reservas/nueva"
+    },
+    {
+      "from": "/backoffice/revenue",
+      "to": "/revenue"
+    },
+    {
+      "from": "/backoffice/revenue/comparison",
+      "to": "/revenue/comparativa"
+    },
+    {
+      "from": "/backoffice/revenue/data-quality",
+      "to": "/desarrollo/revenue-calidad-datos"
+    },
+    {
+      "from": "/backoffice/revenue/demand-calendar",
+      "to": "/revenue/calendario-demanda"
+    },
+    {
+      "from": "/backoffice/revenue/forecast-explorer",
+      "to": "/revenue/historico-prevision/explorador"
+    },
+    {
+      "from": "/backoffice/revenue/history-forecast",
+      "to": "/revenue/historico-prevision"
+    },
+    {
+      "from": "/backoffice/revenue/meeting",
+      "to": "/revenue/reunion"
+    },
+    {
+      "from": "/backoffice/revenue/rate-grid",
+      "to": "/revenue/parrilla"
+    },
+    {
+      "from": "/backoffice/revenue/rate-journal",
+      "to": "/revenue/parrilla/historial"
+    },
+    {
+      "from": "/backoffice/revenue/rate-plans",
+      "to": "/revenue/planes"
+    },
+    {
+      "from": "/backoffice/revenue/rate-shopper",
+      "to": "/revenue/competencia"
+    },
+    {
+      "from": "/backoffice/revenue/recommendations",
+      "to": "/revenue/reglas"
+    },
+    {
+      "from": "/backoffice/revenue/rules",
+      "to": "/revenue/reglas"
+    },
+    {
+      "from": "/backoffice/revenue/scenario-simulator",
+      "to": "/desarrollo/revenue-automatizacion"
+    },
+    {
+      "from": "/backoffice/revenue/settings",
+      "to": "/revenue/reglas"
+    },
+    {
+      "from": "/backoffice/safety-incidents",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/security",
+      "to": "/configuracion/usuarios"
+    },
+    {
+      "from": "/backoffice/setup",
+      "to": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "from": "/backoffice/surveys/nps",
+      "to": "/comercial/reputacion/encuestas"
+    },
+    {
+      "from": "/backoffice/tax-settings",
+      "to": "/configuracion/contabilidad-fiscal/fiscal"
+    },
+    {
+      "from": "/backoffice/timeline",
+      "to": "/recepcion/reservas/cronograma"
+    },
+    {
+      "from": "/backoffice/upsells/settings",
+      "to": "/comercial/ventas-adicionales/ofertas"
+    },
+    {
+      "from": "/backoffice/users-roles",
+      "to": "/configuracion/usuarios"
+    },
+    {
+      "from": "/backoffice/workforce",
+      "to": "/configuracion/puesta-en-marcha"
+    }
+  ],
+  "devOnly": [
+    {
+      "screenKey": "RevenueAutomationRules",
+      "label": "Automatización (dev)",
+      "url": "/desarrollo/revenue-automatizacion",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "revenue_profit_engine"
+      ],
+      "parent": "RevenueRules"
+    },
+    {
+      "screenKey": "ForecastSettings",
+      "label": "Ajustes de previsión (dev)",
+      "url": "/desarrollo/revenue-prevision-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "revenue_profit_engine"
+      ],
+      "parent": "RevenueHistoryForecastDashboard"
+    },
+    {
+      "screenKey": "RevenueDataQuality",
+      "label": "Calidad de datos (dev)",
+      "url": "/desarrollo/revenue-calidad-datos",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "revenue_profit_engine"
+      ],
+      "parent": "RevenueHomeDashboard"
+    },
+    {
+      "screenKey": "OnboardingProjects",
+      "label": "Migración asistida (dev)",
+      "url": "/desarrollo/migracion",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "ai_onboarding_migration"
+      ],
+      "parent": "SetupCenterScreen"
+    },
+    {
+      "screenKey": "FileUploadAndClassification",
+      "label": "Subida y clasificación (dev)",
+      "url": "/desarrollo/migracion/ficheros",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "ai_onboarding_migration"
+      ],
+      "parent": "OnboardingProjects"
+    },
+    {
+      "screenKey": "AIExtractionReview",
+      "label": "Revisión de extracción (dev)",
+      "url": "/desarrollo/migracion/revision",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "ai_onboarding_migration"
+      ],
+      "parent": "OnboardingProjects"
+    },
+    {
+      "screenKey": "MigrationBatches",
+      "label": "Lotes de migración (dev)",
+      "url": "/desarrollo/migracion/lotes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "ai_onboarding_migration"
+      ],
+      "parent": "OnboardingProjects"
+    },
+    {
+      "screenKey": "CRMSettings",
+      "label": "Ajustes de CRM (dev)",
+      "url": "/desarrollo/crm-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "guest_data_crm_loyalty"
+      ],
+      "parent": "CrmDashboard"
+    },
+    {
+      "screenKey": "LoyaltySettings",
+      "label": "Ajustes fidelización (dev)",
+      "url": "/desarrollo/fidelizacion-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "guest_data_crm_loyalty"
+      ],
+      "parent": "CrmDashboard"
+    },
+    {
+      "screenKey": "GroupSettings",
+      "label": "Ajustes de grupos (dev)",
+      "url": "/desarrollo/grupos-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [],
+      "parent": "GroupsEventsDashboard"
+    },
+    {
+      "screenKey": "SalesSettings",
+      "label": "Ajustes de ventas (dev)",
+      "url": "/desarrollo/ventas-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [],
+      "parent": "SalesPipelineDashboard"
+    },
+    {
+      "screenKey": "WorkforceSettings",
+      "label": "Ajustes de personal (dev)",
+      "url": "/desarrollo/personal-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "workforce_labor"
+      ],
+      "parent": "WorkforceDashboard"
+    },
+    {
+      "screenKey": "InventorySettings",
+      "label": "Ajustes de inventario (dev)",
+      "url": "/desarrollo/inventario-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "procurement_inventory"
+      ],
+      "parent": "ProcurementDashboard"
+    },
+    {
+      "screenKey": "ProcurementSettings",
+      "label": "Ajustes de compras (dev)",
+      "url": "/desarrollo/compras-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "procurement_inventory"
+      ],
+      "parent": "ProcurementDashboard"
+    },
+    {
+      "screenKey": "ReputationSettings",
+      "label": "Ajustes de reputación (dev)",
+      "url": "/desarrollo/reputacion-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "reputation_quality"
+      ],
+      "parent": "ReputationDashboard"
+    },
+    {
+      "screenKey": "SurveySettings",
+      "label": "Ajustes de encuestas (dev)",
+      "url": "/desarrollo/encuestas-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "reputation_quality"
+      ],
+      "parent": "ReputationDashboard"
+    },
+    {
+      "screenKey": "QualityWorkflowSettings",
+      "label": "Ajustes de calidad (dev)",
+      "url": "/desarrollo/calidad-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "reputation_quality"
+      ],
+      "parent": "ReputationDashboard"
+    },
+    {
+      "screenKey": "EnergySettings",
+      "label": "Ajustes de energía (dev)",
+      "url": "/desarrollo/energia-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "energy_sustainability"
+      ],
+      "parent": "EnergyDashboard"
+    },
+    {
+      "screenKey": "SafetySettings",
+      "label": "Ajustes de seguridad (dev)",
+      "url": "/desarrollo/seguridad-ajustes",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "safety_incident_management"
+      ],
+      "parent": "SafetyDashboard"
+    },
+    {
+      "screenKey": "ScheduledReports",
+      "label": "Informes programados (dev)",
+      "url": "/desarrollo/informes-programados",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [
+        "hotel_intelligence_platform"
+      ],
+      "parent": "ReportingCenter"
+    }
+  ],
+  "retired": [
+    {
+      "screenKey": "AISettings",
+      "coveredBy": "PropertyAiScreen",
+      "url": "/configuracion/ia"
+    },
+    {
+      "screenKey": "BackOfficeDashboard",
+      "coveredBy": "SetupCenterScreen",
+      "url": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "screenKey": "FrontDeskCopilotScreen",
+      "coveredBy": "AssistantChat",
+      "url": "/asistente"
+    },
+    {
+      "screenKey": "PersonaLandingScreen",
+      "coveredBy": "(barra superior · Ver como…)",
+      "url": null
+    },
+    {
+      "screenKey": "PersonaGuideScreen",
+      "coveredBy": "(centro de ayuda ?)",
+      "url": null
+    },
+    {
+      "screenKey": "ReceptionCopilotScreen",
+      "coveredBy": "AssistantChat",
+      "url": "/asistente"
+    },
+    {
+      "screenKey": "OperationsHome",
+      "coveredBy": "OperationsDirectorScreen",
+      "url": "/hoy/operaciones"
+    },
+    {
+      "screenKey": "MessagingConnections",
+      "coveredBy": "NotificationsScreen",
+      "url": "/configuracion/comunicaciones"
+    },
+    {
+      "screenKey": "EnergyMetering",
+      "coveredBy": "EnergyDashboard",
+      "url": "/operaciones/energia"
+    },
+    {
+      "screenKey": "SurveysNps",
+      "coveredBy": "SurveysDashboard",
+      "url": "/comercial/reputacion/encuestas"
+    },
+    {
+      "screenKey": "QualityCasesReal",
+      "coveredBy": "QualityDashboard",
+      "url": "/comercial/reputacion/calidad"
+    },
+    {
+      "screenKey": "KioskSettingsReal",
+      "coveredBy": "GuestPortalSettingsReal",
+      "url": "/comercial/ventas-adicionales/portal"
+    },
+    {
+      "screenKey": "PropertySetupWizard",
+      "coveredBy": "SetupCenterScreen",
+      "url": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "screenKey": "PropertySetupHomeScreen",
+      "coveredBy": "SetupCenterScreen",
+      "url": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "screenKey": "ManualSetupHubScreen",
+      "coveredBy": "SetupCenterScreen",
+      "url": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "screenKey": "ConfigurationCenterScreen",
+      "coveredBy": "SetupCenterScreen",
+      "url": "/configuracion/puesta-en-marcha"
+    },
+    {
+      "screenKey": "ConfigurationPropertyProfileForm",
+      "coveredBy": "PropertyProfileSetupForm",
+      "url": "/configuracion/propiedad"
+    },
+    {
+      "screenKey": "ConfigurationBuildingForm",
+      "coveredBy": "BuildingSetupForm",
+      "url": "/configuracion/propiedad/edificios"
+    },
+    {
+      "screenKey": "ConfigurationFloorForm",
+      "coveredBy": "FloorSetupForm",
+      "url": "/configuracion/propiedad/plantas"
+    },
+    {
+      "screenKey": "ConfigurationZoneForm",
+      "coveredBy": "ZoneSetupForm",
+      "url": "/configuracion/propiedad/zonas"
+    },
+    {
+      "screenKey": "ConfigurationRoomTypeForm",
+      "coveredBy": "RoomTypeSetupForm",
+      "url": "/configuracion/habitaciones/tipos"
+    },
+    {
+      "screenKey": "ConfigurationRoomForm",
+      "coveredBy": "RoomSetupForm",
+      "url": "/configuracion/habitaciones"
+    },
+    {
+      "screenKey": "ConfigurationSpaceResourceForm",
+      "coveredBy": "SpaceResourceSetupForm",
+      "url": "/configuracion/habitaciones/espacios"
+    },
+    {
+      "screenKey": "ConfigurationDepartmentForm",
+      "coveredBy": "DepartmentSetupForm",
+      "url": "/configuracion/propiedad/departamentos"
+    },
+    {
+      "screenKey": "ConfigurationHousekeepingSetupForm",
+      "coveredBy": "HousekeepingSetupForm",
+      "url": "/operaciones/pisos/ajustes"
+    },
+    {
+      "screenKey": "ConfigurationMaintenanceSetupForm",
+      "coveredBy": "MaintenanceSetupForm",
+      "url": "/operaciones/mantenimiento/ajustes"
+    },
+    {
+      "screenKey": "ConfigurationRevenueCategorySetupForm",
+      "coveredBy": "RevenueCategorySetupForm",
+      "url": "/configuracion/contabilidad-fiscal/categorias-ingresos"
+    },
+    {
+      "screenKey": "ConfigurationComplianceSetupForm",
+      "coveredBy": "FinanceComplianceSetupForm",
+      "url": "/configuracion/contabilidad-fiscal/perfil-inicial"
+    },
+    {
+      "screenKey": "ConfigurationAISetupForm",
+      "coveredBy": "AiPropertySetupForm",
+      "url": "/configuracion/ia/alta"
+    },
+    {
+      "screenKey": "CustomFieldManagerScreen",
+      "coveredBy": "CustomFieldSetupForm",
+      "url": "/configuracion/propiedad/campos-personalizados"
+    },
+    {
+      "screenKey": "AISetupCenter",
+      "coveredBy": "PropertyAiScreen",
+      "url": "/configuracion/ia"
+    },
+    {
+      "screenKey": "OnboardingProjectDetail",
+      "coveredBy": "OnboardingProjects",
+      "url": "/desarrollo/migracion"
+    },
+    {
+      "screenKey": "SourceConnections",
+      "coveredBy": "OnboardingProjects",
+      "url": "/desarrollo/migracion"
+    },
+    {
+      "screenKey": "PropertyBlueprintReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "RoomMappingReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "RatePlanMappingReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "ReservationImportReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "GuestImportReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "ChannelMappingReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "RevenueHistoryImportReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "ComplianceSetupReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "OnboardingDataQualityReview",
+      "coveredBy": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "DryRunResult",
+      "coveredBy": "MigrationBatches",
+      "url": "/desarrollo/migracion/lotes"
+    },
+    {
+      "screenKey": "CutoverAssistant",
+      "coveredBy": "GoLiveChecklist",
+      "url": "/configuracion/puesta-en-marcha/salida-en-vivo"
+    },
+    {
+      "screenKey": "DuplicateGuestReview",
+      "coveredBy": "CrmDashboard",
+      "url": "/comercial/clientes"
+    },
+    {
+      "screenKey": "SalesPipeline",
+      "coveredBy": "SalesPipelineDashboard",
+      "url": "/comercial/ventas-empresas"
+    },
+    {
+      "screenKey": "CorporateAccounts",
+      "coveredBy": "SalesPipelineDashboard",
+      "url": "/comercial/ventas-empresas"
+    },
+    {
+      "screenKey": "EventSpacesSettings",
+      "coveredBy": "SpaceResourceSetupForm",
+      "url": "/configuracion/habitaciones/espacios"
+    },
+    {
+      "screenKey": "SchedulingRules",
+      "coveredBy": "WorkforceDashboard",
+      "url": "/operaciones/personal"
+    },
+    {
+      "screenKey": "PayrollExportSettings",
+      "coveredBy": "PayrollScreen",
+      "url": "/finanzas/nominas"
+    },
+    {
+      "screenKey": "SupplierSettings",
+      "coveredBy": "ProcurementDashboard",
+      "url": "/operaciones/compras"
+    },
+    {
+      "screenKey": "ProcurementRules",
+      "coveredBy": "ProcurementDashboard",
+      "url": "/operaciones/compras"
+    },
+    {
+      "screenKey": "DigitalKeySettings",
+      "coveredBy": "GuestPortalSettingsReal",
+      "url": "/comercial/ventas-adicionales/portal"
+    },
+    {
+      "screenKey": "MeterSettings",
+      "coveredBy": "EnergyDashboard",
+      "url": "/operaciones/energia"
+    },
+    {
+      "screenKey": "SustainabilitySettings",
+      "coveredBy": "SustainabilityDashboard",
+      "url": "/cumplimiento/sostenibilidad"
+    },
+    {
+      "screenKey": "IncidentSettings",
+      "coveredBy": "SafetyDashboard",
+      "url": "/operaciones/seguridad"
+    },
+    {
+      "screenKey": "IncidentWorkflowSettings",
+      "coveredBy": "SafetyDashboard",
+      "url": "/operaciones/seguridad"
+    },
+    {
+      "screenKey": "EmergencyContactsSettings",
+      "coveredBy": "SafetyDashboard",
+      "url": "/operaciones/seguridad"
+    },
+    {
+      "screenKey": "AnalyticsSettings",
+      "coveredBy": "AnalyticsCenterDashboard",
+      "url": "/informes/analitica"
+    },
+    {
+      "screenKey": "MetricDefinitions",
+      "coveredBy": "AnalyticsCenterDashboard",
+      "url": "/informes/analitica"
+    },
+    {
+      "screenKey": "DeveloperPortal",
+      "coveredBy": "AuditLogViewer",
+      "url": "/configuracion/sistema"
+    },
+    {
+      "screenKey": "ApiApps",
+      "coveredBy": "DeveloperApps",
+      "url": "/configuracion/sistema/aplicaciones"
+    },
+    {
+      "screenKey": "Webhooks",
+      "coveredBy": "WebhooksAdmin",
+      "url": "/configuracion/sistema/webhooks"
+    },
+    {
+      "screenKey": "WebhookSubscriptions",
+      "coveredBy": "WebhooksAdmin",
+      "url": "/configuracion/sistema/webhooks"
+    },
+    {
+      "screenKey": "ApiUsageLogs",
+      "coveredBy": "AuditLogViewer",
+      "url": "/configuracion/sistema"
+    },
+    {
+      "screenKey": "PartnerCertification",
+      "coveredBy": "MarketplaceCatalog",
+      "url": "/configuracion/modulos/integraciones"
+    },
+    {
+      "screenKey": "AIToolRegistry",
+      "coveredBy": "AiToolRegistryScreen",
+      "url": "/configuracion/ia/herramientas"
+    },
+    {
+      "screenKey": "AIPromptVersions",
+      "coveredBy": "AiGovernanceScreen",
+      "url": "/configuracion/ia/gobernanza"
+    },
+    {
+      "screenKey": "AIEvaluations",
+      "coveredBy": "AiGovernanceScreen",
+      "url": "/configuracion/ia/gobernanza"
+    },
+    {
+      "screenKey": "AIIncidentLog",
+      "coveredBy": "AiGovernanceScreen",
+      "url": "/configuracion/ia/gobernanza"
+    },
+    {
+      "screenKey": "AIHumanReviewQueue",
+      "coveredBy": "AiHumanReviewQueueScreen",
+      "url": "/hoy/pendientes-ia"
+    },
+    {
+      "screenKey": "AICostDashboard",
+      "coveredBy": "AiGovernanceScreen",
+      "url": "/configuracion/ia/gobernanza"
+    }
+  ],
+  "aliases": [
+    {
+      "screenKey": "ChannelManagerDashboard",
+      "canonical": "ChannelAggregatorHub",
+      "url": "/comercial/canales"
+    },
+    {
+      "screenKey": "AutomationRules",
+      "canonical": "RevenueAutomationRules",
+      "url": "/desarrollo/revenue-automatizacion"
+    },
+    {
+      "screenKey": "RevenueRecommendationRules",
+      "canonical": "RevenueRules",
+      "url": "/revenue/reglas"
+    },
+    {
+      "screenKey": "ImportReview",
+      "canonical": "AIExtractionReview",
+      "url": "/desarrollo/migracion/revision"
+    },
+    {
+      "screenKey": "OnboardingGoLiveReadiness",
+      "canonical": "GoLiveChecklist",
+      "url": "/configuracion/puesta-en-marcha/salida-en-vivo"
+    },
+    {
+      "screenKey": "DepartmentManager",
+      "canonical": "DepartmentSetupForm",
+      "url": "/configuracion/propiedad/departamentos"
+    },
+    {
+      "screenKey": "RoomTypeManager",
+      "canonical": "RoomTypeSetupForm",
+      "url": "/configuracion/habitaciones/tipos"
+    },
+    {
+      "screenKey": "RoomInventoryManager",
+      "canonical": "RoomSetupForm",
+      "url": "/configuracion/habitaciones"
+    },
+    {
+      "screenKey": "DocumentTemplateManager",
+      "canonical": "NotificationsScreen",
+      "url": "/configuracion/comunicaciones"
+    },
+    {
+      "screenKey": "PropertySettings",
+      "canonical": "PropertyProfileSetupForm",
+      "url": "/configuracion/propiedad"
+    },
+    {
+      "screenKey": "OrganizationSettings",
+      "canonical": "PropertyProfileSetupForm",
+      "url": "/configuracion/propiedad"
+    },
+    {
+      "screenKey": "ChannelManagerSettings",
+      "canonical": "ChannelAggregatorHub",
+      "url": "/comercial/canales"
+    },
+    {
+      "screenKey": "CompetitorSet",
+      "canonical": "RateShopperSettings",
+      "url": "/revenue/competencia"
+    },
+    {
+      "screenKey": "RevenueSettings",
+      "canonical": "RatePlans",
+      "url": "/revenue/planes"
+    },
+    {
+      "screenKey": "IntegrationManager",
+      "canonical": "MarketplaceCatalog",
+      "url": "/configuracion/modulos/integraciones"
+    },
+    {
+      "screenKey": "IntegrationMarketplaceHome",
+      "canonical": "MarketplaceCatalog",
+      "url": "/configuracion/modulos/integraciones"
+    },
+    {
+      "screenKey": "ModuleConfigurationCenter",
+      "canonical": "ModuleManager",
+      "url": "/configuracion/modulos"
+    },
+    {
+      "screenKey": "GuestRegisterFieldMapping",
+      "canonical": "GuestRegisterSettings",
+      "url": "/cumplimiento/registro-viajeros"
+    },
+    {
+      "screenKey": "GuestSegments",
+      "canonical": "GuestSegmentsReal",
+      "url": "/comercial/clientes/segmentos"
+    },
+    {
+      "screenKey": "CampaignManager",
+      "canonical": "CampaignManagerReal",
+      "url": "/comercial/clientes/campanas"
+    },
+    {
+      "screenKey": "GuestPortalSettings",
+      "canonical": "GuestPortalSettingsReal",
+      "url": "/comercial/ventas-adicionales/portal"
+    },
+    {
+      "screenKey": "KioskSettings",
+      "canonical": "GuestPortalSettingsReal",
+      "url": "/comercial/ventas-adicionales/portal"
+    },
+    {
+      "screenKey": "UpsellSettings",
+      "canonical": "UpsellsSettings",
+      "url": "/comercial/ventas-adicionales/ofertas"
+    },
+    {
+      "screenKey": "AIGovernanceSettings",
+      "canonical": "AiGovernanceScreen",
+      "url": "/configuracion/ia/gobernanza"
+    }
+  ],
+  "publicScreens": [
+    {
+      "screenKey": "LoginScreen",
+      "label": "Iniciar sesión",
+      "url": "/acceso"
+    },
+    {
+      "screenKey": "ForgotPasswordScreen",
+      "label": "Recuperar contraseña",
+      "url": "/acceso/recuperar-contrasena"
+    }
+  ]
+}

@@ -154,7 +154,7 @@ export function LoginScreen(props: LoginScreenProps) {
           noValidate
         >
           <label className="bo-form-field">
-            <span>Email</span>
+            <span>Correo electrónico</span>
             <input
               type="email"
               autoComplete="username"

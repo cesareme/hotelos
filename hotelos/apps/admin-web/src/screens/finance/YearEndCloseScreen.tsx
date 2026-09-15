@@ -1,9 +1,11 @@
+import { useTabHost } from "../tabs/TabHost";
 import type { CSSProperties } from "react";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
+import { money } from "../../lib/format";
 
 // Demo single-property fallback. Multi-property selection lives in another track.
 const PROPERTY_ID: string | undefined = undefined;
@@ -56,12 +58,7 @@ type CloseResult = {
 };
 
 function fmt(amount: number | undefined | null): string {
-  const v = typeof amount === "number" ? amount : 0;
-  return new Intl.NumberFormat("es-ES", { useGrouping: true,
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2
-  }).format(v);
+  return money(amount);
 }
 
 function statusPillStyle(status: FiscalYear["status"]): CSSProperties {
@@ -75,6 +72,8 @@ function statusPillStyle(status: FiscalYear["status"]): CSSProperties {
 }
 
 export function YearEndCloseScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const query = useMemo(() => {
     const q: Record<string, string> = {};
@@ -157,8 +156,12 @@ export function YearEndCloseScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Contabilidad · Cierre del ejercicio</div>
-          <h1 className="bo-page-title">Year-end close</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Finanzas · Estados contables</div>
+              <h1 className="bo-page-title">Cierre de ejercicio</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Cierre del ejercicio según PGC: <strong>asiento de regularización</strong> (6xx/7xx vs. 129),
             <strong> asiento de cierre</strong> al 31/12 y <strong>asiento de apertura</strong> al 1/1

@@ -37,6 +37,7 @@ import {
 } from "../../components/cocoa-icons/StatusIcons";
 import type { ComponentType } from "react";
 import type { CocoaIconProps } from "../../components/cocoa-icons/StatusIcons";
+import { date } from "../../lib/format";
 
 // Instructional copy shown at the top of the Compliance Center screen.
 // Helps users understand what the screen does and how to drive it.
@@ -121,9 +122,7 @@ const PROFILE_FEATURES: { k: keyof ComplianceProfile; l: string }[] = [
 const COMUNIDAD_LABEL: Record<string, string> = Object.fromEntries(COMUNIDADES.map((c) => [c.v, c.l]));
 
 function fmtDate(v?: string | null): string {
-  if (!v) return "—";
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+  return date(v, "medium");
 }
 function fmtSize(bytes: number): string {
   if (!bytes) return "";

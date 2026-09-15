@@ -36,7 +36,7 @@ export function ManualSetupPreviewScreen(props: { onNavigate?: (route: string) =
                 <StatusChip label={option.status} tone={option.status === "needs_setup" ? "warning" : "success"} />
               </View>
               <Text style={styles.body}>{option.description}</Text>
-              <Text style={styles.meta}>Route: {option.adminPath}</Text>
+              <Text style={styles.meta}>Route: {option.url}</Text>
               <Text style={styles.meta}>Permission: {option.permission}</Text>
               <Text style={styles.meta}>Target: {option.targetTables.join(", ")}</Text>
               <Text style={styles.meta}>Input methods: {option.inputMethods.map((method) => method.label).join(", ")}</Text>

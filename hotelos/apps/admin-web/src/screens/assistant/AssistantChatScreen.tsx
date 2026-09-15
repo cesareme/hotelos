@@ -8,6 +8,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { askAssistant, fetchAssistantTools, type AssistantTool, type AssistantTurn } from "../../services/assistantApi";
 import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { time } from "../../lib/format";
 
 const SUGGESTED_QUESTIONS = [
   "¿Cuántas llegadas tengo hoy?",
@@ -19,8 +21,7 @@ const SUGGESTED_QUESTIONS = [
 ];
 
 function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  return time(iso, { empty: "" });
 }
 
 export function AssistantChatScreen() {
@@ -49,7 +50,7 @@ export function AssistantChatScreen() {
       const turn = await askAssistant(text);
       setHistory((h) => [...h, turn]);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo conectar con el assistant.");
+      setError(e instanceof Error ? e.message : "No se pudo conectar con el asistente.");
     } finally {
       setBusy(false);
     }
@@ -59,16 +60,16 @@ export function AssistantChatScreen() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16, minHeight: "70vh" }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>IA · Asistente conversacional</p>
-          <h2 style={{ color: "var(--ink)" }}>Pregunta a Anfitorio</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Pregunta en lenguaje natural sobre tu hotel. Las respuestas se basan en datos reales de Prisma y citan la fuente.
-            Modo actual: <strong>{mode === "llm" ? "LLM activo" : "Determinista (sin LLM configurado)"}</strong>.
-          </p>
-        </div>
-      </header>
+      <CocoaPageHeader
+        eyebrow="Hoy"
+        title="Asistente Anfitorio"
+        subtitle="Pregunta en lenguaje natural sobre tu hotel: las respuestas salen de tus datos y citan la fuente. El asistente nunca ejecuta cambios sin tu confirmación."
+        actions={
+          <span className={`bo-status ${mode === "llm" ? "ok" : "warn"}`} style={{ textTransform: "none" }} title={mode === "llm" ? "Responde con un modelo de lenguaje" : "Sin modelo de lenguaje configurado: responde con reglas sobre tus datos"}>
+            {mode === "llm" ? "Con modelo de lenguaje" : "Sin modelo de lenguaje"}
+          </span>
+        }
+      />
 
       {/* Sugerencias clicables si no hay historial */}
       {history.length === 0 ? (

@@ -1,6 +1,9 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
+import { UI_STATES } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
+import { dateTime, money, percent } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -30,32 +33,12 @@ type ProcurementDashboardData = {
   }>;
 };
 
-const currencyFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true,
-  style: "currency",
-  currency: "EUR",
-  minimumFractionDigits: 2
-});
-
-function money(value: number | null | undefined): string {
-  return currencyFormatter.format(Number.isFinite(value as number) ? (value as number) : 0);
-}
-
 function pct(value: number | null | undefined): string {
-  if (!Number.isFinite(value as number)) return "0%";
-  return `${value}%`;
+  return percent(value);
 }
 
 function formatDateTime(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(d);
+  return dateTime(value);
 }
 
 function prettyStatus(status: string): string {
@@ -64,6 +47,7 @@ function prettyStatus(status: string): string {
 }
 
 export function ProcurementDashboard() {
+  const hosted = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<ProcurementDashboardData>(
     "/dashboards/procurement",
     { pollIntervalMs: 120000, query: { propertyId: PROPERTY_ID } }
@@ -88,23 +72,25 @@ export function ProcurementDashboard() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Procurement</div>
-          <h1 className="bo-page-title">Pedidos de compra · Proveedores</h1>
-          <p className="bo-page-subtitle">
-            Vista de solo lectura del estado de las órdenes de compra, valor comprometido
-            y proveedores activos. Refresca automáticamente cada 120 segundos.
-          </p>
-        </div>
+      <div className="bo-page-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div className="bo-page-head-text">
+            <div className="bo-page-eyebrow">Operaciones · Compras</div>
+            <h1 className="bo-page-title">Pedidos de compra · Proveedores</h1>
+            <p className="bo-page-subtitle">
+              Vista de solo lectura del estado de las órdenes de compra, valor comprometido
+              y proveedores activos. Refresca automáticamente cada 120 segundos.
+            </p>
+          </div>
+        )}
         <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={refresh}>↻ Refresh</button>
+          <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
         </div>
       </div>
 
       {error ? (
-        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
-          Couldn't load this view right now. Refresh to retry.
+        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }} role="alert">
+          <strong>{UI_STATES.error.title}.</strong> {UI_STATES.error.message}
         </section>
       ) : null}
 

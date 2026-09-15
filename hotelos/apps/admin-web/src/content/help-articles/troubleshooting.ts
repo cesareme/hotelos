@@ -1,199 +1,144 @@
-import type { CocoaHelpArticle } from '../../components/cocoa-guidance/CocoaSearchableHelpModal';
+// troubleshooting — "qué hago si…" articles for hotel staff (help center «?»).
+//
+// Written for the receptionist or the manager, not for an engineer: no
+// browser consoles, request ids, on-call rotations or internal chat channels.
+// Each article ends with when to contact Anfitorio support.
+import type { CocoaHelpArticle } from "../../components/cocoa-guidance/CocoaSearchableHelpModal";
+
+export const TROUBLESHOOTING_CATEGORY = "Qué hago si…";
 
 export const TROUBLESHOOTING_ARTICLES: readonly CocoaHelpArticle[] = [
   {
-    id: 'troubleshooting-error-guardar-reserva',
-    title: 'Error al guardar reserva',
-    category: 'Troubleshooting',
-    tags: ['reservas', 'error', 'guardado', 'validacion'],
-    bodyMd: `# Error al guardar reserva
+    id: "troubleshooting-error-guardar-reserva",
+    title: "No puedo guardar una reserva",
+    category: TROUBLESHOOTING_CATEGORY,
+    tags: ["reservas", "error", "guardar", "disponibilidad", "sesión"],
+    bodyMd: `# No puedo guardar una reserva
 
-## Sintomas
-- Al pulsar "Guardar" en el formulario de reserva aparece un toast rojo con el mensaje "No se pudo guardar la reserva".
-- El boton de guardar queda en estado loading indefinido y nunca cierra el modal.
-- En consola del navegador aparece un 422 (Unprocessable Entity) o 500 (Internal Server Error) en la peticion POST /api/reservations.
-- La reserva no aparece en el listado tras refrescar.
+## Qué ves
+- Al pulsar «Guardar» aparece un aviso rojo y la reserva no se crea.
+- El botón se queda «Guardando…» y no termina.
 
-## Causa probable
-1. **Validacion de campos**: faltan datos obligatorios (huesped, fechas, habitacion, tarifa) o estan en formato invalido.
-2. **Conflicto de disponibilidad**: la habitacion seleccionada ya fue vendida por otro canal (race condition con OTA) entre la apertura del modal y el submit.
-3. **Tarifa cerrada**: el rate code aplicado tiene stop-sell o min-stay activo para esas fechas.
-4. **Sesion caducada**: el token de autenticacion expiro mientras el usuario completaba el formulario.
-5. **Error de red**: el backend no respondio dentro del timeout (15s) o hay un fallo de conectividad.
+## Causas habituales
+1. **Falta un dato obligatorio** (fechas, tipo de habitación, tarifa o nombre del titular) o la salida es anterior a la entrada.
+2. **La habitación ya no está libre**: otra reserva (por ejemplo, de una agencia en línea) la ha ocupado mientras rellenabas el formulario.
+3. **La tarifa está cerrada** para esas fechas (venta cerrada o estancia mínima).
+4. **La sesión ha caducado** mientras completabas el formulario.
 
-## Solucion paso a paso
-1. Abre la consola del navegador (Cmd+Opt+I) y revisa la pestana Network para ver el codigo de error exacto de la peticion fallida.
-2. Si es **422**: lee el cuerpo de la respuesta para identificar el campo invalido. Corrige el dato (ej. fecha de check-out anterior a check-in) y reintenta.
-3. Si es **409 (Conflict)**: la habitacion ya no esta disponible. Cierra el modal, refresca el rack (Cmd+R) y selecciona otra habitacion del mismo tipo.
-4. Si es **401 (Unauthorized)**: tu sesion caduco. Cierra sesion, vuelve a entrar y reabre la reserva desde el inicio.
-5. Si es **500**: copia el request-id que aparece en la respuesta y reporta al equipo de plataforma via canal #soporte-hotelos.
-6. Como workaround inmediato, intenta crear la reserva desde el rack haciendo Shift+click en la celda de la habitacion para el rango de fechas deseado.
-7. Si el problema persiste mas de 5 minutos, escala al on-call de guardia (PagerDuty: rotation reservations-prod).
-`,
+## Qué hacer
+1. Lee el aviso: indica el campo que falla. Corrígelo y vuelve a guardar.
+2. Si la habitación ya no está libre, abre Recepción › Reservas › Tablero de habitaciones y elige otra del mismo tipo.
+3. Si la tarifa está cerrada, comprueba en Revenue › Planes de tarifas sus restricciones o elige otro plan.
+4. Si te ha caducado la sesión, vuelve a iniciar sesión y crea la reserva de nuevo.
+5. Si el aviso persiste con los datos correctos, anota la hora y el texto del aviso y escribe a soporte.`
   },
   {
-    id: 'troubleshooting-folio-no-actualiza',
-    title: 'Folio no se actualiza',
-    category: 'Troubleshooting',
-    tags: ['folio', 'cargos', 'cache', 'sync'],
-    bodyMd: `# Folio no se actualiza
+    id: "troubleshooting-folio-no-actualiza",
+    title: "El folio no muestra un cargo o un cobro",
+    category: TROUBLESHOOTING_CATEGORY,
+    tags: ["folio", "cargos", "cobros", "facturación", "cierre del día"],
+    bodyMd: `# El folio no muestra un cargo o un cobro
 
-## Sintomas
-- Despues de agregar un cargo (minibar, lavanderia, room service) el folio sigue mostrando el total anterior.
-- La columna "Balance" del huesped no refleja los pagos aplicados aunque el comprobante se imprimio.
-- Al hacer check-out aparece el monto antiguo en lugar del actualizado.
-- El badge de "cargos pendientes" no decrementa tras conciliar.
+## Qué ves
+- Has añadido un cargo (minibar, restaurante) o registrado un cobro y el saldo del folio no cambia.
+- En el check-out aparece el importe antiguo.
 
-## Causa probable
-1. **Cache del cliente**: el frontend mantiene una version stale del folio en memoria y no refetched tras el cambio.
-2. **Realtime desconectado**: el canal WebSocket /folios/:id se cayo y los eventos folio.updated no llegan.
-3. **Transaccion abierta**: el cargo se registro en una transaccion que aun no commitio en la base de datos.
-4. **Race con night audit**: si el rollover de fecha de negocio esta corriendo, los folios se bloquean temporalmente.
-5. **Permisos**: el usuario no tiene el rol necesario para ver cargos de cierta categoria (ej. extras corporativos).
+## Causas habituales
+1. **La pantalla no se ha refrescado** desde que se registró el movimiento.
+2. **El cargo se hizo en otro folio** de la misma reserva (por ejemplo, tras dividirlo).
+3. **Está en marcha el Cierre del día**: mientras dura, los folios quedan bloqueados unos minutos.
+4. **Tu rol no ve esa categoría de cargo.**
 
-## Solucion paso a paso
-1. Refresca la vista del folio con Cmd+R o el boton circular en la esquina superior derecha del panel.
-2. Verifica el indicador de conexion realtime en la status bar inferior: debe estar verde. Si esta amarillo o rojo, recarga la pagina (F5).
-3. Abre DevTools > Application > Local Storage y elimina la clave "folio-cache-{folioId}" si existe.
-4. Confirma que el cargo aparece en el endpoint directo: GET /api/folios/:id/charges. Si no esta ahi, el problema esta en backend (no en cache).
-5. Si estas en ventana de night audit (02:00-04:00 hora local), espera a que termine: los folios se desbloquean automaticamente al concluir.
-6. Verifica con tu manager que tu rol incluye el scope "folios:read:all" para ver todas las categorias de cargo.
-7. Si nada de lo anterior funciona, cierra el folio sin hacer check-out y reabrelo desde el listado de huespedes in-house.
-8. Reporta el folioId al soporte si despues de estos pasos el balance sigue incorrecto.
-`,
+## Qué hacer
+1. Pulsa «Actualizar» en el folio o vuelve a abrirlo desde Finanzas › Facturación y cobros.
+2. Revisa los demás folios de la reserva en el detalle de Recepción › Reservas.
+3. Si acaba de ejecutarse el Cierre del día, espera a que termine y vuelve a comprobarlo.
+4. Si el movimiento sigue sin aparecer, pide a dirección que compruebe tu rol en Configuración › Usuarios y roles o escribe a soporte con el número de reserva.`
   },
   {
-    id: 'troubleshooting-canal-ota-desconectado',
-    title: 'Canal OTA desconectado',
-    category: 'Troubleshooting',
-    tags: ['ota', 'channel-manager', 'booking', 'expedia', 'sync'],
-    bodyMd: `# Canal OTA desconectado
+    id: "troubleshooting-canal-ota-desconectado",
+    title: "Un canal de venta aparece desconectado",
+    category: TROUBLESHOOTING_CATEGORY,
+    tags: ["canales", "agencias en línea", "sincronización", "sobreventa", "booking"],
+    bodyMd: `# Un canal de venta aparece desconectado
 
-## Sintomas
-- En la pantalla de Channels el canal (Booking.com, Expedia, Airbnb, etc.) aparece con badge rojo y estado "Disconnected".
-- Las reservas nuevas del canal dejan de llegar al PMS.
-- Los cambios de tarifa o disponibilidad no se reflejan en el extranet del OTA.
-- El log de sincronizacion muestra errores 401 (credenciales), 403 (permisos) o 503 (servicio caido).
+## Qué ves
+- En Comercial › Canales de venta el canal está en rojo o «desconectado».
+- Las reservas de la agencia no entran o las tarifas no se actualizan.
 
-## Causa probable
-1. **Credenciales caducadas**: el token OAuth o las credenciales API expiraron y requieren renovacion.
-2. **Cambio de password en el OTA**: el partner cambio su clave en el extranet sin actualizar Anfitorio.
-3. **Rate limit excedido**: se hicieron demasiadas llamadas en poco tiempo y el OTA bloqueo temporalmente la cuenta.
-4. **Mantenimiento del OTA**: el partner esta en ventana de mantenimiento programado.
-5. **IP no whitelisted**: el OTA exige whitelisting y la IP de salida del channel manager cambio.
-6. **Hotel deshabilitado**: en el extranet del OTA el hotel quedo en estado "inactivo" o "pendiente de revision".
+## Causas habituales
+1. **La agencia ha revocado la conexión** desde su extranet o han cambiado las credenciales.
+2. **Un tipo de habitación o un plan de tarifa ya no coincide** (se ha renombrado o eliminado en una de las dos plataformas).
+3. **La agencia tiene una incidencia** en su servicio.
 
-## Solucion paso a paso
-1. Ve a Channels > [Nombre del canal] > Diagnostico y pulsa "Test connection". El resultado indicara el tipo exacto de fallo.
-2. Si es **401**: pulsa "Reconectar" y completa el flujo OAuth con las credenciales actualizadas del partner. Para canales con API key estatica, edita la credencial en Settings > Integrations.
-3. Si es **403**: revisa en el extranet del OTA que el rol del usuario API tenga permisos de "channel manager" y todos los scopes requeridos.
-4. Si es **429 (rate limit)**: espera 30 minutos. El backoff exponencial reanudara la sincronizacion automaticamente.
-5. Si es **503**: revisa la pagina de status del OTA (status.booking.com, status.expedia.com, etc.). Si confirma incidente, espera resolucion.
-6. Si tras reconectar el canal vuelve a desconectarse en menos de 1 hora, ejecuta "Resync full" desde el menu de tres puntos: forzara una sincronizacion completa de inventario y tarifas.
-7. Mientras el canal este caido, **bloquea manualmente disponibilidad en el extranet del OTA** para evitar overbookings.
-8. Documenta el incidente en el log de canales (boton "Add note") indicando hora de deteccion y resolucion.
-`,
+## Qué hacer
+1. Abre el canal y pulsa «Probar conexión». Si falla por credenciales, vuelve a aceptar la conexión desde la extranet de la agencia.
+2. Revisa la pestaña Correspondencias: cada tipo y cada plan deben tener su equivalente.
+3. Mientras el canal esté caído, vigila la disponibilidad a mano para evitar sobreventas: cierra la venta del canal si hace falta.
+4. Cuando vuelva a estar conectado, pulsa «Sincronizar ahora» y comprueba que entra una reserva de prueba.
+5. Si sigue desconectado más de una hora sin causa visible, escribe a soporte con el nombre del canal.`
   },
   {
-    id: 'troubleshooting-verifactu-rechazado',
-    title: 'VeriFactu rechazado motivo X',
-    category: 'Troubleshooting',
-    tags: ['verifactu', 'compliance', 'aeat', 'facturacion', 'espana'],
-    bodyMd: `# VeriFactu rechazado motivo X
+    id: "troubleshooting-verifactu-rechazado",
+    title: "La AEAT ha rechazado una factura (VeriFactu)",
+    category: TROUBLESHOOTING_CATEGORY,
+    tags: ["verifactu", "aeat", "factura", "rechazo", "rectificativa", "certificado"],
+    bodyMd: `# La AEAT ha rechazado una factura (VeriFactu)
 
-## Sintomas
-- Tras emitir una factura, la AEAT devuelve estado "Rechazado" con un codigo de motivo (ej. 1101, 3001, 4102).
-- El badge de la factura en el listado pasa a rojo con icono de alerta.
-- El folio del huesped queda con estado "Pendiente de regularizacion fiscal".
-- El reporte de Compliance muestra el contador de rechazos incrementado.
+## Qué ves
+- En Cumplimiento › Envíos a autoridades la factura aparece como «rechazada» con un motivo.
+- La misma alerta llega a Cumplimiento › Bandeja de cumplimiento.
 
-## Causa probable
-Los codigos mas comunes y sus causas:
-1. **Motivo 1101 - NIF invalido**: el documento del huesped no pasa el algoritmo de validacion de la AEAT.
-2. **Motivo 1102 - NIF no existe**: el NIF tiene formato valido pero no esta registrado en censo de la AEAT.
-3. **Motivo 3001 - Importe incoherente**: la suma de bases imponibles + cuotas IVA no cuadra con el total declarado.
-4. **Motivo 3002 - Tipo de IVA invalido**: se aplico un tipo (4%, 10%, 21%) que no corresponde al servicio facturado.
-5. **Motivo 4101 - Numero de serie duplicado**: el correlativo ya fue usado en una factura previa.
-6. **Motivo 4102 - Fecha fuera de rango**: la fecha de operacion es anterior al alta del establecimiento en VeriFactu.
-7. **Motivo 5001 - Firma electronica invalida**: el certificado digital del hotel caduco o esta revocado.
+## Causas habituales
+1. **Datos fiscales del cliente incorrectos** (NIF que no valida, razón social vacía).
+2. **Datos del emisor incompletos** en Configuración › Contabilidad y fiscal.
+3. **Certificado digital caducado** o no cargado.
+4. **Factura duplicada**: ya existía un registro con el mismo número de serie.
 
-## Solucion paso a paso
-1. Abre la factura rechazada y revisa el panel "Detalle VeriFactu" para ver el codigo de motivo exacto y el mensaje de la AEAT.
-2. **Si es 1101 o 1102**: contacta al huesped, solicita NIF correcto o pasaporte, edita el huesped en su ficha y reenvia la factura desde "Acciones > Reintentar envio".
-3. **Si es 3001**: verifica las lineas de la factura. Probablemente hay un cargo con redondeo erroneo. Anula la factura (genera rectificativa) y emite nueva.
-4. **Si es 3002**: revisa el catalogo de servicios > tipo de IVA asignado. Para alojamiento es 10%, para spa/restaurante 10%, para parking 21%. Corrige y reintenta.
-5. **Si es 4101**: el sistema asigno un correlativo ya usado. Ve a Settings > Facturacion > Series y pulsa "Reparar correlativos" para resincronizar.
-6. **Si es 4102**: revisa que la fecha de la factura no sea anterior a la fecha de alta del hotel en VeriFactu (campo en Settings > Compliance > VeriFactu).
-7. **Si es 5001**: renueva el certificado digital. Settings > Compliance > Certificados > "Subir nuevo certificado". Tras la renovacion, reintenta todas las facturas pendientes con el boton bulk "Reintentar rechazadas".
-8. Si el motivo no esta en esta lista, copia el codigo completo y consulta el catalogo oficial de la AEAT (https://sede.agenciatributaria.gob.es) o escala a Compliance.
-9. Toda factura rechazada debe regularizarse en plazo maximo de 4 dias naturales para evitar sanciones.
-`,
+## Qué hacer
+1. Abre el envío y lee el motivo del rechazo.
+2. Si es un dato del cliente, corrígelo en su ficha (Recepción › Huéspedes) y pulsa «Reintentar».
+3. Si es el emisor o el certificado, corrígelo en Configuración › Contabilidad y fiscal y reintenta.
+4. Si la factura ya se entregó al cliente con datos erróneos, emite una rectificativa desde Finanzas › Facturación y cobros › Rectificativas; no modifiques la original.
+5. Un envío marcado como «simulado» no ha llegado a la AEAT: hace falta el certificado y el modo producción.`
   },
   {
-    id: 'troubleshooting-habitacion-bloqueada-mantenimiento',
-    title: 'Habitacion bloqueada por mantenimiento',
-    category: 'Troubleshooting',
-    tags: ['mantenimiento', 'habitaciones', 'ooo', 'rack', 'disponibilidad'],
-    bodyMd: `# Habitacion bloqueada por mantenimiento
+    id: "troubleshooting-habitacion-bloqueada-mantenimiento",
+    title: "Una habitación está bloqueada por mantenimiento",
+    category: TROUBLESHOOTING_CATEGORY,
+    tags: ["habitaciones", "mantenimiento", "bloqueo", "pisos", "llegada"],
+    bodyMd: `# Una habitación está bloqueada por mantenimiento
 
-## Sintomas
-- Una habitacion aparece con icono de llave inglesa o badge gris en el rack y no puede asignarse a check-ins.
-- Al intentar mover una reserva a esa habitacion, el sistema muestra "Habitacion fuera de servicio".
-- En el inventario disponible la habitacion no cuenta para tipos ni totales.
-- El reporte de ocupacion la excluye automaticamente.
-- Aunque el equipo de mantenimiento dice haberla liberado, sigue bloqueada en el sistema.
+## Qué ves
+- En el Tablero de habitaciones la habitación aparece «fuera de servicio» y no puedes asignarla.
+- Una llegada de hoy la tenía asignada.
 
-## Causa probable
-1. **Ticket de mantenimiento abierto**: existe un work-order activo sobre esa habitacion que no fue cerrado al terminar.
-2. **Bloqueo manual sin fecha de fin**: alguien marco la habitacion como OOO (Out Of Order) sin definir cuando se libera.
-3. **OOS vs OOO confundidos**: la habitacion esta en Out Of Service (jugado de inventario, ej. construccion) en lugar de Out Of Order (temporal).
-4. **Inspeccion housekeeping pendiente**: aunque el ticket esta cerrado, housekeeping debe inspeccionar y aprobar la entrega.
-5. **Auto-bloqueo por SLA**: el sistema bloqueo automaticamente la habitacion porque excedio el SLA de limpieza sin marcarse como ready.
-
-## Solucion paso a paso
-1. Abre la habitacion desde el rack y revisa el panel "Estado actual". Identifica si esta en OOO o OOS y cual es la razon registrada.
-2. Si dice **"Work-order #XXX abierto"**: ve a Maintenance > Work Orders > #XXX y verifica el estado. Si el trabajo esta completado, marca el ticket como "Resolved" y luego "Closed".
-3. Al cerrar el ticket, el sistema solicita confirmacion: "Liberar habitacion?". Pulsa Si y la habitacion volvera a Available o a Dirty (si requiere limpieza).
-4. Si dice **"Bloqueo manual sin fecha"**: edita el bloqueo en Inventory > Room Status > [habitacion] y agrega fecha de fin igual o anterior a hoy.
-5. Si es **OOS de larga duracion** (renovacion, daño estructural): NO la liberes desde el front, requiere aprobacion del manager y actualizacion del inventario fiscal.
-6. Si esta esperando **inspeccion housekeeping**: ve a Housekeeping > Rooms y desde la lista pulsa "Inspect" sobre esa habitacion (requiere rol supervisor).
-7. Si fue **auto-bloqueada por SLA vencido**: revisa el log de eventos. Si el motivo ya no aplica, puedes hacer override desde el panel "Forzar disponibilidad" (requiere autorizacion de manager).
-8. Para evitar futuras incidencias: configura recordatorios en Maintenance > SLA Policies para que los tickets nunca queden abiertos mas de 24h sin actualizacion.
-9. Si la habitacion sigue bloqueada tras estos pasos, escala al manager de operaciones: puede haber un bloqueo a nivel de tipo de habitacion completo.
-`,
+## Qué hacer
+1. Abre el parte en Operaciones › Mantenimiento para ver qué pasa y cuándo se prevé resolver.
+2. Si la llegada es hoy, reasigna otra habitación del mismo tipo desde el Tablero de habitaciones; si no hay, ofrece una mejora.
+3. Cuando el técnico cierre el parte, Pisos recibe el aviso para repasar la habitación; una vez inspeccionada vuelve a la venta.
+4. Si el bloqueo va a durar más de un día, ciérrala también en Comercial › Canales de venta para no venderla en las agencias.`
   },
   {
-    id: 'troubleshooting-reservas-duplicadas',
-    title: 'Reservas duplicadas',
-    category: 'Troubleshooting',
-    tags: ['reservas', 'duplicados', 'ota', 'overbooking', 'merge'],
-    bodyMd: `# Reservas duplicadas
+    id: "troubleshooting-reservas-duplicadas",
+    title: "Tengo una reserva duplicada",
+    category: TROUBLESHOOTING_CATEGORY,
+    tags: ["reservas", "duplicada", "cancelar", "agencias en línea"],
+    bodyMd: `# Tengo una reserva duplicada
 
-## Sintomas
-- El mismo huesped aparece con dos o mas reservas para las mismas fechas y misma habitacion (o tipo de habitacion).
-- En la cola de llegadas se ven entradas duplicadas con codigos de confirmacion distintos.
-- El reporte de ocupacion muestra mas reservas que habitaciones realmente vendidas.
-- El huesped reclama haber recibido dos emails de confirmacion.
-- En el folio aparecen cargos duplicados de city tax o resort fee.
+## Qué ves
+- El mismo huésped y las mismas fechas aparecen dos veces en Recepción › Reservas.
 
-## Causa probable
-1. **Doble submit en el formulario**: el usuario hizo doble clic en "Guardar" y el sistema creo dos reservas antes de que el debounce actuara.
-2. **OTA enviando duplicado**: el channel manager recibio dos veces el mismo mensaje (timeout en el ack y el OTA reintento).
-3. **Huesped reservo en dos canales**: el mismo huesped reservo en Booking.com y directo en la web, sin que el sistema lo detectara como duplicado.
-4. **Re-importacion masiva**: tras un fallo de sincronizacion alguien re-importo un batch de reservas que ya existian.
-5. **Falta de deduplicacion por email + fechas**: la politica de deduplicacion esta deshabilitada o configurada con criterios demasiado estrictos.
+## Causas habituales
+1. El huésped reservó por dos canales (por ejemplo, por teléfono y por una agencia).
+2. Se creó a mano una reserva que ya había entrado por un canal.
 
-## Solucion paso a paso
-1. Ve a Reservations y aplica el filtro "Posibles duplicados" en el panel lateral. Lista las reservas con misma fecha + huesped + tipo de habitacion.
-2. Selecciona el par sospechoso y abre la vista comparativa con el boton "Comparar lado a lado".
-3. Identifica cual es la reserva valida segun estos criterios prioritarios: (a) la que tiene depesito/prepago aplicado, (b) la mas antigua (created_at menor), (c) la que vino del canal directo si compite con OTA.
-4. Para fusionar usa la accion **"Merge reservations"**: el sistema mueve el folio, cargos y comentarios a la reserva ganadora y cancela la perdedora con motivo "Duplicada".
-5. Si la duplicada tiene pago capturado, **NO la canceles** sin antes generar refund o transferir el pago a la reserva ganadora. El asistente de merge te guiara.
-6. Notifica al huesped por email (template "Confirmacion unificada") explicando que se mantuvo una sola reserva con codigo X.
-7. Si el duplicado vino de un OTA, registra el incidente en el panel del canal (Channels > [canal] > Issues) para que el partner revise por que reenvio el mensaje.
-8. Como prevencion: activa la regla de deduplicacion en Settings > Reservations > Dedup Rules con criterio "email + check-in date + room type" en modo "Auto-merge si match exacto, alertar si match parcial".
-9. Si el duplicado causo overbooking real (mas reservas que habitaciones), aplica protocolo de walk: ofrece upgrade gratuito o reubicacion en hotel partner segun SOP de la propiedad.
-10. Revisa semanalmente el reporte "Duplicate detection log" en Reports > Operations para detectar patrones (canal, tipo de habitacion, dia de semana) y ajustar reglas.
-`,
-  },
+## Qué hacer
+1. Abre las dos reservas y compara el origen y la política de cancelación.
+2. Conserva la que tenga la garantía de pago y cancela la otra desde su detalle; si es de una agencia, cancélala también en la extranet para que no genere comisión.
+3. Si el huésped ya está alojado, deja la reserva del check-in y cancela la duplicada.
+4. Comprueba que la penalización de cancelación (Revenue › Políticas de cancelación) no se ha aplicado a la duplicada; si se ha aplicado, anúlala desde el folio.`
+  }
 ];
+
+export default TROUBLESHOOTING_ARTICLES;

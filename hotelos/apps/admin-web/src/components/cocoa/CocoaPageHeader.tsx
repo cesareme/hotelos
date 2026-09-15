@@ -153,7 +153,7 @@ export function CocoaPageHeader({
             value={segmentedValue}
             onChange={handleTabChange}
             options={tabs!}
-            aria-label={`${title} sections`}
+            aria-label={`Secciones de ${title}`}
           />
         </div>
       ) : null}

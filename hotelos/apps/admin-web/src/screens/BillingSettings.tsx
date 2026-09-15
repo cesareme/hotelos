@@ -11,6 +11,7 @@ import { fetchComplianceHealth, fetchComplianceSettings, type ComplianceHealthRe
 import { useToast } from "../components/Toast";
 import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
 import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { pageHead } from "./tabs/configuracion/tab-helpers";
 import { CocoaCard } from "../components/cocoa/CocoaCard";
 import { CocoaButton } from "../components/cocoa/CocoaButton";
 import { CocoaSelect } from "../components/cocoa/CocoaSelect";
@@ -69,7 +70,9 @@ function previewNumber(sequence: { prefix?: string | null; nextNumber: number; p
   return `${sequence.prefix ?? ""}${String(sequence.nextNumber).padStart(Math.max(0, sequence.padding), "0")}`;
 }
 
-export function BillingSettings() {
+export function BillingSettings({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const { showToast } = useToast();
   const [sequences, setSequences] = useState<InvoiceSequence[]>([]);
   const [loading, setLoading] = useState(true);
@@ -228,7 +231,7 @@ export function BillingSettings() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Finanzas y cumplimiento"
         title="Ajustes de facturación"
         subtitle="Series de numeración por tipo de factura y ejercicio, y estado del registro VeriFactu"
@@ -276,7 +279,7 @@ export function BillingSettings() {
           </div>
           <p className="bo-muted" style={{ margin: 0 }}>
             {verifactuHealth
-              ? `Conector en modo ${verifactuHealth.mode === "production" ? "producción" : verifactuHealth.mode === "preproduction" ? "preproducción" : "sandbox"} · certificado ${verifactuHealth.cert.configured ? "configurado" : "sin configurar"}.`
+              ? `Conector en modo ${verifactuHealth.mode === "production" ? "producción" : verifactuHealth.mode === "preproduction" ? "preproducción" : "pruebas"} · certificado ${verifactuHealth.cert.configured ? "configurado" : "sin configurar"}.`
               : "Estado del conector no disponible."}{" "}
             Las facturas emitidas son inmutables: se corrigen con anulación o rectificativa.
           </p>

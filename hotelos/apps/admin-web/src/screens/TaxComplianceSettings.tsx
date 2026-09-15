@@ -36,6 +36,7 @@ import {
 import { useToast } from "../components/Toast";
 import { ErrorState, LoadingBlock, Spinner } from "../components/States";
 import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { pageHead } from "./tabs/configuracion/tab-helpers";
 import { CocoaCard } from "../components/cocoa/CocoaCard";
 import { CocoaButton } from "../components/cocoa/CocoaButton";
 import { CocoaSelect } from "../components/cocoa/CocoaSelect";
@@ -45,6 +46,7 @@ import { DegradedValue } from "../components/cocoa-extras/DegradedValue";
 import { TAX_COMPLIANCE_INSTRUCTIONS } from "../content/screen-instructions/taxes";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
+import { dateTime } from "../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -166,7 +168,7 @@ function toForm(settings: ComplianceSettings): Form {
 function modeLabel(mode: string | undefined): string {
   if (mode === "production") return "producción";
   if (mode === "preproduction") return "preproducción";
-  if (mode === "sandbox") return "sandbox";
+  if (mode === "sandbox") return "pruebas";
   return "—";
 }
 
@@ -178,7 +180,9 @@ function StatusLine(props: { tone: "ok" | "warn" | "error" | "info"; children: R
   );
 }
 
-export function TaxComplianceSettings() {
+export function TaxComplianceSettings({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const { showToast } = useToast();
   const [settings, setSettings] = useState<ComplianceSettings | null>(null);
   const [form, setForm] = useState<Form | null>(null);
@@ -337,7 +341,7 @@ export function TaxComplianceSettings() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Cumplimiento · Fiscal"
         title="Ajustes de cumplimiento fiscal"
         subtitle="País, región fiscal, conectores obligatorios y datos del establecimiento"
@@ -548,7 +552,7 @@ export function TaxComplianceSettings() {
           </div>
           {settings.updatedAt ? (
             <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
-              Actualizado {new Date(settings.updatedAt).toLocaleString("es-ES")}
+              Actualizado {dateTime(settings.updatedAt)}
             </span>
           ) : null}
         </div>

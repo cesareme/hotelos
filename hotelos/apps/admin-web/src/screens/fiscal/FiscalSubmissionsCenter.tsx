@@ -4,6 +4,9 @@ import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { SubmissionDetailPanel, type AuthorityKind } from "../../components/SubmissionDetailPanel";
 import { useToast } from "../../components/Toast";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS } from "../../content/actions";
+import { dateTime, plural } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -129,7 +132,7 @@ export function FiscalSubmissionsCenter() {
       }
     }
     setBulkRetrying(false);
-    const summary = `Re-queued ${ok} submission${ok === 1 ? "" : "s"}.${fail > 0 ? ` ${fail} failed.` : ""}`;
+    const summary = `${plural(ok, "envío reencolado", "envíos reencolados")}.${fail > 0 ? ` ${plural(fail, "envío con error", "envíos con error")}.` : ""}`;
     setBulkMessage(summary);
     if (fail === 0) {
       showToast(summary, { variant: "success" });
@@ -142,7 +145,7 @@ export function FiscalSubmissionsCenter() {
   }
 
   const tabs: Array<{ id: AuthorityKind; label: string; subtitle: string }> = [
-    { id: "verifactu", label: "VeriFactu", subtitle: "AEAT mainland" },
+    { id: "verifactu", label: "VeriFactu", subtitle: "AEAT · Península y Baleares" },
     { id: "tbai", label: "TicketBAI", subtitle: "Bizkaia · Gipuzkoa · Araba" },
     { id: "igic", label: "IGIC", subtitle: "Canarias (ATC)" },
     { id: "ses", label: "SES.HOSPEDAJES", subtitle: "MIR · viajeros" }
@@ -150,25 +153,21 @@ export function FiscalSubmissionsCenter() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Compliance · Submissions</div>
-          <h1 className="bo-page-title">Fiscal submissions</h1>
-          <p className="bo-page-subtitle">
-            Click cualquier fila para inspeccionar el XML canonical firmado, la respuesta de la autoridad y el historial de reintentos.
-            La tabla se auto-refresca cada 12s mientras haya submissions pendientes.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" onClick={refresh}>↻ Refresh</button>
-          {retryable.length > 0 ? (
-            <button type="button" className="primary" disabled={bulkRetrying} onClick={handleBulkRetry}>
-              {bulkRetrying ? "Retrying…" : `Retry ${retryable.length} failed`}
-            </button>
-          ) : null}
-          <button type="button" className="ghost">Export CSV</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Cumplimiento"
+        title="Envíos a autoridades"
+        subtitle="VeriFactu, SES.Hospedajes, TicketBAI e IGIC: abre una fila para ver el XML firmado, la respuesta de la autoridad y los reintentos. La tabla se actualiza sola cada 12 s mientras haya envíos pendientes."
+        actions={
+          <>
+            <button type="button" onClick={refresh}>↻ {ACTIONS.refresh}</button>
+            {retryable.length > 0 ? (
+              <button type="button" className="primary" disabled={bulkRetrying} onClick={handleBulkRetry}>
+                {bulkRetrying ? "Reintentando…" : `Reintentar ${retryable.length} fallidos`}
+              </button>
+            ) : null}
+          </>
+        }
+      />
 
       <div className="bo-row" style={{ gap: 0, borderBottom: "1px solid var(--line)", paddingBottom: 0, marginBottom: 16 }}>
         {tabs.map((t) => (
@@ -205,35 +204,35 @@ export function FiscalSubmissionsCenter() {
           role="status"
           style={{ borderLeft: "3px solid var(--warn-ink, #a16207)", padding: 12, fontSize: 13 }}
         >
-          <strong>Modo sandbox:</strong> los envíos marcados como SANDBOX son simulados —{" "}
+          <strong>Modo de pruebas:</strong> los envíos marcados como «Simulado» no han salido del sistema —{" "}
           <strong>no se han remitido a la Administración</strong>. El envío real requiere
           configurar el modo producción y el certificado del establecimiento.
         </div>
       ) : null}
 
       {loading && rows.length === 0 ? (
-        <div className="bo-card" style={{ textAlign: "center", padding: 48, color: "var(--ink-muted)" }}>Loading submissions...</div>
+        <div className="bo-card" style={{ textAlign: "center", padding: 48, color: "var(--ink-muted)" }}>Cargando envíos…</div>
       ) : error ? (
         <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)" }}>
-          <h3>Error loading submissions</h3>
-          <p className="bo-muted">Couldn't load this report right now. Refresh to retry.</p>
+          <h3>Error al cargar los envíos</h3>
+          <p className="bo-muted">No hemos podido cargar los envíos. Inténtalo de nuevo.</p>
         </div>
       ) : rows.length === 0 ? (
         <div className="bo-card" style={{ textAlign: "center", padding: 48 }}>
-          <h3 style={{ marginBottom: 8 }}>No submissions yet for this authority</h3>
-          <p>Issue an invoice for a property that routes to this authority to see entries here.</p>
+          <h3 style={{ marginBottom: 8 }}>Todavía no hay envíos a esta autoridad</h3>
+          <p>Emite una factura de una propiedad que tribute en esta autoridad y aparecerá aquí.</p>
         </div>
       ) : (
         <div className="bo-card" style={{ padding: 0, overflow: "hidden" }}>
           <table>
             <thead>
               <tr>
-                <th>Status</th>
-                <th>{tab === "ses" ? "Reference" : "Invoice"}</th>
-                <th>Identifier</th>
-                <th>Submitted</th>
-                <th>Attempts</th>
-                <th>Detail</th>
+                <th>Estado</th>
+                <th>{tab === "ses" ? "Referencia" : "Factura"}</th>
+                <th>Identificador</th>
+                <th>Enviado</th>
+                <th>Intentos</th>
+                <th>Detalle</th>
               </tr>
             </thead>
             <tbody>
@@ -247,7 +246,7 @@ export function FiscalSubmissionsCenter() {
                     <span className={`bo-status ${statusToClass(row.status, isSimulated(row))}`}>{statusLabel(row.status)}</span>
                     {isSimulated(row) ? (
                       <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: 0.5, color: "var(--warn-ink, #a16207)", marginTop: 2 }}>
-                        SANDBOX · no enviado
+                        Simulado · no enviado
                       </div>
                     ) : null}
                   </td>
@@ -262,7 +261,7 @@ export function FiscalSubmissionsCenter() {
                     {row.acknowledgementCode ? (<><span style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{row.acknowledgementCode}</span><div style={{ fontSize: 11, color: "var(--ink-muted)" }}>ACK</div></>) : null}
                     {!row.csvCode && !row.tbaiCode && !row.acknowledgementCode ? <span style={{ color: "var(--ink-muted)" }}>—</span> : null}
                   </td>
-                  <td style={{ fontSize: 12, color: "var(--ink-muted)" }}>{row.submittedAt ? new Date(row.submittedAt).toLocaleString() : "—"}</td>
+                  <td style={{ fontSize: 12, color: "var(--ink-muted)" }}>{dateTime(row.submittedAt)}</td>
                   <td style={{ fontSize: 12 }}>{row.attempts ?? 0}</td>
                   <td>
                     {row.errorCode ? (

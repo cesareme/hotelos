@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import { booleanLabel, dataKeyLabel } from "../../content/data-labels";
+import { dateTime, plural } from "../../lib/format";
 
 export function FormPage(props: { title: string; eyebrow?: string; summary: string; children: ReactNode }) {
   return (
@@ -145,51 +147,76 @@ export function FormPreviewPanel(props: { children: ReactNode }) {
   return <aside className="bo-readiness-card">{props.children}</aside>;
 }
 
-function humanizeKey(key: string): string {
-  return key
-    .replace(/_/g, " ")
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .replace(/^./, (c) => c.toUpperCase());
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
 
+/** True for an id-like or JSON-blob key: hidden from the compact records table (visible in the key/value view). */
+export function isTechnicalKey(key: string): boolean {
+  return key === "id" || /(^|[a-z])Id$/.test(key) || /Json$/.test(key);
+}
+
+/** Cap of columns in the compact records table (the widest useful row at 1280 px). */
+export const RECORDS_TABLE_MAX_COLUMNS = 8;
+/** Cap of rows painted by the compact records table. */
+export const RECORDS_TABLE_MAX_ROWS = 200;
+
+/**
+ * Columns of a compact table for a list of records: scalar keys in order of
+ * first appearance, without ids or JSON blobs, capped at RECORDS_TABLE_MAX_COLUMNS.
+ */
+export function columnsForRecords(rows: Array<Record<string, unknown>>): string[] {
+  const seen = new Set<string>();
+  const columns: string[] = [];
+  for (const row of rows) {
+    for (const [key, value] of Object.entries(row)) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (isTechnicalKey(key)) continue;
+      if (value !== null && typeof value === "object") continue;
+      columns.push(key);
+    }
+  }
+  return columns.slice(0, RECORDS_TABLE_MAX_COLUMNS);
+}
+
 function formatScalar(value: unknown): { display: string; statusClass?: string; mono?: boolean } {
   if (value === null || value === undefined) return { display: "—" };
-  if (typeof value === "boolean") return { display: value ? "Yes" : "No", statusClass: value ? "ok" : "info" };
+  if (typeof value === "boolean") return { display: booleanLabel(value), statusClass: value ? "ok" : "info" };
   if (typeof value === "number") return { display: String(value), mono: true };
   if (typeof value === "string") {
-    if (/^\d{4}-\d{2}-\d{2}T/.test(value)) {
-      try {
-        const d = new Date(value);
-        if (!Number.isNaN(d.getTime())) return { display: d.toLocaleString("es-ES") };
-      } catch {
-        // fall through
-      }
-    }
+    if (/^\d{4}-\d{2}-\d{2}T/.test(value) && !Number.isNaN(new Date(value).getTime())) return { display: dateTime(value) };
     const isId = /^[a-z]+_[a-z0-9]+$/i.test(value) || /^[a-f0-9]{12,}$/i.test(value) || /^cm[a-z0-9]{20,}$/i.test(value);
     return { display: value, mono: isId };
   }
   return { display: String(value), mono: true };
 }
 
-function DataField(props: { label: string; value: unknown }) {
+function ScalarCell({ value }: { value: unknown }) {
+  const fmt = formatScalar(value);
+  return (
+    <span className={`dp-val${fmt.mono ? " mono" : ""}`}>
+      {fmt.statusClass ? <span className={`bo-status ${fmt.statusClass}`}>{fmt.display}</span> : fmt.display}
+    </span>
+  );
+}
+
+function DataField(props: { label: string; value: unknown; labels?: Record<string, string> }) {
   const { value } = props;
+  const label = dataKeyLabel(props.label, props.labels);
   if (Array.isArray(value)) {
     if (value.length === 0) {
       return (
         <div className="dp-row">
-          <span className="dp-key">{humanizeKey(props.label)}</span>
-          <span className="dp-val muted">empty</span>
+          <span className="dp-key">{label}</span>
+          <span className="dp-val muted">vacío</span>
         </div>
       );
     }
     if (value.every((v) => typeof v === "string" || typeof v === "number")) {
       return (
         <div className="dp-row">
-          <span className="dp-key">{humanizeKey(props.label)}</span>
+          <span className="dp-key">{label}</span>
           <span className="dp-val">
             {value.map((v, i) => <span key={i} className="bo-chip" style={{ marginRight: 4 }}>{String(v)}</span>)}
           </span>
@@ -198,13 +225,9 @@ function DataField(props: { label: string; value: unknown }) {
     }
     return (
       <details className="dp-nested">
-        <summary className="dp-key">{humanizeKey(props.label)} <span className="dp-count">{value.length}</span></summary>
+        <summary className="dp-key">{label} <span className="dp-count">{value.length}</span></summary>
         <div className="dp-nested-body">
-          {value.map((item, i) => (
-            <div key={i} className="dp-array-item">
-              {isPlainObject(item) ? <DataPreview data={item} /> : <span>{String(item)}</span>}
-            </div>
-          ))}
+          <DataPreview data={value} labels={props.labels} />
         </div>
       </details>
     );
@@ -212,34 +235,94 @@ function DataField(props: { label: string; value: unknown }) {
   if (isPlainObject(value)) {
     return (
       <details className="dp-nested" open>
-        <summary className="dp-key">{humanizeKey(props.label)}</summary>
+        <summary className="dp-key">{label}</summary>
         <div className="dp-nested-body">
-          <DataPreview data={value} />
+          <DataPreview data={value} labels={props.labels} />
         </div>
       </details>
     );
   }
-  const fmt = formatScalar(value);
   return (
     <div className="dp-row">
-      <span className="dp-key">{humanizeKey(props.label)}</span>
-      <span className={`dp-val${fmt.mono ? " mono" : ""}`}>
-        {fmt.statusClass ? <span className={`bo-status ${fmt.statusClass}`}>{fmt.display}</span> : fmt.display}
-      </span>
+      <span className="dp-key">{label}</span>
+      <ScalarCell value={value} />
     </div>
   );
 }
 
-export function DataPreview(props: { data: Record<string, unknown> | null | undefined; emptyMessage?: string }) {
+/** Compact table for a list of records (one row per record, scalar columns only). */
+function RecordsTable(props: { rows: Array<Record<string, unknown>>; labels?: Record<string, string> }) {
+  const columns = columnsForRecords(props.rows);
+  const visible = props.rows.slice(0, RECORDS_TABLE_MAX_ROWS);
+  if (columns.length === 0) {
+    return (
+      <div className="dp-table">
+        {visible.map((row, i) => (
+          <div key={i} className="dp-array-item">
+            <DataPreview data={row} labels={props.labels} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="rev-report-wrap" data-records-table={props.rows.length}>
+      <p className="bo-muted" style={{ textTransform: "none", letterSpacing: 0, marginBottom: 8 }}>
+        {plural(props.rows.length, "registro", "registros", { withCount: true })}
+        {props.rows.length > visible.length ? ` · se muestran los ${visible.length} primeros` : ""}
+      </p>
+      <table className="cm-table">
+        <thead>
+          <tr>
+            {columns.map((column) => (
+              <th key={column}>{dataKeyLabel(column, props.labels)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {visible.map((row, i) => (
+            <tr key={typeof row.id === "string" ? row.id : i}>
+              {columns.map((column) => (
+                <td key={column}>
+                  <ScalarCell value={row[column]} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+export function DataPreview(props: {
+  data: Record<string, unknown> | unknown[] | null | undefined;
+  emptyMessage?: string;
+  /** Field labels of the screen (key → label); they win over the shared dictionary. */
+  labels?: Record<string, string>;
+}) {
   const data = props.data ?? {};
+  if (Array.isArray(data)) {
+    if (data.length === 0) return <p className="bo-muted">{props.emptyMessage ?? "Sin datos."}</p>;
+    if (data.every(isPlainObject)) return <RecordsTable rows={data} labels={props.labels} />;
+    return (
+      <div className="dp-table">
+        {data.map((item, i) => (
+          <div key={i} className="dp-array-item">
+            {isPlainObject(item) ? <DataPreview data={item} labels={props.labels} /> : <span>{String(item)}</span>}
+          </div>
+        ))}
+      </div>
+    );
+  }
   const entries = Object.entries(data);
   if (entries.length === 0) {
-    return <p className="bo-muted">{props.emptyMessage ?? "No data."}</p>;
+    return <p className="bo-muted">{props.emptyMessage ?? "Sin datos."}</p>;
   }
   return (
     <div className="dp-table">
       {entries.map(([key, value]) => (
-        <DataField key={key} label={key} value={value} />
+        <DataField key={key} label={key} value={value} labels={props.labels} />
       ))}
     </div>
   );

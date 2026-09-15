@@ -15,6 +15,7 @@ import {
 import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useToast } from "../../components/Toast";
+import { date } from "../../lib/format";
 
 const CATEGORY_LABELS: Record<string, string> = {
   channel_manager: "Channel Manager",
@@ -61,7 +62,7 @@ export function MarketplaceCatalogScreen() {
       setScopes(sc);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error cargando marketplace.");
+      setError(e instanceof Error ? e.message : "No se ha podido cargar el catálogo.");
     } finally {
       setLoading(false);
     }
@@ -82,7 +83,7 @@ export function MarketplaceCatalogScreen() {
       await refresh();
       showToast(`Módulo "${appId}" instalado`, { variant: "success" });
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Error instalando.";
+      const message = e instanceof Error ? e.message : "No se ha podido instalar la aplicación.";
       setError(message);
       showToast(message, { variant: "error" });
     } finally {
@@ -234,13 +235,13 @@ export function MarketplaceCatalogScreen() {
         ) : (
           <div className="rev-report-wrap">
             <table className="cm-table">
-              <thead><tr><th>App</th><th>Scopes</th><th>Instalada</th><th></th></tr></thead>
+              <thead><tr><th>Aplicación</th><th>Permisos</th><th>Instalada</th><th></th></tr></thead>
               <tbody>
                 {installations.map((i) => (
                   <tr key={i.id}>
                     <td className="mono">{i.appId}</td>
                     <td style={{ fontSize: 11 }}>{i.scopes.join(", ")}</td>
-                    <td className="mono" style={{ fontSize: 11 }}>{new Date(i.installedAt).toLocaleDateString("es-ES")}</td>
+                    <td className="mono" style={{ fontSize: 11 }}>{date(i.installedAt)}</td>
                     <td><button type="button" onClick={() => setPendingUninstallId(i.appId)}>Desinstalar</button></td>
                   </tr>
                 ))}

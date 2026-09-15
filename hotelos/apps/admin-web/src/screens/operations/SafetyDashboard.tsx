@@ -4,6 +4,7 @@ import { useApiData } from "../../hooks/useApiData";
 import { createIncident, updateIncident, type IncidentSeverity } from "../../services/safetyApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { SidePanel, DetailRow } from "../../components/SidePanel";
+import { date, number } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -22,12 +23,10 @@ const SEV_KIND: Record<string, Kind> = { low: "info", medium: "warn", high: "war
 const SEVERITIES: IncidentSeverity[] = ["low", "medium", "high", "critical"];
 
 function fmtNum(v: number | undefined): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(v ?? 0);
+  return number(v);
 }
 function fmtDate(v?: string): string {
-  if (!v) return "—";
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? v : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short" });
+  return date(v, "dayMonth");
 }
 
 export function SafetyDashboard() {

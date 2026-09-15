@@ -7,6 +7,7 @@
 // como `offerType`; la categoría fiscal (`taxCategory`) decide el tipo de IVA /
 // IGIC / IPSI que aplicará el folio cuando se venda la oferta.
 
+import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useActiveProperty } from "../../services/activeProperty";
 import { LoadingBlock, EmptyState, ErrorState, Spinner } from "../../components/States";
@@ -18,6 +19,7 @@ import {
   toUpsellOfferInput,
   type UpsellOffer
 } from "../../services/upsellsApi";
+import { money, type CurrencyInput } from "../../lib/format";
 
 type Draft = Omit<UpsellOffer, "id"> & { id: string | null };
 
@@ -51,13 +53,8 @@ const TAX_CATEGORIES = [
   { value: "not_subject", label: "No sujeto (indemnizaciones)" }
 ];
 
-function fmtMoney(n: number, currency = "EUR"): string {
-  try {
-    return new Intl.NumberFormat("es-ES", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
-  } catch {
-    // Unknown ISO code typed by the user — fall back to a plain number.
-    return `${n.toFixed(2)} ${currency}`;
-  }
+function fmtMoney(n: number, currency?: CurrencyInput): string {
+  return money(n, currency);
 }
 
 function defaultTaxCategory(category: string): string {
@@ -81,6 +78,8 @@ function newDraft(): Draft {
 }
 
 export function UpsellsSettingsScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const { propertyId } = useActiveProperty();
   const [items, setItems] = useState<UpsellOffer[]>([]);
@@ -170,10 +169,14 @@ export function UpsellsSettingsScreen() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Experiencia del huésped · Upsells
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Catálogo de ofertas adicionales</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
+                Comercial · Ventas adicionales
+              </p>
+              <h2 style={{ color: "var(--ink)" }}>Catálogo de ofertas adicionales</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             Define qué se ofrece al huésped antes y durante la estancia (upgrade, parking, desayuno…),
             por qué canal y a qué precio. El portal, el kiosko y el panel de upsells leen este catálogo.

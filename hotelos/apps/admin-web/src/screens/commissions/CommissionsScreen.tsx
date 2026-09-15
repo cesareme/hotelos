@@ -2,6 +2,10 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState, type FormEvent } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { ACTIONS, STATUS_LABELS, loadingLabel, newLabel } from "../../content/actions";
+import { dateTime, money, percent, plural } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -49,28 +53,29 @@ type CommissionSummary = {
 // --- helpers -------------------------------------------------------------
 
 function fmtEur(amount: number | string): string {
-  const value = typeof amount === "string" ? Number(amount) : amount;
-  return new Intl.NumberFormat("es-ES", { useGrouping: true,
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2
-  }).format(Number.isFinite(value) ? value : 0);
+  return money(amount);
 }
 
 function fmtPct(value: number | string): string {
-  const num = typeof value === "string" ? Number(value) : value;
-  return `${(Number.isFinite(num) ? num : 0).toFixed(2)}%`;
+  return percent(value, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
+
+const APPLIES_TO_LABEL: Record<string, string> = {
+  net_revenue: "Ingreso neto",
+  gross_revenue: "Ingreso bruto",
+  total: "Total"
+};
+
+const ACCRUAL_STATUS_LABEL: Record<string, string> = {
+  accrued: "Devengada",
+  invoiced: "Facturada",
+  paid: "Pagada",
+  reversed: "Anulada"
+};
 
 function fmtDateTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleString("es-ES", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
+    return dateTime(iso, { empty: iso });
   } catch {
     return iso;
   }
@@ -129,12 +134,12 @@ export function CommissionsScreen() {
     e.preventDefault();
     setFormError(null);
     if (!formChannelCode.trim()) {
-      setFormError("Channel code is required.");
+      setFormError("El código del canal es obligatorio.");
       return;
     }
     const rate = Number(formRatePct);
     if (!Number.isFinite(rate) || rate <= 0 || rate > 100) {
-      setFormError("Rate % must be between 0 and 100.");
+      setFormError("La comisión debe estar entre 0 y 100 %.");
       return;
     }
     setFormSubmitting(true);
@@ -160,13 +165,16 @@ export function CommissionsScreen() {
     }
   };
 
+  // Deactivation stops future accruals for the channel: it is confirmed in a
+  // dialog (Tanda 5: every destructive action asks first).
+  const [pendingDeactivate, setPendingDeactivate] = useState<{ id: string; label: string } | null>(null);
   const handleDeactivate = async (id: string) => {
     setBusyDeactivateId(id);
     try {
       await apiRequest(`/commissions/rules/${id}/deactivate`, { method: "POST" });
       refreshAll();
     } catch (err) {
-      console.error("Deactivate failed:", err);
+      setFormError(err instanceof Error ? err.message : "No se pudo desactivar la regla.");
     } finally {
       setBusyDeactivateId(null);
     }
@@ -179,52 +187,58 @@ export function CommissionsScreen() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Comisiones OTA</div>
-          <h1 className="bo-page-title">OTA commission engine</h1>
-          <p className="bo-page-subtitle">
-            Define per-channel commission rates and review accruals (DR 6230 Comisiones / CR 4109 Acreedores OTA).
-            Accruals are produced automatically on <strong>InvoiceIssued</strong> and{" "}
-            <strong>ReservationCheckedOut</strong> events.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" onClick={refreshAll}>↻ Refresh</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Finanzas"
+        title="Comisiones"
+        subtitle="La comisión de cada canal de venta y su devengo: se contabiliza sola al emitir la factura o al hacer el check-out (cuenta 6230 Comisiones contra 4109 Acreedores)."
+        actions={<button type="button" onClick={refreshAll}>↻ {ACTIONS.refresh}</button>}
+      />
+      <ConfirmDialog
+        open={pendingDeactivate !== null}
+        variant="danger"
+        title={pendingDeactivate ? `¿Desactivar la regla de ${pendingDeactivate.label}?` : ""}
+        description="Dejarán de devengarse comisiones para este canal a partir de ahora. Los devengos ya registrados no cambian."
+        confirmLabel={ACTIONS.deactivate}
+        cancelLabel={ACTIONS.cancel}
+        onCancel={() => setPendingDeactivate(null)}
+        onConfirm={() => {
+          const target = pendingDeactivate;
+          setPendingDeactivate(null);
+          if (target) void handleDeactivate(target.id);
+        }}
+      />
 
       {/* KPI cards */}
       <section className="rev-kpi-grid">
         <article className="rev-kpi rev-kpi-warn">
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Total accrued MTD</span>
+            <span className="rev-kpi-label">Devengado este mes</span>
           </div>
           <div className="rev-kpi-value">{fmtEur(totalMtd)}</div>
-          <div className="rev-kpi-delta">{summaryState.data?.total.count ?? 0} accruals</div>
+          <div className="rev-kpi-delta">{plural(summaryState.data?.total.count ?? 0, "devengo", "devengos")}</div>
         </article>
         <article className="rev-kpi">
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Revenue base MTD</span>
+            <span className="rev-kpi-label">Base de ingresos del mes</span>
           </div>
           <div className="rev-kpi-value">{fmtEur(baseMtd)}</div>
-          <div className="rev-kpi-delta">cumulative</div>
+          <div className="rev-kpi-delta">acumulado</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">% of revenue</span>
+            <span className="rev-kpi-label">% sobre ingresos</span>
           </div>
           <div className="rev-kpi-value">{fmtPct(percentOfRevenue)}</div>
-          <div className="rev-kpi-delta">commission / base</div>
+          <div className="rev-kpi-delta">comisión sobre base</div>
         </article>
         <article className="rev-kpi">
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Top channel</span>
+            <span className="rev-kpi-label">Canal con más comisión</span>
           </div>
           <div className="rev-kpi-value" style={{ fontSize: 22 }}>
             {topChannel ? topChannel.channelKey : "—"}
           </div>
-          <div className="rev-kpi-delta">{topChannel ? fmtEur(topChannel.commissionAmount) : "no data"}</div>
+          <div className="rev-kpi-delta">{topChannel ? fmtEur(topChannel.commissionAmount) : "sin datos"}</div>
         </article>
       </section>
 
@@ -232,17 +246,17 @@ export function CommissionsScreen() {
       {summaryState.data && summaryState.data.byChannel.length > 0 ? (
         <section className="bo-card">
           <div className="bo-card-head">
-            <h2 style={{ fontSize: 18 }}>Breakdown by channel · MTD</h2>
+            <h2 style={{ fontSize: 18 }}>Desglose por canal · este mes</h2>
             <span className="bo-chip">{summaryState.data.byChannel.length} channels</span>
           </div>
           <div className="rev-report-wrap">
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Channel</th>
-                  <th style={{ textAlign: "right" }}>Base amount</th>
-                  <th style={{ textAlign: "right" }}>Commission</th>
-                  <th style={{ textAlign: "right" }}>Count</th>
+                  <th>Canal</th>
+                  <th style={{ textAlign: "right" }}>Importe base</th>
+                  <th style={{ textAlign: "right" }}>Comisión</th>
+                  <th style={{ textAlign: "right" }}>Cantidad</th>
                 </tr>
               </thead>
               <tbody>
@@ -265,13 +279,13 @@ export function CommissionsScreen() {
         {/* Commission rules */}
         <section className="bo-card">
           <div className="bo-card-head">
-            <h2 style={{ fontSize: 18 }}>Commission rules</h2>
+            <h2 style={{ fontSize: 18 }}>Reglas de comisión</h2>
             <button
               type="button"
               className="primary"
               onClick={() => setShowAddForm((s) => !s)}
             >
-              {showAddForm ? "Cancel" : "+ Add rule"}
+              {showAddForm ? ACTIONS.cancel : `+ ${newLabel("f", "regla")}`}
             </button>
           </div>
 
@@ -289,16 +303,16 @@ export function CommissionsScreen() {
               }}
             >
               <div style={{ display: "grid", gap: 6 }}>
-                <label style={{ fontSize: 12, color: "var(--ink-muted)" }}>Channel code</label>
+                <label style={{ fontSize: 12, color: "var(--ink-muted)" }}>Código del canal</label>
                 <input
                   type="text"
-                  placeholder="e.g. booking, expedia, hotelbeds"
+                  placeholder="p. ej. booking, expedia, hotelbeds"
                   value={formChannelCode}
                   onChange={(e) => setFormChannelCode(e.target.value)}
                 />
               </div>
               <div style={{ display: "grid", gap: 6 }}>
-                <label style={{ fontSize: 12, color: "var(--ink-muted)" }}>Rate %</label>
+                <label style={{ fontSize: 12, color: "var(--ink-muted)" }}>Comisión (%)</label>
                 <input
                   type="number"
                   step="0.01"
@@ -309,13 +323,13 @@ export function CommissionsScreen() {
                 />
               </div>
               <div style={{ display: "grid", gap: 6 }}>
-                <label style={{ fontSize: 12, color: "var(--ink-muted)" }}>Applies to</label>
+                <label style={{ fontSize: 12, color: "var(--ink-muted)" }}>Se aplica sobre</label>
                 <select
                   value={formAppliesTo}
                   onChange={(e) => setFormAppliesTo(e.target.value as typeof formAppliesTo)}
                 >
-                  <option value="net_revenue">Net revenue</option>
-                  <option value="gross_revenue">Gross revenue</option>
+                  <option value="net_revenue">Ingreso neto</option>
+                  <option value="gross_revenue">Ingreso bruto</option>
                   <option value="total">Total</option>
                 </select>
               </div>
@@ -324,30 +338,30 @@ export function CommissionsScreen() {
               ) : null}
               <div style={{ display: "flex", gap: 8 }}>
                 <button type="submit" className="primary" disabled={formSubmitting}>
-                  {formSubmitting ? "Saving…" : "Save rule"}
+                  {formSubmitting ? STATUS_LABELS.saving : "Guardar regla"}
                 </button>
                 <button type="button" onClick={() => setShowAddForm(false)} disabled={formSubmitting}>
-                  Cancel
+                  {ACTIONS.cancel}
                 </button>
               </div>
             </form>
           ) : null}
 
           {rulesState.loading ? (
-            <p style={{ color: "var(--ink-muted)" }}>Loading rules…</p>
+            <p style={{ color: "var(--ink-muted)" }}>{loadingLabel("reglas")}</p>
           ) : rulesState.error ? (
             <p style={{ color: "var(--danger-ink)" }}>{rulesState.error}</p>
           ) : !rulesState.data || rulesState.data.length === 0 ? (
-            <p style={{ color: "var(--ink-muted)" }}>No rules defined yet. Add one to start accruing commissions.</p>
+            <p style={{ color: "var(--ink-muted)" }}>Aún no hay reglas. Añade una para empezar a devengar comisiones.</p>
           ) : (
             <div className="rev-report-wrap">
               <table className="cm-table">
                 <thead>
                   <tr>
-                    <th>Channel</th>
-                    <th style={{ textAlign: "right" }}>Rate</th>
-                    <th>Applies to</th>
-                    <th>Active</th>
+                    <th>Canal</th>
+                    <th style={{ textAlign: "right" }}>Comisión</th>
+                    <th>Se aplica sobre</th>
+                    <th>Activa</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -356,20 +370,20 @@ export function CommissionsScreen() {
                     <tr key={rule.id} style={!rule.active ? { opacity: 0.55 } : undefined}>
                       <td><strong>{rule.channelCode ?? rule.channelId ?? "—"}</strong></td>
                       <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmtPct(rule.ratePct)}</td>
-                      <td>{rule.appliesTo.replace("_", " ")}</td>
+                      <td>{APPLIES_TO_LABEL[rule.appliesTo] ?? rule.appliesTo}</td>
                       <td>
                         <span className={`bo-status ${rule.active ? "ok" : "neutral"}`}>
-                          {rule.active ? "active" : "inactive"}
+                          {rule.active ? STATUS_LABELS.active : STATUS_LABELS.inactive}
                         </span>
                       </td>
                       <td style={{ textAlign: "right" }}>
                         {rule.active ? (
                           <button
                             type="button"
-                            onClick={() => handleDeactivate(rule.id)}
+                            onClick={() => setPendingDeactivate({ id: rule.id, label: rule.channelCode ?? rule.channelId ?? "este canal" })}
                             disabled={busyDeactivateId === rule.id}
                           >
-                            {busyDeactivateId === rule.id ? "…" : "Deactivate"}
+                            {busyDeactivateId === rule.id ? "…" : ACTIONS.deactivate}
                           </button>
                         ) : null}
                       </td>
@@ -384,30 +398,30 @@ export function CommissionsScreen() {
         {/* Recent accruals */}
         <section className="bo-card">
           <div className="bo-card-head">
-            <h2 style={{ fontSize: 18 }}>Recent accruals</h2>
+            <h2 style={{ fontSize: 18 }}>Devengos recientes</h2>
             <span className="bo-chip">{accrualsState.data?.length ?? 0}</span>
           </div>
 
           {accrualsState.loading ? (
-            <p style={{ color: "var(--ink-muted)" }}>Loading accruals…</p>
+            <p style={{ color: "var(--ink-muted)" }}>{loadingLabel("devengos")}</p>
           ) : accrualsState.error ? (
             <p style={{ color: "var(--danger-ink)" }}>{accrualsState.error}</p>
           ) : !accrualsState.data || accrualsState.data.length === 0 ? (
             <p style={{ color: "var(--ink-muted)" }}>
-              No accruals yet. They will appear here once invoices are issued for OTA reservations.
+              Aún no hay devengos. Aparecerán al emitir facturas de reservas llegadas por canales de venta.
             </p>
           ) : (
             <div className="rev-report-wrap">
               <table className="cm-table">
                 <thead>
                   <tr>
-                    <th>Source</th>
-                    <th>Channel</th>
+                    <th>Origen</th>
+                    <th>Canal</th>
                     <th style={{ textAlign: "right" }}>Base</th>
-                    <th style={{ textAlign: "right" }}>Rate</th>
-                    <th style={{ textAlign: "right" }}>Commission</th>
-                    <th>Status</th>
-                    <th>Accrued at</th>
+                    <th style={{ textAlign: "right" }}>Comisión</th>
+                    <th style={{ textAlign: "right" }}>Comisión</th>
+                    <th>Estado</th>
+                    <th>Devengada el</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -427,7 +441,7 @@ export function CommissionsScreen() {
                         {fmtEur(accrual.commissionAmount)}
                       </td>
                       <td>
-                        <span className={`bo-status ${statusTone(accrual.status)}`}>{accrual.status}</span>
+                        <span className={`bo-status ${statusTone(accrual.status)}`}>{ACCRUAL_STATUS_LABEL[accrual.status] ?? accrual.status}</span>
                       </td>
                       <td style={{ fontSize: 11, color: "var(--ink-muted)" }}>{fmtDateTime(accrual.accruedAt)}</td>
                     </tr>

@@ -20,7 +20,13 @@
 //      as the global hook): same org passes; another org is an opaque 404
 //      unless the caller is a platform admin, whose `userContext.organizationId`
 //      is RE-POINTED to the row's org so every downstream org check stays
-//      consistent for the rest of the request.
+//      consistent for the rest of the request. Tanda 5 (L1c · api): inside
+//      the organization the caller must also hold a role in THAT property
+//      (`userContext.assignedPropertyIds`, from user_property_roles): a
+//      receptionist of Los Tilos got 200 on reservations, folios and guests
+//      of Rías Altas (same organization Faranda). Same opaque 404. Platform
+//      admins and contexts without assignments (demo fallback, users with no
+//      property role) keep the organization-wide scope.
 //   4. Owner resolved to an organizationId → `grantOrganizationAccess`, same
 //      escape (compare / re-point).
 //   5. Optional `propertyId` (routes that carry BOTH `:propertyId` and an
@@ -72,14 +78,28 @@ type Resolver = {
 const PROPERTY_NOT_FOUND = "Propiedad no encontrada.";
 const ORGANIZATION_NOT_FOUND = "Organización no encontrada.";
 
+/**
+ * Property scope inside the organization (L1c): true when the context has no
+ * property assignments (organization-wide by construction) or holds a role in
+ * `propertyId`. Platform admins are handled by the callers (they may act in
+ * any property of any organization).
+ */
+export function isPropertyAssigned(context: Pick<UserContext, "assignedPropertyIds">, propertyId: string): boolean {
+  const assigned = context.assignedPropertyIds;
+  if (!assigned || assigned.length === 0) return true;
+  return assigned.includes(propertyId);
+}
+
 // ── Property / organization grants (shared with the global hook) ────────────
 
 /**
  * Resolves `propertyId` and grants the request access to it or throws 404
  * (`notFoundMessage` is reused for unknown AND foreign properties so the
- * response is never an oracle). Same org → no-op. Other org → platform
- * admins get `userContext.organizationId` re-pointed to the property's org;
- * everyone else gets the opaque 404. Returns the property's organizationId.
+ * response is never an oracle). Same org AND a role in the property → no-op.
+ * Same org without a role there (L1c, `assignedPropertyIds`) → opaque 404.
+ * Other org → platform admins get `userContext.organizationId` re-pointed to
+ * the property's org; everyone else gets the opaque 404. Returns the
+ * property's organizationId.
  */
 export async function grantPropertyAccess(
   request: TenantRequest,
@@ -92,6 +112,9 @@ export async function grantPropertyAccess(
   });
   if (!property) throw new NotFoundError(notFoundMessage);
   await grantOrganizationAccess(request, property.organizationId, notFoundMessage);
+  if (!isPropertyAssigned(request.userContext, propertyId) && !(await isPlatformAdmin(request.userContext))) {
+    throw new NotFoundError(notFoundMessage);
+  }
   return property.organizationId;
 }
 
@@ -824,6 +847,11 @@ export async function assertEntityAccess(request: TenantRequest, input: EntityAc
     const organizationId =
       "propertyId" in owner ? await resolvePropertyOrganization(owner.propertyId) : owner.organizationId;
     if (!organizationId || organizationId !== request.userContext.organizationId) throw new NotFoundError(notFound);
+    // Same property scope as the Prisma branch (L1c); platform admins are not
+    // re-pointed here by design (see the module comment) but keep their reach.
+    if ("propertyId" in owner && !isPropertyAssigned(request.userContext, owner.propertyId) && !(await isPlatformAdmin(request.userContext))) {
+      throw new NotFoundError(notFound);
+    }
     return "propertyId" in owner ? { organizationId, propertyId: owner.propertyId } : { organizationId };
   }
 

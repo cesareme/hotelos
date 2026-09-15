@@ -11,8 +11,6 @@ export const GROUPS_INSTRUCTIONS = {
     'Usa NewGroupDialog con 31 campos para crear el grupo completo.',
     'Usa RoomBlockGridDialog para la distribucion de habitaciones del room block.',
   ],
-  shortcuts: [
-    { keys: '⌘G', description: 'Abrir gestion de grupos.' },
-  ],
+  shortcuts: [{ keys: '⌘K', description: 'Buscar reservas, huéspedes y pantallas' }, { keys: 'Esc', description: 'Cerrar el panel o diálogo abierto' }],
   relatedScreens: ['Allotments', 'TT.OO.'],
 } as const;

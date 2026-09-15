@@ -1,4 +1,6 @@
+import { useTabHost } from "../tabs/TabHost";
 import { useApiData } from "../../hooks/useApiData";
+import { dateTime } from "../../lib/format";
 
 type ReputationDashboardData = {
   kpis: {
@@ -29,12 +31,7 @@ const EMPTY: ReputationDashboardData = {
 };
 
 function formatDate(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString();
-  } catch {
-    return iso;
-  }
+  return dateTime(iso);
 }
 
 function ratingPillClass(rating?: number): string {
@@ -46,6 +43,8 @@ function ratingPillClass(rating?: number): string {
 }
 
 export function ReputationDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<ReputationDashboardData>(
     "/dashboards/reputation",
     { pollIntervalMs: 120000 }
@@ -72,22 +71,26 @@ export function ReputationDashboard() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Guest experience</div>
-          <h1 className="bo-page-title">Reputación</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Comercial · Reputación y calidad</div>
+              <h1 className="bo-page-title">Reseñas</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Monitorización en tiempo real de las opiniones de los huéspedes: valoración media, distribución por estrellas,
             volumen por canal y reseñas pendientes de respuesta. Actualización automática cada 2 minutos.
           </p>
         </div>
         <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => refresh()}>↻ Refresh</button>
+          <button type="button" className="ghost" onClick={() => refresh()}>↻ Actualizar</button>
         </div>
       </div>
 
       {error ? (
         <section className="bo-card">
           <div className="bo-card-head">
-            <h3>Error loading reputation data</h3>
+            <h3>Error al cargar la reputación</h3>
             <span className="cm-pill cm-pill-error">error</span>
           </div>
           <p>{error}</p>
@@ -96,9 +99,9 @@ export function ReputationDashboard() {
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${kpis.avgRating >= 4 ? "rev-kpi-ok" : kpis.avgRating >= 3 ? "rev-kpi-warn" : "rev-kpi-error"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Avg rating</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Valoración media</span></div>
           <div className="rev-kpi-value">{kpis.avgRating.toFixed(1)} ★</div>
-          <div className="rev-kpi-delta">Sentiment: {sentimentLabel} ({kpis.sentimentScore.toFixed(2)})</div>
+          <div className="rev-kpi-delta">Sentimiento: {sentimentLabel} ({kpis.sentimentScore.toFixed(2)})</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head"><span className="rev-kpi-label">Reviews · last 7d</span></div>
@@ -111,7 +114,7 @@ export function ReputationDashboard() {
           <div className="rev-kpi-delta">últimos 30 días</div>
         </article>
         <article className={`rev-kpi ${kpis.pendingResponses > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Pending responses</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Respuestas pendientes</span></div>
           <div className="rev-kpi-value">{kpis.pendingResponses}</div>
           <div className="rev-kpi-delta">requieren atención</div>
         </article>
@@ -122,7 +125,7 @@ export function ReputationDashboard() {
           <div className="bo-card-head">
             <div>
               <p className="bo-muted">Distribución por estrellas</p>
-              <h3>Star distribution</h3>
+              <h3>Distribución por estrellas</h3>
             </div>
             <span className="bo-chip">{totalDistribution} reviews</span>
           </div>
@@ -131,7 +134,7 @@ export function ReputationDashboard() {
               <tr>
                 <th style={{ width: 110 }}>Estrellas</th>
                 <th>Distribución</th>
-                <th style={{ width: 90, textAlign: "right" }}>Count</th>
+                <th style={{ width: 90, textAlign: "right" }}>Número</th>
                 <th style={{ width: 70, textAlign: "right" }}>%</th>
               </tr>
             </thead>
@@ -163,7 +166,7 @@ export function ReputationDashboard() {
           <div className="bo-card-head">
             <div>
               <p className="bo-muted">Volumen por canal</p>
-              <h3>Reviews by source</h3>
+              <h3>Reseñas por fuente</h3>
             </div>
             <span className="bo-chip">{reviewsBySource.length} fuentes</span>
           </div>
@@ -174,8 +177,8 @@ export function ReputationDashboard() {
               <thead>
                 <tr>
                   <th>Fuente</th>
-                  <th style={{ textAlign: "right" }}>Reviews</th>
-                  <th style={{ textAlign: "right" }}>Avg rating</th>
+                  <th style={{ textAlign: "right" }}>Reseñas</th>
+                  <th style={{ textAlign: "right" }}>Valoración media</th>
                 </tr>
               </thead>
               <tbody>
@@ -198,7 +201,7 @@ export function ReputationDashboard() {
         <div className="bo-card-head">
           <div>
             <p className="bo-muted">Últimas opiniones</p>
-            <h3>Recent reviews</h3>
+            <h3>Reseñas recientes</h3>
           </div>
           <span className="bo-chip">{recentReviews.length} · {loading ? "cargando…" : "actualizado"}</span>
         </div>

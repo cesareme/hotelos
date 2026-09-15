@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { useTabHost } from "../tabs/TabHost";
 import { fetchRooms } from "../../services/pmsCommerceApi";
 import {
   blockRoomForWorkOrder,
@@ -14,6 +15,7 @@ import {
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { SidePanel, DetailRow } from "../../components/SidePanel";
 import { toArray } from "../../utils/toArray";
+import { date, number } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -38,14 +40,14 @@ const FILTERS: { id: string; label: string; match: (w: WorkOrder) => boolean }[]
 ];
 
 function fmtNum(n: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(n);
+  return number(n);
 }
 function fmtDate(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short" });
+  return date(iso, "dayMonth");
 }
 
 export function MaintenanceDashboard() {
+  const hosted = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<WorkOrder[]>(
     `/properties/${PROPERTY_ID}/work-orders`,
     { pollIntervalMs: 30000 }
@@ -112,14 +114,16 @@ export function MaintenanceDashboard() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · Mantenimiento</p>
-          <h2 style={{ color: "var(--ink)" }}>Tablero de mantenimiento</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Órdenes de trabajo en vivo. Crea averías, cambia su estado, asígnalas, bloquea habitaciones y resuélvelas.
-          </p>
-        </div>
+      <header className="bo-card-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div>
+            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · Mantenimiento</p>
+            <h2 style={{ color: "var(--ink)" }}>Tablero de mantenimiento</h2>
+            <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
+              Órdenes de trabajo en vivo. Crea averías, cambia su estado, asígnalas, bloquea habitaciones y resuélvelas.
+            </p>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {busy ? <Spinner size="sm" /> : null}
           <button type="button" onClick={refresh} disabled={loading}>↻ Actualizar</button>

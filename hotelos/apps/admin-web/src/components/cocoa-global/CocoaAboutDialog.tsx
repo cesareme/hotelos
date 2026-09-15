@@ -4,11 +4,11 @@
 // version, edition, and quick legal links. Layout, top-to-bottom:
 //   - Large app icon (64x64 rounded square with accent → success gradient)
 //   - 'Anfitorio' large-title heading
-//   - 'Aurora Cocoa Edition' italic subtitle
-//   - 'Version 3.0.0' caption
-//   - 'PMS + ERP nativo espanol con IA' description
+//   - 'Gestión hotelera con IA' italic subtitle
+//   - 'Versión <app version>' caption
+//   - one-line description
 //   - Inline links row: Help center · Keyboard shortcuts · Privacy · Terms
-//   - 'Copyright 2026 Anfitorio. All rights reserved.' footnote
+//   - copyright footnote
 //   - Filled CocoaButton 'OK' aligned at the bottom
 //
 // Visuals: blurred backdrop with fade, dialog container with
@@ -39,10 +39,15 @@ import {
 import { createPortal } from "react-dom";
 
 import { CocoaButton } from "../cocoa/CocoaButton";
+import { DEFAULT_VERSION } from "./CocoaKeyboardShortcutsHelp";
 
 export interface CocoaAboutDialogProps {
   open: boolean;
   onClose: () => void;
+  /** Opens the help center («?»); the link is hidden when omitted. */
+  onOpenHelp?: () => void;
+  /** Opens the keyboard shortcuts sheet; the link is hidden when omitted. */
+  onOpenShortcuts?: () => void;
 }
 
 const FOCUSABLE_SELECTOR = [
@@ -75,17 +80,19 @@ function getFocusableElements(root: HTMLElement | null): HTMLElement[] {
 
 interface AboutLink {
   label: string;
-  href: string;
+  onClick: () => void;
 }
 
-const LINKS: AboutLink[] = [
-  { label: "Help center", href: "#help" },
-  { label: "Keyboard shortcuts", href: "#shortcuts" },
-  { label: "Privacy", href: "#privacy" },
-  { label: "Terms", href: "#terms" }
-];
+// Version shown in the dialog: the same constant the shortcuts sheet reads
+// (build-time VITE_APP_VERSION, else the package default).
+const APP_VERSION = DEFAULT_VERSION;
 
-export function CocoaAboutDialog({ open, onClose }: CocoaAboutDialogProps) {
+export function CocoaAboutDialog({ open, onClose, onOpenHelp, onOpenShortcuts }: CocoaAboutDialogProps) {
+  // Only real actions are listed: the previous «Privacy» / «Terms» anchors
+  // pointed nowhere (Tanda 5 · chrome).
+  const links: AboutLink[] = [];
+  if (onOpenHelp) links.push({ label: "Centro de ayuda", onClick: () => { onClose(); onOpenHelp(); } });
+  if (onOpenShortcuts) links.push({ label: "Atajos de teclado", onClick: () => { onClose(); onOpenShortcuts(); } });
   const containerRef = useRef<HTMLDivElement | null>(null);
   const okButtonRef = useRef<HTMLButtonElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
@@ -380,21 +387,22 @@ export function CocoaAboutDialog({ open, onClose }: CocoaAboutDialogProps) {
           Anfitorio
         </h1>
 
-        <p style={subtitleStyle}>Aurora Cocoa Edition</p>
+        <p style={subtitleStyle}>Gestión hotelera con IA</p>
 
-        <p style={captionStyle}>Version 3.0.0</p>
+        <p style={captionStyle}>Versión {APP_VERSION}</p>
 
-        <p style={descriptionStyle}>PMS + ERP nativo espanol con IA</p>
+        <p style={descriptionStyle}>Recepción, operaciones, revenue, finanzas y cumplimiento español en una sola aplicación.</p>
 
         <div style={linksRowStyle}>
-          {LINKS.map((link, index) => (
+          {links.map((link, index) => (
             <span
               key={link.label}
               style={{ display: "inline-flex", alignItems: "center", gap: 8 }}
             >
-              <a
-                href={link.href}
-                style={linkStyle}
+              <button
+                type="button"
+                style={{ ...linkStyle, background: "transparent", border: "none", padding: 0, font: "inherit", cursor: "pointer" }}
+                onClick={link.onClick}
                 onMouseEnter={(event) => {
                   event.currentTarget.style.textDecoration = "underline";
                 }}
@@ -403,8 +411,8 @@ export function CocoaAboutDialog({ open, onClose }: CocoaAboutDialogProps) {
                 }}
               >
                 {link.label}
-              </a>
-              {index < LINKS.length - 1 ? (
+              </button>
+              {index < links.length - 1 ? (
                 <span style={linkSeparatorStyle} aria-hidden="true">
                   &middot;
                 </span>
@@ -413,13 +421,13 @@ export function CocoaAboutDialog({ open, onClose }: CocoaAboutDialogProps) {
           ))}
         </div>
 
-        <p style={footnoteStyle}>Copyright 2026 Anfitorio. All rights reserved.</p>
+        <p style={footnoteStyle}>© 2026 Anfitorio. Todos los derechos reservados.</p>
 
         <div style={actionsRowStyle}>
           <CocoaButton
             variant="filled"
             onClick={onClose}
-            aria-label="Close about dialog"
+            aria-label="Cerrar"
           >
             <span
               ref={(el) => {
@@ -428,7 +436,7 @@ export function CocoaAboutDialog({ open, onClose }: CocoaAboutDialogProps) {
                 okButtonRef.current = btn;
               }}
             >
-              OK
+              Aceptar
             </span>
           </CocoaButton>
         </div>

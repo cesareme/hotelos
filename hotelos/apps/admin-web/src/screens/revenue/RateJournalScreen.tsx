@@ -15,6 +15,7 @@
 // `staleRevert` (cells + message) so both hosts render JournalStaleDialog
 // («Forzar reversión» → `{ force: true }`). Deep link: /backoffice/revenue/rate-journal.
 
+import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { RateChangeJournalEntry, RateChangeJournalItem, RateGridRatePlan, RateGridRoomType } from "@hotelos/shared";
 import {
@@ -239,6 +240,20 @@ const screenStyle: CSSProperties = {
   fontFamily: "var(--cocoa-font)"
 };
 
+const JOURNAL_SUBTITLE = "Cada guardado o publicación del editor crea una entrada con su diff celda a celda. Desde aquí se revierte.";
+
+// Embedded as the «Historial» tab of Parrilla de tarifas: the container paints
+// the page header, so only the subtitle and the actions stay, in one row.
+const embeddedBarStyle: CSSProperties = {
+  display: "flex",
+  justifyContent: "space-between",
+  alignItems: "center",
+  gap: "var(--cocoa-space-3)",
+  flexWrap: "wrap"
+};
+const embeddedSubtitleStyle: CSSProperties = { color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)" };
+const embeddedActionsStyle: CSSProperties = { display: "inline-flex", gap: "var(--cocoa-space-2)", flexShrink: 0 };
+
 const noticeStyle: CSSProperties = {
   padding: "var(--cocoa-space-3)",
   borderRadius: "var(--cocoa-radius-md)",
@@ -249,6 +264,8 @@ const noticeStyle: CSSProperties = {
 };
 
 export function RateJournalScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   // Snapshot at mount: setActiveProperty reloads the page, so no subscription needed here.
   const propertyId = useMemo(() => getActivePropertyId(), []);
   const journal = useRateJournal(propertyId);
@@ -290,23 +307,27 @@ export function RateJournalScreen() {
 
   const openEditor = useCallback(() => navigateTo("RateGridEditorScreen"), []);
 
+  const headerActions = (
+    <>
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={journal.refresh} loading={journal.loading}>
+        Actualizar
+      </CocoaButton>
+      <CocoaButton variant="filled" tone="accent" size="small" onClick={openEditor}>
+        Abrir el editor de tarifas
+      </CocoaButton>
+    </>
+  );
+
   return (
     <div style={screenStyle}>
-      <CocoaPageHeader
-        eyebrow="Revenue"
-        title="Historial de cambios de tarifas"
-        subtitle="Cada guardado o publicación del editor crea una entrada con su diff celda a celda. Desde aquí se revierte."
-        actions={
-          <>
-            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={journal.refresh} loading={journal.loading}>
-              Actualizar
-            </CocoaButton>
-            <CocoaButton variant="filled" tone="accent" size="small" onClick={openEditor}>
-              Abrir el editor de tarifas
-            </CocoaButton>
-          </>
-        }
-      />
+      {embedded ? (
+        <div style={embeddedBarStyle}>
+          <span style={embeddedSubtitleStyle}>{JOURNAL_SUBTITLE}</span>
+          <span style={embeddedActionsStyle}>{headerActions}</span>
+        </div>
+      ) : (
+        <CocoaPageHeader eyebrow="Revenue · Parrilla de tarifas" title="Historial de cambios de tarifas" subtitle={JOURNAL_SUBTITLE} actions={headerActions} />
+      )}
 
       {journal.error ? (
         <div role="status" style={noticeStyle}>

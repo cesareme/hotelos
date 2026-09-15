@@ -11,7 +11,11 @@ const server = readFileSync(new URL("../apps/api/src/server.ts", import.meta.url
 const routePermissions = readFileSync(new URL("../apps/api/src/security/route-permissions.ts", import.meta.url), "utf8");
 const advancedService = readFileSync(new URL("../apps/api/src/modules/advanced/advanced-modules.service.ts", import.meta.url), "utf8");
 const demoStore = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", import.meta.url), "utf8");
-const sidebar = readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8");
+// Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (labels, keys, URLs and
+// the legacy /backoffice/* redirects live there), so the menu source is both files.
+const sidebar =
+  readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8");
 const mobileNavigation = readFileSync(new URL("../packages/product/src/navigation/mobile-navigation.ts", import.meta.url), "utf8");
 const aiTools = readFileSync(new URL("../packages/ai-tools/src/registry.ts", import.meta.url), "utf8");
 const toolNames = readFileSync(new URL("../packages/ai-tools/src/tool-names.ts", import.meta.url), "utf8");
@@ -158,7 +162,8 @@ describe("Advanced HotelOS modules foundation", () => {
     assert.match(worker, /generateRevenueForecasts/);
     assert.match(worker, /processHumanReviewQueue/);
     assert.match(sidebar, /Comercial/);
-    assert.match(sidebar, /Plataforma de desarrollador|Desarrollador y sistema/);
+    // The developer/platform zone is now Configuración › Sistema (Webhooks, Aplicaciones, Referencia de API).
+    assert.match(sidebar, /Webhooks|Aplicaciones|Plataforma de desarrollador|Desarrollador y sistema/);
     assert.match(mobileNavigation, /RevenueDashboard/);
     assert.match(mobileNavigation, /AIGovernanceSettings/);
     assert.match(preview, /Advanced HotelOS modules/);

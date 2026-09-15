@@ -47,6 +47,7 @@
 // sheets, drawers and pure helpers live in components/cocoa-rate-grid (core lot)
 // and are consumed through the props contract in cocoa-rate-grid/types.ts.
 
+import { useTabHost } from "../tabs/TabHost";
 import {
   useCallback,
   useEffect,
@@ -74,6 +75,7 @@ import {
 } from "../../services/activeProperty";
 import { getUser } from "../../services/auth-storage";
 import { HOTELOS_NAV_EVENT, navigateTo } from "../../lib/navigate";
+import { TAB_NAV_EVENT, commitTabNavigation, type TabNavDetail } from "../../components/cocoa/CocoaRouteTabs";
 import {
   ALL_CELLS_CONFLICT_CODE,
   RATE_GRID_BUSY_CODE,
@@ -163,6 +165,7 @@ import {
   type SyncMatrixCell
 } from "../../components/cocoa-rate-grid/types";
 import { useRateJournal, type RateJournalRevertInfo } from "./RateJournalScreen";
+import { DEFAULT_CURRENCY } from "../../lib/format";
 
 /* ------------------------------------------------------------------ */
 /*  Constants                                                          */
@@ -645,7 +648,7 @@ function NoChannelsPanel(props: { compact?: boolean }) {
     >
       {props.compact
         ? "Los cambios se guardan en Anfitorio pero no se publican en ninguna OTA."
-        : "Los cambios se guardan en Anfitorio pero no llegan a ninguna OTA hasta que conectes un canal. Puedes empezar en modo stub o sandbox (sin credenciales reales): las entregas se registran y simulan, nada sale a Internet hasta que actives el modo real con credenciales."}
+        : "Los cambios se guardan en Anfitorio pero no llegan a ninguna OTA hasta que conectes un canal. Puedes empezar en modo simulado o de pruebas (sin credenciales reales): las entregas se registran y se simulan; nada sale a Internet hasta que actives el modo real con credenciales."}
     </InlineNotice>
   );
 }
@@ -657,6 +660,8 @@ function NoChannelsPanel(props: { compact?: boolean }) {
 type LoadNotice = { tone: NoticeTone; title?: string; text: string; conflicts?: RateGridConflictDetail[]; id: number };
 
 export function RateGridEditorScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const [propertyId, setPropertyId] = useState(() => getActivePropertyId());
   const propertyName = getActivePropertyName();
@@ -877,6 +882,7 @@ export function RateGridEditorScreen() {
 
   // --- navigation guard ---
   const [pendingNav, setPendingNav] = useState<string | null>(null);
+  const [pendingTabNav, setPendingTabNav] = useState<TabNavDetail | null>(null);
   const bypassGuardRef = useRef(false);
   useEffect(() => {
     function onBeforeUnload(event: BeforeUnloadEvent) {
@@ -896,23 +902,38 @@ export function RateGridEditorScreen() {
       event.stopImmediatePropagation();
       setPendingNav(detail);
     }
+    // Tab switch inside «Parrilla de tarifas» (CocoaRouteTabs, Tanda 5): same
+    // veto contract as hotelos-nav; the container commits the URL when the
+    // user confirms (commitTabNavigation in confirmLeave).
+    function onTabNav(event: Event) {
+      if (bypassGuardRef.current || draftIsEmpty(draftRef.current)) return;
+      const detail = (event as CustomEvent<TabNavDetail>).detail;
+      if (!detail) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setPendingTabNav(detail);
+    }
     window.addEventListener("beforeunload", onBeforeUnload);
     // Capture phase: runs before App.tsx's bubble listener on the same target.
     window.addEventListener(HOTELOS_NAV_EVENT, onNav, true);
+    window.addEventListener(TAB_NAV_EVENT, onTabNav, true);
     return () => {
       window.removeEventListener("beforeunload", onBeforeUnload);
       window.removeEventListener(HOTELOS_NAV_EVENT, onNav, true);
+      window.removeEventListener(TAB_NAV_EVENT, onTabNav, true);
     };
   }, []);
 
   const confirmLeave = useCallback(() => {
-    if (!pendingNav) return;
+    if (!pendingNav && !pendingTabNav) return;
     persistDraft(propertyId, draftRef.current);
     bypassGuardRef.current = true;
-    window.dispatchEvent(new CustomEvent<string>(HOTELOS_NAV_EVENT, { detail: pendingNav }));
+    if (pendingNav) window.dispatchEvent(new CustomEvent<string>(HOTELOS_NAV_EVENT, { detail: pendingNav }));
+    if (pendingTabNav) commitTabNavigation(pendingTabNav);
     bypassGuardRef.current = false;
     setPendingNav(null);
-  }, [pendingNav, propertyId]);
+    setPendingTabNav(null);
+  }, [pendingNav, pendingTabNav, propertyId]);
 
   // --- selection / quick edit / bulk edit ---
   const [selection, setSelection] = useState<Selection>(EMPTY_SELECTION);
@@ -1836,34 +1857,48 @@ export function RateGridEditorScreen() {
     background: "var(--cocoa-background-content)"
   };
 
+  // Embedded as the base tab of Parrilla de tarifas (Tanda 5) the container
+  // paints the page header: only the range line and the actions stay, in a row.
+  const gridSubtitle = `${propertyName} · ${formatDateRange(from, to)} · ${rangeDays} noches${response?.legacyShape ? " · solo lectura" : ""}`;
+  const headerActions = (
+    <>
+      <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => setHistoryOpen(true)}>
+        Historial
+      </CocoaButton>
+      <CocoaButton
+        variant="bordered"
+        size="small"
+        tone="neutral"
+        onClick={() => {
+          void loadGrid();
+          void loadProductMappings();
+          journal.refresh();
+        }}
+        loading={loading}
+        disabled={loading}
+      >
+        Recargar
+      </CocoaButton>
+    </>
+  );
+  const embeddedBarStyle: CSSProperties = {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: "var(--cocoa-space-3)",
+    flexWrap: "wrap"
+  };
+
   return (
     <section style={screenStyle} aria-busy={loading}>
-      <CocoaPageHeader
-        eyebrow="Revenue · Tarifas"
-        title="Editor de tarifas"
-        subtitle={`${propertyName} · ${formatDateRange(from, to)} · ${rangeDays} noches${response?.legacyShape ? " · solo lectura" : ""}`}
-        actions={
-          <>
-            <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => setHistoryOpen(true)}>
-              Historial
-            </CocoaButton>
-            <CocoaButton
-              variant="bordered"
-              size="small"
-              tone="neutral"
-              onClick={() => {
-                void loadGrid();
-                void loadProductMappings();
-                journal.refresh();
-              }}
-              loading={loading}
-              disabled={loading}
-            >
-              Recargar
-            </CocoaButton>
-          </>
-        }
-      />
+      {embedded ? (
+        <div style={embeddedBarStyle}>
+          <span style={{ color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)" }}>{gridSubtitle}</span>
+          <span style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", flexShrink: 0 }}>{headerActions}</span>
+        </div>
+      ) : (
+        <CocoaPageHeader eyebrow="Revenue · Parrilla de tarifas" title="Parrilla de tarifas" subtitle={gridSubtitle} actions={headerActions} />
+      )}
 
       <div style={toolbarStyle} role="toolbar" aria-label="Rango, vista y filtros">
         <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -2270,7 +2305,7 @@ export function RateGridEditorScreen() {
           anchorRect={recPopover.anchorRect}
           cellKey={recPopover.key}
           recommendation={recPopoverData.rec}
-          currency={response?.currency ?? "EUR"}
+          currency={response?.currency ?? DEFAULT_CURRENCY}
           roomTypeName={recPopoverData.roomTypeName}
           ratePlanCode={recPopoverData.ratePlanCode}
           date={recPopoverData.parsed.date}
@@ -2311,14 +2346,17 @@ export function RateGridEditorScreen() {
       />
 
       <ConfirmDialog
-        open={pendingNav !== null}
+        open={pendingNav !== null || pendingTabNav !== null}
         title="Tienes cambios sin guardar"
         description={`Hay ${pluralize(draftChangeCount(draft), "celda editada", "celdas editadas")} sin guardar. Se conservarán en esta pestaña para que puedas recuperarlas al volver, pero no se guardarán en Anfitorio.`}
         confirmLabel="Salir igualmente"
         cancelLabel="Seguir editando"
         variant="danger"
         onConfirm={confirmLeave}
-        onCancel={() => setPendingNav(null)}
+        onCancel={() => {
+          setPendingNav(null);
+          setPendingTabNav(null);
+        }}
       />
     </section>
   );

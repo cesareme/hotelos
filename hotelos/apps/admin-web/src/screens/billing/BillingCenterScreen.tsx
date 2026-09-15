@@ -1,3 +1,4 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -52,22 +53,16 @@ import {
   statusBadgeVariant,
   type InvoiceUiStatus
 } from "./invoiceStatus";
+import { date, DEFAULT_CURRENCY, money, type CurrencyInput } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
 // Spanish money formatting — "272,00 €", never the Anglo "272.00 EUR".
 // This is a VeriFactu product; the numbers must read as Spanish invoices.
-function fmtMoney(value: number | string | null | undefined, currency = "EUR"): string {
-  const n = typeof value === "string" ? Number(value) : value;
-  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
-  return new Intl.NumberFormat("es-ES", {
-    style: "currency",
-    currency: currency || "EUR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(n);
+function fmtMoney(value: number | string | null | undefined, currency?: CurrencyInput): string {
+  return money(value, currency);
 }
-const fmtEur = (value: number | string | null | undefined): string => fmtMoney(value, "EUR");
+const fmtEur = (value: number | string | null | undefined): string => money(value);
 
 type InvoiceTab = "draft" | "issued" | "pending" | "paid" | "cancelled";
 
@@ -161,7 +156,11 @@ function readIssueBlock(error: unknown): IssueBlock | null {
   return { code: "TAX_NOT_CONFIGURED", message: error.message, lines, hint: typeof details.hint === "string" ? details.hint : undefined };
 }
 
+const BILLING_SUBTITLE = "Folios + facturas · cumplimiento VERI*FACTU";
+
 export function BillingCenterScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const [reservations, setReservations] = useState<AdminReservation[]>([]);
   const [selectedReservationId, setSelectedReservationId] = useState("res_18392");
@@ -189,8 +188,8 @@ export function BillingCenterScreen() {
   const [preview, setPreview] = useState<InvoiceFull | null>(null);
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<InvoiceTab>("draft");
-  const [folioTab, setFolioTab] = useState<"charges" | "payments" | "routing" | "notes">("charges");
-  const [folioNote, setFolioNote] = useState("");
+  // The «Notas» tab was a local-only editor with a fake «guardado» toast: retired (L1c) until the API persists folio notes.
+  const [folioTab, setFolioTab] = useState<"charges" | "payments" | "routing">("charges");
   const [emailDraft, setEmailDraft] = useState<{ invoiceId: string; to: string; subject: string; body: string } | null>(null);
 
   // Enveloped listing: items carry paymentStatus/balanceDue, `summary` feeds the
@@ -438,12 +437,11 @@ export function BillingCenterScreen() {
     }
   }
 
-  function handleRectifyPlaceholder(invoice: InvoiceDraft) {
+  // The rectification flow lives in Finanzas › Facturación › Rectificativas (InvoiceRectifyDialog).
+  function handleRectify(invoice: InvoiceDraft) {
     logBreadcrumb("invoice.rectify.intent", "ui", { invoiceId: invoice.id });
-    setStatus(
-      `Generación de factura rectificativa para ${invoice.invoiceNumber ?? invoice.id} llega en Q3. Mientras tanto use el diálogo de rectificación en el centro de facturas.`
-    );
-    showToast("Factura rectificativa: disponible en Q3", { variant: "info" });
+    setStatus(`Rectificación de ${invoice.invoiceNumber ?? invoice.id}: elige la factura en Rectificativas.`);
+    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "InvoiceRectificationsScreen" }));
   }
 
   function handlePrint() {
@@ -549,7 +547,7 @@ export function BillingCenterScreen() {
               <span
                 className="bo-status warn"
                 style={{ marginLeft: "var(--cocoa-space-2)", textTransform: "none" }}
-                title="Emitida con NIF emisor provisional (sandbox): configura el NIF real en Perfil del establecimiento"
+                title="Emitida con NIF emisor provisional (modo de pruebas): configura el NIF real en Perfil del establecimiento"
               >
                 NIF provisional
               </span>
@@ -572,7 +570,7 @@ export function BillingCenterScreen() {
         label: "Fecha",
         render: (row) =>
           row.issuedAt
-            ? new Date(row.issuedAt).toLocaleDateString("es-ES")
+            ? date(row.issuedAt)
             : "—"
       },
       {
@@ -652,30 +650,36 @@ export function BillingCenterScreen() {
   const previewListRow = preview ? invoices.find((inv) => inv.id === preview.id) : undefined;
   const previewMarkable = preview ? canMarkPaid(previewListRow ?? preview) : false;
 
+  // Embedded as the base tab of Facturación y cobros the container paints the
+  // page header: the screen keeps its subtitle and actions in one row.
+  const headerActions = (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: "var(--cocoa-space-2)"
+      }}
+    >
+      <CocoaButton
+        variant="plain"
+        size="regular"
+        onClick={handleExportInvoicesCsv}
+      >
+        Exportar CSV
+      </CocoaButton>
+    </span>
+  );
+
   return (
     <section className="bo-card">
-      <CocoaPageHeader
-        eyebrow="Finanzas y cumplimiento"
-        title="Centro de facturación"
-        subtitle="Folios + facturas · cumplimiento VERI*FACTU"
-        actions={
-          <span
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              gap: "var(--cocoa-space-2)"
-            }}
-          >
-            <CocoaButton
-              variant="plain"
-              size="regular"
-              onClick={handleExportInvoicesCsv}
-            >
-              Exportar CSV
-            </CocoaButton>
-          </span>
-        }
-      />
+      {embedded ? (
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--cocoa-space-3)", flexWrap: "wrap" }}>
+          <span style={{ color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)" }}>{BILLING_SUBTITLE}</span>
+          {headerActions}
+        </div>
+      ) : (
+        <CocoaPageHeader eyebrow="Finanzas · Facturación y cobros" title="Facturación y cobros" subtitle={BILLING_SUBTITLE} actions={headerActions} />
+      )}
 
       <div style={{ marginTop: "var(--cocoa-space-4)" }}>
         <CocoaScreenInstructionsCard
@@ -726,7 +730,7 @@ export function BillingCenterScreen() {
             {folio?.chargesTotal ?? 0}
           </div>
           <p style={{ marginTop: "var(--cocoa-space-1)", color: "var(--cocoa-label-secondary)" }}>
-            {folio?.folio.currency ?? "EUR"}
+            {folio?.folio.currency ?? DEFAULT_CURRENCY}
           </p>
         </CocoaCard>
         <CocoaCard variant="elevated" padding="md">
@@ -846,13 +850,12 @@ export function BillingCenterScreen() {
                   aria-label="Secciones del folio"
                   value={folioTab}
                   onChange={(next) =>
-                    setFolioTab(next as "charges" | "payments" | "routing" | "notes")
+                    setFolioTab(next as "charges" | "payments" | "routing")
                   }
                   options={[
                     { value: "charges", label: `Cargos (${folio.lines.length})` },
                     { value: "payments", label: `Pagos (${folio.payments.length})` },
-                    { value: "routing", label: "Reglas de routing" },
-                    { value: "notes", label: "Notas" }
+                    { value: "routing", label: "Reglas de enrutamiento" }
                   ]}
                 />
               </div>
@@ -868,16 +871,6 @@ export function BillingCenterScreen() {
                     }}
                   >
                     <h4 style={{ margin: 0 }}>Cargos</h4>
-                    <CocoaButton
-                      variant="plain"
-                      size="small"
-                      onClick={() => {
-                        logBreadcrumb("folio.addCharge.intent", "ui", { folioId: folio.folio.id });
-                        showToast("Añadir cargo manual: formulario detallado disponible en Q3", { variant: "info" });
-                      }}
-                    >
-                      + Añadir cargo
-                    </CocoaButton>
                   </div>
                   {folio.lines.length ? folio.lines.map((line) => (
                     <div className="bo-row" key={line.id}>
@@ -908,10 +901,10 @@ export function BillingCenterScreen() {
 
               {folioTab === "routing" ? (
                 <div>
-                  <h4 style={{ marginTop: 0 }}>Reglas de routing</h4>
+                  <h4 style={{ marginTop: 0 }}>Reglas de enrutamiento</h4>
                   <p className="bo-muted">
-                    Las reglas de routing del folio (qué cargos van a qué pagador) se gestionan en la pantalla dedicada
-                    de administración. Próximamente se embebe aquí el editor de reglas.
+                    Las reglas de enrutamiento del folio (qué cargos van a qué pagador) se gestionan en la pantalla dedicada
+                    de administración.
                   </p>
                   <div className="bo-actions">
                     <CocoaButton
@@ -919,38 +912,12 @@ export function BillingCenterScreen() {
                       tone="neutral"
                       onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "FolioRouting" }))}
                     >
-                      Abrir editor de routing
+                      Abrir editor de enrutamiento
                     </CocoaButton>
                   </div>
                 </div>
               ) : null}
 
-              {folioTab === "notes" ? (
-                <div>
-                  <h4 style={{ marginTop: 0 }}>Notas</h4>
-                  <label className="bo-form-field">
-                    <span>Nota interna sobre este folio</span>
-                    <textarea
-                      rows={4}
-                      value={folioNote}
-                      onChange={(event) => setFolioNote(event.target.value)}
-                      placeholder="Anotaciones para el equipo de facturación…"
-                    />
-                  </label>
-                  <div className="bo-actions">
-                    <CocoaButton
-                      variant="filled"
-                      tone="accent"
-                      onClick={() => {
-                        logBreadcrumb("folio.note.save", "mutation", { folioId: folio.folio.id });
-                        showToast("Nota guardada localmente (persistencia backend en Q3)", { variant: "success" });
-                      }}
-                    >
-                      Guardar nota
-                    </CocoaButton>
-                  </div>
-                </div>
-              ) : null}
             </div>
           ) : <p>Ningún folio seleccionado.</p>}
         </section>
@@ -980,7 +947,7 @@ export function BillingCenterScreen() {
                 value={customerType}
                 onChange={(value) => setCustomerType(value as InvoiceDraft["customerType"])}
                 options={[
-                  { value: "guest", label: "Guest" },
+                  { value: "guest", label: "Huésped" },
                   { value: "company", label: "Company" },
                   { value: "agency", label: "Agency" }
                 ]}
@@ -1460,8 +1427,8 @@ export function BillingCenterScreen() {
                 <CocoaButton
                   variant="filled"
                   tone="destructive"
-                  onClick={() => handleRectifyPlaceholder(preview)}
-                  aria-label="Generar factura rectificativa (disponible en Q3)"
+                  onClick={() => handleRectify(preview)}
+                  aria-label="Generar factura rectificativa"
                 >
                   Generar factura rectificativa
                 </CocoaButton>
@@ -1497,7 +1464,7 @@ export function BillingCenterScreen() {
               {preview.issuer?.taxId ? <div className="bo-muted">NIF/CIF: {preview.issuer.taxId}</div> : null}
               {preview.issuer?.taxIdPlaceholder || preview.issuerTaxIdPlaceholder || previewListRow?.issuerTaxIdPlaceholder ? (
                 <div className="bo-status warn" style={{ textTransform: "none", marginTop: "var(--cocoa-space-1)" }}>
-                  NIF emisor provisional (sandbox): configura el NIF real en Perfil del establecimiento antes de facturar en modo fiscal.
+                  NIF emisor provisional (modo de pruebas): configura el NIF real en Perfil del establecimiento antes de facturar en modo fiscal.
                 </div>
               ) : null}
               {preview.issuer?.address ? <div className="bo-muted">{preview.issuer.address}</div> : null}
@@ -1505,7 +1472,7 @@ export function BillingCenterScreen() {
             <div style={{ textAlign: "right" }}>
               <div><strong>Factura {preview.invoiceNumber ?? preview.id}</strong></div>
               <div className="bo-muted">Tipo {preview.invoiceType} · {preview.customerType}</div>
-              {preview.issuedAt ? <div className="bo-muted">Emitida: {new Date(preview.issuedAt).toLocaleDateString("es-ES")}</div> : null}
+              {preview.issuedAt ? <div className="bo-muted">Emitida: {date(preview.issuedAt)}</div> : null}
               {preview.customerTaxId ? <div className="bo-muted">Cliente NIF: {preview.customerTaxId}</div> : null}
             </div>
           </div>

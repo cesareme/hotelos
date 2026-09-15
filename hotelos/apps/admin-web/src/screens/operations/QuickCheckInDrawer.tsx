@@ -35,6 +35,7 @@ import {
 } from "../../services/complianceApi";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 import { navigateTo } from "../../lib/navigate";
+import { DEFAULT_CURRENCY, money } from "../../lib/format";
 
 // =============================================================== shapes
 
@@ -103,8 +104,7 @@ export type QuickCheckInProps = {
 // =============================================================== utils
 
 function fmtEur(value: number | undefined | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,00 €";
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  return money(value);
 }
 
 function fmtName(g: Guest | null): string {
@@ -323,7 +323,7 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
             method: "POST",
             body: {
               amount: paymentMode === "capture" ? balanceDue : preauthAmount,
-              currency: reservation.currency || "EUR",
+              currency: reservation.currency || DEFAULT_CURRENCY,
               method: paymentMethod,
               status: paymentMode === "capture" ? "captured" : "pending"
             }

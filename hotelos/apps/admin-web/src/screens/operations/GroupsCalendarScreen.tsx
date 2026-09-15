@@ -29,6 +29,8 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
 import { GROUPS_INSTRUCTIONS } from "../../content/screen-instructions/groups";
 import { GroupDetailDialog } from "./GroupDetailDialog";
+import { useTabHost } from "../tabs/TabHost";
+import { date as formatDate } from "../../lib/format";
 
 // ───────────────────────────────────────────────────────── Tipos del API
 
@@ -69,7 +71,7 @@ const STATUS_COLOR: Record<string, { bg: string; ink: string; label: string }> =
   tentative: { bg: "#f0b429", ink: "#5b3700", label: "Tentative" },
   definite: { bg: "#2f9e44", ink: "#ffffff", label: "Definite" },
   in_house: { bg: "#0d6e2d", ink: "#ffffff", label: "In house" },
-  cancelled: { bg: "#dc2626", ink: "#ffffff", label: "Cancelled" }
+  cancelled: { bg: "#dc2626", ink: "#ffffff", label: "Cancelado" }
 };
 
 function statusTone(status: string) {
@@ -113,13 +115,11 @@ function daysBetween(a: Date, b: Date): number {
 }
 
 function formatShort(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short" });
+  return formatDate(iso, "dayMonth");
 }
 
 function formatLong(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+  return formatDate(iso, "medium");
 }
 
 // ───────────────────────────────────────────────────────── Estilos internos
@@ -298,6 +298,7 @@ const styles: Record<string, CSSProperties> = {
 // ───────────────────────────────────────────────────────── Componente principal
 
 export function GroupsCalendarScreen() {
+  const hosted = useTabHost() !== null;
   const propertyId = getActivePropertyId();
 
   const [windowDays, setWindowDays] = useState<number>(180);
@@ -362,7 +363,7 @@ export function GroupsCalendarScreen() {
     const months: MonthGroup[] = [];
     for (const { date } of days) {
       const key = `${date.getUTCFullYear()}-${date.getUTCMonth()}`;
-      const label = date.toLocaleDateString("es-ES", { month: "short", year: "2-digit" });
+      const label = formatDate(date, "monthYear");
       const last = months[months.length - 1];
       if (last && last.key === key) {
         last.count += 1;
@@ -393,23 +394,25 @@ export function GroupsCalendarScreen() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Commercial · Groups & Events</div>
-          <h1 className="bo-page-title">Calendario de grupos</h1>
-          <p className="bo-page-subtitle">
-            Vista Gantt horizontal de todos los grupos activos en la ventana seleccionada
-            (próximos 30 / 90 / 180 días). Cada barra cubre arrival → departure y el color
-            refleja el estado del bloque. La línea vertical roja punteada marca el cut-off
-            date contractual. Click sobre una barra para abrir el detalle 360º del grupo.
-          </p>
-        </div>
+      <div className="bo-page-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div className="bo-page-head-text">
+            <div className="bo-page-eyebrow">Recepción · Grupos y eventos</div>
+            <h1 className="bo-page-title">Calendario de grupos</h1>
+            <p className="bo-page-subtitle">
+              Vista de calendario de todos los grupos activos en la ventana seleccionada
+              (próximos 30 / 90 / 180 días). Cada barra cubre de la llegada a la salida y el color
+              refleja el estado del bloque. La línea vertical roja punteada marca la fecha límite
+              contractual. Pulsa sobre una barra para abrir el detalle completo del grupo.
+            </p>
+          </div>
+        )}
         <div className="bo-page-head-actions">
           <button type="button" className="primary" onClick={handleNuevoGrupo}>
             + Nuevo grupo
           </button>
           <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ Refresh
+            ↻ Actualizar
           </button>
         </div>
       </div>

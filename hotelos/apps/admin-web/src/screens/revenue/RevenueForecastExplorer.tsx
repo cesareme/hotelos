@@ -1,9 +1,10 @@
+import { useTabHost } from "../tabs/TabHost";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { toArray } from "../../utils/toArray";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { ErrorState, LoadingBlock, SkeletonLines } from "../../components/States";
-import { money } from "../../services/revenueApi";
+import { money, percent } from "../../lib/format";
 
 // Live shape returned by GET /revenue/properties/:propertyId/forecast
 // (see apps/api/src/modules/revenue/forecast.service.ts → mapForecast).
@@ -34,7 +35,7 @@ function rangeFrom(days: number): { from: string; to: string } {
 function fmtPct(value: number, fractionDigits = 1): string {
   // expectedOccupancy is stored as 0..1 in the canonical RevenueForecast table.
   const pct = value > 1.5 ? value : value * 100;
-  return `${pct.toLocaleString("es-ES", { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits })}%`;
+  return percent(pct, { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits });
 }
 function fmtDate(iso: string): string {
   // 2026-05-31 → 31/05
@@ -56,6 +57,8 @@ const HORIZON_OPTIONS = [30, 60, 90] as const;
 type HorizonDays = (typeof HORIZON_OPTIONS)[number];
 
 export function RevenueForecastExplorer() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const propertyId = getActivePropertyId();
   const [horizonDays, setHorizonDays] = useState<HorizonDays>(30);
   const { from, to } = useMemo(() => rangeFrom(horizonDays), [horizonDays]);
@@ -91,8 +94,12 @@ export function RevenueForecastExplorer() {
     <section className="bo-card">
       <div className="bo-card-head">
         <div>
-          <p className="bo-muted">Forecast explorer</p>
-          <h2>Forecast Confidence and Drivers</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted">Revenue · Histórico y previsión</p>
+              <h2>Explorador de previsión</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ margin: "4px 0 0", textTransform: "none", fontSize: 12 }}>
             Próximos {horizonDays} días · {from} → {to}
           </p>

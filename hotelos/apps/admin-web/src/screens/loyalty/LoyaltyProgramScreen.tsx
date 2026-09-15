@@ -11,6 +11,7 @@
 // reciente. Los KPIs de miembros se calculan de las membresías reales
 // devueltas por la API (agregadas entre versiones del programa).
 
+import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createLoyaltyProgram,
@@ -20,6 +21,7 @@ import {
 } from "../../services/crmApi";
 import { ErrorState, LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
+import { date, money, number, percent } from "../../lib/format";
 
 type LoyaltyTier = {
   id: string;
@@ -172,9 +174,7 @@ function pickCurrent(records: LoyaltyProgram[]): LoyaltyProgram | null {
 }
 
 function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+  return date(iso, "medium");
 }
 
 function errMsg(err: unknown): string {
@@ -182,6 +182,8 @@ function errMsg(err: unknown): string {
 }
 
 export function LoyaltyProgramScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const [programs, setPrograms] = useState<LoyaltyProgram[]>([]);
   const [current, setCurrent] = useState<LoyaltyProgram | null>(null);
@@ -328,10 +330,14 @@ export function LoyaltyProgramScreen() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Comercial · Fidelización
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>{config.programName || "Programa de fidelización"}</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
+                Comercial · Clientes y fidelización
+              </p>
+              <h2 style={{ color: "var(--ink)" }}>{config.programName || "Programa de fidelización"}</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             Programa por <strong>tiers + puntos</strong>. Los miembros suben de tier por estancias en los últimos 12 meses;
             los puntos se canjean por estancias gratuitas, upgrades o reservas en F&B.
@@ -350,22 +356,22 @@ export function LoyaltyProgramScreen() {
       <div className="rev-kpi-grid">
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head"><span className="rev-kpi-label">Miembros totales</span></div>
-          <div className="rev-kpi-value">{kpis.totalMembers.toLocaleString("es-ES")}</div>
+          <div className="rev-kpi-value">{number(kpis.totalMembers)}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
             <span className="rev-kpi-label">Membresías activas</span>
             {kpis.totalMembers > 0 ? <span className="bo-status ok">{Math.round((kpis.active / kpis.totalMembers) * 100)}%</span> : null}
           </div>
-          <div className="rev-kpi-value">{kpis.active.toLocaleString("es-ES")}</div>
+          <div className="rev-kpi-value">{number(kpis.active)}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head"><span className="rev-kpi-label">Saldo total puntos</span></div>
-          <div className="rev-kpi-value">{kpis.totalPoints.toLocaleString("es-ES")}</div>
+          <div className="rev-kpi-value">{number(kpis.totalPoints)}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head"><span className="rev-kpi-label">Saldo medio</span></div>
-          <div className="rev-kpi-value">{kpis.avgBalance.toLocaleString("es-ES")}</div>
+          <div className="rev-kpi-value">{number(kpis.avgBalance)}</div>
         </article>
       </div>
 
@@ -392,7 +398,7 @@ export function LoyaltyProgramScreen() {
                       color: "#0a0d10",
                       fontWeight: 600
                     }}
-                    title={`${meta.name}: ${d.members.toLocaleString("es-ES")} (${d.pct.toFixed(1)}%)`}
+                    title={`${meta.name}: ${number(d.members)} (${percent(d.pct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })})`}
                   >
                     {d.pct >= 6 ? meta.name : ""}
                   </div>
@@ -405,7 +411,7 @@ export function LoyaltyProgramScreen() {
                 return (
                   <span key={d.tierCode}>
                     <span style={{ display: "inline-block", width: 8, height: 8, background: meta.color, borderRadius: 99, marginRight: 4 }} />
-                    {meta.name}: {d.members.toLocaleString("es-ES")} ({d.pct.toFixed(1)}%)
+                    {meta.name}: {number(d.members)} ({percent(d.pct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })})
                   </span>
                 );
               })}
@@ -438,7 +444,7 @@ export function LoyaltyProgramScreen() {
           </label>
         </div>
         <p className="bo-muted" style={{ textTransform: "none", marginTop: 8, fontSize: 12 }}>
-          Ratio actual: <strong>{config.pointsPerEur} puntos × {config.pointValueEur} € = {(config.pointsPerEur * config.pointValueEur * 100).toFixed(1)} % de retorno</strong> al canje.
+          Ratio actual: <strong>{config.pointsPerEur} puntos × {money(config.pointValueEur, { decimals: "auto" })} = {percent(config.pointsPerEur * config.pointValueEur, { ratio: true, minimumFractionDigits: 1, maximumFractionDigits: 1 })} de retorno</strong> al canje.
         </p>
       </article>
 

@@ -1,5 +1,7 @@
 import { getActiveOrganizationId, getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 const ORGANIZATION_ID = getActiveOrganizationId();
@@ -58,7 +60,7 @@ const AUTOMATION_PLAIN: Record<AutomationLevel, { headline: string; detail: stri
 };
 
 function eur(n: number | undefined): string {
-  return `${(n ?? 0).toLocaleString("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+  return money(n ?? 0);
 }
 
 export function AiOwnerSummaryScreen() {
@@ -80,19 +82,16 @@ export function AiOwnerSummaryScreen() {
 
   return (
     <section className="bo-page">
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Inteligencia artificial · Resumen para dirección y propiedad</div>
-          <h1 className="bo-page-title">La IA de tu hotel, en claro</h1>
-          <p className="bo-muted" style={{ maxWidth: 760 }}>
-            Resumen sencillo de qué hace la inteligencia artificial en tu hotel, cómo está configurada y con qué
-            controles de seguridad. Sin tecnicismos: para que dirección y propiedad sepan exactamente qué está pasando.
-          </p>
-        </div>
-        <button type="button" className="bo-btn" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "PropertyAiScreen" }))}>
-          Ajustes de IA
-        </button>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Hoy"
+        title="Informe IA del día"
+        subtitle="Qué hace la inteligencia artificial en tu hotel, cómo está configurada, cuánto cuesta y con qué controles trabaja. Sin tecnicismos, para dirección y propiedad."
+        actions={
+          <button type="button" className="bo-btn" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "PropertyAiScreen" }))}>
+            Ajustes de IA
+          </button>
+        }
+      />
 
       {/* Cómo trabaja la IA aquí */}
       <section className="bo-card">

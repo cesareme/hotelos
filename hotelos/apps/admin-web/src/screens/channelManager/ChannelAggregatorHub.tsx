@@ -18,6 +18,7 @@
 // has not been mapped yet. The result table surfaces that text from the API
 // response so the user can act on it.
 
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import type { CSSProperties } from "react";
 import { useEffect, useMemo, useState } from "react";
@@ -49,6 +50,7 @@ import { CHANNEL_HAS_PENDING_DELIVERIES_CODE, classifyRateGridError, fetchRatePl
 import { fetchRoomTypes } from "../../services/pmsCommerceApi";
 import { getActivePropertyName } from "../../services/activeProperty";
 import { channelModeLabel, channelTypeLabel, deliveryStatusLabel, providerLabel } from "../../components/cocoa-rate-grid/helpers";
+import { date, dateTime, money } from "../../lib/format";
 
 function navigateToScreen(screen: string): void {
   window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
@@ -196,30 +198,13 @@ type MappingCoverage = {
   complete: boolean;
 };
 
-const eur = new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR" });
-
-function money(value: number | null | undefined): string {
-  return eur.format(Number.isFinite(value as number) ? (value as number) : 0);
-}
-
 function fmtTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(d);
+  return dateTime(value, { style: "dayMonth" });
 }
 
 /** "2026-12-16" → "16/12/2026" (es-ES). */
 function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
-  if (!m) return iso;
-  return `${m[3]}/${m[2]}/${m[1]}`;
+  return date(iso);
 }
 
 function severityClass(severity: string): "ok" | "warn" | "error" {
@@ -1105,6 +1090,8 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
 }
 
 export function ChannelAggregatorHub() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const channelsState = useApiData<{ channels: ChannelRow[] }>(
     `/channel-manager/channels?propertyId=${PROPERTY_ID}`,
@@ -1273,8 +1260,12 @@ export function ChannelAggregatorHub() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Comercial · Canales</div>
-          <h1 className="bo-page-title">Channel Manager (agregador OTA)</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Comercial · Canales de venta</div>
+              <h1 className="bo-page-title">Canales de venta</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Un único punto para tarifas, disponibilidad y restricciones: cada publicación del editor de tarifas llega a Booking, Expedia, Airbnb,
             Hotelbeds y Vrbo. Las reservas de los canales entran como reservas externas y la paridad de precios se vigila de forma continua.

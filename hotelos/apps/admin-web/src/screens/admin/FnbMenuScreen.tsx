@@ -12,12 +12,14 @@
 // editable de la carta (alta de items).
 
 import { useMemo, useState } from "react";
+import { useTabHost } from "../tabs/TabHost";
 import { useApiData } from "../../hooks/useApiData";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { createMenuItem, type MenuItem } from "../../services/fnbInventoryApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -48,7 +50,7 @@ const TAX_RATES = [
 ];
 
 function fmtMoney(n: number): string {
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(n);
+  return money(n);
 }
 
 type Draft = {
@@ -74,6 +76,7 @@ function emptyDraft(outletId: string): Draft {
 }
 
 export function FnbMenuScreen() {
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const outlets = useApiData<PosOutlet[]>(`/properties/${PROPERTY_ID}/pos/outlets`, { pollIntervalMs: 0 });
   const menus = useApiData<{ items: MenuItem[] }>(`/properties/${PROPERTY_ID}/menu-items`, { pollIntervalMs: 30000 });
@@ -152,16 +155,18 @@ export function FnbMenuScreen() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>F&B · Carta</p>
-          <h2 style={{ color: "var(--ink)" }}>Cartas de Restauración (F&B)</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Catálogo de platos y bebidas por punto de venta. Cada item tiene precio, IVA y opcionalmente
-            una receta (BOM) que descuenta stock al cerrar la comanda (ver{" "}
-            <strong>Inventario F&amp;B</strong>).
-          </p>
-        </div>
+      <header className="bo-card-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div>
+            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Punto de venta · Cartas</p>
+            <h2 style={{ color: "var(--ink)" }}>Cartas de restauración</h2>
+            <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
+              Catálogo de platos y bebidas por punto de venta. Cada artículo tiene precio, IVA y opcionalmente
+              una receta que descuenta existencias al cerrar la comanda (ver{" "}
+              <strong>Existencias</strong>).
+            </p>
+          </div>
+        )}
         <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
           {(outlets.loading || menus.loading || busy) ? <Spinner size="sm" /> : null}
           <button type="button" onClick={() => { outlets.refresh(); menus.refresh(); }}>↻ Actualizar</button>

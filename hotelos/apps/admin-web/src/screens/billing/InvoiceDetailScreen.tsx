@@ -22,34 +22,23 @@ import {
   statusBadgeVariant,
   type InvoiceUiStatus
 } from "./invoiceStatus";
+import { date, DEFAULT_CURRENCY, money, number, type CurrencyInput, type NumberOptions } from "../../lib/format";
 
 // --- helpers ---------------------------------------------------------------
 
 // Money formatting: invoice totals are stored as numbers (EUR). Use Intl with
 // es-ES to render "1.234,56 €" — keeps the UI consistent with the rest of the
 // PMS (PropertyDetailScreen, FinancePositionDashboard).
-function fmtMoney(value: number | null | undefined, currency = "EUR"): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat("es-ES", {
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(value);
+function fmtMoney(value: number | null | undefined, currency?: CurrencyInput): string {
+  return money(value, currency);
 }
 
-function fmtNumber(value: number | null | undefined, opts?: Intl.NumberFormatOptions): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat("es-ES", { useGrouping: true, ...opts }).format(value);
+function fmtNumber(value: number | null | undefined, opts?: NumberOptions): string {
+  return number(value, opts);
 }
 
 function fmtDate(value?: string): string {
-  if (!value) return "—";
-  try {
-    return new Date(value).toLocaleDateString("es-ES");
-  } catch {
-    return value;
-  }
+  return date(value);
 }
 
 // Reads the target invoice id from the current URL. We use the same convention
@@ -134,7 +123,7 @@ export function InvoiceDetailScreen() {
     invoice && invoice.status === "issued" && !isPaid && invoice.paymentStatus !== "not_applicable"
   );
 
-  const currency = (invoice?.lines?.[0] as { currency?: string } | undefined)?.currency ?? "EUR";
+  const currency = (invoice?.lines?.[0] as { currency?: string } | undefined)?.currency ?? DEFAULT_CURRENCY;
 
   // Build the table rows once (lines are usually small but memoizing prevents
   // re-renders cascading from the email dialog state).
@@ -384,12 +373,10 @@ export function InvoiceDetailScreen() {
     }
   }
 
-  function handleRectifyPlaceholder() {
+  // The rectification flow lives in Finanzas › Facturación › Rectificativas (InvoiceRectifyDialog).
+  function handleRectify() {
     logBreadcrumb("invoice.rectify.intent", "ui", { invoiceId });
-    showToast(
-      "La generación de factura rectificativa estará disponible en Q3. Use el flujo de rectificación en el centro de facturas.",
-      { variant: "info" }
-    );
+    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "InvoiceRectificationsScreen" }));
   }
 
   function handleBack() {
@@ -548,8 +535,8 @@ export function InvoiceDetailScreen() {
           <CocoaButton
             variant="filled"
             tone="destructive"
-            onClick={handleRectifyPlaceholder}
-            aria-label="Generar rectificativa (disponible en Q3)"
+            onClick={handleRectify}
+            aria-label="Generar rectificativa"
           >
             Generar rectificativa
           </CocoaButton>
@@ -593,7 +580,7 @@ export function InvoiceDetailScreen() {
           ) : null}
           {invoice.issuer?.taxIdPlaceholder || invoice.issuerTaxIdPlaceholder ? (
             <div className="bo-status warn" style={{ textTransform: "none", marginTop: "var(--cocoa-space-1)" }}>
-              NIF emisor provisional (sandbox): la huella y el QR se calcularon con un NIF de relleno. Configura el NIF real en Perfil del establecimiento.
+              NIF emisor provisional (modo de pruebas): la huella y el QR se calcularon con un NIF de relleno. Configura el NIF real en Perfil del establecimiento.
             </div>
           ) : null}
           {invoice.issuer?.address ? (

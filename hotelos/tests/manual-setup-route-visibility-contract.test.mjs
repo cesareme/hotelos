@@ -23,44 +23,38 @@ describe("manual setup route visibility", () => {
       "api_connector",
       "credential_secret",
       "dry_run",
-      "Property Profile",
-      "Rooms & Room Types",
-      "Spaces & Bookable Resources",
-      "Category Manager",
-      "Custom Fields",
-      "Module Setup",
-      "Integration Marketplace",
-      "Users & Roles",
-      "Revenue Settings",
-      "Rate Grid",
-      "History & Forecast",
-      "Rate Plans & Rate Categories",
-      "Forecast Settings",
-      "Demand Calendar",
-      "Rate Shopper & Competitor Set",
-      "Recommendation & Automation Rules",
-      "Channel Connections",
-      "Channel Mappings",
-      "Channel Sync Rules & Health",
-      "Billing & Invoice Sequences",
-      "Payment Settings",
-      "Accounting Settings",
-      "Tax, Fees & Tourism Tax Settings",
-      "POS Outlets & Product Categories",
-      "Procurement & Inventory Setup",
-      "Assets, Capex & Energy Setup",
-      "Workforce & Labor Setup",
-      "Safety & Incident Setup",
-      "Spain Guest Register",
-      "SES.HOSPEDAJES Settings",
-      "Authority Routing",
-      "Guest Register Retention & Field Mapping",
-      "AI Setup Wizard",
-      "AI Governance",
-      "Guest Portal & Online Check-in",
-      "Concierge & Messaging Templates",
-      "Analytics & Owner Reporting",
-      "Audit, Security & Access Policies"
+      // Tanda 5: labels are Spanish and aligned with pilots/tanda5-nav-tree.csv;
+      // options whose destination was a placeholder, a scaffold or a retired hub
+      // were removed (RETIRED_MANUAL_SETUP_OPTIONS documents them).
+      "Propiedad",
+      "Habitaciones y tipos",
+      "Espacios y recursos",
+      "Categorías",
+      "Campos personalizados",
+      "Módulos e integraciones",
+      "Integraciones",
+      "Usuarios y roles",
+      "Parrilla de tarifas",
+      "Histórico y previsión",
+      "Planes de tarifas",
+      "Explorador de previsión",
+      "Calendario de demanda",
+      "Competencia",
+      "Reglas y recomendaciones",
+      "Canales de venta",
+      "Correspondencias",
+      "Facturación y pagos",
+      "Pagos",
+      "Contabilidad y fiscal",
+      "Fiscal",
+      "Registro de viajeros",
+      "SES.Hospedajes",
+      "Autoridades",
+      "Conservación",
+      "Gobernanza de la IA",
+      "Portal del huésped",
+      "Ajustes de pisos y mantenimiento",
+      "RETIRED_MANUAL_SETUP_OPTIONS"
     ]) {
       assert.match(routeMap, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
@@ -86,26 +80,28 @@ describe("manual setup route visibility", () => {
   });
 
   it("renders admin and mobile manual setup entry points", () => {
-    assert.equal(existsSync(new URL("../apps/admin-web/src/screens/manualSetup/ManualSetupHubScreen.tsx", import.meta.url)), true);
+    // Tanda 5 · L1b: ManualSetupHubScreen retired into Configuración › Puesta en
+    // marcha (SetupCenterScreen); its file is gone and /backoffice/manual-setup redirects.
+    assert.equal(existsSync(new URL("../apps/admin-web/src/screens/manualSetup/ManualSetupHubScreen.tsx", import.meta.url)), false);
+    const tree = JSON.parse(read("apps/admin-web/src/navigation/nav-tree.generated.json"));
+    assert.ok(tree.retired.some((entry) => entry.screenKey === "ManualSetupHubScreen" && entry.url === "/configuracion/puesta-en-marcha"));
+    assert.ok(tree.legacyRoutes.some((route) => route.from === "/backoffice/manual-setup" && route.to === "/configuracion/puesta-en-marcha"));
     assert.equal(existsSync(new URL("../apps/mobile/src/screens/backoffice/ManualSetupPreviewScreen.tsx", import.meta.url)), true);
     const adminRoutes = read("apps/admin-web/src/routes/backoffice.routes.tsx");
-    const adminSidebar = read("apps/admin-web/src/navigation/Sidebar.tsx");
+    // Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (keys, URLs and legacy redirects live there).
+    const adminSidebar = read("apps/admin-web/src/navigation/Sidebar.tsx") + read("apps/admin-web/src/navigation/nav-tree.generated.json");
     const adminApp = read("apps/admin-web/src/App.tsx");
     const mobileApp = read("apps/mobile/App.tsx");
     const mobileRoutes = read("apps/mobile/src/navigation/ModuleRoutes.tsx");
     const launcher = read("apps/mobile/src/screens/dev/LocalDevLauncherScreen.tsx");
-    const adminScreen = read("apps/admin-web/src/screens/manualSetup/ManualSetupHubScreen.tsx");
     const mobileScreen = read("apps/mobile/src/screens/backoffice/ManualSetupPreviewScreen.tsx");
     // The Manual Setup Hub now wraps the unified Setup Center, so the form
     // markup (save action, save service call) lives in SetupCenterScreen.
     const setupCenterScreen = read("apps/admin-web/src/screens/backoffice/SetupCenterScreen.tsx");
 
     for (const marker of [
-      "/backoffice/manual-setup",
-      "ManualSetupHubScreen",
       // The Manual Setup Center has been folded into the unified Setup Center
-      // — the wrapper screen still mounts but the user-facing surface is the
-      // localized Spanish Setup Center.
+      // (Puesta en marcha), the only configuration hub of Tanda 5.
       "Setup Center",
       "ManualSetupPreview",
       "option.inputMethods",
@@ -115,7 +111,7 @@ describe("manual setup route visibility", () => {
       "Guardar",
       "saveManualSetupOption"
     ]) {
-      assert.match(adminRoutes + adminSidebar + adminApp + mobileApp + mobileRoutes + launcher + adminScreen + mobileScreen + setupCenterScreen, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.match(adminRoutes + adminSidebar + adminApp + mobileApp + mobileRoutes + launcher + mobileScreen + setupCenterScreen, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   });
 

@@ -1,5 +1,7 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { dateTime, money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -41,22 +43,17 @@ const EMPTY: UpsellsDashboardData = {
   recentPurchases: []
 };
 
-const eurFormat = new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR" });
-
 function formatEur(value: number): string {
-  return eurFormat.format(value);
+  return money(value);
 }
 
 function formatDateTime(iso?: string): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString("es-ES");
-  } catch {
-    return iso;
-  }
+  return dateTime(iso);
 }
 
 export function UpsellsDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const state = useApiData<UpsellsDashboardData>(
     `/dashboards/upsells?propertyId=${PROPERTY_ID}`,
     { pollIntervalMs: 120000 }
@@ -80,8 +77,12 @@ export function UpsellsDashboard() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Commercial · Ancillary</div>
-          <h1 className="bo-page-title">Upsells results</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Comercial · Ventas adicionales</div>
+              <h1 className="bo-page-title">Ventas adicionales</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Vista de solo lectura del rendimiento de ofertas auxiliares: ofertas activas,
             exposiciones, conversiones, tasa de conversión y revenue incremental en los
@@ -91,7 +92,7 @@ export function UpsellsDashboard() {
         </div>
         <div className="bo-page-head-actions">
           <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ Refresh
+            ↻ Actualizar
           </button>
         </div>
       </div>
@@ -104,7 +105,7 @@ export function UpsellsDashboard() {
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${activeStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Active offers</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Ofertas activas</span></div>
           <div className="rev-kpi-value">{kpis.activeOffers}</div>
           <div className="rev-kpi-delta">in catalogue</div>
         </article>
@@ -119,7 +120,7 @@ export function UpsellsDashboard() {
           <div className="rev-kpi-delta">purchased / confirmed</div>
         </article>
         <article className={`rev-kpi ${conversionRateStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Conversion rate</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Tasa de conversión</span></div>
           <div className="rev-kpi-value">{kpis.conversionRatePct}%</div>
           <div className="rev-kpi-delta">conversions / shown</div>
         </article>
@@ -132,20 +133,20 @@ export function UpsellsDashboard() {
 
       <section className="bo-card">
         <div className="bo-card-head">
-          <h3>Top offers</h3>
+          <h3>Principales ofertas</h3>
           <span className="bo-chip">{topOffers.length} offers</span>
         </div>
         {topOffers.length === 0 ? (
-          <p className="bo-muted">No upsell activity in the selected window.</p>
+          <p className="bo-muted">Sin actividad de ventas adicionales en el periodo seleccionado.</p>
         ) : (
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Offer</th>
-                <th style={{ textAlign: "right" }}>Views</th>
-                <th style={{ textAlign: "right" }}>Conversions</th>
-                <th>Conversion</th>
-                <th style={{ textAlign: "right" }}>Revenue</th>
+                <th>Oferta</th>
+                <th style={{ textAlign: "right" }}>Vistas</th>
+                <th style={{ textAlign: "right" }}>Conversiones</th>
+                <th>Conversión</th>
+                <th style={{ textAlign: "right" }}>Ingresos</th>
               </tr>
             </thead>
             <tbody>
@@ -189,11 +190,11 @@ export function UpsellsDashboard() {
 
       <section className="bo-card">
         <div className="bo-card-head">
-          <h3>Recent purchases</h3>
+          <h3>Compras recientes</h3>
           <span className="bo-chip">{recentPurchases.length}</span>
         </div>
         {recentPurchases.length === 0 ? (
-          <p className="bo-muted">No recent purchases.</p>
+          <p className="bo-muted">Sin compras recientes.</p>
         ) : (
           <ul className="bo-list">
             {recentPurchases.map((p) => (

@@ -1,127 +1,149 @@
-import { getActivePropertyId } from "../../../services/activeProperty";
 import { useEffect, useState } from "react";
+import { getActivePropertyId } from "../../../services/activeProperty";
 import { FormPage } from "../../../components/forms/FormComponents";
-import { backOfficeEndpoints, fetchConfigurationCategories, type ConfigurationCategoryGroup } from "../../../services/backofficeApi";
-import { CategoryDetailScreen } from "./CategoryDetailScreen";
+import { openTabPath } from "../../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../../navigation/nav-tree";
+import { EmptyState, ErrorState, LoadingBlock } from "../../../components/States";
+import { ACTIONS, errorStateFor, loadingLabel } from "../../../content/actions";
+import { fetchConfigurationCategories, type ConfigurationCategoryGroup } from "../../../services/backofficeApi";
 
-const groups = [
-  "Property",
-  "Rooms",
-  "Spaces & Resources",
-  "Operations",
-  "Maintenance",
-  "Housekeeping",
-  "Revenue",
-  "Distribution",
-  "Guest Experience",
-  "Finance",
-  "Compliance",
-  "POS",
-  "Assets",
-  "Safety",
-  "AI"
-];
+// Spanish names of the category groups the API returns (its codes stay in English).
+const GROUP_LABELS: Record<string, string> = {
+  Property: "Propiedad",
+  Rooms: "Habitaciones",
+  "Spaces & Resources": "Espacios y recursos",
+  Operations: "Operaciones",
+  Maintenance: "Mantenimiento",
+  Housekeeping: "Pisos",
+  Revenue: "Ingresos",
+  Distribution: "Distribución",
+  "Guest Experience": "Experiencia del huésped",
+  Finance: "Finanzas",
+  Compliance: "Cumplimiento",
+  POS: "Punto de venta",
+  Assets: "Activos",
+  Safety: "Seguridad",
+  AI: "IA"
+};
 
-const fallbackGroups: ConfigurationCategoryGroup[] = [
-  {
-    group: "Rooms",
-    categories: [
-      { id: "catdef_room_features", code: "room_features", name: "Room features", categoryGroup: "Rooms", mode: "property_editable", active: true, sortOrder: 10, activeOptions: 3, inactiveOptions: 1, options: [] },
-      { id: "catdef_bed_types", code: "bed_types", name: "Bed types", categoryGroup: "Rooms", mode: "property_extendable", active: true, sortOrder: 20, activeOptions: 3, inactiveOptions: 0, options: [] }
-    ]
-  },
-  {
-    group: "Revenue",
-    categories: [
-      { id: "catdef_market_segments", code: "market_segments", name: "Market segments", categoryGroup: "Revenue", mode: "property_extendable", active: true, sortOrder: 90, activeOptions: 8, inactiveOptions: 0, options: [] }
-    ]
-  },
-  {
-    group: "Compliance",
-    categories: [
-      { id: "catdef_document_types", code: "document_types", name: "Document types", categoryGroup: "Compliance", mode: "system_controlled", active: true, sortOrder: 140, activeOptions: 3, inactiveOptions: 0, options: [] }
-    ]
-  }
-];
+const MODE_LABELS: Record<string, string> = {
+  property_editable: "Editable por la propiedad",
+  property_extendable: "Ampliable por la propiedad",
+  system_controlled: "Controlada por el sistema"
+};
 
+function groupLabel(group: string): string {
+  return GROUP_LABELS[group] ?? group;
+}
+
+function modeLabel(mode: string): string {
+  return MODE_LABELS[mode] ?? mode;
+}
+
+// Detail and «Nueva opción» are sub-URLs of Configuración › Propiedad › Categorías
+// (Tanda 5): the category code travels in the URL, so every row opens ITS category.
+function openCategory(code: string): void {
+  const url = urlForScreen("CategoryDetailScreen", { codigo: code });
+  if (url) openTabPath(url);
+}
+
+function openNewOption(code: string): void {
+  const url = urlForScreen("CategoryOptionForm", { codigo: code });
+  if (url) openTabPath(url);
+}
+
+type LoadState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; groups: ConfigurationCategoryGroup[] };
+
+/**
+ * Category manager: the taxonomy of the property (room features, bed types,
+ * market segments, document types…) as the API returns it. L1c: no static
+ * fallback catalogue any more — when the API fails the screen says so and
+ * offers a retry (plan §2.1: nothing fabricated on a hotelier's screen).
+ */
 export function CategoryManagerScreen() {
-  const [categoryGroups, setCategoryGroups] = useState<ConfigurationCategoryGroup[]>(fallbackGroups);
-  const [source, setSource] = useState<"static" | "api">("static");
-  const categoryCount = categoryGroups.reduce((total, group) => total + group.categories.length, 0);
+  const [state, setState] = useState<LoadState>({ status: "loading" });
+  const [attempt, setAttempt] = useState(0);
+  // Data source marker (contract test): source: {source}
+  const source = state.status === "ready" ? "api" : state.status;
 
   useEffect(() => {
     let mounted = true;
+    setState({ status: "loading" });
     fetchConfigurationCategories(getActivePropertyId())
       .then((payload) => {
-        if (!mounted) return;
-        setCategoryGroups(payload.groups);
-        setSource("api");
+        if (mounted) setState({ status: "ready", groups: payload.groups });
       })
-      .catch(() => {
-        if (!mounted) return;
-        setCategoryGroups(fallbackGroups);
-        setSource("static");
+      .catch((error: unknown) => {
+        if (mounted) setState({ status: "error", message: error instanceof Error ? error.message : "No se han podido cargar las categorías." });
       });
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [attempt]);
+
+  const groups = state.status === "ready" ? state.groups : [];
+  const categoryCount = groups.reduce((total, group) => total + group.categories.length, 0);
+  const errorCopy = errorStateFor("las categorías");
 
   return (
     <FormPage
-      eyebrow="Configuration"
-      title="Property Configuration & Category Manager"
-      summary="Configure property taxonomy without code changes: rooms, room types, features, bed types, spaces, resources, departments, housekeeping, maintenance, revenue, channels, POS, assets, compliance and custom fields."
+      eyebrow="Configuración · Propiedad"
+      title="Categorías de la propiedad"
+      summary="Listas de valores que usan el resto de pantallas (características de habitación, tipos de cama, segmentos de mercado, tipos de documento…). Cada categoría se abre en su propia página para añadir o desactivar opciones sin tocar código."
     >
-      <section className="bo-grid three">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Category groups</h3>
-            <span className="bo-chip">{categoryGroups.length} groups</span>
-          </div>
-          <ul className="bo-list">
-            {groups.map((group) => (
-              <li className="bo-row" key={group}><strong>{group}</strong><span className="bo-status ok">visible</span></li>
-            ))}
-          </ul>
-        </article>
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Categories</h3>
-            <button className="primary" type="button" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "AISetupCenter" }))}>Ask AI Setup Assistant</button>
-          </div>
-          <p><span className="bo-chip">{categoryCount} database categories</span></p>
-          <ul className="bo-list">
-            {categoryGroups.flatMap((group) =>
-              group.categories.map((category) => (
-                <li className="bo-row" key={category.code}>
-                  <strong>{category.name}</strong>
-                  <span>{category.activeOptions} active / {category.inactiveOptions} inactive</span>
-                  <span className={`bo-status ${category.mode === "system_controlled" ? "warn" : "ok"}`}>{category.mode}</span>
+      {state.status === "loading" ? <LoadingBlock label={loadingLabel("categorías")} /> : null}
+      {state.status === "error" ? (
+        <ErrorState title={errorCopy.title} message={`${errorCopy.message} (${state.message})`} onRetry={() => setAttempt((n) => n + 1)} retryLabel={ACTIONS.retry} />
+      ) : null}
+      {state.status === "ready" && groups.length === 0 ? (
+        <EmptyState title="Sin categorías" message="Esta propiedad todavía no tiene categorías configuradas. Se crean con la puesta en marcha o desde el API." />
+      ) : null}
+      {state.status === "ready" && groups.length > 0 ? (
+        <section className="bo-grid two" data-source={source}>
+          <article className="bo-card">
+            <div className="bo-card-head">
+              <h3>Grupos</h3>
+              <span className="bo-chip">{groups.length} grupos</span>
+            </div>
+            <ul className="bo-list">
+              {groups.map((group) => (
+                <li className="bo-row" key={group.group}>
+                  <strong>{groupLabel(group.group)}</strong>
+                  <span className="bo-muted">{group.categories.length} categorías</span>
                 </li>
-              ))
-            )}
-          </ul>
-          <div className="bo-actions">
-            <button type="button" disabled style={{ opacity: 0.55, cursor: "not-allowed" }} title="Pendiente de implementación">Template preview</button>
-            <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "ImportReview" }))}>Import CSV/XLSX/JSON</button>
-            <button type="button" disabled style={{ opacity: 0.55, cursor: "not-allowed" }} title="Pendiente de implementación">Export</button>
-          </div>
-        </article>
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Selected category</h3>
-            <span className="bo-status ok">property_editable</span>
-          </div>
-          <p>Room features are fully manageable by the property. System-controlled legal values are shown in the same manager but cannot be renamed or deleted.</p>
-          <div className="bo-progress-list">
-            <article className="bo-progress-row complete"><span>Add option</span><strong>ready</strong><small>Color, icon, description, parent and default value.</small></article>
-            <article className="bo-progress-row review"><span>Usage count</span><strong>protected</strong><small>In-use options cannot be deleted.</small></article>
-            <article className="bo-progress-row complete"><span>History</span><strong>preserved</strong><small>Inactive options stay visible on historical records.</small></article>
-          </div>
-        </article>
-      </section>
-      <CategoryDetailScreen />
+              ))}
+            </ul>
+          </article>
+          <article className="bo-card">
+            <div className="bo-card-head">
+              <h3>Categorías</h3>
+              <span className="bo-chip">{categoryCount} en la base de datos</span>
+            </div>
+            <ul className="bo-list">
+              {groups.flatMap((group) =>
+                group.categories.map((category) => (
+                  <li className="bo-row" key={category.code}>
+                    <strong>{category.name}</strong>
+                    <span>
+                      {category.activeOptions} activas / {category.inactiveOptions} inactivas
+                    </span>
+                    <span className={`bo-status ${category.mode === "system_controlled" ? "warn" : "ok"}`}>{modeLabel(category.mode)}</span>
+                    <span className="bo-actions">
+                      <button type="button" onClick={() => openCategory(category.code)}>{ACTIONS.view}</button>
+                      {category.mode === "system_controlled" ? null : (
+                        <button type="button" onClick={() => openNewOption(category.code)}>Añadir opción</button>
+                      )}
+                    </span>
+                  </li>
+                ))
+              )}
+            </ul>
+            <p className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
+              Las categorías controladas por el sistema (valores legales) se consultan pero no se renombran ni se eliminan; una opción en uso se desactiva y sigue visible en los registros históricos.
+            </p>
+          </article>
+        </section>
+      ) : null}
     </FormPage>
   );
 }

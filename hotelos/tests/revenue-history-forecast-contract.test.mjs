@@ -214,7 +214,8 @@ describe("Revenue Visual Analytics History & Forecast", () => {
     assert.match(read("apps/admin-web/src/App.tsx"), /RevenueHistoryForecastDashboard/);
     // Sidebar label is "Histórico y previsión" (Spanish) but the screen key
     // RevenueHistoryForecastDashboard is what the test really cares about.
-    assert.match(read("apps/admin-web/src/navigation/Sidebar.tsx"), /Histórico y previsión|History and Forecast/);
+    // Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (labels live there).
+    assert.match(read("apps/admin-web/src/navigation/Sidebar.tsx") + read("apps/admin-web/src/navigation/nav-tree.generated.json"), /Histórico y previsión|History and Forecast/);
     assert.match(read("apps/mobile/src/screens/revenue/RevenueHistoryForecastScreen.tsx"), /Chart selector tabs|Overview|RevenueReportTable|ForecastBoundaryMarker/);
   });
 

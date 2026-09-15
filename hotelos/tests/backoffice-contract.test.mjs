@@ -9,20 +9,35 @@ const server = readFileSync(new URL("../apps/api/src/server.ts", import.meta.url
 const routePermissions = readFileSync(new URL("../apps/api/src/security/route-permissions.ts", import.meta.url), "utf8");
 const backofficeService = readFileSync(new URL("../apps/api/src/modules/backoffice/backoffice.service.ts", import.meta.url), "utf8");
 const demoStore = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", import.meta.url), "utf8");
-const sidebar = readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8");
+// Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (labels, keys, URLs and
+// the legacy /backoffice/* redirects live there), so the menu source is both files.
+const sidebar =
+  readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8");
 const adminApp = readFileSync(new URL("../apps/admin-web/src/App.tsx", import.meta.url), "utf8");
 const adminStyles = readFileSync(new URL("../apps/admin-web/src/styles.css", import.meta.url), "utf8");
-const backOfficeDashboard = readFileSync(new URL("../apps/admin-web/src/screens/BackOfficeDashboard.tsx", import.meta.url), "utf8");
 const propertyMapper = readFileSync(new URL("../apps/admin-web/src/screens/PropertyMapper.tsx", import.meta.url), "utf8");
-const aiSettings = readFileSync(new URL("../apps/admin-web/src/screens/AISettings.tsx", import.meta.url), "utf8");
+// Tanda 5 · L1b: BackOfficeDashboard, PropertySetupWizard and AISettings retired into
+// Configuración › Puesta en marcha / Inteligencia artificial (nav-tree.generated.json).
+const navTree = JSON.parse(readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8"));
+const setupCenter = readFileSync(new URL("../apps/admin-web/src/screens/backoffice/SetupCenterScreen.tsx", import.meta.url), "utf8");
+const goLiveChecklist = readFileSync(new URL("../apps/admin-web/src/screens/GoLiveChecklist.tsx", import.meta.url), "utf8");
+const propertyAi = readFileSync(new URL("../apps/admin-web/src/screens/aiOperations/PropertyAiScreen.tsx", import.meta.url), "utf8");
 const mobileSummary = readFileSync(new URL("../apps/mobile/src/screens/settings/BackOfficeSetupScreen.tsx", import.meta.url), "utf8");
 const docs = readFileSync(new URL("../docs/backoffice-addendum.md", import.meta.url), "utf8");
 
 describe("Back Office hotel setup layer", () => {
   it("adds the Back Office admin-web shell and required screen modules", () => {
+    for (const [screen, cover] of [
+      ["BackOfficeDashboard", "/configuracion/puesta-en-marcha"],
+      ["PropertySetupWizard", "/configuracion/puesta-en-marcha"],
+      ["AISettings", "/configuracion/ia"]
+    ]) {
+      assert.equal(existsSync(new URL(`../apps/admin-web/src/screens/${screen}.tsx`, import.meta.url)), false, `${screen} must be deleted`);
+      assert.ok(navTree.retired.some((entry) => entry.screenKey === screen && entry.url === cover), `${screen} retired → ${cover}`);
+      assert.doesNotMatch(adminApp, new RegExp(`\\b${screen}\\b`), `${screen} must leave SCREEN_COMPONENTS`);
+    }
     for (const screen of [
-      "BackOfficeDashboard",
-      "PropertySetupWizard",
       "GoLiveChecklist",
       "PropertyMapper",
       "UserRoleManager",
@@ -32,7 +47,6 @@ describe("Back Office hotel setup layer", () => {
       "BillingSettings",
       "AccountingSettings",
       "PaymentSettings",
-      "AISettings",
       "AuditLogViewer"
     ]) {
       assert.equal(existsSync(new URL(`../apps/admin-web/src/screens/${screen}.tsx`, import.meta.url)), true);
@@ -40,17 +54,17 @@ describe("Back Office hotel setup layer", () => {
     }
 
     for (const navLabel of [
-      // The sidebar has been translated to Spanish. Each English label below
-      // is matched against its Spanish equivalent (or a representative entry
-      // when the section was reorganised).
-      "Configuración de propiedad", // Hotel Setup
-      "Módulos e integraciones",    // Modules
-      "Operaciones",                // Operations
-      "Comercial",                  // Commercial
-      "Portal del huésped",         // Guest Experience (guest-portal settings now live under "Comercial / CRM")
-      "Finanzas y fiscal",          // Finance and Compliance
-      "activos",                    // Asset and Sustainability (asset role nav)
-      "Plataforma de desarrollador" // Platform (Developer & system)
+      // The sidebar is Spanish and reads nav-tree.generated.json (Tanda 5).
+      // Each English area below is matched against its entry in the tree.
+      "\"label\": \"Propiedad\"",           // Hotel Setup → Configuración › Propiedad
+      "Módulos e integraciones",             // Modules
+      "\"label\": \"Operaciones\"",         // Operations
+      "\"label\": \"Comercial\"",           // Commercial
+      "Portal del huésped",                  // Guest Experience (tab of Comercial › Ventas adicionales)
+      "Contabilidad y fiscal",               // Finance and Compliance → Configuración › Contabilidad y fiscal
+      "\"label\": \"Activos\"",             // Asset (Operaciones › Activos) and Sostenibilidad
+      "Sostenibilidad",
+      "\"label\": \"Sistema\""              // Platform (Configuración › Sistema: Webhooks, Aplicaciones)
     ]) {
       assert.match(sidebar, new RegExp(navLabel));
     }
@@ -239,8 +253,8 @@ describe("Back Office hotel setup layer", () => {
 
     assert.match(mobileSummary, /Back Office/);
     assert.match(mobileSummary, /Go-live blockers/);
-    assert.match(aiSettings, /ai-settings/);
-    assert.match(aiSettings, /defaultAutomationLevel/);
+    assert.match(propertyAi, /defaultAutomationLevel/);
+    assert.match(propertyAi, /automationLevel/);
     assert.match(docs, /The Back Office is the configuration and control center/);
   });
 
@@ -248,15 +262,17 @@ describe("Back Office hotel setup layer", () => {
     // The eyebrow now uses a separator between "Aurora" and "Back Office".
     // The other markers cover the same intent (setup checklist, go-live
     // readiness, recent audit signals) in the redesigned dashboard.
+    // Tanda 5: the Back Office dashboard retired into Puesta en marcha (setup
+    // state + go-live checklist), the single configuration hub.
     for (const marker of [
-      "Anfitorio Aurora · Back Office",  // page eyebrow (visible brand; HotelOS* identifiers stay technical)
-      "Continue setup checklist",      // primary CTA in hero
-      "Go-live readiness",             // readiness card
-      "Recalculate readiness",         // module health / readiness action
-      "OnboardingGoLiveReadiness"      // routed event surface
+      "Puesta en marcha",              // hub title
+      "Estado de la configuración",    // setup state (embedded title)
+      "GoLiveChecklist"                // go-live entry point
     ]) {
-      assert.match(backOfficeDashboard, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.match(setupCenter, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
+    assert.match(goLiveChecklist, /Recalcular readiness/);
+    assert.match(adminApp, /OnboardingGoLiveReadiness: PuestaEnMarchaTabs/);
 
     // The Aurora theme tokens were migrated from per-component --bo-* vars to
     // the shared design-token system. The CSS classes that the dashboard

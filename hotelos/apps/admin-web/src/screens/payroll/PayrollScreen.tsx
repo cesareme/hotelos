@@ -1,9 +1,13 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+import { getActiveOrganizationId, getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { apiRequest } from "../../services/api-client";
 import { useApiData } from "../../hooks/useApiData";
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { ACTIONS, STATUS_LABELS, UI_STATES, loadingLabel, newLabel } from "../../content/actions";
+import { money, percent } from "../../lib/format";
 
 // ---- Sprint 23 / Track 5 — Payroll bridge a gestoría (UI) ----
 //
@@ -18,7 +22,8 @@ import { toArray } from "../../utils/toArray";
 // (which only knows JSON) usable.
 
 const PROPERTY_ID = getActivePropertyId();
-const ORG_ID = "org_demo";
+// Organisation of the active property (never a fixed demo id, browser-roles#10).
+const ORG_ID = getActiveOrganizationId();
 
 type Contract = {
   id: string;
@@ -90,10 +95,19 @@ type ExportResult = {
   exportedAt: string;
 };
 
-const eur = new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR", minimumFractionDigits: 2 });
-
 function fmt(n: number | undefined): string {
-  return eur.format(n ?? 0);
+  return money(n ?? 0);
+}
+
+const PERIOD_STATUS_LABEL: Record<string, string> = {
+  open: "Abierto",
+  calculated: "Calculado",
+  exported: "Exportado",
+  closed: "Cerrado"
+};
+
+function periodStatusLabel(status: string): string {
+  return PERIOD_STATUS_LABEL[status] ?? status;
 }
 
 function statusPillClass(status: Period["status"]): string {
@@ -205,16 +219,11 @@ export function PayrollScreen() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Payroll bridge</div>
-          <h1 className="bo-page-title">Nóminas → gestoría</h1>
-          <p className="bo-page-subtitle">
-            Contratos, periodos mensuales y exportación a A3 Nóminas / Sage Payroll / Holded. Cálculo simple
-            (gross → IRPF → SS → net) para alimentar a la gestoría sin contabilizar todavía.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
+      <CocoaPageHeader
+        eyebrow="Finanzas"
+        title="Nóminas"
+        subtitle="Contratos, periodos mensuales y exportación a la gestoría (A3 Nóminas, Sage). Cálculo orientativo bruto → IRPF → Seguridad Social → neto; no contabiliza."
+        actions={
           <button
             type="button"
             className="ghost"
@@ -224,37 +233,37 @@ export function PayrollScreen() {
               if (selectedPeriodId) slips.refresh();
             }}
           >
-            ↻ Refresh
+            ↻ {ACTIONS.refresh}
           </button>
-        </div>
-      </div>
+        }
+      />
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${openPeriods > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Open periods</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Periodos abiertos</span></div>
           <div className="rev-kpi-value">{openPeriods}</div>
-          <div className="rev-kpi-delta">awaiting calculation</div>
+          <div className="rev-kpi-delta">pendientes de calcular</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Last calculated</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Último calculado</span></div>
           <div className="rev-kpi-value" style={{ fontSize: 24 }}>{lastCalculated?.periodCode ?? "—"}</div>
-          <div className="rev-kpi-delta">{lastCalculated ? fmt(lastCalculated.totalGross) : "no periods yet"}</div>
+          <div className="rev-kpi-delta">{lastCalculated ? fmt(lastCalculated.totalGross) : "sin periodos"}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Gross MTD</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Bruto del mes</span></div>
           <div className="rev-kpi-value">{fmt(grossMTD)}</div>
-          <div className="rev-kpi-delta">period {currentMonthCode()}</div>
+          <div className="rev-kpi-delta">periodo {currentMonthCode()}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Active contracts</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Contratos activos</span></div>
           <div className="rev-kpi-value">{contractsArr.filter((c) => c.active).length}</div>
-          <div className="rev-kpi-delta">{contractsArr.length} total</div>
+          <div className="rev-kpi-delta">{contractsArr.length} en total</div>
         </article>
       </section>
 
       {error ? (
         <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)", marginBottom: 16 }}>
-          Couldn't load this view right now. Refresh to retry.
+          {UI_STATES.error.title}. {UI_STATES.error.message}
         </div>
       ) : null}
 
@@ -264,14 +273,14 @@ export function PayrollScreen() {
           className={tab === "contracts" ? "primary" : "ghost"}
           onClick={() => setTab("contracts")}
         >
-          Contracts ({contractsArr.length})
+          Contratos ({contractsArr.length})
         </button>
         <button
           type="button"
           className={tab === "periods" ? "primary" : "ghost"}
           onClick={() => setTab("periods")}
         >
-          Payroll periods ({periodsArr.length})
+          Periodos ({periodsArr.length})
         </button>
         <button
           type="button"
@@ -279,7 +288,7 @@ export function PayrollScreen() {
           onClick={() => setTab("slips")}
           disabled={!selectedPeriodId}
         >
-          Slips {slips.data ? `(${slips.data.length})` : ""}
+          Recibos {slips.data ? `(${slips.data.length})` : ""}
         </button>
       </div>
 
@@ -353,34 +362,50 @@ function ContractsTab(props: {
   onDeactivate: (id: string) => void;
   busy: string | null;
 }) {
+  // Deactivating a contract removes it from the next payroll run: ask first.
+  const [pendingDeactivate, setPendingDeactivate] = useState<Contract | null>(null);
   return (
     <section className="bo-card">
+      <ConfirmDialog
+        open={pendingDeactivate !== null}
+        variant="danger"
+        title={pendingDeactivate ? `¿Desactivar el contrato de ${pendingDeactivate.staffProfileId}?` : ""}
+        description="El contrato dejará de entrar en los próximos periodos de nómina. Los recibos ya calculados no cambian."
+        confirmLabel={ACTIONS.deactivate}
+        cancelLabel={ACTIONS.cancel}
+        onCancel={() => setPendingDeactivate(null)}
+        onConfirm={() => {
+          const target = pendingDeactivate;
+          setPendingDeactivate(null);
+          if (target) props.onDeactivate(target.id);
+        }}
+      />
       <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Employment contracts</h2>
+        <h2 style={{ fontSize: 20 }}>Contratos</h2>
         <button type="button" className="primary" onClick={props.onToggleForm}>
-          {props.showForm ? "Cancel" : "+ Add contract"}
+          {props.showForm ? ACTIONS.cancel : `+ ${newLabel("m", "contrato")}`}
         </button>
       </div>
 
       {props.showForm ? <NewContractForm onCreated={props.onCreated} /> : null}
 
       {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Loading contracts…</p>
+        <p style={{ color: "var(--ink-muted)" }}>{loadingLabel("contratos")}</p>
       ) : props.fetchError ? (
         <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
       ) : (props.contracts ?? []).length === 0 ? (
-        <p style={{ color: "var(--ink-muted)" }}>No employment contracts yet. Add the first one above.</p>
+        <p style={{ color: "var(--ink-muted)" }}>Aún no hay contratos. Añade el primero con el botón de arriba.</p>
       ) : (
         <div className="rev-report-wrap">
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Employee</th>
-                <th>Type</th>
-                <th style={{ textAlign: "right" }}>Gross / month</th>
+                <th>Empleado</th>
+                <th>Tipo</th>
+                <th style={{ textAlign: "right" }}>Bruto / mes</th>
                 <th style={{ textAlign: "right" }}>IRPF %</th>
-                <th>Started</th>
-                <th>Status</th>
+                <th>Inicio</th>
+                <th>Estado</th>
                 <th />
               </tr>
             </thead>
@@ -391,12 +416,12 @@ function ContractsTab(props: {
                   <td>{c.contractType}</td>
                   <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(c.grossSalary)}</td>
                   <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
-                    {c.irpfRatePct === undefined ? <span style={{ color: "var(--ink-muted)" }}>auto</span> : `${c.irpfRatePct}%`}
+                    {c.irpfRatePct === undefined ? <span style={{ color: "var(--ink-muted)" }}>automático</span> : percent(c.irpfRatePct)}
                   </td>
                   <td>{c.startDate}</td>
                   <td>
                     <span className={c.active ? "bo-status ok" : "bo-status"}>
-                      {c.active ? "active" : "inactive"}
+                      {c.active ? STATUS_LABELS.active : STATUS_LABELS.inactive}
                     </span>
                   </td>
                   <td style={{ textAlign: "right" }}>
@@ -405,9 +430,9 @@ function ContractsTab(props: {
                         type="button"
                         className="ghost"
                         disabled={props.busy === `deact-${c.id}`}
-                        onClick={() => props.onDeactivate(c.id)}
+                        onClick={() => setPendingDeactivate(c)}
                       >
-                        {props.busy === `deact-${c.id}` ? "…" : "Deactivate"}
+                        {props.busy === `deact-${c.id}` ? "…" : ACTIONS.deactivate}
                       </button>
                     ) : null}
                   </td>
@@ -432,12 +457,12 @@ function NewContractForm(props: { onCreated: () => void }) {
 
   async function submit() {
     if (!staffProfileId.trim()) {
-      setFormError("Staff profile id is required.");
+      setFormError("El identificador del empleado es obligatorio.");
       return;
     }
     const gross = Number(grossSalary);
     if (!Number.isFinite(gross) || gross < 0) {
-      setFormError("Gross salary must be a number ≥ 0.");
+      setFormError("El bruto mensual debe ser un número mayor o igual que 0.");
       return;
     }
     setSubmitting(true);
@@ -467,14 +492,14 @@ function NewContractForm(props: { onCreated: () => void }) {
       className="bo-card"
       style={{ background: "var(--surface)", marginBottom: 16, padding: 16, border: "1px solid var(--line)" }}
     >
-      <h3 style={{ fontSize: 16, marginTop: 0 }}>New employment contract</h3>
+      <h3 style={{ fontSize: 16, marginTop: 0 }}>Nuevo contrato</h3>
       <div className="bo-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
         <label>
-          Staff profile id
-          <input value={staffProfileId} onChange={(e) => setStaffProfileId(e.target.value)} placeholder="staff_abc" />
+          Identificador del empleado
+          <input value={staffProfileId} onChange={(e) => setStaffProfileId(e.target.value)} placeholder="Identificador de la ficha de personal" />
         </label>
         <label>
-          Contract type
+          Tipo de contrato
           <select value={contractType} onChange={(e) => setContractType(e.target.value)}>
             <option value="indefinido">Indefinido</option>
             <option value="temporal">Temporal</option>
@@ -483,22 +508,22 @@ function NewContractForm(props: { onCreated: () => void }) {
           </select>
         </label>
         <label>
-          Start date
+          Fecha de inicio
           <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
         </label>
         <label>
-          Gross / month (€)
+          Bruto mensual (€)
           <input type="number" min={0} step="0.01" value={grossSalary} onChange={(e) => setGrossSalary(e.target.value)} />
         </label>
         <label>
-          IRPF % <span style={{ color: "var(--ink-muted)", fontWeight: "normal" }}>(blank = auto)</span>
+          IRPF (%) <span style={{ color: "var(--ink-muted)", fontWeight: "normal" }}>(vacío = automático)</span>
           <input type="number" min={0} max={50} step="0.01" value={irpfRatePct} onChange={(e) => setIrpfRatePct(e.target.value)} />
         </label>
       </div>
       {formError ? <p style={{ color: "var(--danger-ink)", marginTop: 8 }}>{formError}</p> : null}
       <div style={{ marginTop: 12 }}>
         <button type="button" className="primary" disabled={submitting} onClick={submit}>
-          {submitting ? "Saving…" : "Save contract"}
+          {submitting ? STATUS_LABELS.saving : "Guardar contrato"}
         </button>
       </div>
     </div>
@@ -522,39 +547,39 @@ function PeriodsTab(props: {
   return (
     <section className="bo-card">
       <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Payroll periods</h2>
+        <h2 style={{ fontSize: 20 }}>Periodos de nómina</h2>
         <button type="button" className="primary" onClick={props.onToggleForm}>
-          {props.showForm ? "Cancel" : "+ Open period"}
+          {props.showForm ? ACTIONS.cancel : "+ Abrir periodo"}
         </button>
       </div>
 
       {props.showForm ? <NewPeriodForm onCreated={props.onCreated} /> : null}
 
       {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Loading periods…</p>
+        <p style={{ color: "var(--ink-muted)" }}>{loadingLabel("periodos")}</p>
       ) : props.fetchError ? (
         <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
       ) : (props.periods ?? []).length === 0 ? (
-        <p style={{ color: "var(--ink-muted)" }}>No payroll periods yet. Open one for the current month above.</p>
+        <p style={{ color: "var(--ink-muted)" }}>Aún no hay periodos. Abre el del mes en curso con el botón de arriba.</p>
       ) : (
         <div className="rev-report-wrap">
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Period</th>
-                <th>Status</th>
-                <th style={{ textAlign: "right" }}>Gross</th>
-                <th style={{ textAlign: "right" }}>Net</th>
+                <th>Periodo</th>
+                <th>Estado</th>
+                <th style={{ textAlign: "right" }}>Bruto</th>
+                <th style={{ textAlign: "right" }}>Neto</th>
                 <th style={{ textAlign: "right" }}>IRPF</th>
                 <th style={{ textAlign: "right" }}>SS</th>
-                <th style={{ textAlign: "right" }}>Actions</th>
+                <th style={{ textAlign: "right" }}>Acciones</th>
               </tr>
             </thead>
             <tbody>
               {(props.periods ?? []).map((p) => (
                 <tr key={p.id}>
                   <td><strong>{p.periodCode}</strong></td>
-                  <td><span className={statusPillClass(p.status)}>{p.status}</span></td>
+                  <td><span className={statusPillClass(p.status)}>{periodStatusLabel(p.status)}</span></td>
                   <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(p.totalGross)}</td>
                   <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(p.totalNet)}</td>
                   <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(p.totalIrpf)}</td>
@@ -566,7 +591,7 @@ function PeriodsTab(props: {
                       disabled={props.busy === `calc-${p.id}` || p.status === "closed"}
                       onClick={() => props.onCalculate(p.id)}
                     >
-                      {props.busy === `calc-${p.id}` ? "…" : "Calculate"}
+                      {props.busy === `calc-${p.id}` ? "…" : "Calcular"}
                     </button>{" "}
                     <button
                       type="button"
@@ -574,7 +599,7 @@ function PeriodsTab(props: {
                       disabled={props.busy === `export-${p.id}-a3` || p.status === "open"}
                       onClick={() => props.onExport(p.id, "a3")}
                     >
-                      {props.busy === `export-${p.id}-a3` ? "…" : "Export A3"}
+                      {props.busy === `export-${p.id}-a3` ? "…" : "Exportar a A3"}
                     </button>{" "}
                     <button
                       type="button"
@@ -582,10 +607,10 @@ function PeriodsTab(props: {
                       disabled={props.busy === `export-${p.id}-sage` || p.status === "open"}
                       onClick={() => props.onExport(p.id, "sage")}
                     >
-                      {props.busy === `export-${p.id}-sage` ? "…" : "Export Sage"}
+                      {props.busy === `export-${p.id}-sage` ? "…" : "Exportar a Sage"}
                     </button>{" "}
                     <button type="button" className="ghost" onClick={() => props.onViewSlips(p.id)}>
-                      View slips →
+                      Ver recibos →
                     </button>
                   </td>
                 </tr>
@@ -605,7 +630,7 @@ function NewPeriodForm(props: { onCreated: () => void }) {
 
   async function submit() {
     if (!/^\d{4}-\d{2}$/.test(periodCode)) {
-      setFormError("Period code must be YYYY-MM.");
+      setFormError("El periodo debe tener el formato AAAA-MM.");
       return;
     }
     setSubmitting(true);
@@ -628,14 +653,14 @@ function NewPeriodForm(props: { onCreated: () => void }) {
       className="bo-card"
       style={{ background: "var(--surface)", marginBottom: 16, padding: 16, border: "1px solid var(--line)" }}
     >
-      <h3 style={{ fontSize: 16, marginTop: 0 }}>Open new payroll period</h3>
+      <h3 style={{ fontSize: 16, marginTop: 0 }}>Abrir un periodo de nómina</h3>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end" }}>
         <label>
-          Period (YYYY-MM)
+          Periodo (AAAA-MM)
           <input value={periodCode} onChange={(e) => setPeriodCode(e.target.value)} placeholder="2026-05" />
         </label>
         <button type="button" className="primary" disabled={submitting} onClick={submit}>
-          {submitting ? "Opening…" : "Open period"}
+          {submitting ? "Abriendo…" : "Abrir periodo"}
         </button>
       </div>
       {formError ? <p style={{ color: "var(--danger-ink)", marginTop: 8 }}>{formError}</p> : null}
@@ -655,7 +680,7 @@ function SlipsTab(props: {
   if (!props.period) {
     return (
       <section className="bo-card">
-        <p style={{ color: "var(--ink-muted)" }}>Pick a period in the “Payroll periods” tab to view slips.</p>
+        <p style={{ color: "var(--ink-muted)" }}>Elige un periodo en la pestaña «Periodos» para ver sus recibos.</p>
       </section>
     );
   }
@@ -663,30 +688,30 @@ function SlipsTab(props: {
   return (
     <section className="bo-card">
       <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Slips · {props.period.periodCode}</h2>
-        <span className={statusPillClass(props.period.status)}>{props.period.status}</span>
+        <h2 style={{ fontSize: 20 }}>Recibos · {props.period.periodCode}</h2>
+        <span className={statusPillClass(props.period.status)}>{periodStatusLabel(props.period.status)}</span>
       </div>
 
       {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Loading slips…</p>
+        <p style={{ color: "var(--ink-muted)" }}>{loadingLabel("recibos")}</p>
       ) : props.fetchError ? (
         <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
       ) : (props.slips ?? []).length === 0 ? (
         <p style={{ color: "var(--ink-muted)" }}>
-          No slips yet. Run “Calculate” on the period to generate one slip per active contract.
+          Aún no hay recibos. Pulsa «Calcular» en el periodo para generar un recibo por cada contrato activo.
         </p>
       ) : (
         <div className="rev-report-wrap">
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Employee</th>
-                <th style={{ textAlign: "right" }}>Gross</th>
+                <th>Empleado</th>
+                <th style={{ textAlign: "right" }}>Bruto</th>
                 <th style={{ textAlign: "right" }}>IRPF</th>
-                <th style={{ textAlign: "right" }}>SS (worker)</th>
-                <th style={{ textAlign: "right" }}>SS (company)</th>
-                <th style={{ textAlign: "right" }}>Net</th>
-                <th>Status</th>
+                <th style={{ textAlign: "right" }}>SS (trabajador)</th>
+                <th style={{ textAlign: "right" }}>SS (empresa)</th>
+                <th style={{ textAlign: "right" }}>Neto</th>
+                <th>Estado</th>
               </tr>
             </thead>
             <tbody>
@@ -706,7 +731,7 @@ function SlipsTab(props: {
                   <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700 }}>
                     {fmt(s.netSalary)}
                   </td>
-                  <td><span className="bo-status">{s.status}</span></td>
+                  <td><span className="bo-status">{periodStatusLabel(s.status)}</span></td>
                 </tr>
               ))}
             </tbody>

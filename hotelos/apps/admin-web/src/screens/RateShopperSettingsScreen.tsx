@@ -5,12 +5,14 @@ import {
   fetchParityAlerts,
   createCompetitor,
   runRateShop,
-  money,
   type Competitor,
   type CompetitorRate,
   type ParityAlert
 } from "../services/revenueApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../components/States";
+import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { ACTIONS } from "../content/actions";
+import { date, money } from "../lib/format";
 
 function median(values: number[]): number {
   if (!values.length) return 0;
@@ -19,7 +21,7 @@ function median(values: number[]): number {
   return s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
 }
 function fmtDate(iso: string): string {
-  return new Date(`${iso}T00:00:00.000Z`).toLocaleDateString("es-ES", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
+  return date(iso, "medium");
 }
 
 export function RateShopperSettingsScreen() {
@@ -107,22 +109,19 @@ export function RateShopperSettingsScreen() {
 
   return (
     <section className="bo-card" style={{ display: "grid", gap: 16 }}>
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Inteligencia de mercado</p>
-          <h2>Rate Shopper (comp-set)</h2>
-        </div>
-        <div className="bo-pill-row">
-          <button type="button" className="primary" onClick={handleShop} disabled={busy || loading}>
-            {busy ? <><Spinner size="sm" /> Sondeando…</> : "Ejecutar sondeo"}
-          </button>
-          <button type="button" onClick={() => void load()} disabled={loading}>↻ Actualizar</button>
-        </div>
-      </div>
-      <p>
-        Monitoriza las tarifas del comp-set para informar tus decisiones de BAR. El proveedor de sondeo es determinista y
-        está etiquetado como tal (no hay scraper de OTA conectado); las tarifas se guardan en la base de datos.
-      </p>
+      <CocoaPageHeader
+        eyebrow="Revenue"
+        title="Competencia"
+        subtitle="Las tarifas de tus competidores y las alertas de paridad, para decidir tu precio público. Hoy no hay ningún proveedor de sondeo externo conectado: las tarifas se registran a mano o con el sondeo interno y se guardan en tu base de datos."
+        actions={
+          <>
+            <button type="button" className="primary" onClick={handleShop} disabled={busy || loading}>
+              {busy ? <><Spinner size="sm" /> Sondeando…</> : "Ejecutar sondeo"}
+            </button>
+            <button type="button" onClick={() => void load()} disabled={loading}>↻ {ACTIONS.refresh}</button>
+          </>
+        }
+      />
       {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
 
       {loading ? (
@@ -152,7 +151,7 @@ export function RateShopperSettingsScreen() {
 
           <div className="bo-grid two">
             <article className="bo-card">
-              <div className="bo-card-head"><h3>Comp-set</h3><span className="bo-chip">{competitors.length}</span></div>
+              <div className="bo-card-head"><h3>Competidores</h3><span className="bo-chip">{competitors.length}</span></div>
               {competitors.length === 0 ? (
                 <p className="bo-muted">Aún no hay competidores. Añade uno para empezar a sondear.</p>
               ) : (
@@ -239,7 +238,7 @@ export function RateShopperSettingsScreen() {
                         <td>{r.competitorHotelId ? compName.get(r.competitorHotelId) ?? r.competitorHotelId : "—"}</td>
                         <td>{fmtDate(r.stayDate)}</td>
                         <td>{r.sourceChannel ?? "—"}</td>
-                        <td><strong>{money(r.price, r.currency ?? "EUR")}</strong></td>
+                        <td><strong>{money(r.price, r.currency)}</strong></td>
                         <td>{r.availabilityStatus ?? "—"}</td>
                       </tr>
                     ))}

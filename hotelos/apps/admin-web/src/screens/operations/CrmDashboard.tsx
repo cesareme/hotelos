@@ -1,5 +1,7 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { date, money, number } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -31,34 +33,22 @@ const EMPTY: CrmDashboardData = {
   recentGuests: []
 };
 
-const eurFormat = new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR" });
-const numFormat = new Intl.NumberFormat("es-ES", { useGrouping: true });
-
 const ACTIVE_CAMPAIGN_STATUSES = new Set(["active", "running", "scheduled", "live"]);
 
 function formatEur(value: number): string {
-  return eurFormat.format(value);
+  return money(value);
 }
 
 function formatNumber(value: number): string {
-  return numFormat.format(value);
+  return number(value);
 }
 
 function formatDate(iso?: string): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleDateString("es-ES");
-  } catch {
-    return iso;
-  }
+  return date(iso);
 }
 
 function formatBirthday(iso: string): string {
-  try {
-    return new Date(iso).toLocaleDateString("es-ES", { day: "2-digit", month: "short" });
-  } catch {
-    return iso;
-  }
+  return date(iso, "dayMonth");
 }
 
 function campaignStatusPill(status: string) {
@@ -69,6 +59,8 @@ function campaignStatusPill(status: string) {
 }
 
 export function CrmDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const state = useApiData<CrmDashboardData>(
     `/dashboards/crm?propertyId=${PROPERTY_ID}`,
     { pollIntervalMs: 120000 }
@@ -90,8 +82,12 @@ export function CrmDashboard() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Commercial · CRM</div>
-          <h1 className="bo-page-title">CRM y campañas</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Comercial · Clientes y fidelización</div>
+              <h1 className="bo-page-title">Clientes</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Vista de solo lectura del CRM: base de contactos, perfiles activos, VIPs, valor medio
             por cliente y tasa de churn a 90 días. Incluye segmentos principales, campañas activas,
@@ -100,7 +96,7 @@ export function CrmDashboard() {
         </div>
         <div className="bo-page-head-actions">
           <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ Refresh
+            ↻ Actualizar
           </button>
         </div>
       </div>
@@ -113,12 +109,12 @@ export function CrmDashboard() {
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${totalStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total guests</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Huéspedes totales</span></div>
           <div className="rev-kpi-value">{formatNumber(kpis.totalGuests)}</div>
           <div className="rev-kpi-delta">contacts in the CRM base</div>
         </article>
         <article className={`rev-kpi ${profilesStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Active profiles</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Perfiles activos</span></div>
           <div className="rev-kpi-value">{formatNumber(kpis.activeProfiles)}</div>
           <div className="rev-kpi-delta">deduplicated guest profiles</div>
         </article>
@@ -133,7 +129,7 @@ export function CrmDashboard() {
           <div className="rev-kpi-delta">across active profiles</div>
         </article>
         <article className={`rev-kpi ${churnStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Churn 90d</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Bajas en 90 días</span></div>
           <div className="rev-kpi-value">{kpis.churnRate90dPct}%</div>
           <div className="rev-kpi-delta">guests with last stay {">"} 90 days ago</div>
         </article>
@@ -142,7 +138,7 @@ export function CrmDashboard() {
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Top segments</h3>
+            <h3>Principales segmentos</h3>
             <span className="bo-chip">{topSegments.length} segments</span>
           </div>
           {topSegments.length === 0 ? (
@@ -151,10 +147,10 @@ export function CrmDashboard() {
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Segment</th>
-                  <th style={{ textAlign: "right" }}>Members</th>
-                  <th>Reach</th>
-                  <th style={{ textAlign: "right" }}>Revenue 90d</th>
+                  <th>Segmento</th>
+                  <th style={{ textAlign: "right" }}>Miembros</th>
+                  <th>Alcance</th>
+                  <th style={{ textAlign: "right" }}>Ingresos 90 días</th>
                 </tr>
               </thead>
               <tbody>
@@ -187,7 +183,7 @@ export function CrmDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Active campaigns</h3>
+            <h3>Campañas activas</h3>
             <span className="bo-chip">{activeCampaigns.length} campaigns</span>
           </div>
           {activeCampaigns.length === 0 ? (
@@ -196,9 +192,9 @@ export function CrmDashboard() {
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Status</th>
-                  <th>Campaign</th>
-                  <th style={{ textAlign: "right" }}>Recipients</th>
+                  <th>Estado</th>
+                  <th>Campaña</th>
+                  <th style={{ textAlign: "right" }}>Destinatarios</th>
                   <th style={{ textAlign: "right" }}>CTR</th>
                 </tr>
               </thead>
@@ -220,17 +216,17 @@ export function CrmDashboard() {
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Upcoming birthdays</h3>
+            <h3>Próximos cumpleaños</h3>
             <span className="bo-chip">next 30 days · {upcomingBirthdays.length}</span>
           </div>
           {upcomingBirthdays.length === 0 ? (
-            <p className="bo-muted">No birthdays in the next 30 days.</p>
+            <p className="bo-muted">Sin cumpleaños en los próximos 30 días.</p>
           ) : (
             <ul className="bo-list">
               {upcomingBirthdays.map((g) => (
                 <li key={g.id} style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", paddingBottom: 6 }}>
                   <span className="bo-pill">{g.daysAway === 0 ? "today" : `in ${g.daysAway}d`}</span>
-                  <strong>{g.fullName || "Unknown guest"}</strong>
+                  <strong>{g.fullName || "Huésped sin nombre"}</strong>
                   <small className="bo-muted">{formatBirthday(g.dateOfBirth)}</small>
                 </li>
               ))}
@@ -240,25 +236,25 @@ export function CrmDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Recent guests</h3>
+            <h3>Huéspedes recientes</h3>
             <span className="bo-chip">{recentGuests.length}</span>
           </div>
           {recentGuests.length === 0 ? (
-            <p className="bo-muted">No recent guests at this property.</p>
+            <p className="bo-muted">Sin huéspedes recientes en esta propiedad.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Guest</th>
-                  <th>Last stay</th>
-                  <th style={{ textAlign: "right" }}>Stays</th>
-                  <th style={{ textAlign: "right" }}>Revenue</th>
+                  <th>Huésped</th>
+                  <th>Última estancia</th>
+                  <th style={{ textAlign: "right" }}>Estancias</th>
+                  <th style={{ textAlign: "right" }}>Ingresos</th>
                 </tr>
               </thead>
               <tbody>
                 {recentGuests.map((g) => (
                   <tr key={g.id}>
-                    <td><strong>{g.fullName || "Unknown guest"}</strong></td>
+                    <td><strong>{g.fullName || "Huésped sin nombre"}</strong></td>
                     <td>{formatDate(g.lastStayAt)}</td>
                     <td style={{ textAlign: "right" }}>{formatNumber(g.totalStays)}</td>
                     <td style={{ textAlign: "right" }}>{g.totalRevenue !== undefined ? formatEur(g.totalRevenue) : "—"}</td>

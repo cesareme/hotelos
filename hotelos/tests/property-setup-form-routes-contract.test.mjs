@@ -10,7 +10,17 @@ const demoStore = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", impo
 const apiClient = readFileSync(new URL("../apps/admin-web/src/services/backofficeApi.ts", import.meta.url), "utf8");
 const adminApp = readFileSync(new URL("../apps/admin-web/src/App.tsx", import.meta.url), "utf8");
 const adminRoutes = readFileSync(new URL("../apps/admin-web/src/routes/backoffice.routes.tsx", import.meta.url), "utf8");
-const sidebar = readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8");
+// Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (labels, keys, URLs and
+// the legacy /backoffice/* redirects live there), so the menu source is both files.
+const sidebar =
+  readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8");
+const tree = JSON.parse(readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8"));
+const treeUrls = new Set([
+  ...tree.categories.flatMap((category) => category.items.flatMap((item) => [item.url, ...item.tabs.map((tab) => tab.url)])),
+  ...tree.devOnly.map((screen) => screen.url),
+  ...tree.publicScreens.map((screen) => screen.url)
+]);
 const demoHtml = readFileSync(new URL("../demo/public/index.html", import.meta.url), "utf8");
 const demoJs = readFileSync(new URL("../demo/public/app.js", import.meta.url), "utf8");
 
@@ -94,8 +104,13 @@ describe("Property setup form routes", () => {
 
   it("adds admin routes and screens for every form", () => {
     assert.equal(existsSync(new URL("../apps/admin-web/src/screens/propertySetup/PropertySetupForms.tsx", import.meta.url)), true);
+    // Tanda 5 · L1b: the Property Setup index retired into Puesta en marcha; the
+    // 14 forms are tabs of Configuración › Propiedad / Habitaciones y espacios /
+    // Contabilidad y fiscal / Inteligencia artificial and of Operaciones › Pisos /
+    // Mantenimiento, registered in App.tsx through their containers.
+    assert.ok(tree.retired.some((entry) => entry.screenKey === "PropertySetupHomeScreen" && entry.url === "/configuracion/puesta-en-marcha"));
+    assert.doesNotMatch(adminApp, /PropertySetupHomeScreen/);
     for (const screen of [
-      "PropertySetupHomeScreen",
       "PropertyProfileSetupForm",
       "BuildingSetupForm",
       "FloorSetupForm",
@@ -111,9 +126,13 @@ describe("Property setup form routes", () => {
       "AiPropertySetupForm",
       "CustomFieldSetupForm"
     ]) {
-      assert.match(adminApp + adminRoutes + sidebar, new RegExp(screen));
+      assert.match(adminApp, new RegExp(`\\b${screen}\\b`), `${screen} must be a SCREEN_COMPONENTS key`);
+      assert.match(sidebar, new RegExp(`"screenKey": "${screen}"`), `${screen} must be a screen of the tree`);
     }
 
+    // Every old /backoffice/property-setup/* path is a registered legacy redirect
+    // (NAV_TREE.legacyRoutes) that lands on a URL of the tree.
+    assert.match(adminRoutes, /LEGACY_ROUTES[^\n]*NAV_TREE\.legacyRoutes/);
     for (const path of [
       "/backoffice/property-setup",
       "/backoffice/property-setup/property-profile",
@@ -131,7 +150,9 @@ describe("Property setup form routes", () => {
       "/backoffice/property-setup/ai",
       "/backoffice/property-setup/custom-fields"
     ]) {
-      assert.match(adminRoutes + sidebar, new RegExp(path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      const legacy = tree.legacyRoutes.find((route) => route.from === path);
+      assert.ok(legacy, `${path} is not a legacy route of the tree`);
+      assert.ok(treeUrls.has(legacy.to), `${path} → ${legacy.to} is not a URL of the tree`);
     }
   });
 
@@ -161,17 +182,25 @@ describe("Property setup form routes", () => {
     // entry point to the form, source-of-truth display) is preserved.
     for (const marker of [
       "fetchPropertySetupForm",
-      "fetchPropertySetupForms",
       "savePropertySetupForm",
       "handleSave",
       "Valores actuales",          // Existing database data (panel header)
       "envíos anteriores",         // Submission history (chip in status panel)
-      "Abrir formulario",          // Open form (link in form index)
       "onChange"
     ]) {
       assert.match(propertySetupScreen + formComponents, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
-    for (const marker of ["BACKOFFICE_ROUTES", "screenFromPathname", "routeMatches", "window.history.pushState"]) {
+    // The forms are reached through their tab containers (entry point to the form).
+    const propiedadTabs = readFileSync(new URL("../apps/admin-web/src/screens/tabs/configuracion/PropiedadTabs.tsx", import.meta.url), "utf8");
+    const habitacionesTabs = readFileSync(new URL("../apps/admin-web/src/screens/tabs/configuracion/HabitacionesTabs.tsx", import.meta.url), "utf8");
+    for (const marker of ["PropertyProfileSetupForm", "BuildingSetupForm", "CustomFieldSetupForm"]) assert.match(propiedadTabs, new RegExp(marker));
+    for (const marker of ["RoomSetupForm", "RoomTypeSetupForm", "SpaceResourceSetupForm"]) assert.match(habitacionesTabs, new RegExp(marker));
+    // Router contract (Tanda 5 · L1b): the table derives from the tree and the
+    // shell resolves the location (legacy paths with replaceState, a client-side 308).
+    for (const marker of ["BACKOFFICE_ROUTES", "routeMatches", "allUrls(", "resolveLegacyPath("]) {
+      assert.match(adminRoutes, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    }
+    for (const marker of ["resolveLocation", "screenFromPathname", "resolveLegacyLocation", "window.history.replaceState", "window.history.pushState"]) {
       assert.match(adminApp, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
   });

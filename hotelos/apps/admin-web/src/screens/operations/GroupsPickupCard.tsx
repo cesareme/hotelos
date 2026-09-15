@@ -23,6 +23,7 @@
 
 import { useApiData } from "../../hooks/useApiData";
 import { LoadingBlock } from "../../components/States";
+import { date } from "../../lib/format";
 
 // ───────────────────────────────────────────────────────── Tipos del API
 
@@ -73,8 +74,7 @@ function emojiFor(groupType: string): string {
 }
 
 function fmtDate(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short" });
+  return date(iso, "dayMonth");
 }
 
 // ───────────────────────────────────────────────────────── Componente principal
@@ -237,7 +237,7 @@ function GroupPickupRow({ group, onSelect }: { group: GroupPickupSummary; onSele
               return (
                 <div
                   key={d.date}
-                  title={`${new Date(d.date).toLocaleDateString("es-ES")}\nBloqueado: ${d.blocked}\nVendido: ${d.pickedUp} (${dayPickupPct}%)\nDisponible: ${d.remaining}`}
+                  title={`${date(d.date)}\nBloqueado: ${d.blocked}\nVendido: ${d.pickedUp} (${dayPickupPct}%)\nDisponible: ${d.remaining}`}
                   style={{
                     minWidth: 6,
                     flex: "1 1 auto",

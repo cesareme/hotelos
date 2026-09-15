@@ -1,6 +1,9 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS, UI_STATES } from "../../content/actions";
+import { dateTime, money as formatMoney, percent, plural } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -35,32 +38,16 @@ type ChannelPerformanceData = {
   syncJobsStatus: Array<{ status: string; count: number }>;
 };
 
-const currencyFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true,
-  style: "currency",
-  currency: "EUR",
-  minimumFractionDigits: 2
-});
-
 function money(value: number | null | undefined): string {
-  return currencyFormatter.format(Number.isFinite(value as number) ? (value as number) : 0);
+  return formatMoney(value);
 }
 
 function pct(value: number | null | undefined): string {
-  if (!Number.isFinite(value as number)) return "0%";
-  return `${value}%`;
+  return percent(value);
 }
 
 function formatDateTime(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(d);
+  return dateTime(value);
 }
 
 function severityClass(severity?: string): "ok" | "warn" | "error" {
@@ -122,51 +109,44 @@ export function ChannelPerformanceDashboard() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Channels</div>
-          <h1 className="bo-page-title">Channel performance</h1>
-          <p className="bo-page-subtitle">
-            Channel mix, profitability, parity alerts and sync job status para los últimos 30 días.
-            Solo lectura; refresca automáticamente cada 120 segundos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={refresh}>↻ Refresh</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Informes"
+        title="Rendimiento de canales"
+        subtitle="Reparto de ventas por canal, rentabilidad, alertas de paridad y estado de las sincronizaciones de los últimos 30 días. Solo lectura; se actualiza cada 2 minutos."
+        actions={<button type="button" className="ghost" onClick={refresh}>↻ {ACTIONS.refresh}</button>}
+      />
 
       {error ? (
         <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
-          Couldn't load this view right now. Refresh to retry.
+          {UI_STATES.error.title}. {UI_STATES.error.message}
         </section>
       ) : null}
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi rev-kpi-${activeStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Active channels</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Canales activos</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.activeChannels ?? 0)}</div>
-          <div className="rev-kpi-delta">Canales con status “active”</div>
+          <div className="rev-kpi-delta">Canales en estado «activo»</div>
         </article>
         <article className={`rev-kpi rev-kpi-${parityStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Open parity alerts</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Alertas de paridad abiertas</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.openParityAlerts ?? 0)}</div>
-          <div className="rev-kpi-delta">Estado “open” en rate parity</div>
+          <div className="rev-kpi-delta">Diferencias de precio entre canales sin resolver</div>
         </article>
         <article className={`rev-kpi rev-kpi-${commissionStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Avg commission</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Comisión media</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : pct(kpis?.avgCommissionPct)}</div>
           <div className="rev-kpi-delta">Promedio entre canales con comisión definida</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Reservations 30d</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Reservas · 30 días</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.reservations30d ?? 0)}</div>
           <div className="rev-kpi-delta">Reservas externas importadas</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Revenue 30d</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Ingresos · 30 días</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.revenue30dEur)}</div>
-          <div className="rev-kpi-delta">Gross revenue snapshots</div>
+          <div className="rev-kpi-delta">Ingresos brutos registrados</div>
         </article>
       </section>
 
@@ -174,8 +154,8 @@ export function ChannelPerformanceDashboard() {
         <article className="bo-card">
           <div className="bo-card-head">
             <div>
-              <p className="bo-muted">Mix</p>
-              <h3>Channel mix</h3>
+              <p className="bo-muted">Reparto</p>
+              <h3>Reparto por canal</h3>
             </div>
             <span className="bo-chip">{channelMix.length} canales</span>
           </div>
@@ -191,8 +171,8 @@ export function ChannelPerformanceDashboard() {
                   <tr>
                     <th>Canal</th>
                     <th style={{ textAlign: "right" }}>Reservas</th>
-                    <th style={{ textAlign: "right" }}>Revenue</th>
-                    <th>Share</th>
+                    <th style={{ textAlign: "right" }}>Ingresos</th>
+                    <th>Cuota</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -247,14 +227,14 @@ export function ChannelPerformanceDashboard() {
         <article className="bo-card">
           <div className="bo-card-head">
             <div>
-              <p className="bo-muted">Profitability</p>
-              <h3>Top profitable channels</h3>
+              <p className="bo-muted">Rentabilidad</p>
+              <h3>Canales más rentables</h3>
             </div>
             <span className="bo-chip">{topProfitableChannels.length} top</span>
           </div>
           {topProfitableChannels.length === 0 ? (
             <EmptyState
-              title="No hay snapshots de rentabilidad"
+              title="Sin datos de rentabilidad"
               message="La rentabilidad neta por canal aparecerá aquí cuando el pipeline registre el primer snapshot del periodo."
             />
           ) : (
@@ -263,7 +243,7 @@ export function ChannelPerformanceDashboard() {
                 <thead>
                   <tr>
                     <th>Canal</th>
-                    <th style={{ textAlign: "right" }}>Net revenue</th>
+                    <th style={{ textAlign: "right" }}>Ingreso neto</th>
                     <th style={{ textAlign: "right" }}>Comisión</th>
                     <th style={{ textAlign: "right" }}>Margen</th>
                   </tr>
@@ -287,13 +267,13 @@ export function ChannelPerformanceDashboard() {
       <section className="bo-card">
         <div className="bo-card-head">
           <div>
-            <p className="bo-muted">Parity</p>
-            <h3>Recent parity alerts</h3>
+            <p className="bo-muted">Paridad</p>
+            <h3>Alertas de paridad recientes</h3>
           </div>
           <span className="bo-chip">{recentParityAlerts.length} alertas</span>
         </div>
         {recentParityAlerts.length === 0 ? (
-          <p className="bo-muted">No hay alertas de parity recientes.</p>
+          <p className="bo-muted">No hay alertas de paridad recientes.</p>
         ) : (
           <div className="rev-report-wrap">
             <table className="cm-table">
@@ -334,18 +314,18 @@ export function ChannelPerformanceDashboard() {
       <section className="bo-card">
         <div className="bo-card-head">
           <div>
-            <p className="bo-muted">Sync</p>
-            <h3>Sync jobs status</h3>
+            <p className="bo-muted">Sincronización</p>
+            <h3>Estado de las sincronizaciones</h3>
           </div>
-          <span className="bo-chip">{syncJobsStatus.reduce((s, j) => s + j.count, 0)} jobs</span>
+          <span className="bo-chip">{plural(syncJobsStatus.reduce((s, j) => s + j.count, 0), "tarea", "tareas")}</span>
         </div>
         {syncJobsStatus.length === 0 ? (
-          <p className="bo-muted">No hay sync jobs en la ventana.</p>
+          <p className="bo-muted">No hay sincronizaciones en el periodo.</p>
         ) : (
           <ul className="bo-list">
             {syncJobsStatus.map((row) => (
               <li key={row.status}>
-                {syncStatusPill(row.status)} <strong>{row.count}</strong> jobs
+                {syncStatusPill(row.status)} <strong>{row.count}</strong> {row.count === 1 ? "tarea" : "tareas"}
               </li>
             ))}
           </ul>

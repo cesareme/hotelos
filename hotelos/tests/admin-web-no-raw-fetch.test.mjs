@@ -82,7 +82,6 @@ describe("admin-web HTTP calls go through api-client", () => {
     for (const rel of [
       "services/backofficeApi.ts",
       "screens/operations/FrontDeskActionQueue.tsx",
-      "screens/operations/FrontDeskCopilotScreen.tsx",
       "screens/operations/HousekeepingMobileScreen.tsx",
       "screens/operations/NightAuditScreen.tsx"
     ]) {

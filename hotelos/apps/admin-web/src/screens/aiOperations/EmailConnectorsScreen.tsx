@@ -15,6 +15,7 @@ import {
   type InboundEmail
 } from "../../services/emailApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
+import { dateTime } from "../../lib/format";
 
 const PROVIDER_LABEL: Record<string, string> = { gmail: "Gmail", microsoft: "Microsoft 365", imap: "IMAP", manual: "Manual / demo" };
 const STATUS_LABEL: Record<string, string> = { connected: "conectado", pending_auth: "pendiente de autorizar", disconnected: "desconectado", error: "error" };
@@ -27,8 +28,7 @@ const INBOUND_STATUS: Record<string, { label: string; cls: string }> = {
 };
 
 function fmt(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString("es-ES");
+  return dateTime(iso);
 }
 
 export function EmailConnectorsScreen() {

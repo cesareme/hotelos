@@ -19,21 +19,23 @@ import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedControl";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
 import { ALLOTMENTS_INSTRUCTIONS } from "../../content/screen-instructions/allotments";
+import { useTabHost } from "../tabs/TabHost";
+import { date, number } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 const ORG_ID = getActiveOrganizationId();
 
 function fmtDate(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "2-digit" });
+  return date(iso, "medium");
 }
 function fmtNum(n: number): string {
-  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 1 }).format(n);
+  return number(n, { maximumFractionDigits: 1 });
 }
 
 type AllotmentsTab = "pickup" | "allotments" | "operators";
 
 export function AllotmentsScreen() {
+  const hosted = useTabHost() !== null;
   const tos = useApiData<{ items: TourOperator[] }>(`/organizations/${ORG_ID}/tour-operators`, { pollIntervalMs: 0 });
   const allots = useApiData<{ items: Allotment[] }>(`/properties/${PROPERTY_ID}/allotments`, { pollIntervalMs: 60000 });
   const pickup = useApiData<PickupSummary>(`/properties/${PROPERTY_ID}/allotments/pickup-summary?windowDays=60`, { pollIntervalMs: 60000 });
@@ -74,15 +76,17 @@ export function AllotmentsScreen() {
   return (
     <CocoaCard variant="bordered" padding="lg" className="bo-card">
       <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }}>
-      <header style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "var(--cocoa-space-4)", width: "100%" }}>
+      <header style={{ display: "flex", alignItems: "flex-start", justifyContent: hosted ? "flex-end" : "space-between", gap: "var(--cocoa-space-4)", width: "100%" }}>
+        {hosted ? null : (
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-1)", minWidth: 0, flex: "1 1 auto" }}>
-          <p style={{ color: "var(--cocoa-label-tertiary)", fontSize: "var(--cocoa-fs-caption)", fontWeight: 600, letterSpacing: "var(--cocoa-tracking-wide)", textTransform: "uppercase", lineHeight: 1.2, margin: 0 }}>Comercial · Distribución</p>
+          <p style={{ color: "var(--cocoa-label-tertiary)", fontSize: "var(--cocoa-fs-caption)", fontWeight: 600, letterSpacing: "var(--cocoa-tracking-wide)", textTransform: "uppercase", lineHeight: 1.2, margin: 0 }}>Recepción · Grupos y eventos</p>
           <h2 style={{ color: "var(--cocoa-label)", fontSize: "var(--cocoa-fs-title-2)", fontWeight: 700, letterSpacing: "var(--cocoa-tracking-tight)", lineHeight: 1.2, margin: 0 }}>Cupos de tour operadores</h2>
           <p style={{ color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)", lineHeight: 1.35, margin: 0 }}>
-            Cuotas contratadas con TT.OO. (Hotelbeds, TUI, FTI, JetTours…). Las cuotas no usadas se devuelven al pool general
-            <strong> N días antes</strong> de la llegada (release period).
+            Cuotas contratadas con TT.OO. (Hotelbeds, TUI, FTI, JetTours…). Las cuotas no usadas se devuelven al cupo general
+            <strong> N días antes</strong> de la llegada (periodo de liberación).
           </p>
         </div>
+        )}
         <div style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", alignItems: "center", flexShrink: 0 }}>
           {busy ? <Spinner size="sm" /> : null}
           <CocoaButton variant="bordered" tone="neutral" onClick={() => { tos.refresh(); allots.refresh(); pickup.refresh(); }} disabled={busy}>↻ Actualizar</CocoaButton>
@@ -153,7 +157,7 @@ export function AllotmentsScreen() {
         ) : (
           <div className="rev-report-wrap">
             <table className="cm-table">
-              <thead><tr><th>Code</th><th>Nombre</th><th>NIF/Tax</th><th>Email</th><th>Comisión</th><th>Plazo</th><th>Estado</th></tr></thead>
+              <thead><tr><th>Código</th><th>Nombre</th><th>NIF</th><th>Correo</th><th>Comisión</th><th>Plazo</th><th>Estado</th></tr></thead>
               <tbody>
                 {tourOperators.map((t) => (
                   <tr key={t.id}>
@@ -191,7 +195,7 @@ export function AllotmentsScreen() {
         ) : (
           <div className="rev-report-wrap">
             <table className="cm-table">
-              <thead><tr><th>Code</th><th>Nombre</th><th>Tour operador</th><th>Periodo</th><th>Hab/día</th><th>Release</th><th>Tarifa</th><th>Estado</th></tr></thead>
+              <thead><tr><th>Código</th><th>Nombre</th><th>Turoperador</th><th>Periodo</th><th>Hab/día</th><th>Liberación</th><th>Tarifa</th><th>Estado</th></tr></thead>
               <tbody>
                 {allotments.map((a) => (
                   <tr key={a.id}>
@@ -992,7 +996,7 @@ function ReleasePreview(props: {
   // Para la primera noche del cupo, el release ocurre el día: arrival - releaseDays
   const firstNight = props.validFrom;
   const firstReleaseDate = new Date(from.getTime() - props.releaseDays * 86400000);
-  const fmt = (d: Date) => d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "2-digit" });
+  const fmt = (d: Date) => date(d, "medium");
 
   return (
     <div
@@ -1109,7 +1113,7 @@ function AllotmentLifecycleRow({ allotment }: { allotment: PickupSummaryAllotmen
             <span style={{ color: "var(--ink)", fontSize: 14 }}>{allotment.name}</span>
           </div>
           <p className="bo-muted" style={{ margin: "2px 0 0 0", fontSize: 12 }}>
-            Vigencia: {new Date(allotment.validFrom).toLocaleDateString("es-ES")} → {new Date(allotment.validTo).toLocaleDateString("es-ES")} · {allotment.totalRooms} hab/día contratadas · release T−{allotment.releaseDays}d
+            Vigencia: {date(allotment.validFrom)} → {date(allotment.validTo)} · {allotment.totalRooms} hab/día contratadas · release T−{allotment.releaseDays}d
           </p>
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
@@ -1126,7 +1130,7 @@ function AllotmentLifecycleRow({ allotment }: { allotment: PickupSummaryAllotmen
           </span>
           {allotment.daysToNextRelease != null && allotment.nextReleaseDate ? (
             <span className="bo-muted" style={{ fontSize: 11 }}>
-              Próx. release: T−{allotment.daysToNextRelease}d ({new Date(allotment.nextReleaseDate).toLocaleDateString("es-ES", { day: "2-digit", month: "short" })})
+              Próx. release: T−{allotment.daysToNextRelease}d ({date(allotment.nextReleaseDate, "dayMonth")})
             </span>
           ) : null}
         </div>
@@ -1180,7 +1184,7 @@ function AllotmentLifecycleRow({ allotment }: { allotment: PickupSummaryAllotmen
               return (
                 <div
                   key={d.date}
-                  title={`${new Date(d.date).toLocaleDateString("es-ES")}\nContratado: ${d.blocked}\nVendido: ${d.pickedUp} (${d.pickupPct}%)\nLiberado: ${d.released}\nDisponible: ${d.remaining}`}
+                  title={`${date(d.date)}\nContratado: ${d.blocked}\nVendido: ${d.pickedUp} (${d.pickupPct}%)\nLiberado: ${d.released}\nDisponible: ${d.remaining}`}
                   style={{
                     minWidth: 6,
                     flex: "1 1 auto",

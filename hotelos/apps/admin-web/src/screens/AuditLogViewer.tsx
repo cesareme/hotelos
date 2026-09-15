@@ -18,6 +18,7 @@ import { useApiData } from "../hooks/useApiData";
 import { LoadingBlock, ErrorState, EmptyState } from "../components/States";
 import { useToast } from "../components/Toast";
 import { exportToCsv, type CsvColumn } from "../lib/csv";
+import { dateTime } from "../lib/format";
 
 const PAGE_SIZE = 50;
 const ROW_HEIGHT = 56; // matches `.cm-table tbody tr` baseline (kept in sync with styles.css)
@@ -38,16 +39,7 @@ type AuditFacets = {
 };
 
 function fmtDateTime(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+  return dateTime(iso, { style: "medium" });
 }
 
 function compact(value: unknown): string {
@@ -175,8 +167,8 @@ export function AuditLogViewer() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Audit</p>
-          <h2 style={{ color: "var(--ink)" }}>Audit Log Viewer</h2>
+          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Sistema</p>
+          <h2 style={{ color: "var(--ink)" }}>Registro de auditoría</h2>
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             Cadena sellada SHA-256 de eventos críticos: setup, mapeo, módulos, integraciones, facturación, IA, QR, importaciones y go-live.
           </p>

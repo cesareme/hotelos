@@ -1,6 +1,8 @@
 import { getActiveOrganizationId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
+import { money, number, percent } from "../../lib/format";
+import { HOSTED_ACTIONS_ROW, useTabHost } from "../tabs/TabHost";
 
 const ORGANIZATION_ID = getActiveOrganizationId();
 
@@ -44,24 +46,17 @@ type PortfolioDashboardData = {
   alerts: PortfolioAlert[];
 };
 
-function fmtNumber(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0";
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(value);
-}
-function fmtEur(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0 €";
-  return new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(value);
-}
-function fmtPct(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,0 %";
-  return `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value)} %`;
-}
+// Single es-ES formatter (lib/format.ts): missing values read «—», never «0 €».
+const fmtNumber = (value: number | null | undefined) => number(value);
+const fmtEur = (value: number | null | undefined) => money(value, { decimals: 0 });
+const fmtPct = (value: number | null | undefined) => percent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 function navigateTo(screen: string) {
   if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
 }
 
 /** Owner home: the "1-page verdict" — portfolio value, performance KPIs, alerts. */
 export function OwnerHomeScreen() {
+  const hosted = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<PortfolioDashboardData>(
     `/dashboards/portfolio?organizationId=${ORGANIZATION_ID}`,
     { pollIntervalMs: 60000 }
@@ -73,14 +68,16 @@ export function OwnerHomeScreen() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Propietario · Resumen ejecutivo</div>
-          <h1 className="bo-page-title">Resumen del propietario</h1>
-          <p className="bo-page-subtitle">
-            El estado de tu cartera de un vistazo: rendimiento, ingresos y lo que requiere tu atención.
-          </p>
-        </div>
+      <div className={hosted ? undefined : "bo-page-head"} style={hosted ? HOSTED_ACTIONS_ROW : undefined}>
+        {hosted ? null : (
+          <div className="bo-page-head-text">
+            <div className="bo-page-eyebrow">Propietario · Resumen ejecutivo</div>
+            <h1 className="bo-page-title">Resumen del propietario</h1>
+            <p className="bo-page-subtitle">
+              El estado de tu cartera de un vistazo: rendimiento, ingresos y lo que requiere tu atención.
+            </p>
+          </div>
+        )}
         <div className="bo-page-head-actions">
           {loading ? <span className="bo-status info">cargando</span> : null}
           {error ? <span className="bo-status error">{error}</span> : null}

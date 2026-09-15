@@ -12,8 +12,23 @@ export type AuthUser = {
   propertyId: string;
   fullName: string;
   deviceId?: string;
+  /** Effective permissions of the session (the demo union on the dev API); never a role source. */
   permissions?: string[];
   email?: string;
+  // Role snapshot (Tanda 5 · L1c): POST /auth/login sends `isPlatformAdmin`;
+  // services/usersApi.ts copies the template keys and the real grants from
+  // GET /users/me once the profile loads (`persistSnapshot`). Optional because
+  // a session stored before the profile answers only carries the login
+  // payload. App.tsx (landing, /desarrollo/* guard), the guide and
+  // navigation/useEnabledModules.ts read these fields from this one type.
+  /** Platform administrator flag of the session (never inferred from permissions). */
+  isPlatformAdmin?: boolean;
+  /** Template keys held in the session property (ROLE_TEMPLATE_KEYS order). */
+  templateKeys?: string[];
+  /** Template keys per property id, so the active property can change without a refetch. */
+  templateKeysByProperty?: Record<string, string[]>;
+  /** Real grants of the active property (never the demo union): what the menu trusts. */
+  grantedPermissions?: string[];
 };
 
 function hasWindow(): boolean {

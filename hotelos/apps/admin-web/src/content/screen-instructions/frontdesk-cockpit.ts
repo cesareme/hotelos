@@ -6,7 +6,7 @@ export const FRONTDESK_COCKPIT_INSTRUCTIONS = {
     '1. Revisa la cola de acciones en la parte central. Cada tarjeta es una accion concreta.',
     '2. Click en una accion abre el drawer correspondiente (QuickCheckIn 90s, QuickCheckOut 60s, walk-in, etc).',
     '3. Filtra por tipo arriba si quieres ver solo check-ins o solo check-outs.',
-    '4. Usa Cmd+1 para volver aqui en cualquier momento.'
+    '4. Vuelve aquí cuando quieras desde Hoy › Mi día.'
   ],
   tip: 'Las acciones cambian dinamicamente segun la hora del dia. Si una accion muestra badge rojo, es urgente.'
 };

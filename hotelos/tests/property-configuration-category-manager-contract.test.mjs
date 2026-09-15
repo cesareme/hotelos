@@ -16,8 +16,12 @@ const mobileApp = readFileSync(new URL("../apps/mobile/App.tsx", import.meta.url
 const mobileBackOffice = readFileSync(new URL("../apps/mobile/src/screens/settings/BackOfficePreviewScreen.tsx", import.meta.url), "utf8");
 const adminApp = readFileSync(new URL("../apps/admin-web/src/App.tsx", import.meta.url), "utf8");
 const adminRoutes = readFileSync(new URL("../apps/admin-web/src/routes/backoffice.routes.tsx", import.meta.url), "utf8");
-const sidebar = readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8");
-const dashboard = readFileSync(new URL("../apps/admin-web/src/screens/BackOfficeDashboard.tsx", import.meta.url), "utf8");
+// Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (labels, keys, URLs and
+// the legacy /backoffice/* redirects live there), so the menu source is both files.
+const sidebar =
+  readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8");
+const navTree = JSON.parse(readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8"));
 const forms = readFileSync(new URL("../apps/admin-web/src/components/forms/FormComponents.tsx", import.meta.url), "utf8");
 const apiClient = readFileSync(new URL("../apps/admin-web/src/services/backofficeApi.ts", import.meta.url), "utf8");
 const categoryManager = readFileSync(new URL("../apps/admin-web/src/screens/backoffice/categories/CategoryManagerScreen.tsx", import.meta.url), "utf8");
@@ -158,9 +162,17 @@ describe("Property Configuration & Category Manager", () => {
   });
 
   it("renders admin Configuration Center, Category Manager, custom fields, forms and sidebar entry points", () => {
+    // Tanda 5 · L1b: the Configuration Center and the custom-field manager retired
+    // into Puesta en marcha / Propiedad › Campos personalizados (files deleted).
+    for (const [screen, cover] of [
+      ["ConfigurationCenterScreen", "/configuracion/puesta-en-marcha"],
+      ["CustomFieldManagerScreen", "/configuracion/propiedad/campos-personalizados"]
+    ]) {
+      assert.equal(existsSync(new URL(`../apps/admin-web/src/screens/backoffice/${screen}.tsx`, import.meta.url)), false, `${screen} must be deleted`);
+      assert.ok(navTree.retired.some((entry) => entry.screenKey === screen && entry.url === cover), `${screen} retired → ${cover}`);
+      assert.doesNotMatch(adminApp, new RegExp(`\\b${screen}\\b`));
+    }
     for (const screen of [
-      "ConfigurationCenterScreen",
-      "CustomFieldManagerScreen",
       "CategoryManagerScreen",
       "CategoryDetailScreen",
       "CategoryOptionForm"
@@ -178,24 +190,26 @@ describe("Property Configuration & Category Manager", () => {
     // representative entry where the section was reorganised). The intent —
     // that every Configuration Center area has a discoverable entry point —
     // is preserved.
+    // Tanda 5: the areas are tabs of Configuración › Propiedad / Habitaciones y
+    // espacios / Contabilidad y fiscal / Inteligencia artificial in the tree.
     for (const label of [
-      "Configuración",                  // Configuration
-      "Perfil de la propiedad",          // Property profile
-      "Mapeador de propiedad",           // Property mapper
-      "Categorías",                      // Categories
+      "\"label\": \"Configuración\"",    // Configuration
+      "\"baseTab\": \"Perfil\"",         // Property profile (base tab of Propiedad)
+      "Importar desde documentos",       // Property mapper (Puesta en marcha › Importar desde documentos)
+      "\"label\": \"Categorías\"",       // Categories
       "Campos personalizados",           // Custom fields
-      "Tipos de habitación",             // Rooms & room types
+      "Habitaciones y espacios",         // Rooms & room types
       "Espacios y recursos",             // Spaces & resources
-      "Departamentos",                   // Departments
-      "Configuración operativa",         // Operations setup
-      "Configuración de revenue",        // Revenue setup
-      "Configuración de finanzas",       // Finance setup
-      "Configuración de cumplimiento|Configuración de finanzas y cumplimiento", // Compliance setup
-      "Configuración de IA",             // AI setup
-      "Inicio de configuración",         // Configuration Center entry point (was "Configuration Center")
-      "ConfigurationCenterScreen"        // Open Configuration Center destination
+      "\"label\": \"Departamentos\"",    // Departments
+      "/operaciones/pisos/ajustes",      // Operations setup (Pisos › Ajustes)
+      "Categorías de ingresos",          // Revenue setup (Contabilidad y fiscal › Categorías de ingresos)
+      "Perfil inicial",                  // Finance setup (Contabilidad y fiscal › Perfil inicial)
+      "\"label\": \"Fiscal\"",           // Compliance setup (Contabilidad y fiscal › Fiscal)
+      "Alta de IA",                      // AI setup (Inteligencia artificial › Alta de IA)
+      "Puesta en marcha",                // Configuration Center entry point (single hub)
+      "ConfigurationCenterScreen"        // Retired key, covered in the tree
     ]) {
-      assert.match(sidebar + dashboard + adminRoutes, new RegExp(label.replace(/[.*+?^${}()[\]\\]/g, "\\$&")));
+      assert.match(sidebar + adminRoutes, new RegExp(label.replace(/[.*+?^${}()[\]\\]/g, "\\$&")));
     }
 
     for (const formComponent of [

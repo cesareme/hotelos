@@ -1,7 +1,15 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { number, plural } from "../../lib/format";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ErrorState } from "../../components/States";
+import { ACTIONS, errorStateFor } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
 
 const PROPERTY_ID = getActivePropertyId();
+// Menu labels of the tree (Operaciones › Energía y agua), never retyped here.
+const HEADER = treeHeaderFor("EnergyDashboard", { eyebrow: "Operaciones", title: "Energía y agua" });
+const LOAD_ERROR = errorStateFor("el consumo de energía y agua");
 
 type EnergyDashboardData = {
   kpis: {
@@ -35,11 +43,11 @@ const EMPTY: EnergyDashboardData = {
 };
 
 function formatKwh(n: number): string {
-  return `${n.toLocaleString()} kWh`;
+  return `${number(n)} kWh`;
 }
 
 function trendPill(pct: number) {
-  if (pct === 0) return <span className="cm-pill cm-pill-ok">flat</span>;
+  if (pct === 0) return <span className="cm-pill cm-pill-ok">estable</span>;
   if (pct > 0) {
     const cls = pct >= 15 ? "cm-pill-error" : pct >= 5 ? "cm-pill-warn" : "cm-pill-ok";
     return <span className={`cm-pill ${cls}`}>+{pct}%</span>;
@@ -84,89 +92,76 @@ export function EnergyDashboard() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Energy</div>
-          <h1 className="bo-page-title">Consumo energético</h1>
-          <p className="bo-page-subtitle">
-            Panel operativo de consumo energético: kWh totales en ventana de 30
-            días, kWh por habitación ocupada, tendencia respecto al periodo
-            anterior, contadores activos, lecturas anómalas y consumo por
-            contador y por día. Vista solo lectura actualizada cada 5 minutos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
+      <CocoaPageHeader
+        eyebrow={HEADER.eyebrow}
+        title={HEADER.title}
+        subtitle="Consumo de los últimos 30 días: kWh totales, kWh por habitación ocupada, tendencia frente al periodo anterior, contadores activos y lecturas anómalas, por contador y por día. Solo lectura; se actualiza cada 5 minutos."
+        actions={
           <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ Refresh
+            ↻ {ACTIONS.refresh}
           </button>
-        </div>
-      </div>
+        }
+      />
 
-      {state.error ? (
-        <section className="bo-card">
-          <p style={{ color: "var(--danger-ink)" }}>
-            Couldn't load this view right now. Refresh to retry.
-          </p>
-        </section>
-      ) : null}
+      {state.error ? <ErrorState title={LOAD_ERROR.title} message={LOAD_ERROR.message} onRetry={() => state.refresh()} /> : null}
 
       <section className="rev-kpi-grid">
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
             <span className="rev-kpi-label">Total kWh (30d)</span>
           </div>
-          <div className="rev-kpi-value">{kpis.totalKwh30d.toLocaleString()}</div>
-          <div className="rev-kpi-delta">consumption in window</div>
+          <div className="rev-kpi-value">{number(kpis.totalKwh30d)}</div>
+          <div className="rev-kpi-delta">consumo en la ventana</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">kWh per occupied room</span>
+            <span className="rev-kpi-label">kWh por habitación ocupada</span>
           </div>
-          <div className="rev-kpi-value">{kpis.kwhPerOccupiedRoom.toLocaleString()}</div>
-          <div className="rev-kpi-delta">total kWh / occupied room-nights</div>
+          <div className="rev-kpi-value">{number(kpis.kwhPerOccupiedRoom)}</div>
+          <div className="rev-kpi-delta">kWh totales entre las noches ocupadas</div>
         </article>
         <article className={`rev-kpi ${tendencyStatus}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Tendency (90d)</span>
+            <span className="rev-kpi-label">Tendencia (90 días)</span>
           </div>
           <div className="rev-kpi-value">
             {kpis.tendencyPct90d > 0 ? "+" : ""}
             {kpis.tendencyPct90d}%
           </div>
-          <div className="rev-kpi-delta">last 30 vs prior 30</div>
+          <div className="rev-kpi-delta">últimos 30 días frente a los 30 anteriores</div>
         </article>
         <article className={`rev-kpi ${activeMetersStatus}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Active meters</span>
+            <span className="rev-kpi-label">Contadores activos</span>
           </div>
           <div className="rev-kpi-value">{kpis.activeMeters}</div>
-          <div className="rev-kpi-delta">currently reporting</div>
+          <div className="rev-kpi-delta">con lecturas recientes</div>
         </article>
         <article className={`rev-kpi ${abnormalStatus}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Abnormal readings</span>
+            <span className="rev-kpi-label">Lecturas anómalas</span>
           </div>
           <div className="rev-kpi-value">{kpis.abnormalReadingsCount}</div>
-          <div className="rev-kpi-delta">rollbacks or outliers in window</div>
+          <div className="rev-kpi-delta">retrocesos o valores atípicos en la ventana</div>
         </article>
       </section>
 
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Consumption by meter</h3>
-            <span className="bo-chip">{consumptionByMeter.length} meters</span>
+            <h3>Consumo por contador</h3>
+            <span className="bo-chip">{plural(consumptionByMeter.length, "contador", "contadores", { withCount: true })}</span>
           </div>
           {consumptionByMeter.length === 0 ? (
-            <p className="bo-muted">No meters with readings in the selected window.</p>
+            <p className="bo-muted">Sin contadores con lecturas en el periodo seleccionado.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Meter</th>
-                  <th>Type</th>
+                  <th>Contador</th>
+                  <th>Tipo</th>
                   <th style={{ textAlign: "right" }}>kWh (30d)</th>
-                  <th style={{ textAlign: "right" }}>Trend</th>
+                  <th style={{ textAlign: "right" }}>Tendencia</th>
                 </tr>
               </thead>
               <tbody>
@@ -174,7 +169,7 @@ export function EnergyDashboard() {
                   <tr key={row.meterName}>
                     <td><strong>{row.meterName}</strong></td>
                     <td>{row.meterType}</td>
-                    <td style={{ textAlign: "right" }}>{row.kwh30d.toLocaleString()}</td>
+                    <td style={{ textAlign: "right" }}>{number(row.kwh30d)}</td>
                     <td style={{ textAlign: "right" }}>{trendPill(row.trendPct)}</td>
                   </tr>
                 ))}
@@ -185,11 +180,11 @@ export function EnergyDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Top consumers</h3>
-            <span className="bo-chip">top {topConsumers.length}</span>
+            <h3>Mayores consumidores</h3>
+            <span className="bo-chip">{plural(topConsumers.length, "contador", "contadores", { withCount: true })}</span>
           </div>
           {topConsumers.length === 0 ? (
-            <p className="bo-muted">No consumers with positive consumption.</p>
+            <p className="bo-muted">Sin consumidores con consumo registrado.</p>
           ) : (
             <ul className="bo-list">
               {topConsumers.map((row) => (
@@ -213,11 +208,11 @@ export function EnergyDashboard() {
 
       <section className="bo-card">
         <div className="bo-card-head">
-          <h3>Daily consumption</h3>
-          <span className="bo-chip">{dailyConsumption.length} days</span>
+          <h3>Consumo diario</h3>
+          <span className="bo-chip">{plural(dailyConsumption.length, "día", "días", { withCount: true })}</span>
         </div>
         {dailyConsumption.length === 0 ? (
-          <p className="bo-muted">No daily consumption data in the window.</p>
+          <p className="bo-muted">Sin datos de consumo diario en el periodo.</p>
         ) : (
           <div
             style={{
@@ -229,7 +224,7 @@ export function EnergyDashboard() {
               borderBottom: "1px solid var(--border)",
               overflowX: "auto"
             }}
-            aria-label="Daily kWh consumption, last 30 days"
+            aria-label="Consumo diario en kWh de los últimos 30 días"
           >
             {dailyConsumption.map((d) => {
               const ratio = maxDailyKwh > 0 ? d.kwh / maxDailyKwh : 0;
@@ -237,7 +232,7 @@ export function EnergyDashboard() {
               return (
                 <div
                   key={d.date}
-                  title={`${d.date}: ${d.kwh.toLocaleString()} kWh`}
+                  title={`${d.date}: ${number(d.kwh)} kWh`}
                   style={{
                     flex: "1 0 14px",
                     display: "flex",

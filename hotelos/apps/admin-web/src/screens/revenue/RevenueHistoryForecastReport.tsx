@@ -5,6 +5,7 @@
 // GET /revenue/properties/:id/history-forecast/board. Nothing is invented
 // client-side; missing blocks (forecast/budget/STLY/pickup) render as "—".
 // Exports go through the Export Center (hf_daily, CSV/XLS).
+import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   fetchHistoryForecastBoard,
@@ -15,6 +16,7 @@ import {
 import { downloadGeneratedExport, generateRevenueExport } from "../../services/revenueExportApi";
 import { ErrorState, LoadingBlock, SkeletonLines, Spinner } from "../../components/States";
 import { NarrowViewportBanner } from "../../components/NarrowViewportBanner";
+import { number, percent, time } from "../../lib/format";
 
 // ---- date helpers (UTC slicing, module convention) -------------------------
 const MS_DAY = 86_400_000;
@@ -41,19 +43,17 @@ const RANGE_PRESETS: { id: string; label: string; range: () => { from: string; t
 ];
 
 // ---- number/date formatting (es-ES) ----------------------------------------
-const nfInt = new Intl.NumberFormat("es-ES", { useGrouping: true, maximumFractionDigits: 0 });
-const nfPct1 = new Intl.NumberFormat("es-ES", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
 function fmtInt(n: number): string {
-  return nfInt.format(Math.round(n));
+  return number(n, { maximumFractionDigits: 0 });
 }
 function fmtPct1(n: number): string {
-  return `${nfPct1.format(n)} %`;
+  return percent(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 /** Confidence can arrive as 0..1 or 0..100 depending on the model row; normalize defensively. */
 function fmtConfidence(n: number): string {
   const pct = n > 1.5 ? n : n * 100;
-  return `${nfInt.format(Math.round(pct))}%`;
+  return percent(pct, { maximumFractionDigits: 0 });
 }
 function signedInt(n: number): string {
   return `${n > 0 ? "+" : ""}${fmtInt(n)}`;
@@ -74,11 +74,7 @@ function fmtDateFull(iso: string): string {
 }
 /** OTB timestamp → HH:MM in Europe/Madrid (spec convention: "OTB a las HH:MM"). */
 function fmtOtbTime(isoTimestamp: string): string {
-  try {
-    return new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", hour: "2-digit", minute: "2-digit" }).format(new Date(isoTimestamp));
-  } catch {
-    return isoTimestamp.slice(11, 16);
-  }
+  return time(isoTimestamp);
 }
 
 function navigateTo(screen: string) {
@@ -287,6 +283,8 @@ tr.hfr-total td:first-child { background: var(--inverse-surface); color: var(--i
 `;
 
 export function RevenueHistoryForecastReport() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const [preset, setPreset] = useState<string>("-7+90");
   const [from, setFrom] = useState<string>(() => addDaysIso(todayIso(), -7));
   const [to, setTo] = useState<string>(() => addDaysIso(todayIso(), 90));
@@ -343,8 +341,12 @@ export function RevenueHistoryForecastReport() {
       <section className="bo-card">
         <div className="bo-card-head">
           <div>
-            <p className="bo-muted">Revenue · Informe detallado</p>
-            <h2>Informe History &amp; Forecast{board ? ` — ${board.propertyName}` : ""}</h2>
+            {embedded ? null : (
+              <>
+                <p className="bo-muted">Revenue · Histórico y previsión</p>
+                <h2>Informe de histórico y previsión{board ? ` — ${board.propertyName}` : ""}</h2>
+              </>
+            )}
             {board ? (
               <p className="bo-muted" style={{ margin: "4px 0 0", textTransform: "none", fontSize: 12 }}>
                 Datos a cierre de {fmtDateFull(board.businessDate)} · OTB a las {fmtOtbTime(board.generatedAt)} (Europe/Madrid) · {fmtDateFull(board.from)} → {fmtDateFull(board.to)} · {fmtInt(board.totalRooms)} hab. totales

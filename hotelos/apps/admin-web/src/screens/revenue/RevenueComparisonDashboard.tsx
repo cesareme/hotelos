@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { fetchPeriodMetrics, money, type PeriodMetrics } from "../../services/revenueApi";
+import { fetchPeriodMetrics, type PeriodMetrics } from "../../services/revenueApi";
 import { LoadingBlock, ErrorState, EmptyState } from "../../components/States";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS } from "../../content/actions";
+import { money, number, percent } from "../../lib/format";
 
 const MS_DAY = 86_400_000;
 
@@ -26,10 +29,10 @@ function diffDays(from: string, to: string): number {
   return Math.round((new Date(to).getTime() - new Date(from).getTime()) / MS_DAY) + 1;
 }
 function fmtNum(n: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(Math.round(n));
+  return number(Math.round(n));
 }
 function fmtPct(n: number): string {
-  return `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(n)} %`;
+  return percent(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 type CompareMode = "none" | "previous" | "last_year" | "custom";
@@ -122,16 +125,12 @@ export function RevenueComparisonDashboard() {
 
   return (
     <section className="bo-card" style={{ display: "grid", gap: 16 }}>
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Comparación</p>
-          <h2>Comparación de revenue</h2>
-        </div>
-        <button type="button" onClick={() => void load()} disabled={loading}>↻ Actualizar</button>
-      </div>
-      <p className="bo-muted" style={{ textTransform: "none", marginTop: -8 }}>
-        Compara el rendimiento de un periodo con el periodo anterior, el mismo periodo del año pasado o un rango a tu elección.
-      </p>
+      <CocoaPageHeader
+        eyebrow="Revenue"
+        title="Comparativa"
+        subtitle="Compara el rendimiento de un periodo con el periodo anterior, el mismo periodo del año pasado o un rango a tu elección."
+        actions={<button type="button" onClick={() => void load()} disabled={loading}>↻ {ACTIONS.refresh}</button>}
+      />
 
       <div className="bo-row" style={{ gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
         <div className="bo-stack" style={{ gap: 6 }}>
@@ -194,7 +193,7 @@ export function RevenueComparisonDashboard() {
                     <h3 style={{ fontSize: 14 }}>{m.label}</h3>
                     {hasCmp ? (
                       <span className={`bo-status ${trendClass}`} style={{ textTransform: "none" }}>
-                        {arrow} {pctDelta !== null ? `${pctDelta > 0 ? "+" : ""}${pctDelta.toFixed(1)} %` : "—"}
+                        {arrow} {pctDelta !== null ? percent(pctDelta, { signDisplay: "exceptZero", minimumFractionDigits: 1, maximumFractionDigits: 1 }) : "—"}
                       </span>
                     ) : null}
                   </div>

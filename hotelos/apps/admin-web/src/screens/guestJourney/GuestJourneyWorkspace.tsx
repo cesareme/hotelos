@@ -16,6 +16,10 @@ import {
 } from "../../services/pmsCommerceApi";
 import { fetchGuest, type GuestProfile } from "../../services/guestsApi";
 import { LoadingBlock, EmptyState, ErrorState, Spinner } from "../../components/States";
+import { useTabHost } from "../tabs/TabHost";
+import { urlForScreen } from "../../navigation/nav-tree";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 // Rows per page (API default order: most recent arrival first); "Cargar más"
@@ -27,9 +31,15 @@ type PanelErrors = { folio?: string; guest?: string; activity?: string };
 function nav(screen: string) {
   window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
 }
-function go(path: string) {
-  window.history.pushState(null, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+// Deep links open through the shared openTabPath (CocoaRouteTabs): one channel, no local pushState copy (code-review#12).
+const go = (path: string) => openTabPath(path);
+// Deep links of Tanda 5: Ficha del huésped (/recepcion/huespedes/:id) and Detalle
+// de la reserva (/recepcion/reservas/:id), tabs of their containers.
+function guestPath(id: string): string {
+  return urlForScreen("GuestDetail", { id }) ?? `/recepcion/huespedes/${encodeURIComponent(id)}`;
+}
+function reservationPath(id: string): string {
+  return urlForScreen("ReservationDetailWorkspace", { id }) ?? `/recepcion/reservas/${encodeURIComponent(id)}`;
 }
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -39,12 +49,12 @@ type StepState = "done" | "active" | "pending" | "blocked" | "skipped";
 type JourneyStep = { key: string; label: string; state: StepState; detail: string };
 
 const NEXT_ACTION_LABEL: Record<string, string> = {
-  booked: "Confirm the reservation",
-  identity: "Capture guest identity",
-  payment: "Take payment / deposit",
-  room: "Assign a room",
-  checkin: "Check the guest in",
-  checkout: "Check the guest out"
+  booked: "Confirmar la reserva",
+  identity: "Registrar la identidad del huésped",
+  payment: "Cobrar el pago o el depósito",
+  room: "Asignar habitación",
+  checkin: "Hacer el check-in",
+  checkout: "Hacer el check-out"
 };
 
 /** Derive the journey purely from real reservation + folio + guest data. */
@@ -57,41 +67,41 @@ function computeJourney(res: AdminReservation, folio: FolioBalance | null, guest
 
   steps.push({
     key: "booked",
-    label: "Booking confirmed",
+    label: "Reserva confirmada",
     state: cancelled ? "skipped" : res.status === "draft" ? "pending" : "done",
-    detail: res.status === "draft" ? "Reservation is still a draft." : `${res.channel} · ${res.arrivalDate} → ${res.departureDate}`
+    detail: res.status === "draft" ? "La reserva sigue en borrador." : `${res.channel} · ${res.arrivalDate} → ${res.departureDate}`
   });
 
   const hasDoc = Boolean(guest?.documentNumber);
   steps.push({
     key: "identity",
-    label: "Identity & traveller record (SES)",
+    label: "Identidad y parte de viajeros (SES)",
     state: cancelled ? "skipped" : hasDoc ? "done" : checkedIn ? "blocked" : "pending",
     detail: hasDoc
-      ? `Document on file${guest?.documentType ? ` (${guest.documentType})` : ""}.`
-      : "No identity document captured — required for the parte de viajeros."
+      ? `Documento registrado${guest?.documentType ? ` (${guest.documentType})` : ""}.`
+      : "Sin documento de identidad: es obligatorio para el parte de viajeros."
   });
 
   let payState: StepState;
   let payDetail: string;
   if (!folio) {
     payState = "pending";
-    payDetail = "Folio not loaded yet.";
+    payDetail = "Folio todavía no cargado.";
   } else {
     const bal = folio.balanceDue;
     const cur = folio.folio.currency;
-    if (folio.chargesTotal > 0 && bal <= 0.005) { payState = "done"; payDetail = `Balance settled (${folio.paymentsTotal} ${cur}).`; }
-    else if (folio.paymentsTotal > 0) { payState = checkedOut && bal > 0.005 ? "blocked" : "active"; payDetail = `Partially paid · balance ${bal.toFixed(2)} ${cur}.`; }
-    else { payState = checkedOut ? "blocked" : "pending"; payDetail = `No payment yet · balance ${bal.toFixed(2)} ${cur}.`; }
+    if (folio.chargesTotal > 0 && bal <= 0.005) { payState = "done"; payDetail = `Saldo liquidado (${money(folio.paymentsTotal, cur)}).`; }
+    else if (folio.paymentsTotal > 0) { payState = checkedOut && bal > 0.005 ? "blocked" : "active"; payDetail = `Pago parcial · saldo ${money(bal, cur)}.`; }
+    else { payState = checkedOut ? "blocked" : "pending"; payDetail = `Sin pagos · saldo ${money(bal, cur)}.`; }
   }
-  steps.push({ key: "payment", label: "Payment", state: cancelled ? "skipped" : payState, detail: payDetail });
+  steps.push({ key: "payment", label: "Pago", state: cancelled ? "skipped" : payState, detail: payDetail });
 
   const assigned = Boolean(res.assignedRoomId);
   steps.push({
     key: "room",
-    label: "Room assigned",
+    label: "Habitación asignada",
     state: cancelled ? "skipped" : assigned ? "done" : checkedIn ? "blocked" : "pending",
-    detail: assigned ? `Room ${res.assignedRoomId}.` : "No room assigned yet."
+    detail: assigned ? `Habitación ${res.assignedRoomId}.` : "Todavía sin habitación asignada."
   });
 
   const arrivalPast = res.arrivalDate < today;
@@ -99,14 +109,14 @@ function computeJourney(res: AdminReservation, folio: FolioBalance | null, guest
     key: "checkin",
     label: "Check-in",
     state: cancelled ? "skipped" : checkedIn ? "done" : arrivalPast && res.status === "confirmed" ? "blocked" : "pending",
-    detail: checkedIn ? "Guest checked in." : arrivalPast ? "Arrival date passed — not checked in." : `Scheduled ${res.arrivalDate}.`
+    detail: checkedIn ? "Huésped registrado." : arrivalPast ? "La fecha de llegada ya pasó sin check-in." : `Prevista el ${res.arrivalDate}.`
   });
 
   steps.push({
     key: "stay",
-    label: "In-house stay",
+    label: "Estancia",
     state: cancelled ? "skipped" : res.status === "checked_in" ? "active" : checkedOut ? "done" : "pending",
-    detail: res.status === "checked_in" ? "Guest is in-house." : checkedOut ? "Stay completed." : "Not started."
+    detail: res.status === "checked_in" ? "El huésped está en casa." : checkedOut ? "Estancia completada." : "No ha empezado."
   });
 
   steps.push({
@@ -132,7 +142,7 @@ function listStage(res: AdminReservation): { done: number; total: number; label:
     res.status === "checked_out"
   ];
   const done = flags.filter(Boolean).length;
-  const label = res.status === "checked_out" ? "Completed" : res.status === "checked_in" ? "In-house" : res.status === "confirmed" ? "Upcoming" : res.status;
+  const label = res.status === "checked_out" ? "Completada" : res.status === "checked_in" ? "En casa" : res.status === "confirmed" ? "Próxima" : res.status;
   return { done, total: 4, label, cls: res.status === "checked_out" ? "ok" : res.status === "checked_in" ? "info" : "warn" };
 }
 
@@ -155,7 +165,17 @@ function timeAgo(iso: string): string {
   return m > 0 ? `${m}m ago` : "just now";
 }
 
+/** Reservation named by the tab URL `/recepcion/reservas/:id/recorrido` (null on the standalone route). */
+function reservationIdFromPath(): string | null {
+  if (typeof window === "undefined") return null;
+  const segments = window.location.pathname.split("/").filter(Boolean);
+  if (segments.length < 2 || segments[segments.length - 1] !== "recorrido") return null;
+  const id = decodeURIComponent(segments[segments.length - 2]);
+  return id && id !== "nueva" ? id : null;
+}
+
 export function GuestJourneyWorkspace() {
+  const hosted = useTabHost() !== null;
   const [reservations, setReservations] = useState<AdminReservation[]>([]);
   const [roomTypes, setRoomTypes] = useState<AdminRoomType[]>([]);
   const [loading, setLoading] = useState(true);
@@ -186,10 +206,12 @@ export function GuestJourneyWorkspace() {
         setNextCursor(page.nextCursor);
         setTotal(page.total);
         setRoomTypes(rt);
-        const initial = pickInitialReservation(page.items, todayIsoLocal());
+        // Inside Reservas › Recorrido the URL names the reservation; standalone, the first relevant one.
+        const fromPath = reservationIdFromPath();
+        const initial = fromPath ? { id: fromPath } : pickInitialReservation(page.items, todayIsoLocal());
         if (initial) void openReservation(initial.id);
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "No se pudo cargar el guest journey."))
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : "No se pudo cargar el recorrido del huésped."))
       .finally(() => setLoading(false));
   }
   useEffect(load, []);
@@ -272,34 +294,38 @@ export function GuestJourneyWorkspace() {
 
   return (
     <section className="bo-card">
-      <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
-        <div>
-          <p className="bo-page-eyebrow">Guest Journey</p>
-          <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>Guest Journey Workspace</h2>
-        </div>
-        <span className="bo-chip">{total ?? reservations.length} reservations</span>
-      </div>
-      <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
-        Every reservation's real progress — booking, identity (SES), payment, room, check-in, stay and check-out — with the
-        blocked step and the next best action. Pick a reservation to see its full journey and act on it.
-      </p>
+      {hosted ? null : (
+        <>
+          <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
+            <div>
+              <p className="bo-page-eyebrow">Recepción · Reservas</p>
+              <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>Recorrido del huésped</h2>
+            </div>
+            <span className="bo-chip">{total ?? reservations.length} reservas</span>
+          </div>
+          <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
+            El avance real de cada reserva — reserva, identidad (SES), pago, habitación, check-in, estancia y check-out — con
+            el paso bloqueado y la siguiente mejor acción. Elige una reserva para ver su recorrido completo y actuar.
+          </p>
+        </>
+      )}
 
       <div className="bo-grid two" style={{ marginTop: "var(--space-4)" }}>
         {/* List */}
         <section className="bo-card">
-          <div className="bo-card-head"><h3>Reservations</h3><span className="bo-chip">{filtered.length} of {reservations.length}</span></div>
+          <div className="bo-card-head"><h3>Reservas</h3><span className="bo-chip">{filtered.length} de {reservations.length}</span></div>
           <div className="rev-toolbar" style={{ marginBottom: "var(--space-3)" }}>
             <div className="rev-toolbar-group" style={{ flex: 1 }}>
               <label htmlFor="gj-search">Buscar</label>
-              <input id="gj-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Code, guest, dates, status…" />
+              <input id="gj-search" type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Código, huésped, fechas, estado…" />
             </div>
           </div>
           {loading ? (
-            <LoadingBlock label="Loading guest journeys…" />
+            <LoadingBlock label="Cargando recorridos…" />
           ) : error ? (
             <ErrorState message={error} onRetry={load} />
           ) : filtered.length === 0 ? (
-            <EmptyState title={reservations.length ? "No matches" : "No reservations yet"} message={reservations.length ? "Nothing matches your search." : "Create a reservation to see its journey."} actions={<button className="primary" type="button" onClick={() => nav("ReservationAgent")}>✨ AI booking agent</button>} />
+            <EmptyState title={reservations.length ? "Sin resultados" : "Todavía no hay reservas"} message={reservations.length ? "Ninguna reserva coincide con la búsqueda." : "Crea una reserva para ver su recorrido."} actions={<button className="primary" type="button" onClick={() => nav("ReservationAgent")}>Agente de reservas con IA</button>} />
           ) : (
             filtered.map((r) => {
               const st = listStage(r);
@@ -308,7 +334,7 @@ export function GuestJourneyWorkspace() {
                 <button key={r.id} type="button" className={`bo-row bo-row-button${selected?.id === r.id ? " is-active" : ""}`} onClick={() => void openReservation(r.id)} style={{ alignItems: "stretch" }}>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <strong>{r.code}</strong>
-                    <small>{r.bookerName ?? "Guest pending"} · {r.arrivalDate} → {r.departureDate}</small>
+                    <small>{r.bookerName ?? "Huésped pendiente"} · {r.arrivalDate} → {r.departureDate}</small>
                     <span className={`bo-progress-bar${pct >= 100 ? " ok" : ""}`} style={{ marginTop: 6, maxWidth: 220 }}><span style={{ width: `${pct}%` }} /></span>
                   </span>
                   <span className={`bo-status ${st.cls}`}>{st.label}</span>
@@ -328,12 +354,12 @@ export function GuestJourneyWorkspace() {
         {/* Detail journey */}
         <section className="bo-card">
           <div className="bo-card-head">
-            <h3>Journey detail</h3>
-            <span className="bo-chip">{selected?.code ?? "Select a reservation"}</span>
+            <h3>Detalle del recorrido</h3>
+            <span className="bo-chip">{selected?.code ?? "Elige una reserva"}</span>
           </div>
 
           {detailLoading ? (
-            <LoadingBlock label="Loading journey…" />
+            <LoadingBlock label="Cargando el recorrido…" />
           ) : detailError ? (
             <ErrorState
               title="No se pudo cargar la reserva"
@@ -341,13 +367,13 @@ export function GuestJourneyWorkspace() {
               onRetry={() => void openReservation(detailError.id)}
             />
           ) : !selected ? (
-            <p className="bo-muted">Select a reservation to see its journey.</p>
+            <p className="bo-muted">Elige una reserva para ver su recorrido.</p>
           ) : journey ? (
             <>
               <div className="bo-row" style={{ justifyContent: "space-between", marginBottom: "var(--space-2)" }}>
-                <strong>{journey.cancelled ? "Cancelled" : `${journey.done} of ${journey.total} steps complete`}</strong>
+                <strong>{journey.cancelled ? "Cancelada" : `${journey.done} de ${journey.total} pasos completados`}</strong>
                 <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
-                  {selected.bookerName ?? guest?.fullName ?? "Guest pending"} · {roomTypeName(selected.roomTypeId)}
+                  {selected.bookerName ?? guest?.fullName ?? "Huésped pendiente"} · {roomTypeName(selected.roomTypeId)}
                 </span>
               </div>
               {panelErrorSummary.length > 0 ? (
@@ -361,17 +387,17 @@ export function GuestJourneyWorkspace() {
                 <div className="bo-card" style={{ background: "var(--accent-soft)", borderColor: "var(--accent-line, var(--line))", marginBottom: "var(--space-3)" }}>
                   <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
                     <div>
-                      <p className="bo-muted" style={{ color: "var(--accent-strong)" }}>Next best action</p>
-                      <h3 style={{ margin: 0 }}>{NEXT_ACTION_LABEL[journey.next.key] ?? "Continue the journey"}</h3>
+                      <p className="bo-muted" style={{ color: "var(--accent-strong)" }}>Siguiente paso</p>
+                      <h3 style={{ margin: 0 }}>{NEXT_ACTION_LABEL[journey.next.key] ?? "Continuar el recorrido"}</h3>
                     </div>
                     <span className={`bo-status ${journey.next.state === "blocked" ? "error" : "warn"}`}>{journey.next.state === "blocked" ? "blocked" : "pending"}</span>
                   </div>
                   <p style={{ marginBottom: "var(--space-2)" }}>{journey.next.detail}</p>
                   <div className="bo-actions">
                     {journey.next.key === "identity" && selected.primaryGuestId ? (
-                      <button type="button" className="primary" onClick={() => go(`/backoffice/guests/${selected.primaryGuestId}`)}>Abrir perfil de huésped</button>
+                      <button type="button" className="primary" onClick={() => go(guestPath(selected.primaryGuestId!))}>Abrir perfil de huésped</button>
                     ) : (
-                      <button type="button" className="primary" onClick={() => go(`/backoffice/reservations/${selected.id}`)}>Open reservation to act</button>
+                      <button type="button" className="primary" onClick={() => go(reservationPath(selected.id))}>Abrir la reserva</button>
                     )}
                   </div>
                 </div>
@@ -393,14 +419,14 @@ export function GuestJourneyWorkspace() {
               <section className="bo-card" style={{ marginTop: "var(--space-4)" }}>
                 <div className="bo-card-head">
                   <div>
-                    <p className="bo-muted">Requests &amp; messages</p>
-                    <h3 style={{ margin: 0 }}>Across all departments</h3>
+                    <p className="bo-muted">Peticiones y mensajes</p>
+                    <h3 style={{ margin: 0 }}>De todos los departamentos</h3>
                   </div>
                   {activity ? <span className={`bo-status ${activity.counts.openTotal ? "warn" : "ok"}`}>{activity.counts.openTotal} open</span> : null}
                 </div>
                 {!activity ? (
                   <p className="bo-muted">
-                    {panelErrors.activity ? `Actividad no disponible: ${panelErrors.activity}` : "Loading activity…"}
+                    {panelErrors.activity ? `Actividad no disponible: ${panelErrors.activity}` : "Cargando la actividad…"}
                   </p>
                 ) : (
                   <>
@@ -411,7 +437,7 @@ export function GuestJourneyWorkspace() {
                       <span className="bo-pill">{activity.counts.serviceRequests} requests</span>
                     </div>
                     {activity.items.length === 0 ? (
-                      <p className="bo-muted">No messages, complaints or department requests for this guest yet.</p>
+                      <p className="bo-muted">Este huésped no tiene mensajes, quejas ni peticiones a departamentos.</p>
                     ) : (
                       <ul className="bo-list">
                         {activity.items.slice(0, 12).map((it) => (
@@ -432,19 +458,19 @@ export function GuestJourneyWorkspace() {
                     )}
                     <div className="bo-actions" style={{ marginTop: "var(--space-3)" }}>
                       <button type="button" onClick={() => nav("ConciergeInboxDashboard")}>Abrir bandeja de chat</button>
-                      <button type="button" onClick={() => nav("HousekeepingDashboard")}>Housekeeping board</button>
-                      <button type="button" onClick={() => nav("MaintenanceDashboard")}>Maintenance board</button>
+                      <button type="button" onClick={() => nav("HousekeepingDashboard")}>Tablero de pisos</button>
+                      <button type="button" onClick={() => nav("MaintenanceDashboard")}>Tablero de mantenimiento</button>
                     </div>
                   </>
                 )}
               </section>
 
               <div className="bo-actions" style={{ marginTop: "var(--space-3)" }}>
-                <button type="button" className="primary" onClick={() => go(`/backoffice/reservations/${selected.id}`)}>Open full detail</button>
-                {selected.primaryGuestId ? <button type="button" onClick={() => go(`/backoffice/guests/${selected.primaryGuestId}`)}>Guest profile</button> : null}
-                <button type="button" onClick={() => nav("BillingCenter")}>Billing</button>
+                <button type="button" className="primary" onClick={() => go(reservationPath(selected.id))}>Ver detalle completo</button>
+                {selected.primaryGuestId ? <button type="button" onClick={() => go(guestPath(selected.primaryGuestId!))}>Perfil del huésped</button> : null}
+                <button type="button" onClick={() => nav("BillingCenter")}>Facturación</button>
               </div>
-              {detailLoading ? <p className="bo-muted" style={{ display: "inline-flex", marginTop: 8 }}><Spinner size="sm" /> Refreshing…</p> : null}
+              {detailLoading ? <p className="bo-muted" style={{ display: "inline-flex", marginTop: 8 }}><Spinner size="sm" /> Actualizando…</p> : null}
             </>
           ) : null}
         </section>

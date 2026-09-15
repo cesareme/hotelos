@@ -11,10 +11,12 @@
 // ({ criteria: [...], color }) y lee de forma defensiva reglas planas
 // heredadas (p. ej. { minStays: 2 }) mostrándolas como criterios de igualdad.
 
+import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createSegment, fetchSegments, updateSegment, type CrmSegment } from "../../services/crmApi";
 import { EmptyState, ErrorState, LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
+import { date } from "../../lib/format";
 
 type CriterionOp = "equals" | "in" | "gt" | "gte" | "lt" | "lte" | "between" | "contains" | "exists";
 
@@ -110,9 +112,7 @@ function cleanCriteria(criteria: SegmentCriterion[]): SegmentCriterion[] {
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "2-digit" });
+  return date(iso, "medium");
 }
 
 function errMsg(err: unknown): string {
@@ -120,6 +120,8 @@ function errMsg(err: unknown): string {
 }
 
 export function GuestSegmentsScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const [segments, setSegments] = useState<SegmentView[]>([]);
   const [loading, setLoading] = useState(true);
@@ -231,10 +233,14 @@ export function GuestSegmentsScreen() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            CRM · Segmentos
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Segmentación de huéspedes</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
+                Comercial · Clientes y fidelización
+              </p>
+              <h2 style={{ color: "var(--ink)" }}>Segmentación de huéspedes</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             Define audiencias para campañas, ofertas personalizadas y exclusiones (p. ej. detractores fuera del marketing).
             Cada segmento se evalúa sobre el perfil + historial del huésped en tiempo real.

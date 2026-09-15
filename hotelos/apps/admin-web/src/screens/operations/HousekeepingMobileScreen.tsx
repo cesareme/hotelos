@@ -21,6 +21,7 @@ import { LoadingBlock, EmptyState, ErrorState } from "../../components/States";
 import { useToast } from "../../components/Toast";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
 import { HK_INSTRUCTIONS } from "../../content/screen-instructions/housekeeping";
+import { useTabHost } from "../tabs/TabHost";
 
 type Priority = "urgent" | "high" | "normal" | "low";
 
@@ -88,6 +89,7 @@ async function postAction(path: string, body?: unknown): Promise<{ ok: boolean; 
 }
 
 export function HousekeepingMobileScreen() {
+  const hosted = useTabHost() !== null;
   const propertyId = getActivePropertyId();
   const propertyName = getActiveProperty().propertyName;
   const { showToast } = useToast();
@@ -161,11 +163,13 @@ export function HousekeepingMobileScreen() {
           zIndex: 10
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-          <div>
-            <div className="bo-page-eyebrow" style={{ fontSize: 11 }}>Housekeeping · {propertyName}</div>
-            <h1 style={{ fontSize: 22, margin: "2px 0 0 0", color: "var(--ink)" }}>Mi turno</h1>
-          </div>
+        <div style={{ display: "flex", justifyContent: hosted ? "flex-end" : "space-between", alignItems: "center", gap: 8 }}>
+          {hosted ? null : (
+            <div>
+              <div className="bo-page-eyebrow" style={{ fontSize: 11 }}>Pisos · {propertyName}</div>
+              <h1 style={{ fontSize: 22, margin: "2px 0 0 0", color: "var(--ink)" }}>Mi turno</h1>
+            </div>
+          )}
           <button type="button" className="ghost" onClick={refresh} style={{ minHeight: 44, minWidth: 44, fontSize: 18 }} title="Actualizar">
             ↻
           </button>

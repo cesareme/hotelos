@@ -8,11 +8,13 @@ import { getActivePropertyId } from "../services/activeProperty";
 import { fetchAccountingSettings, fetchFiscalPeriods, type AccountingSettings as AccountingSettingsPayload, type CostCenter, type FiscalPeriod } from "../services/billingApi";
 import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
 import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { pageHead } from "./tabs/configuracion/tab-helpers";
 import { CocoaCard } from "../components/cocoa/CocoaCard";
 import { CocoaButton } from "../components/cocoa/CocoaButton";
 import { CocoaTable, type CocoaTableColumn } from "../components/cocoa/CocoaTable";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
+import { date } from "../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -27,12 +29,12 @@ const PERIOD_STATUS: Record<FiscalPeriod["status"], { label: string; tone: strin
 const PERIOD_TYPE: Record<FiscalPeriod["periodType"], string> = { month: "Mes", quarter: "Trimestre", year: "Ejercicio" };
 
 function fmtDate(value?: string | null): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("es-ES");
+  return date(value);
 }
 
-export function AccountingSettings() {
+export function AccountingSettings({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const [payload, setPayload] = useState<AccountingSettingsPayload | null>(null);
   const [periods, setPeriods] = useState<FiscalPeriod[]>([]);
   const [periodsError, setPeriodsError] = useState<string | null>(null);
@@ -116,7 +118,7 @@ export function AccountingSettings() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Finanzas y cumplimiento"
         title="Contabilidad"
         subtitle="Plan contable, ejercicio, centros de coste y periodos fiscales"
@@ -146,7 +148,7 @@ export function AccountingSettings() {
           {settings ? (
             <p style={{ margin: 0 }}>
               Inicio del ejercicio: <strong>{MONTHS[(settings.fiscalYearStartMonth ?? 1) - 1] ?? settings.fiscalYearStartMonth}</strong>
-              {settings.updatedAt ? <span className="bo-muted"> · actualizado {new Date(settings.updatedAt).toLocaleDateString("es-ES")}</span> : null}
+              {settings.updatedAt ? <span className="bo-muted"> · actualizado {date(settings.updatedAt)}</span> : null}
             </p>
           ) : (
             <p className="bo-muted" style={{ margin: 0 }}>

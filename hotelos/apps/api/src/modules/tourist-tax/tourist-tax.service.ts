@@ -295,7 +295,7 @@ export async function listApplicationsForPeriod(input: {
   fromDate: string;
   toDate: string;
 }) {
-  requirePermissions(input.context, ["folio.charge.post"]);
+  requirePermissions(input.context, ["tourist_tax.read"]);
   const from = startOfDayUtc(input.fromDate);
   const to = startOfDayUtc(input.toDate);
   const rows = await prisma.touristTaxApplication.findMany({
@@ -327,7 +327,9 @@ export async function listApplicationsForPeriod(input: {
 // ---------------------------------------------------------------------------
 
 export async function listRates(input: { context: UserContext; ccaaCode?: string }) {
-  requirePermissions(input.context, ["folio.charge.post"]);
+  // Tanda 5 (L1b · api-side): reading rates is a read (same key as the manifest
+  // entry of GET /tourist-tax/rates); applying the tax keeps folio.charge.post.
+  requirePermissions(input.context, ["tourist_tax.read"]);
   return prisma.touristTaxRate.findMany({
     where: { ...(input.ccaaCode ? { ccaaCode: input.ccaaCode } : {}) },
     orderBy: [{ ccaaCode: "asc" }, { municipality: "asc" }, { establishmentClass: "asc" }, { validFrom: "desc" }]

@@ -12,13 +12,12 @@ import {
   type TbaiTerritoryConfig
 } from "../../services/tbaiApi";
 import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
+import { dateTime } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
 function fmtDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  return dateTime(iso, { style: "dayMonth" });
 }
 
 function statusBadge(status: string): "ok" | "warn" | "info" {
@@ -123,7 +122,7 @@ export function TbaiForalScreen() {
               <p style={{ margin: 0, color: "var(--ink)" }}>{Math.round(config[active].submissionDeadlineMs / 86_400_000)} días máximo</p>
             </div>
             <div style={{ gridColumn: "1 / -1" }}>
-              <span className="bo-muted">Endpoint sandbox</span>
+              <span className="bo-muted">Punto de conexión de pruebas</span>
               <p className="mono" style={{ margin: 0, color: "var(--ink-muted)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis" }}>{config[active].endpoints.sandbox}</p>
             </div>
           </div>

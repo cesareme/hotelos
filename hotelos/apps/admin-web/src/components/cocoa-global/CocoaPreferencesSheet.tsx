@@ -574,18 +574,18 @@ export function CocoaPreferencesSheet({
         ref={containerRef}
         role="dialog"
         aria-modal="true"
-        aria-label="Preferences"
+        aria-label="Preferencias"
         tabIndex={-1}
         style={containerStyle}
         onKeyDown={handleContainerKeyDown}
       >
         <button
           type="button"
-          aria-label="Close preferences"
+          aria-label="Cerrar preferencias"
           onClick={onClose}
           style={closeButtonStyle}
         />
-        <div role="tablist" aria-label="Preferences sections" style={tabBarStyle}>
+        <div role="tablist" aria-label="Secciones de preferencias" style={tabBarStyle}>
           {TABS.map((tab, index) => (
             <TabButton
               key={tab.id}

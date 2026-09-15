@@ -12,6 +12,8 @@ import {
 } from "../../services/housekeepingApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { toArray } from "../../utils/toArray";
+import { useTabHost } from "../tabs/TabHost";
+import { number } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -67,10 +69,11 @@ const FILTERS: { id: string; label: string; match: (i: HkBoardItem) => boolean }
 ];
 
 function fmtNum(n: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(n);
+  return number(n);
 }
 
 export function HousekeepingDashboard() {
+  const hosted = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<HkBoardItem[]>(
     `/properties/${PROPERTY_ID}/housekeeping/board`,
     { pollIntervalMs: 30000 }
@@ -133,14 +136,16 @@ export function HousekeepingDashboard() {
         .hk-hc-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 2px 0; }
         .hk-hc-row span:first-child { color: var(--ink-soft, #64748b); }
       `}</style>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · Pisos</p>
-          <h2 style={{ color: "var(--ink)" }}>Tablero de pisos</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Estado de cada habitación en vivo. Marca limpiezas, inspecciona y crea tareas para el equipo.
-          </p>
-        </div>
+      <header className="bo-card-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div>
+            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · Pisos</p>
+            <h2 style={{ color: "var(--ink)" }}>Tablero de pisos</h2>
+            <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
+              Estado de cada habitación en vivo. Marca limpiezas, inspecciona y crea tareas para el equipo.
+            </p>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {busy ? <Spinner size="sm" /> : null}
           <button type="button" onClick={refresh} disabled={loading}>↻ Actualizar</button>

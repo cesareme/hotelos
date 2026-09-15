@@ -8,7 +8,8 @@
 //
 // API surface (all hooks throw outside the provider):
 //   useCocoaCommandPalette() -> { open, register(item) => unregister }
-//   useCocoaNotifications()  -> { items, push, markAllRead, openCenter }
+//   useCocoaNotifications()  -> { items, unreadCount, push, markAllRead, markRead, refresh, openCenter }
+//                               (items = GET /notifications of the session user + local pushes)
 //   useCocoaPreferences()    -> { prefs, update(partial) => Promise, openSheet }
 //   useCocoaShortcuts()      -> { openHelp, register(combo, handler) => off }
 //   useCocoaAbout()          -> { open }
@@ -44,7 +45,10 @@ import {
   type CocoaNotification,
 } from "../components/cocoa-global";
 import { apiRequest } from "../services/api-client";
+import { getToken, onAuthChange } from "../services/auth-storage";
+import { listNotifications, markNotificationRead, type NotificationRecord } from "../services/notificationsApi";
 import { navigateTo } from "../lib/navigate";
+import { openHelpCenter } from "../components/guide/guideStore";
 
 // ---------------------------------------------------------------------------
 // Preference shape — mirrors the CocoaPreferencesSheet contract so consumers
@@ -87,10 +91,42 @@ interface CommandPaletteContextValue {
 
 interface NotificationsContextValue {
   items: CocoaNotification[];
+  unreadCount: number;
+  /** Loading/error line of the server feed (null when idle). */
+  status: string | null;
   push: (n: CocoaNotificationInput) => void;
   markAllRead: () => void;
+  markRead: (id: string) => void;
+  /** Re-fetch GET /notifications (the bell calls it when the center opens). */
+  refresh: () => void;
   openCenter: () => void;
 }
+
+/** Event any screen can dispatch to open the notification center (legacy TopBar, ⌘K). */
+export const OPEN_NOTIFICATIONS_EVENT = "hotelos-open-notifications";
+
+// Server notification types → Cocoa severities.
+const NOTIFICATION_TYPE_MAP: Record<string, CocoaNotification["type"]> = {
+  compliance: "warning",
+  maintenance: "warning",
+  guest_message: "info",
+  payment: "success",
+  system: "info",
+};
+
+function fromServerRecord(record: NotificationRecord): CocoaNotification {
+  return {
+    id: record.id,
+    title: record.title,
+    message: record.body,
+    type: NOTIFICATION_TYPE_MAP[record.type] ?? "info",
+    timestamp: record.createdAt,
+    read: record.status === "read",
+  };
+}
+
+// Poll cadence of the server feed while a session exists and the tab is visible.
+const NOTIFICATIONS_POLL_MS = 60_000;
 
 interface PreferencesContextValue {
   prefs: CocoaPreferences;
@@ -221,68 +257,18 @@ interface DefaultCommandBindings {
 
 function buildDefaultCommands(bindings: DefaultCommandBindings): CocoaCommandPaletteItem[] {
   return [
-    {
-      id: "nav.reservations",
-      label: "Reservaciones",
-      category: "Navegacion",
-      onSelect: () => navigateTo("ReservationWorkspace"),
-    },
-    {
-      id: "nav.frontdesk",
-      label: "Front desk",
-      category: "Navegacion",
-      onSelect: () => navigateTo("FrontDeskDashboard"),
-    },
-    {
-      id: "nav.groups",
-      label: "Grupos",
-      category: "Navegacion",
-      onSelect: () => navigateTo("GroupsCalendarScreen"),
-    },
-    {
-      id: "nav.allotments",
-      label: "Allotments",
-      category: "Navegacion",
-      onSelect: () => navigateTo("Allotments"),
-    },
-    {
-      id: "nav.rates",
-      label: "Tarifas",
-      category: "Navegacion",
-      onSelect: () => navigateTo("RatePlans"),
-    },
-    {
-      id: "nav.compliance",
-      label: "Compliance",
-      category: "Navegacion",
-      onSelect: () => navigateTo("ComplianceCenter"),
-    },
-    {
-      id: "nav.setup",
-      label: "Setup",
-      category: "Navegacion",
-      onSelect: () => navigateTo("SetupCenterScreen"),
-    },
-    {
-      id: "global.preferences",
-      label: "Preferences",
-      category: "Sistema",
-      shortcut: "⌘,",
-      onSelect: bindings.openPreferences,
-    },
-    {
-      id: "global.shortcuts",
-      label: "Help shortcuts",
-      category: "Sistema",
-      shortcut: "⌘/",
-      onSelect: bindings.openShortcuts,
-    },
-    {
-      id: "global.about",
-      label: "About",
-      category: "Sistema",
-      onSelect: bindings.openAbout,
-    },
+    { id: "nav.today", label: "Mi día", category: "Navegación", onSelect: () => navigateTo("FrontDeskDashboard") },
+    { id: "nav.reservations", label: "Reservas", category: "Navegación", onSelect: () => navigateTo("ReservationWorkspace") },
+    { id: "nav.reservation-create", label: "Nueva reserva", category: "Navegación", onSelect: () => navigateTo("ReservationCreate") },
+    { id: "nav.guests", label: "Huéspedes", category: "Navegación", onSelect: () => navigateTo("GuestsList") },
+    { id: "nav.groups", label: "Grupos y eventos", category: "Navegación", onSelect: () => navigateTo("GroupsEventsDashboard") },
+    { id: "nav.rates", label: "Planes de tarifas", category: "Navegación", onSelect: () => navigateTo("RatePlans") },
+    { id: "nav.compliance", label: "Bandeja de cumplimiento", category: "Navegación", onSelect: () => navigateTo("ComplianceInbox") },
+    { id: "nav.setup", label: "Puesta en marcha", category: "Navegación", onSelect: () => navigateTo("SetupCenterScreen") },
+    { id: "global.help", label: "Centro de ayuda", category: "Sistema", onSelect: () => openHelpCenter() },
+    { id: "global.shortcuts", label: "Atajos de teclado", category: "Sistema", shortcut: "⌘/", onSelect: bindings.openShortcuts },
+    { id: "global.preferences", label: "Preferencias", category: "Sistema", shortcut: "⌘,", onSelect: bindings.openPreferences },
+    { id: "global.about", label: "Acerca de Anfitorio", category: "Sistema", onSelect: bindings.openAbout },
   ];
 }
 
@@ -330,9 +316,15 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
   );
 
   // Notification store — newest first so the center renders chronological
-  // ordering even before its own bucket sort runs.
+  // ordering even before its own bucket sort runs. Two sources: local pushes
+  // (`push`, kept in memory) and the session user's server feed
+  // (GET /notifications, ids tracked in `serverIdsRef` so read marks are
+  // POSTed back). The feed is fetched once a session exists and polled while
+  // the tab is visible.
   const [notifications, setNotifications] = useState<CocoaNotification[]>([]);
+  const [notificationsStatus, setNotificationsStatus] = useState<string | null>(null);
   const notificationIdCounterRef = useRef<number>(0);
+  const serverIdsRef = useRef<Set<string>>(new Set());
   const pushNotification = useCallback((input: CocoaNotificationInput) => {
     setNotifications((prev) => {
       notificationIdCounterRef.current += 1;
@@ -353,9 +345,68 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
       return [record, ...filtered];
     });
   }, []);
-  const markAllNotificationsRead = useCallback(() => {
-    setNotifications((prev) => prev.map((n) => (n.read ? n : { ...n, read: true })));
+  const refreshNotifications = useCallback(() => {
+    if (!getToken()) return;
+    setNotificationsStatus("Cargando…");
+    listNotifications()
+      .then((records) => {
+        const serverItems = records.map(fromServerRecord);
+        serverIdsRef.current = new Set(serverItems.map((item) => item.id));
+        setNotifications((prev) => {
+          const local = prev.filter((item) => !serverIdsRef.current.has(item.id) && !records.some((record) => record.id === item.id));
+          return [...serverItems, ...local];
+        });
+        setNotificationsStatus(null);
+      })
+      .catch((error: unknown) => {
+        setNotificationsStatus(error instanceof Error ? `No se pudieron cargar los avisos: ${error.message}` : "No se pudieron cargar los avisos.");
+      });
   }, []);
+  const markNotificationReadLocal = useCallback((id: string) => {
+    setNotifications((prev) => prev.map((n) => (n.id === id && !n.read ? { ...n, read: true } : n)));
+    if (serverIdsRef.current.has(id)) {
+      // Best effort: the local flip already happened; a failed POST only
+      // means the mark comes back unread on the next refresh.
+      markNotificationRead(id).catch(() => undefined);
+    }
+  }, []);
+  const markAllNotificationsRead = useCallback(() => {
+    setNotifications((prev) => {
+      for (const n of prev) {
+        if (!n.read && serverIdsRef.current.has(n.id)) markNotificationRead(n.id).catch(() => undefined);
+      }
+      return prev.map((n) => (n.read ? n : { ...n, read: true }));
+    });
+  }, []);
+  const unreadCount = useMemo(() => notifications.reduce((total, n) => (n.read ? total : total + 1), 0), [notifications]);
+
+  // Server feed lifecycle: fetch when a session appears (login, tab focus,
+  // other tab), poll while the document is visible, reset on logout.
+  useEffect(() => {
+    let timer: number | null = null;
+    const stop = () => {
+      if (timer !== null) window.clearInterval(timer);
+      timer = null;
+    };
+    const start = () => {
+      stop();
+      if (!getToken()) {
+        serverIdsRef.current = new Set();
+        setNotifications((prev) => prev.filter((n) => !serverIdsRef.current.has(n.id)));
+        return;
+      }
+      refreshNotifications();
+      timer = window.setInterval(() => {
+        if (document.visibilityState === "visible") refreshNotifications();
+      }, NOTIFICATIONS_POLL_MS);
+    };
+    start();
+    const offAuth = onAuthChange(start);
+    return () => {
+      stop();
+      offAuth();
+    };
+  }, [refreshNotifications]);
 
   // Preferences store — applies any change to <html> immediately and rolls
   // back on failure, mirroring the CocoaPreferencesSheet semantics so both
@@ -443,8 +494,16 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
   const closePalette = useCallback(() => setPaletteOpen(false), []);
   const openPreferences = useCallback(() => setPreferencesOpen(true), []);
   const closePreferences = useCallback(() => setPreferencesOpen(false), []);
-  const openNotifications = useCallback(() => setNotificationsOpen(true), []);
+  const openNotifications = useCallback(() => {
+    refreshNotifications();
+    setNotificationsOpen(true);
+  }, [refreshNotifications]);
   const closeNotifications = useCallback(() => setNotificationsOpen(false), []);
+
+  useEffect(() => {
+    window.addEventListener(OPEN_NOTIFICATIONS_EVENT, openNotifications);
+    return () => window.removeEventListener(OPEN_NOTIFICATIONS_EVENT, openNotifications);
+  }, [openNotifications]);
   const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
   const closeShortcuts = useCallback(() => setShortcutsOpen(false), []);
   const openAbout = useCallback(() => setAboutOpen(true), []);
@@ -511,11 +570,15 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
   const notificationsValue = useMemo<NotificationsContextValue>(
     () => ({
       items: notifications,
+      unreadCount,
+      status: notificationsStatus,
       push: pushNotification,
       markAllRead: markAllNotificationsRead,
+      markRead: markNotificationReadLocal,
+      refresh: refreshNotifications,
       openCenter: openNotifications,
     }),
-    [notifications, pushNotification, markAllNotificationsRead, openNotifications],
+    [notifications, unreadCount, notificationsStatus, pushNotification, markAllNotificationsRead, markNotificationReadLocal, refreshNotifications, openNotifications],
   );
   const preferencesValue = useMemo<PreferencesContextValue>(
     () => ({
@@ -555,13 +618,15 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
                 onClose={closeNotifications}
                 notifications={notifications}
                 onMarkAllAsRead={markAllNotificationsRead}
+                onMarkAsRead={markNotificationReadLocal}
+                status={notificationsStatus}
               />
               <CocoaKeyboardShortcutsHelp
                 open={shortcutsOpen}
                 onClose={closeShortcuts}
                 onRequestOpen={openShortcuts}
               />
-              <CocoaAboutDialog open={aboutOpen} onClose={closeAbout} />
+              <CocoaAboutDialog open={aboutOpen} onClose={closeAbout} onOpenHelp={openHelpCenter} onOpenShortcuts={openShortcuts} />
             </AboutContext.Provider>
           </ShortcutsContext.Provider>
         </PreferencesContext.Provider>

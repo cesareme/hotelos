@@ -4,6 +4,9 @@ import { getModuleRouteItems, type ModuleRouteMapItem } from "@hotelos/product";
 import { colors } from "../../theme/colors";
 import { RevenueSetupRequiredCard } from "./RevenueSetupRequiredCard";
 
+// Screens of this app that the product map does not list. Tanda 5 · L1c: the
+// cards are deduplicated by `route` (never by label: the map's labels are
+// Spanish now), so a screen never appears twice.
 const extraTools: ModuleRouteMapItem[] = [
   { label: "Overview", route: "RevenueDashboard", permission: "revenue.read", description: "Revenue dashboard with occupancy, ADR, RevPAR, GOPPAR and net revenue.", status: "ready" },
   { label: "Forecast Graphs", route: "RevenueForecastGraph", permission: "revenue.forecast.read", description: "Forecast lines, confidence bands and drivers.", status: "ready" },
@@ -13,7 +16,7 @@ const extraTools: ModuleRouteMapItem[] = [
 
 export function RevenueHomeScreen(props: { onNavigate?: (route: string) => void }) {
   const tools = [...extraTools, ...getModuleRouteItems("revenue_profit_engine", "mobile")];
-  const deduped = tools.filter((tool, index, all) => all.findIndex((candidate) => candidate.label === tool.label) === index);
+  const deduped = tools.filter((tool, index, all) => all.findIndex((candidate) => candidate.route === tool.route) === index);
 
   return (
     <ScrollView contentContainerStyle={styles.content}>
@@ -25,7 +28,7 @@ export function RevenueHomeScreen(props: { onNavigate?: (route: string) => void 
       <RevenueSetupRequiredCard localDev onNavigate={props.onNavigate} />
       <View style={styles.grid}>
         {deduped.map((tool) => (
-          <Pressable key={`${tool.label}-${tool.route}`} accessibilityRole="button" accessibilityLabel={`Open ${tool.label}`} onPress={() => tool.route && props.onNavigate?.(tool.route)} style={styles.card}>
+          <Pressable key={tool.route ?? tool.label} accessibilityRole="button" accessibilityLabel={`Open ${tool.label}`} onPress={() => tool.route && props.onNavigate?.(tool.route)} style={styles.card}>
             <View style={styles.cardHead}>
               <Text style={styles.cardTitle}>{tool.label}</Text>
               <StatusChip label={tool.status === "ready" ? "Ready" : tool.status === "coming_soon" ? "Coming soon" : "Needs setup"} tone={tool.status === "ready" ? "success" : tool.status === "coming_soon" ? "info" : "warning"} />

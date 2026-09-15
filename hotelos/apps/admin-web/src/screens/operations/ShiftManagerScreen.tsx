@@ -7,6 +7,9 @@
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { toArray } from "../../utils/toArray";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { money, time } from "../../lib/format";
 import {
   DegradedBanner,
   DegradedNote,
@@ -70,11 +73,11 @@ const EVENT_ICON: Record<string, string> = {
 };
 
 function fmtEur(value: number): string {
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  return money(value);
 }
 
 function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  return time(iso);
 }
 
 function navigateTo(screen: string) {
@@ -105,21 +108,19 @@ export function ShiftManagerScreen() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Supervisión · Jefe de Recepción</div>
-          <h1 className="bo-page-title">Turno de hoy · {propertyName}</h1>
-          <p className="bo-page-subtitle">
-            Productividad del equipo, caja del día y bloqueos críticos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <DegradedBanner degraded={degraded} />
-          {loading ? <span className="bo-status info">cargando</span> : null}
-          {error ? <span className="bo-status error">{error}</span> : null}
-          <button type="button" className="ghost" onClick={refresh}>↻</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow={`Hoy · ${propertyName}`}
+        title="Turno"
+        subtitle="Productividad del equipo de recepción, caja del día y bloqueos críticos."
+        actions={
+          <>
+            <DegradedBanner degraded={degraded} />
+            {loading ? <span className="bo-status info">{STATUS_LABELS.loading}</span> : null}
+            {error ? <span className="bo-status error">{error}</span> : null}
+            <button type="button" className="ghost" onClick={refresh} aria-label={ACTIONS.refresh} title={ACTIONS.refresh}>↻ {ACTIONS.refresh}</button>
+          </>
+        }
+      />
 
       {/* Productividad / KPIs principales */}
       {k ? (

@@ -4,6 +4,7 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { toArray } from "../../utils/toArray";
 import { LoadingBlock, EmptyState, ErrorState } from "../../components/States";
+import { date } from "../../lib/format";
 
 // ─── Tipos locales ───────────────────────────────────────────────────────
 
@@ -133,9 +134,7 @@ function fmtDayLabel(iso: string): string {
 }
 
 function dayOfWeekShort(iso: string): string {
-  const d = new Date(`${iso}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString("es-ES", { weekday: "short" });
+  return date(iso, "weekdayOnly", { empty: "" });
 }
 
 // ─── Componente principal ────────────────────────────────────────────────

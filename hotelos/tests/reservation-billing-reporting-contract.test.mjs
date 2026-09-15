@@ -9,10 +9,10 @@ describe("reservation, billing and reporting entry points", () => {
     const routeMap = read("packages/product/src/navigation/reservation-commerce-route-map.ts");
     for (const marker of [
       "reservation_create",
-      "/backoffice/reservations/new",
+      "url: \"/recepcion/reservas/nueva\"",
       "/properties/:propertyId/reservations",
       "folio_billing",
-      "/backoffice/billing/center",
+      "url: \"/finanzas/facturacion\"",
       "invoice_lifecycle",
       "reporting_center",
       "/reports/properties/:propertyId/export",
@@ -46,21 +46,29 @@ describe("reservation, billing and reporting entry points", () => {
 
   it("adds admin routes and sidebar navigation for reservation creation, billing and reports", () => {
     const routes = read("apps/admin-web/src/routes/backoffice.routes.tsx");
-    const sidebar = read("apps/admin-web/src/navigation/Sidebar.tsx");
+    // Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (keys, URLs and legacy redirects live there).
+    const sidebar = read("apps/admin-web/src/navigation/Sidebar.tsx") + read("apps/admin-web/src/navigation/nav-tree.generated.json");
     const app = read("apps/admin-web/src/App.tsx");
     for (const marker of [
       "ReservationWorkspace",
       "ReservationCreate",
       "ReservationDetailWorkspace",
       "BillingCenter",
-      "ReportingCenter",
-      "/backoffice/reservations",
-      "/backoffice/reservations/new",
-      "/backoffice/billing/center",
-      "/backoffice/reports"
+      "ReportingCenter"
     ]) {
       assert.match(routes + sidebar + app, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
+    // Tanda 5 · L1b: the old paths are client-side redirects (NAV_TREE.legacyRoutes).
+    const tree = JSON.parse(read("apps/admin-web/src/navigation/nav-tree.generated.json"));
+    for (const [from, to] of [
+      ["/backoffice/reservations", "/recepcion/reservas"],
+      ["/backoffice/reservations/new", "/recepcion/reservas/nueva"],
+      ["/backoffice/billing/center", "/finanzas/facturacion"],
+      ["/backoffice/reports", "/informes"]
+    ]) {
+      assert.ok(tree.legacyRoutes.some((route) => route.from === from && route.to === to), `${from} → ${to}`);
+    }
+    assert.match(routes, /NAV_TREE\.legacyRoutes/);
   });
 
   it("adds configurable reservation categories and persistence fields", () => {

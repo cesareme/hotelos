@@ -7,9 +7,12 @@ import {
   type Displacement
 } from "../../services/revenueApi";
 import { LoadingBlock, ErrorState, Spinner } from "../../components/States";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS } from "../../content/actions";
+import { date, percent } from "../../lib/format";
 
 function fmtDate(iso: string): string {
-  return new Date(`${iso}T00:00:00.000Z`).toLocaleDateString("es-ES", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
+  return date(iso, "medium");
 }
 
 // Human label for BudgetVariance.sources.actual (Tanda 2 · REV-03).
@@ -29,7 +32,7 @@ function actualSourceLabel(source: string | undefined): string {
 }
 
 function fmtPct(value: number | null | undefined): string {
-  return value == null ? "—" : `${value}%`;
+  return percent(value);
 }
 
 export function RevenueMeetingScreen() {
@@ -86,14 +89,12 @@ export function RevenueMeetingScreen() {
 
   return (
     <section className="bo-card" style={{ display: "grid", gap: 16 }}>
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Comercial · Revenue</p>
-          <h2>Panel de reunión de revenue</h2>
-        </div>
-        <button type="button" onClick={() => void load()} disabled={loading}>↻ Actualizar</button>
-      </div>
-      <p>Todo lo que necesita la reunión semanal en una pantalla: pace, pickup, precisión de la previsión, comp-set, presupuesto vs previsión vs real, recomendaciones pendientes y una calculadora de desplazamiento de grupos. Datos reales.</p>
+      <CocoaPageHeader
+        eyebrow="Revenue"
+        title="Reunión de revenue"
+        subtitle="Todo lo que necesita la reunión semanal en una pantalla: ritmo de ventas, pickup, precisión de la previsión, competencia, presupuesto frente a previsión y real, recomendaciones pendientes y una calculadora de desplazamiento de grupos."
+        actions={<button type="button" onClick={() => void load()} disabled={loading}>↻ {ACTIONS.refresh}</button>}
+      />
 
       {loading ? (
         <LoadingBlock label="Cargando pack de reunión…" />

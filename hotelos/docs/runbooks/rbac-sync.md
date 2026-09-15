@@ -2,7 +2,11 @@
 
 Fuente: `apps/api/src/lib/rbac-catalog.ts` (lógica) y
 `apps/api/src/scripts/rbac-sync.ts` (CLI). Tanda 1 lo creó; Tanda 4 añade
-`Role.templateKey` y el top-up aditivo de los roles plantilla.
+`Role.templateKey` y el top-up aditivo de los roles plantilla; Tanda 5 (L1a
+rbac + L1b api-side) amplía las plantillas al árbol de navegación, añade
+`sales`/`fnb`, las claves de lectura `folio.read` / `pos.read` /
+`tourist_tax.read`, el CLI `reseed-property-roles` (§7) y las 10 plantillas
+por organización en `createTenant`.
 
 ## 1. Qué hace y cuándo corre
 
@@ -27,50 +31,67 @@ Códigos de salida: `0` ok · `1` fallo (BD inaccesible, invariante de plantilla
 roto) · `2` flag desconocido. Flags reconocidos por `parseFlags`: `--prune`,
 `--dry-run`, `--json` (cualquier otro → exit 2).
 
-### Estado actual (BD demo, 2026-09-14 · cierre de Tanda 4)
+### Estado actual (BD demo, 2026-09-15 · Tanda 5 · L1b api-side)
 
-- Catálogo: **212 claves** (211 org + 1 plataforma). El `--prune` de §3 **ya se
-  ejecutó** (216 → 212: `pms.reservation.update / .cancel / .check_in /
-  .check_out`); el seed ya no las recrea (`grep -rn pms.reservation.update apps
-  packages` solo devuelve el test de `rbac-catalog`).
-- La BD demo tiene **2 roles en total** (re-verificación adversarial,
-  2026-09-14 tras el segundo `demo:refresh --apply`): el «Owner» de Faranda
-  (`template_key = 'owner'`, 211 grants) y «Local Super Admin» (plataforma,
-  org_123, `template_key` `NULL`, 212 grants). Faranda **solo** tiene el rol
-  Owner: Manager / Recepción / Housekeeping **no existen** hoy en la BD demo
-  (los roles `AUDIT-T4 *` y los Owner de las orgs AUDIT se borraron con el
-  refresco). Se crean bajo demanda con `POST
-  /backoffice/properties/:id/roles {name, templateKey}` o, al crear un tenant,
-  con `provisionDefaultTemplateRoles` (§5). org_123 no tiene rol Owner: usr_123
-  opera con «Local Super Admin».
+- Catálogo: **215 claves** (214 org + 1 plataforma). El `--prune` de §3 **ya se
+  ejecutó** en Tanda 4 (216 → 212); Tanda 5 (L1b) añadió **3 claves de
+  lectura** — `folio.read`, `pos.read`, `tourist_tax.read` — para los GET que
+  hasta L1a estaban gateados por claves de escritura (`folio.charge.post`,
+  `compliance.ses.submit`, `compliance.configure`): folios y balances,
+  enrutamiento, TPV (salas, comandas, cierre de caja), tasa turística,
+  envíos VeriFactu / TicketBAI / IGIC (`billing.compliance.view`) y registro
+  de viajeros / SES / bandeja de cumplimiento (`guest_register.read`). Ningún
+  GET del manifiesto exige ya `folio.charge.post` ni `compliance.ses.submit`
+  (`tests/rbac-nav-contract.test.mjs` y
+  `apps/api/src/security/__tests__/route-read-keys.test.mts` lo fijan).
+- **11 plantillas** (`ROLE_TEMPLATE_KEYS`): owner, admin, manager,
+  receptionist, housekeeper, maintenance, accountant, compliance, revenue,
+  sales, fnb. **10 se materializan por organización**
+  (`ORGANIZATION_TEMPLATE_ROLE_KEYS`: todas menos `admin`, que §3 del árbol
+  reserva al administrador de plataforma) con nombre en español
+  (`ROLE_TEMPLATE_LABELS_ES`: Propietario, Dirección, Recepción, Pisos,
+  Mantenimiento, Contabilidad, Cumplimiento, Revenue, Comercial, Punto de
+  venta). `createTenant` las provisiona en tenants nuevos
+  (`DEFAULT_TENANT_ROLE_TEMPLATES` = esa lista; el «Owner» que crea antes se
+  reconoce por `template_key`, no se duplica como «Propietario») y
+  `reseed-property-roles` (§7) las materializa en organizaciones existentes.
+- La BD demo tiene **21 roles**: Faranda (`cmrhw9jy30002fyvb6tsdiugt`) →
+  Owner (owner) + Dirección, Recepción, Pisos, Mantenimiento, Contabilidad,
+  Cumplimiento, Revenue, Comercial, Punto de venta (creados por el reseed de
+  L1a); org_123 → Local Super Admin (plataforma, `template_key` `NULL`, 215
+  grants) + Propietario + las mismas 9. Usuario de prueba
+  `recepcion.tilos@faranda.test` (Recepción en Los Tilos, 27 claves).
 - Comando de verificación (sin escrituras) y salida esperada **hoy** (literal,
-  ejecutada el 2026-09-14; solo varía el tiempo en ms):
+  ejecutada el 2026-09-15 tras aplicar el sync de L1b; solo varía el tiempo
+  en ms):
 
   ```bash
   corepack pnpm --filter @hotelos/api rbac:sync -- --dry-run
-  # [rbac] template roles: 1 following a template (0 topped up [dry-run]), 0 template_key stamped by name, 0 custom (untouched), 0 EMPTY without template
+  # [rbac] template roles: 20 following a template (0 topped up [dry-run]), 0 template_key stamped by name, 0 custom (untouched), 0 EMPTY without template
   # [rbac] platform roles topped up: 0 of 1 platform role(s) [dry-run] (Local Super Admin (org_123) ← full catalog: +0)
-  # [rbac:sync] DRY-RUN (no writes) · 42 ms
-  #   catalog: 212 keys (211 org + 1 platform)
+  # [rbac:sync] DRY-RUN (no writes) · 75 ms
+  #   catalog: 215 keys (214 org + 1 platform)
   #   permissions: +0 created · 0 descriptions updated · 0 stale
-  #   template roles: 1 following a template · 0 topped up · 0 template_key stamped by name · 0 custom (untouched) · 0 EMPTY without template
+  #   template roles: 20 following a template · 0 topped up · 0 template_key stamped by name · 0 custom (untouched) · 0 EMPTY without template
   #   platform roles: 1 (0 topped up)
   #     Local Super Admin (org_123) ← full catalog: +0
-  #   templates: owner=211 admin=211 manager=85 receptionist=18 housekeeper=2 maintenance=2 accountant=9 compliance=19 revenue=33
+  #   templates: owner=214 admin=214 manager=99 receptionist=27 housekeeper=4 maintenance=3 accountant=19 compliance=28 revenue=34 sales=31 fnb=14
   ```
 
   Cualquier `stale > 0`, `created > 0` o `stamped > 0` significa que la BD y el
   código han divergido desde este cierre: leer §2/§3/§4 antes de escribir.
-  `following a template` sube en 1 por cada rol plantilla que se cree (por
-  ejemplo, provisionar Manager/Recepción/Housekeeping en Faranda lo dejaría
-  en 4).
+  `following a template` sube en 1 por cada rol plantilla que se cree (un
+  tenant nuevo añade 10). Lo que hizo L1b el 2026-09-15 (registro): dry-run
+  `+3 created · 12 topped up` (Dirección +3, Recepción +4, Contabilidad +3,
+  Cumplimiento +4, Punto de venta +1 en las dos orgs; Propietario +3; Local
+  Super Admin +3) → `rbac:sync` aplicado → segundo dry-run `+0`.
 
 ## 2. `Role.templateKey` y el backfill de roles
 
 `roles.template_key` (nullable) dice de qué plantilla compartida
 (`ROLE_PERMISSION_MAP`: `owner`, `admin`, `manager`, `receptionist`,
-`housekeeper`, `maintenance`, `accountant`, `compliance`, `revenue`) nace un
-rol. `NULL` = rol custom (o rol de plataforma).
+`housekeeper`, `maintenance`, `accountant`, `compliance`, `revenue`, `sales`,
+`fnb`) nace un rol. `NULL` = rol custom (o rol de plataforma).
 
 En cada arranque, `backfillTemplateRoles`:
 
@@ -96,18 +117,19 @@ En cada arranque, `backfillTemplateRoles`:
    viven en una org que ya posee un rol de plataforma) → catálogo completo,
    `template_key` se queda `NULL`.
 
-Verificación (BD demo tras el cierre de Tanda 4: exactamente 2 filas — el
-recon de la mañana contaba 4 «Owner», llegó a 6 antes del refresco y a 7 roles
-con los fixtures AUDIT-T4; todo eso ya se borró):
+Verificación (BD demo, 2026-09-15 tras L1b: 21 filas, 20 con plantilla; el
+tamaño de cada rol plantilla coincide con la línea `templates:` del dry-run
+de §1):
 
 ```sql
-SELECT r.name, r.template_key, count(rp.*) AS grants
+SELECT r.organization_id, r.name, r.template_key, count(rp.*) AS grants
 FROM roles r LEFT JOIN role_permissions rp ON rp.role_id = r.id
-GROUP BY 1, 2 ORDER BY 1, 2;
---        name        | template_key | grants
--- -------------------+--------------+-------
---  Local Super Admin |              |    212
---  Owner             | owner        |    211
+GROUP BY 1, 2, 3 ORDER BY 1, 2;
+-- Faranda (cmrhw9jy30002fyvb6tsdiugt): Owner owner 214 · Dirección manager 99 ·
+--   Recepción receptionist 27 · Pisos housekeeper 4 · Mantenimiento maintenance 3 ·
+--   Contabilidad accountant 19 · Cumplimiento compliance 28 · Revenue revenue 34 ·
+--   Comercial sales 31 · Punto de venta fnb 14
+-- org_123: Local Super Admin (NULL) 215 · Propietario owner 214 · y las mismas 9
 ```
 
 Log de arranque esperado hoy (ya estampado y podado; `stamped by name` solo
@@ -116,7 +138,7 @@ con un alias):
 
 ```
 [rbac] permission catalog synced: created=0 updated=0 stale=0
-[rbac] template roles: 1 following a template (0 topped up), 0 template_key stamped by name, 0 custom (untouched), 0 EMPTY without template
+[rbac] template roles: 20 following a template (0 topped up), 0 template_key stamped by name, 0 custom (untouched), 0 EMPTY without template
 [rbac] platform roles topped up: 0 of 1 platform role(s) (Local Super Admin (org_123) ← full catalog: +0)
 ```
 
@@ -170,12 +192,12 @@ Orden obligatorio:
 5. **Verificar**:
 
    ```sql
-   SELECT count(*) FROM permissions;                       -- = nº de claves de PERMISSIONS (212 desde el prune del 2026-09-14)
+   SELECT count(*) FROM permissions;                       -- = nº de claves de PERMISSIONS (215 desde L1b, 2026-09-15; 212 tras el prune del 2026-09-14)
    SELECT count(*) FROM role_permissions rp
      LEFT JOIN permissions p ON p.id = rp.permission_id
    WHERE p.id IS NULL;                                     -- = 0 (sin huérfanas)
    SELECT count(*) FROM role_permissions
-   WHERE role_id = 'role_local_super_admin';               -- = 212 (211 org + 1 plataforma)
+   WHERE role_id = 'role_local_super_admin';               -- = 215 (214 org + 1 plataforma)
    ```
 
    y un segundo `rbac:sync -- --dry-run` debe reportar `0 stale`.
@@ -203,8 +225,10 @@ Flujo normal de una tanda que añade una clave (`PERMISSIONS` en
    el arranque del paso `restart`.
 4. Verificar: `SELECT count(*) FROM permissions` = nuevo total (213, 214…) y
    un segundo `--dry-run` con `+0 created · 0 topped up`. Actualizar la cifra
-   «212» en este runbook, en `deploy/README-INSTALL.md` (§8) y en
-   `apps/api/src/lib/__tests__/rbac-catalog.test.mts` (`catalogKeys: 212`).
+   «215» en este runbook (§1, §3 paso 5) y en `deploy/README-INSTALL.md` (§8;
+   hoy dice 212, pendiente). El `catalogKeys: 212` de
+   `apps/api/src/lib/__tests__/rbac-catalog.test.mts` es un fixture del
+   informe humano, no la cifra real: no hace falta tocarlo.
 5. Roles custom que deban tener la clave: concederla desde el editor de roles
    (`roles.manage`) o sellar `template_key` como en §5; nunca por `UPDATE`
    masivo en `role_permissions`.
@@ -227,16 +251,51 @@ reporta como `stale` y la conserva; retirarla es el procedimiento de §3.
 - **`template_key` con un valor desconocido** (typo manual): el arranque lo
   avisa (`carries unknown template_key`) y salta el rol sin abortar; corregir
   la fila o ponerla a `NULL`.
-- **Un tenant antiguo sin roles Manager/Recepción/Housekeeping**:
-  `createTenant` los provisiona desde Tanda 4; para orgs anteriores ejecutar
-  `provisionDefaultTemplateRoles(organizationId)` (idempotente) desde un
-  script o crear los roles con el POST anterior.
+- **Una organización sin las 10 plantillas** (Dirección, Recepción, Pisos,
+  Mantenimiento, Contabilidad, Cumplimiento, Revenue, Comercial, Punto de
+  venta + Propietario/Owner): `createTenant` las provisiona desde Tanda 5
+  (`provisionDefaultTemplateRoles`, idempotente: top-up por `template_key`,
+  adopción por nombre español, creación; un nombre ya usado por un rol de otra
+  plantilla se reporta como `conflict` y no se toca); para organizaciones
+  existentes usar el CLI de §7.
 
 ## 6. Qué NO hace este runbook
 
-- No cambia el contenido de las plantillas: ampliar `manager` (ver el TODO en
-  `packages/shared/src/permissions.ts`) es una decisión de producto pendiente;
-  cuando se aplique, el top-up de §2 la propagará solo en el siguiente
-  arranque.
+- No cambia el contenido de las plantillas: los deltas de Tanda 5 (§10 del
+  árbol de navegación: `manager` 85 → 99 claves, `receptionist` 18 → 27,
+  nuevas `sales`/`fnb`, claves de lectura de L1b) ya están aplicados en
+  `packages/shared/src/permissions.ts`; cualquier ampliación futura se
+  propaga sola con el top-up de §2 en el siguiente arranque o `rbac:sync`.
+  Retirar una clave de una plantilla NO la retira de los roles (todo es
+  aditivo): hacerlo exige `--prune` (§3) o edición manual del rol.
 - No borra usuarios ni roles: eso pertenece al refresco del dataset
   (DATA-06/09).
+
+## 7. `reseed-property-roles`: las 10 plantillas en una organización existente
+
+Fuente: `apps/api/src/scripts/reseed-property-roles.ts` (Tanda 5 · L1a rbac;
+unitarios en `src/scripts/__tests__/reseed-property-roles.test.mts`). Para
+UNA organización, materializa un rol por plantilla de
+`ORGANIZATION_TEMPLATE_ROLE_KEYS` y lo sube a su plantilla: `top-up` (rol con
+`template_key`), `adopt` (sin `template_key`, nombre que resuelve por alias y
+sin claves ajenas → se sella), `create` (nombre de `ROLE_TEMPLATE_LABELS_ES`,
+auditoría `ROLE_CREATED_FROM_TEMPLATE`) o `conflict` (un rol con ese nombre es
+custom o sigue otra plantilla: se reporta, no se toca y bloquea `--apply`).
+Nunca borra grants ni roles, nunca crea ni asigna usuarios; los roles de
+plataforma se saltan. No hace falta reiniciar el API (roles y grants se leen
+de Postgres por petición).
+
+```bash
+cd apps/api
+node --env-file-if-exists=../../.env --import tsx src/scripts/reseed-property-roles.ts --org <organizationId>            # dry-run (por defecto)
+node --env-file-if-exists=../../.env --import tsx src/scripts/reseed-property-roles.ts --org <organizationId> --apply --confirm <organizationId>
+#   --templates owner,manager,...   subconjunto de ORGANIZATION_TEMPLATE_ROLE_KEYS
+#   --json                          salida máquina
+```
+
+Códigos de salida: `0` ok · `1` fallo (org inexistente, conflictos,
+post-condición, BD) · `2` flag desconocido. Procedimiento: dry-run → leer el
+plan (una línea por plantilla con acción, rol y `+n` claves; informe por
+propiedad de `user_property_roles` afectados) → `--apply --confirm` → segundo
+dry-run con todo `top-up +0`. Ejecutado en local el 2026-09-15 (L1a) para
+Faranda y org_123: 9 y 10 roles creados; segunda pasada `+0`.

@@ -41,6 +41,7 @@ import { useToast } from "../../components/Toast";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { EmptyState, ErrorState, LoadingBlock } from "../../components/States";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { pageHead } from "../tabs/configuracion/tab-helpers";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
@@ -50,6 +51,7 @@ import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/Coc
 import { TAXES_INSTRUCTIONS } from "../../content/screen-instructions/taxes";
 import { toArray } from "../../utils/toArray";
 import { navigateTo } from "../../lib/navigate";
+import { date, percent } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -81,14 +83,11 @@ function toInlineError(error: unknown, fallback: string): InlineError {
 }
 
 function fmtPercent(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  return `${new Intl.NumberFormat("es-ES", { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(value)} %`;
+  return percent(value, { maximumFractionDigits: 2 });
 }
 
 function fmtDate(value: string | null | undefined): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString("es-ES");
+  return date(value);
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -98,7 +97,9 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
-export function PropertyTaxesScreen() {
+export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const { showToast } = useToast();
   const [profile, setProfile] = useState<PropertyTaxProfile | null>(null);
   const [loading, setLoading] = useState(true);
@@ -339,7 +340,7 @@ export function PropertyTaxesScreen() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Cumplimiento · Fiscal"
         title="Impuestos de la propiedad"
         subtitle="Tipos de IVA / IGIC / IPSI por concepto de folio, con su base legal y vigencia"

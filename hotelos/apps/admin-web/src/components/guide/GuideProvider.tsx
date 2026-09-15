@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { GuidedTour } from "./GuidedTour";
 import { HelpCenter } from "./HelpCenter";
-import { ROLE_STARTER_TOUR, WELCOME_TOUR_ID, getTourById } from "./guideContent";
-import { GUIDE_EVENTS, getGuideState, hasSeenRole, markRoleSeen, setGuideState } from "./guideStore";
-import { ROLES, type Role } from "../../navigation/roles";
+import { WELCOME_TOUR_ID, getTourById, tourStepsFor } from "./guideContent";
+import { GUIDE_EVENTS, getGuideState, setGuideState } from "./guideStore";
+import { useNavAudience } from "../../navigation/useEnabledModules";
 
-type WelcomeOffer = { tourId: string; title: string; body: string; role?: Role };
+type WelcomeOffer = { tourId: string; title: string; body: string };
 
 /**
  * Non-blocking corner card that offers a tour. Deferential by design.
@@ -31,11 +31,21 @@ function WelcomeCard(props: { offer: WelcomeOffer; onStart: () => void; onDismis
   );
 }
 
+/**
+ * Mounts the help center («?») and the guided tours once in the shell. Tours
+ * are filtered by the same audience as the menu (`useNavAudience` of
+ * navigation/useEnabledModules.ts): the role tokens of the session and, once
+ * known, the enabled modules of the active property — so a step never
+ * navigates to an item the user cannot open or to a disabled module. The
+ * audience re-renders when GET /users/me answers and when ModuleManager
+ * enables or disables a module (ENABLED_MODULES_CHANGED_EVENT).
+ */
 export function GuideProvider() {
   const [tourId, setTourId] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [welcome, setWelcome] = useState<WelcomeOffer | null>(null);
   const [tourRunId, setTourRunId] = useState(0);
+  const { roleTokens, enabledModules } = useNavAudience();
 
   const startTourRun = (id: string = WELCOME_TOUR_ID) => {
     setHelpOpen(false);
@@ -69,51 +79,34 @@ export function GuideProvider() {
     function startTour(e: Event) {
       startTourRun((e as CustomEvent<string | undefined>).detail ?? WELCOME_TOUR_ID);
     }
-    // When the user picks a persona for the first time, offer that persona's tour.
-    function onRoleChanged(e: Event) {
-      const role = (e as CustomEvent<Role>).detail;
-      if (!role || role === "all" || hasSeenRole(role)) return;
-      const starter = ROLE_STARTER_TOUR[role];
-      if (!starter) return;
-      const meta = ROLES.find((r) => r.id === role);
-      setWelcome({
-        role,
-        tourId: starter,
-        title: `Vista de ${meta?.label ?? role}`,
-        body: `Te enseñamos en un minuto lo que verás como ${meta?.label ?? role}.`
-      });
-    }
     window.addEventListener(GUIDE_EVENTS.openHelp, openHelp);
     window.addEventListener(GUIDE_EVENTS.startTour, startTour);
-    window.addEventListener(GUIDE_EVENTS.roleChanged, onRoleChanged);
     return () => {
       window.removeEventListener(GUIDE_EVENTS.openHelp, openHelp);
       window.removeEventListener(GUIDE_EVENTS.startTour, startTour);
-      window.removeEventListener(GUIDE_EVENTS.roleChanged, onRoleChanged);
     };
   }, []);
 
   function dismissWelcome() {
-    if (welcome?.role) markRoleSeen(welcome.role);
-    else setGuideState({ welcomeDismissed: true });
+    setGuideState({ welcomeDismissed: true });
     setWelcome(null);
   }
   function startWelcome() {
-    if (welcome?.role) markRoleSeen(welcome.role);
-    else setGuideState({ welcomeDismissed: true });
+    setGuideState({ welcomeDismissed: true });
     startTourRun(welcome?.tourId ?? WELCOME_TOUR_ID);
   }
 
   const activeTour = tourId ? getTourById(tourId) : null;
+  const activeSteps = activeTour ? tourStepsFor(activeTour, { roleTokens, enabledModules }) : [];
 
   return (
     <>
       {welcome ? <WelcomeCard offer={welcome} onStart={startWelcome} onDismiss={dismissWelcome} /> : null}
 
-      {activeTour ? (
+      {activeTour && activeSteps.length > 0 ? (
         <GuidedTour
           key={tourRunId}
-          steps={activeTour.steps}
+          steps={activeSteps}
           tourTitle={activeTour.title}
           onClose={() => {
             setTourId(null);
@@ -126,9 +119,7 @@ export function GuideProvider() {
         />
       ) : null}
 
-      {helpOpen ? (
-        <HelpCenter onClose={() => setHelpOpen(false)} onStartTour={(id) => startTourRun(id)} />
-      ) : null}
+      {helpOpen ? <HelpCenter onClose={() => setHelpOpen(false)} onStartTour={(id) => startTourRun(id)} /> : null}
     </>
   );
 }

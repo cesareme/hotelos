@@ -9,9 +9,11 @@
 // Interaction contract:
 //   - Opens via the `open` prop (controlled by the parent toolbar bell button).
 //   - Closes via the X button, the Esc key, or a click on the dimmed backdrop.
-//   - "Marcar todas como leidas" is a visual affordance only; the parent owns
-//     notification state, so this component exposes the click via the optional
-//     `onMarkAllAsRead` callback.
+//   - "Marcar todas como leídas" and the per-card "Marcar como leída" are
+//     visual affordances only; the parent owns notification state (Tanda 5:
+//     the shell feeds it from GET /notifications and POSTs the read marks),
+//     so this component exposes the clicks via the optional `onMarkAllAsRead`
+//     and `onMarkAsRead` callbacks.
 //
 // Accessibility notes:
 //   - Rendered as role="dialog" with aria-modal so screen readers announce it.
@@ -21,6 +23,7 @@
 
 import { useEffect, useId, useMemo, type CSSProperties, type ReactNode } from "react";
 
+import { date as formatDate, time as formatTime } from "../../lib/format";
 import {
   CheckCircleIcon,
   ExclamationCircleIcon,
@@ -51,11 +54,15 @@ export interface CocoaNotificationCenterProps {
   onClose: () => void;
   notifications: Array<CocoaNotification>;
   /**
-   * Optional handler for the "Marcar todas como leidas" header button. If
+   * Optional handler for the "Marcar todas como leídas" header button. If
    * omitted, the button is hidden because there would be no way for the parent
    * to react to it.
    */
   onMarkAllAsRead?: () => void;
+  /** Optional per-card handler: unread cards get a "Marcar como leída" action. */
+  onMarkAsRead?: (id: string) => void;
+  /** Optional loading/error line under the header (feed fetched by the parent). */
+  status?: string | null;
 }
 
 // Buckets correspond to the three sections rendered in the list. Notifications
@@ -118,10 +125,8 @@ function formatTimestamp(timestamp: string, now: Date): string {
   if (diffMinutes < 1) return "Ahora";
   if (diffMinutes < 60) return `Hace ${diffMinutes} min`;
   const sameDay = startOfDay(ts).getTime() === startOfDay(now).getTime();
-  if (sameDay) {
-    return ts.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  }
-  return ts.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  if (sameDay) return formatTime(ts);
+  return formatDate(ts, "medium");
 }
 
 interface TypeStyle {
@@ -144,7 +149,7 @@ function styleFor(type: CocoaNotificationType | undefined): TypeStyle {
 }
 
 export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
-  const { open, onClose, notifications, onMarkAllAsRead } = props;
+  const { open, onClose, notifications, onMarkAllAsRead, onMarkAsRead, status } = props;
   const headingId = useId();
 
   // Esc closes the panel — parity with SidePanel and CommandPalette so keyboard
@@ -314,7 +319,7 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
                 onClick={onMarkAllAsRead}
                 data-testid="cocoa-notification-mark-all"
               >
-                Marcar todas como leidas
+                Marcar todas como leídas
               </button>
             ) : null}
             <button
@@ -330,6 +335,12 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
           </div>
         </header>
 
+        {status ? (
+          <div role="status" aria-live="polite" style={{ padding: "var(--cocoa-space-2) var(--cocoa-space-4)", fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)", borderBottom: "1px solid var(--cocoa-separator)" }}>
+            {status}
+          </div>
+        ) : null}
+
         {totalCount === 0 ? (
           <EmptyState />
         ) : (
@@ -342,7 +353,7 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
                   <SectionHeader>{BUCKET_LABELS[bucket]}</SectionHeader>
                   <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
                     {items.map((item) => (
-                      <NotificationCard key={item.id} notification={item} now={grouped.now} />
+                      <NotificationCard key={item.id} notification={item} now={grouped.now} onMarkAsRead={onMarkAsRead} />
                     ))}
                   </div>
                 </section>
@@ -371,12 +382,17 @@ function SectionHeader({ children }: { children: ReactNode }) {
 interface NotificationCardProps {
   notification: CocoaNotification;
   now: Date;
+  onMarkAsRead?: (id: string) => void;
 }
 
-function NotificationCard({ notification, now }: NotificationCardProps) {
-  const { title, message, type, timestamp, read, actions } = notification;
+function NotificationCard({ notification, now, onMarkAsRead }: NotificationCardProps) {
+  const { id, title, message, type, timestamp, read } = notification;
   const { icon, color } = styleFor(type);
   const isUnread = !read;
+  const actions: CocoaNotificationAction[] = [
+    ...(notification.actions ?? []),
+    ...(isUnread && onMarkAsRead ? [{ label: "Marcar como leída", onClick: () => onMarkAsRead(id) }] : [])
+  ];
 
   const cardStyle: CSSProperties = {
     position: "relative",

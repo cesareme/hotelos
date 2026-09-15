@@ -6,6 +6,7 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { createId } from "../../lib/ids.js";
+import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
 
 // ---------------------------------------------------------------------------
 // Permission keys
@@ -15,6 +16,9 @@ import { createId } from "../../lib/ids.js";
 // ---------------------------------------------------------------------------
 export const TOOL_REGISTRY_READ_PERMISSION: PermissionKey = "ai_governance.read";
 export const TOOL_REGISTRY_WRITE_PERMISSION: PermissionKey = "ai_tool_registry.manage";
+
+/** Neutral 404 for a tool name that is not in the registry (never echoes the name). */
+export const TOOL_NOT_FOUND_MESSAGE = "Herramienta no encontrada.";
 
 export const AUTOMATION_LEVELS = ["off", "suggest", "suggest_and_confirm", "autonomous"] as const;
 export type AutomationLevel = (typeof AUTOMATION_LEVELS)[number];
@@ -242,9 +246,9 @@ export async function getTool(input: { context?: UserContext; toolName: string }
   if (input.context) requirePermissions(input.context, [TOOL_REGISTRY_READ_PERMISSION]);
 
   const row = await prisma.aiToolRegistry.findUnique({ where: { toolName: input.toolName } });
-  if (!row) {
-    throw new Error(`Tool ${input.toolName} is not in the registry. Run sync if it exists in code.`);
-  }
+  // Tanda 5 (L1c · api): an unknown tool name is a 404 (neutral message), not
+  // a 500 — the only way to reach it is typing a name that is not registered.
+  if (!row) throw new NotFoundError(TOOL_NOT_FOUND_MESSAGE);
 
   const definition = DEFINITION_BY_NAME.get(row.toolName);
   const settingRows = await prisma.propertyAiToolSetting.findMany({
@@ -317,15 +321,11 @@ export async function setPropertyToolSetting(input: {
   if (input.context) requirePermissions(input.context, [TOOL_REGISTRY_WRITE_PERMISSION]);
 
   if (input.automationLevel && !AUTOMATION_LEVELS.includes(input.automationLevel)) {
-    throw new Error(
-      `Invalid automationLevel "${input.automationLevel}". Expected one of: ${AUTOMATION_LEVELS.join(", ")}.`
-    );
+    throw new BadRequestError(`Nivel de automatización no válido. Valores admitidos: ${AUTOMATION_LEVELS.join(", ")}.`);
   }
 
   const registry = await prisma.aiToolRegistry.findUnique({ where: { toolName: input.toolName } });
-  if (!registry) {
-    throw new Error(`Tool ${input.toolName} is not in the registry. Run sync first.`);
-  }
+  if (!registry) throw new NotFoundError(TOOL_NOT_FOUND_MESSAGE);
 
   const existing = await prisma.propertyAiToolSetting.findUnique({
     where: { propertyId_toolName: { propertyId: input.propertyId, toolName: input.toolName } }

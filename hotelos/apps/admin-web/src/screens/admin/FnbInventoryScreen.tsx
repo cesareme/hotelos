@@ -4,16 +4,19 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import type { StockBalance, MenuItem, MenuRecipe } from "../../services/fnbInventoryApi";
 import { fetchMenuItemDetail } from "../../services/fnbInventoryApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
+import { useTabHost } from "../tabs/TabHost";
+import { number } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
 function fmtNum(n: number): string {
-  return new Intl.NumberFormat("es-ES", { maximumFractionDigits: 3 }).format(n);
+  return number(n, { maximumFractionDigits: 3 });
 }
 
 type Tab = "stock" | "menu";
 
 export function FnbInventoryScreen() {
+  const hosted = useTabHost() !== null;
   const balances = useApiData<{ items: StockBalance[] }>(`/properties/${PROPERTY_ID}/stock-balances`, { pollIntervalMs: 60000 });
   const menus = useApiData<{ items: MenuItem[] }>(`/properties/${PROPERTY_ID}/menu-items`, { pollIntervalMs: 60000 });
 
@@ -55,15 +58,17 @@ export function FnbInventoryScreen() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>F&B · Inventario</p>
-          <h2 style={{ color: "var(--ink)" }}>Inventario y carta</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Stock en vivo + carta del TPV con sus recetas (BOM). Al cerrar una comanda, el motor descuenta
-            automáticamente los ingredientes consumidos.
-          </p>
-        </div>
+      <header className="bo-card-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div>
+            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Punto de venta · Existencias</p>
+            <h2 style={{ color: "var(--ink)" }}>Existencias y carta</h2>
+            <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
+              Existencias en vivo y carta del TPV con sus recetas. Al cerrar una comanda, el motor descuenta
+              automáticamente los ingredientes consumidos.
+            </p>
+          </div>
+        )}
         <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
           {(balances.loading || menus.loading) ? <Spinner size="sm" /> : null}
           <button type="button" onClick={() => { balances.refresh(); menus.refresh(); }}>↻ Actualizar</button>

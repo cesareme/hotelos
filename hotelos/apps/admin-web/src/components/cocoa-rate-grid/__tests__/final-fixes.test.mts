@@ -159,7 +159,7 @@ describe("final · etiquetas coherentes de modo, proveedor y tipo (browser-ux-fi
     for (const mode of ["stub", "sandbox", "real"] as const) {
       assert.ok(CHANNEL_MODE_LABELS[mode].toLowerCase().startsWith(channelModeLabel(mode)), `${mode}: ${CHANNEL_MODE_LABELS[mode]} vs ${channelModeLabel(mode)}`);
     }
-    assert.equal(CHANNEL_MODE_LABELS.sandbox, "Modo de pruebas (sandbox del proveedor)");
+    assert.equal(CHANNEL_MODE_LABELS.sandbox, "Modo de pruebas (entorno de pruebas del proveedor)");
   });
   it("proveedor y tipo de canal en español, sin enum crudo", () => {
     assert.equal(providerLabel("booking_com"), "Booking.com");

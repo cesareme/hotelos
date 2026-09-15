@@ -4,6 +4,7 @@ import { useApiData } from "../../hooks/useApiData";
 import { approveAbsence, clockIn, clockOut, createShift } from "../../services/workforceApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { SidePanel, DetailRow } from "../../components/SidePanel";
+import { date, number, time } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -25,15 +26,13 @@ type WorkforceDashboardData = {
 const ABSENCE_TYPE_LABELS: Record<string, string> = { vacation: "vacaciones", sick: "baja médica", personal: "personal", unpaid: "sin sueldo", other: "otro" };
 
 function fmtNum(v: number | undefined): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true, maximumFractionDigits: 1 }).format(v ?? 0);
+  return number(v, { maximumFractionDigits: 1 });
 }
 function fmtDate(v: string): string {
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? v : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short" });
+  return date(v, "dayMonth");
 }
 function fmtTime(v: string): string {
-  const d = new Date(v);
-  return Number.isNaN(d.getTime()) ? v : d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  return time(v);
 }
 
 export function WorkforceDashboard() {
@@ -126,7 +125,7 @@ export function WorkforceDashboard() {
                 {clockEntries.slice(0, 8).map((e) => (
                   <div key={e.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
                     <span><strong>{String(e.payload?.staffName ?? "—")}</strong> <span className={`bo-status ${e.payload?.action === "out" ? "info" : "ok"}`} style={{ fontSize: 10 }}>{e.payload?.action === "out" ? "salida" : "entrada"}</span></span>
-                    <span className="bo-muted" style={{ fontSize: 12 }}>{e.createdAt ? new Date(e.createdAt).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }) : ""}</span>
+                    <span className="bo-muted" style={{ fontSize: 12 }}>{time(e.createdAt, { empty: "" })}</span>
                   </div>
                 ))}
               </div>
@@ -252,7 +251,7 @@ export function WorkforceDashboard() {
             <>
               <DetailRow label="Empleado">{selectedShift.staffName}</DetailRow>
               {selectedShift.role ? <DetailRow label="Puesto">{selectedShift.role}</DetailRow> : null}
-              <DetailRow label="Fecha">{start.toLocaleDateString("es-ES", { weekday: "long", day: "2-digit", month: "long" })}</DetailRow>
+              <DetailRow label="Fecha">{date(start, "weekday")}</DetailRow>
               <DetailRow label="Entrada">{fmtTime(selectedShift.startAt)}</DetailRow>
               <DetailRow label="Salida">{fmtTime(selectedShift.endAt)}</DetailRow>
               <DetailRow label="Duración">{fmtNum(hours)} h</DetailRow>

@@ -12,6 +12,7 @@
 //   UI labels it "PDF (imprimir)" and explains the print/save flow instead
 //   of pretending a binary PDF is produced.
 // - Generation errors are surfaced verbatim next to the export card.
+import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   downloadGeneratedExport,
@@ -24,6 +25,7 @@ import {
 } from "../../services/revenueExportApi";
 import { EmptyState, ErrorState, LoadingBlock, SkeletonLines } from "../../components/States";
 import { useToast } from "../../components/Toast";
+import { number, time } from "../../lib/format";
 
 const MS_DAY = 86_400_000;
 
@@ -46,14 +48,11 @@ function fmtBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toLocaleString("es-ES", { maximumFractionDigits: 1 })} KB`;
-  return `${(kb / 1024).toLocaleString("es-ES", { maximumFractionDigits: 1 })} MB`;
+  if (kb < 1024) return `${number(kb, { maximumFractionDigits: 1 })} KB`;
+  return `${number(kb / 1024, { maximumFractionDigits: 1 })} MB`;
 }
 function fmtTime(isoTs: string): string {
-  const d = new Date(isoTs);
-  return Number.isNaN(d.getTime())
-    ? "—"
-    : d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return time(isoTs, { seconds: true });
 }
 
 /** Default date windows per export code (contract §3); generic fallback for unknown codes. */
@@ -238,6 +237,8 @@ function ExportCard(props: {
 }
 
 export function RevenueExportCenter() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
 
   const [catalog, setCatalog] = useState<ExportCatalog | null>(null);
@@ -370,8 +371,12 @@ export function RevenueExportCenter() {
     <section className="bo-card" style={{ display: "grid", gap: 20 }}>
       <div className="bo-card-head">
         <div>
-          <p className="bo-muted">Revenue · Exportación</p>
-          <h2>Centro de exportación de Revenue</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted">Informes · Centro de informes</p>
+              <h2>Exportaciones de revenue</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ margin: "4px 0 0", textTransform: "none", fontSize: 12, letterSpacing: 0 }}>
             Los informes del ritual de revenue se generan bajo demanda con los datos de la propiedad y se descargan
             al momento: CSV y Excel para trabajar, páginas imprimibles para dirección.

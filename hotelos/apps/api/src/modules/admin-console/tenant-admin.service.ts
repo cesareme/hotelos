@@ -575,10 +575,14 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
     });
     const ownerTemplate = await applyRoleTemplate(ownerRole.id, "owner", { db: tx });
 
-    // Tanda 4: template roles Manager / Recepción / Housekeeping (no users
-    // attached) so the invite role selector offers real options from day one
-    // instead of "Owner" for every employee. Same transaction: a failure rolls
-    // the whole tenant back rather than leaving a half-provisioned org.
+    // Tanda 5: the 10 organization templates of ORGANIZATION_TEMPLATE_ROLE_KEYS
+    // (provisionDefaultTemplateRoles, Spanish names; no users attached) so the
+    // invite role selector offers real options from day one instead of "Owner"
+    // for every employee. The Owner created above is recognised by its
+    // template_key and topped up, never duplicated as «Propietario»; a role of
+    // another template already using a name is reported as `conflict`. Same
+    // transaction: a failure rolls the whole tenant back rather than leaving a
+    // half-provisioned org.
     const templateRoles = await provisionDefaultTemplateRoles(organization.id, { db: tx });
 
     const user = await tx.user.create({

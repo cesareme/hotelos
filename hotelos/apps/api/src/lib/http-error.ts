@@ -98,6 +98,35 @@ export function describePrismaError(
  * value: explicit `statusCode`, Fastify validation errors, and the most
  * common Prisma known-request-error codes.
  */
+/**
+ * Tanda 5 (L1c · api): Fastify's own content-type/body errors (code
+ * FST_ERR_CTP_*) reach the global handler with an English message and a
+ * correct status (400/413/415). They are client errors, so the message must
+ * be Spanish like every other 4xx of this API: `PATCH …/modules/:code` with
+ * `Content-Type: application/json` and an empty body used to answer «Body
+ * cannot be empty when content-type is set to 'application/json'». Returns
+ * null for anything else so the caller falls back to its own handling.
+ */
+export function describeFastifyContentTypeError(error: unknown): { statusCode: number; message: string } | null {
+  if (!error || typeof error !== "object") return null;
+  const code = (error as { code?: unknown }).code;
+  if (typeof code !== "string") return null;
+  switch (code) {
+    case "FST_ERR_CTP_EMPTY_JSON_BODY":
+      return { statusCode: 400, message: "El cuerpo de la petición debe ser un objeto JSON." };
+    case "FST_ERR_CTP_INVALID_JSON_BODY":
+      return { statusCode: 400, message: "El cuerpo de la petición no es JSON válido." };
+    case "FST_ERR_CTP_INVALID_MEDIA_TYPE":
+      return { statusCode: 415, message: "Tipo de contenido no admitido: envía application/json." };
+    case "FST_ERR_CTP_INVALID_CONTENT_LENGTH":
+      return { statusCode: 400, message: "La longitud del cuerpo de la petición no coincide con Content-Length." };
+    case "FST_ERR_CTP_BODY_TOO_LARGE":
+      return { statusCode: 413, message: "El cuerpo de la petición es demasiado grande." };
+    default:
+      return null;
+  }
+}
+
 export function statusCodeForError(error: unknown): number {
   if (error && typeof error === "object") {
     const e = error as { statusCode?: unknown; validation?: unknown; code?: unknown };

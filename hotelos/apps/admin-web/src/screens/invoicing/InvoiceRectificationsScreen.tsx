@@ -1,3 +1,4 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -7,6 +8,7 @@ import {
   type RectifyingReasonCode
 } from "../../services/pmsCommerceApi";
 import { InvoiceRectifyDialog } from "./InvoiceRectifyDialog";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -33,6 +35,8 @@ function startOfMonth(d = new Date()): Date {
 }
 
 export function InvoiceRectificationsScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const [invoices, setInvoices] = useState<RectifyingFlavour[]>([]);
   const [dialogTargetId, setDialogTargetId] = useState<string | null>(null);
   const [status, setStatus] = useState("Loading invoices…");
@@ -80,8 +84,12 @@ export function InvoiceRectificationsScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Finance & Compliance · Facturas rectificativas</div>
-          <h1 className="bo-page-title">Rectifying invoices</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Finanzas · Facturación y cobros</div>
+              <h1 className="bo-page-title">Rectificativas</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Audit trail and KPIs for *facturas rectificativas* issued under RD 1496/2003 (art. 13–15) and
             RD 87/2005. Every rectifying invoice carries an R1–R5 reason code, a link to the original
@@ -135,7 +143,7 @@ export function InvoiceRectificationsScreen() {
                   <strong>{inv.invoiceNumber ?? inv.id}</strong>
                   <small>
                     {" "}
-                    {inv.rectifyingReasonCode ?? inv.invoiceType} · {inv.total} EUR · {inv.status}
+                    {inv.rectifyingReasonCode ?? inv.invoiceType} · {money(inv.total)} · {inv.status}
                   </small>
                 </span>
                 <span className="bo-muted">
@@ -166,7 +174,7 @@ export function InvoiceRectificationsScreen() {
                 .filter((i: RectifyingFlavour) => i.status === "issued" && !isRectifying(i))
                 .map((i: RectifyingFlavour) => (
                   <option key={i.id} value={i.id}>
-                    {i.invoiceNumber ?? i.id} · {i.total} EUR
+                    {i.invoiceNumber ?? i.id} · {money(i.total)}
                   </option>
                 ))}
             </select>

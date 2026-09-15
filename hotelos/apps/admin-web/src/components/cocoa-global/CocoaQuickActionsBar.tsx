@@ -42,7 +42,7 @@ export function CocoaQuickActionsBar({ actions }: CocoaQuickActionsBarProps) {
   return (
     <div
       role="toolbar"
-      aria-label="Quick actions"
+      aria-label="Acciones rápidas"
       style={barStyle}
     >
       {actions.map((action) => (

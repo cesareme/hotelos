@@ -6,11 +6,13 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
+  ORGANIZATION_TEMPLATE_ROLE_KEYS,
   ORG_PERMISSION_KEYS,
   PERMISSIONS,
   PLATFORM_PERMISSION_KEYS,
   ROLE_PERMISSION_MAP,
   ROLE_TEMPLATE_KEYS,
+  ROLE_TEMPLATE_LABELS_ES,
   isPlatformPermission,
   type PermissionKey
 } from "@hotelos/shared";
@@ -278,16 +280,24 @@ describe("role templates", () => {
     assert.throws(() => templatePermissionKeys("nope"), /Unknown role template "nope"/);
   });
 
-  it("DEFAULT_TENANT_ROLE_TEMPLATES resolve back to their template by name", () => {
-    assert.ok(DEFAULT_TENANT_ROLE_TEMPLATES.length >= 3);
+  it("DEFAULT_TENANT_ROLE_TEMPLATES are the 10 organisation templates (Tanda 5 · L1b) with their Spanish names, and resolve back by name", () => {
+    assert.deepEqual(
+      DEFAULT_TENANT_ROLE_TEMPLATES.map((template) => template.templateKey),
+      [...ORGANIZATION_TEMPLATE_ROLE_KEYS],
+      "one entry per ORGANIZATION_TEMPLATE_ROLE_KEYS template, same order"
+    );
     for (const template of DEFAULT_TENANT_ROLE_TEMPLATES) {
       assert.ok(isRoleTemplateKey(template.templateKey));
+      assert.equal(template.name, ROLE_TEMPLATE_LABELS_ES[template.templateKey]);
       assert.equal(resolveTemplateKeyForRoleName(template.name), template.templateKey, template.name);
-      assert.notEqual(template.templateKey, "owner");
     }
     const names = DEFAULT_TENANT_ROLE_TEMPLATES.map((template) => template.name.toLowerCase());
-    assert.equal(new Set(names).size, names.length);
-    assert.equal(names.includes("owner"), false);
+    assert.equal(new Set(names).size, names.length, "names are unique (case-insensitive)");
+    assert.ok(DEFAULT_TENANT_ROLE_TEMPLATES.some((template) => template.templateKey === "owner"), "owner is provisioned (matched by templateKey against createTenant's Owner)");
+    assert.equal(DEFAULT_TENANT_ROLE_TEMPLATES.some((template) => template.templateKey === "admin"), false, "the org admin template is not materialised by default (§3 reserves admin for the platform)");
+    for (const key of ["manager", "receptionist", "housekeeper", "maintenance", "accountant", "compliance", "revenue", "sales", "fnb"]) {
+      assert.ok(DEFAULT_TENANT_ROLE_TEMPLATES.some((template) => template.templateKey === key), `${key} missing`);
+    }
   });
 });
 
@@ -477,20 +487,52 @@ describe("createRoleFromTemplate (fake store)", () => {
 // ---------------------------------------------------------------------------
 
 describe("provisionDefaultTemplateRoles (fake store)", () => {
-  it("creates Manager / Recepción / Housekeeping with their templates, idempotently", async () => {
+  it("creates the 9 non-owner templates with their Spanish names, tops up createTenant's Owner instead of adding «Propietario», idempotently", async () => {
     const fake = createFakeDb({ roles: [{ id: "owner", organizationId: "org_a", name: "Owner", templateKey: "owner" }] });
     const first = await provisionDefaultTemplateRoles("org_a", { db: fake.db });
     assert.deepEqual(
       first.map((role) => [role.name, role.templateKey, role.permissionsCount, role.created]),
-      DEFAULT_TENANT_ROLE_TEMPLATES.map((template) => [template.name, template.templateKey, templateSize(template.templateKey), true])
+      DEFAULT_TENANT_ROLE_TEMPLATES.map((template) =>
+        template.templateKey === "owner"
+          ? ["Owner", "owner", templateSize("owner"), false]
+          : [template.name, template.templateKey, templateSize(template.templateKey), true]
+      )
     );
+    assert.equal(fake.roleByName("org_a", "Propietario"), undefined, "no second full-scope role next to Owner");
     for (const role of first) {
       assert.equal(fake.roleByName("org_a", role.name)?.templateKey, role.templateKey);
       assert.equal(fake.keysOf(role.id).some((key) => isPlatformPermission(key)), false);
+      assert.equal(role.conflict, undefined);
     }
     const second = await provisionDefaultTemplateRoles("org_a", { db: fake.db });
     assert.deepEqual(second.map((role) => role.created), DEFAULT_TENANT_ROLE_TEMPLATES.map(() => false));
-    assert.equal(fake.state.roles.length, 1 + DEFAULT_TENANT_ROLE_TEMPLATES.length);
+    assert.deepEqual(second.map((role) => role.permissionsCount), first.map((role) => role.permissionsCount), "+0 once converged");
+    assert.equal(fake.state.roles.length, 1 + DEFAULT_TENANT_ROLE_TEMPLATES.length - 1);
+  });
+
+  it("adopts a role that already carries the Spanish name (templateKey null) and reports a conflict instead of duplicating a name that follows another template", async () => {
+    const fake = createFakeDb({
+      roles: [
+        { id: "owner", organizationId: "org_b", name: "Owner", templateKey: "owner" },
+        { id: "recepcion", organizationId: "org_b", name: "Recepción", templateKey: null },
+        // Org admin template: not in the default set, so nothing tops it up.
+        { id: "pisos", organizationId: "org_b", name: "Pisos", templateKey: "admin" }
+      ]
+    });
+    const result = await provisionDefaultTemplateRoles("org_b", { db: fake.db });
+    const recepcion = result.find((role) => role.templateKey === "receptionist");
+    assert.ok(recepcion);
+    assert.equal(recepcion.id, "recepcion");
+    assert.equal(recepcion.created, false);
+    assert.equal(fake.roleByName("org_b", "Recepción")?.templateKey, "receptionist", "adoption stamps templateKey");
+    assert.equal(recepcion.permissionsCount, templateSize("receptionist"));
+    const pisos = result.find((role) => role.name === "Pisos");
+    assert.ok(pisos);
+    assert.equal(pisos.templateKey, "admin", "the «Pisos» row that follows another template is left as it is");
+    assert.match(pisos.conflict ?? "", /sigue la plantilla "admin"/);
+    assert.equal(fake.keysOf("pisos").length, 0, "no template applied to the conflicting row");
+    assert.equal(result.some((role) => role.templateKey === "housekeeper"), false, "housekeeper is not created under a second name");
+    assert.equal(fake.state.roles.length, 3 + DEFAULT_TENANT_ROLE_TEMPLATES.length - 3);
   });
 });
 

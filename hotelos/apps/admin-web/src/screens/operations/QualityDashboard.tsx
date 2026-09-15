@@ -1,5 +1,7 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { dateTime } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -52,15 +54,12 @@ function severityChip(severity?: string) {
 }
 
 function formatDate(iso?: string): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  return dateTime(iso);
 }
 
 export function QualityDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const state = useApiData<QualityDashboardData>(
     `/dashboards/quality?propertyId=${PROPERTY_ID}`,
     { pollIntervalMs: 60000 }
@@ -77,8 +76,12 @@ export function QualityDashboard() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Quality</div>
-          <h1 className="bo-page-title">Quality cases</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Comercial · Reputación y calidad</div>
+              <h1 className="bo-page-title">Calidad</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Panel operativo de calidad: casos abiertos, críticos y resueltos recientemente,
             tiempo medio de resolución, distribución por tipo y estado, y modos de fallo más
@@ -87,7 +90,7 @@ export function QualityDashboard() {
         </div>
         <div className="bo-page-head-actions">
           <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ Refresh
+            ↻ Actualizar
           </button>
         </div>
       </div>
@@ -100,12 +103,12 @@ export function QualityDashboard() {
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${openStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Open cases</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Casos abiertos</span></div>
           <div className="rev-kpi-value">{kpis.openCases}</div>
           <div className="rev-kpi-delta">currently active</div>
         </article>
         <article className={`rev-kpi ${criticalStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Critical open</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Críticos abiertos</span></div>
           <div className="rev-kpi-value">{kpis.criticalOpen}</div>
           <div className="rev-kpi-delta">priority: critical / urgent / high</div>
         </article>
@@ -115,12 +118,12 @@ export function QualityDashboard() {
           <div className="rev-kpi-delta">no SLA target configured</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Avg resolution</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Resolución media</span></div>
           <div className="rev-kpi-value">{kpis.avgResolutionHours}h</div>
           <div className="rev-kpi-delta">hours per resolved case</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Closed last 30d</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Cerrados en 30 días</span></div>
           <div className="rev-kpi-value">{kpis.closedLast30d}</div>
           <div className="rev-kpi-delta">resolved in last 30 days</div>
         </article>
@@ -129,17 +132,17 @@ export function QualityDashboard() {
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Cases by type</h3>
+            <h3>Casos por tipo</h3>
             <span className="bo-chip">{casesByType.length} buckets</span>
           </div>
           {casesByType.length === 0 ? (
-            <p className="bo-muted">No quality cases in the selected window.</p>
+            <p className="bo-muted">Sin casos de calidad en el periodo seleccionado.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Case type</th>
-                  <th style={{ textAlign: "right" }}>Count</th>
+                  <th>Tipo de caso</th>
+                  <th style={{ textAlign: "right" }}>Número</th>
                 </tr>
               </thead>
               <tbody>
@@ -156,17 +159,17 @@ export function QualityDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Cases by status</h3>
+            <h3>Casos por estado</h3>
             <span className="bo-chip">{casesByStatus.length} buckets</span>
           </div>
           {casesByStatus.length === 0 ? (
-            <p className="bo-muted">No quality cases in the selected window.</p>
+            <p className="bo-muted">Sin casos de calidad en el periodo seleccionado.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Status</th>
-                  <th style={{ textAlign: "right" }}>Count</th>
+                  <th>Estado</th>
+                  <th style={{ textAlign: "right" }}>Número</th>
                 </tr>
               </thead>
               <tbody>
@@ -185,17 +188,17 @@ export function QualityDashboard() {
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Top failure modes</h3>
+            <h3>Causas más frecuentes</h3>
             <span className="bo-chip">{topFailureModes.length}</span>
           </div>
           {topFailureModes.length === 0 ? (
-            <p className="bo-muted">No resolved cases in the selected window.</p>
+            <p className="bo-muted">Sin casos resueltos en el periodo seleccionado.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Root cause</th>
-                  <th style={{ textAlign: "right" }}>Count</th>
+                  <th>Causa raíz</th>
+                  <th style={{ textAlign: "right" }}>Número</th>
                 </tr>
               </thead>
               <tbody>
@@ -212,11 +215,11 @@ export function QualityDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Recent cases</h3>
+            <h3>Casos recientes</h3>
             <span className="bo-chip">{recentCases.length}</span>
           </div>
           {recentCases.length === 0 ? (
-            <p className="bo-muted">No recent quality cases.</p>
+            <p className="bo-muted">Sin casos recientes.</p>
           ) : (
             <ul className="bo-list">
               {recentCases.map((c) => (

@@ -1,6 +1,8 @@
 import { getActivePropertyId, getActivePropertyName } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { ReportErrorCard } from "./ReportErrorCard";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -47,10 +49,11 @@ function quarterRange(year: number, quarter: number): { from: string; to: string
 }
 
 function fmt(amount: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR", minimumFractionDigits: 2 }).format(amount);
+  return money(amount);
 }
 
-export function Modelo111Screen() {
+export function Modelo111Screen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const initial = useMemo(defaultQuarter, []);
   const [year, setYear] = useState(initial.year);
   const [quarter, setQuarter] = useState<number>(initial.quarter);
@@ -73,8 +76,8 @@ export function Modelo111Screen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">AEAT · Modelo 111</div>
-          <h1 className="bo-page-title">Retenciones IRPF trimestrales</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">AEAT · Modelo 111</div>}
+          {embedded ? null : <h1 className="bo-page-title">Retenciones IRPF trimestrales</h1>}
           <p className="bo-page-subtitle">
             Agregación de la cuenta <strong>4751 H.P. acreedor por retenciones practicadas</strong> por código de
             percepción (empleados, profesionales, actividades agrarias, …), con mapeo a las casillas oficiales del
@@ -83,8 +86,6 @@ export function Modelo111Screen() {
         </div>
         <div className="bo-page-head-actions">
           <button type="button" onClick={refresh}>↻ Recalcular</button>
-          <button type="button" className="ghost">Export CSV</button>
-          <button type="button" className="primary">Generar PDF AEAT</button>
         </div>
       </div>
 
@@ -121,9 +122,7 @@ export function Modelo111Screen() {
           Calculando agregación…
         </div>
       ) : error ? (
-        <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)" }}>
-          <h3>Error</h3><p className="bo-muted">Couldn't load this report right now. Refresh to retry.</p>
-        </div>
+        <ReportErrorCard message={error} onRetry={refresh} />
       ) : !data ? (
         <div className="bo-card" style={{ textAlign: "center", padding: 48 }}>
           <h3>Sin datos</h3>

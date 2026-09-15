@@ -8,11 +8,13 @@ import { getActivePropertyId } from "../services/activeProperty";
 import { fetchPropertyIntegrations, isPaymentIntegration, type PropertyIntegration } from "../services/billingApi";
 import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
 import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { pageHead } from "./tabs/configuracion/tab-helpers";
 import { CocoaCard } from "../components/cocoa/CocoaCard";
 import { CocoaButton } from "../components/cocoa/CocoaButton";
 import { CocoaTable, type CocoaTableColumn } from "../components/cocoa/CocoaTable";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
+import { dateTime } from "../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -23,7 +25,9 @@ const STATUS_META: Record<PropertyIntegration["status"], { label: string; tone: 
   disconnected: { label: "Desconectado", tone: "info" }
 };
 
-export function PaymentSettings() {
+export function PaymentSettings({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const [integrations, setIntegrations] = useState<PropertyIntegration[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +65,7 @@ export function PaymentSettings() {
         }
       },
       { key: "auth", label: "Autenticación", width: "130px", render: (row) => row.provider?.authType ?? "—" },
-      { key: "lastSyncAt", label: "Última sincronización", width: "170px", render: (row) => (row.lastSyncAt ? new Date(row.lastSyncAt).toLocaleString("es-ES") : "—") }
+      { key: "lastSyncAt", label: "Última sincronización", width: "170px", render: (row) => dateTime(row.lastSyncAt) }
     ],
     []
   );
@@ -83,7 +87,7 @@ export function PaymentSettings() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Finanzas y cumplimiento"
         title="Pagos"
         subtitle="Proveedores de pago (PSP) conectados a la propiedad, tokenización y política de reembolsos"

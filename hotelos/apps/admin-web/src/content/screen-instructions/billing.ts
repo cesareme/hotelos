@@ -28,12 +28,7 @@ export const BILLING_INSTRUCTIONS: CocoaHelpContent = {
     "Antes de emitir, verifica que los datos fiscales del huesped o de la empresa pagadora estan completos: NIF/CIF, razon social y direccion son obligatorios para VeriFactu.",
     "Si necesitas una rectificativa, usa la accion 'Rectificar factura' desde el detalle: nunca edites una factura ya emitida.",
   ],
-  shortcuts: [
-    { keys: "Cmd+B", action: "Abrir la pantalla de facturacion (Billing)." },
-    { keys: "Cmd+N", action: "Anadir un nuevo cargo al folio actual." },
-    { keys: "Cmd+P", action: "Registrar un pago sobre el folio abierto." },
-    { keys: "Cmd+Enter", action: "Emitir la factura y enviarla a VeriFactu." },
-  ],
+  shortcuts: [{ keys: "⌘K", action: "Buscar reservas, huéspedes y pantallas" }, { keys: "Esc", action: "Cerrar el panel o diálogo abierto" }],
   relatedScreens: [
     {
       screenId: "Compliance",

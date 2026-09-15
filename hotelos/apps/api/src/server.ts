@@ -45,7 +45,7 @@ import { assertEnv, resolveCorsOrigins, validateEnv } from "./lib/env.js";
 import { createRoleFromTemplate } from "./lib/rbac-catalog.js";
 import { ROLE_TEMPLATE_KEYS, type RoleKey } from "@hotelos/shared";
 import { isSchedulerLeader } from "./lib/scheduler-leader.js";
-import { BadRequestError, ConflictError, ForbiddenError, HttpError, NotFoundError, UnauthorizedError, statusCodeForError, describePrismaError } from "./lib/http-error.js";
+import { BadRequestError, ConflictError, ForbiddenError, HttpError, NotFoundError, UnauthorizedError, statusCodeForError, describePrismaError, describeFastifyContentTypeError } from "./lib/http-error.js";
 import { pageBody, pageHeaders, parsePageQuery } from "./lib/pagination.js";
 import {
   assertEntityAccess,
@@ -294,6 +294,7 @@ import {
   rejectRequest as gdprRejectRequest
 } from "./modules/gdpr/gdpr.service.js";
 import {
+  getCurrentUserProfile,
   createMfaChallenge,
   getSecuritySettings,
   listNotifications,
@@ -1090,17 +1091,24 @@ export async function buildApiServer() {
     // ({ code: "UNIQUE_VIOLATION", target }); the original error is still in
     // the log line above with its full text.
     const prismaDescription = describePrismaError(error);
+    // Tanda 5 (L1c · api): Fastify's body/content-type errors (FST_ERR_CTP_*:
+    // empty or invalid JSON body, unsupported media type, body too large) are
+    // 4xx with an English message — translated here like the Prisma ones.
+    const contentTypeDescription = describeFastifyContentTypeError(error);
     const exposeMessage = prismaDescription
       ? prismaDescription.message
-      : statusCode < 500 && typeof thrownMessage === "string"
-        ? thrownMessage
-        : "Internal Server Error";
+      : contentTypeDescription
+        ? contentTypeDescription.message
+        : statusCode < 500 && typeof thrownMessage === "string"
+          ? thrownMessage
+          : "Internal Server Error";
     const errorLabels: Record<number, string> = {
       401: "Unauthorized",
       403: "Forbidden",
       404: "Not Found",
       409: "Conflict",
       413: "Payload Too Large",
+      415: "Unsupported Media Type",
       429: "Too Many Requests"
     };
     // Typed 4xx errors may carry machine-readable `details` (e.g. the check-out
@@ -1380,6 +1388,15 @@ export async function buildApiServer() {
     // Errors thrown here flow to the global setErrorHandler → 404 JSON body.
     await grantPropertyAccess(request, propertyId);
   });
+
+  // Body of PATCH /backoffice/properties/:propertyId/modules/:moduleCode (L1c):
+  // strict — unknown keys are a 400 — with Spanish issue messages.
+  const ModuleStatePatchSchema = z
+    .object({
+      action: z.enum(["enable", "disable"], { message: "action debe ser enable o disable." }).optional(),
+      configurationJson: z.record(z.string(), z.unknown(), { message: "configurationJson debe ser un objeto." }).optional()
+    })
+    .strict({ message: "Campo no admitido en el cuerpo de la petición." });
 
   /** 400 (not a TypeError → 500) when a JSON body is missing or not an object. */
   function requireObjectBody<T extends object>(body: unknown): T {
@@ -1854,6 +1871,13 @@ export async function buildApiServer() {
       organizationName: orgName.get(property.organizationId) ?? property.organizationId
     }));
   }
+
+  // Tanda 5 (L1a · rbac): the signed-in user with the template key of every
+  // role they hold, per property — the navigation derives its role tokens
+  // from it (apps/admin-web/src/navigation/role-tokens.ts). Self-service: no
+  // permission, served while the password rotation guard is active
+  // (PASSWORD_CHANGE_ALLOWLIST already covers /users/me).
+  app.get("/users/me", async (request) => getCurrentUserProfile(request.userContext));
 
   app.get("/users/me/properties", async (request) => listSwitchableProperties(request.userContext));
 
@@ -3748,7 +3772,13 @@ export async function buildApiServer() {
 
   app.patch("/backoffice/properties/:propertyId/modules/:moduleCode", async (request) => {
     const params = request.params as { propertyId: string; moduleCode: HotelModuleCode };
-    const body = request.body as { action?: "enable" | "disable"; configurationJson?: Record<string, unknown> };
+    // Missing/non-object body → 400 in Spanish (was a TypeError → 500); the
+    // shape is strict (L1c) and an empty object is a 400 instead of a silent
+    // no-op that re-saved the module unchanged with a 200.
+    const body = parse(ModuleStatePatchSchema, requireObjectBody(request.body));
+    if (body.action === undefined && body.configurationJson === undefined) {
+      throw new BadRequestError("Sin cambios que aplicar: indica action (enable | disable) o configurationJson.");
+    }
     if (body.action === "enable") {
       return enablePropertyModule({
         context: request.userContext,
@@ -4204,7 +4234,8 @@ export async function buildApiServer() {
 
   app.patch("/properties/:propertyId/modules/:moduleCode/enable", async (request) => {
     const params = request.params as { propertyId: string; moduleCode: HotelModuleCode };
-    const body = request.body as { configurationJson?: Record<string, unknown> };
+    // Optional body; a non-object one is a 400 in Spanish (L1c), never a TypeError.
+    const body = request.body === undefined || request.body === null ? {} : requireObjectBody<{ configurationJson?: Record<string, unknown> }>(request.body);
     return enablePropertyModule({
       context: request.userContext,
       propertyId: params.propertyId,
@@ -7345,54 +7376,9 @@ export async function buildApiServer() {
     return buildOperationsDirector({ propertyId: q.propertyId ?? request.userContext.propertyId });
   });
   app.get("/developer/api-reference", async () => buildApiReference());
-  app.get("/developer/keyboard-shortcuts", async () => ({
-    categories: [
-      {
-        category: "Global",
-        shortcuts: [
-          { keys: "Cmd+K", action: "Open command palette" },
-          { keys: "Cmd+/", action: "Toggle help" },
-          { keys: "Cmd+,", action: "Open preferences" },
-          { keys: "Cmd+Shift+P", action: "Quick switcher" },
-          { keys: "Esc", action: "Close dialog/popover" }
-        ]
-      },
-      {
-        category: "Navigation",
-        shortcuts: [
-          { keys: "Cmd+1", action: "Go to Dashboard" },
-          { keys: "Cmd+2", action: "Go to Reservations" },
-          { keys: "Cmd+3", action: "Go to Front Desk" },
-          { keys: "Cmd+4", action: "Go to Housekeeping" },
-          { keys: "Cmd+5", action: "Go to Reports" },
-          { keys: "Cmd+[", action: "Back" },
-          { keys: "Cmd+]", action: "Forward" }
-        ]
-      },
-      {
-        category: "Reservations",
-        shortcuts: [
-          { keys: "Cmd+N", action: "New reservation" },
-          { keys: "Cmd+F", action: "Find reservation" },
-          { keys: "Cmd+E", action: "Edit selected reservation" },
-          { keys: "Cmd+Shift+C", action: "Check-in selected reservation" },
-          { keys: "Cmd+Shift+O", action: "Check-out selected reservation" },
-          { keys: "Cmd+D", action: "Duplicate reservation" },
-          { keys: "Cmd+Backspace", action: "Cancel reservation" }
-        ]
-      },
-      {
-        category: "Groups",
-        shortcuts: [
-          { keys: "Cmd+Shift+G", action: "New group block" },
-          { keys: "Cmd+Shift+R", action: "Add rooming list entry" },
-          { keys: "Cmd+Shift+B", action: "Open block manager" },
-          { keys: "Cmd+Shift+I", action: "Import rooming list" },
-          { keys: "Cmd+Shift+E", action: "Export rooming list" }
-        ]
-      }
-    ]
-  }));
+  // Tanda 5 (L1b · api-side): GET /developer/keyboard-shortcuts retired — the
+  // catalogue it served did not match the front (⌘/ reads the local list in
+  // apps/admin-web/src/content/help-articles/keyboard-shortcuts.ts).
   app.get("/copilot/presets", async () => ({ items: COPILOT_PRESET_QUESTIONS }));
   app.post("/copilot/ask", async (request) => {
     const body = (request.body ?? {}) as { propertyId?: string; question?: string };

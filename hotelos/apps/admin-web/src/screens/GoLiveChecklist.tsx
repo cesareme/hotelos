@@ -12,9 +12,11 @@ import { fetchPropertyReadiness, recalculatePropertyReadiness, type PropertyRead
 import { useToast } from "../components/Toast";
 import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
 import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { pageHead } from "./tabs/configuracion/tab-helpers";
 import { CocoaButton } from "../components/cocoa/CocoaButton";
 import { toArray } from "../utils/toArray";
 import { navigateTo, type ScreenKey } from "../lib/navigate";
+import { dateTime } from "../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -46,7 +48,9 @@ function statusMeta(check: ReadinessCheck): { label: string; tone: string } {
   return check.severity === "blocking" ? { label: "Bloqueante", tone: "error" } : { label: "Pendiente", tone: "warn" };
 }
 
-export function GoLiveChecklist() {
+export function GoLiveChecklist({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const { showToast } = useToast();
   const [readiness, setReadiness] = useState<PropertyReadiness | null>(null);
   const [loading, setLoading] = useState(true);
@@ -119,10 +123,10 @@ export function GoLiveChecklist() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Back Office · Puesta en marcha"
         title="Checklist de go-live"
-        subtitle={lastUpdated ? `Última comprobación: ${new Date(lastUpdated).toLocaleString("es-ES")}` : "Aún no se ha calculado el readiness de esta propiedad"}
+        subtitle={lastUpdated ? `Última comprobación: ${dateTime(lastUpdated)}` : "Aún no se ha calculado el readiness de esta propiedad"}
         actions={
           <span style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", alignItems: "center", flexWrap: "wrap" }}>
             <span className={`bo-status ${headerTone}`} style={{ textTransform: "none" }}>
@@ -130,11 +134,6 @@ export function GoLiveChecklist() {
             </span>
             <CocoaButton variant="filled" tone="accent" onClick={() => void handleRecalculate()} disabled={recalculating} loading={recalculating}>
               Recalcular readiness
-            </CocoaButton>
-            {/* OnboardingGoLiveReadiness now aliases this very screen, so the
-                secondary action points at the cutover step that follows it. */}
-            <CocoaButton variant="bordered" tone="neutral" onClick={() => navigateTo("CutoverAssistant")}>
-              Asistente de cutover
             </CocoaButton>
           </span>
         }

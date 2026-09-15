@@ -26,6 +26,7 @@ import { LoadingBlock } from "../../components/States";
 import { apiRequest } from "../../services/api-client";
 import { balanceDueConflict, type BalanceDueConflict } from "../../services/pmsCommerceApi";
 import { logBreadcrumb } from "../../lib/breadcrumb";
+import { DEFAULT_CURRENCY, money } from "../../lib/format";
 
 type Reservation = {
   id: string;
@@ -61,8 +62,7 @@ export type QuickCheckOutProps = {
 type PaymentMethod = "card" | "cash" | "bank_transfer";
 
 function fmtEur(value: number | undefined | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  return money(value);
 }
 
 function fmtName(g: Guest | null): string {
@@ -196,7 +196,7 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
             method: "POST",
             body: {
               amount: amountToCollect,
-              currency: reservation.currency || "EUR",
+              currency: reservation.currency || DEFAULT_CURRENCY,
               method: paymentMethod,
               status: "captured"
             }

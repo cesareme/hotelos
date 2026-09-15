@@ -1,6 +1,8 @@
 import { getActivePropertyId, getActivePropertyName } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { ReportErrorCard } from "./ReportErrorCard";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -35,10 +37,11 @@ function defaultQuarter(): { from: string; to: string; label: string } {
 }
 
 function fmt(amount: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR", minimumFractionDigits: 2 }).format(amount);
+  return money(amount);
 }
 
-export function Modelo303Screen() {
+export function Modelo303Screen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const initial = useMemo(defaultQuarter, []);
   const [fromDate, setFromDate] = useState(initial.from);
   const [toDate, setToDate] = useState(initial.to);
@@ -57,30 +60,28 @@ export function Modelo303Screen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">AEAT · Modelo 303</div>
-          <h1 className="bo-page-title">Declaración trimestral del IVA</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">AEAT · Modelo 303</div>}
+          {embedded ? null : <h1 className="bo-page-title">Declaración trimestral del IVA</h1>}
           <p className="bo-page-subtitle">
             Agregación de la cuenta <strong>477 H.P. IVA repercutido</strong> por bucket de tasa, con mapeo directo a las casillas oficiales del Modelo 303 para presentación.
           </p>
         </div>
         <div className="bo-page-head-actions">
           <button type="button" onClick={refresh}>↻ Recalcular</button>
-          <button type="button" className="ghost">Export CSV</button>
-          <button type="button" className="primary">Generar PDF AEAT</button>
         </div>
       </div>
 
       <div className="rev-toolbar">
         <div className="rev-toolbar-group">
-          <label>Period</label>
+          <label>Desde</label>
           <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
         </div>
         <div className="rev-toolbar-group">
-          <label>End date</label>
+          <label>Hasta</label>
           <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
         </div>
         <div className="rev-toolbar-group">
-          <label>Property</label>
+          <label>Propiedad</label>
           <select disabled defaultValue={getActivePropertyId()}><option value={getActivePropertyId()}>{getActivePropertyName()}</option></select>
         </div>
         <div className="rev-toolbar-spacer" />
@@ -92,7 +93,7 @@ export function Modelo303Screen() {
       {loading ? (
         <div className="bo-card" style={{ textAlign: "center", padding: 48, color: "var(--ink-muted)" }}>Calculando agregación…</div>
       ) : error ? (
-        <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)" }}><h3>Error</h3><p className="bo-muted">Couldn't load this report right now. Refresh to retry.</p></div>
+        <ReportErrorCard message={error} onRetry={refresh} />
       ) : !data || data.buckets.length === 0 ? (
         <div className="bo-card" style={{ textAlign: "center", padding: 48 }}>
           <h3>Sin operaciones en este período</h3>

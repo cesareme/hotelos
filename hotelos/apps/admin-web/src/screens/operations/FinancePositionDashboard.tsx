@@ -1,6 +1,8 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
+import { dateTime, money, percent } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -26,32 +28,12 @@ type FinancePositionDashboardData = {
   recentPayments: Array<{ id: string; amount: number; method: string; capturedAt?: string; reference?: string }>;
 };
 
-const currencyFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true,
-  style: "currency",
-  currency: "EUR",
-  minimumFractionDigits: 2
-});
-
-function money(value: number | null | undefined): string {
-  return currencyFormatter.format(Number.isFinite(value as number) ? (value as number) : 0);
-}
-
 function pct(value: number | null | undefined): string {
-  if (!Number.isFinite(value as number)) return "0%";
-  return `${value}%`;
+  return percent(value);
 }
 
 function formatDateTime(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(d);
+  return dateTime(value);
 }
 
 function bucketTotal(buckets: AgingBuckets | undefined): number {
@@ -66,6 +48,8 @@ function bucketTotal(buckets: AgingBuckets | undefined): number {
 }
 
 export function FinancePositionDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<FinancePositionDashboardData>(
     "/dashboards/finance-position",
     { pollIntervalMs: 60000, query: { propertyId: PROPERTY_ID } }
@@ -100,15 +84,19 @@ export function FinancePositionDashboard() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Finance · Position</div>
-          <h1 className="bo-page-title">AR · AP · Cash</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Finanzas · Tesorería</div>
+              <h1 className="bo-page-title">Tesorería</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Monitor de salud financiera en tiempo real: cuentas a cobrar, cuentas a pagar, tesorería disponible
             y porcentaje de cobro del mes en curso. Solo lectura; refresca automáticamente cada 60 segundos.
           </p>
         </div>
         <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={refresh}>↻ Refresh</button>
+          <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
         </div>
       </div>
 

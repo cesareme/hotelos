@@ -1,3 +1,4 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
@@ -5,6 +6,7 @@ import { apiRequest } from "../../services/api-client";
 import { LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
+import { date, money, type CurrencyInput } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -85,16 +87,12 @@ type AutoMatchResult = {
 
 // ---- Helpers ----
 
-function fmt(amount: number, currency = "EUR"): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true,
-    style: "currency",
-    currency,
-    minimumFractionDigits: 2
-  }).format(amount);
+function fmt(amount: number, currency?: CurrencyInput): string {
+  return money(amount, currency);
 }
 
 function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("es-ES");
+  return date(iso);
 }
 
 function driftClass(drift: number): "ok" | "warn" | "error" {
@@ -112,6 +110,8 @@ const CSV_PLACEHOLDER = `date,amount,description,reference,counterparty
 // ---- Component ----
 
 export function BankReconciliationScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const accounts = useApiData<BankAccountRow[]>("/banking/accounts", { query: { propertyId: PROPERTY_ID } });
   const accountsArr = useMemo(() => toArray<BankAccountRow>(accounts.data), [accounts.data]);
@@ -154,7 +154,7 @@ export function BankReconciliationScreen() {
 
   async function handleCreateAccount() {
     if (!newAccount.name.trim()) {
-      setCreateError("Name is required.");
+      setCreateError("El nombre es obligatorio.");
       return;
     }
     setCreating(true);
@@ -192,7 +192,7 @@ export function BankReconciliationScreen() {
   async function handleImportCsv() {
     if (!selectedAccountId) return;
     if (!csv.trim()) {
-      setImportMsg("Paste CSV first.");
+      setImportMsg("Pega primero el extracto en CSV.");
       return;
     }
     setImporting(true);
@@ -202,7 +202,7 @@ export function BankReconciliationScreen() {
         `/banking/accounts/${selectedAccountId}/statements/import-csv`,
         { method: "POST", body: { csv } }
       );
-      const okMessage = `Imported statement ${result.id} with ${result.lines.length} lines.`;
+      const okMessage = `Extracto importado con ${result.lines.length} líneas.`;
       setImportMsg(okMessage);
       setCsv("");
       statements.refresh();
@@ -211,7 +211,7 @@ export function BankReconciliationScreen() {
       showToast(`Extracto importado · ${result.lines.length} líneas`, { variant: "success" });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      setImportMsg(`Import failed: ${message}`);
+      setImportMsg(`No se pudo importar: ${message}`);
       showToast(message, { variant: "error" });
     } finally {
       setImporting(false);
@@ -232,15 +232,15 @@ export function BankReconciliationScreen() {
         { method: "POST" }
       );
       setAutoMsg(
-        `Scanned ${result.scanned}; matched ${result.matched}; already matched ${result.alreadyMatched}.`
+        `Revisadas ${result.scanned}; conciliadas ${result.matched}; ya conciliadas ${result.alreadyMatched}.`
       );
       statement.refresh();
       reconStatus.refresh();
       accounts.refresh();
-      showToast(`Auto-match · ${result.matched} líneas conciliadas`, { variant: "success" });
+      showToast(`Conciliación automática · ${result.matched} líneas conciliadas`, { variant: "success" });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      setAutoMsg(`Auto-match failed: ${message}`);
+      setAutoMsg(`No se pudo conciliar automáticamente: ${message}`);
       showToast(message, { variant: "error" });
     } finally {
       setAutoBusy(false);
@@ -282,7 +282,7 @@ export function BankReconciliationScreen() {
       showToast("Línea conciliada", { variant: "success" });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      setAutoMsg(`Manual match failed: ${message}`);
+      setAutoMsg(`No se pudo conciliar la línea: ${message}`);
       showToast(message, { variant: "error" });
     }
   }
@@ -296,7 +296,7 @@ export function BankReconciliationScreen() {
       showToast("Conciliación deshecha", { variant: "success" });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      setAutoMsg(`Unmatch failed: ${message}`);
+      setAutoMsg(`No se pudo deshacer la conciliación: ${message}`);
       showToast(message, { variant: "error" });
     }
   }
@@ -307,15 +307,19 @@ export function BankReconciliationScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Treasury · Bank reconciliation</div>
-          <h1 className="bo-page-title">Conciliación bancaria</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Finanzas · Conciliación bancaria</div>
+              <h1 className="bo-page-title">Conciliación bancaria</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
-            Importa extractos en CSV, ejecuta auto-match contra <strong>Payment</strong> y <strong>SupplierBill</strong>, y resuelve manualmente lo que falte.
-            El drift compara el closing del extracto con la cuenta 572 del libro mayor.
+            Importa extractos en CSV, casa automáticamente cada movimiento con los <strong>pagos</strong> y las <strong>facturas de proveedor</strong>, y resuelve a mano lo que falte.
+            La diferencia compara el saldo final del extracto con la cuenta 572 del libro mayor.
           </p>
         </div>
         <div className="bo-page-head-actions">
-          <button type="button" onClick={() => { accounts.refresh(); statements.refresh(); statement.refresh(); reconStatus.refresh(); }}>↻ Refresh</button>
+          <button type="button" onClick={() => { accounts.refresh(); statements.refresh(); statement.refresh(); reconStatus.refresh(); }}>↻ Actualizar</button>
         </div>
       </div>
 
@@ -539,8 +543,8 @@ export function BankReconciliationScreen() {
                                     value={draft?.matchType ?? "payment"}
                                     onChange={(e) => updateDraft(line.id, { matchType: e.target.value as "payment" | "supplier_bill" | "manual" })}
                                   >
-                                    <option value="payment">Payment</option>
-                                    <option value="supplier_bill">SupplierBill</option>
+                                    <option value="payment">Pago</option>
+                                    <option value="supplier_bill">Factura de proveedor</option>
                                     <option value="manual">Manual</option>
                                   </select>
                                   <input

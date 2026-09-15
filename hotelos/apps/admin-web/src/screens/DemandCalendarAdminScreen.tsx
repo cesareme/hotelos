@@ -6,6 +6,8 @@ import { useToast } from "../components/Toast";
 import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
+import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
+import { date } from "../lib/format";
 
 // =====================================================================================
 // Revenue · Calendario de demanda (admin) — wired to
@@ -57,10 +59,7 @@ function impactPill(value?: string) {
 }
 
 function fmtDate(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(`${value}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return value;
-  return new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "short", year: "numeric" }).format(d);
+  return date(value, "medium", { empty: value ?? "—" });
 }
 
 function today(): string {
@@ -153,19 +152,18 @@ export function DemandCalendarAdminScreen() {
 
   return (
     <>
-      <div className="bo-page-head" style={{ marginBottom: "var(--space-6)" }}>
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Revenue / Tarifas</div>
-          <h1 className="bo-page-title">Calendario de demanda</h1>
-          <p className="bo-page-subtitle">
-            Eventos, festivos y periodos de compresión que alimentan la previsión y las explicaciones de precio.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => navigateTo("RevenueForecastExplorer")}>Explorador de forecast</button>
-          <button type="button" className="ghost" onClick={() => navigateTo("RevenueHomeDashboard")}>Inicio de revenue</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Revenue"
+        title="Calendario de demanda"
+        subtitle="Eventos, festivos y periodos de alta demanda que alimentan la previsión y explican los precios."
+        style={{ marginBottom: "var(--space-6)" }}
+        actions={
+          <>
+            <button type="button" className="ghost" onClick={() => navigateTo("RevenueForecastExplorer")}>Explorador de previsión</button>
+            <button type="button" className="ghost" onClick={() => navigateTo("RevenueHomeDashboard")}>Panel de revenue</button>
+          </>
+        }
+      />
 
       <div className="bo-grid two">
         <section className="bo-card">

@@ -27,6 +27,7 @@ import type { Prisma } from "@hotelos/database";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
+import { ConflictError } from "../../lib/http-error.js";
 import { demoStore, type ModuleRecord, type PropertyModuleRecord, type UserContext } from "../../lib/demo-store.js";
 
 type PropertyModuleRow = NonNullable<Awaited<ReturnType<typeof prisma.propertyModule.findUnique>>>;
@@ -65,6 +66,38 @@ function mirrorPropertyModule(record: PropertyModuleRecord): PropertyModuleRecor
   }
   demoStore.propertyModules.push(record);
   return record;
+}
+
+/** Spanish display name of a module (manifest first; the demo catalog as fallback). */
+function moduleDisplayName(moduleCode: HotelModuleCode): string {
+  try {
+    return getHotelModuleManifest(moduleCode).name;
+  } catch {
+    return demoStore.modules.find((candidate) => candidate.code === moduleCode)?.name ?? moduleCode;
+  }
+}
+
+/**
+ * Tanda 5 (L1c · api): enabling a module whose dependencies are not active
+ * is a CONFLICT (409), never a 200 with `status: "rejected"` — the front
+ * announced «activado» on any 2xx. The Spanish message names the missing
+ * modules; `details` carries the codes and names so the module card can
+ * link to them. Pure (no DB) so the unit test covers it.
+ */
+export function moduleDependenciesConflict(moduleCode: HotelModuleCode, missingDependencies: HotelModuleCode[]): ConflictError {
+  const missingDependencyNames = missingDependencies.map(moduleDisplayName);
+  return new ConflictError(
+    `No se puede activar ${moduleDisplayName(moduleCode)}: falta activar ${missingDependencyNames.join(", ")}.`,
+    { code: "MODULE_DEPENDENCIES_MISSING", moduleCode, missingDependencies, missingDependencyNames }
+  );
+}
+
+/** Same rule for disabling an essential module (`isCore`): 409 with a Spanish message. */
+export function coreModuleConflict(moduleCode: HotelModuleCode): ConflictError {
+  return new ConflictError(`No se puede desactivar ${moduleDisplayName(moduleCode)}: es un módulo esencial.`, {
+    code: "CORE_MODULE",
+    moduleCode
+  });
 }
 
 function getModuleRecord(moduleCode: HotelModuleCode): ModuleRecord {
@@ -160,11 +193,22 @@ async function resolveDbModuleId(module: ModuleRecord): Promise<string> {
 // Catalog (static, in-memory by design)
 // ---------------------------------------------------------------------------
 
+/**
+ * Static catalog. Each entry carries the manifest as-is, including (Tanda 5):
+ *  - `enabledByDefault`: starts enabled in a new property (§14.1, reversible;
+ *    `isCore` still means «cannot be disabled» and is only `pms_core`);
+ *  - `menuEntries`: the menu items and tabs of the Tanda 5 navigation tree the
+ *    module unlocks, so ModuleManager can show «qué entradas desbloquea».
+ * `status` keeps its historical values ("core" | "optional") for existing
+ * readers; `defaultEnabled` is the additive flag for the new default.
+ */
 export function listModuleCatalog() {
   return HOTEL_MODULES.map((module) => ({
     ...module,
     dependencies: module.dependencies,
-    status: module.isCore ? "core" : "optional"
+    status: module.isCore ? "core" : "optional",
+    defaultEnabled: module.enabledByDefault,
+    unlocks: module.menuEntries
   }));
 }
 
@@ -231,10 +275,23 @@ export async function hydrateAllPropertyModules(): Promise<number> {
  * async reads re-hydrate from Prisma.
  */
 export function getEnabledModuleCodes(propertyId: string): HotelModuleCode[] {
-  return demoStore.propertyModules
-    .filter((propertyModule) => propertyModule.propertyId === propertyId && propertyModule.status === "enabled")
-    .map((propertyModule) => demoStore.modules.find((candidate) => candidate.id === propertyModule.moduleId)?.code)
+  const rows = demoStore.propertyModules.filter((propertyModule) => propertyModule.propertyId === propertyId);
+  const codeOf = (propertyModule: PropertyModuleRecord): HotelModuleCode | undefined =>
+    demoStore.modules.find((candidate) => candidate.id === propertyModule.moduleId)?.code as HotelModuleCode | undefined;
+  const withRow = new Set(rows.map(codeOf).filter((code): code is HotelModuleCode => Boolean(code)));
+  const enabled = rows
+    .filter((propertyModule) => propertyModule.status === "enabled")
+    .map(codeOf)
     .filter((code): code is HotelModuleCode => Boolean(code));
+  // Tanda 5 (L1b · api-side): a module the property has never touched is in
+  // the state the manifest gives it (`enabledByDefault`: pms_core plus the
+  // reversible §14.1 set) — the same default listBackOfficeModules shows and
+  // ensurePropertyModulePersisted writes, so the menu, ModuleManager and this
+  // gate agree. An explicit row (enabled or disabled) always wins.
+  for (const module of HOTEL_MODULES) {
+    if (module.enabledByDefault && !withRow.has(module.code)) enabled.push(module.code);
+  }
+  return enabled;
 }
 
 /**
@@ -250,16 +307,22 @@ export async function ensurePropertyModulePersisted(propertyId: string, moduleCo
     where: { propertyId_moduleId: { propertyId, moduleId: dbModuleId } }
   });
   if (!row) {
+    // Default status of a row that did not exist yet: the manifest decides
+    // (`enabledByDefault` = isCore or the §14.1 list of Tanda 5, reversible in
+    // packages/product/src/modules/module-manifest.ts). Existing rows are
+    // never touched here, so a property that disabled one of those modules
+    // keeps it disabled.
+    const enabledByDefault = getHotelModuleManifest(moduleCode).enabledByDefault;
     const now = nowIso();
     row = await prisma.propertyModule.create({
       data: {
         id: createId("pm"),
         propertyId,
         moduleId: dbModuleId,
-        status: module.isCore ? "enabled" : "disabled",
+        status: enabledByDefault ? "enabled" : "disabled",
         configurationJson: asJson({}),
-        enabledAt: module.isCore ? new Date(now) : null,
-        disabledAt: module.isCore ? null : new Date(now),
+        enabledAt: enabledByDefault ? new Date(now) : null,
+        disabledAt: enabledByDefault ? null : new Date(now),
         createdAt: new Date(now)
       }
     });
@@ -279,13 +342,7 @@ export async function enablePropertyModule(input: {
   await listPropertyModules(input.propertyId);
   const enabledModules = getEnabledModuleCodes(input.propertyId);
   const missingDependencies = getMissingModuleDependencies(input.moduleCode, enabledModules);
-  if (missingDependencies.length > 0) {
-    return {
-      status: "rejected" as const,
-      moduleCode: input.moduleCode,
-      missingDependencies
-    };
-  }
+  if (missingDependencies.length > 0) throw moduleDependenciesConflict(input.moduleCode, missingDependencies);
 
   const module = getModuleRecord(input.moduleCode);
   const propertyModule = await ensurePropertyModulePersisted(input.propertyId, input.moduleCode);
@@ -342,13 +399,8 @@ export async function disablePropertyModule(input: {
 }) {
   requirePermissions(input.context, ["modules.disable"]);
   const module = getModuleRecord(input.moduleCode);
-  if (module.isCore) {
-    return {
-      status: "rejected" as const,
-      moduleCode: input.moduleCode,
-      reason: "Core modules cannot be disabled."
-    };
-  }
+  // Core modules cannot be disabled: 409 in Spanish (L1c), no silent "rejected" 200.
+  if (module.isCore) throw coreModuleConflict(input.moduleCode);
 
   const propertyModule = await ensurePropertyModulePersisted(input.propertyId, input.moduleCode);
   const before = { ...propertyModule };

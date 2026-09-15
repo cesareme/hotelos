@@ -92,7 +92,7 @@ export function ForgotPasswordScreen(props: ForgotPasswordScreenProps) {
       ) : (
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }} noValidate>
           <label className="bo-form-field">
-            <span>Email</span>
+            <span>Correo electrónico</span>
             <input
               type="email"
               autoComplete="username"

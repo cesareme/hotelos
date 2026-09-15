@@ -1598,6 +1598,15 @@ export type UserContext = {
   /** Granted through REAL roles in the database (never the demo union): may act across organizations. */
   isPlatformAdmin?: boolean;
   /**
+   * Tanda 5 (L1c · api): the properties the user holds a role in
+   * (user_property_roles, every property — `propertyId` is only the active
+   * one). `grantPropertyAccess` (lib/tenancy.ts) restricts a non-platform
+   * user to these properties inside the organization; undefined or empty
+   * (demo fallback, contexts assembled elsewhere, users with no property
+   * assignment) keeps the organization-wide scope.
+   */
+  assignedPropertyIds?: string[];
+  /**
    * Tanda 3: true when the account must rotate its password before using the
    * API (User.mustChangePassword, or a set password never changed — temp
    * credential). Only /auth/change-password and the PASSWORD_CHANGE_ALLOWLIST
@@ -2333,6 +2342,13 @@ export const demoStore: DemoStore = {
       "guest_experience.ai_reply",
       "guest_experience.handoff",
       "billing.compliance.view",
+      // Tanda 5 (L1c · api): read keys of the invoice, payroll, banking,
+      // commissions and fiscal-calendar GETs (demo fallback without token).
+      "invoice.read",
+      "payroll.read",
+      "banking.read",
+      "commissions.read",
+      "accounting.read",
       "asset.capex.approve",
       "assets.read",
       "assets.manage",

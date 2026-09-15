@@ -12,6 +12,7 @@
 
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { date, dateTime, money, number, relativeTime } from "../../lib/format";
 
 type Profile = {
   id: string;
@@ -143,39 +144,34 @@ const FILTER_BY_TAB: Record<FilterTab, (e: TLEvent) => boolean> = {
 };
 
 function fmtEur(value: number | undefined | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,00 €";
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  return money(value);
 }
 
 function fmtNumber(value: number): string {
-  return new Intl.NumberFormat("es-ES").format(value);
+  return number(value);
 }
 
 function fmtDate(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+  return date(iso, "medium");
 }
 
 function fmtRelTime(iso: string): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  const diff = Date.now() - d.getTime();
-  const days = Math.floor(diff / 86400000);
-  if (days === 0) return "Hoy";
-  if (days === 1) return "Ayer";
-  if (days < 7) return `Hace ${days} días`;
-  if (days < 30) return `Hace ${Math.floor(days / 7)} sem.`;
-  if (days < 365) return `Hace ${Math.floor(days / 30)} meses`;
-  return `Hace ${Math.floor(days / 365)} años`;
+  return relativeTime(iso);
 }
 
 // ============================================================== component
 
+/**
+ * Guest id from the tab URL `/recepcion/huespedes/:id/cronologia` (Tanda 5), or
+ * from the legacy `?guestId` query on the standalone route.
+ */
 function getGuestIdFromQuery(): string | null {
   if (typeof window === "undefined") return null;
+  const segments = window.location.pathname.split("/").filter(Boolean);
+  if (segments.length >= 2 && segments[segments.length - 1] === "cronologia") {
+    const id = decodeURIComponent(segments[segments.length - 2]);
+    if (id && id !== "new") return id;
+  }
   const params = new URLSearchParams(window.location.search);
   return params.get("guestId");
 }
@@ -476,7 +472,7 @@ function TimelineEntry({ event, isLast }: { event: TLEvent; isLast: boolean }) {
           <span className="bo-muted" style={{ fontSize: 12 }}>{event.subtitle}</span>
         ) : null}
         <span className="bo-muted" style={{ fontSize: 11 }}>
-          {fmtRelTime(event.timestamp)} · {new Date(event.timestamp).toLocaleString("es-ES", { dateStyle: "medium", timeStyle: "short" })}
+          {fmtRelTime(event.timestamp)} · {dateTime(event.timestamp, { style: "medium" })}
           {event.propertyName ? ` · ${event.propertyName}` : ""}
           {event.reservationCode ? ` · ${event.reservationCode}` : ""}
         </span>

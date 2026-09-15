@@ -13,6 +13,7 @@ API edge permissions are declared in `apps/api/src/security/route-permissions.ts
 - The manifest is additive to service-level validation; backend tools still validate business rules, property scope, confirmations, and audit events.
 - `PUT` is an accepted verb (Tanda 3): it is used for idempotent overrides such as `PUT /backoffice/properties/:propertyId/taxes/rates` and fails closed like any other mutation when unmapped.
 - Forced password rotation (Tanda 3 · CFG-P1-6): a session opened with a temporary password (`User.mustChangePassword`) may only call the routes in `PASSWORD_CHANGE_ALLOWLIST` (`apps/api/src/lib/auth-context.ts`: change-password, password-policy, `/users/me/*`, sessions). Any other route answers `403` with `details.code = "PASSWORD_CHANGE_REQUIRED"`; the front redirects to the change-password screen. Public routes and unknown paths (404) are not gated.
+- Read keys (Tanda 5 · L1b · api-side): a `GET` never requires a write key. The families that used to be gated by `folio.charge.post` or `compliance.ses.submit` now carry their own read key — `folio.read` (`GET /folios/:id/balance`, `GET /reservations/:id/folios`, `GET /reservations/:id/routing-rules`), `pos.read` (`GET /properties/:propertyId/pos/outlets|tickets|cash-summary`), `tourist_tax.read` (`GET /tourist-tax/rates`, `GET /properties/:propertyId/tourist-tax/applications`), `billing.compliance.view` (`GET /properties/:propertyId/verifactu|tbai|igic/submissions`, `GET /verifactu|tbai|igic/submissions/:id`, `GET /invoices/:id/verifactu`) and `guest_register.read` (`GET /properties/:propertyId/guest-register-records`, `GET /properties/:propertyId/compliance/inbox`, `GET /properties/:propertyId/ses-hospedajes/submissions`, `GET /properties/:propertyId/ses/submissions`, `GET /ses/submissions/:id`). The catalogue has 215 keys; the templates that open those screens (manager, receptionist, accountant, compliance, fnb) received the read keys additively (`docs/runbooks/rbac-sync.md`). `GET /developer/keyboard-shortcuts` was removed: the shortcut sheet reads `content/help-articles/keyboard-shortcuts.ts`.
 - Boot policy (Tanda 3 · VeriFactu): `resolveVerifactuSoftware()` validates the `SistemaInformatico` block (producer NIF, `IdSistemaInformatico`, version, installation number). With `VERIFACTU_MODE` other than `sandbox` an invalid block aborts the boot (`process.exit(1)`, like AUTH-04); in sandbox it only logs a warning. `GET /health` exposes it as `checks.verifactu.software = { ok, errors }`.
 
 ## Audit Integrity
@@ -47,6 +48,7 @@ Additional app-shell and security endpoints:
 - `POST /auth/mfa/verify`
 - `GET /auth/invitations/:token` (public, rate-limited 30/min): `{ email, fullName, organizationName, propertyName, roleName, expiresAt }` for a pending staff invitation. Unknown, expired, used and revoked tokens all answer the same generic `404` (no enumeration oracle).
 - `POST /auth/accept-invite` (public, rate-limited 5/min): `{ token, password, deviceId? }` sets the password (policy violations → `400` with the policy message), activates the user, consumes the token and returns the same shape as `POST /auth/login` (`token`, `sessionId`, `user`, `property`).
+- `GET /users/me` (Tanda 5 · L1a): the signed-in user — `{ userId, email, fullName, organizationId, organizationName, activePropertyId, permissions, grantedPermissions, isPlatformAdmin, mustChangePassword, templateKeys, properties[] }`. `properties[]` lists every property the user is assigned to with `roles[] { id, name, templateKey }` and the distinct `templateKeys` (ROLE_TEMPLATE_KEYS order); `templateKeys` at the top level is the active property's. `permissions` is the effective session set (demo union in dev), `grantedPermissions` the real role grants of the active property — the navigation derives its role tokens (`apps/admin-web/src/navigation/role-tokens.ts`) and its permission filter from them. No permission required; served during the forced password rotation.
 - `GET /users/me/properties`
 - `GET /properties`
 - `GET /notifications`
@@ -107,12 +109,30 @@ Availability quotes return only room types, availability, prices, and policies c
 ## Folios And Payments
 
 - `GET /reservations/:id/folio`
+- `GET /reservations/:id/folios` (`folio.read`) — every folio of the reservation.
+- `GET /folios/:id/balance` (`folio.read`)
+- `GET /reservations/:id/routing-rules` (`folio.read`) — folio routing rules of the reservation.
 - `POST /folios/:id/lines`
 - `POST /folios/:id/payments`
 - `POST /payments/:id/refund`
 - `POST /folios/:id/close`
 
-Refunds require `payment.refund` and `ai.high_risk.confirm`. Closing a folio requires a zero balance.
+Refunds require `payment.refund` and `ai.high_risk.confirm`. Closing a folio requires a zero balance. Reading folios, balances and routing rules requires `folio.read` (Tanda 5); posting charges still requires `folio.charge.post`.
+
+## Point Of Sale (TPV)
+
+- `GET /properties/:propertyId/pos/outlets` (`pos.read`)
+- `GET /properties/:propertyId/pos/tickets` (`pos.read`)
+- `GET /properties/:propertyId/pos/cash-summary` (`pos.read`) — cash-up of the outlet(s) for the day.
+
+Creating, paying or charging a ticket to a room keeps its own `pos.order.*` keys; managing products keeps `pos.product.manage`.
+
+## Tourist Tax
+
+- `GET /tourist-tax/rates` (`tourist_tax.read`)
+- `GET /properties/:propertyId/tourist-tax/applications` (`tourist_tax.read`) — applications of the period.
+
+Computing or applying the tax and creating rates keep their write keys (`folio.charge.post`, `tax.configure`).
 
 ## Invoicing
 
@@ -121,6 +141,7 @@ Refunds require `payment.refund` and `ai.high_risk.confirm`. Closing a folio req
 - `POST /invoices/:id/issue`
 - `POST /invoices/:id/cancel`
 - `POST /invoices/:id/rectifying`
+- `GET /invoices/:id/verifactu` (`billing.compliance.view`) — VeriFactu record and QR payload of an issued invoice.
 
 Issued invoices cannot be destructively edited. Corrections use cancellation or rectifying invoice workflows. Issue creates VERI*FACTU hash and QR payload placeholders.
 
@@ -235,6 +256,7 @@ Staff catalogue over Prisma `UpsellOffer` — the same table `GET /dashboards/up
 
 - `GET /notifications/email-status` (`users.invite`): `{ configured, provider, from, mode: "real" | "simulated" | "disabled" }` so invitation screens show a copyable link instead of a fake "sent" when email is not configured.
 - `POST /admin/tenants/:orgId/users/:userId/reissue-invite` (`admin.tenants.manage`): replaces the clear-text temporary password flow with a persisted invitation the owner accepts through `POST /auth/accept-invite`.
+- `POST /admin/tenants` (`admin.tenants.manage`, Tanda 5 · L1b): besides the organization, property and owner it returns `templateRoles[]` with one entry per organization template (`ORGANIZATION_TEMPLATE_ROLE_KEYS`, 10 entries, Spanish names): `{ name, templateKey, permissionsCount, created, conflict? }`. The Owner created first is recognised by its `template_key` and topped up (`created: false`, never duplicated as «Propietario»); a role of another template already using a template name is reported in `conflict` and left untouched.
 
 ## Real Estate, Assets, And Owner Dashboard
 
@@ -253,13 +275,15 @@ Capex approval requires `asset.capex.approve`. Room profitability rolls up reser
 
 ## Compliance
 
-- `GET /properties/:propertyId/compliance/inbox`
-- `GET /properties/:propertyId/guest-register-records`
+- `GET /properties/:propertyId/compliance/inbox` (`guest_register.read`) — incidents of the guest register.
+- `GET /properties/:propertyId/guest-register-records` (`guest_register.read`)
 - `POST /guest-register-records/:id/sign`
 - `PATCH /guest-register-records/:id/correct`
 - `POST /guest-register-records/:id/queue-ses`
-- `GET /properties/:propertyId/ses-hospedajes/submissions`
+- `GET /properties/:propertyId/ses-hospedajes/submissions` (`guest_register.read`)
+- `GET /ses/submissions/:id` (`guest_register.read`)
 - `PATCH /ses-hospedajes/submissions/:id/status`
+- `GET /properties/:propertyId/verifactu/submissions`, `GET /properties/:propertyId/tbai/submissions`, `GET /properties/:propertyId/igic/submissions` and `GET /verifactu|tbai|igic/submissions/:id` (`billing.compliance.view`) — authority submissions of the property (the `tbai` list used to require `compliance.configure`).
 - `GET /properties/:propertyId/ses/submissions` (Prisma pipeline, `guest_register.read`): cursor-paginated history of what was sent to the MIR — bare array by default, `{ items, nextCursor, total }` with `?cursor=` / `?envelope=1`, `X-Total-Count` / `X-Next-Cursor` headers always, optional `?status=` filter.
 - `GET /properties/:propertyId/ses/establishment` (`guest_register.read`): `{ ok, missing[], establishment: { registryNumber, taxId, legalName, address, municipality, municipalityCode, province, postalCode, country } }` — the block the SES XML carries, resolved from the property, its organization and the compliance settings, never from environment defaults.
 - `POST /properties/:propertyId/ses/submissions` answers `409` with `details.code = "SES_ESTABLISHMENT_INCOMPLETE"` and the same `missing` list when the establishment profile is incomplete.

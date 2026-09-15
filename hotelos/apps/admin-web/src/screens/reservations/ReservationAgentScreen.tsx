@@ -1,5 +1,7 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useRef, useState } from "react";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
 import {
   aiParseReservation,
   createReservation,
@@ -11,6 +13,8 @@ import {
   type ReservationParseResult
 } from "../../services/pmsCommerceApi";
 import { Spinner } from "../../components/States";
+import { useTabHost } from "../tabs/TabHost";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -56,6 +60,7 @@ interface SpeechRecognitionLike {
 }
 
 export function ReservationAgentScreen() {
+  const hosted = useTabHost() !== null;
   const [text, setText] = useState("");
   const [listening, setListening] = useState(false);
   const [parsing, setParsing] = useState(false);
@@ -204,20 +209,22 @@ export function ReservationAgentScreen() {
   return (
     <>
       <section className="bo-card">
-        <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
-          <div>
-            <p className="bo-page-eyebrow">PMS · AI Booking Agent</p>
-            <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>Book by voice or text</h2>
+        {hosted ? null : (
+          <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
+            <div>
+              <p className="bo-page-eyebrow">PMS · Agente de reservas</p>
+              <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>Reservar por voz o texto</h2>
+            </div>
+            <span className="bo-chip">Asistido por IA</span>
           </div>
-          <span className="bo-chip">AI-assisted</span>
-        </div>
+        )}
         <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
-          Speak or type a booking request in plain language. The agent extracts dates, guests, room type and board into a draft
-          you review before creating the reservation. Nothing is booked until you confirm.
+          Dicta o escribe la petición en lenguaje natural. El agente extrae fechas, huéspedes, tipo de habitación y régimen en un
+          borrador que revisas antes de crear la reserva. No se reserva nada hasta que confirmes.
         </p>
 
         <div className="bo-form-field" style={{ marginTop: "var(--space-4)" }}>
-          <span>Booking request</span>
+          <span>Petición de reserva</span>
           <div style={{ position: "relative" }}>
             <textarea
               value={text}
@@ -244,12 +251,12 @@ export function ReservationAgentScreen() {
               </button>
             ) : null}
           </div>
-          {listening ? <small className="bo-status ai" style={{ display: "inline-flex", marginTop: 6 }}><Spinner size="sm" /> Listening…</small> : null}
-          {!speechSupported ? <small className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>Voice dictation isn't supported in this browser — type your request (it works the same).</small> : null}
+          {listening ? <small className="bo-status ai" style={{ display: "inline-flex", marginTop: 6 }}><Spinner size="sm" /> Escuchando…</small> : null}
+          {!speechSupported ? <small className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>Este navegador no admite dictado por voz: escribe la petición (funciona igual).</small> : null}
         </div>
 
         <div className="bo-pill-row" style={{ marginTop: "var(--space-2)" }}>
-          <span className="bo-muted">Try:</span>
+          <span className="bo-muted">Prueba con:</span>
           {EXAMPLES.map((ex) => (
             <button type="button" className="bo-pill" key={ex} onClick={() => setText(ex)} style={{ cursor: "pointer" }}>{ex.slice(0, 38)}…</button>
           ))}
@@ -267,49 +274,49 @@ export function ReservationAgentScreen() {
         <section className="bo-card">
           <div className="bo-card-head">
             <div>
-              <p className="bo-muted">Extracted booking</p>
-              <h3 style={{ margin: 0 }}>Review &amp; confirm</h3>
+              <p className="bo-muted">Reserva extraída</p>
+              <h3 style={{ margin: 0 }}>Revisa y confirma</h3>
             </div>
-            {srcBadge ? <span className={`bo-status ${srcBadge.cls}`}>{srcBadge.label} · {Math.round(result.confidence * 100)}% confident</span> : null}
+            {srcBadge ? <span className={`bo-status ${srcBadge.cls}`}>{srcBadge.label} · {Math.round(result.confidence * 100)} % de confianza</span> : null}
           </div>
 
           <div className="bo-grid three">
-            <label className="bo-form-field"><span>Arrival <strong>required</strong></span>
+            <label className="bo-form-field"><span>Llegada <strong>obligatoria</strong></span>
               <input type="date" value={draft.arrivalDate} onChange={(e) => set("arrivalDate", e.target.value)} /></label>
-            <label className="bo-form-field"><span>Departure <strong>required</strong></span>
+            <label className="bo-form-field"><span>Salida <strong>obligatoria</strong></span>
               <input type="date" value={draft.departureDate} onChange={(e) => set("departureDate", e.target.value)} /></label>
-            <label className="bo-form-field"><span>Adults / children</span>
+            <label className="bo-form-field"><span>Adultos / niños</span>
               <div className="bo-inline-inputs">
-                <input type="number" min="1" value={draft.adults} onChange={(e) => set("adults", e.target.value)} aria-label="Adults" />
-                <input type="number" min="0" value={draft.children} onChange={(e) => set("children", e.target.value)} aria-label="Children" />
+                <input type="number" min="1" value={draft.adults} onChange={(e) => set("adults", e.target.value)} aria-label="Adultos" />
+                <input type="number" min="0" value={draft.children} onChange={(e) => set("children", e.target.value)} aria-label="Niños" />
               </div>
             </label>
-            <label className="bo-form-field"><span>Room type <strong>required</strong></span>
+            <label className="bo-form-field"><span>Tipo de habitación <strong>obligatorio</strong></span>
               <select value={draft.roomTypeId} onChange={(e) => set("roomTypeId", e.target.value)}>
-                <option value="">Select…</option>
+                <option value="">Selecciona…</option>
                 {roomTypes.map((rt) => <option key={rt.id} value={rt.id}>{rt.name}</option>)}
               </select>
             </label>
-            <label className="bo-form-field"><span>Board</span>
+            <label className="bo-form-field"><span>Régimen</span>
               <select value={draft.boardType} onChange={(e) => set("boardType", e.target.value)}>
                 {BOARD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </label>
-            <label className="bo-form-field"><span>Guest name</span>
+            <label className="bo-form-field"><span>Nombre del huésped</span>
               <input value={draft.guestName} onChange={(e) => set("guestName", e.target.value)} /></label>
-            <label className="bo-form-field"><span>Email</span>
+            <label className="bo-form-field"><span>Correo electrónico</span>
               <input type="email" value={draft.email} onChange={(e) => set("email", e.target.value)} /></label>
-            <label className="bo-form-field"><span>Phone</span>
+            <label className="bo-form-field"><span>Teléfono</span>
               <input value={draft.phone} onChange={(e) => set("phone", e.target.value)} /></label>
           </div>
-          <label className="bo-form-field"><span>Special requests</span>
+          <label className="bo-form-field"><span>Peticiones especiales</span>
             <textarea value={draft.specialRequests} onChange={(e) => set("specialRequests", e.target.value)} /></label>
 
           {quotes.length ? (
             <div className="bo-pill-row" style={{ margin: "var(--space-2) 0" }}>
               {quotes.map((q) => (
                 <button type="button" key={q.roomTypeId} className={`bo-pill${draft.roomTypeId === q.roomTypeId ? " is-active" : ""}`} onClick={() => set("roomTypeId", q.roomTypeId)} style={{ cursor: "pointer" }}>
-                  {q.roomTypeName}: {q.availableRooms} avail · {q.totalAmount} {q.currency}
+                  {q.roomTypeName}: {q.availableRooms} disp. · {money(q.totalAmount, q.currency)}
                 </button>
               ))}
             </div>
@@ -324,9 +331,9 @@ export function ReservationAgentScreen() {
 
           {created ? (
             <article className="bo-card" style={{ marginTop: "var(--space-3)" }}>
-              <div className="bo-card-head"><h3 style={{ margin: 0 }}>{created.code}</h3><span className="bo-status ok">Created</span></div>
+              <div className="bo-card-head"><h3 style={{ margin: 0 }}>{created.code}</h3><span className="bo-status ok">Creada</span></div>
               <div className="bo-actions">
-                <button type="button" onClick={() => { window.history.pushState(null, "", `/backoffice/reservations/${created.id}`); window.dispatchEvent(new PopStateEvent("popstate")); }}>Open reservation</button>
+                <button type="button" onClick={() => openTabPath(urlForScreen("ReservationDetailWorkspace", { id: created.id }) ?? "/recepcion/reservas")}>Abrir reserva</button>
               </div>
             </article>
           ) : null}

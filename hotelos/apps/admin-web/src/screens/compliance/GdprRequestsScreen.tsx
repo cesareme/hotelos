@@ -3,7 +3,9 @@ import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { DataPreview } from "../../components/forms/FormComponents";
 import { useToast } from "../../components/Toast";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
 import { toArray } from "../../utils/toArray";
+import { dateTime } from "../../lib/format";
 
 type GdprRequest = {
   id: string;
@@ -42,8 +44,7 @@ function statusClass(status: string): "ok" | "warn" | "error" | "" {
 }
 
 function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString("es-ES");
+  return dateTime(iso);
 }
 
 function daysSince(iso: string): number {
@@ -205,13 +206,12 @@ export function GdprRequestsScreen() {
 
   return (
     <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Privacidad y cumplimiento</p>
-          <h2>Solicitudes RGPD del interesado</h2>
-        </div>
-        <span className="bo-chip">Art. 15 / 17</span>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Cumplimiento"
+        title="Protección de datos"
+        subtitle="Solicitudes RGPD de los huéspedes: acceso, supresión, rectificación y portabilidad."
+        actions={<span className="bo-chip">Art. 15 / 17</span>}
+      />
       <p>
         Gestiona solicitudes de acceso, derecho al olvido, rectificación y portabilidad bajo el RGPD.
         Los registros del libro de viajeros español se conservan tres años (RD 933/2021) salvo que se
@@ -220,29 +220,29 @@ export function GdprRequestsScreen() {
 
       <div className="bo-grid three">
         <article className="bo-card">
-          <h3>Pending</h3>
+          <h3>Pendientes</h3>
           <div className="bo-metric">{kpis.totalPending}</div>
-          <p>Open or in-progress requests.</p>
+          <p>Solicitudes abiertas o en curso.</p>
         </article>
         <article className="bo-card">
-          <h3>Overdue</h3>
+          <h3>Fuera de plazo</h3>
           <div className="bo-metric">{kpis.overdue}</div>
-          <p>Past the 30-day GDPR response window.</p>
+          <p>Han superado el plazo de respuesta de 30 días del RGPD.</p>
         </article>
         <article className="bo-card">
-          <h3>Completed (30d)</h3>
+          <h3>Completadas (30 días)</h3>
           <div className="bo-metric">{kpis.completedLast30d}</div>
-          <p>Closed in the last 30 days.</p>
+          <p>Cerradas en los últimos 30 días.</p>
         </article>
       </div>
 
       <section className="bo-card">
-        <h3>New request</h3>
+        <h3>Nueva solicitud</h3>
         <div className="bo-grid two">
           <label className="bo-form-field">
-            <span>Request type</span>
+            <span>Tipo de solicitud</span>
             <select
-              aria-label="Request type"
+              aria-label="Tipo de solicitud"
               value={formRequestType}
               onChange={(event) => setFormRequestType(event.currentTarget.value)}
             >
@@ -254,9 +254,9 @@ export function GdprRequestsScreen() {
             </select>
           </label>
           <label className="bo-form-field">
-            <span>Subject email</span>
+            <span>Correo del interesado</span>
             <input
-              aria-label="Subject email"
+              aria-label="Correo del interesado"
               type="email"
               value={formSubjectEmail}
               onChange={(event) => setFormSubjectEmail(event.currentTarget.value)}
@@ -264,9 +264,9 @@ export function GdprRequestsScreen() {
             />
           </label>
           <label className="bo-form-field">
-            <span>Requestor email</span>
+            <span>Correo del solicitante</span>
             <input
-              aria-label="Requestor email"
+              aria-label="Correo del solicitante"
               type="email"
               value={formRequestorEmail}
               onChange={(event) => setFormRequestorEmail(event.currentTarget.value)}
@@ -276,7 +276,7 @@ export function GdprRequestsScreen() {
         </div>
         <div className="bo-actions">
           <button className="primary" type="button" disabled={submitting} onClick={handleCreate}>
-            {submitting ? "Creating..." : "Create request"}
+            {submitting ? "Creando…" : "Crear solicitud"}
           </button>
           {actionMessage ? <span className="bo-status ok">{actionMessage}</span> : null}
           {actionError ? <span className="bo-status error">{actionError}</span> : null}
@@ -284,20 +284,20 @@ export function GdprRequestsScreen() {
       </section>
 
       <section className="bo-card">
-        <h3>Requests</h3>
-        {loading ? <p className="bo-muted">Loading...</p> : null}
+        <h3>Solicitudes</h3>
+        {loading ? <p className="bo-muted">Cargando…</p> : null}
         {error ? <p className="bo-status error">{error}</p> : null}
-        {!loading && requests.length === 0 ? <p className="bo-muted">No GDPR requests yet.</p> : null}
+        {!loading && requests.length === 0 ? <p className="bo-muted">Todavía no hay solicitudes RGPD.</p> : null}
         {requests.length > 0 ? (
           <table className="bo-table">
             <thead>
               <tr>
-                <th>Requested</th>
-                <th>Subject</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th>Due</th>
-                <th>Actions</th>
+                <th>Solicitada</th>
+                <th>Interesado</th>
+                <th>Tipo</th>
+                <th>Estado</th>
+                <th>Vence</th>
+                <th>Acciones</th>
               </tr>
             </thead>
             <tbody>
@@ -313,7 +313,7 @@ export function GdprRequestsScreen() {
                       <td>{r.requestType.toUpperCase()}</td>
                       <td>
                         <span className={`bo-status ${statusClass(r.status)}`}>{r.status}</span>
-                        {overdue ? <span className="bo-status error"> overdue</span> : null}
+                        {overdue ? <span className="bo-status error"> fuera de plazo</span> : null}
                       </td>
                       <td>{fmtDate(r.dueAt)}</td>
                       <td>
@@ -322,7 +322,7 @@ export function GdprRequestsScreen() {
                           onClick={() => setExpandedId(isExpanded ? null : r.id)}
                           aria-expanded={isExpanded}
                         >
-                          {isExpanded ? "Hide" : "Details"}
+                          {isExpanded ? "Ocultar" : "Detalles"}
                         </button>
                       </td>
                     </tr>
@@ -334,32 +334,32 @@ export function GdprRequestsScreen() {
                             <div className="bo-grid two">
                               <div>
                                 <p>
-                                  <strong>Requestor:</strong> {r.requestorEmail}
+                                  <strong>Solicitante:</strong> {r.requestorEmail}
                                 </p>
                                 <p>
-                                  <strong>Acknowledged:</strong> {fmtDate(r.acknowledgedAt)}
+                                  <strong>Reconocida:</strong> {fmtDate(r.acknowledgedAt)}
                                 </p>
                                 <p>
-                                  <strong>Completed:</strong> {fmtDate(r.completedAt)}
+                                  <strong>Completada:</strong> {fmtDate(r.completedAt)}
                                 </p>
                                 <p>
-                                  <strong>Rejected:</strong> {fmtDate(r.rejectedAt)}
+                                  <strong>Rechazada:</strong> {fmtDate(r.rejectedAt)}
                                 </p>
                                 {r.rejectedReason ? (
                                   <p>
-                                    <strong>Rejection reason:</strong> {r.rejectedReason}
+                                    <strong>Motivo del rechazo:</strong> {r.rejectedReason}
                                   </p>
                                 ) : null}
                               </div>
                               <div>
-                                <h5>Fulfillment metadata</h5>
+                                <h5>Datos del cumplimiento</h5>
                                 <DataPreview
                                   data={
                                     (dossierByRequest[r.id] ?? r.fulfillmentMetadataJson) as
                                       | Record<string, unknown>
                                       | null
                                   }
-                                  emptyMessage="No fulfillment data yet."
+                                  emptyMessage="Sin datos de cumplimiento todavía."
                                 />
                               </div>
                             </div>
@@ -370,7 +370,7 @@ export function GdprRequestsScreen() {
                                   onClick={() => handleAcknowledge(r.id)}
                                   disabled={runningAction === `ack-${r.id}`}
                                 >
-                                  {runningAction === `ack-${r.id}` ? "Acknowledging..." : "Acknowledge"}
+                                  {runningAction === `ack-${r.id}` ? "Reconociendo…" : "Reconocer"}
                                 </button>
                               ) : null}
                               {(r.requestType === "dsar" || r.requestType === "portability") &&
@@ -382,7 +382,7 @@ export function GdprRequestsScreen() {
                                   onClick={() => handleFulfillDsar(r.id)}
                                   disabled={runningAction === `dsar-${r.id}`}
                                 >
-                                  {runningAction === `dsar-${r.id}` ? "Fulfilling..." : "Fulfill (DSAR)"}
+                                  {runningAction === `dsar-${r.id}` ? "Generando…" : "Entregar datos (acceso)"}
                                 </button>
                               ) : null}
                               {r.requestType === "erasure" &&
@@ -392,7 +392,7 @@ export function GdprRequestsScreen() {
                                   <label className="bo-form-field">
                                     <span>
                                       <input
-                                        aria-label="Confirm retention override"
+                                        aria-label="Confirmar la excepción de retención"
                                         type="checkbox"
                                         checked={Boolean(confirmOverride[r.id])}
                                         onChange={(event) =>
@@ -412,15 +412,15 @@ export function GdprRequestsScreen() {
                                     onClick={() => handleExecuteErasure(r.id)}
                                     disabled={runningAction === `erase-${r.id}`}
                                   >
-                                    {runningAction === `erase-${r.id}` ? "Erasing..." : "Execute erasure"}
+                                    {runningAction === `erase-${r.id}` ? "Borrando…" : "Ejecutar el borrado"}
                                   </button>
                                 </>
                               ) : null}
                               {r.status !== "completed" && r.status !== "rejected" ? (
                                 <>
                                   <input
-                                    aria-label="Rejection reason"
-                                    placeholder="Rejection reason"
+                                    aria-label="Motivo del rechazo"
+                                    placeholder="Motivo del rechazo"
                                     value={rejectReason[r.id] ?? ""}
                                     onChange={(event) =>
                                       setRejectReason((prev) => ({

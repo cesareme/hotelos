@@ -4480,7 +4480,11 @@ export async function listBackOfficeModules(propertyId: string) {
         : "ok";
     return {
       ...manifest,
-      status: propertyModule?.status ?? (manifest.isCore ? "enabled" : "available"),
+      // Tanda 5 (L1b · api-side): a module without a PropertyModule row is
+      // "enabled" when the manifest says it starts enabled (`enabledByDefault`,
+      // §14.1 — pms_core plus the reversible default set), the same rule
+      // product-modules.service applies when it materialises the row.
+      status: propertyModule?.status ?? (manifest.enabledByDefault ? "enabled" : "available"),
       configurationJson: propertyModule?.configurationJson ?? {},
       healthStatus,
       healthChecks: health,

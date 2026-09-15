@@ -426,7 +426,7 @@ export function CocoaLoginScreen(props: CocoaLoginScreenProps) {
               <CocoaFormFieldset title="Cuenta">
                 <div style={fieldsetInnerStyle}>
                   <div ref={emailWrapperRef}>
-                    <LabelledField label="Email">
+                    <LabelledField label="Correo electrónico">
                       <CocoaInput
                         type="email"
                         value={email}

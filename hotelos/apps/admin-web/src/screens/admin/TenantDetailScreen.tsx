@@ -23,6 +23,7 @@
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { pageHead } from "../tabs/configuracion/tab-helpers";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaSwitch } from "../../components/cocoa/CocoaSwitch";
@@ -40,10 +41,13 @@ import {
   type TenantUserSummary
 } from "../../services/tenantAdminApi";
 import { copyText, describeDelivery, formatExpiry, type InvitationResult } from "../../services/authApi";
+import { date, dateTime } from "../../lib/format";
 
 export interface TenantDetailScreenProps {
   orgId: string;
   onClose?: () => void;
+  /** Rendered as the «Organización» sub-URL of Configuración › Sistema (Tanda 5): section head instead of page header. */
+  embedded?: boolean;
 }
 
 type Tab = "general" | "properties" | "users" | "modules" | "audit";
@@ -115,25 +119,11 @@ function CopyRow({ label, value }: { label: string; value: string }) {
 }
 
 function fmtDate(v?: string | null): string {
-  if (!v) return "—";
-  const d = new Date(v);
-  return Number.isNaN(d.getTime())
-    ? "—"
-    : d.toLocaleString("es-ES", {
-        day: "2-digit",
-        month: "short",
-        year: "numeric",
-        hour: "2-digit",
-        minute: "2-digit"
-      });
+  return dateTime(v, { style: "medium" });
 }
 
 function fmtDateShort(v?: string | null): string {
-  if (!v) return "—";
-  const d = new Date(v);
-  return Number.isNaN(d.getTime())
-    ? "—"
-    : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+  return date(v, "medium");
 }
 
 function getString(row: Record<string, unknown>, key: string): string {
@@ -174,7 +164,9 @@ const valueStyle: CSSProperties = {
   margin: 0
 };
 
-export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) {
+export function TenantDetailScreen({ orgId, onClose, embedded = false }: TenantDetailScreenProps) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const { showToast } = useToast();
 
   const [tenant, setTenant] = useState<TenantDetail | null>(null);
@@ -384,7 +376,7 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
       label: "Nombre",
       render: (row) => <strong>{row.fullName || "—"}</strong>
     },
-    { key: "email", label: "Email", render: (row) => row.email || "—" },
+    { key: "email", label: "Correo", render: (row) => row.email || "—" },
     { key: "role", label: "Rol", render: (row) => (row.roles.length > 0 ? row.roles.join(", ") : "—") },
     {
       key: "status",
@@ -484,7 +476,7 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
         minHeight: "100%"
       }}
     >
-      <CocoaPageHeader
+      <Head
         eyebrow="Superadmin · Tenants"
         title={tenant.name}
         subtitle={subtitle}
@@ -606,7 +598,7 @@ export function TenantDetailScreen({ orgId, onClose }: TenantDetailScreenProps) 
               </div>
             </div>
             <p style={{ marginTop: 12, color: "var(--cocoa-label-tertiary)", fontSize: "var(--cocoa-fs-caption)" }}>
-              TODO(backend): exponer agregados de billing (MRR, última factura, próximo cobro) en /admin/tenants/:orgId.
+              El API de administración no expone los agregados de facturación de este cliente (MRR, última factura, próximo cobro).
             </p>
           </CocoaCard>
         </div>

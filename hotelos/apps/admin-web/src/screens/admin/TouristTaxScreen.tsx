@@ -19,6 +19,7 @@ import {
 } from "../../services/touristTaxApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { useToast } from "../../components/Toast";
+import { date, DEFAULT_CURRENCY, money, percent } from "../../lib/format";
 
 const CCAA_LABEL: Record<string, string> = {
   CAT: "Cataluña",
@@ -70,13 +71,11 @@ const EXEMPTION_LABEL: Record<string, { icon: string; label: string }> = {
 const CLASS_OPTIONS = Object.keys(CLASS_LABEL);
 
 function fmtMoney(n: number): string {
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(n);
+  return money(n);
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric" });
+  return date(iso, "medium");
 }
 
 type Draft = {
@@ -216,7 +215,7 @@ export function TouristTaxScreen() {
         municipality: draft.municipality.trim() || null,
         establishmentClass: draft.establishmentClass.trim(),
         amountPerPersonNight: amount,
-        currency: draft.currency || "EUR",
+        currency: draft.currency || DEFAULT_CURRENCY,
         validFrom: draft.validFrom,
         validUntil: draft.validUntil || null,
         maxNightsPerStay: draft.maxNightsPerStay ? Number(draft.maxNightsPerStay) : 0,
@@ -340,8 +339,8 @@ export function TouristTaxScreen() {
                         <td>{r.maxNightsPerStay > 0 ? `${r.maxNightsPerStay} n.` : <span className="bo-muted">Sin límite</span>}</td>
                         <td>
                           {r.highSeasonSurcharge && r.highSeasonSurcharge > 0 ? (
-                            <span className="bo-chip" style={{ fontSize: 11 }} title={`Recargo del ${(Number(r.highSeasonSurcharge) * 100).toFixed(0)}% entre ${r.highSeasonFromMmdd} y ${r.highSeasonUntilMmdd}`}>
-                              +{(Number(r.highSeasonSurcharge) * 100).toFixed(0)}% · {r.highSeasonFromMmdd}→{r.highSeasonUntilMmdd}
+                            <span className="bo-chip" style={{ fontSize: 11 }} title={`Recargo del ${percent(r.highSeasonSurcharge, { ratio: true, maximumFractionDigits: 0 })} entre ${r.highSeasonFromMmdd} y ${r.highSeasonUntilMmdd}`}>
+                              {percent(r.highSeasonSurcharge, { ratio: true, signDisplay: "always", maximumFractionDigits: 0 })} · {r.highSeasonFromMmdd}→{r.highSeasonUntilMmdd}
                             </span>
                           ) : <span className="bo-muted" style={{ fontSize: 12 }}>—</span>}
                         </td>

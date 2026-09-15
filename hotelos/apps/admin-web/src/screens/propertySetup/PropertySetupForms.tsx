@@ -1,5 +1,6 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useMemo, useState } from "react";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
 import {
   DataPreview,
   FormDateInput,
@@ -18,12 +19,23 @@ import {
 import {
   backOfficeEndpoints,
   fetchPropertySetupForm,
-  fetchPropertySetupForms,
   savePropertySetupForm,
   type PropertySetupForm,
   type PropertySetupFormField
 } from "../../services/backofficeApi";
 import { FISCAL_TERRITORY_OPTIONS, TAX_REGION_OPTIONS, TOURISM_TAX_REGION_OPTIONS, normalizeTaxRegionClient } from "../../services/taxesApi";
+import { urlForScreen } from "../../navigation/nav-tree";
+import { useTabHost } from "../tabs/TabHost";
+import { HostedHead } from "../tabs/tab-helpers";
+
+// Tanda 5 · L1c: the 14 forms are tabs of their containers (Configuración ›
+// Propiedad / Habitaciones y espacios / Contabilidad y fiscal / Inteligencia
+// artificial, Operaciones › Pisos / Mantenimiento). Inside a container the
+// screen reads `useTabHost()` and paints `HostedHead` (subtitle only): the
+// container already carries eyebrow and title. «Cancelar» returns to the
+// single configuration hub without a full reload.
+const SETUP_CENTER_PATH = urlForScreen("SetupCenterScreen") ?? "/configuracion/puesta-en-marcha";
+const hostedStackStyle = { display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)", minWidth: 0 } as const;
 
 // Tanda 3: select options are canonical {value, label} pairs (the API
 // definition serves them for taxRegion / tourismTaxRegion / fiscalTerritory;
@@ -72,7 +84,7 @@ const forms: FormDefinition[] = [
   {
     code: "property_profile",
     title: "Perfil de la propiedad",
-    route: "/backoffice/property-setup/property-profile",
+    route: "/configuracion/propiedad",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Perfil legal, identidad fiscal, dirección, zona horaria, moneda, idioma, región fiscal y reglas de fecha de negocio.",
     targetTable: "properties + property_setup_form_submissions",
@@ -106,7 +118,7 @@ const forms: FormDefinition[] = [
   {
     code: "building",
     title: "Edificios",
-    route: "/backoffice/property-setup/buildings",
+    route: "/configuracion/propiedad/edificios",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Crea los edificios físicos a los que se podrán asociar plantas, zonas, habitaciones y espacios.",
     targetTable: "buildings",
@@ -123,7 +135,7 @@ const forms: FormDefinition[] = [
   {
     code: "floor",
     title: "Plantas",
-    route: "/backoffice/property-setup/floors",
+    route: "/configuracion/propiedad/plantas",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Crea plantas dentro de los edificios para mapear habitaciones y recursos.",
     targetTable: "floors",
@@ -141,7 +153,7 @@ const forms: FormDefinition[] = [
   {
     code: "zone",
     title: "Zonas",
-    route: "/backoffice/property-setup/zones",
+    route: "/configuracion/propiedad/zonas",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Agrupa las plantas en zonas operativas para limpieza, mantenimiento, informes de ingresos y enrutado de recursos.",
     targetTable: "property_zones",
@@ -160,7 +172,7 @@ const forms: FormDefinition[] = [
   {
     code: "room_type",
     title: "Tipos de habitación",
-    route: "/backoffice/property-setup/room-types",
+    route: "/configuracion/habitaciones/tipos",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Crea tipos de habitación con ocupación, configuración de camas, características, categoría de limpieza y valores de venta por defecto.",
     targetTable: "room_types",
@@ -187,7 +199,7 @@ const forms: FormDefinition[] = [
   {
     code: "room",
     title: "Habitaciones",
-    route: "/backoffice/property-setup/rooms",
+    route: "/configuracion/habitaciones",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Crea habitaciones y vincúlalas a su tipo, edificio, planta, zona, sección de limpieza y área de mantenimiento.",
     targetTable: "rooms",
@@ -212,7 +224,7 @@ const forms: FormDefinition[] = [
   {
     code: "space_resource",
     title: "Espacios y recursos",
-    route: "/backoffice/property-setup/spaces-resources",
+    route: "/configuracion/habitaciones/espacios",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Crea aparcamiento, salas de reuniones, coworking, spa, espacios para eventos, espacios de restauración y otros recursos reservables.",
     targetTable: "property_spaces + property_setup_form_submissions",
@@ -234,7 +246,7 @@ const forms: FormDefinition[] = [
   {
     code: "department",
     title: "Departamentos",
-    route: "/backoffice/property-setup/departments",
+    route: "/configuracion/propiedad/departamentos",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Crea departamentos y asigna responsables/usuarios para la titularidad operativa.",
     targetTable: "departments + user_departments",
@@ -252,7 +264,7 @@ const forms: FormDefinition[] = [
   {
     code: "housekeeping_setup",
     title: "Configuración de limpieza (housekeeping)",
-    route: "/backoffice/property-setup/operations",
+    route: "/operaciones/pisos/ajustes",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Configura las secciones de limpieza, los tipos de tarea, los esquemas de limpieza, la política de inspección y las reglas de estancias.",
     targetTable: "housekeeping_sections + housekeeping_rules",
@@ -270,7 +282,7 @@ const forms: FormDefinition[] = [
   {
     code: "maintenance_setup",
     title: "Configuración de mantenimiento",
-    route: "/backoffice/property-setup/maintenance",
+    route: "/operaciones/mantenimiento/ajustes",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Configura las áreas de mantenimiento, los tipos de incidencia, las prioridades, las reglas de SLA y las reglas de bloqueo de habitaciones.",
     targetTable: "maintenance_areas + maintenance_rules",
@@ -287,7 +299,7 @@ const forms: FormDefinition[] = [
   {
     code: "revenue_setup",
     title: "Configuración de ingresos (revenue)",
-    route: "/backoffice/property-setup/revenue",
+    route: "/configuracion/contabilidad-fiscal/categorias-ingresos",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Configura los segmentos de mercado, los códigos de origen, los canales, las categorías de tarifa y las categorías de factores de previsión.",
     targetTable: "property_category_options + property_setup_form_submissions",
@@ -304,7 +316,7 @@ const forms: FormDefinition[] = [
   {
     code: "finance_compliance_setup",
     title: "Finanzas y cumplimiento",
-    route: "/backoffice/property-setup/finance-compliance",
+    route: "/configuracion/contabilidad-fiscal/perfil-inicial",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Configura la región fiscal, la autoridad de destino, las series de facturación, las categorías de método de pago y las reglas de retención.",
     targetTable: "property_compliance_settings + invoice_sequences",
@@ -323,7 +335,7 @@ const forms: FormDefinition[] = [
   {
     code: "ai_setup",
     title: "Configuración de IA",
-    route: "/backoffice/property-setup/ai",
+    route: "/configuracion/ia/alta",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Configura el nivel de automatización de la IA, los idiomas de voz, la minimización de OCR y los valores por defecto de revisión humana.",
     targetTable: "property_ai_settings",
@@ -340,7 +352,7 @@ const forms: FormDefinition[] = [
   {
     code: "custom_field",
     title: "Campos personalizados",
-    route: "/backoffice/property-setup/custom-fields",
+    route: "/configuracion/propiedad/campos-personalizados",
     endpoint: backOfficeEndpoints.propertySetupForm,
     description: "Crea campos personalizados para habitaciones, reservas, huéspedes, recursos, activos u órdenes de trabajo.",
     targetTable: "property_custom_field_definitions",
@@ -591,6 +603,7 @@ function humanizeKey(value: string): string {
 }
 
 function PropertySetupFormScreen({ formCode }: { formCode: string }) {
+  const host = useTabHost();
   const fallbackForm = useMemo(() => formDefinitionToView(forms.find((candidate) => candidate.code === formCode) ?? forms[0]), [formCode]);
   const [form, setForm] = useState<PropertySetupFormView>(fallbackForm);
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -666,8 +679,8 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
   const statusClass = form.status === "saved" || form.status === "completed" ? "ok" : form.status === "in_progress" ? "warn" : "info";
   const saveStateLabel = saveState === "saved" ? "Guardado" : saveState === "error" ? "Error" : saveState === "saving" ? "Guardando" : "Pendiente";
 
-  return (
-    <FormPage eyebrow="Back Office / Configuración de la propiedad" title={form.title} summary={form.description}>
+  const body = (
+    <>
       <section className="bo-grid two">
         <FormPreviewPanel>
           <h3>Sobre este formulario</h3>
@@ -711,7 +724,11 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
             <h3>Valores actuales</h3>
             <span className="bo-chip">Solo lectura · guardado en la base de datos</span>
           </div>
-          <DataPreview data={form.existingData as Record<string, unknown> | undefined} emptyMessage="Aún no hay datos guardados." />
+          <DataPreview
+            data={form.existingData as Record<string, unknown> | unknown[] | undefined}
+            labels={Object.fromEntries(form.fields.map((field) => [field.key, field.label]))}
+            emptyMessage="Aún no hay datos guardados."
+          />
         </section>
       ) : null}
       <div className="bo-actions">
@@ -719,76 +736,23 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
           {saveState === "saving" ? "Guardando..." : "Guardar"}
         </button>
         <button disabled={saveState === "saving"} onClick={() => handleSave(true)} type="button">Guardar y añadir otro</button>
-        <a className="bo-button-link" href="/backoffice/property-setup">Cancelar</a>
-        <button type="button" disabled style={{ opacity: 0.55, cursor: "not-allowed" }} title="Pendiente de implementación">Desactivar</button>
+        <button type="button" onClick={() => openTabPath(SETUP_CENTER_PATH)}>Cancelar</button>
         <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "AuditLogViewer" }))}>Historial de auditoría</button>
       </div>
-    </FormPage>
+    </>
   );
-}
 
-function statusLabelEs(status?: string): string {
-  if (status === "saved" || status === "completed") return "Guardado";
-  if (status === "in_progress") return "En progreso";
-  return "Sin iniciar";
-}
-
-export function PropertySetupHomeScreen() {
-  const [formList, setFormList] = useState<PropertySetupFormView[]>(() => forms.map(formDefinitionToView));
-
-  useEffect(() => {
-    let mounted = true;
-    fetchPropertySetupForms(getActivePropertyId())
-      .then((payload) => {
-        if (!mounted) return;
-        // Keep Spanish titles/descriptions/categories from the local definitions;
-        // overlay only the live completion status reported by the API.
-        const statusByCode = new Map(payload.forms.map((apiForm) => [apiForm.code, apiForm.status]));
-        setFormList(
-          forms.map((definition) => {
-            const view = formDefinitionToView(definition);
-            const status = statusByCode.get(definition.code);
-            return status ? { ...view, status } : view;
-          })
-        );
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setFormList(forms.map(formDefinitionToView));
-      });
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
+  if (host) {
+    return (
+      <div style={hostedStackStyle} data-setup-form={form.code}>
+        <HostedHead title={form.title} subtitle={form.description} />
+        {body}
+      </div>
+    );
+  }
   return (
-    <FormPage
-      eyebrow="Back Office"
-      title="Formularios de configuración de la propiedad"
-      summary="Abre cada formulario, introduce las categorías de datos requeridas y guárdalas mediante la API de configuración en los registros de la base de datos."
-    >
-      <div className="bo-actions">
-        <span className="bo-chip">{formList.length} formularios</span>
-      </div>
-      <div className="bo-grid two">
-        {formList.map((form) => (
-          <article className="bo-card" key={form.code}>
-            <div className="bo-card-head">
-              <h3>{form.title}</h3>
-              <span className={`bo-status ${form.status === "saved" || form.status === "completed" ? "ok" : "warn"}`}>{statusLabelEs(form.status)}</span>
-            </div>
-            <p>{form.description}</p>
-            {form.inputCategories.length ? (
-              <div className="bo-actions">
-                {form.inputCategories.map((category) => <span className="bo-chip" key={category}>{category}</span>)}
-              </div>
-            ) : null}
-            <div className="bo-actions">
-              <a className="bo-button-link" href={form.route}>Abrir formulario</a>
-            </div>
-          </article>
-        ))}
-      </div>
+    <FormPage eyebrow="Configuración de la propiedad" title={form.title} summary={form.description}>
+      {body}
     </FormPage>
   );
 }

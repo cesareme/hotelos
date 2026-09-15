@@ -602,7 +602,7 @@ export function channelModeLabel(mode: ChannelMode | string | null | undefined):
  */
 export const CHANNEL_MODE_LABELS: Record<ChannelMode, string> = {
   stub: "Simulado (sin red, sin proveedor)",
-  sandbox: "Modo de pruebas (sandbox del proveedor)",
+  sandbox: "Modo de pruebas (entorno de pruebas del proveedor)",
   real: "Real (producción)"
 };
 

@@ -1,5 +1,9 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useMemo, useState } from "react";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
+import { usePathname } from "../tabs/usePathname";
+import { reservationIdFromPathname } from "./reservation-route";
 import {
   assignReservationRoom,
   balanceDueConflict,
@@ -38,6 +42,7 @@ import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedControl";
 import { CocoaSearchInput } from "../../components/cocoa/CocoaSearchInput";
 import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -74,7 +79,7 @@ type StatusTab = ReservationOperationalTab;
 const PAGE_SIZE = 100;
 const STATUS_TABS: { key: StatusTab; label: string }[] = [
   { key: "today_arrivals", label: "Llegan hoy" },
-  { key: "in_house", label: "In-house" },
+  { key: "in_house", label: "En casa" },
   { key: "today_departures", label: "Salen hoy" },
   { key: "future", label: "Futuras" },
   { key: "cancelled", label: "Canceladas" },
@@ -397,7 +402,7 @@ export function ReservationWorkspaceScreen() {
         <CocoaCard variant="bordered" padding="md">
           <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Valor reservado</span>
           <div style={{ fontSize: "var(--cocoa-fs-title-1)", fontWeight: 600, color: "var(--cocoa-label)", marginTop: "var(--cocoa-space-1)" }}>
-            {totalValue} EUR
+            {money(totalValue)}
           </div>
           <p style={{ marginTop: "var(--cocoa-space-1)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-subheadline)" }}>
             Alimenta los informes de facturación e ingresos.
@@ -449,30 +454,11 @@ export function ReservationWorkspaceScreen() {
             />
           </div>
 
-          {/* Bulk actions bar — disabled placeholder for Q3 (cancel selected, group
-              transfer, export). Selection checkboxes drive this state.
-              TODO(cocoa): use CocoaSheet for cancel/no-show confirmation */}
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "var(--cocoa-space-3)",
-              flexWrap: "wrap",
-              gap: "var(--cocoa-space-2)"
-            }}
-          >
+          {/* Selection counter (the bulk-actions bar was a disabled placeholder: removed, L1c). */}
+          <div style={{ marginBottom: "var(--cocoa-space-3)" }}>
             <span style={{ color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-subheadline)" }}>
               {selectedRowIds.size ? `${selectedRowIds.size} seleccionada(s)` : "Selección múltiple"}
             </span>
-            <CocoaButton
-              variant="bordered"
-              tone="neutral"
-              disabled={selectedRowIds.size === 0}
-              onClick={() => showToast("Acciones masivas estarán disponibles en Q3", { variant: "info" })}
-            >
-              Acciones masivas (Q3)
-            </CocoaButton>
           </div>
 
           {/* Secondary status filter (legacy) kept for finer slicing within a tab. */}
@@ -556,7 +542,7 @@ export function ReservationWorkspaceScreen() {
                 <div><dt>Origen</dt><dd>{selected.sourceCode ?? "Sin definir"}</dd></div>
                 <div><dt>Segmento</dt><dd>{selected.marketSegment ?? "Sin definir"}</dd></div>
                 <div><dt>Instrucción de cobro</dt><dd>{selected.billingInstruction ?? "Sin definir"}</dd></div>
-                <div><dt>Total</dt><dd>{selected.totalAmount} {selected.currency}</dd></div>
+                <div><dt>Total</dt><dd>{money(selected.totalAmount, selected.currency)}</dd></div>
               </dl>
               <CocoaCard variant="bordered" padding="md">
                 <h3 style={{ margin: 0, marginBottom: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
@@ -574,10 +560,7 @@ export function ReservationWorkspaceScreen() {
                 <CocoaButton
                   variant="filled"
                   tone="accent"
-                  onClick={() => {
-                    window.history.pushState(null, "", `/backoffice/reservations/${selected.id}`);
-                    window.dispatchEvent(new PopStateEvent("popstate"));
-                  }}
+                  onClick={() => openTabPath(urlForScreen("ReservationDetailWorkspace", { id: selected.id }) ?? "/recepcion/reservas")}
                 >
                   Abrir detalle completo
                 </CocoaButton>
@@ -585,10 +568,7 @@ export function ReservationWorkspaceScreen() {
                   <CocoaButton
                     variant="bordered"
                     tone="neutral"
-                    onClick={() => {
-                      window.history.pushState(null, "", `/backoffice/guests/${selected.primaryGuestId}`);
-                      window.dispatchEvent(new PopStateEvent("popstate"));
-                    }}
+                    onClick={() => openTabPath(urlForScreen("GuestDetail", { id: selected.primaryGuestId! }) ?? "/recepcion/huespedes")}
                   >
                     Abrir ficha del huésped
                   </CocoaButton>
@@ -661,11 +641,10 @@ function fmtActivityWhen(iso: string): string {
 }
 
 export function ReservationDetailWorkspaceScreen() {
-  // Bug fix: only the last path segment that actually matches a reservation slug
-  // pattern should be used. We never silently fall back to a hard-coded id, which
-  // previously surfaced an unrelated booking when routing was misconfigured.
-  const lastSegment = window.location.pathname.split("/").filter(Boolean).at(-1) ?? "";
-  const reservationId = /^res_/.test(lastSegment) ? lastSegment : "";
+  // The id comes from the URL and follows it (popstate, tab changes, shell
+  // navigations) so ⌘K, the list row and a pasted deep link all land here.
+  const pathname = usePathname();
+  const reservationId = useMemo(() => reservationIdFromPathname(pathname), [pathname]);
   const [reservation, setReservation] = useState<AdminReservation | null>(null);
   const [folio, setFolio] = useState<FolioBalance | null>(null);
   const [rooms, setRooms] = useState<AdminRoom[]>([]);
@@ -858,7 +837,7 @@ export function ReservationDetailWorkspaceScreen() {
                 <div><dt>Canal</dt><dd>{[reservation.channel, reservation.sourceCode, reservation.marketSegment].filter(Boolean).join(" / ") || "Directo"}</dd></div>
                 <div><dt>Habitación asignada</dt><dd>{rooms.find((r) => r.id === reservation.assignedRoomId)?.number ?? (reservation.assignedRoomId ? reservation.assignedRoomId : "Sin asignar")}</dd></div>
                 <div><dt>Garantía</dt><dd>{reservation.guaranteeType ?? "Sin definir"}</dd></div>
-                <div><dt>Total</dt><dd>{reservation.totalAmount} {reservation.currency}</dd></div>
+                <div><dt>Total</dt><dd>{money(reservation.totalAmount, reservation.currency)}</dd></div>
               </dl>
 
               <h3 style={{ margin: 0, marginTop: "var(--cocoa-space-3)", fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
@@ -1161,10 +1140,7 @@ export function ReservationDetailWorkspaceScreen() {
                   <CocoaButton
                     variant="bordered"
                     tone="neutral"
-                    onClick={() => {
-                      window.history.pushState(null, "", `/backoffice/guests/${reservation.primaryGuestId}`);
-                      window.dispatchEvent(new PopStateEvent("popstate"));
-                    }}
+                    onClick={() => openTabPath(urlForScreen("GuestDetail", { id: reservation.primaryGuestId! }) ?? "/recepcion/huespedes")}
                   >
                     Abrir ficha del huésped
                   </CocoaButton>
@@ -1246,10 +1222,6 @@ export function ReservationDetailWorkspaceScreen() {
                   </tbody>
                 </table>
               )}
-              <p style={{ marginTop: "var(--cocoa-space-2)", color: "var(--cocoa-label-secondary)" }}>
-                La paginación completa y el filtro por categoría llegarán con el endpoint persistente de
-                <code> ReservationActivityLog </code> en v2.1.
-              </p>
             </CocoaCard>
           ) : null}
 
@@ -1264,11 +1236,10 @@ export function ReservationDetailWorkspaceScreen() {
                 }}
               >
                 <h3 style={{ margin: 0, fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>Documentos</h3>
-                <span className="bo-chip">Q3</span>
               </div>
               <EmptyState
-                title="Gestor documental — disponible en Q3"
-                message="Aquí podrás adjuntar y consultar parte de viajeros, facturas proforma, contratos de grupo y otros documentos vinculados a la reserva. Integración prevista con el DMS del grupo."
+                title="Sin documentos adjuntos"
+                message="Esta reserva no guarda documentos. El parte de viajeros se consulta en Cumplimiento › Registro de viajeros y las facturas en Finanzas › Facturación."
               />
             </CocoaCard>
           ) : null}
@@ -1301,7 +1272,7 @@ export function ReservationDetailWorkspaceScreen() {
         />
       ) : (
         <div style={{ padding: "var(--cocoa-space-6)", textAlign: "center" }}>
-          <p style={{ color: "var(--cocoa-label-secondary)" }}>No se encontró ninguna reserva con ese identificador.</p>
+          <p style={{ color: "var(--cocoa-label-secondary)" }}>Esta dirección no lleva ninguna reserva. Vuelve a la lista y abre una.</p>
           <div style={{ display: "flex", justifyContent: "center", gap: "var(--cocoa-space-2)", marginTop: "var(--cocoa-space-3)" }}>
             <CocoaButton
               variant="bordered"

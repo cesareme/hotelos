@@ -1,3 +1,4 @@
+import { useTabHost } from "../tabs/TabHost";
 import { useEffect, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import {
@@ -79,6 +80,8 @@ const REPORT_TYPE_LABELS: Record<string, string> = {
 };
 
 export function ReportingCenterScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const [reports, setReports] = useState<ReportState>({});
   const [reportType, setReportType] = useState<string>("reservation");
   const [format, setFormat] = useState<ReportFormat>("pdf");
@@ -121,8 +124,12 @@ export function ReportingCenterScreen() {
     <section className="bo-card">
       <div className="bo-card-head">
         <div>
-          <p className="bo-muted">Hotel Intelligence Platform</p>
-          <h2>Centro de informes</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted">Informes · Centro de informes</p>
+              <h2>Centro de informes</h2>
+            </>
+          )}
         </div>
         <span className="bo-chip">{catalogReports.length} informes disponibles</span>
       </div>

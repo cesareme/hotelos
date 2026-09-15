@@ -1,6 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { backOfficeNavigationGroups } from "../navigation/Sidebar";
+import { flatMenuEntries, menuCategories, normalizeMenuText } from "../navigation/nav-tree";
+import { useDevMode } from "../navigation/dev-mode";
+import { useNavGate } from "../navigation/useEnabledModules";
 import { globalSearch, type SearchHit, SEARCH_KIND_LABELS } from "../services/searchApi";
+import { openPropertySwitcher } from "../services/activeProperty";
+import { openHelpCenter } from "./guide/guideStore";
+import { OPEN_NOTIFICATIONS_EVENT } from "../providers/CocoaGlobalProvider";
+import { useSidebarRecent } from "../hooks/useSidebarRecent";
 
 type CommandPaletteProps = {
   open: boolean;
@@ -11,16 +17,23 @@ type CommandPaletteProps = {
   // from screen + params (eg ReservationDetailWorkspace + { reservationId }).
   // Falls back to onSelect when omitted.
   onSelectHit?: (hit: SearchHit) => void;
+  /**
+   * Query the palette opens with (Tanda 5: the toolbar search field hands its
+   * text over to ⌘K instead of being a dead end). Read each time `open` flips
+   * to true.
+   */
+  initialQuery?: string;
 };
 
 type CommandItem = {
-  source: "screen" | "entity";
+  source: "screen" | "entity" | "action" | "recent";
   label: string;
   subtitle?: string;
   badge?: string;
   screen: string;
   group: string;
   hit?: SearchHit;
+  run?: () => void;
 };
 
 const KIND_BADGE_COLOR: Record<string, string> = {
@@ -33,6 +46,17 @@ const KIND_BADGE_COLOR: Record<string, string> = {
   rate_plan: "info"
 };
 
+const RECENT_GROUP = "Recientes";
+const ACTIONS_GROUP = "Acciones";
+const MAX_RECENT = 5;
+
+// Shell actions reachable from the palette (no screen behind them).
+const ACTION_ITEMS: CommandItem[] = [
+  { source: "action", label: "Abrir el centro de ayuda", screen: "", group: ACTIONS_GROUP, run: () => openHelpCenter() },
+  { source: "action", label: "Ver avisos", screen: "", group: ACTIONS_GROUP, run: () => window.dispatchEvent(new CustomEvent(OPEN_NOTIFICATIONS_EVENT)) },
+  { source: "action", label: "Cambiar de propiedad", screen: "", group: ACTIONS_GROUP, run: () => openPropertySwitcher() }
+];
+
 export function CommandPalette(props: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [activeIdx, setActiveIdx] = useState(0);
@@ -40,40 +64,75 @@ export function CommandPalette(props: CommandPaletteProps) {
   const [liveLoading, setLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const { recent } = useSidebarRecent();
+  // Same role/module gate as the tab containers and the sidebar (Tanda 5 · L1b):
+  // the palette never offers a screen the menu would not show («Ver como…»
+  // included, L1c) and «Desarrollo» follows the reactive dev mode of the tab.
+  const gate = useNavGate();
+  const devMode = useDevMode();
 
   useEffect(() => {
     if (props.open) {
-      setQuery("");
+      setQuery(props.initialQuery ?? "");
       setActiveIdx(0);
       setLiveHits([]);
       setLiveError(null);
-      setTimeout(() => inputRef.current?.focus(), 50);
+      setTimeout(() => {
+        const input = inputRef.current;
+        if (!input) return;
+        input.focus();
+        // Keep the caret after the handed-over text so the user just keeps typing.
+        const end = input.value.length;
+        input.setSelectionRange(end, end);
+      }, 50);
     }
+    // `initialQuery` is read only when the palette opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.open]);
 
-  // Static screen catalog — sourced from the same nav config the sidebar uses.
+  // Screen catalogue — the same nine categories the sidebar renders from the
+  // navigation tree (items and their paintable tabs, filtered by the role
+  // tokens and the enabled modules; «Desarrollo» only with dev mode + admin).
   const allScreens = useMemo<CommandItem[]>(() => {
+    const categories = menuCategories(gate.tokens, gate.modules, { devMode });
+    return flatMenuEntries(categories, { includeTabs: true })
+      .filter((entry) => entry.visibility === "visible")
+      .map((entry) => ({
+        source: "screen" as const,
+        label: entry.tab ? `${entry.itemLabel} · ${entry.label}` : entry.label,
+        screen: entry.screenKey,
+        group: entry.categoryLabel
+      }));
+  }, [gate.tokens, gate.modules, devMode]);
+
+  // Recently visited screens (hooks/useSidebarRecent), labelled from the catalog.
+  const recentItems = useMemo<CommandItem[]>(() => {
+    const seen = new Set<string>();
     const items: CommandItem[] = [];
-    for (const group of backOfficeNavigationGroups) {
-      for (const it of group.items ?? []) {
-        items.push({ source: "screen", label: it.label, screen: it.screen, group: group.title });
-      }
-      for (const sub of group.subgroups ?? []) {
-        for (const it of sub.items) {
-          items.push({ source: "screen", label: it.label, screen: it.screen, group: `${group.title} · ${sub.title}` });
-        }
-      }
+    for (const screen of recent) {
+      if (seen.has(screen)) continue;
+      const match = allScreens.find((item) => item.screen === screen);
+      if (!match) continue;
+      seen.add(screen);
+      items.push({ ...match, source: "recent", subtitle: match.group, group: RECENT_GROUP });
+      if (items.length >= MAX_RECENT) break;
     }
     return items;
-  }, []);
+  }, [recent, allScreens]);
 
   const filteredScreens = useMemo(() => {
-    const q = query.trim().toLowerCase();
+    const q = normalizeMenuText(query);
     if (!q) return allScreens.slice(0, 18);
     return allScreens
-      .filter((item) => item.label.toLowerCase().includes(q) || item.group.toLowerCase().includes(q))
+      .filter((item) => normalizeMenuText(item.label).includes(q) || normalizeMenuText(item.group).includes(q))
       .slice(0, 18);
   }, [query, allScreens]);
+
+  const filteredActions = useMemo(() => {
+    const q = normalizeMenuText(query);
+    if (!q) return ACTION_ITEMS;
+    return ACTION_ITEMS.filter((item) => normalizeMenuText(item.label).includes(q));
+  }, [query]);
 
   // Debounced live search against /search every 200ms while the palette is open.
   useEffect(() => {
@@ -106,7 +165,7 @@ export function CommandPalette(props: CommandPaletteProps) {
     };
   }, [query, props.open]);
 
-  // Merge in order: entity hits first (concrete data), then screens.
+  // Merge in order: entity hits first (concrete data), then recents, screens and actions.
   const liveItems = useMemo<CommandItem[]>(() => liveHits.map((h) => ({
     source: "entity" as const,
     label: h.title,
@@ -117,7 +176,10 @@ export function CommandPalette(props: CommandPaletteProps) {
     hit: h
   })), [liveHits]);
 
-  const filtered = useMemo<CommandItem[]>(() => [...liveItems, ...filteredScreens], [liveItems, filteredScreens]);
+  const filtered = useMemo(
+    () => [...liveItems, ...(query.trim() ? [] : recentItems), ...filteredScreens, ...filteredActions],
+    [liveItems, query, recentItems, filteredScreens, filteredActions]
+  );
 
   useEffect(() => {
     setActiveIdx(0);
@@ -146,6 +208,11 @@ export function CommandPalette(props: CommandPaletteProps) {
   }, [props, filtered, activeIdx]);
 
   function commit(item: CommandItem) {
+    if (item.run) {
+      props.onClose();
+      item.run();
+      return;
+    }
     if (item.hit && props.onSelectHit) {
       props.onSelectHit(item.hit);
     } else {
@@ -214,7 +281,7 @@ export function CommandPalette(props: CommandPaletteProps) {
                             <span style={{ fontSize: 11, color: "var(--ink-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.subtitle}</span>
                           ) : null}
                         </span>
-                        <span className="bo-cmdk-item-meta">{item.group}</span>
+                        <span className="bo-cmdk-item-meta">{item.source === "recent" ? "Reciente" : item.group}</span>
                       </div>
                     );
                   })}

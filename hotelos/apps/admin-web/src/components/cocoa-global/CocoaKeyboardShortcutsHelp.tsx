@@ -1,8 +1,10 @@
 // CocoaKeyboardShortcutsHelp — DEV GLOBAL · W6
 //
-// Modal sheet (centered, 640px wide, max-height 80vh, scrollable) that fetches
-// the keyboard shortcut catalog from `GET /developer/keyboard-shortcuts` and
-// renders each category as a collapsible `CocoaFormFieldset`. Inside each
+// Modal sheet (centered, 640px wide, max-height 80vh, scrollable) that renders
+// the keyboard shortcut catalog of content/help-articles/keyboard-shortcuts.ts
+// (the only shortcuts admin-web really implements; Tanda 5 retired the
+// API-served list of combinations no screen handled) as collapsible
+// `CocoaFormFieldset` sections. Inside each
 // fieldset, shortcuts are listed in a two-column layout: keys (left, monospace
 // small bold) and action (right, label). A search input at the top filters
 // shortcuts by keyword in either the keys or action. Footer shows "Cierra con
@@ -19,7 +21,7 @@ import {
   type MouseEvent as ReactMouseEvent
 } from "react";
 import { createPortal } from "react-dom";
-import { apiRequest } from "../../services/api-client";
+import { KEYBOARD_SHORTCUTS } from "../../content/help-articles/keyboard-shortcuts";
 import { CocoaFormFieldset } from "../cocoa-extras/CocoaFormFieldset";
 import { CocoaSearchInput } from "../cocoa/CocoaSearchInput";
 
@@ -48,10 +50,6 @@ export interface CocoaKeyboardShortcut {
 export interface CocoaKeyboardShortcutCategory {
   category: string;
   shortcuts: CocoaKeyboardShortcut[];
-}
-
-interface KeyboardShortcutsResponse {
-  categories: CocoaKeyboardShortcutCategory[];
 }
 
 const SHEET_MAX_WIDTH = 640;
@@ -244,12 +242,8 @@ const statusMessageStyle: CSSProperties = {
   color: "var(--cocoa-label-secondary)"
 };
 
-const errorMessageStyle: CSSProperties = {
-  ...statusMessageStyle,
-  color: "var(--cocoa-label)"
-};
-
-const DEFAULT_VERSION =
+/** App version shown in the global overlays (build-time VITE_APP_VERSION, else the package default). */
+export const DEFAULT_VERSION =
   (import.meta.env?.VITE_APP_VERSION as string | undefined) ?? "0.1.0";
 
 export function CocoaKeyboardShortcutsHelp({
@@ -260,11 +254,10 @@ export function CocoaKeyboardShortcutsHelp({
 }: CocoaKeyboardShortcutsHelpProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-  const [categories, setCategories] = useState<
-    CocoaKeyboardShortcutCategory[] | null
-  >(null);
-  const [loading, setLoading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const categories: CocoaKeyboardShortcutCategory[] = useMemo(
+    () => KEYBOARD_SHORTCUTS.map((cat) => ({ category: cat.category, shortcuts: cat.shortcuts.map((s) => ({ ...s })) })),
+    []
+  );
   const [query, setQuery] = useState<string>("");
 
   // Global Cmd+/ (or Ctrl+/) listener — fires onRequestOpen so the parent can
@@ -292,33 +285,6 @@ export function CocoaKeyboardShortcutsHelp({
       setQuery("");
     }
   }, [open]);
-
-  // Fetch the catalog on first open and cache it across subsequent opens.
-  useEffect(() => {
-    if (!open) return undefined;
-    if (categories !== null) return undefined;
-    const controller = new AbortController();
-    setLoading(true);
-    setError(null);
-    apiRequest<KeyboardShortcutsResponse>("/developer/keyboard-shortcuts", {
-      signal: controller.signal
-    })
-      .then((res) => {
-        setCategories(res.categories ?? []);
-      })
-      .catch((err: unknown) => {
-        if ((err as { name?: string })?.name === "AbortError") return;
-        setError(
-          err instanceof Error
-            ? err.message
-            : "No se pudo cargar el catálogo de atajos."
-        );
-      })
-      .finally(() => {
-        setLoading(false);
-      });
-    return () => controller.abort();
-  }, [open, categories]);
 
   // Focus management: trap focus inside the sheet while open and restore on close.
   useEffect(() => {
@@ -404,7 +370,6 @@ export function CocoaKeyboardShortcutsHelp({
   );
 
   const filteredCategories = useMemo<CocoaKeyboardShortcutCategory[]>(() => {
-    if (categories === null) return [];
     const q = query.trim().toLowerCase();
     if (!q) return categories;
     return categories
@@ -477,17 +442,7 @@ export function CocoaKeyboardShortcutsHelp({
         </div>
 
         <div style={bodyStyle}>
-          {loading && categories === null ? (
-            <div role="status" aria-live="polite" style={statusMessageStyle}>
-              Cargando atajos…
-            </div>
-          ) : null}
-          {error ? (
-            <div role="alert" style={errorMessageStyle}>
-              {error}
-            </div>
-          ) : null}
-          {!loading && !error && filteredCategories.length === 0 ? (
+          {filteredCategories.length === 0 ? (
             <div style={statusMessageStyle}>
               {query.trim()
                 ? `Sin resultados para "${query}".`

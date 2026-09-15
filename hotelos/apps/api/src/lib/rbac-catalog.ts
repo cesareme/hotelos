@@ -33,7 +33,11 @@
 //     345 manifest routes because the backfill skipped it.
 //   - createRoleFromTemplate() / provisionDefaultTemplateRoles(): create an
 //     organization role from a template (POST /backoffice/properties/:id/roles
-//     and createTenant), so the invite role selector has real options.
+//     and createTenant), so the invite role selector has real options. Since
+//     Tanda 5 (L1b) a new tenant is born with the 10 templates of
+//     ORGANIZATION_TEMPLATE_ROLE_KEYS (Spanish names, ROLE_TEMPLATE_LABELS_ES),
+//     the same set apps/api/src/scripts/reseed-property-roles.ts materialises
+//     in an existing organisation.
 //   - ensureRoleHasPermissions(): guard used before assigning a role to a user
 //     (invite / POST /users): a role with 0 grants gets its template applied,
 //     or the caller receives a 409 — an invitee with an empty role would get
@@ -47,11 +51,13 @@
 // skipDuplicates, so several API replicas can run it at once.
 
 import {
+  ORGANIZATION_TEMPLATE_ROLE_KEYS,
   ORG_PERMISSION_KEYS,
   PERMISSIONS,
   PLATFORM_PERMISSION_KEYS,
   ROLE_PERMISSION_MAP,
   ROLE_TEMPLATE_KEYS,
+  ROLE_TEMPLATE_LABELS_ES,
   isPlatformPermission,
   type PermissionKey,
   type RoleKey
@@ -413,17 +419,18 @@ export async function createRoleFromTemplate(
 }
 
 /**
- * Template roles every new tenant gets besides "Owner", so the invite role
- * selector offers real options from day one (no users attached). Names are
+ * Template roles every new tenant gets: one Role row per template of
+ * ORGANIZATION_TEMPLATE_ROLE_KEYS, named after ROLE_TEMPLATE_LABELS_ES
+ * (Tanda 5 · L1b — the 10 templates the navigation tree binds its tokens to;
+ * until then only Manager / Recepción / Housekeeping were provisioned). The
+ * owner entry is matched by templateKey against the "Owner" row createTenant
+ * creates first, so a tenant never gets a second full-scope role. Names are
  * what the hotel sees; each one also resolves through
  * resolveTemplateKeyForRoleName, so a row that lost its templateKey would be
  * adopted again by the boot backfill.
  */
-export const DEFAULT_TENANT_ROLE_TEMPLATES: ReadonlyArray<{ name: string; templateKey: RoleKey }> = [
-  { name: "Manager", templateKey: "manager" },
-  { name: "Recepción", templateKey: "receptionist" },
-  { name: "Housekeeping", templateKey: "housekeeper" }
-];
+export const DEFAULT_TENANT_ROLE_TEMPLATES: ReadonlyArray<{ name: string; templateKey: RoleKey }> =
+  ORGANIZATION_TEMPLATE_ROLE_KEYS.map((templateKey) => ({ name: ROLE_TEMPLATE_LABELS_ES[templateKey], templateKey }));
 
 export type ProvisionedTemplateRole = {
   id: string;
@@ -432,13 +439,24 @@ export type ProvisionedTemplateRole = {
   permissionsCount: number;
   /** false when the role already existed (its template was still topped up). */
   created: boolean;
+  /**
+   * Set when the template's Spanish name is already taken by a role that
+   * follows ANOTHER template: that row is left untouched and no second role
+   * is created (same "conflict" rule as reseed-property-roles).
+   */
+  conflict?: string;
 };
 
 /**
  * Idempotently create the DEFAULT_TENANT_ROLE_TEMPLATES roles of an
  * organization and apply their templates (createTenant; also safe to re-run on
- * an existing tenant). Runs on the given client — pass the transaction client
- * from createTenant so a failure rolls the whole tenant back.
+ * an existing tenant). Per template, in order: a role already stamped with the
+ * template (createTenant's "Owner", a role the hotel renamed) is topped up;
+ * else a role carrying the template's Spanish name is adopted (applyRoleTemplate
+ * stamps templateKey when it is null) unless it follows another template
+ * (conflict, untouched); else the row is created. Runs on the given client —
+ * pass the transaction client from createTenant so a failure rolls the whole
+ * tenant back.
  */
 export async function provisionDefaultTemplateRoles(
   organizationId: string,
@@ -447,10 +465,30 @@ export async function provisionDefaultTemplateRoles(
   const db = options.db ?? prisma;
   const provisioned: ProvisionedTemplateRole[] = [];
   for (const template of DEFAULT_TENANT_ROLE_TEMPLATES) {
-    const existing = await db.role.findUnique({
-      where: { organizationId_name: { organizationId, name: template.name } },
+    const stamped = await db.role.findFirst({
+      where: { organizationId, templateKey: template.templateKey },
+      orderBy: { id: "asc" },
       select: { id: true, name: true, templateKey: true }
     });
+    const byName =
+      stamped ??
+      (await db.role.findUnique({
+        where: { organizationId_name: { organizationId, name: template.name } },
+        select: { id: true, name: true, templateKey: true }
+      }));
+    if (byName && byName.templateKey !== null && byName.templateKey !== template.templateKey) {
+      const permissionsCount = await db.rolePermission.count({ where: { roleId: byName.id } });
+      provisioned.push({
+        id: byName.id,
+        name: byName.name,
+        templateKey: byName.templateKey,
+        permissionsCount,
+        created: false,
+        conflict: `«${byName.name}» sigue la plantilla "${byName.templateKey}"; no se crea «${template.name}» (${template.templateKey})`
+      });
+      continue;
+    }
+    const existing = byName;
     const role =
       existing ??
       (await db.role.create({
@@ -565,7 +603,12 @@ const ROLE_TEMPLATE_ALIASES: Record<RoleKey, readonly string[]> = {
   maintenance: ["maintenance", "mantenimiento", "tecnico", "tecnica", "sat"],
   accountant: ["accountant", "accounting", "contable", "contabilidad", "finanzas", "finance", "administracion"],
   compliance: ["compliance", "cumplimiento", "legal", "rgpd", "gdpr"],
-  revenue: ["revenue", "revenue manager", "yield", "pricing", "distribucion", "distribution"]
+  revenue: ["revenue", "revenue manager", "yield", "pricing", "distribucion", "distribution"],
+  // Tanda 5 (L1a · rbac): Comercial/Ventas and Punto de venta / F&B. Names
+  // match ROLE_TEMPLATE_LABELS_ES (packages/shared) so a row created by
+  // reseed-property-roles that lost its template_key is adopted again.
+  sales: ["sales", "comercial", "ventas", "sales manager", "marketing", "grupos y eventos", "eventos"],
+  fnb: ["fnb", "f b", "punto de venta", "tpv", "pos", "restauracion", "restaurante", "bar", "cocina"]
 };
 
 /** Template key for a Role.name, or undefined when the name matches no template (custom role). */

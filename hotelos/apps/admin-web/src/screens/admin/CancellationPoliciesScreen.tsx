@@ -8,6 +8,8 @@ import {
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useToast } from "../../components/Toast";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS, newLabel } from "../../content/actions";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -173,22 +175,18 @@ export function CancellationPoliciesScreen() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Comercial · Políticas</p>
-          <h2 style={{ color: "var(--ink)" }}>Políticas de cancelación</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Define la ventana de cancelación gratuita, la penalización aplicable y opcionalmente una
-            <strong> sliding scale</strong> (penalizaciones progresivas: cuánto más cerca del check-in, mayor el cargo).
-            El motor postea el cargo automáticamente al folio al cancelar o durante el Night Audit.
-          </p>
-        </div>
-        <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-          {busy ? <Spinner size="sm" /> : null}
-          <button type="button" onClick={refresh} disabled={loading}>↻ Actualizar</button>
-          <button type="button" className="primary" onClick={openCreate} disabled={busy}>+ Nueva política</button>
-        </div>
-      </header>
+      <CocoaPageHeader
+        eyebrow="Revenue"
+        title="Políticas de cancelación"
+        subtitle="Ventana de cancelación gratuita, penalización aplicable y, si quieres, penalizaciones progresivas (cuanto más cerca de la entrada, mayor el cargo). El cargo se aplica al folio al cancelar o en el cierre del día."
+        actions={
+          <>
+            {busy ? <Spinner size="sm" /> : null}
+            <button type="button" onClick={refresh} disabled={loading}>↻ {ACTIONS.refresh}</button>
+            <button type="button" className="primary" onClick={openCreate} disabled={busy}>+ {newLabel("f", "política")}</button>
+          </>
+        }
+      />
 
       {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
 
@@ -203,7 +201,7 @@ export function CancellationPoliciesScreen() {
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Code</th><th>Nombre</th><th>Cancelación gratuita</th><th>Sliding scale</th><th>No-show</th><th>Activa</th><th></th>
+                <th>Código</th><th>Nombre</th><th>Cancelación gratuita</th><th>Escalado</th><th>No-show</th><th>Activa</th><th></th>
               </tr>
             </thead>
             <tbody>

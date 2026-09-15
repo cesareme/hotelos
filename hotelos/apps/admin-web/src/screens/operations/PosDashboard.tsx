@@ -15,16 +15,17 @@ import { todayIsoLocal } from "../../services/pmsCommerceApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { SidePanel, DetailRow } from "../../components/SidePanel";
 import { toArray } from "../../utils/toArray";
+import { useTabHost } from "../tabs/TabHost";
+import { date, money, time } from "../../lib/format";
+import { cashSummaryWindow } from "./pos-cash-window";
 
 const PROPERTY_ID = getActivePropertyId();
 
 function eur(n: number): string {
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2 }).format(n ?? 0);
+  return money(n);
 }
 function fmtTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+  return time(iso, { empty: "" });
 }
 /** True when the ISO timestamp falls on the given local calendar day. */
 function isOnLocalDay(iso: string | undefined, dayIso: string): boolean {
@@ -37,6 +38,7 @@ function isOnLocalDay(iso: string | undefined, dayIso: string): boolean {
 const SETTLE_LABEL: Record<string, string> = { room: "a la habitación", cash: "efectivo", card: "tarjeta" };
 
 export function PosDashboard() {
+  const hosted = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<PosTicket[]>(
     `/properties/${PROPERTY_ID}/pos/tickets`,
     { pollIntervalMs: 20000 }
@@ -92,7 +94,7 @@ export function PosDashboard() {
     setCashLoading(true);
     setCashError(null);
     try {
-      const summary = await fetchPosCashSummary({ from: csFrom, to: csTo, outletId: csOutletId || undefined }, PROPERTY_ID);
+      const summary = await fetchPosCashSummary({ ...cashSummaryWindow(csFrom, csTo), outletId: csOutletId || undefined }, PROPERTY_ID);
       setCashSummary(summary);
       if (!csOutletId) setCashOutlets(summary.byOutlet.map((o) => ({ id: o.outletId, name: o.outletName })));
     } catch (e: unknown) {
@@ -138,14 +140,16 @@ export function PosDashboard() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · TPV</p>
-          <h2 style={{ color: "var(--ink)" }}>Punto de venta (TPV)</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Abre comandas en restaurante, bar o room service, añade consumos y cierra cobrando a la habitación, en efectivo o con tarjeta.
-          </p>
-        </div>
+      <header className="bo-card-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div>
+            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · TPV</p>
+            <h2 style={{ color: "var(--ink)" }}>Punto de venta (TPV)</h2>
+            <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
+              Abre comandas en restaurante, bar o room service, añade consumos y cierra cobrando a la habitación, en efectivo o con tarjeta.
+            </p>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {busy ? <Spinner size="sm" /> : null}
           <button type="button" onClick={refresh} disabled={loading}>↻ Actualizar</button>
@@ -304,7 +308,7 @@ export function PosDashboard() {
                       <td>{t.roomNumber ? `Hab. ${t.roomNumber}` : "—"}</td>
                       <td>{eur(t.total)}</td>
                       <td>{t.settlement ? <span className="bo-status ok">{SETTLE_LABEL[t.settlement] ?? t.settlement}</span> : <span className="bo-muted">sin registrar</span>}</td>
-                      <td>{t.closedAt ? `${isOnLocalDay(t.closedAt, today) ? "hoy" : new Date(t.closedAt).toLocaleDateString("es-ES")} ${fmtTime(t.closedAt)}` : "—"}</td>
+                      <td>{t.closedAt ? `${isOnLocalDay(t.closedAt, today) ? "hoy" : date(t.closedAt)} ${fmtTime(t.closedAt)}` : "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -326,7 +330,7 @@ export function PosDashboard() {
             <DetailRow label="Punto de venta">{selected.outletName}</DetailRow>
             <DetailRow label="Habitación">{selected.roomNumber ? `Hab. ${selected.roomNumber}` : "—"}</DetailRow>
             <DetailRow label="Abierta">{fmtTime(selected.createdAt)}</DetailRow>
-            {selected.closedAt ? <DetailRow label="Cerrada">{new Date(selected.closedAt).toLocaleDateString("es-ES")} {fmtTime(selected.closedAt)}</DetailRow> : null}
+            {selected.closedAt ? <DetailRow label="Cerrada">{date(selected.closedAt)} {fmtTime(selected.closedAt)}</DetailRow> : null}
             {selected.settlement ? <DetailRow label="Cobro">{SETTLE_LABEL[selected.settlement] ?? selected.settlement}</DetailRow> : null}
             <div style={{ marginTop: 8 }}>
               <p className="bo-muted" style={{ fontSize: 12, textTransform: "none", marginBottom: 4 }}>Consumos</p>

@@ -662,7 +662,7 @@ export function RoomingListImportDialog(props: {
                     <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>#</th>
                     <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Nombre</th>
                     <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Apellido</th>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Email</th>
+                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Correo</th>
                     <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Llegada</th>
                     <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Salida</th>
                     <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Tipo</th>

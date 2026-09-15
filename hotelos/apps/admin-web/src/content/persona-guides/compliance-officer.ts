@@ -1,18 +1,31 @@
-export const COMPLIANCE_OFFICER_GUIDE = {
-  persona: "Compliance Officer",
+import type { PersonaGuide } from "./types";
+
+export const COMPLIANCE_OFFICER_GUIDE: PersonaGuide = {
+  id: "cumplimiento",
+  roleTokens: ["finanzas"],
+  title: "Cumplimiento y fiscal: nada pendiente con la Administración",
+  summary: "VeriFactu, partes de viajeros, modelos de la AEAT y protección de datos, cada día en su bandeja.",
   dailyFlow: [
-    "Revisar la matriz semaforo de controles (verde=OK, ambar=atencion, rojo=accion requerida) para detectar areas criticas al iniciar el dia.",
-    "Consultar doc vault expirations: certificados digitales, licencias turisticas, autorizaciones autonomicas y libros registro proximos a vencer.",
-    "Atender alerts criticos del feed por prioridad: errores VeriFactu/TBAI/SES, plazos vencidos, cambios normativos publicados.",
-    "Ejecutar inspection prep: check-list de documentos exigibles por AEAT, Hacienda Foral, autoridad turistica y proteccion de datos.",
-    "Auditar el audit trail diario: trazabilidad de envios automaticos, hashes de registros, sellos de tiempo y firmas electronicas.",
+    "Empieza en Cumplimiento › Bandeja de cumplimiento: envíos rechazados, plazos a punto de vencer y certificados que caducan.",
+    "Revisa en Cumplimiento › Envíos a autoridades el estado de cada envío (VeriFactu, TicketBAI, IGIC, SES.Hospedajes) y reintenta los que fallaron.",
+    "Comprueba en Cumplimiento › Registro de viajeros que los partes del día están firmados y comunicados antes de 24 horas.",
+    "Prepara los modelos del periodo en Cumplimiento › Modelos AEAT (303, 111, 115, 180, 390) y compáralos con Finanzas › Estados contables.",
+    "Atiende las solicitudes de acceso o borrado de datos en Cumplimiento › Protección de datos dentro del plazo de un mes.",
+    "Mantén al día los ajustes fiscales de la propiedad en Configuración › Contabilidad y fiscal."
   ],
   tips: [
-    "Usa los filtros por CCAA (Pais Vasco, Navarra, Canarias, regimen comun) para segmentar obligaciones segun jurisdiccion.",
-    "En territorios forales aplica TBAI (TicketBAI) en lugar de VeriFactu: Bizkaia, Gipuzkoa, Araba y Navarra tienen plataformas y plazos propios.",
-    "Para ESRS clasifica emisiones por scope: scope 1 (combustion directa: calderas, vehiculos), scope 2 (electricidad y climatizacion adquirida), scope 3 (cadena de valor: huespedes, proveedores, residuos).",
-    "Configura recordatorios anticipados (T-30, T-7, T-1) sobre vencimientos del document vault para evitar incumplimientos.",
-    "Export inspection folder genera un ZIP con la documentacion exigible para entregar a inspectores sin exposicion innecesaria.",
+    "En los territorios forales (Bizkaia, Gipuzkoa, Araba, Navarra) se aplica TicketBAI en lugar de VeriFactu: la pestaña está dentro de VeriFactu.",
+    "Un envío marcado como «simulado» no ha llegado a la Administración: hace falta el certificado y el modo producción.",
+    "Renueva el certificado digital con al menos un mes de margen: caducado, bloquea toda la facturación."
   ],
-  relatedScreens: ["ComplianceScreen", "BillingScreen", "ConfigurationScreen"],
-} as const;
+  relatedScreens: [
+    "ComplianceInbox",
+    "FiscalSubmissionsCenter",
+    "GuestRegisterSettings",
+    "Modelo303Screen",
+    "GdprRequestsScreen",
+    "AccountingSettings"
+  ]
+};
+
+export default COMPLIANCE_OFFICER_GUIDE;

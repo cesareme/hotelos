@@ -464,8 +464,10 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     `reservation`); (f) scripts raíz encadenan `pnpm` a pelo (falla en shells sin
     shim; el instalador hace `corepack enable`); (g) VPS demo sin adoptar
     (checklist en `deploy/README-INSTALL.md §9`), `EMAIL_PROVIDER` y
-    `VERIFACTU_SOFTWARE_*` por configurar, plantilla `manager` (85 claves) pendiente
-    de decisión de producto; (h) cadena VeriFactu de Faranda no lineal por número
+    `VERIFACTU_SOFTWARE_*` por configurar; la plantilla `manager` (85 claves)
+    quedó resuelta en Tanda 5 (L1a rbac + L1b api-side: 99 claves, §10 del árbol
+    de navegación; catálogo 215 claves, 10 plantillas por organización, ver
+    `docs/runbooks/rbac-sync.md` §1 y §7); (h) cadena VeriFactu de Faranda no lineal por número
     (FAC-2026-000014 enlaza al `cancellation_hash` de FAC-2026-000009, no al
     `verifactu_hash` de la anterior por numeración): válida como grafo, residuo de
     sandbox.

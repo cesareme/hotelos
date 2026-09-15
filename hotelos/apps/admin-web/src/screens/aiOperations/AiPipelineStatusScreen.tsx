@@ -4,6 +4,7 @@ import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { DataPreview } from "../../components/forms/FormComponents";
 import { LoadingBlock } from "../../components/States";
+import { dateTime, money, number } from "../../lib/format";
 
 // ---- Sprint 48 — AI Pipeline Status (tool-call telemetry) ----
 // Read-only operations dashboard over /ai-operations/pipeline/dashboard.
@@ -118,8 +119,7 @@ function severityPill(severity: string) {
 }
 
 function fmtNumber(n: number | null | undefined, fractionDigits = 0): string {
-  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
-  return n.toLocaleString(undefined, { maximumFractionDigits: fractionDigits });
+  return number(n, { maximumFractionDigits: fractionDigits });
 }
 
 function fmtConfidence(n: number | null | undefined): string {
@@ -128,22 +128,16 @@ function fmtConfidence(n: number | null | undefined): string {
 }
 
 function fmtEur(n: number | null | undefined): string {
-  if (n === null || n === undefined || !Number.isFinite(n)) return "—";
-  return `€${n.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return money(n);
 }
 
 function fmtMs(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
-  return `${n.toLocaleString()} ms`;
+  return `${number(n, { maximumFractionDigits: 0 })} ms`;
 }
 
 function fmtDateTime(iso?: string): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  return dateTime(iso);
 }
 
 function fmtDayShort(iso: string): string {
@@ -171,7 +165,8 @@ function Bar(props: { fraction: number; label: string; danger?: boolean }) {
   );
 }
 
-export function AiPipelineStatusScreen() {
+export function AiPipelineStatusScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const state = useApiData<PipelineDashboard>("/ai-operations/pipeline/dashboard", {
     pollIntervalMs: 30000,
     query: { organizationId: ORGANIZATION_ID }
@@ -260,8 +255,8 @@ export function AiPipelineStatusScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">IA · Actividad</div>
-          <h1 className="bo-page-title">Estado de la IA</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">IA · Actividad</div>}
+          {embedded ? null : <h1 className="bo-page-title">Estado de la IA</h1>}
           <p className="bo-page-subtitle">
             Actividad de la IA (solo lectura): volumen, tasa de éxito, tiempo de respuesta,
             confianza, gasto en tokens (uso del modelo) y anomalías. Se actualiza solo cada 30 segundos.

@@ -1,24 +1,31 @@
-export const OWNER_GUIDE = {
-  persona: "Owner",
+import type { PersonaGuide } from "./types";
+
+export const OWNER_GUIDE: PersonaGuide = {
+  id: "propietario",
+  roleTokens: ["direccion"],
+  title: "Propietario: resultados sin operar el día a día",
+  summary: "Cartera, rentabilidad, tesorería y cumplimiento, comparados con el presupuesto y con el año anterior.",
   dailyFlow: [
-    "Abrir P&L vista del activo (revenue, GOP, EBITDA, margen) con periodo MTD y comparar contra prior year.",
-    "Revisar occupancy YTD vs budget vs prior year e identificar el gap acumulado por canal y segmento.",
-    "Comparar REVPAR vs comp-set (rate shopper) para validar el posicionamiento de mercado y el RGI.",
-    "Cruzar budget vs actual por linea (rooms, F&B, otros) y marcar las desviaciones criticas para seguimiento.",
-    "Repasar asset-level health: CAPEX en curso, mantenimiento mayor, ratios operativos del activo y cumplimiento legal.",
+    "Tu inicio es Hoy › Mi día › Propietario: ingresos, margen y ocupación del mes frente al presupuesto y al año pasado.",
+    "Si tienes varios hoteles, Informes › Cartera de propiedades los compara entre sí y permite entrar en cada uno.",
+    "Mira Informes › Rentabilidad por habitación para saber qué tipos de habitación y qué canales dejan más margen.",
+    "Revisa Finanzas › Tesorería: lo que te deben, lo que debes y la posición de caja.",
+    "Comprueba en Cumplimiento › Centro de cumplimiento que las obligaciones legales (VeriFactu, partes de viajeros, protección de datos) están al día.",
+    "Lee Hoy › Informe IA del día para saber qué ha hecho la IA y cuánto ha costado."
   ],
   tips: [
-    "Portfolio rollup multi-property: vista consolidada weighted por habitaciones, con drill-down por propiedad y por marca.",
-    "Alertas critical cross-property: overbookings, incidencias mayores, desviaciones de budget >10%, cash flow negativo o saldos pendientes anomalos.",
-    "REVPAR Index (RGI) vs comp-set debe estar >100 para liderar el mercado; <90 exige revision urgente de pricing y mix de canales.",
-    "El owner no opera el dia a dia: si te encuentras revisando check-ins o overbookings, escala al GM en lugar de intervenir.",
-    "Cuadra el P&L mensual con la tesoreria real antes de cualquier decision de distribucion de dividendos o reinversion en CAPEX.",
+    "Si te encuentras revisando check-ins o sobreventas, escala a dirección en lugar de intervenir: tu panel es de resultados, no de operación.",
+    "Un RevPAR por debajo de la competencia (Revenue › Competencia) es una señal para revisar precios y mezcla de canales.",
+    "Cuadra la tesorería real con el resultado del mes antes de decidir reparto o reinversión."
   ],
   relatedScreens: [
-    "OwnerHome",
+    "FrontDeskDashboard",
     "PortfolioDashboard",
-    "GeneralManagerScreen",
+    "RoomProfitabilityDashboard",
     "FinancePositionDashboard",
-    "RevenueHomeDashboard",
-  ],
-} as const;
+    "ComplianceCenter",
+    "AiOwnerSummaryScreen"
+  ]
+};
+
+export default OWNER_GUIDE;

@@ -312,7 +312,8 @@ function ToolDetailPanel(props: { toolName: string; onClose: () => void; onSetti
 
 // ---- screen ----------------------------------------------------------------
 
-export function AiToolRegistryScreen() {
+export function AiToolRegistryScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const [moduleFilter, setModuleFilter] = useState("");
   const [riskFilter, setRiskFilter] = useState("");
   const [search, setSearch] = useState("");
@@ -372,8 +373,8 @@ export function AiToolRegistryScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">IA · Catálogo de herramientas</div>
-          <h1 className="bo-page-title">Catálogo de herramientas de IA</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">IA · Catálogo de herramientas</div>}
+          {embedded ? null : <h1 className="bo-page-title">Catálogo de herramientas de IA</h1>}
           <p className="bo-page-subtitle">
             Catálogo de todas las herramientas con IA que la plataforma puede ejecutar, sincronizado
             desde el código. Revisa el riesgo y los permisos y, después, actívalas y ajusta la

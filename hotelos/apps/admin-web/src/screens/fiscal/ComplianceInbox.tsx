@@ -2,6 +2,9 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { toArray } from "../../utils/toArray";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS } from "../../content/actions";
+import { dateTime, relativeTime } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -39,7 +42,6 @@ type Alert = {
   actionLabel?: string;
   actionScreen?: string;
   timestamp?: string;
-  demo?: boolean;
 };
 
 const SEVERITY_META: Record<Severity, { label: string; chip: string; accent: string }> = {
@@ -63,17 +65,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 function relTime(iso?: string): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const diff = Date.now() - d.getTime();
-  const min = Math.round(diff / 60000);
-  if (min < 1) return "ahora mismo";
-  if (min < 60) return `hace ${min} min`;
-  const h = Math.round(min / 60);
-  if (h < 24) return `hace ${h} h`;
-  const days = Math.round(h / 24);
-  return `hace ${days} d`;
+  return iso ? relativeTime(iso) : "";
 }
 
 function asAlerts(authority: Authority, rows: Submission[] | null): Alert[] {
@@ -88,99 +80,13 @@ function asAlerts(authority: Authority, rows: Submission[] | null): Alert[] {
       description: row.errorMessage
         ? `${row.errorCode ?? "error"}: ${row.errorMessage}`
         : row.status === "retrying"
-          ? `Envío en cola para reintento. Próximo intento: ${row.nextRetryAt ? new Date(row.nextRetryAt).toLocaleString("es-ES") : "en breve"}. Intentos hasta ahora: ${row.attempts ?? 0}.`
+          ? `Envío en cola para reintento. Próximo intento: ${row.nextRetryAt ? dateTime(row.nextRetryAt) : "en breve"}. Intentos hasta ahora: ${row.attempts ?? 0}.`
           : "La autoridad no confirmó la recepción. El worker reintentará automáticamente.",
       actionLabel: "Abrir envíos",
       actionScreen: "FiscalSubmissionsCenter",
       timestamp: row.submittedAt
     }));
 }
-
-// Sample alerts shown only when there are no real alerts, so the inbox can be
-// previewed populated. They are clearly flagged as demo and never mixed with
-// real data (real alerts always take precedence and hide these).
-const minutesAgo = (n: number) => new Date(Date.now() - n * 60_000).toISOString();
-const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
-
-const DEMO_ALERTS: Alert[] = [
-  {
-    id: "demo-verifactu-1",
-    severity: "critical",
-    authority: "verifactu",
-    title: "VeriFactu · envío rechazado — Factura F-2026/000142",
-    description: "Error AEAT 3001: el NIF del receptor no es válido. Corrige el NIF en la factura y reenvía el registro de facturación.",
-    actionLabel: "Abrir envíos",
-    actionScreen: "FiscalSubmissionsCenter",
-    timestamp: minutesAgo(8),
-    demo: true
-  },
-  {
-    id: "demo-period-overdue",
-    severity: "critical",
-    authority: "system",
-    title: "Período fiscal 2026-T1 vencido",
-    description: "El período terminó el 31/03/2026 y sigue abierto. Ciérralo para bloquear asientos y poder generar el Modelo 303.",
-    actionLabel: "Cerrar período",
-    actionScreen: "FiscalDashboard",
-    timestamp: daysAgo(2),
-    demo: true
-  },
-  {
-    id: "demo-ses-1",
-    severity: "warning",
-    authority: "ses",
-    title: "SES.HOSPEDAJES · parte rechazado — Reserva RES-00042",
-    description: "El parte de viajeros fue rechazado: falta el número de soporte del documento de un huésped. Completa los datos y reenvía.",
-    actionLabel: "Abrir SES.HOSPEDAJES",
-    actionScreen: "SesHospedajesSettings",
-    timestamp: minutesAgo(45),
-    demo: true
-  },
-  {
-    id: "demo-tbai-1",
-    severity: "warning",
-    authority: "tbai",
-    title: "TicketBAI · reintentando — Factura F-2026/000150",
-    description: "Envío en cola para reintento automático. Próximo intento en ~5 min. Intentos hasta ahora: 2.",
-    actionLabel: "Abrir envíos",
-    actionScreen: "FiscalSubmissionsCenter",
-    timestamp: minutesAgo(12),
-    demo: true
-  },
-  {
-    id: "demo-period-soon",
-    severity: "warning",
-    authority: "system",
-    title: "El período fiscal 2026-T2 cierra en 5 días",
-    description: "Ciérralo antes de la presentación en AEAT. Los asientos con fecha posterior al 30/06/2026 quedarán bloqueados.",
-    actionLabel: "Abrir período",
-    actionScreen: "FiscalDashboard",
-    timestamp: daysAgo(1),
-    demo: true
-  },
-  {
-    id: "demo-igic-1",
-    severity: "info",
-    authority: "igic",
-    title: "IGIC · recordatorio — Modelo 420 trimestral",
-    description: "El plazo de presentación del Modelo 420 (IGIC, Canarias) abre el 1 de julio. Revisa los importes acumulados del trimestre.",
-    actionLabel: "Ajustes fiscales",
-    actionScreen: "TaxComplianceSettings",
-    timestamp: daysAgo(3),
-    demo: true
-  },
-  {
-    id: "demo-cert-1",
-    severity: "info",
-    authority: "system",
-    title: "El certificado de firma caduca en 30 días",
-    description: "El certificado digital (AEAT) caduca el 24/06/2026. Renuévalo a tiempo para no interrumpir VeriFactu ni el SII.",
-    actionLabel: "Ajustes de cumplimiento",
-    actionScreen: "TaxComplianceSettings",
-    timestamp: daysAgo(5),
-    demo: true
-  }
-];
 
 const SEVERITY_FILTERS: Array<{ id: "all" | Severity; label: string }> = [
   { id: "all", label: "Todas" },
@@ -196,7 +102,6 @@ export function ComplianceInbox(props: { onNavigate?: (screen: string) => void }
   const ses = useApiData<Submission[]>(`/properties/${PROPERTY_ID}/ses/submissions`, { pollIntervalMs: 15000 });
   const periods = useApiData<FiscalPeriod[]>(`/accounting/fiscal-periods?propertyId=${PROPERTY_ID}`);
 
-  const [showDemo, setShowDemo] = useState(true);
   const [filter, setFilter] = useState<"all" | Severity>("all");
 
   const realAlerts = useMemo<Alert[]>(() => {
@@ -243,8 +148,8 @@ export function ComplianceInbox(props: { onNavigate?: (screen: string) => void }
     });
   }, [verifactu.data, tbai.data, igic.data, ses.data, periods.data]);
 
-  const isDemoMode = realAlerts.length === 0 && showDemo;
-  const sourceAlerts = realAlerts.length > 0 ? realAlerts : isDemoMode ? DEMO_ALERTS : [];
+  // Only real alerts (Tanda 5: the sample «Datos de ejemplo» feed is gone).
+  const sourceAlerts = realAlerts;
   const alerts = filter === "all" ? sourceAlerts : sourceAlerts.filter((a) => a.severity === filter);
 
   const counts = {
@@ -263,19 +168,12 @@ export function ComplianceInbox(props: { onNavigate?: (screen: string) => void }
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Cumplimiento · Bandeja</div>
-          <h1 className="bo-page-title">Bandeja de cumplimiento</h1>
-          <p className="bo-page-subtitle">
-            Un único feed con todo lo que requiere atención humana: envíos rechazados, períodos fiscales a punto de cerrar y
-            certificados que caducan, en VeriFactu, TicketBAI, IGIC y SES.HOSPEDAJES. Se actualiza automáticamente cada 15 s.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" onClick={refreshAll}>↻ Actualizar</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Cumplimiento"
+        title="Bandeja de cumplimiento"
+        subtitle="Todo lo que requiere atención humana en un solo sitio: envíos rechazados, periodos fiscales a punto de cerrar y certificados que caducan, en VeriFactu, TicketBAI, IGIC y SES.Hospedajes. Se actualiza cada 15 s."
+        actions={<button type="button" onClick={refreshAll}>↻ {ACTIONS.refresh}</button>}
+      />
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${counts.critical > 0 ? "rev-kpi-error" : "rev-kpi-ok"}`}>
@@ -296,26 +194,9 @@ export function ComplianceInbox(props: { onNavigate?: (screen: string) => void }
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head"><span className="rev-kpi-label">Total de alertas</span></div>
           <div className="rev-kpi-value">{sourceAlerts.length}</div>
-          <div className="rev-kpi-delta">4 autoridades + sistema</div>
+          <div className="rev-kpi-delta">Cuatro autoridades y el sistema</div>
         </article>
       </section>
-
-      {/* Demo banner */}
-      {isDemoMode ? (
-        <div
-          className="bo-card"
-          style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 12, borderLeft: "3px solid var(--info-ink)" }}
-        >
-          <div>
-            <strong>Datos de ejemplo</strong>
-            <p style={{ margin: "4px 0 0", color: "var(--ink-muted)", fontSize: 13 }}>
-              No hay alertas reales ahora mismo. Mostramos ejemplos para previsualizar cómo se ve la bandeja con actividad. En
-              cuanto entre una alerta real, los ejemplos se ocultan automáticamente.
-            </p>
-          </div>
-          <button type="button" onClick={() => setShowDemo(false)}>Ocultar ejemplos</button>
-        </div>
-      ) : null}
 
       {/* Severity filter */}
       {sourceAlerts.length > 0 ? (
@@ -340,15 +221,10 @@ export function ComplianceInbox(props: { onNavigate?: (screen: string) => void }
       <section className="bo-card" style={{ padding: 0, overflow: "hidden" }}>
         {alerts.length === 0 ? (
           <div style={{ padding: 48, textAlign: "center" }}>
-            <h3 style={{ marginBottom: 8 }}>✅ Nada que atender</h3>
+            <h3 style={{ marginBottom: 8 }}>Nada que atender</h3>
             <p style={{ color: "var(--ink-muted)" }}>
-              No hay envíos rechazados ni períodos fiscales vencidos. El pipeline está sano.
+              No hay envíos rechazados ni periodos fiscales vencidos.
             </p>
-            {!showDemo && realAlerts.length === 0 ? (
-              <button type="button" style={{ marginTop: 12 }} onClick={() => { setShowDemo(true); setFilter("all"); }}>
-                Ver ejemplos
-              </button>
-            ) : null}
           </div>
         ) : (
           <div className="bo-stack" style={{ padding: 16, gap: 8 }}>
@@ -371,7 +247,6 @@ export function ComplianceInbox(props: { onNavigate?: (screen: string) => void }
                   <div style={{ minWidth: 0 }}>
                     <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, marginBottom: 4 }}>
                       <span className="bo-chip">{AUTHORITY_LABEL[alert.authority]}</span>
-                      {alert.demo ? <span className="bo-status info" style={{ textTransform: "none" }}>Demo</span> : null}
                       <strong style={{ color: "var(--ink)" }}>{alert.title}</strong>
                     </div>
                     <div style={{ fontSize: 13, color: "var(--ink-muted)", lineHeight: 1.45 }}>{alert.description}</div>

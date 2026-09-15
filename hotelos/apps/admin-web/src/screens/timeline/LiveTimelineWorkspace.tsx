@@ -41,6 +41,10 @@ import {
 } from "../../services/pmsCommerceApi";
 import { EmptyState, ErrorState, LoadingBlock, Spinner } from "../../components/States";
 import { NarrowViewportBanner } from "../../components/NarrowViewportBanner";
+import { useTabHost } from "../tabs/TabHost";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
+import { date, dateRange, money, time, type DateStyle } from "../../lib/format";
 
 // ---------------------------------------------------------------------------
 // Date helpers (date-only, UTC, no timezone drift)
@@ -62,12 +66,8 @@ function todayUtc(): Date {
   const now = new Date();
   return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
 }
-function fmtDate(value: string, opts: Intl.DateTimeFormatOptions = { day: "2-digit", month: "short" }): string {
-  return parseDateOnly(value).toLocaleDateString("es-ES", { ...opts, timeZone: "UTC" });
-}
-function money(amount: number | undefined, currency = "EUR"): string {
-  if (amount === undefined || Number.isNaN(amount)) return "—";
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency, useGrouping: true }).format(amount);
+function fmtDate(value: string, style: DateStyle = "dayMonth"): string {
+  return date(value, style);
 }
 function nightsOf(res: AdminReservation): number {
   return Math.max(1, diffDays(parseDateOnly(res.arrivalDate), parseDateOnly(res.departureDate)));
@@ -159,6 +159,7 @@ function assignLanes(blocks: Omit<Block, "lane">[]): { laid: Block[]; laneCount:
 }
 
 export function LiveTimelineWorkspace() {
+  const hosted = useTabHost() !== null;
   const propertyId = useMemo(() => getActivePropertyId(), []);
 
   const [rooms, setRooms] = useState<AdminRoom[]>([]);
@@ -251,7 +252,7 @@ export function LiveTimelineWorkspace() {
     } catch (err) {
       // Keep the current view, but flag it as stale instead of failing silently.
       setStaleSince({
-        at: new Date().toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" }),
+        at: time(new Date()),
         message: err instanceof Error ? err.message : "No se pudo actualizar el timeline."
       });
     }
@@ -427,19 +428,19 @@ export function LiveTimelineWorkspace() {
   const days = useMemo(
     () =>
       Array.from({ length: dayCount }, (_, i) => {
-        const date = addDays(rangeStart, i);
-        const key = toDateOnly(date);
+        const day = addDays(rangeStart, i);
+        const key = toDateOnly(day);
         return {
           key,
-          label: date.toLocaleDateString("es-ES", { weekday: "short", timeZone: "UTC" }),
-          sublabel: date.toLocaleDateString("es-ES", { day: "2-digit", month: "short", timeZone: "UTC" }),
+          label: date(day, "weekdayOnly"),
+          sublabel: date(day, "dayMonth"),
           isToday: key === todayKey,
-          isWeekend: [0, 6].includes(date.getUTCDay())
+          isWeekend: [0, 6].includes(day.getUTCDay())
         };
       }),
     [rangeStart, dayCount, todayKey]
   );
-  const rangeLabel = `${rangeStart.toLocaleDateString("es-ES", { day: "2-digit", month: "short", timeZone: "UTC" })} – ${addDays(rangeStart, dayCount - 1).toLocaleDateString("es-ES", { day: "2-digit", month: "short", year: "numeric", timeZone: "UTC" })}`;
+  const rangeLabel = dateRange(rangeStart, addDays(rangeStart, dayCount - 1));
 
   // ---- drag + resize ------------------------------------------------------
   const dragRef = useRef<{ res: AdminReservation; mode: "move" | "resize"; startX: number; startY: number; moved: boolean } | null>(null);
@@ -552,9 +553,10 @@ export function LiveTimelineWorkspace() {
     }
   }
 
+  // Detalle de la reserva: /recepcion/reservas/:id (tab of the Reservas container, Tanda 5).
   function openReservation(id: string) {
-    window.history.pushState(null, "", `/backoffice/reservations/${id}`);
-    window.dispatchEvent(new PopStateEvent("popstate"));
+    const url = urlForScreen("ReservationDetailWorkspace", { id });
+    if (url) openTabPath(url);
   }
   function nav(screen: string) {
     window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
@@ -565,16 +567,18 @@ export function LiveTimelineWorkspace() {
     <>
     <NarrowViewportBanner />
     <section className="bo-card" style={{ display: "grid", gap: 16, minWidth: 0 }}>
-      <header style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-        <div style={{ flex: "1 1 320px", minWidth: 0 }}>
-          <p className="bo-page-eyebrow">Timeline</p>
-          <h1 className="bo-page-title" style={{ marginTop: 2 }}>Live Timeline</h1>
-          <p style={{ marginTop: 8, color: "var(--ink-muted)", maxWidth: "72ch" }}>
-            Reservas y habitaciones reales. Pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el
-            detalle con folio y actividad, y arrastra para mover o redimensionar la estancia. Las acciones críticas piden
-            confirmación antes de ejecutarse.
-          </p>
-        </div>
+      <header style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", justifyContent: hosted ? "flex-end" : "space-between", gap: 16 }}>
+        {hosted ? null : (
+          <div style={{ flex: "1 1 320px", minWidth: 0 }}>
+            <p className="bo-page-eyebrow">Recepción · Reservas</p>
+            <h1 className="bo-page-title" style={{ marginTop: 2 }}>Cronograma</h1>
+            <p style={{ marginTop: 8, color: "var(--ink-muted)", maxWidth: "72ch" }}>
+              Reservas y habitaciones reales. Pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el
+              detalle con folio y actividad, y arrastra para mover o redimensionar la estancia. Las acciones críticas piden
+              confirmación antes de ejecutarse.
+            </p>
+          </div>
+        )}
         {overbookingCount > 0 ? (
           <TimelineOverbookingAlert
             count={overbookingCount}
@@ -870,8 +874,8 @@ function HoverCard(props: { res: AdminReservation; room?: AdminRoom; left: numbe
         {room ? <span className="bo-chip">Hab. {room.number}</span> : <span className="bo-chip">Sin habitación</span>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
-        <HoverFact label="Entrada" value={fmtDate(res.arrivalDate, { weekday: "short", day: "2-digit", month: "short" })} />
-        <HoverFact label="Salida" value={fmtDate(res.departureDate, { weekday: "short", day: "2-digit", month: "short" })} />
+        <HoverFact label="Entrada" value={fmtDate(res.arrivalDate, "weekdayShort")} />
+        <HoverFact label="Salida" value={fmtDate(res.departureDate, "weekdayShort")} />
         <HoverFact label="Noches" value={`${nightsOf(res)}`} />
         <HoverFact label="Ocupación" value={`${res.adults}A${res.children ? ` · ${res.children}N` : ""}`} />
         <HoverFact label="Importe" value={money(res.totalAmount, res.currency)} />
@@ -910,8 +914,8 @@ function DetailPanel(props: {
   const facts: Array<[string, string]> = [
     ["Estado", RES_STATUS_LABEL[res.status] ?? res.status],
     ["Huésped", guestLabel(res)],
-    ["Entrada", fmtDate(res.arrivalDate, { weekday: "long", day: "2-digit", month: "short" })],
-    ["Salida", fmtDate(res.departureDate, { weekday: "long", day: "2-digit", month: "short" })],
+    ["Entrada", fmtDate(res.arrivalDate, "weekdayShort")],
+    ["Salida", fmtDate(res.departureDate, "weekdayShort")],
     ["Noches", `${nightsOf(res)}`],
     ["Ocupación", `${res.adults} adultos${res.children ? ` · ${res.children} niños` : ""}`],
     ["Habitación", room ? `Hab. ${room.number}` : "Sin asignar"],

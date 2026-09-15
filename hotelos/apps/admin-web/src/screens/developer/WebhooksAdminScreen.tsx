@@ -18,10 +18,10 @@ import {
 import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useToast } from "../../components/Toast";
+import { dateTime } from "../../lib/format";
 
 function fmtTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  return dateTime(iso, { style: "dayMonth" });
 }
 
 function statusBadge(status: string): "ok" | "warn" | "info" {

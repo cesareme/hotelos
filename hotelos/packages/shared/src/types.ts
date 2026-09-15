@@ -43,10 +43,18 @@ export type PermissionKey =
   | "pms.checkin.execute"
   | "pms.checkout.execute"
   | "folio.charge.post"
+  | "folio.read"
   | "payment.capture"
   | "payment.refund"
   | "invoice.issue"
   | "invoice.cancel"
+  // Tanda 5 (L1c · api): read keys of the invoice, payroll, banking,
+  // commissions and accounting-calendar GET routes (write keys stay on POST).
+  | "invoice.read"
+  | "payroll.read"
+  | "banking.read"
+  | "commissions.read"
+  | "accounting.read"
   | "housekeeping.task.manage"
   | "maintenance.workorder.manage"
   | "asset.capex.approve"
@@ -92,6 +100,8 @@ export type PermissionKey =
   | "pos.order.charge_to_room"
   | "pos.order.pay"
   | "pos.product.manage"
+  | "pos.read"
+  | "tourist_tax.read"
   | "guest_experience.inbox.read"
   | "guest_experience.message.send"
   | "guest_experience.ai_reply"
@@ -261,6 +271,10 @@ export type RoleKey =
   | "accountant"
   | "compliance"
   | "revenue"
+  // Tanda 5 (L1a · rbac): sales = Comercial/Ventas, fnb = Punto de venta / F&B.
+  // They back the `comercial` and `fnb` tokens of the navigation tree.
+  | "sales"
+  | "fnb"
   | "admin";
 
 export type ToolContext = {

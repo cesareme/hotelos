@@ -1,5 +1,8 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { STATUS_LABELS, UI_STATES } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
+import { dateTime, money, number } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -35,43 +38,16 @@ type InventoryDashboardData = {
 
 type StatusKind = "ok" | "warn" | "error" | "info";
 
-const currencyFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true,
-  style: "currency",
-  currency: "EUR",
-  minimumFractionDigits: 2
-});
-
-const numberFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true });
-const qtyFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true,
-  minimumFractionDigits: 0,
-  maximumFractionDigits: 2
-});
-
-function money(value: number | null | undefined): string {
-  return currencyFormatter.format(Number.isFinite(value as number) ? (value as number) : 0);
-}
-
 function fmtNumber(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0";
-  return numberFormatter.format(value);
+  return number(value, { maximumFractionDigits: 0 });
 }
 
 function fmtQty(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0";
-  return qtyFormatter.format(value);
+  return number(value);
 }
 
 function formatDateTime(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(d);
+  return dateTime(value);
 }
 
 function pill(kind: StatusKind, label: string) {
@@ -93,19 +69,19 @@ function barPercent(value: number, max: number): number {
 }
 
 const MOVEMENT_LABELS: Record<string, string> = {
-  receipt: "Receipt",
-  in: "Inbound",
-  purchase: "Purchase",
-  transfer_in: "Transfer in",
-  adjustment_in: "Adjust +",
-  return: "Return",
-  consumption: "Consumption",
-  out: "Outbound",
-  issue: "Issue",
-  transfer_out: "Transfer out",
-  adjustment_out: "Adjust −",
-  loss: "Loss",
-  waste: "Waste"
+  receipt: "Recepción",
+  in: "Entrada",
+  purchase: "Compra",
+  transfer_in: "Traspaso de entrada",
+  adjustment_in: "Ajuste +",
+  return: "Devolución",
+  consumption: "Consumo",
+  out: "Salida",
+  issue: "Entrega",
+  transfer_out: "Traspaso de salida",
+  adjustment_out: "Ajuste −",
+  loss: "Pérdida",
+  waste: "Merma"
 };
 
 const MOVEMENT_KIND: Record<string, StatusKind> = {
@@ -125,6 +101,7 @@ const MOVEMENT_KIND: Record<string, StatusKind> = {
 };
 
 export function InventoryDashboard() {
+  const hosted = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<InventoryDashboardData>(
     "/dashboards/inventory",
     { pollIntervalMs: 120000, query: { propertyId: PROPERTY_ID } }
@@ -150,60 +127,62 @@ export function InventoryDashboard() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Inventory</div>
-          <h1 className="bo-page-title">Inventario operativo</h1>
-          <p className="bo-page-subtitle">
-            Vista de solo lectura sobre niveles de stock, artículos bajo mínimo, valor del inventario y
-            últimos movimientos. Refresca automáticamente cada 120 segundos.
-          </p>
-        </div>
+      <div className="bo-page-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div className="bo-page-head-text">
+            <div className="bo-page-eyebrow">Operaciones · Inventario</div>
+            <h1 className="bo-page-title">Inventario operativo</h1>
+            <p className="bo-page-subtitle">
+              Vista de solo lectura sobre niveles de existencias, artículos bajo mínimo, valor del inventario y
+              últimos movimientos. Refresca automáticamente cada 120 segundos.
+            </p>
+          </div>
+        )}
         <div className="bo-page-head-actions">
-          {loading ? <span className="bo-status info">loading</span> : null}
-          <button type="button" className="ghost" onClick={refresh}>↻ Refresh</button>
+          {loading ? <span className="bo-status info">{STATUS_LABELS.loading}</span> : null}
+          <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
         </div>
       </div>
 
       {error ? (
-        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
-          Couldn't load this view right now. Refresh to retry.
+        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }} role="alert">
+          <strong>{UI_STATES.error.title}.</strong> {UI_STATES.error.message}
         </section>
       ) : null}
 
       <section className="rev-kpi-grid">
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Active items</span>
-            {pill("info", "catalog")}
+            <span className="rev-kpi-label">Artículos activos</span>
+            {pill("info", "catálogo")}
           </div>
           <div className="rev-kpi-value">{fmtNumber(kpis.itemsCount)}</div>
         </article>
         <article className={`rev-kpi rev-kpi-${belowMinKind === "ok" ? "ok" : belowMinKind === "warn" ? "warn" : "error"}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Below minimum</span>
-            {pill(belowMinKind, belowMinKind === "ok" ? "healthy" : "reorder")}
+            <span className="rev-kpi-label">Bajo mínimo</span>
+            {pill(belowMinKind, belowMinKind === "ok" ? "correcto" : "reponer")}
           </div>
           <div className="rev-kpi-value">{fmtNumber(kpis.itemsBelowMin)}</div>
         </article>
         <article className={`rev-kpi ${lowStockKind === "ok" ? "rev-kpi-ok" : "rev-kpi-warn"}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Low-stock value</span>
-            {pill(lowStockKind, "EUR")}
+            <span className="rev-kpi-label">Valor bajo mínimo</span>
+            {pill(lowStockKind, "importe")}
           </div>
           <div className="rev-kpi-value">{money(kpis.lowStockValueEur)}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Total inventory value</span>
-            {pill("ok", "EUR")}
+            <span className="rev-kpi-label">Valor total del inventario</span>
+            {pill("ok", "importe")}
           </div>
           <div className="rev-kpi-value">{money(kpis.totalInventoryValueEur)}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Movements (30d)</span>
-            {pill("info", "activity")}
+            <span className="rev-kpi-label">Movimientos (30 días)</span>
+            {pill("info", "actividad")}
           </div>
           <div className="rev-kpi-value">{fmtNumber(kpis.movementsLast30d)}</div>
         </article>
@@ -211,21 +190,21 @@ export function InventoryDashboard() {
 
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Items below minimum</h3>
+          <h3 style={{ color: "var(--ink)" }}>Artículos bajo mínimo</h3>
           <span className="bo-chip">{itemsBelowMinList.length} items</span>
         </div>
         {itemsBelowMinList.length === 0 ? (
-          <p className="bo-muted">All items above their minimum level.</p>
+          <p className="bo-muted">Todos los artículos están por encima de su mínimo.</p>
         ) : (
           <table className="cm-table">
             <thead>
               <tr>
                 <th>SKU</th>
-                <th>Name</th>
-                <th>Location</th>
-                <th>Current</th>
-                <th>Min</th>
-                <th>Status</th>
+                <th>Nombre</th>
+                <th>Ubicación</th>
+                <th>Actual</th>
+                <th>Mínimo</th>
+                <th>Estado</th>
               </tr>
             </thead>
             <tbody>
@@ -251,18 +230,18 @@ export function InventoryDashboard() {
 
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Top consumed (last 30 days)</h3>
+          <h3 style={{ color: "var(--ink)" }}>Más consumidos (últimos 30 días)</h3>
           <span className="bo-chip">{topConsumed.length} items</span>
         </div>
         {topConsumed.length === 0 ? (
-          <p className="bo-muted">No consumption recorded in the last 30 days.</p>
+          <p className="bo-muted">Sin consumo registrado en los últimos 30 días.</p>
         ) : (
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Item</th>
-                <th>Consumed</th>
-                <th style={{ width: "55%" }}>Share</th>
+                <th>Artículo</th>
+                <th>Consumido</th>
+                <th style={{ width: "55%" }}>Cuota</th>
               </tr>
             </thead>
             <tbody>
@@ -287,19 +266,19 @@ export function InventoryDashboard() {
 
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Stock by location</h3>
+          <h3 style={{ color: "var(--ink)" }}>Existencias por ubicación</h3>
           <span className="bo-chip">{stockByLocation.length} locations</span>
         </div>
         {stockByLocation.length === 0 ? (
-          <p className="bo-muted">No active stock locations.</p>
+          <p className="bo-muted">Sin ubicaciones de existencias activas.</p>
         ) : (
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Location</th>
-                <th>Items</th>
-                <th>Value</th>
-                <th style={{ width: "45%" }}>Share</th>
+                <th>Ubicación</th>
+                <th>Artículos</th>
+                <th>Valor</th>
+                <th style={{ width: "45%" }}>Cuota</th>
               </tr>
             </thead>
             <tbody>
@@ -325,20 +304,20 @@ export function InventoryDashboard() {
 
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Recent movements</h3>
+          <h3 style={{ color: "var(--ink)" }}>Movimientos recientes</h3>
           <span className="bo-chip">{recentMovements.length} entries</span>
         </div>
         {recentMovements.length === 0 ? (
-          <p className="bo-muted">No stock movements recorded yet.</p>
+          <p className="bo-muted">Todavía no hay movimientos de existencias.</p>
         ) : (
           <table className="cm-table">
             <thead>
               <tr>
-                <th>When</th>
-                <th>Item</th>
-                <th>Location</th>
-                <th>Type</th>
-                <th>Qty</th>
+                <th>Cuándo</th>
+                <th>Artículo</th>
+                <th>Ubicación</th>
+                <th>Tipo</th>
+                <th>Cant.</th>
               </tr>
             </thead>
             <tbody>

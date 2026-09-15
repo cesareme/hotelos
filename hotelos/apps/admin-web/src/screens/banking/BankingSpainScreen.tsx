@@ -1,30 +1,38 @@
 // Banking España — importador CSB-43 con matches sugeridos + generador SEPA Norma 19.
 // 2 tabs en un solo screen para mantener la cohesión del módulo.
 
+import { useTabHost } from "../tabs/TabHost";
 import { useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { importCsb43, generateSepaRemittance, validateIban, type Csb43ImportResult, type SepaResult } from "../../services/bankingApi";
 import { Spinner } from "../../components/States";
+import { money, number, plural, type CurrencyInput } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
 type Tab = "csb43" | "sepa";
 
-function fmtMoney(n: number, currency = "EUR"): string {
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
+function fmtMoney(n: number, currency?: CurrencyInput): string {
+  return money(n, currency);
 }
 
 export function BankingSpainScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const [tab, setTab] = useState<Tab>("csb43");
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Finanzas · Banca española
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Conciliación CSB-43 + remesas SEPA</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
+                Finanzas · Conciliación bancaria
+              </p>
+              <h2 style={{ color: "var(--ink)" }}>Conciliación CSB-43 + remesas SEPA</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             Importa el extracto de tu banco en formato AEB <strong>Cuaderno 43</strong> y deja que el motor identifique los
             movimientos que coinciden con los pagos del PMS. Genera remesas <strong>SEPA Norma 19</strong> (pain.008.001.02)
@@ -88,7 +96,7 @@ function Csb43Tab() {
         <input type="file" accept=".txt,.csb,.dat,text/plain" onChange={handleFile} />
         {content ? (
           <p className="bo-status info" style={{ textTransform: "none", marginTop: 8 }}>
-            Fichero cargado · {content.length.toLocaleString("es-ES")} caracteres
+            Fichero cargado · {number(content.length)} caracteres
           </p>
         ) : null}
         <div style={{ marginTop: 8 }}>
@@ -119,14 +127,14 @@ function Csb43Tab() {
                   <div className="rev-kpi-value" style={{ fontSize: 18 }}>{fmtMoney(acc.finalBalance, acc.currency)}</div>
                 </article>
                 <article className="rev-kpi rev-kpi-ok">
-                  <div className="rev-kpi-head"><span className="rev-kpi-label">Movimientos</span><span className="bo-status info">{acc.matches.length} matches</span></div>
+                  <div className="rev-kpi-head"><span className="rev-kpi-label">Movimientos</span><span className="bo-status info">{plural(acc.matches.length, "coincidencia", "coincidencias")}</span></div>
                   <div className="rev-kpi-value" style={{ fontSize: 18 }}>{acc.movements.length}</div>
                 </article>
               </div>
 
               <div className="rev-report-wrap" style={{ marginTop: 12 }}>
                 <table className="cm-table">
-                  <thead><tr><th>Fecha</th><th>Concepto</th><th>Importe</th><th>Saldo</th><th>Match</th></tr></thead>
+                  <thead><tr><th>Fecha</th><th>Concepto</th><th>Importe</th><th>Saldo</th><th>Coincidencia</th></tr></thead>
                   <tbody>
                     {acc.movements.map((m, mi) => {
                       const match = acc.matches.find((x) => x.movementIndex === mi);
@@ -198,15 +206,8 @@ function SepaTab() {
   const [schema, setSchema] = useState<"CORE" | "B2B">("CORE");
   const [sequenceType, setSequenceType] = useState<"FRST" | "RCUR" | "OOFF">("OOFF");
   const [debtors, setDebtors] = useState<Debtor[]>([
-    {
-      mandateId: "MND-001",
-      mandateSignedAt: "2026-01-15",
-      name: "Empresa Demo SL",
-      iban: "ES9121000418450200051332",
-      amount: 250.00,
-      description: "Estancia corporativa abril 2026",
-      endToEndId: "REF-001"
-    }
+    // One empty debtor row: the form never pre-fills a fictitious company (L1c).
+    { mandateId: "", mandateSignedAt: "", name: "", iban: "", amount: 0, description: "", endToEndId: "" }
   ]);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SepaResult | null>(null);

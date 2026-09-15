@@ -114,7 +114,7 @@ export function ScreenScaffold(props: ScreenScaffoldProps) {
                       type="button"
                       onClick={navigable ? () => handleAction(action) : undefined}
                       disabled={!navigable}
-                      title={navigable ? undefined : "Pendiente de implementación"}
+                      title={navigable ? undefined : "Acción no disponible en esta pantalla"}
                       style={!navigable ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
                     >
                       {label}

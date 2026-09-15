@@ -11,6 +11,7 @@ import { clearSession, getUser, onAuthChange, type AuthUser } from "../services/
 import { cycleThemePreference, getThemePreference, type ThemePreference } from "../theme";
 import { Spinner } from "./States";
 import { openHelpCenter } from "./guide/guideStore";
+import { OPEN_NOTIFICATIONS_EVENT } from "../providers/CocoaGlobalProvider";
 
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -230,7 +231,7 @@ export function TopBar(props: TopBarProps) {
           <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1.5" />
           <path d="M10 10L13 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
         </svg>
-        <span>Search reservations, guests, settings...</span>
+        <span>Buscar reservas, huéspedes, facturas…</span>
         <kbd className="bo-topbar-search-kbd">⌘K</kbd>
       </button>
 
@@ -239,8 +240,8 @@ export function TopBar(props: TopBarProps) {
           type="button"
           className="bo-icon-button"
           data-tour="help"
-          aria-label="Ayuda y guía de recepción"
-          title="Ayuda y guía"
+          aria-label="Centro de ayuda"
+          title="Centro de ayuda"
           onClick={() => openHelpCenter()}
         >
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
@@ -258,7 +259,14 @@ export function TopBar(props: TopBarProps) {
         >
           {themeMeta[theme].icon}
         </button>
-        <button type="button" className="bo-icon-button has-badge" data-tour="notifications" aria-label="Notificaciones">
+        <button
+          type="button"
+          className="bo-icon-button"
+          data-tour="notifications"
+          aria-label="Avisos"
+          title="Avisos"
+          onClick={() => window.dispatchEvent(new CustomEvent(OPEN_NOTIFICATIONS_EVENT))}
+        >
           <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden>
             <path d="M14 11V8a5 5 0 1 0-10 0v3l-1.5 2h13L14 11Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
             <path d="M7 15a2 2 0 0 0 4 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />

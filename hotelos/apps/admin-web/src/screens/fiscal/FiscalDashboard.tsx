@@ -19,7 +19,9 @@ function countByStatus(rows: SubmissionLite[] | null) {
 
 type FiscalSection = "authorities" | "reports" | "certificates";
 
-export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }) {
+export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; embedded?: boolean }) {
+  const embedded = props.embedded === true;
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const { showToast } = useToast();
   const verifactu = useApiData<SubmissionLite[]>(`/properties/${PROPERTY_ID}/verifactu/submissions`);
   const tbai = useApiData<SubmissionLite[]>(`/properties/${PROPERTY_ID}/tbai/submissions`);
@@ -65,11 +67,11 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Compliance</div>
-          <h1 className="bo-page-title">Fiscal Submissions Center</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">Cumplimiento</div>}
+          {embedded ? null : <h1 className="bo-page-title">Centro fiscal</h1>}
           <p className="bo-page-subtitle">
             Cumplimiento normativo español: VeriFactu (AEAT), TicketBAI (forales vascos), IGIC (Canarias), SES.HOSPEDAJES (MIR) y Modelos 303 / 390.
-            Todas las submissions se firman con XAdES-EPES, se trazan con hash chain y se reintentan automáticamente.
+            Todos los envíos se firman con XAdES-EPES, se encadenan con huellas digitales y se reintentan automáticamente.
           </p>
         </div>
         <div className="bo-page-head-actions">
@@ -113,7 +115,7 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
         {(
           [
             { id: "authorities" as const, label: "Autoridades" },
-            { id: "reports" as const, label: "Reports (Modelos)" },
+            { id: "reports" as const, label: "Modelos" },
             { id: "certificates" as const, label: "Certificados" }
           ]
         ).map((tab) => {
@@ -139,19 +141,19 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
         <button className="bo-card" type="button" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => props.onNavigate?.("FiscalSubmissionsCenter")}>
           <div className="bo-card-head">
             <div>
-              <p className="bo-muted" style={{ fontSize: 11 }}>AEAT · Mainland</p>
+              <p className="bo-muted" style={{ fontSize: 11 }}>AEAT · Península y Baleares</p>
               <h3>VeriFactu</h3>
             </div>
             <span className={`bo-status ${v.rejected > 0 ? "error" : v.retrying > 0 ? "warn" : "ok"}`}>
-              {v.rejected > 0 ? `${v.rejected} rejected` : v.retrying > 0 ? `${v.retrying} retrying` : v.total === 0 ? "no data" : "healthy"}
+              {v.rejected > 0 ? `${v.rejected} rechazados` : v.retrying > 0 ? `${v.retrying} reintentando` : v.total === 0 ? "sin datos" : "correcto"}
             </span>
           </div>
           <div className="bo-metric">{v.total}</div>
-          <p>RD 1007/2023 · Sistema de facturación verificable. SHA-256 hash chain + QR AEAT + secuencia legal.</p>
+          <p>RD 1007/2023 · Sistema de facturación verificable: cadena de huellas SHA-256, código QR de la AEAT y numeración legal.</p>
           <div className="bo-pill-row" style={{ marginTop: 12 }}>
-            <span className="bo-pill">{v.accepted} accepted</span>
-            {v.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{v.rejected} rejected</span> : null}
-            {v.retrying > 0 ? <span className="bo-pill" style={{ color: "var(--warn-ink)" }}>{v.retrying} retrying</span> : null}
+            <span className="bo-pill">{v.accepted} aceptados</span>
+            {v.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{v.rejected} rechazados</span> : null}
+            {v.retrying > 0 ? <span className="bo-pill" style={{ color: "var(--warn-ink)" }}>{v.retrying} reintentando</span> : null}
           </div>
         </button>
 
@@ -162,14 +164,14 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
               <h3>TicketBAI</h3>
             </div>
             <span className={`bo-status ${t.rejected > 0 ? "error" : t.retrying > 0 ? "warn" : "ok"}`}>
-              {t.rejected > 0 ? `${t.rejected} rejected` : t.retrying > 0 ? `${t.retrying} retrying` : t.total === 0 ? "no data" : "healthy"}
+              {t.rejected > 0 ? `${t.rejected} rechazados` : t.retrying > 0 ? `${t.retrying} reintentando` : t.total === 0 ? "sin datos" : "correcto"}
             </span>
           </div>
           <div className="bo-metric">{t.total}</div>
-          <p>Bizkaia · Gipuzkoa · Araba. Hash chain TBAI + XML por territorio foral + código TBAI por factura.</p>
+          <p>Bizkaia · Gipuzkoa · Araba. Cadena de huellas TBAI, XML por territorio foral y código TBAI en cada factura.</p>
           <div className="bo-pill-row" style={{ marginTop: 12 }}>
-            <span className="bo-pill">{t.accepted} accepted</span>
-            {t.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{t.rejected} rejected</span> : null}
+            <span className="bo-pill">{t.accepted} aceptados</span>
+            {t.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{t.rejected} rechazados</span> : null}
           </div>
         </button>
 
@@ -180,13 +182,13 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
               <h3>IGIC</h3>
             </div>
             <span className={`bo-status ${i.rejected > 0 ? "error" : i.retrying > 0 ? "warn" : "ok"}`}>
-              {i.rejected > 0 ? `${i.rejected} rejected` : i.retrying > 0 ? `${i.retrying} retrying` : i.total === 0 ? "no data" : "healthy"}
+              {i.rejected > 0 ? `${i.rejected} rechazados` : i.retrying > 0 ? `${i.retrying} reintentando` : i.total === 0 ? "sin datos" : "correcto"}
             </span>
           </div>
           <div className="bo-metric">{i.total}</div>
-          <p>Impuesto General Indirecto Canario. Endpoint separado de AEAT (Hacienda Canaria) con DesgloseIGIC.</p>
+          <p>Impuesto General Indirecto Canario. Se presenta ante la Hacienda Canaria, no ante la AEAT, con el desglose del IGIC.</p>
           <div className="bo-pill-row" style={{ marginTop: 12 }}>
-            <span className="bo-pill">{i.accepted} accepted</span>
+            <span className="bo-pill">{i.accepted} aceptados</span>
           </div>
         </button>
 
@@ -197,14 +199,14 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
               <h3>SES.HOSPEDAJES</h3>
             </div>
             <span className={`bo-status ${s.rejected > 0 ? "error" : s.retrying > 0 ? "warn" : "ok"}`}>
-              {s.rejected > 0 ? `${s.rejected} rejected` : s.retrying > 0 ? `${s.retrying} retrying` : s.total === 0 ? "no data" : "healthy"}
+              {s.rejected > 0 ? `${s.rejected} rechazados` : s.retrying > 0 ? `${s.retrying} reintentando` : s.total === 0 ? "sin datos" : "correcto"}
             </span>
           </div>
           <div className="bo-metric">{s.total}</div>
           <p>RD 933/2021 · Comunicaciones de Hospedaje. Datos del viajero + contrato firmados con cert FNMT registrado en MIR.</p>
           <div className="bo-pill-row" style={{ marginTop: 12 }}>
-            <span className="bo-pill">{s.accepted} accepted</span>
-            {s.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{s.rejected} rejected</span> : null}
+            <span className="bo-pill">{s.accepted} aceptados</span>
+            {s.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{s.rejected} rechazados</span> : null}
           </div>
         </button>
       </section>
@@ -222,23 +224,21 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
           <article className="bo-card">
             <div className="bo-card-head">
               <h3>Modelo 303 — Declaración trimestral IVA</h3>
-              <span className="bo-chip">Quarterly</span>
+              <span className="bo-chip">Trimestral</span>
             </div>
             <p>Agrega cuota repercutida (cuenta 477) por bucket de tipo impositivo (4%, 10%, 21%) y mapea a las casillas oficiales AEAT.</p>
             <div className="bo-row" style={{ marginTop: 12 }}>
-              <button type="button" className="primary" onClick={() => props.onNavigate?.("Modelo303Screen")}>Open Modelo 303</button>
-              <button type="button" className="ghost">Download last submitted PDF</button>
+              <button type="button" className="primary" onClick={() => props.onNavigate?.("Modelo303Screen")}>Abrir Modelo 303</button>
             </div>
           </article>
           <article className="bo-card">
             <div className="bo-card-head">
               <h3>Modelo 390 — Resumen anual IVA</h3>
-              <span className="bo-chip">Annual</span>
+              <span className="bo-chip">Anual</span>
             </div>
             <p>Consolidación anual de los 4 modelos 303 con buckets por tasa, totales y casillas Modelo 390 (07/09, 04/06, 99, 109, etc.).</p>
             <div className="bo-row" style={{ marginTop: 12 }}>
-              <button type="button" className="primary" onClick={() => props.onNavigate?.("Modelo390Screen")}>Open Modelo 390</button>
-              <button type="button" className="ghost">Download last submitted PDF</button>
+              <button type="button" className="primary" onClick={() => props.onNavigate?.("Modelo390Screen")}>Abrir Modelo 390</button>
             </div>
           </article>
           <article className="bo-card">
@@ -261,48 +261,49 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void }
       <section className="bo-section">
         <div className="bo-card-head">
           <div>
-            <p className="bo-muted">XAdES-EPES signature pipeline</p>
-            <h2 style={{ fontSize: 20 }}>Certificate health</h2>
+            <p className="bo-muted">Cadena de firma XAdES-EPES</p>
+            <h2 style={{ fontSize: 20 }}>Estado de los certificados</h2>
+            <p className="bo-muted" style={{ textTransform: "none", marginTop: 4 }}>Tabla de referencia del entorno de demostración. El estado real del conector VeriFactu y su certificado se consulta en Configuración › Facturación.</p>
           </div>
         </div>
         <table>
           <thead>
             <tr>
-              <th>Authority</th>
-              <th>Mode</th>
-              <th>Certificate</th>
-              <th>Endpoint</th>
-              <th>Status</th>
+              <th>Autoridad</th>
+              <th>Modo</th>
+              <th>Certificado</th>
+              <th>Punto de conexión</th>
+              <th>Estado</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td><strong>VeriFactu</strong></td>
-              <td><span className="bo-chip">sandbox</span></td>
-              <td>Firmador en modo demostración (no PKCS#12 configured)</td>
-              <td>Demo (sandbox)</td>
-              <td><span className="bo-status warn">Demo</span></td>
+              <td><span className="bo-chip">pruebas</span></td>
+              <td>Firmador en modo demostración (sin certificado PKCS#12 configurado)</td>
+              <td>Demostración (pruebas)</td>
+              <td><span className="bo-status warn">Demostración</span></td>
             </tr>
             <tr>
               <td><strong>TicketBAI</strong></td>
-              <td><span className="bo-chip">sandbox</span></td>
+              <td><span className="bo-chip">pruebas</span></td>
               <td>Firmador en modo demostración</td>
-              <td>Demo (sandbox)</td>
-              <td><span className="bo-status warn">Demo</span></td>
+              <td>Demostración (pruebas)</td>
+              <td><span className="bo-status warn">Demostración</span></td>
             </tr>
             <tr>
               <td><strong>IGIC</strong></td>
-              <td><span className="bo-chip">sandbox</span></td>
+              <td><span className="bo-chip">pruebas</span></td>
               <td>Firmador en modo demostración</td>
-              <td>Demo (sandbox)</td>
-              <td><span className="bo-status warn">Demo</span></td>
+              <td>Demostración (pruebas)</td>
+              <td><span className="bo-status warn">Demostración</span></td>
             </tr>
             <tr>
               <td><strong>SES.HOSPEDAJES</strong></td>
-              <td><span className="bo-chip">sandbox</span></td>
-              <td>Firmador en modo demostración (MIR FNMT cert needed for production)</td>
-              <td>Demo (sandbox)</td>
-              <td><span className="bo-status warn">Demo</span></td>
+              <td><span className="bo-chip">pruebas</span></td>
+              <td>Firmador en modo demostración (en producción exige el certificado FNMT registrado en el MIR)</td>
+              <td>Demostración (pruebas)</td>
+              <td><span className="bo-status warn">Demostración</span></td>
             </tr>
           </tbody>
         </table>

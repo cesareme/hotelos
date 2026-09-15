@@ -1,3 +1,4 @@
+import { useTabHost } from "./tabs/TabHost";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApiData } from "../hooks/useApiData";
 import { apiRequest } from "../services/api-client";
@@ -22,6 +23,7 @@ import { channelIdFromHash, withChannelHash } from "../lib/channel-hash";
 import { fetchRoomTypes, type AdminRoomType } from "../services/pmsCommerceApi";
 import type { RateGridRatePlan } from "@hotelos/shared";
 import { useToast } from "../components/Toast";
+import { dateTime } from "../lib/format";
 
 // =====================================================================================
 // Channel Manager · Mapeos de canales — read view over the Prisma-backed mapping
@@ -98,10 +100,7 @@ type MappingDetail = {
 };
 
 function fmtDateTime(value: string | null | undefined): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(d);
+  return dateTime(value);
 }
 
 function channelStatusPill(status: string) {
@@ -398,6 +397,8 @@ function ProductMappingsPanel({ propertyId, channelId, onChannelChange }: { prop
 }
 
 export function ChannelMappingsScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const propertyId = useMemo(() => getActivePropertyId(), []);
   const channelsState = useApiData<{ channels: ChannelRow[] }>(`/channel-manager/channels?propertyId=${propertyId}`);
   const channels = useMemo(() => toArray<ChannelRow>(channelsState.data?.channels ?? channelsState.data), [channelsState.data]);
@@ -478,8 +479,12 @@ export function ChannelMappingsScreen() {
     <>
       <div className="bo-page-head" style={{ marginBottom: "var(--space-6)" }}>
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Channel Manager</div>
-          <h1 className="bo-page-title">Mapeos de canales</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Comercial · Canales de venta</div>
+              <h1 className="bo-page-title">Correspondencias</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Correspondencia entre tipos de habitación y planes tarifarios internos y los códigos de cada canal. Un mapeo incompleto bloquea el envío de ARI.
           </p>

@@ -21,6 +21,8 @@ import { getActiveProperty, getActivePropertyId } from "../../services/activePro
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedControl";
+import { HOSTED_ACTIONS_ROW, HOSTED_TOOLBAR, useTabHost } from "../tabs/TabHost";
 import {
   DirectorOpsHealthMini,
   type DirectorOpsHealthMiniProps,
@@ -39,6 +41,7 @@ import {
   toneToColorToken,
   type ManagementTone
 } from "./managementBadges";
+import { dateTime, time } from "../../lib/format";
 
 type Kpi = { label: string; value: number | string; tone: "ok" | "warn" | "error" | "info"; detail?: string };
 
@@ -497,6 +500,7 @@ function buildPosMiniProps(mc: MiniCards["posRevenueToday"]): DirectorOpsHealthM
 // ---------------------------------------------------------------------------
 
 export function OperationsDirectorScreen() {
+  const hosted = useTabHost() !== null;
   const propertyId = getActivePropertyId();
   const propertyName = getActiveProperty().propertyName;
   const { data, loading, error, refresh } = useApiData<Data>(
@@ -535,18 +539,34 @@ export function OperationsDirectorScreen() {
 
   return (
     <div style={sectionStackStyle}>
-      <CocoaPageHeader
-        eyebrow="Operaciones · Director"
-        title={`Estado operativo · ${data?.propertyName ?? propertyName}`}
-        subtitle="Foto cross-departamento. Cada bloque te lleva al tablero específico."
-        actions={headerActions}
-        tabs={[
-          { value: "overview", label: "Vista general" },
-          { value: "alertas", label: `Alertas (${alerts.length})` }
-        ]}
-        activeTab={activeTab}
-        onTabChange={(value) => setActiveTab(value as OpsTab)}
-      />
+      {hosted ? (
+        <div style={HOSTED_TOOLBAR}>
+          <CocoaSegmentedControl
+            size="small"
+            aria-label="Vista"
+            value={activeTab}
+            onChange={(value) => setActiveTab(value as OpsTab)}
+            options={[
+              { value: "overview", label: "Vista general" },
+              { value: "alertas", label: `Alertas (${alerts.length})` }
+            ]}
+          />
+          <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
+        </div>
+      ) : (
+        <CocoaPageHeader
+          eyebrow="Operaciones · Director"
+          title={`Estado operativo · ${data?.propertyName ?? propertyName}`}
+          subtitle="Foto cross-departamento. Cada bloque te lleva al tablero específico."
+          actions={headerActions}
+          tabs={[
+            { value: "overview", label: "Vista general" },
+            { value: "alertas", label: `Alertas (${alerts.length})` }
+          ]}
+          activeTab={activeTab}
+          onTabChange={(value) => setActiveTab(value as OpsTab)}
+        />
+      )}
 
       {/* Summary tiles (siempre visibles, son el resumen ejecutivo). */}
       <CocoaCard variant="bordered" padding="md">
@@ -863,23 +883,11 @@ function EmptyRow({ colSpan }: { colSpan: number }) {
 }
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleString("es-ES", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return iso;
-  }
+  return dateTime(iso, { style: "dayMonth" });
 }
 
 function fmtTime(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return iso;
-  }
+  return time(iso);
 }
 
 function priorityBadge(priority: string): ReactNode {

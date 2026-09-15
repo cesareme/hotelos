@@ -23,6 +23,8 @@ import { LoadingBlock, ErrorState } from "../../components/States";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
+import { useTabHost } from "../tabs/TabHost";
+import { money } from "../../lib/format";
 
 // ============================================================== types
 
@@ -122,8 +124,7 @@ const BADGE_TITLE: Record<Badge, string> = {
 // ============================================================== helpers
 
 function fmtEur(value: number | undefined | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,00 €";
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  return money(value);
 }
 
 // SECURITY (auditoría 2026-07): antes era `fetch` crudo sin Authorization → 401
@@ -140,6 +141,7 @@ async function postAction(path: string, body?: unknown): Promise<{ ok: boolean; 
 // ============================================================== component
 
 export function RoomRackScreen() {
+  const hosted = useTabHost() !== null;
   const propertyId = getActivePropertyId();
   const { data, loading, error, refresh } = useApiData<RackData>(`/dashboards/room-rack?propertyId=${propertyId}`, { pollIntervalMs: 30000 });
 
@@ -216,11 +218,13 @@ export function RoomRackScreen() {
   if (!data) {
     return (
       <>
-        <div className="bo-page-head">
-          <div className="bo-page-head-text">
-            <div className="bo-page-eyebrow">Recepción · Tablero</div>
-            <h1 className="bo-page-title">Habitaciones</h1>
-          </div>
+        <div className="bo-page-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+          {hosted ? null : (
+            <div className="bo-page-head-text">
+              <div className="bo-page-eyebrow">Recepción · Tablero</div>
+              <h1 className="bo-page-title">Habitaciones</h1>
+            </div>
+          )}
           <div className="bo-page-head-actions">
             <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
           </div>
@@ -236,14 +240,16 @@ export function RoomRackScreen() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Recepción · Tablero</div>
-          <h1 className="bo-page-title">Habitaciones</h1>
-          <p className="bo-page-subtitle">
-            Vista en tiempo real de las {totals.rooms} habitaciones. Click en una tile para ver detalles y actuar.
-          </p>
-        </div>
+      <div className="bo-page-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
+        {hosted ? null : (
+          <div className="bo-page-head-text">
+            <div className="bo-page-eyebrow">Recepción · Tablero</div>
+            <h1 className="bo-page-title">Habitaciones</h1>
+            <p className="bo-page-subtitle">
+              Vista en tiempo real de las {totals.rooms} habitaciones. Click en una tile para ver detalles y actuar.
+            </p>
+          </div>
+        )}
         <div className="bo-page-head-actions">
           {loading ? <span className="bo-status info">cargando</span> : null}
           {error ? <span className="bo-status error">{error}</span> : null}

@@ -1,6 +1,8 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -21,11 +23,7 @@ function todayIso(): string {
 }
 
 function fmt(amount: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true,
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2
-  }).format(amount);
+  return money(amount);
 }
 
 function Section({
@@ -95,6 +93,8 @@ function Section({
 }
 
 export function BalanceSheetScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const initialAsOf = useMemo(todayIso, []);
   const [asOf, setAsOf] = useState(initialAsOf);
 
@@ -107,8 +107,12 @@ export function BalanceSheetScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Contabilidad · Balance de Situación</div>
-          <h1 className="bo-page-title">Balance de situación</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Finanzas · Estados contables</div>
+              <h1 className="bo-page-title">Balance de situación</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Activo, Pasivo y Patrimonio neto clasificado conforme al Plan General Contable español.
             La igualdad fundamental es: <strong>Activo = Pasivo + Patrimonio neto</strong>.
@@ -116,7 +120,6 @@ export function BalanceSheetScreen() {
         </div>
         <div className="bo-page-head-actions">
           <button type="button" onClick={refresh}>↻ Recalcular</button>
-          <button type="button" className="ghost">Export CSV</button>
         </div>
       </div>
 

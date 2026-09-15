@@ -16,35 +16,36 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Hard cap on placeholder modules. Recalibrated upward to 80 after the
-// pre-demo (W25) consolidation moved ~10 AI / Settings / Compliance items
-// behind `placeholder: true` so they only surface in the admin "all" view
-// rather than confusing pilot users. The visible-real count IMPROVED;
-// the placeholder count only went up because we re-tagged formerly-visible
-// "Coming soon" entries with the explicit flag the hook tracks.
+// Hard cap on placeholder modules.
 //
-// 2026-09 re-baseline (Tanda 3 «cumplimiento sin atrezzo»):
-//   - The App.tsx regex now counts calls only (`makeModulePlaceholder(`), so the
-//     import line no longer adds a phantom placeholder (75 → 74 before changes).
-//   - 13 ScreenScaffold stubs with invented status/metrics were RETIRED (files
-//     deleted, keys aliased to the real screen) and 4 were WIRED to real
-//     endpoints (AISettings, ModuleHealthCenter, DemandCalendarAdmin,
-//     ChannelMappings): 0 flags each.
-//   - 7 makeModulePlaceholder duplicates of screens that already existed for
-//     real (GuestSegments, CampaignManager, GuestPortalSettings, KioskSettings,
-//     UpsellSettings, AIGovernanceSettings, DataQualityCenter) were removed.
-//   - 3 remaining stubs without a backing endpoint (RevenueAutomationRules,
-//     RevenueDataQuality, ForecastSettings) became HONEST placeholders: they now
-//     count (+3 calls, +3 sidebar flags) instead of passing as real screens.
-//   Net: 75 → 71. The cap stays at 80 — it was not raised.
+// History:
+//   - 2026 May baseline (pre-demo): 75 (cap recalibrated to 80 after the W25
+//     consolidation moved ~10 AI / Settings / Compliance items behind
+//     `placeholder: true`).
+//   - 2026 Sep (Tanda 3 «cumplimiento sin atrezzo»): 71 (27 sidebar flags +
+//     44 calls) — 13 ScreenScaffold stubs retired, 4 wired, 7 duplicates removed,
+//     3 honest placeholders added. Cap stayed at 80.
+//
+// 2026-09-15 re-baseline «Tanda 5» (navegación y honestidad, L1b):
+//   - The menu is generated from navigation/nav-tree.generated.json: no
+//     `placeholder: true` flag survives in Sidebar.tsx (0 placeholders visible
+//     to a hotelier, plan §4 «0 placeholders fuera de ?dev»).
+//   - App.tsx keeps exactly the 16 makeModulePlaceholder calls of the dev-only
+//     screens under /desarrollo/* (RevenueAutomationRules, ForecastSettings,
+//     RevenueDataQuality, CRMSettings, LoyaltySettings, GroupSettings,
+//     SalesSettings, WorkforceSettings, InventorySettings, ProcurementSettings,
+//     ReputationSettings, SurveySettings, QualityWorkflowSettings,
+//     EnergySettings, SafetySettings, ScheduledReports), reachable only with
+//     `?dev=1` (or localStorage anfitorio.dev=1) AND the platform admin. The
+//     other 28 calls were retired (NAV_TREE.retired) with their keys.
+//   Net: 71 → 16. The cap drops from 80 to 20 (plan L1: «presupuesto → 20»).
 //
 // Roadmap (re-baselined):
-//   - 2026 May baseline (pre-demo): 75
-//   - 2026 Sep (Tanda 3)          : 71  (27 sidebar flags + 44 calls)
-//   - 2026 Q4 target : 55  (implement compliance hubs, retire dead AI items)
-//   - 2027 Q1 target : 35  (consolidate setup forms)
-//   - 2027 Q2 target : 15  (steady-state goal)
-const BUDGET = 80;
+//   - 2026 Sep (Tanda 5)          : 16  (0 sidebar flags + 16 dev-only calls)
+//   - 2026 Q4 target : 10  (wire CRM/fidelización/grupos/ventas settings to Prisma or retire them)
+//   - 2027 Q1 target :  5  (revenue automation, forecast settings and data quality behind real endpoints)
+//   - 2027 Q2 target :  0  (steady-state goal: no placeholder, dev-only or not)
+const BUDGET = 20;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

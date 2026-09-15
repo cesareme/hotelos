@@ -1,3 +1,4 @@
+import { useTabHost } from "../tabs/TabHost";
 import { useMemo, useState, type FormEvent } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
@@ -35,6 +36,8 @@ function fmtRate(n: number): string {
 }
 
 export function ExchangeRatesScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const [base, setBase] = useState<string>("");
   const [quote, setQuote] = useState<string>("");
@@ -106,8 +109,12 @@ export function ExchangeRatesScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Finanzas · Tipos de cambio</div>
-          <h1 className="bo-page-title">Exchange Rates</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Finanzas · Tesorería</div>
+              <h1 className="bo-page-title">Tipos de cambio</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Tabla de tipos de cambio históricos. Cada fila indica que <strong>1 unidad de la divisa base</strong>
             equivale a <strong>rate</strong> unidades de la divisa cotizada en la fecha efectiva. Las facturas no-EUR

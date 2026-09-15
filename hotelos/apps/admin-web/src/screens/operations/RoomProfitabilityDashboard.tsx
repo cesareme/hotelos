@@ -1,5 +1,8 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS, UI_STATES } from "../../content/actions";
+import { money as formatMoney, percent } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -35,19 +38,12 @@ type RoomProfitabilityData = {
   }>;
 };
 
-const currencyFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true,
-  style: "currency",
-  currency: "EUR",
-  minimumFractionDigits: 2
-});
-
 function money(value: number | null | undefined): string {
-  return currencyFormatter.format(Number.isFinite(value as number) ? (value as number) : 0);
+  return formatMoney(value);
 }
 
 function pct(value: number | null | undefined): string {
-  if (!Number.isFinite(value as number)) return "0%";
-  return `${value}%`;
+  return percent(value);
 }
 
 type Status = "ok" | "warn" | "error";
@@ -107,51 +103,44 @@ export function RoomProfitabilityDashboard() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Revenue</div>
-          <h1 className="bo-page-title">Room profitability</h1>
-          <p className="bo-page-subtitle">
-            RevPAR, ADR, ocupación y GOPPAR por tipo de habitación y por canal para los últimos 30 días.
-            Solo lectura; refresca automáticamente cada 5 minutos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={refresh}>↻ Refresh</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Informes"
+        title="Rentabilidad por habitación"
+        subtitle="RevPAR, ADR, ocupación y GOPPAR por tipo de habitación y por canal en los últimos 30 días. Solo lectura; se actualiza cada 5 minutos."
+        actions={<button type="button" className="ghost" onClick={refresh}>↻ {ACTIONS.refresh}</button>}
+      />
 
       {error ? (
         <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
-          Couldn't load this view right now. Refresh to retry.
+          {UI_STATES.error.title}. {UI_STATES.error.message}
         </section>
       ) : null}
 
       <section className="rev-kpi-grid">
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total revenue</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Ingresos totales</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.totalRevenueEur)}</div>
-          <div className="rev-kpi-delta">Suma total revenue 30d</div>
+          <div className="rev-kpi-delta">Suma de los últimos 30 días</div>
         </article>
         <article className={`rev-kpi rev-kpi-${occStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Occupancy</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Ocupación</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : pct(kpis?.occupancyPct)}</div>
-          <div className="rev-kpi-delta">Habitaciones vendibles / nights</div>
+          <div className="rev-kpi-delta">Noches vendidas sobre noches disponibles</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head"><span className="rev-kpi-label">ADR</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.adrEur)}</div>
-          <div className="rev-kpi-delta">Room revenue / room nights</div>
+          <div className="rev-kpi-delta">Ingreso de habitaciones por noche vendida</div>
         </article>
         <article className={`rev-kpi rev-kpi-${revparKpiStatus}`}>
           <div className="rev-kpi-head"><span className="rev-kpi-label">RevPAR</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.revparEur)}</div>
-          <div className="rev-kpi-delta">Room revenue / available room nights</div>
+          <div className="rev-kpi-delta">Ingreso de habitaciones por noche disponible</div>
         </article>
         <article className={`rev-kpi rev-kpi-${gopparStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">GOPPAR 30d</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">GOPPAR · 30 días</span></div>
           <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.goppar30dEur)}</div>
-          <div className="rev-kpi-delta">Gross operating profit per available room</div>
+          <div className="rev-kpi-delta">Beneficio operativo bruto por habitación disponible</div>
         </article>
       </section>
 
@@ -159,24 +148,24 @@ export function RoomProfitabilityDashboard() {
         <article className="bo-card">
           <div className="bo-card-head">
             <div>
-              <p className="bo-muted">Mix</p>
-              <h3>By room type</h3>
+              <p className="bo-muted">Por tipo</p>
+              <h3>Por tipo de habitación</h3>
             </div>
             <span className="bo-chip">{byRoomType.length} tipos</span>
           </div>
           {byRoomType.length === 0 ? (
-            <p className="bo-muted">No hay snapshots por tipo de habitación en la ventana.</p>
+            <p className="bo-muted">No hay datos por tipo de habitación en el periodo.</p>
           ) : (
             <div className="rev-report-wrap">
               <table className="cm-table">
                 <thead>
                   <tr>
                     <th>Tipo</th>
-                    <th style={{ textAlign: "right" }}>Rooms</th>
-                    <th style={{ textAlign: "right" }}>Occ</th>
+                    <th style={{ textAlign: "right" }}>Habitaciones</th>
+                    <th style={{ textAlign: "right" }}>Ocupación</th>
                     <th style={{ textAlign: "right" }}>ADR</th>
                     <th style={{ textAlign: "right" }}>RevPAR</th>
-                    <th style={{ textAlign: "right" }}>Revenue</th>
+                    <th style={{ textAlign: "right" }}>Ingresos</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -199,13 +188,13 @@ export function RoomProfitabilityDashboard() {
         <article className="bo-card">
           <div className="bo-card-head">
             <div>
-              <p className="bo-muted">Channels</p>
-              <h3>By channel</h3>
+              <p className="bo-muted">Canales</p>
+              <h3>Por canal</h3>
             </div>
             <span className="bo-chip">{byChannel.length} canales</span>
           </div>
           {byChannel.length === 0 ? (
-            <p className="bo-muted">No hay actividad de canales en la ventana.</p>
+            <p className="bo-muted">No hay actividad de canales en el periodo.</p>
           ) : (
             <div className="rev-report-wrap">
               <table className="cm-table">
@@ -213,8 +202,8 @@ export function RoomProfitabilityDashboard() {
                   <tr>
                     <th>Canal</th>
                     <th style={{ textAlign: "right" }}>Reservas</th>
-                    <th style={{ textAlign: "right" }}>Revenue</th>
-                    <th style={{ textAlign: "right" }}>Net revenue</th>
+                    <th style={{ textAlign: "right" }}>Ingresos</th>
+                    <th style={{ textAlign: "right" }}>Ingreso neto</th>
                     <th style={{ textAlign: "right" }}>Margen</th>
                   </tr>
                 </thead>
@@ -238,13 +227,13 @@ export function RoomProfitabilityDashboard() {
       <section className="bo-card">
         <div className="bo-card-head">
           <div>
-            <p className="bo-muted">Top rooms</p>
-            <h3>Most profitable rooms (30d)</h3>
+            <p className="bo-muted">Habitaciones</p>
+            <h3>Habitaciones más rentables (30 días)</h3>
           </div>
           <span className="bo-chip">{topRooms.length} habitaciones</span>
         </div>
         {topRooms.length === 0 ? (
-          <p className="bo-muted">No hay reservas asignadas a habitaciones en la ventana.</p>
+          <p className="bo-muted">No hay reservas asignadas a habitaciones en el periodo.</p>
         ) : (
           <div className="rev-report-wrap">
             <table className="cm-table">
@@ -253,7 +242,7 @@ export function RoomProfitabilityDashboard() {
                   <th>Habitación</th>
                   <th>Tipo</th>
                   <th style={{ textAlign: "right" }}>Noches</th>
-                  <th style={{ textAlign: "right" }}>Revenue 30d</th>
+                  <th style={{ textAlign: "right" }}>Ingresos · 30 días</th>
                 </tr>
               </thead>
               <tbody>

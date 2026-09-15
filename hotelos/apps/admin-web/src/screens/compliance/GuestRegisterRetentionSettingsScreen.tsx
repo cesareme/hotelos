@@ -8,6 +8,7 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import { fetchSesSettings, type SesSettings } from "../../services/sesApi";
 import { ErrorState, LoadingBlock } from "../../components/States";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { pageHead } from "../tabs/configuracion/tab-helpers";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { toArray } from "../../utils/toArray";
@@ -26,7 +27,9 @@ function yesNo(value: unknown): string {
   return value === true ? "Sí" : value === false ? "No" : "—";
 }
 
-export function GuestRegisterRetentionSettingsScreen() {
+export function GuestRegisterRetentionSettingsScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const [settings, setSettings] = useState<SesSettings | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -70,7 +73,7 @@ export function GuestRegisterRetentionSettingsScreen() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Cumplimiento · Registro de viajeros"
         title="Retención y privacidad"
         subtitle="Minimización de datos, retención legal y tratamiento de imágenes de documentos de identidad"

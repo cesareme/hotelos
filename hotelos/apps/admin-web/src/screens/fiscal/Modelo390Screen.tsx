@@ -1,6 +1,8 @@
 import { getActivePropertyId, getActivePropertyName } from "../../services/activeProperty";
 import { useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { ReportErrorCard } from "./ReportErrorCard";
+import { money, percent } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -24,10 +26,11 @@ type Modelo390 = {
 };
 
 function fmt(amount: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR", minimumFractionDigits: 2 }).format(amount);
+  return money(amount);
 }
 
-export function Modelo390Screen() {
+export function Modelo390Screen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const [year, setYear] = useState<number>(new Date().getUTCFullYear());
   const { data, loading, error, refresh } = useApiData<Modelo390>(
     "/accounting/reports/modelo-390",
@@ -38,16 +41,14 @@ export function Modelo390Screen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">AEAT · Modelo 390</div>
-          <h1 className="bo-page-title">Resumen anual del IVA {year}</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">AEAT · Modelo 390</div>}
+          {embedded ? null : <h1 className="bo-page-title">Resumen anual del IVA {year}</h1>}
           <p className="bo-page-subtitle">
             Consolidación de los 4 modelos 303 trimestrales con desglose por bucket de tasa, comparativa por trimestre y mapeo a las casillas Modelo 390.
           </p>
         </div>
         <div className="bo-page-head-actions">
           <button type="button" onClick={refresh}>↻ Recalcular</button>
-          <button type="button" className="ghost">Export CSV</button>
-          <button type="button" className="primary">Generar PDF AEAT</button>
         </div>
       </div>
 
@@ -74,7 +75,7 @@ export function Modelo390Screen() {
       {loading ? (
         <div className="bo-card" style={{ textAlign: "center", padding: 48, color: "var(--ink-muted)" }}>Calculando consolidación anual…</div>
       ) : error ? (
-        <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)" }}><h3>Error</h3><p className="bo-muted">Couldn't load this report right now. Refresh to retry.</p></div>
+        <ReportErrorCard message={error} onRetry={refresh} />
       ) : !data ? null : (
         <>
           <section className="rev-kpi-grid">
@@ -125,7 +126,7 @@ export function Modelo390Screen() {
                         <td style={{ fontSize: 12, color: "var(--ink-muted)" }}>{q.fromDate} → {q.toDate}</td>
                         <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(q.baseImponible)}</td>
                         <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(q.cuotaRepercutida)}</td>
-                        <td style={{ textAlign: "right" }}>{pct.toFixed(1)}%</td>
+                        <td style={{ textAlign: "right" }}>{percent(pct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</td>
                       </tr>
                     );
                   })}
@@ -150,10 +151,10 @@ export function Modelo390Screen() {
                 <thead>
                   <tr>
                     <th>Tipo</th>
-                    <th style={{ textAlign: "right" }}>Q1 base</th>
-                    <th style={{ textAlign: "right" }}>Q2 base</th>
-                    <th style={{ textAlign: "right" }}>Q3 base</th>
-                    <th style={{ textAlign: "right" }}>Q4 base</th>
+                    <th style={{ textAlign: "right" }}>Base 1T</th>
+                    <th style={{ textAlign: "right" }}>Base 2T</th>
+                    <th style={{ textAlign: "right" }}>Base 3T</th>
+                    <th style={{ textAlign: "right" }}>Base 4T</th>
                     <th style={{ textAlign: "right" }}>Base anual</th>
                     <th style={{ textAlign: "right" }}>Cuota anual</th>
                   </tr>
@@ -189,7 +190,7 @@ export function Modelo390Screen() {
                 <thead>
                   <tr>
                     <th>Concepto</th>
-                    <th style={{ textAlign: "right" }}>Suma Modelos 303 (Q1+Q2+Q3+Q4)</th>
+                    <th style={{ textAlign: "right" }}>Suma Modelos 303 (1T+2T+3T+4T)</th>
                     <th style={{ textAlign: "right" }}>Modelo 390 anual</th>
                     <th style={{ textAlign: "right" }}>Diferencia</th>
                     <th>Cuadre</th>

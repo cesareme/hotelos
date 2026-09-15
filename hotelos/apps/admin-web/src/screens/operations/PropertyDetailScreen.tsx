@@ -1,7 +1,11 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useMemo } from "react";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
+import { money, number, percent } from "../../lib/format";
 
 type StatusKind = "ok" | "warn" | "error" | "info";
 
@@ -56,12 +60,12 @@ type PropertyOverview = {
 };
 
 const RESERVATION_STATUS_LABELS: Record<string, string> = {
-  draft: "Draft",
-  confirmed: "Confirmed",
-  checked_in: "Checked in",
-  checked_out: "Checked out",
-  cancelled: "Cancelled",
-  no_show: "No-show"
+  draft: "Borrador",
+  confirmed: "Confirmada",
+  checked_in: "En casa",
+  checked_out: "Salida realizada",
+  cancelled: "Cancelada",
+  no_show: "No presentado"
 };
 
 const RESERVATION_STATUS_KIND: Record<string, StatusKind> = {
@@ -80,28 +84,20 @@ const PROPERTY_STATUS_KIND: Record<string, StatusKind> = {
 };
 
 function fmtNumber(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0";
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(value);
+  return number(value);
 }
 
 function fmtEur(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,00 €";
-  return new Intl.NumberFormat("es-ES", { useGrouping: true,
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(value);
+  return money(value);
 }
 
 function fmtPct(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,0 %";
-  return `${new Intl.NumberFormat("es-ES", { useGrouping: true, minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value)} %`;
+  return percent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 function fmtRating(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value) || value <= 0) return "—";
-  return `${new Intl.NumberFormat("es-ES", { useGrouping: true, minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value)} ★`;
+  return `${number(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} ★`;
 }
 
 function pill(kind: StatusKind, label: string) {
@@ -133,17 +129,20 @@ function navTo(screen: string) {
 
 function navToReservation(reservationId: string) {
   if (typeof window === "undefined") return;
-  // ReservationDetailWorkspaceScreen reads its target id from the last path
-  // segment, so push the path before dispatching the nav event.
-  window.history.pushState(null, "", `/backoffice/reservations/${reservationId}`);
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "ReservationDetailWorkspace" }));
+  // /recepcion/reservas/:id (Detalle tab of the Reservas container, Tanda 5):
+  // ReservationDetailWorkspaceScreen reads its target id from the last path segment.
+  const url = urlForScreen("ReservationDetailWorkspace", { id: reservationId });
+  if (url) openTabPath(url);
 }
 
-export function PropertyDetailScreen() {
+// `propertyId`: route param of the sub-URL /informes/cartera/:propiedad (Tanda 5); falls back to the active property.
+export function PropertyDetailScreen({ propertyId: propertyIdProp }: { propertyId?: string } = {}) {
+  // Hosted inside the Cartera de propiedades container (Tanda 5): it paints the page header.
+  const embedded = useTabHost() !== null;
   // Read through the shared service (single owner of the storage key) at mount
   // time: PortfolioDashboard repoints the active property before navigating
   // here, reloading when the scope changes.
-  const propertyId = useMemo(() => getActivePropertyId(), []);
+  const propertyId = useMemo(() => propertyIdProp ?? getActivePropertyId(), [propertyIdProp]);
 
   const { data, loading, error, refresh } = useApiData<PropertyOverview>(
     "/dashboards/property-overview",
@@ -162,14 +161,16 @@ export function PropertyDetailScreen() {
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <div>
-        <button type="button" onClick={() => navTo("PortfolioDashboard")}>← Back to portfolio</button>
+        <button type="button" onClick={() => navTo("PortfolioDashboard")}>← Volver a la cartera</button>
       </div>
 
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Group · Property
-          </p>
+          {embedded ? null : (
+            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
+              Informes · Cartera de propiedades
+            </p>
+          )}
           <h2 style={{ color: "var(--ink)", display: "flex", alignItems: "center", gap: 12 }}>
             {property?.name ?? "Property"}
             {property ? propertyStatusPill(property.status) : null}
@@ -186,26 +187,26 @@ export function PropertyDetailScreen() {
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {loading ? <span className="bo-status info">loading</span> : null}
           {error ? <span className="bo-status error">{error}</span> : null}
-          <button type="button" onClick={refresh}>Refresh</button>
+          <button type="button" onClick={refresh}>Actualizar</button>
         </div>
       </header>
 
       <div className="rev-kpi-grid">
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Arrivals today</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Llegadas hoy</span></div>
           <div className="rev-kpi-value">{fmtNumber(today?.arrivals)}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Departures today</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Salidas hoy</span></div>
           <div className="rev-kpi-value">{fmtNumber(today?.departures)}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">In-house</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">En casa</span></div>
           <div className="rev-kpi-value">{fmtNumber(today?.inHouse)}</div>
           <div className="rev-kpi-delta">currently occupied</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Occupancy</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Ocupación</span></div>
           <div className="rev-kpi-value">{fmtPct(today?.occupancyPct)}</div>
           <div className="rev-kpi-delta">month-to-date avg</div>
         </article>
@@ -222,7 +223,7 @@ export function PropertyDetailScreen() {
           <div className="rev-kpi-value">{fmtEur(finance?.revenueMtdEur)}</div>
         </article>
         <article className={`rev-kpi ${(finance?.pendingBalanceEur ?? 0) > 5000 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Pending balance</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Saldo pendiente</span></div>
           <div className="rev-kpi-value">{fmtEur(finance?.pendingBalanceEur)}</div>
           <div className="rev-kpi-delta">open AR today</div>
         </article>
@@ -231,7 +232,7 @@ export function PropertyDetailScreen() {
       <div className="bo-grid two">
         <article className="bo-card" style={{ background: "var(--surface)" }}>
           <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Operations</h3>
+            <h3 style={{ color: "var(--ink)" }}>Operaciones</h3>
             <span className="bo-chip">backlog</span>
           </div>
           <ul style={{ display: "flex", flexDirection: "column", gap: 12, listStyle: "none", padding: 0, margin: 0 }}>
@@ -252,28 +253,28 @@ export function PropertyDetailScreen() {
 
         <article className="bo-card" style={{ background: "var(--surface)" }}>
           <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Guest experience</h3>
+            <h3 style={{ color: "var(--ink)" }}>Experiencia del huésped</h3>
             <span className="bo-chip">satisfaction</span>
           </div>
           <ul style={{ display: "flex", flexDirection: "column", gap: 12, listStyle: "none", padding: 0, margin: 0 }}>
             <li style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
               <span>Open conversations <strong>{fmtNumber(guestExperience?.openConversations)}</strong></span>
-              <button type="button" onClick={() => navTo("ConciergeInboxDashboard")}>Open inbox</button>
+              <button type="button" onClick={() => navTo("ConciergeInboxDashboard")}>Abrir bandeja</button>
             </li>
             <li style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
               <span>Avg review rating <strong>{fmtRating(guestExperience?.avgReviewRating)}</strong></span>
-              <button type="button" onClick={() => navTo("ReputationDashboard")}>Open reputation</button>
+              <button type="button" onClick={() => navTo("ReputationDashboard")}>Abrir reputación</button>
             </li>
             <li style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
               <span>Pending reviews <strong>{fmtNumber(guestExperience?.pendingReviews)}</strong></span>
-              <button type="button" onClick={() => navTo("ReputationDashboard")}>Respond</button>
+              <button type="button" onClick={() => navTo("ReputationDashboard")}>Responder</button>
             </li>
           </ul>
         </article>
 
         <article className="bo-card" style={{ background: "var(--surface)" }}>
           <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Compliance</h3>
+            <h3 style={{ color: "var(--ink)" }}>Cumplimiento</h3>
             <span className="bo-chip">fiscal posture</span>
           </div>
           <ul style={{ display: "flex", flexDirection: "column", gap: 12, listStyle: "none", padding: 0, margin: 0 }}>
@@ -288,7 +289,7 @@ export function PropertyDetailScreen() {
                   <strong>0</strong>
                 )}
               </span>
-              <button type="button" onClick={() => navTo("FiscalDashboard")}>Open fiscal</button>
+              <button type="button" onClick={() => navTo("FiscalDashboard")}>Abrir centro fiscal</button>
             </li>
             <li style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <span>SES Hospedajes</span>
@@ -304,7 +305,7 @@ export function PropertyDetailScreen() {
 
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Recent reservations</h3>
+          <h3 style={{ color: "var(--ink)" }}>Reservas recientes</h3>
           <span className="bo-chip">{fmtNumber(recentReservations.length)} rows · click a row to open</span>
         </div>
         {recentReservations.length === 0 ? (
@@ -316,12 +317,12 @@ export function PropertyDetailScreen() {
           <table className="cm-table">
             <thead>
               <tr>
-                <th style={{ textAlign: "left" }}>Code</th>
-                <th style={{ textAlign: "left" }}>Guest</th>
-                <th style={{ textAlign: "left" }}>Arrival</th>
-                <th style={{ textAlign: "left" }}>Departure</th>
-                <th style={{ textAlign: "left" }}>Status</th>
-                <th style={{ textAlign: "right" }}>Balance</th>
+                <th style={{ textAlign: "left" }}>Código</th>
+                <th style={{ textAlign: "left" }}>Huésped</th>
+                <th style={{ textAlign: "left" }}>Llegada</th>
+                <th style={{ textAlign: "left" }}>Salida</th>
+                <th style={{ textAlign: "left" }}>Estado</th>
+                <th style={{ textAlign: "right" }}>Saldo</th>
               </tr>
             </thead>
             <tbody>
@@ -330,7 +331,7 @@ export function PropertyDetailScreen() {
                   key={row.id}
                   style={{ cursor: "pointer" }}
                   onClick={() => navToReservation(row.id)}
-                  title="Open reservation detail"
+                  title="Abrir el detalle de la reserva"
                 >
                   <td><strong>{row.code}</strong></td>
                   <td>{row.guestName}</td>

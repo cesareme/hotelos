@@ -3,15 +3,17 @@
 // `useApiData` so mutations refresh the table that changed without forcing a
 // full-page reload.
 
-import { getActivePropertyId } from "../../services/activeProperty";
+import { getActiveOrganizationId, getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
+import { dateTime, percent, plural } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
-const ORG_ID = "org_demo";
+// Organisation of the active property (never a fixed demo id: Los Tilos answered 404 ×3, browser-roles#10).
+const ORG_ID = getActiveOrganizationId();
 
 // ---- types ----
 
@@ -67,30 +69,28 @@ type TabKey = "templates" | "deliveries" | "stats";
 
 // ---- helpers ----
 
+const DELIVERY_STATUS_LABEL: Record<Delivery["status"], string> = {
+  pending: "pendiente",
+  queued: "en cola",
+  sent: "enviado",
+  failed: "fallido",
+  bounced: "rebotado"
+};
+
 function formatDateTime(value: string | null): string {
-  if (!value) return "—";
-  try {
-    return new Date(value).toLocaleString("es-ES", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  } catch {
-    return value;
-  }
+  return dateTime(value);
 }
 
 function statusPill(status: Delivery["status"]) {
-  if (status === "sent") return <span className="bo-status ok">sent</span>;
-  if (status === "failed" || status === "bounced") return <span className="bo-status" style={{ color: "var(--danger-ink)" }}>{status}</span>;
-  return <span className="bo-status warn">{status}</span>;
+  if (status === "sent") return <span className="bo-status ok">{DELIVERY_STATUS_LABEL.sent}</span>;
+  if (status === "failed" || status === "bounced") return <span className="bo-status" style={{ color: "var(--danger-ink)" }}>{DELIVERY_STATUS_LABEL[status]}</span>;
+  return <span className="bo-status warn">{DELIVERY_STATUS_LABEL[status] ?? status}</span>;
 }
 
 // ---- screen ----
 
-export function NotificationsScreen() {
+export function NotificationsScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const { showToast } = useToast();
   const [tab, setTab] = useState<TabKey>("templates");
   const [busy, setBusy] = useState<string | null>(null);
@@ -168,11 +168,11 @@ export function NotificationsScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Notification engine</div>
-          <h1 className="bo-page-title">Notificaciones y plantillas</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">Comunicaciones</div>}
+          {embedded ? null : <h1 className="bo-page-title">Notificaciones y plantillas</h1>}
           <p className="bo-page-subtitle">
-            Manage templates per channel (email · SMS · WhatsApp), inspect delivery history, and monitor send
-            volumes. Invoices, reservation confirmations and payment receipts auto-dispatch from the event bus.
+            Plantillas por canal (correo · SMS · WhatsApp), historial de envíos y volúmenes. Las facturas, las
+            confirmaciones de reserva y los recibos de pago se envían solos cuando ocurre el evento.
           </p>
         </div>
         <div className="bo-page-head-actions">
@@ -185,49 +185,49 @@ export function NotificationsScreen() {
               stats.refresh();
             }}
           >
-            ↻ Refresh
+            ↻ Actualizar
           </button>
         </div>
       </div>
 
       <section className="rev-kpi-grid">
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Sent (last 30d)</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Enviadas (30 días)</span></div>
           <div className="rev-kpi-value">{sentCount}</div>
-          <div className="rev-kpi-delta">delivered</div>
+          <div className="rev-kpi-delta">entregadas</div>
         </article>
         <article className={`rev-kpi ${failedCount > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Failed</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Fallidas</span></div>
           <div className="rev-kpi-value">{failedCount}</div>
-          <div className="rev-kpi-delta">retry from the deliveries tab</div>
+          <div className="rev-kpi-delta">reintenta desde la pestaña de envíos</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Queued</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">En cola</span></div>
           <div className="rev-kpi-value">{queuedCount}</div>
-          <div className="rev-kpi-delta">awaiting send</div>
+          <div className="rev-kpi-delta">pendientes de envío</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Active templates</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Plantillas activas</span></div>
           <div className="rev-kpi-value">{toArray<NotificationTemplate>(templates.data).filter((t) => t.active).length}</div>
-          <div className="rev-kpi-delta">{toArray<NotificationTemplate>(templates.data).length} total</div>
+          <div className="rev-kpi-delta">{toArray<NotificationTemplate>(templates.data).length} en total</div>
         </article>
       </section>
 
       {error ? (
         <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)", marginBottom: 16 }}>
-          Couldn't load this view right now. Refresh to retry.
+          No hemos podido cargar esta vista. Inténtalo de nuevo.
         </div>
       ) : null}
 
       <div className="rev-toolbar" style={{ gap: 8 }}>
         <button type="button" className={tab === "templates" ? "primary" : "ghost"} onClick={() => setTab("templates")}>
-          Templates ({templates.data?.length ?? 0})
+          Plantillas ({templates.data?.length ?? 0})
         </button>
         <button type="button" className={tab === "deliveries" ? "primary" : "ghost"} onClick={() => setTab("deliveries")}>
-          Deliveries ({deliveries.data?.length ?? 0})
+          Envíos ({deliveries.data?.length ?? 0})
         </button>
         <button type="button" className={tab === "stats" ? "primary" : "ghost"} onClick={() => setTab("stats")}>
-          Stats
+          Estadísticas
         </button>
       </div>
 
@@ -289,35 +289,35 @@ function TemplatesTab(props: {
   return (
     <section className="bo-card">
       <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Notification templates</h2>
+        <h2 style={{ fontSize: 20 }}>Plantillas de notificación</h2>
         <button type="button" className="primary" onClick={props.onToggleForm}>
-          {props.showForm ? "Cancel" : "+ Add / edit template"}
+          {props.showForm ? "Cancelar" : "+ Añadir o editar plantilla"}
         </button>
       </div>
 
       {props.showForm ? <TemplateForm onCreated={props.onCreated} /> : null}
 
       {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Loading templates…</p>
+        <p style={{ color: "var(--ink-muted)" }}>Cargando plantillas…</p>
       ) : props.fetchError ? (
         <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
       ) : (props.templates ?? []).length === 0 ? (
         <p style={{ color: "var(--ink-muted)" }}>
-          No templates yet. Add the first one — needed codes include
-          {" "}<code>invoice_issued</code>, <code>reservation_confirmed</code> and <code>payment_receipt</code>.
+          Todavía no hay plantillas. Añade la primera; los códigos que usa el motor son
+          {" "}<code>invoice_issued</code>, <code>reservation_confirmed</code> y <code>payment_receipt</code>.
         </p>
       ) : (
         <div className="rev-report-wrap">
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Code</th>
-                <th>Channel</th>
-                <th>Lang</th>
-                <th>Scope</th>
-                <th>Subject</th>
-                <th>Tokens</th>
-                <th>Status</th>
+                <th>Código</th>
+                <th>Canal</th>
+                <th>Idioma</th>
+                <th>Ámbito</th>
+                <th>Asunto</th>
+                <th>Variables</th>
+                <th>Estado</th>
                 <th />
               </tr>
             </thead>
@@ -327,7 +327,7 @@ function TemplatesTab(props: {
                   <td><strong>{t.code}</strong></td>
                   <td>{t.channel}</td>
                   <td>{t.language}</td>
-                  <td>{t.propertyId ? "property" : <span style={{ color: "var(--ink-muted)" }}>org-wide</span>}</td>
+                  <td>{t.propertyId ? "propiedad" : <span style={{ color: "var(--ink-muted)" }}>organización</span>}</td>
                   <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     {t.subject ?? <span style={{ color: "var(--ink-muted)" }}>—</span>}
                   </td>
@@ -348,7 +348,7 @@ function TemplatesTab(props: {
                         disabled={props.busy === `deact-${t.id}`}
                         onClick={() => props.onDeactivate(t.id)}
                       >
-                        {props.busy === `deact-${t.id}` ? "…" : "Deactivate"}
+                        {props.busy === `deact-${t.id}` ? "…" : "Desactivar"}
                       </button>
                     ) : null}
                   </td>
@@ -376,11 +376,11 @@ function TemplateForm(props: { onCreated: () => void }) {
 
   async function submit() {
     if (!code.trim()) {
-      setFormError("Template code is required.");
+      setFormError("El código de la plantilla es obligatorio.");
       return;
     }
     if (!body.trim()) {
-      setFormError("Template body cannot be empty.");
+      setFormError("El cuerpo de la plantilla no puede estar vacío.");
       return;
     }
     setSubmitting(true);
@@ -411,38 +411,38 @@ function TemplateForm(props: { onCreated: () => void }) {
       className="bo-card"
       style={{ background: "var(--surface)", marginBottom: 16, padding: 16, border: "1px solid var(--line)" }}
     >
-      <h3 style={{ fontSize: 16, marginTop: 0 }}>New / update template</h3>
+      <h3 style={{ fontSize: 16, marginTop: 0 }}>Nueva plantilla o actualización</h3>
       <div className="bo-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
         <label>
-          Code
+          Código
           <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="invoice_issued" />
         </label>
         <label>
-          Channel
+          Canal
           <select value={channel} onChange={(e) => setChannel(e.target.value as "email" | "sms" | "whatsapp")}>
-            <option value="email">email</option>
-            <option value="sms">sms</option>
-            <option value="whatsapp">whatsapp</option>
+            <option value="email">correo</option>
+            <option value="sms">SMS</option>
+            <option value="whatsapp">WhatsApp</option>
           </select>
         </label>
         <label>
-          Language
+          Idioma
           <input value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="es" />
         </label>
         <label>
-          Scope
+          Ámbito
           <select value={scope} onChange={(e) => setScope(e.target.value as "property" | "org")}>
-            <option value="property">property-scoped</option>
-            <option value="org">org-wide default</option>
+            <option value="property">de esta propiedad</option>
+            <option value="org">predeterminada de la organización</option>
           </select>
         </label>
       </div>
       <label style={{ display: "block", marginTop: 12 }}>
-        Subject (email/WhatsApp only)
+        Asunto (solo correo y WhatsApp)
         <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Factura {{invoice_number}}" />
       </label>
       <label style={{ display: "block", marginTop: 12 }}>
-        Body
+        Cuerpo
         <textarea
           value={body}
           onChange={(e) => setBody(e.target.value)}
@@ -451,13 +451,13 @@ function TemplateForm(props: { onCreated: () => void }) {
         />
       </label>
       <p style={{ color: "var(--ink-muted)", fontSize: 12, marginTop: 4 }}>
-        Tokens: <code>{"{{var}}"}</code> or <code>{"{{var | default: \"fallback\"}}"}</code>. Dotted paths
-        like <code>{"{{guest.name}}"}</code> are supported one level deep.
+        Variables: <code>{"{{var}}"}</code> o <code>{"{{var | default: \"valor\"}}"}</code>. Se admiten rutas con punto
+        como <code>{"{{guest.name}}"}</code> (un nivel).
       </p>
       {formError ? <p style={{ color: "var(--danger-ink)", marginTop: 8 }}>{formError}</p> : null}
       <div style={{ marginTop: 12 }}>
         <button type="button" className="primary" disabled={submitting} onClick={submit}>
-          {submitting ? "Saving…" : "Save template"}
+          {submitting ? "Guardando…" : "Guardar plantilla"}
         </button>
       </div>
     </div>
@@ -480,17 +480,17 @@ function DeliveriesTab(props: {
   return (
     <section className="bo-card">
       <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Delivery log</h2>
+        <h2 style={{ fontSize: 20 }}>Registro de envíos</h2>
         <div style={{ display: "flex", gap: 8 }}>
           <select value={props.statusFilter} onChange={(e) => props.onStatusFilter(e.target.value)}>
-            <option value="">all statuses</option>
-            <option value="sent">sent</option>
-            <option value="failed">failed</option>
-            <option value="queued">queued</option>
-            <option value="bounced">bounced</option>
+            <option value="">todos los estados</option>
+            <option value="sent">enviado</option>
+            <option value="failed">fallido</option>
+            <option value="queued">en cola</option>
+            <option value="bounced">rebotado</option>
           </select>
           <select value={props.channelFilter} onChange={(e) => props.onChannelFilter(e.target.value)}>
-            <option value="">all channels</option>
+            <option value="">todos los canales</option>
             <option value="email">email</option>
             <option value="sms">sms</option>
             <option value="whatsapp">whatsapp</option>
@@ -499,26 +499,26 @@ function DeliveriesTab(props: {
       </div>
 
       {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Loading deliveries…</p>
+        <p style={{ color: "var(--ink-muted)" }}>Cargando envíos…</p>
       ) : props.fetchError ? (
         <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
       ) : (props.deliveries ?? []).length === 0 ? (
         <p style={{ color: "var(--ink-muted)" }}>
-          No deliveries yet. Issue an invoice or create a reservation with a booker email and the engine will
-          queue one automatically.
+          Todavía no hay envíos. Emite una factura o crea una reserva con el correo del titular y el motor
+          encolará uno automáticamente.
         </p>
       ) : (
         <div className="rev-report-wrap">
           <table className="cm-table">
             <thead>
               <tr>
-                <th>When</th>
-                <th>Channel</th>
-                <th>Template</th>
-                <th>Recipient</th>
-                <th>Subject</th>
-                <th>Status</th>
-                <th>Attempts</th>
+                <th>Cuándo</th>
+                <th>Canal</th>
+                <th>Plantilla</th>
+                <th>Destinatario</th>
+                <th>Asunto</th>
+                <th>Estado</th>
+                <th>Intentos</th>
                 <th />
               </tr>
             </thead>
@@ -547,7 +547,7 @@ function DeliveriesTab(props: {
                         disabled={props.busy === `retry-${d.id}`}
                         onClick={() => props.onRetry(d.id)}
                       >
-                        {props.busy === `retry-${d.id}` ? "…" : "Retry"}
+                        {props.busy === `retry-${d.id}` ? "…" : "Reintentar"}
                       </button>
                     ) : null}
                   </td>
@@ -578,52 +578,52 @@ function StatsTab(props: {
   return (
     <section className="bo-card">
       <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Template performance · last {props.days} days</h2>
-        <select value={props.days} onChange={(e) => props.onChangeDays(Number(e.target.value))}>
-          <option value={7}>7 days</option>
-          <option value={30}>30 days</option>
-          <option value={90}>90 days</option>
+        <h2 style={{ fontSize: 20 }}>Rendimiento de las plantillas · últimos {plural(props.days, "día", "días", { withCount: true })}</h2>
+        <select value={props.days} onChange={(e) => props.onChangeDays(Number(e.target.value))} aria-label="Ventana de días">
+          <option value={7}>7 días</option>
+          <option value={30}>30 días</option>
+          <option value={90}>90 días</option>
         </select>
       </div>
 
       <section className="rev-kpi-grid" style={{ marginBottom: 16 }}>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total sent</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Total enviadas</span></div>
           <div className="rev-kpi-value">{totalSent}</div>
         </article>
         <article className={`rev-kpi ${totalFailed > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total failed</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Total fallidas</span></div>
           <div className="rev-kpi-value">{totalFailed}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Failure rate</span></div>
-          <div className="rev-kpi-value">{failureRate.toFixed(1)}%</div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Tasa de fallos</span></div>
+          <div className="rev-kpi-value">{percent(failureRate, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Queued / pending</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">En cola / pendientes</span></div>
           <div className="rev-kpi-value">{totalQueued}</div>
         </article>
       </section>
 
       {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Loading stats…</p>
+        <p style={{ color: "var(--ink-muted)" }}>Cargando estadísticas…</p>
       ) : props.fetchError ? (
         <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
       ) : (props.stats ?? []).length === 0 ? (
-        <p style={{ color: "var(--ink-muted)" }}>No deliveries in this window.</p>
+        <p style={{ color: "var(--ink-muted)" }}>Sin envíos en este periodo.</p>
       ) : (
         <div className="rev-report-wrap">
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Template</th>
-                <th>Channel</th>
-                <th style={{ textAlign: "right" }}>Sent</th>
-                <th style={{ textAlign: "right" }}>Failed</th>
-                <th style={{ textAlign: "right" }}>Queued</th>
+                <th>Plantilla</th>
+                <th>Canal</th>
+                <th style={{ textAlign: "right" }}>Enviadas</th>
+                <th style={{ textAlign: "right" }}>Fallidas</th>
+                <th style={{ textAlign: "right" }}>En cola</th>
                 <th style={{ textAlign: "right" }}>Total</th>
-                <th>Last sent</th>
-                <th>Last failed</th>
+                <th>Último envío</th>
+                <th>Último fallo</th>
               </tr>
             </thead>
             <tbody>

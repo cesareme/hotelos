@@ -1,6 +1,8 @@
+import { useTabHost } from "../tabs/TabHost";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -35,11 +37,7 @@ function defaultPeriod(): { from: string; to: string } {
 }
 
 function fmt(amount: number): string {
-  return new Intl.NumberFormat("es-ES", { useGrouping: true,
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2
-  }).format(amount);
+  return money(amount);
 }
 
 function amountColor(n: number): string {
@@ -84,6 +82,8 @@ function LineRow({ label, amount, bold = false }: { label: string; amount: numbe
 }
 
 export function CashFlowScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const initial = useMemo(defaultPeriod, []);
   const [fromDate, setFromDate] = useState(initial.from);
   const [toDate, setToDate] = useState(initial.to);
@@ -97,8 +97,12 @@ export function CashFlowScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Contabilidad · Estado de Flujos de Efectivo</div>
-          <h1 className="bo-page-title">Estado de flujos de efectivo</h1>
+          {embedded ? null : (
+            <>
+              <div className="bo-page-eyebrow">Finanzas · Estados contables</div>
+              <h1 className="bo-page-title">Flujos de efectivo</h1>
+            </>
+          )}
           <p className="bo-page-subtitle">
             Método indirecto: parte del resultado del ejercicio, ajusta partidas no monetarias (amortización 68x)
             y variaciones del capital circulante (clientes, existencias, proveedores), y separa actividades de
@@ -107,7 +111,6 @@ export function CashFlowScreen() {
         </div>
         <div className="bo-page-head-actions">
           <button type="button" onClick={refresh}>↻ Recalcular</button>
-          <button type="button" className="ghost">Export CSV</button>
         </div>
       </div>
 

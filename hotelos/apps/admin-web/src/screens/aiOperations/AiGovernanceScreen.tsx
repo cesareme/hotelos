@@ -3,6 +3,7 @@ import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { LoadingBlock, Spinner } from "../../components/States";
 import { toArray } from "../../utils/toArray";
+import { dateTime, money, number, percent } from "../../lib/format";
 
 // =====================================================================================
 // IA · Gobernanza — centro de gobernanza de la IA
@@ -94,25 +95,17 @@ type CostDashboard = {
 
 // ---- formatters ----
 
-const eur = new Intl.NumberFormat("es-ES", { useGrouping: true, style: "currency", currency: "EUR", maximumFractionDigits: 2 });
-const num = new Intl.NumberFormat("es-ES", { useGrouping: true, maximumFractionDigits: 0 });
-
 function fmtEur(v: number | null | undefined): string {
-  return eur.format(Number.isFinite(v as number) ? (v as number) : 0);
+  return money(v);
 }
 function fmtNum(v: number | null | undefined): string {
-  return num.format(Number.isFinite(v as number) ? (v as number) : 0);
+  return number(v, { maximumFractionDigits: 0 });
 }
 function fmtPct(v: number | null | undefined): string {
-  return v === undefined || v === null || !Number.isFinite(v) ? "—" : `${v.toFixed(1)}%`;
+  return percent(v, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 function fmtDateTime(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"
-  }).format(d);
+  return dateTime(value);
 }
 
 function severityClass(severity?: string): "ok" | "warn" | "error" {
@@ -850,7 +843,8 @@ const TABS: Array<{ id: TabId; label: string; subtitle: string }> = [
   { id: "cost", label: "Coste", subtitle: "Gasto y tokens (uso del modelo)" }
 ];
 
-export function AiGovernanceScreen() {
+export function AiGovernanceScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const [tab, setTab] = useState<TabId>("policies");
   const [banner, setBanner] = useState<string | null>(null);
 
@@ -858,8 +852,8 @@ export function AiGovernanceScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">IA · Gobernanza</div>
-          <h1 className="bo-page-title">Gobernanza de la IA</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">IA · Gobernanza</div>}
+          {embedded ? null : <h1 className="bo-page-title">Gobernanza de la IA</h1>}
           <p className="bo-page-subtitle">
             Políticas, versiones de prompts (instrucciones a la IA), evaluaciones, gestión de incidencias y coste:
             el panel de control de la IA para operar de forma segura en toda la cartera de hoteles.

@@ -16,6 +16,8 @@ import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { EmptyState, ErrorState } from "../../components/States";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
 
@@ -152,9 +154,14 @@ async function executeAction(
         return { ok: false, message: "Falta reservationId" };
       }
       case "open_reservation":
-      case "open_folio":
-        navigateTo("ReservationDetailWorkspace");
+      case "open_folio": {
+        // Land on the reservation's own detail URL when the queue names it.
+        const rid = String(payload?.reservationId ?? "");
+        const url = rid ? urlForScreen("ReservationDetailWorkspace", { id: rid }) : null;
+        if (url) openTabPath(url);
+        else navigateTo("ReservationDetailWorkspace");
         return { ok: true };
+      }
       case "open_room_rack":
         navigateTo("RoomRackScreen");
         return { ok: true };
@@ -165,13 +172,13 @@ async function executeAction(
         navigateTo("MaintenanceDashboard");
         return { ok: true };
       case "open_guest": {
+        // One history entry: the concrete tab URL (/recepcion/huespedes/:id/cronologia)
+        // through openTabPath, instead of pushState(?guestId) + a second push by
+        // the shell (code-review#4).
         const gid = String(payload?.guestId ?? "");
-        if (gid && typeof window !== "undefined") {
-          const url = new URL(window.location.href);
-          url.searchParams.set("guestId", gid);
-          window.history.pushState({}, "", url);
-        }
-        navigateTo("GuestTimelineScreen");
+        const url = gid ? urlForScreen("GuestTimelineScreen", { id: gid }) : null;
+        if (url) openTabPath(url);
+        else navigateTo("GuestTimelineScreen");
         return { ok: true };
       }
       case "assign_room": {

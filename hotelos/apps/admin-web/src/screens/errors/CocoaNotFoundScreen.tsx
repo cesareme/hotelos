@@ -82,7 +82,7 @@ export function CocoaNotFoundScreen() {
     <div style={wrapperStyle}>
       <div style={contentStyle}>
         <EmptyStateBox size={240} tone="accent" />
-        <h1 style={titleStyle}>404 · Pagina no encontrada</h1>
+        <h1 style={titleStyle}>404 · Página no encontrada</h1>
         <p style={descriptionStyle}>
           Esta pantalla no existe o fue movida. Verifica el enlace o vuelve al
           inicio.

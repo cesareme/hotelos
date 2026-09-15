@@ -21,14 +21,15 @@ const aiRegistry = read("packages/ai-tools/src/registry.ts");
 const worker = read("apps/worker/src/index.ts");
 const mobileNavigation = read("packages/product/src/navigation/mobile-navigation.ts");
 const moduleRoutes = read("apps/mobile/src/navigation/ModuleRoutes.tsx");
-const sidebar = read("apps/admin-web/src/navigation/Sidebar.tsx");
+// Tanda 5 · L1b: the sidebar renders nav-tree.generated.json, so the menu source is both files.
+const sidebar = read("apps/admin-web/src/navigation/Sidebar.tsx") + read("apps/admin-web/src/navigation/nav-tree.generated.json");
 const app = read("apps/admin-web/src/App.tsx");
 const demoHtml = read("demo/public/index.html");
 
 describe("Spain Guest Register and SES.HOSPEDAJES compliance module", () => {
   it("registers the module, permissions, mobile routes and admin routes", () => {
     assert.match(moduleCodes, /spain_guest_register_compliance/);
-    assert.match(manifest, /Spain Guest Register Compliance/);
+    assert.match(manifest, /Registro de viajeros \(España\)/);
     for (const permission of [
       "guest_register.read",
       "guest_register.create",

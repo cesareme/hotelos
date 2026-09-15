@@ -1,17 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchGuests, type GuestProfile } from "../../services/guestsApi";
 import { LoadingBlock, EmptyState, ErrorState, Spinner } from "../../components/States";
+import { useTabHost } from "../tabs/TabHost";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
 
 // Rows per page (API caps at 200); "Cargar más" walks the cursor. With a
 // search term the API answers a single merged page (nextCursor: null).
 const PAGE_SIZE = 50;
 
+// Ficha del huésped: /recepcion/huespedes/:id (tab of the Huéspedes container, Tanda 5).
 function openGuest(id: string) {
-  window.history.pushState(null, "", `/backoffice/guests/${id}`);
-  window.dispatchEvent(new PopStateEvent("popstate"));
+  const url = urlForScreen("GuestDetail", { id });
+  if (url) openTabPath(url);
 }
 
 export function GuestsListScreen() {
+  const hosted = useTabHost() !== null;
   const [guests, setGuests] = useState<GuestProfile[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [total, setTotal] = useState<number | null>(null);
@@ -76,13 +81,15 @@ export function GuestsListScreen() {
 
   return (
     <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">CRM · Perfiles de huésped</p>
-          <h2>Huéspedes</h2>
+      {hosted ? null : (
+        <div className="bo-card-head">
+          <div>
+            <p className="bo-muted">CRM · Perfiles de huésped</p>
+            <h2>Huéspedes</h2>
+          </div>
+          <button className="primary" type="button" onClick={() => openGuest("new")}>Nuevo huésped</button>
         </div>
-        <button className="primary" type="button" onClick={() => openGuest("new")}>Nuevo huésped</button>
-      </div>
+      )}
       <p>Directorio de perfiles de huésped de la organización. Busca por nombre, empresa, email o documento.</p>
 
       <div className="rev-toolbar" style={{ marginBottom: "var(--space-4)" }}>

@@ -24,6 +24,7 @@ import { navigateTo } from "../../lib/navigate";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { HOSTED_ACTIONS_ROW, useTabHost } from "../tabs/TabHost";
 import {
   DirectorKpiTile,
   DirectorForwardPaceChart,
@@ -52,6 +53,7 @@ import {
   isDegraded
 } from "../../components/cocoa-extras/DegradedValue";
 import { toArray } from "../../utils/toArray";
+import { dateTime, money, number, percent } from "../../lib/format";
 
 // ---------------------------------------------------------------------------
 // Types — wire-shape of the dashboard endpoint. Kept aligned with
@@ -152,25 +154,19 @@ const DEGRADED_LABEL = {
 // ---------------------------------------------------------------------------
 
 function fmtEur(value: number | undefined | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,00 €";
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+  return money(value);
 }
 
 function fmtEurCompact(value: number | undefined | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M €`;
-  if (abs >= 1_000) return `${(value / 1_000).toFixed(1)}k €`;
-  return `${Math.round(value)} €`;
+  return money(value, { compact: true });
 }
 
 function fmtPct(value: number | undefined | null): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0 %";
-  return `${value.toFixed(1)} %`;
+  return percent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 function fmtNumber(value: number): string {
-  return new Intl.NumberFormat("es-ES").format(value);
+  return number(value);
 }
 
 function asoFLabel(asOf?: string): string {
@@ -178,17 +174,10 @@ function asoFLabel(asOf?: string): string {
   return asOf;
 }
 
-// Format ISO timestamp like "2026-05-30T08:12:00Z" as "30 May, 08:12".
+// Format ISO timestamp like "2026-05-30T08:12:00Z" as "30 may, 10:12" (hotel time).
 function fmtCompactDateTime(iso?: string): string | undefined {
   if (!iso) return undefined;
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return iso;
-  const day = String(parsed.getUTCDate()).padStart(2, "0");
-  const months = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
-  const mm = months[parsed.getUTCMonth()] ?? "";
-  const hh = String(parsed.getUTCHours()).padStart(2, "0");
-  const mi = String(parsed.getUTCMinutes()).padStart(2, "0");
-  return `${day} ${mm}, ${hh}:${mi}`;
+  return dateTime(iso, { style: "dayMonth" });
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +379,7 @@ function buildPacePoints(pace: PaceData | null) {
 // ---------------------------------------------------------------------------
 
 export function GeneralManagerScreen() {
+  const hosted = useTabHost() !== null;
   const propertyId = getActivePropertyId();
   const propertyName = getActiveProperty().propertyName;
   const { data, loading, error, refresh } = useApiData<Data>(
@@ -427,12 +417,16 @@ export function GeneralManagerScreen() {
   if (isLoading) {
     return (
       <div style={sectionStackStyle}>
-        <CocoaPageHeader
-          eyebrow={`Gerencia · ${propertyName}`}
-          title="Dashboard del director"
-          subtitle="Vista estratégica del día y del mes en curso"
-          actions={headerActions}
-        />
+        {hosted ? (
+          <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
+        ) : (
+          <CocoaPageHeader
+            eyebrow={`Gerencia · ${propertyName}`}
+            title="Dashboard del director"
+            subtitle="Vista estratégica del día y del mes en curso"
+            actions={headerActions}
+          />
+        )}
         <DashboardSkeleton />
       </div>
     );
@@ -441,12 +435,16 @@ export function GeneralManagerScreen() {
   if (!k) {
     return (
       <div style={sectionStackStyle}>
-        <CocoaPageHeader
-          eyebrow={`Gerencia · ${propertyName}`}
-          title="Dashboard del director"
-          subtitle="Vista estratégica del día y del mes en curso"
-          actions={headerActions}
-        />
+        {hosted ? (
+          <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
+        ) : (
+          <CocoaPageHeader
+            eyebrow={`Gerencia · ${propertyName}`}
+            title="Dashboard del director"
+            subtitle="Vista estratégica del día y del mes en curso"
+            actions={headerActions}
+          />
+        )}
         <CocoaCard variant="bordered" padding="lg">
           <p style={cardMutedStyle}>Sin datos del director hoy</p>
         </CocoaCard>
@@ -500,12 +498,16 @@ export function GeneralManagerScreen() {
 
   return (
     <div style={sectionStackStyle}>
-      <CocoaPageHeader
-        eyebrow={`Gerencia · ${k.propertyName ?? propertyName}`}
-        title="Dashboard del director"
-        subtitle={`Vista estratégica del día y del mes en curso · datos a ${asoFLabel(k.asOf)}`}
-        actions={headerActions}
-      />
+      {hosted ? (
+        <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
+      ) : (
+        <CocoaPageHeader
+          eyebrow={`Gerencia · ${k.propertyName ?? propertyName}`}
+          title="Dashboard del director"
+          subtitle={`Vista estratégica del día y del mes en curso · datos a ${asoFLabel(k.asOf)}`}
+          actions={headerActions}
+        />
+      )}
 
       {/* Row 1 — Today snapshot strip */}
       <div className="cocoa-stagger" style={kpiStripStyle}>
@@ -546,7 +548,7 @@ export function GeneralManagerScreen() {
           />
         </DegradedCard>
         <DirectorKpiTile
-          label="In-house"
+          label="En casa"
           value={fmtNumber(k.productivity.checkInsDone)}
           deltaLabel={`/${k.productivity.checkInsPlanned} planificados`}
           deltaPolarity="neutral"
@@ -1118,7 +1120,7 @@ function DemandSpikeList({ rows }: DemandSpikeListProps) {
                 fontVariantNumeric: "tabular-nums"
               }}
             >
-              +{pct.toFixed(0)}% vs LY
+              {percent(pct, { signDisplay: "always", maximumFractionDigits: 0 })} frente al año anterior
             </strong>
           </li>
         );

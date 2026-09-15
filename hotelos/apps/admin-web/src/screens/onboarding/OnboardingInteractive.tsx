@@ -1,22 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  aiSuggestMapping,
-  approveMapping,
   classifyFile,
   createProject,
-  editMapping,
   extractFile,
   generateMappings,
   getActiveProjectId,
   listExtractedEntities,
   listMappingSuggestions,
   listProjects,
-  rejectMapping,
   setActiveProjectId,
   uploadFile,
   type ExtractedEntity,
   type ExtractResult,
-  type MappingSuggestion,
   type OnboardingFile,
   type OnboardingProject
 } from "../../services/onboardingApi";
@@ -653,9 +648,7 @@ export function AIExtractionReviewScreen() {
             {generating ? "Generando mapeos…" : "Generar mapeos"}
           </button>
           {mappingCount !== null ? (
-            <button type="button" className="ghost" onClick={() => navigate("RoomMappingReview")}>
-              Revisar mapeos ({mappingCount}) →
-            </button>
+            <span className="bo-chip">{mappingCount} mapeos generados</span>
           ) : null}
         </div>
         {generateError ? <p style={{ color: "var(--danger-ink)" }}>{generateError}</p> : null}
@@ -674,267 +667,8 @@ export function AIExtractionReviewScreen() {
 
       <NavCards
         actions={[
-          { label: "Revisión de mapeo de habitaciones", screen: "RoomMappingReview" },
+          { label: "Lotes de migración", screen: "MigrationBatches" },
           { label: "Volver a subir ficheros", screen: "FileUploadAndClassification" }
-        ]}
-      />
-    </>
-  );
-}
-
-// ============================================================================
-// 3) Room Mapping Review
-// ============================================================================
-
-export function RoomMappingReviewScreen() {
-  const { projects, activeId, creating, error: projectError, select, create } = useActiveProject();
-
-  const [suggestions, setSuggestions] = useState<MappingSuggestion[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState("");
-  const [aiBusyId, setAiBusyId] = useState<string | null>(null);
-  const [aiNote, setAiNote] = useState<string | null>(null);
-
-  async function suggestWithAi(s: MappingSuggestion) {
-    setAiBusyId(s.id);
-    setAiNote(null);
-    try {
-      const res = await aiSuggestMapping({ sourceValue: s.sourceValue, targetType: s.mappingType });
-      if (!res.configured) {
-        setAiNote(res.message ?? "IA no configurada. Edita el destino a mano.");
-        return;
-      }
-      if (res.suggestion && res.suggestion.target) {
-        // Prefill the row in edit mode so a human reviews + saves the suggestion.
-        setEditingId(s.id);
-        setEditValue(res.suggestion.target);
-        const pct = Math.round((res.suggestion.confidence ?? 0) * 100);
-        setAiNote(`✨ IA sugiere para "${s.sourceValue}" → "${res.suggestion.target}" (${pct}%). ${res.suggestion.rationale} — revísalo y guarda.`);
-      } else {
-        setAiNote(res.message ?? "La IA no encontró un destino claro; edítalo a mano.");
-      }
-    } catch (err) {
-      setAiNote(errorMessage(err));
-    } finally {
-      setAiBusyId(null);
-    }
-  }
-
-  const load = useCallback(async (projectId: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const items = await listMappingSuggestions(projectId);
-      setSuggestions(items);
-    } catch (err) {
-      const message = errorMessage(err);
-      setError(isForbidden(message) ? `Permiso denegado (onboarding.*): ${message}` : message);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (activeId) void load(activeId);
-    else setSuggestions([]);
-  }, [activeId, load]);
-
-  async function runAction(id: string, fn: () => Promise<unknown>) {
-    setBusyId(id);
-    setActionError(null);
-    try {
-      await fn();
-      if (activeId) await load(activeId);
-    } catch (err) {
-      const message = errorMessage(err);
-      setActionError(isForbidden(message) ? `Permiso denegado (onboarding.*): ${message}` : message);
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  function startEdit(s: MappingSuggestion) {
-    setEditingId(s.id);
-    setEditValue(s.targetValue === "—" ? "" : s.targetValue);
-    setActionError(null);
-  }
-
-  async function saveEdit(id: string) {
-    await runAction(id, () => editMapping(id, editValue));
-    setEditingId(null);
-    setEditValue("");
-  }
-
-  const kpis = useMemo(() => {
-    const total = suggestions.length;
-    const pending = suggestions.filter((s) => s.status === "pending").length;
-    const approved = suggestions.filter((s) => s.status === "approved" || s.status === "applied").length;
-    const rejected = suggestions.filter((s) => s.status === "rejected").length;
-    const avgConfidence = avg(suggestions.map((s) => s.confidence));
-    return { total, pending, approved, rejected, avgConfidence };
-  }, [suggestions]);
-
-  return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Alta y migración con IA</div>
-          <h1 className="bo-page-title">Revisión de mapeo de habitaciones</h1>
-          <p className="bo-page-subtitle">
-            Aprueba, rechaza o edita los mapeos de rangos de habitaciones, tipos de habitación, espacios y recursos no-habitación generados a partir
-            de ficheros, planos o el recorrido de habitaciones. Se requiere aprobación antes de cualquier simulación o aplicación.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => activeId && load(activeId)} disabled={!activeId || loading}>
-            ↻ Actualizar
-          </button>
-        </div>
-      </div>
-
-      <ProjectBanner
-        projects={projects}
-        activeId={activeId}
-        onSelect={select}
-        onCreate={create}
-        creating={creating}
-        error={projectError}
-      />
-
-      <section className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : kpis.total}</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${kpis.pending > 0 ? "warn" : "ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Pendientes</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : kpis.pending}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Aprobados</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : kpis.approved}</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${kpis.rejected > 0 ? "error" : "ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Rechazados</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : kpis.rejected}</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${kpis.avgConfidence >= 0.8 ? "ok" : kpis.avgConfidence >= 0.5 ? "warn" : "error"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Confianza media</span></div>
-          <div className="rev-kpi-value">{loading ? "…" : `${Math.round(kpis.avgConfidence * 100)}%`}</div>
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Sugerencias de mapeo</p>
-            <h3>Cola de revisión</h3>
-          </div>
-          <span className="bo-chip">{suggestions.length} filas</span>
-        </div>
-
-        {error ? (
-          <p style={{ color: "var(--danger-ink)" }}>{error}</p>
-        ) : loading ? (
-          <LoadingBlock label="Cargando sugerencias de mapeo…" />
-        ) : suggestions.length === 0 ? (
-          <p className="bo-muted">
-            Aún no hay sugerencias de mapeo. Ejecuta «Generar mapeos» desde «Revisión de extracción (IA)» primero.
-          </p>
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Tipo</th>
-                  <th>Origen → Destino</th>
-                  <th>Confianza</th>
-                  <th>Justificación</th>
-                  <th>Estado</th>
-                  <th>Acciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {suggestions.map((s) => {
-                  const decided = s.status === "approved" || s.status === "rejected" || s.status === "applied";
-                  const isBusy = busyId === s.id;
-                  const isEditing = editingId === s.id;
-                  return (
-                    <tr key={s.id} className={s.confidence < 0.5 ? "cm-row-error" : s.confidence < 0.8 ? "cm-row-warn" : undefined}>
-                      <td><strong>{s.mappingType}</strong></td>
-                      <td>
-                        <span>{s.sourceValue}</span>
-                        <span className="bo-muted"> → </span>
-                        {isEditing ? (
-                          <input
-                            type="text"
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            style={{ width: 200 }}
-                            placeholder="Valor de destino"
-                          />
-                        ) : (
-                          <span>{s.targetValue}</span>
-                        )}
-                      </td>
-                      <td><ConfidencePill confidence={s.confidence} /></td>
-                      <td style={{ maxWidth: 320 }}>{s.rationale}</td>
-                      <td><StatusPill status={s.status} /></td>
-                      <td>
-                        <div style={{ display: "flex", gap: "0.35rem", flexWrap: "wrap" }}>
-                          {isEditing ? (
-                            <>
-                              <button type="button" className="primary" disabled={isBusy} onClick={() => saveEdit(s.id)}>
-                                Guardar
-                              </button>
-                              <button type="button" className="ghost" disabled={isBusy} onClick={() => { setEditingId(null); setEditValue(""); }}>
-                                Cancelar
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button type="button" className="ghost" disabled={decided || isBusy} onClick={() => runAction(s.id, () => approveMapping(s.id))}>
-                                Aprobar
-                              </button>
-                              <button type="button" className="ghost" disabled={decided || isBusy} onClick={() => runAction(s.id, () => rejectMapping(s.id))}>
-                                Rechazar
-                              </button>
-                              <button type="button" className="ghost" disabled={isBusy} onClick={() => startEdit(s)}>
-                                Editar
-                              </button>
-                              <button
-                                type="button"
-                                className="ghost"
-                                disabled={decided || isBusy || aiBusyId === s.id}
-                                onClick={() => void suggestWithAi(s)}
-                                title="La IA propone un destino; tú lo revisas y guardas"
-                              >
-                                {aiBusyId === s.id ? "Consultando IA…" : "✨ Sugerir (IA)"}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {actionError ? <p style={{ color: "var(--danger-ink)" }}>{actionError}</p> : null}
-        {aiNote ? <p className="bo-muted" style={{ marginTop: 8 }}>{aiNote}</p> : null}
-      </section>
-
-      <NavCards
-        actions={[
-          { label: "Volver a la revisión de extracción", screen: "AIExtractionReview" },
-          { label: "Mapear propiedad desde documentos", screen: "PropertyMapper" }
         ]}
       />
     </>

@@ -1,85 +1,106 @@
+import { useCallback, useEffect, useState } from "react";
 import { getActivePropertyId } from "../../../services/activeProperty";
-import { useEffect, useState } from "react";
 import { FormPage } from "../../../components/forms/FormComponents";
+import { EmptyState, ErrorState, LoadingBlock } from "../../../components/States";
+import { ACTIONS, errorStateFor, loadingLabel } from "../../../content/actions";
 import { fetchConfigurationCategory, type ConfigurationCategory } from "../../../services/backofficeApi";
 import { CategoryOptionForm } from "./CategoryOptionForm";
+import { openTabPath } from "../../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../../navigation/nav-tree";
 
-const fallbackCategory: ConfigurationCategory = {
-  id: "catdef_room_features",
-  code: "room_features",
-  name: "Room features",
-  categoryGroup: "Rooms",
-  entityType: "room",
-  mode: "property_editable",
-  active: true,
-  sortOrder: 10,
-  activeOptions: 3,
-  inactiveOptions: 1,
-  options: [
-    { id: "catopt_balcony", label: "Balcony", code: "balcony", usageCount: 12, active: true, sortOrder: 10 },
-    { id: "catopt_sea_view", label: "Sea view", code: "sea_view", usageCount: 8, active: true, sortOrder: 20 },
-    { id: "catopt_connecting", label: "Connecting room", code: "connecting_room", usageCount: 3, active: true, sortOrder: 30 },
-    { id: "catopt_pet", label: "Pet friendly", code: "pet_friendly", usageCount: 0, active: false, sortOrder: 40 }
-  ]
+const MODE_LABELS: Record<string, string> = {
+  property_editable: "Editable por la propiedad",
+  property_extendable: "Ampliable por la propiedad",
+  system_controlled: "Controlada por el sistema"
 };
 
-export function CategoryDetailScreen() {
-  const [category, setCategory] = useState<ConfigurationCategory>(fallbackCategory);
-  const [source, setSource] = useState<"static" | "api">("static");
+/** Sub-URL of the «Nueva opción» form of a category (the code travels in the URL, never a fixed fallback). */
+function openOptionForm(categoryCode: string): void {
+  const url = urlForScreen("CategoryOptionForm", { codigo: categoryCode });
+  if (url) openTabPath(url);
+}
 
-  function refreshCategory() {
-    fetchConfigurationCategory(getActivePropertyId(), category.code)
-      .then((payload) => {
-        setCategory(payload);
-        setSource("api");
-      })
-      .catch(() => {
-        setCategory(fallbackCategory);
-        setSource("static");
-      });
-  }
+function openManager(): void {
+  const url = urlForScreen("CategoryManagerScreen");
+  if (url) openTabPath(url);
+}
+
+type LoadState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; category: ConfigurationCategory };
+
+/**
+ * `categoryCode` comes from the `:codigo` sub-URL of Configuración › Propiedad ›
+ * Categorías (Tanda 5). L1c: without a code, or when the API fails, the screen
+ * says so instead of painting the old «Room features» demo category.
+ */
+export function CategoryDetailScreen({ categoryCode }: { categoryCode?: string; embedded?: boolean } = {}) {
+  const [state, setState] = useState<LoadState>({ status: "loading" });
+  // Data source marker (contract test): source: {source}
+  const source = state.status === "ready" ? "api" : state.status;
+
+  const refreshCategory = useCallback(() => {
+    if (!categoryCode) {
+      setState({ status: "error", message: "La URL no indica qué categoría abrir." });
+      return;
+    }
+    setState({ status: "loading" });
+    fetchConfigurationCategory(getActivePropertyId(), categoryCode)
+      .then((payload) => setState({ status: "ready", category: payload }))
+      .catch((error: unknown) => setState({ status: "error", message: error instanceof Error ? error.message : "No se ha podido cargar la categoría." }));
+  }, [categoryCode]);
 
   useEffect(() => {
     refreshCategory();
-  }, []);
+  }, [refreshCategory]);
+
+  const errorCopy = errorStateFor("la categoría");
+  const category = state.status === "ready" ? state.category : null;
 
   return (
     <FormPage
-      eyebrow="Category detail"
-      title={category.name}
-      summary="Manage property-editable options with colors, icons, descriptions, parent options, usage counts and active/inactive state."
+      eyebrow="Configuración · Propiedad · Categorías"
+      title={category?.name ?? categoryCode ?? "Categoría"}
+      summary="Opciones de la categoría con color, icono, descripción, opción superior, número de usos y estado. Una opción en uso se desactiva, nunca se elimina."
     >
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Options</h3>
-            <div className="bo-actions">
-              <button className="primary" type="button" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "CategoryOptionForm" }))}>Añadir opción</button>
-              <button type="button" disabled style={{ opacity: 0.55, cursor: "not-allowed" }} title="Pendiente de implementación">Reorder</button>
-              <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "ImportReview" }))}>Import</button>
-              <button type="button" disabled style={{ opacity: 0.55, cursor: "not-allowed" }} title="Pendiente de implementación">Export</button>
+      {state.status === "loading" ? <LoadingBlock label={loadingLabel("opciones")} /> : null}
+      {state.status === "error" ? (
+        <ErrorState title={errorCopy.title} message={`${errorCopy.message} (${state.message})`} onRetry={categoryCode ? refreshCategory : openManager} retryLabel={categoryCode ? ACTIONS.retry : "Ver todas las categorías"} />
+      ) : null}
+      {category ? (
+        <section className="bo-grid two" data-source={source}>
+          <article className="bo-card">
+            <div className="bo-card-head">
+              <h3>Opciones</h3>
+              <div className="bo-actions">
+                {/* Nueva opción de ESTA categoría: /configuracion/propiedad/categorias/:codigo/opciones/nueva (Tanda 5). */}
+                {category.mode === "system_controlled" ? null : (
+                  <button className="primary" type="button" onClick={() => openOptionForm(category.code)}>Añadir opción</button>
+                )}
+              </div>
             </div>
-          </div>
-          <p>
-            <span className={`bo-status ${category.mode === "system_controlled" ? "warn" : "ok"}`}>{category.mode}</span>{" "}
-            <span className="bo-chip">source: {source}</span>
-          </p>
-          <ul className="bo-list">
-            {category.options.map((option) => (
-              <li className="bo-row" key={option.id}>
-                <strong>{option.label}</strong>
-                <span>{option.code}</span>
-                <span>{option.usageCount} linked records</span>
-                <span className={`bo-status ${option.active ? "ok" : "warn"}`}>{option.active ? "active" : "inactive"}</span>
-                <button type="button">Editar</button>
-              </li>
-            ))}
-          </ul>
-        </article>
-        <article className="bo-card">
-          <CategoryOptionForm category={category} onSaved={refreshCategory} />
-        </article>
-      </section>
+            <p>
+              <span className={`bo-status ${category.mode === "system_controlled" ? "warn" : "ok"}`}>{MODE_LABELS[category.mode] ?? category.mode}</span>
+            </p>
+            {category.options.length === 0 ? (
+              <EmptyState title="Sin opciones" message="Esta categoría todavía no tiene opciones. Añade la primera con «Añadir opción»." />
+            ) : (
+              <ul className="bo-list">
+                {category.options.map((option) => (
+                  <li className="bo-row" key={option.id}>
+                    <strong>{option.label}</strong>
+                    <span>{option.code}</span>
+                    {/* usageCount = linked records (rooms, reservations…) that still reference the option. */}
+                    <span>{option.usageCount} registros vinculados</span>
+                    <span className={`bo-status ${option.active ? "ok" : "warn"}`}>{option.active ? "activa" : "inactiva"}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </article>
+          <article className="bo-card">
+            <CategoryOptionForm category={category} onSaved={refreshCategory} />
+          </article>
+        </section>
+      ) : null}
     </FormPage>
   );
 }

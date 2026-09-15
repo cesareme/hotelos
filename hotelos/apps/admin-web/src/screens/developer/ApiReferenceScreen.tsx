@@ -47,7 +47,8 @@ const RISK_COLOR: Record<string, string> = {
   critical: "#7a1212"
 };
 
-export function ApiReferenceScreen() {
+export function ApiReferenceScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const { data, loading, error, refresh } = useApiData<Data>("/developer/api-reference");
   const [query, setQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | "all">("all");
@@ -79,8 +80,8 @@ export function ApiReferenceScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Developer · API reference</div>
-          <h1 className="bo-page-title">API Anfitorio</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">Sistema · Referencia de API</div>}
+          {embedded ? null : <h1 className="bo-page-title">API Anfitorio</h1>}
           <p className="bo-page-subtitle">
             Generado automáticamente desde el route permission manifest — siempre sincronizado con el código en producción.
             {data ? ` ${data.totalEndpoints} endpoints en ${data.categories.length} categorías.` : null}

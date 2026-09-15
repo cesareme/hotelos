@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { LoadingBlock } from "../../components/States";
+import { dateTime } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 const ORGANIZATION_ID = getActiveOrganizationId();
@@ -81,23 +82,13 @@ function readinessTone(status: ReadinessCheck["status"]): "ok" | "warn" | "error
 }
 
 function fmtDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString("es-ES", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-  } catch {
-    return iso;
-  }
+  return dateTime(iso);
 }
 
 // --- screen --------------------------------------------------------------
 
-export function PropertyAiScreen() {
+export function PropertyAiScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const settingsState = useApiData<PropertyAiSettings>("/ai-operations/property/settings", {
     query: { propertyId: PROPERTY_ID }
   });
@@ -185,8 +176,8 @@ export function PropertyAiScreen() {
     <>
       <div className="bo-page-head">
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">IA · Configuración por propiedad</div>
-          <h1 className="bo-page-title">Configuración de IA de la propiedad</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">IA · Configuración por propiedad</div>}
+          {embedded ? null : <h1 className="bo-page-title">Configuración de IA de la propiedad</h1>}
           <p className="bo-page-subtitle">
             El interruptor principal y los valores por defecto de toda la IA, para esta propiedad. Las
             excepciones por herramienta se gestionan aparte en el registro de herramientas de IA.

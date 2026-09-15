@@ -12,6 +12,8 @@ import { LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
 import { MAINT_INSTRUCTIONS } from "../../content/screen-instructions/maintenance";
+import { useTabHost } from "../tabs/TabHost";
+import { dateTime } from "../../lib/format";
 
 
 type Priority = "urgent" | "high" | "normal" | "low";
@@ -68,6 +70,7 @@ function fmtAge(minutes: number): string {
 }
 
 export function MaintenanceMobileScreen() {
+  const hosted = useTabHost() !== null;
   const propertyId = getActivePropertyId();
   const propertyName = getActiveProperty().propertyName;
   const { showToast } = useToast();
@@ -110,7 +113,7 @@ export function MaintenanceMobileScreen() {
     if (!note?.trim()) return;
     setBusy(item.workOrderId);
     // Guarda como descripción anexada (concat con la existente).
-    const newDescription = item.description ? `${item.description}\n\n[${new Date().toLocaleString("es-ES")}] ${note}` : note;
+    const newDescription = item.description ? `${item.description}\n\n[${dateTime(new Date())}] ${note}` : note;
     const res = await mutate(`/work-orders/${item.workOrderId}`, "PATCH", { description: newDescription });
     setBusy(null);
     const ok = res.ok;
@@ -136,11 +139,13 @@ export function MaintenanceMobileScreen() {
           zIndex: 10
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-          <div>
-            <div className="bo-page-eyebrow" style={{ fontSize: 11 }}>Mantenimiento · {propertyName}</div>
-            <h1 style={{ fontSize: 22, margin: "2px 0 0 0", color: "var(--ink)" }}>Mis averías</h1>
-          </div>
+        <div style={{ display: "flex", justifyContent: hosted ? "flex-end" : "space-between", alignItems: "center", gap: 8 }}>
+          {hosted ? null : (
+            <div>
+              <div className="bo-page-eyebrow" style={{ fontSize: 11 }}>Mantenimiento · {propertyName}</div>
+              <h1 style={{ fontSize: 22, margin: "2px 0 0 0", color: "var(--ink)" }}>Mis averías</h1>
+            </div>
+          )}
           <button type="button" className="ghost" onClick={refresh} style={{ minHeight: 44, minWidth: 44, fontSize: 18 }} title="Actualizar">
             ↻
           </button>

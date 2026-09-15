@@ -30,6 +30,7 @@ import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { pageHead } from "../tabs/configuracion/tab-helpers";
 import { CocoaSheet } from "../../components/cocoa/CocoaSheet";
 import {
   CocoaTable,
@@ -53,6 +54,7 @@ import {
 import { copyText, describeDelivery, formatExpiry, type InvitationResult } from "../../services/authApi";
 import { CocoaInput } from "../../components/cocoa/CocoaInput";
 import { NewTenantWizardDialog } from "./NewTenantWizardDialog";
+import { date, dateTime } from "../../lib/format";
 
 // ---------------------------------------------------------------------------
 // Constants & helpers
@@ -67,27 +69,11 @@ const TAB_OPTIONS: Array<{ value: ConsoleTab; label: string }> = [
 ];
 
 function fmtDate(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("es-ES", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric"
-  });
+  return date(iso, "medium");
 }
 
 function fmtDateTime(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
+  return dateTime(iso);
 }
 
 function statusColor(status: TenantStatus): string {
@@ -360,7 +346,9 @@ function SystemTile({ label, value, detail, tone = "info" }: SystemTileProps) {
 // Main screen
 // ---------------------------------------------------------------------------
 
-export function TenantAdminConsoleScreen() {
+export function TenantAdminConsoleScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const { showToast } = useToast();
   const [activeTab, setActiveTab] = useState<ConsoleTab>("tenants");
   const [tenants, setTenants] = useState<TenantSummary[]>([]);
@@ -792,7 +780,7 @@ export function TenantAdminConsoleScreen() {
 
   return (
     <section style={rootStyle}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Super Admin"
         title="Consola de tenants"
         subtitle="Gestiona organizaciones, propiedades y usuarios. Onboarding completo de clientes nuevos."

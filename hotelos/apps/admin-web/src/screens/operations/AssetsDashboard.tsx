@@ -1,5 +1,8 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS, UI_STATES } from "../../content/actions";
+import { date, money as formatMoney, percent } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -45,36 +48,16 @@ const EMPTY: AssetsDashboardData = {
   upcomingWarrantyExpirations: []
 };
 
-const currencyFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true,
-  style: "currency",
-  currency: "EUR",
-  minimumFractionDigits: 2
-});
-
-const compactCurrencyFormatter = new Intl.NumberFormat("es-ES", { useGrouping: true,
-  style: "currency",
-  currency: "EUR",
-  notation: "compact",
-  maximumFractionDigits: 1
-});
-
 function money(value: number | null | undefined): string {
-  return currencyFormatter.format(Number.isFinite(value as number) ? (value as number) : 0);
+  return formatMoney(value);
 }
 
 function moneyCompact(value: number | null | undefined): string {
-  return compactCurrencyFormatter.format(Number.isFinite(value as number) ? (value as number) : 0);
+  return formatMoney(value, { compact: true });
 }
 
 function formatDate(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric"
-  }).format(d);
+  return date(value);
 }
 
 const CLOSED_STATUSES = new Set(["completed", "closed", "done"]);
@@ -116,73 +99,62 @@ export function AssetsDashboard() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Assets</div>
-          <h1 className="bo-page-title">Registro de activos</h1>
-          <p className="bo-page-subtitle">
-            Vista solo lectura del registro de activos físicos y proyectos de capex.
-            Resumen de valor neto contable, depreciación mes a fecha (estimada),
-            proyectos abiertos y garantías próximas a vencer. Datos consolidados
-            cada 5 minutos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ Refresh
-          </button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Operaciones"
+        title="Activos"
+        subtitle="Registro de activos físicos y proyectos de inversión: valor neto contable, amortización del mes (estimada), proyectos abiertos y garantías próximas a vencer. Datos consolidados cada 5 minutos."
+        actions={<button type="button" className="ghost" onClick={() => state.refresh()}>↻ {ACTIONS.refresh}</button>}
+      />
 
       {state.error ? (
         <section className="bo-card">
-          <p style={{ color: "var(--danger-ink)" }}>Couldn't load this view right now. Refresh to retry.</p>
+          <p style={{ color: "var(--danger-ink)" }}>{UI_STATES.error.title}. {UI_STATES.error.message}</p>
         </section>
       ) : null}
 
       <section className="rev-kpi-grid">
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total assets</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Activos</span></div>
           <div className="rev-kpi-value">{kpis.totalAssets}</div>
-          <div className="rev-kpi-delta">in register</div>
+          <div className="rev-kpi-delta">en el registro</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Net book value</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Valor neto contable</span></div>
           <div className="rev-kpi-value">{moneyCompact(kpis.totalNetBookValueEur)}</div>
           <div className="rev-kpi-delta">{money(kpis.totalNetBookValueEur)}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Depreciation MTD</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Amortización del mes</span></div>
           <div className="rev-kpi-value">{moneyCompact(kpis.depreciationMtdEur)}</div>
-          <div className="rev-kpi-delta">straight-line estimate</div>
+          <div className="rev-kpi-delta">estimación lineal</div>
         </article>
         <article className={`rev-kpi ${capexStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Open capex</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Inversiones abiertas</span></div>
           <div className="rev-kpi-value">{kpis.openCapexProjects}</div>
-          <div className="rev-kpi-delta">active projects</div>
+          <div className="rev-kpi-delta">proyectos activos</div>
         </article>
         <article className={`rev-kpi ${warrantyStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Warranties 30d</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Garantías · 30 días</span></div>
           <div className="rev-kpi-value">{kpis.nextWarrantyExpiries}</div>
-          <div className="rev-kpi-delta">expiring soon</div>
+          <div className="rev-kpi-delta">vencen pronto</div>
         </article>
       </section>
 
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Assets by category</h3>
+            <h3>Activos por categoría</h3>
             <span className="bo-chip">{assetsByCategory.length} buckets</span>
           </div>
           {assetsByCategory.length === 0 ? (
-            <p className="bo-muted">No assets registered.</p>
+            <p className="bo-muted">No hay activos registrados.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Category</th>
-                  <th style={{ textAlign: "right" }}>Count</th>
-                  <th style={{ textAlign: "right" }}>Net book value</th>
+                  <th>Categoría</th>
+                  <th style={{ textAlign: "right" }}>Cantidad</th>
+                  <th style={{ textAlign: "right" }}>Valor neto contable</th>
                 </tr>
               </thead>
               <tbody>
@@ -200,19 +172,19 @@ export function AssetsDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Top assets</h3>
+            <h3>Activos de mayor valor</h3>
             <span className="bo-chip">{topAssets.length}</span>
           </div>
           {topAssets.length === 0 ? (
-            <p className="bo-muted">No assets to display.</p>
+            <p className="bo-muted">No hay activos que mostrar.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Asset</th>
-                  <th>Category</th>
-                  <th style={{ textAlign: "right" }}>Acquisition</th>
-                  <th style={{ textAlign: "right" }}>NBV</th>
+                  <th>Activo</th>
+                  <th>Categoría</th>
+                  <th style={{ textAlign: "right" }}>Adquisición</th>
+                  <th style={{ textAlign: "right" }}>Valor neto</th>
                 </tr>
               </thead>
               <tbody>
@@ -241,20 +213,20 @@ export function AssetsDashboard() {
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Capex projects</h3>
+            <h3>Proyectos de inversión</h3>
             <span className="bo-chip">{capexProjects.length}</span>
           </div>
           {capexProjects.length === 0 ? (
-            <p className="bo-muted">No capex projects registered.</p>
+            <p className="bo-muted">No hay proyectos de inversión registrados.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Project</th>
-                  <th>Status</th>
-                  <th style={{ textAlign: "right" }}>Budget</th>
-                  <th style={{ textAlign: "right" }}>Spent</th>
-                  <th>Progress</th>
+                  <th>Proyecto</th>
+                  <th>Estado</th>
+                  <th style={{ textAlign: "right" }}>Presupuesto</th>
+                  <th style={{ textAlign: "right" }}>Gastado</th>
+                  <th>Avance</th>
                 </tr>
               </thead>
               <tbody>
@@ -272,7 +244,7 @@ export function AssetsDashboard() {
                       {project.progressPct !== undefined ? (
                         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                           <div
-                            aria-label={`progress ${project.progressPct}%`}
+                            aria-label={`Avance ${percent(project.progressPct)}`}
                             style={{
                               flex: 1,
                               height: 6,
@@ -312,11 +284,11 @@ export function AssetsDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Warranty expirations (next 90 days)</h3>
+            <h3>Garantías que vencen (próximos 90 días)</h3>
             <span className="bo-chip">{upcomingWarrantyExpirations.length}</span>
           </div>
           {upcomingWarrantyExpirations.length === 0 ? (
-            <p className="bo-muted">No warranties expiring in the next 90 days.</p>
+            <p className="bo-muted">Ninguna garantía vence en los próximos 90 días.</p>
           ) : (
             <ul className="bo-list">
               {upcomingWarrantyExpirations.map((row) => (
@@ -328,7 +300,7 @@ export function AssetsDashboard() {
                     {warrantyChip(row.warrantyEndsAt)}
                     <strong>{row.assetName}</strong>
                   </div>
-                  <small className="bo-muted">expires {formatDate(row.warrantyEndsAt)}</small>
+                  <small className="bo-muted">vence el {formatDate(row.warrantyEndsAt)}</small>
                 </li>
               ))}
             </ul>

@@ -4,6 +4,9 @@ import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { DataPreview } from "../../components/forms/FormComponents";
 import { useToast } from "../../components/Toast";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS } from "../../content/actions";
+import { dateTime } from "../../lib/format";
 
 // ---- Sprint 50 — AI Human Review Queue (HITL) ----
 // Triage screen for high-risk / low-confidence AI actions awaiting a human
@@ -67,15 +70,7 @@ function fmtAge(minutes: number): string {
 }
 
 function fmtDateTime(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", {
-    day: "2-digit",
-    month: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(d);
+  return dateTime(value);
 }
 
 function statusPill(status: ReviewItem["status"]) {
@@ -176,19 +171,12 @@ export function AiHumanReviewQueueScreen() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">IA · Revisión humana</div>
-          <h1 className="bo-page-title">Cola de revisión humana</h1>
-          <p className="bo-page-subtitle">
-            Las acciones de IA que una persona debe aprobar antes de ejecutarse: acciones de alto
-            riesgo o baja confianza que esperan tu decisión. Ordenadas por antigüedad (plazo). Se actualiza cada 20 s.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={refreshAll}>↻ Actualizar</button>
-        </div>
-      </div>
+      <CocoaPageHeader
+        eyebrow="Hoy"
+        title="Pendientes de la IA"
+        subtitle="Lo que la inteligencia artificial propone y una persona debe aprobar o rechazar antes de aplicarse: acciones de riesgo o de baja confianza, ordenadas por antigüedad. Se actualiza cada 20 s."
+        actions={<button type="button" className="ghost" onClick={refreshAll}>↻ {ACTIONS.refresh}</button>}
+      />
 
       {error ? (
         <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>

@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
 import {
   createGuest,
   fetchGuest,
@@ -8,6 +10,7 @@ import {
   type GuestStay
 } from "../../services/guestsApi";
 import { LoadingBlock, ErrorState } from "../../components/States";
+import { money } from "../../lib/format";
 
 const TITLE_OPTIONS = ["", "Sr.", "Sra.", "Srta.", "Dr.", "Dra.", "Mr.", "Mrs.", "Ms.", "Mx."];
 const SEX_OPTIONS = [
@@ -157,8 +160,7 @@ export function GuestProfileScreen() {
       if (isNew) {
         const created = await createGuest(input);
         setStatus(`Huésped ${created.fullName} creado.`);
-        window.history.pushState(null, "", `/backoffice/guests/${created.id}`);
-        window.dispatchEvent(new PopStateEvent("popstate"));
+        openTabPath(urlForScreen("GuestDetail", { id: created.id }) ?? "/recepcion/huespedes");
       } else {
         const updated = await updateGuest(guestId, input);
         setStatus(`Cambios guardados (${updated.fullName}).`);
@@ -182,13 +184,13 @@ export function GuestProfileScreen() {
           <p className="bo-muted">CRM · Perfil de huésped</p>
           <h2>{isNew ? "Nuevo huésped" : (detail?.guest.fullName || form.firstName || "Huésped")}</h2>
         </div>
-        <button type="button" onClick={() => { window.history.pushState(null, "", "/backoffice/guests"); window.dispatchEvent(new PopStateEvent("popstate")); }}>← Volver al listado</button>
+        <button type="button" onClick={() => openTabPath(urlForScreen("GuestsList") ?? "/recepcion/huespedes")}>← Volver al listado</button>
       </div>
 
       {!isNew && detail ? (
         <div className="rev-kpi-grid" style={{ marginBottom: "var(--space-4)" }}>
           <div className="rev-kpi"><span className="rev-kpi-label">Estancias</span><span className="rev-kpi-value">{detail.stats.stays}</span></div>
-          <div className="rev-kpi"><span className="rev-kpi-label">Valor de vida (LTV)</span><span className="rev-kpi-value">{lifetime.toLocaleString("es-ES", { useGrouping: true })} €</span></div>
+          <div className="rev-kpi"><span className="rev-kpi-label">Valor de vida (LTV)</span><span className="rev-kpi-value">{money(lifetime)}</span></div>
           <div className="rev-kpi"><span className="rev-kpi-label">VIP</span><span className="rev-kpi-value">{detail.guest.vipCode ?? "—"}</span></div>
           <div className="rev-kpi"><span className="rev-kpi-label">Fidelización</span><span className="rev-kpi-value">{detail.guest.loyaltyTier ?? "—"}</span></div>
         </div>
@@ -224,7 +226,7 @@ export function GuestProfileScreen() {
       {/* Contacto */}
       <div className="bo-card-head" style={{ marginTop: 8 }}><div><p className="bo-muted">Contacto</p><h3 style={{ margin: 0 }}>Teléfonos, email, empresa</h3></div></div>
       <div className="bo-grid three">
-        <Field label="Email" k="email" form={form} set={set} type="email" />
+        <Field label="Correo electrónico" k="email" form={form} set={set} type="email" />
         <Field label="Teléfono" k="phone" form={form} set={set} />
         <Field label="Móvil" k="mobilePhone" form={form} set={set} />
         <Field label="Empresa" k="company" form={form} set={set} />
@@ -279,12 +281,12 @@ export function GuestProfileScreen() {
                 <thead><tr><th>Reserva</th><th>Estado</th><th>Entrada</th><th>Salida</th><th>Importe</th><th>Rol</th></tr></thead>
                 <tbody>
                   {detail.stayHistory.map((s: GuestStay) => (
-                    <tr key={s.id} style={{ cursor: "pointer" }} onClick={() => { window.history.pushState(null, "", `/backoffice/reservations/${s.id}`); window.dispatchEvent(new PopStateEvent("popstate")); }}>
+                    <tr key={s.id} style={{ cursor: "pointer" }} onClick={() => openTabPath(urlForScreen("ReservationDetailWorkspace", { id: s.id }) ?? "/recepcion/reservas")}>
                       <td><strong>{s.code}</strong></td>
                       <td><span className="bo-chip">{s.status}</span></td>
                       <td>{s.arrivalDate ?? "—"}</td>
                       <td>{s.departureDate ?? "—"}</td>
-                      <td>{s.totalAmount.toLocaleString("es-ES", { useGrouping: true })} {s.currency}</td>
+                      <td>{money(s.totalAmount, s.currency)}</td>
                       <td>{s.isPrimary ? "Titular" : "Acompañante"}</td>
                     </tr>
                   ))}

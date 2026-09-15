@@ -6,11 +6,9 @@
 // pero esta UI expone el "perfil por defecto" que el motor aplicará al crear
 // días sin override manual.
 //
-// TODO(backend): no existe todavía endpoint REST
-// `/properties/:propertyId/rate-plans` ni `PATCH /rate-plans/:id`. La UI
-// detecta el 404 y cae a un set de demo data (BAR + 3 variantes típicas)
-// para que el cliente pueda ver el flow y aprobar el diseño antes de
-// implementar el backend.
+// Backend: `GET/POST /properties/:propertyId/rate-plans` (ratePlansApi). If an
+// older API still answers 404, the screen shows an honest error state — never
+// sample data (Tanda 5: no demo data in front of the hotelier).
 
 import { useEffect, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
@@ -21,17 +19,20 @@ import {
 } from "../../services/ratePlansApi";
 import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
 import { useToast } from "../../components/Toast";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { ACTIONS, newLabel } from "../../content/actions";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
 const TYPE_LABEL: Record<string, string> = {
-  BAR: "BAR · Best Available Rate (base)",
+  BAR: "BAR · Tarifa pública (base)",
   non_refundable: "No reembolsable",
   flexible: "Flexible",
-  corporate: "Corporate",
+  corporate: "Empresas",
   package: "Paquete (PKG)",
   promo: "Promocional",
-  weekend: "Weekend"
+  weekend: "Fin de semana"
 };
 
 const TYPE_BADGE_COLOR: Record<string, "ok" | "info" | "warn"> = {
@@ -44,72 +45,12 @@ const TYPE_BADGE_COLOR: Record<string, "ok" | "info" | "warn"> = {
 };
 
 const MEAL_PLAN_LABEL: Record<string, string> = {
-  RO: "Sólo alojamiento (RO)",
-  BB: "Bed & Breakfast (BB)",
+  RO: "Solo alojamiento (RO)",
+  BB: "Alojamiento y desayuno (BB)",
   HB: "Media pensión (HB)",
   FB: "Pensión completa (FB)",
   AI: "Todo incluido (AI)"
 };
-
-// Demo seed que la UI muestra cuando el endpoint aún no existe.
-const DEMO_RATE_PLANS: RatePlan[] = [
-  {
-    id: "rp_demo_bar",
-    propertyId: PROPERTY_ID,
-    code: "BAR",
-    name: "BAR — Best Available Rate",
-    ratePlanType: "BAR",
-    parentRatePlanId: null,
-    derivationJson: {},
-    cancellationPolicyId: null,
-    mealPlan: "BB",
-    active: true,
-    createdAt: new Date().toISOString(),
-    restrictions: { mlos: 1, maxLos: 30, cta: false, ctd: false }
-  },
-  {
-    id: "rp_demo_nref",
-    propertyId: PROPERTY_ID,
-    code: "NREF",
-    name: "Non-refundable — 10% off BAR",
-    ratePlanType: "non_refundable",
-    parentRatePlanId: "rp_demo_bar",
-    derivationJson: { type: "percent", value: -10 },
-    cancellationPolicyId: null,
-    mealPlan: "BB",
-    active: true,
-    createdAt: new Date().toISOString(),
-    restrictions: { mlos: 2, maxLos: null, cta: false, ctd: false }
-  },
-  {
-    id: "rp_demo_flex",
-    propertyId: PROPERTY_ID,
-    code: "FLEX",
-    name: "Flexible — +5% BAR · cancelación 24h",
-    ratePlanType: "flexible",
-    parentRatePlanId: "rp_demo_bar",
-    derivationJson: { type: "percent", value: 5 },
-    cancellationPolicyId: null,
-    mealPlan: "BB",
-    active: true,
-    createdAt: new Date().toISOString(),
-    restrictions: { mlos: 1, maxLos: null, cta: false, ctd: false }
-  },
-  {
-    id: "rp_demo_corp",
-    propertyId: PROPERTY_ID,
-    code: "CORP",
-    name: "Corporate — -15% BAR · LOS≥2",
-    ratePlanType: "corporate",
-    parentRatePlanId: "rp_demo_bar",
-    derivationJson: { type: "percent", value: -15 },
-    cancellationPolicyId: null,
-    mealPlan: "BB",
-    active: true,
-    createdAt: new Date().toISOString(),
-    restrictions: { mlos: 2, maxLos: null, cta: true, ctd: false }
-  }
-];
 
 function fmtDerivation(plan: RatePlan): string {
   if (!plan.parentRatePlanId) return "Base";
@@ -120,7 +61,7 @@ function fmtDerivation(plan: RatePlan): string {
   }
   if (d?.type === "absolute" && typeof d.value === "number") {
     const sign = d.value > 0 ? "+" : "";
-    return `${sign}${d.value} € sobre BAR`;
+    return `${sign}${money(d.value)} sobre BAR`;
   }
   return "Derivado";
 }
@@ -162,7 +103,6 @@ export function RatePlansScreen() {
 
   const [plans, setPlans] = useState<RatePlan[]>([]);
   const [loading, setLoading] = useState(true);
-  const [usingDemo, setUsingDemo] = useState(false);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
@@ -176,20 +116,15 @@ export function RatePlansScreen() {
     try {
       const items = await fetchRatePlans();
       setPlans(items);
-      setUsingDemo(false);
     } catch (e) {
-      // FIX 7: solo entramos en modo demo cuando el endpoint NO está implementado
-      // (404). Si es un 500/network/timeout no caemos a demo: dejamos el listado
-      // anterior y avisamos del error real para que el operador no confunda
-      // datos demo con datos reales temporalmente caídos.
+      // A 404 means this API does not serve rate plans yet; any other failure
+      // keeps the previous list and shows the real error. Never sample data.
       const message = e instanceof Error ? e.message : String(e);
       if (e instanceof RatePlansNotImplementedError) {
-        setPlans(DEMO_RATE_PLANS);
-        setUsingDemo(true);
-        setErrorBanner(`Endpoint /properties/:propertyId/rate-plans aún no implementado (${message}). Mostrando datos DEMO — los cambios no se persisten.`);
+        setPlans([]);
+        setErrorBanner("Este servidor aún no ofrece los planes de tarifas. Actualiza la aplicación o contacta con soporte.");
       } else {
-        setUsingDemo(false);
-        setErrorBanner(`No se pudieron cargar los planes tarifarios: ${message}. Reintenta o contacta a soporte.`);
+        setErrorBanner(`No se pudieron cargar los planes de tarifas: ${message}. Reintenta o contacta con soporte.`);
       }
     } finally {
       setLoading(false);
@@ -279,24 +214,10 @@ export function RatePlansScreen() {
 
     setBusy(true); setMsg(null);
     try {
-      if (usingDemo) {
-        // En modo demo, agregamos localmente sin llamar al backend (404).
-        const fakeId = `rp_demo_${Date.now()}`;
-        const created: RatePlan = {
-          ...payload,
-          id: fakeId,
-          propertyId: PROPERTY_ID,
-          createdAt: new Date().toISOString()
-        };
-        setPlans((prev) => [...prev, created]);
-        setMsg(`Plan «${draft.name}» creado en demo. Cuando se implemente el endpoint, esta UI lo persistirá real.`);
-        showToast(`Plan «${draft.name}» creado (demo)`, { variant: "info" });
-      } else {
-        await createRatePlan(payload);
-        setMsg(`Plan «${draft.name}» creado.`);
-        showToast(`Plan «${draft.name}» creado`, { variant: "success" });
-        await load();
-      }
+      await createRatePlan(payload);
+      setMsg(`Plan «${draft.name}» creado.`);
+      showToast(`Plan «${draft.name}» creado`, { variant: "success" });
+      await load();
       setShowForm(false);
       setDraft(emptyDraft());
     } catch (e) {
@@ -317,22 +238,18 @@ export function RatePlansScreen() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Comercial · Tarifas</p>
-          <h2 style={{ color: "var(--ink)" }}>Planes tarifarios (Rate Plans)</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            BAR como tarifa pública base, y variantes derivadas (% o absoluto) con sus propias
-            restricciones (MLOS, max LOS, CTA, CTD). El motor calcula el precio diario aplicando
-            la derivación sobre la BAR del día y respetando las restricciones por canal y tipo de habitación.
-          </p>
-        </div>
-        <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-          {busy ? <Spinner size="sm" /> : null}
-          <button type="button" onClick={load} disabled={loading || busy}>↻ Actualizar</button>
-          <button type="button" className="primary" onClick={openCreate} disabled={busy}>+ Nuevo plan</button>
-        </div>
-      </header>
+      <CocoaPageHeader
+        eyebrow="Revenue"
+        title="Planes de tarifas"
+        subtitle="La tarifa pública (BAR) como base y sus variantes derivadas (porcentaje o importe) con sus restricciones de estancia mínima y máxima y de llegada o salida. El precio de cada día se calcula sobre la BAR del día."
+        actions={
+          <>
+            {busy ? <Spinner size="sm" /> : null}
+            <button type="button" onClick={load} disabled={loading || busy}>↻ {ACTIONS.refresh}</button>
+            <button type="button" className="primary" onClick={openCreate} disabled={busy}>+ {newLabel("m", "plan")}</button>
+          </>
+        }
+      />
 
       {errorBanner ? (
         <p role="alert" className="bo-status warn" style={{ textTransform: "none" }}>
@@ -373,7 +290,7 @@ export function RatePlansScreen() {
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Code</th>
+                <th>Código</th>
                 <th>Nombre</th>
                 <th>Tipo</th>
                 <th>Plan padre</th>

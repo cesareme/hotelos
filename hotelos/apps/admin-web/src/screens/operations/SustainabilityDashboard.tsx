@@ -1,7 +1,14 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { dateTime, number, percent, plural } from "../../lib/format";
+import { ErrorState } from "../../components/States";
+import { ACTIONS, errorStateFor } from "../../content/actions";
+import { pageHead, treeHeaderFor } from "../tabs/tab-helpers";
 
 const PROPERTY_ID = getActivePropertyId();
+// Menu labels of the tree (Cumplimiento › Sostenibilidad), never retyped here.
+const HEADER = treeHeaderFor("SustainabilityDashboard", { eyebrow: "Cumplimiento", title: "Sostenibilidad" });
+const LOAD_ERROR = errorStateFor("los datos de sostenibilidad");
 
 type SustainabilityDashboardData = {
   kpis: {
@@ -61,44 +68,56 @@ const IN_PROGRESS_STATUSES = new Set([
   "running"
 ]);
 
+const ACTION_STATUS_LABELS: Record<string, string> = {
+  completed: "completada",
+  done: "completada",
+  cancelled: "cancelada",
+  canceled: "cancelada",
+  archived: "archivada",
+  in_progress: "en curso",
+  active: "en curso",
+  ongoing: "en curso",
+  running: "en curso",
+  planned: "planificada",
+  draft: "borrador",
+  paused: "en pausa"
+};
+
 function statusPill(status: string) {
-  const s = status.toLowerCase();
+  const s = status.toLowerCase().replace(/[\s-]+/g, "_");
+  const label = ACTION_STATUS_LABELS[s] ?? status.replace(/_/g, " ");
   if (CLOSED_STATUSES.has(s)) {
-    return <span className="cm-pill cm-pill-ok">{status}</span>;
+    return <span className="cm-pill cm-pill-ok">{label}</span>;
   }
   if (IN_PROGRESS_STATUSES.has(s)) {
-    return <span className="cm-pill cm-pill-warn">{status}</span>;
+    return <span className="cm-pill cm-pill-warn">{label}</span>;
   }
-  return <span className="cm-pill cm-pill-warn">{status}</span>;
+  return <span className="cm-pill cm-pill-warn">{label}</span>;
 }
 
 function trendPill(trendPct: number) {
   if (trendPct === 0) {
-    return <span className="cm-pill cm-pill-ok">flat</span>;
+    return <span className="cm-pill cm-pill-ok">estable</span>;
   }
   // For ESG metrics, lower is generally better (less CO2/water/waste). We
   // surface the sign honestly and let the operator interpret.
   if (trendPct < 0) {
-    return <span className="cm-pill cm-pill-ok">{trendPct.toFixed(1)}%</span>;
+    return <span className="cm-pill cm-pill-ok">{percent(trendPct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>;
   }
-  return <span className="cm-pill cm-pill-warn">+{trendPct.toFixed(1)}%</span>;
+  return <span className="cm-pill cm-pill-warn">{percent(trendPct, { signDisplay: "always", minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>;
 }
 
 function formatDate(iso?: string): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
+  return dateTime(iso);
 }
 
 function formatNumber(n: number): string {
-  if (!Number.isFinite(n)) return "—";
-  return n.toLocaleString(undefined, { maximumFractionDigits: 2 });
+  return number(n);
 }
 
-export function SustainabilityDashboard() {
+export function SustainabilityDashboard({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: pageHead paints only subtitle and actions.
+  const Head = pageHead(embedded);
   const state = useApiData<SustainabilityDashboardData>(
     `/dashboards/sustainability?propertyId=${PROPERTY_ID}`,
     { pollIntervalMs: 300000 }
@@ -136,86 +155,73 @@ export function SustainabilityDashboard() {
 
   return (
     <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Operations · Sustainability</div>
-          <h1 className="bo-page-title">Sostenibilidad</h1>
-          <p className="bo-page-subtitle">
-            Panel ESG de solo lectura: emisiones de CO2, consumo de agua,
-            generación de residuos por habitación-noche y acciones de
-            sostenibilidad activas. Datos refrescados cada 5 minutos para
-            responsables de sostenibilidad y operaciones.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
+      <Head
+        eyebrow={HEADER.eyebrow}
+        title={HEADER.title}
+        subtitle="Panel de sostenibilidad en solo lectura: emisiones de CO2, consumo de agua y residuos por habitación-noche, y acciones de sostenibilidad activas. Se actualiza cada 5 minutos."
+        actions={
           <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ Refresh
+            ↻ {ACTIONS.refresh}
           </button>
-        </div>
-      </div>
+        }
+      />
 
-      {state.error ? (
-        <section className="bo-card">
-          <p style={{ color: "var(--danger-ink)" }}>
-            Couldn't load this view right now. Refresh to retry.
-          </p>
-        </section>
-      ) : null}
+      {state.error ? <ErrorState title={LOAD_ERROR.title} message={LOAD_ERROR.message} onRetry={() => state.refresh()} /> : null}
 
       <section className="rev-kpi-grid">
         <article className={`rev-kpi ${co2PerRnStatus}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">CO2 / room night</span>
+            <span className="rev-kpi-label">CO2 por noche ocupada</span>
           </div>
           <div className="rev-kpi-value">{formatNumber(kpis.co2KgPerRoomNight)} kg</div>
-          <div className="rev-kpi-delta">carbon intensity per occupied night</div>
+          <div className="rev-kpi-delta">intensidad de carbono por noche ocupada</div>
         </article>
         <article className={`rev-kpi ${co2TotalStatus}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">CO2 total (30d)</span>
+            <span className="rev-kpi-label">CO2 total (30 días)</span>
           </div>
           <div className="rev-kpi-value">{formatNumber(kpis.co2Total30dKg)} kg</div>
-          <div className="rev-kpi-delta">sum of CO2 metrics in window</div>
+          <div className="rev-kpi-delta">suma de las métricas de CO2 en la ventana</div>
         </article>
         <article className={`rev-kpi ${waterStatus}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Water / room night</span>
+            <span className="rev-kpi-label">Agua / noche ocupada</span>
           </div>
           <div className="rev-kpi-value">{formatNumber(kpis.waterLitersPerRoomNight)} L</div>
-          <div className="rev-kpi-delta">litres per occupied night</div>
+          <div className="rev-kpi-delta">litros por noche ocupada</div>
         </article>
         <article className={`rev-kpi ${wasteStatus}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Waste / room night</span>
+            <span className="rev-kpi-label">Residuos / noche ocupada</span>
           </div>
           <div className="rev-kpi-value">{formatNumber(kpis.wastePerRoomNightKg)} kg</div>
-          <div className="rev-kpi-delta">kg per occupied night</div>
+          <div className="rev-kpi-delta">kilos por noche ocupada</div>
         </article>
         <article className={`rev-kpi ${actionsStatus}`}>
           <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Active actions</span>
+            <span className="rev-kpi-label">Acciones activas</span>
           </div>
           <div className="rev-kpi-value">{kpis.activeActions}</div>
-          <div className="rev-kpi-delta">not closed / cancelled</div>
+          <div className="rev-kpi-delta">ni cerradas ni canceladas</div>
         </article>
       </section>
 
       <section className="bo-grid two">
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Metrics by category</h3>
-            <span className="bo-chip">{metricsByCategory.length} categories</span>
+            <h3>Métricas por categoría</h3>
+            <span className="bo-chip">{plural(metricsByCategory.length, "categoría", "categorías", { withCount: true })}</span>
           </div>
           {metricsByCategory.length === 0 ? (
-            <p className="bo-muted">No metrics recorded in the selected window.</p>
+            <p className="bo-muted">Sin métricas registradas en el periodo seleccionado.</p>
           ) : (
             <table className="cm-table">
               <thead>
                 <tr>
-                  <th>Category</th>
-                  <th style={{ textAlign: "right" }}>Latest</th>
-                  <th>Unit</th>
-                  <th style={{ textAlign: "right" }}>Trend</th>
+                  <th>Categoría</th>
+                  <th style={{ textAlign: "right" }}>Último valor</th>
+                  <th>Unidad</th>
+                  <th style={{ textAlign: "right" }}>Tendencia</th>
                 </tr>
               </thead>
               <tbody>
@@ -234,11 +240,11 @@ export function SustainabilityDashboard() {
 
         <article className="bo-card">
           <div className="bo-card-head">
-            <h3>Active actions</h3>
+            <h3>Acciones activas</h3>
             <span className="bo-chip">{activeActions.length}</span>
           </div>
           {activeActions.length === 0 ? (
-            <p className="bo-muted">No active sustainability actions.</p>
+            <p className="bo-muted">Sin acciones de sostenibilidad activas.</p>
           ) : (
             <ul className="bo-list">
               {activeActions.map((action) => (
@@ -252,7 +258,7 @@ export function SustainabilityDashboard() {
                   </div>
                   {typeof action.progressPct === "number" ? (
                     <div
-                      aria-label={`Progress ${action.progressPct}%`}
+                      aria-label={`Progreso ${action.progressPct}%`}
                       style={{
                         width: "100%",
                         height: 8,
@@ -271,7 +277,7 @@ export function SustainabilityDashboard() {
                     </div>
                   ) : (
                     <div
-                      aria-label="Progress unavailable"
+                      aria-label="Progreso no disponible"
                       style={{
                         width: "100%",
                         height: 8,
@@ -283,10 +289,10 @@ export function SustainabilityDashboard() {
                   )}
                   <small className="bo-muted">
                     {typeof action.progressPct === "number"
-                      ? `${action.progressPct}% complete`
-                      : "progress not tracked"}
+                      ? `${action.progressPct}% completado`
+                      : "sin seguimiento del progreso"}
                     {action.targetDate ? (
-                      <> · target {formatDate(action.targetDate)}</>
+                      <> · objetivo {formatDate(action.targetDate)}</>
                     ) : null}
                   </small>
                 </li>
@@ -298,19 +304,19 @@ export function SustainabilityDashboard() {
 
       <section className="bo-card">
         <div className="bo-card-head">
-          <h3>Recent metrics</h3>
+          <h3>Métricas recientes</h3>
           <span className="bo-chip">{recentMetrics.length}</span>
         </div>
         {recentMetrics.length === 0 ? (
-          <p className="bo-muted">No recent metrics recorded.</p>
+          <p className="bo-muted">Sin métricas recientes.</p>
         ) : (
           <table className="cm-table">
             <thead>
               <tr>
-                <th>Name</th>
-                <th style={{ textAlign: "right" }}>Value</th>
-                <th>Unit</th>
-                <th>Recorded</th>
+                <th>Nombre</th>
+                <th style={{ textAlign: "right" }}>Valor</th>
+                <th>Unidad</th>
+                <th>Registrado</th>
               </tr>
             </thead>
             <tbody>

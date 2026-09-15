@@ -68,7 +68,7 @@ export function DeveloperAppsScreen() {
       await refresh();
       showToast(`App "${appName}" creada`, { variant: "success" });
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Error creando app.";
+      const message = e instanceof Error ? e.message : "No se ha podido crear la aplicación.";
       setError(message);
       showToast(message, { variant: "error" });
     } finally {
@@ -85,7 +85,7 @@ export function DeveloperAppsScreen() {
       const r = await rotateAppSecret(appId);
       if (app) setCreatedSecret({ clientId: app.clientId, clientSecret: r.clientSecret });
       await refresh();
-      showToast(app ? `Secret de "${app.name}" rotado` : "Secret rotado", { variant: "success" });
+      showToast(app ? `Secreto de «${app.name}» renovado` : "Secreto renovado", { variant: "success" });
     } catch (e) {
       const message = e instanceof Error ? e.message : "Error.";
       setError(message);
@@ -140,8 +140,8 @@ export function DeveloperAppsScreen() {
           <select value={appType} onChange={(e) => setAppType(e.target.value)}>
             <option value="integration">Integración server-to-server</option>
             <option value="spa">Single-page app (con PKCE)</option>
-            <option value="mobile">Mobile</option>
-            <option value="partner_app">Marketplace partner</option>
+            <option value="mobile">Móvil</option>
+            <option value="partner_app">Socio del marketplace</option>
           </select>
           <label className="bo-muted" style={{ textTransform: "none" }}>Scopes ({chosenScopes.size}/{scopes.length})</label>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 4 }}>
@@ -156,7 +156,7 @@ export function DeveloperAppsScreen() {
             <button type="submit" className="primary" disabled={creating || !name.trim() || chosenScopes.size === 0}>
               {creating ? <Spinner size="sm" /> : "+ Crear app"}
             </button>
-            <button type="button" onClick={() => setChosenScopes(new Set(scopes))} disabled={creating}>Todos los scopes</button>
+            <button type="button" onClick={() => setChosenScopes(new Set(scopes))} disabled={creating}>Todos los permisos</button>
           </div>
         </form>
       </article>
@@ -172,7 +172,7 @@ export function DeveloperAppsScreen() {
         ) : (
           <div className="rev-report-wrap">
             <table className="cm-table">
-              <thead><tr><th>Nombre</th><th>Tipo</th><th>Estado</th><th>Client ID</th><th>Scopes</th><th></th></tr></thead>
+              <thead><tr><th>Nombre</th><th>Tipo</th><th>Estado</th><th>ID de cliente</th><th>Permisos</th><th></th></tr></thead>
               <tbody>
                 {apps.map((a) => (
                   <tr key={a.id}>
@@ -181,7 +181,7 @@ export function DeveloperAppsScreen() {
                     <td><span className={`bo-status ${a.status === "active" ? "ok" : "info"}`} style={{ fontSize: 10 }}>{a.status}</span></td>
                     <td className="mono" style={{ fontSize: 11 }}>{a.clientId}</td>
                     <td style={{ fontSize: 11 }}>{a.scopes.length}</td>
-                    <td><button type="button" onClick={() => setPendingRotateId(a.id)}>Rotar secret</button></td>
+                    <td><button type="button" onClick={() => setPendingRotateId(a.id)}>Renovar secreto</button></td>
                   </tr>
                 ))}
               </tbody>

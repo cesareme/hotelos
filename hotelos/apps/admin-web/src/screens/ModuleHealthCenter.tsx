@@ -6,6 +6,7 @@ import { useToast } from "../components/Toast";
 import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
+import { dateTime } from "../lib/format";
 
 // =====================================================================================
 // Módulos · Salud de módulos — wired to GET /backoffice/properties/:propertyId/modules
@@ -70,10 +71,7 @@ function statusPill(status: ModuleStatus) {
 }
 
 function fmtDateTime(value?: string): string {
-  if (!value) return "—";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "—";
-  return new Intl.DateTimeFormat("es-ES", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(d);
+  return dateTime(value);
 }
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -84,7 +82,8 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
-export function ModuleHealthCenter() {
+export function ModuleHealthCenter({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
   const propertyId = useMemo(() => getActivePropertyId(), []);
   const { showToast } = useToast();
   const state = useApiData<BackOfficeModule[]>(`/backoffice/properties/${propertyId}/modules`);
@@ -147,8 +146,8 @@ export function ModuleHealthCenter() {
     <>
       <div className="bo-page-head" style={{ marginBottom: "var(--space-6)" }}>
         <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">Módulos e integraciones</div>
-          <h1 className="bo-page-title">Salud de módulos</h1>
+          {embedded ? null : <div className="bo-page-eyebrow">Módulos e integraciones</div>}
+          {embedded ? null : <h1 className="bo-page-title">Salud de módulos</h1>}
           <p className="bo-page-subtitle">
             Estado de configuración y comprobaciones de cada módulo activo. Activa o desactiva módulos desde el marketplace.
           </p>

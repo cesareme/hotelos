@@ -45,9 +45,7 @@ export function markRoleSeen(role: string) {
 
 export const GUIDE_EVENTS = {
   openHelp: "hotelos-open-help",
-  startTour: "hotelos-start-tour",
-  /** Fired by the sidebar role switcher (detail = role id). */
-  roleChanged: "hotelos-role-changed"
+  startTour: "hotelos-start-tour"
 } as const;
 
 /** Open the Help center slide-over (the "?" panel). */

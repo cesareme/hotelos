@@ -1,8 +1,14 @@
 // Content for the in-app guidance system ("guía intrínseca").
-// Kept separate from components so the plain-Spanish copy is easy to evolve.
-// Apple principle: the interface is the manual — every step is explained where
-// the action happens, in the user's own language, with no jargon.
-import { PERSONA_ROLES, type Role } from "../../navigation/roles";
+//
+// Tanda 5 (chrome): the tours are generated from the navigation tree
+// (`navigation/nav-tree.ts`, built from pilots/tanda5-nav-tree.csv) so their
+// screen keys, labels, order and roles can never drift from the menu: one
+// welcome tour anchored to the shell chrome plus one tour per category (the
+// nine domain categories). Every step narrates a `keep` item in plain Spanish;
+// a step is skipped for roles that cannot see its item. Only real keyboard
+// shortcuts are mentioned (content/help-articles/keyboard-shortcuts.ts).
+import { NAV_TREE, type NavCategory, type NavItem } from "../../navigation/nav-tree";
+import { canSee, type RoleToken } from "../../navigation/role-tokens";
 
 export type TourStep = {
   /** CSS selector of a real element to spotlight (dims the rest). */
@@ -11,6 +17,10 @@ export type TourStep = {
   navigateTo?: string;
   /** Render as a centered card with a dimmed backdrop (for intros/summaries). */
   center?: boolean;
+  /** Role tokens that can see the step; empty = everyone. */
+  roles?: readonly string[];
+  /** Module codes (any) the step needs; empty = core. */
+  modulesAny?: readonly string[];
   title: string;
   body: string;
 };
@@ -21,593 +31,245 @@ export type Tour = {
   summary: string;
   /** Short category label shown as a chip. */
   badge?: string;
+  /** Role tokens the tour is meant for (union of its items); empty = everyone. */
+  roles: readonly string[];
   steps: TourStep[];
 };
 
 export const WELCOME_TOUR_ID = "primeros-pasos";
 
 /**
- * The catalog of guided tours — one per app area. The first tour ("primeros
- * pasos") is the 60-second welcome, anchored to chrome present on every screen.
- * Every other tour drives the user through the real screens of its area and
- * narrates each one, step by step.
+ * The 60-second welcome, anchored to chrome present on every screen of the
+ * Cocoa shell (BackOfficeLayout: data-tour="property|search|sidebar|
+ * notifications|help"). GuidedTour degrades a missing anchor to a pinned
+ * callout, so a hidden control never breaks the tour.
  */
-export const tours: Tour[] = [
-  {
-    id: WELCOME_TOUR_ID,
-    title: "Primeros pasos",
-    summary: "Un minuto para conocer lo esencial de la app.",
-    badge: "Bienvenida",
-    steps: [
-      {
-        center: true,
-        title: "Te damos la bienvenida",
-        body: "Este recorrido de un minuto te muestra lo esencial para empezar. Puedes salir cuando quieras y repetirlo desde el botón «?»."
-      },
-      {
-        selector: "[data-tour='property']",
-        title: "Tu hotel activo",
-        body: "Aquí ves en qué hotel estás trabajando y puedes cambiar a otro. Comprueba siempre que es el correcto antes de hacer un check-in o una reserva."
-      },
-      {
-        selector: "[data-tour='search']",
-        title: "Encuentra cualquier cosa",
-        body: "Busca una reserva o un huésped por nombre, número de habitación o localizador. Atajo de teclado: ⌘K (o Ctrl+K)."
-      },
-      {
-        selector: "[data-tour='sidebar']",
-        title: "Tu menú",
-        body: "Toda la app vive aquí, organizada por áreas. Tus tareas del día están en «Ops»; la configuración, en «Back Office»."
-      },
-      {
-        selector: "[data-tour='notifications']",
-        title: "Avisos en tiempo real",
-        body: "Te avisamos de llegadas, tareas pendientes y alertas que necesitan tu atención."
-      },
-      {
-        selector: "[data-tour='help']",
-        title: "Tu guía, siempre a mano",
-        body: "Pulsa el «?» cuando quieras para repetir este recorrido, abrir un recorrido por área o ver los pasos de cada tarea."
-      }
-    ]
-  },
+const WELCOME_TOUR: Tour = {
+  id: WELCOME_TOUR_ID,
+  title: "Primeros pasos",
+  summary: "Un minuto para conocer lo esencial de la aplicación.",
+  badge: "Bienvenida",
+  roles: [],
+  steps: [
+    {
+      center: true,
+      title: "Te damos la bienvenida",
+      body: "Este recorrido de un minuto te muestra lo esencial para empezar. Puedes salir cuando quieras y repetirlo desde el botón «?» de la barra superior."
+    },
+    {
+      selector: "[data-tour='property']",
+      title: "Tu hotel activo",
+      body: "Aquí ves en qué hotel estás trabajando y puedes cambiar a otro. Comprueba siempre que es el correcto antes de hacer un check-in o una reserva."
+    },
+    {
+      selector: "[data-tour='search']",
+      title: "Encuentra cualquier cosa",
+      body: "Escribe aquí (o pulsa ⌘K, Ctrl+K en Windows) para buscar una reserva, un huésped, una factura o una pantalla por su nombre."
+    },
+    {
+      selector: "[data-tour='sidebar']",
+      title: "Tu menú, por áreas",
+      body: "Toda la aplicación vive en el menú lateral, agrupada por áreas: Hoy, Recepción, Operaciones, Comercial, Revenue, Finanzas, Cumplimiento, Informes y Configuración. Solo ves lo que corresponde a tu puesto."
+    },
+    {
+      selector: "[data-tour='notifications']",
+      title: "Avisos",
+      body: "La campana reúne los avisos que necesitan tu atención: envíos rechazados, averías, mensajes de huéspedes y cobros."
+    },
+    {
+      selector: "[data-tour='help']",
+      title: "Tu guía, siempre a mano",
+      body: "Pulsa «?» para repetir este recorrido, abrir el recorrido de tu área, leer la guía de tu puesto o buscar en los artículos de ayuda."
+    }
+  ]
+};
 
-  {
-    id: "recepcion",
-    title: "Recepción (día a día)",
-    summary: "Tu copiloto y el día a día del mostrador.",
-    badge: "Ops",
-    steps: [
-      {
-        center: true,
-        title: "Recepción, paso a paso",
-        body: "El Copiloto de recepción es tu centro de mando: el pulso del día, accesos directos y un asistente de IA. Te enseñamos cada parte."
-      },
-      {
-        navigateTo: "ReceptionCopilotScreen",
-        selector: "[data-tour='cop-pulse']",
-        title: "El pulso de tu día",
-        body: "De un vistazo: llegadas y salidas de hoy, quién está en el hotel, habitaciones sin asignar y saldos por cobrar. Toca una tarjeta para ir a «Mi día»."
-      },
-      {
-        selector: "[data-tour='cop-actions']",
-        title: "Acciones rápidas",
-        body: "Lo más frecuente a un toque: crear una reserva, buscar un huésped (⌘K), reservar con IA, ir a las llegadas o al Live Timeline."
-      },
-      {
-        selector: "[data-tour='cop-input']",
-        title: "Mensaje del huésped",
-        body: "Pega el texto del huésped o elige una de sus conversaciones (WhatsApp, email, chat…) para responder en contexto."
-      },
-      {
-        selector: "[data-tour='cop-intents']",
-        title: "Preguntas frecuentes",
-        body: "Un clic rellena las dudas típicas (parking, check-out, mascotas, cómo llegar…) para que no escribas de cero."
-      },
-      {
-        selector: "[data-tour='cop-options']",
-        title: "Idioma y tono",
-        body: "Elige en qué idioma responde la IA (o que use el del huésped) y con qué tono: cordial, formal, cercano o breve."
-      },
-      {
-        selector: "[data-tour='cop-draft']",
-        title: "Borrador con IA",
-        body: "La IA redacta la respuesta; tú la revisas, la editas y la envías o la copias. La IA nunca envía nada sola."
-      },
-      {
-        navigateTo: "LiveTimelineWorkspace",
-        title: "Live Timeline",
-        body: "El planning de habitaciones por día. Arrastra una reserva para moverla, ajusta fechas y detecta solapes al instante."
-      },
-      {
-        navigateTo: "GuestsList",
-        title: "Huéspedes",
-        body: "Busca fichas de huéspedes, su historial de estancias y sus documentos de identidad."
-      }
-    ]
-  },
+/** Plain-Spanish narration of every menu item, keyed by screen key (CSV keep rows). */
+const ITEM_NARRATION: Record<string, string> = {
+  // Hoy
+  FrontDeskDashboard:
+    "Tu punto de partida. Llegadas y salidas de hoy, huéspedes alojados y la cola de acciones del turno. Según tu puesto aterrizas en la pestaña Recepción, Operaciones, Dirección o Propietario.",
+  AssistantChat:
+    "Pregunta en lenguaje natural sobre tu hotel (ocupación, una reserva, un huésped) y obtén una respuesta con la fuente del dato. Nunca ejecuta cambios sin tu confirmación.",
+  ShiftManagerScreen: "El turno de recepción de un vistazo: productividad del equipo, caja del día y bloqueos que impiden avanzar.",
+  NightAuditScreen:
+    "El cierre del día guiado: comprueba llegadas sin registrar, folios abiertos y salidas pendientes, y cambia la fecha de negocio cuando todo está en verde.",
+  AiOwnerSummaryScreen: "Qué ha hecho la inteligencia artificial hoy, qué ha propuesto, cuánto ha costado y con qué controles trabaja. Sin tecnicismos.",
+  AiHumanReviewQueueScreen: "Las propuestas de la IA que una persona debe aprobar o rechazar antes de aplicarse (correo → reserva, confirmaciones, acciones de riesgo).",
+  // Recepción
+  ReservationWorkspace:
+    "Todas las reservas del hotel. Pestañas Lista, Cronograma (planificación por días) y Tablero de habitaciones (estado y asignación). Cada reserva abre su detalle y su recorrido.",
+  ReservationCreate: "Alta manual de una reserva: fechas, tipo de habitación, tarifa, titular y garantía. En la pestaña «Dictar (IA)» puedes dictarla y revisar el borrador.",
+  GuestsList: "El directorio de huéspedes: datos de contacto, documento de identidad, preferencias y la cronología de sus estancias.",
+  ConciergeInboxDashboard: "Las conversaciones con los huéspedes por todos los canales en una sola bandeja. La IA propone un borrador y tú decides si lo envías.",
+  GroupsEventsDashboard: "Grupos, eventos y bloqueos de habitaciones: calendario, cupos por operador y lista de huéspedes del grupo.",
+  // Operaciones
+  HousekeepingDashboard: "Estado de cada habitación (limpia, sucia, en inspección) y asignación de tareas al equipo. La pestaña Mi turno es la vista móvil de cada camarera.",
+  MaintenanceDashboard: "Partes de avería: abrir, asignar, bloquear la habitación si hace falta y cerrar con evidencia. La pestaña Mis averías es la vista móvil del técnico.",
+  PosDashboard: "Restaurante, bar y otros puntos de venta: tickets, cargos a la habitación, cartas y existencias.",
+  WorkforceDashboard: "La plantilla del día: turnos, presencias y cargas de trabajo por departamento.",
+  SafetyDashboard: "Registro de incidentes de seguridad y su seguimiento hasta la resolución.",
+  ProcurementDashboard: "Pedidos a proveedores, recepciones e inventario de almacén.",
+  AssetsDashboard: "Inventario de activos y equipamiento del hotel: valor, garantías próximas a vencer y proyectos de inversión.",
+  EnergyDashboard: "Consumo de energía y agua por zonas y su evolución, para detectar anomalías.",
+  // Comercial
+  CrmDashboard: "Tus clientes: segmentos, programa de fidelización y campañas para volver a traerlos.",
+  ReputationDashboard: "Reseñas de los portales, encuestas de satisfacción y casos de calidad; responde a cada reseña desde aquí.",
+  UpsellsDashboard: "Mejoras de habitación y extras que aumentan el ingreso por estancia, y el portal del huésped donde los compra.",
+  SalesPipelineDashboard: "Cuentas de empresa y agencias, oportunidades y negociaciones comerciales.",
+  ChannelAggregatorHub: "La conexión con las agencias en línea (Booking, Expedia…): estado, sincronización de tarifas y disponibilidad, y correspondencias de habitaciones y planes.",
+  // Revenue
+  RevenueHomeDashboard: "Ocupación, ADR y RevPAR de un vistazo, con el pickup de las últimas 24 horas y las señales del día.",
+  RateGridEditorScreen: "La parrilla de tarifas por día y tipo de habitación: edita, revisa el impacto y publica en los canales. El historial guarda cada cambio y permite revertirlo.",
+  RatePlans: "Los planes de tarifa: la tarifa pública y sus variantes derivadas (no reembolsable, con desayuno…) con sus restricciones.",
+  RevenueRules: "Reglas de precio y recomendaciones del motor de revenue: revísalas y decide cuáles aplicar.",
+  RevenueHistoryForecastDashboard: "Histórico y previsión de ocupación e ingresos frente al año anterior; informe exportable y explorador por segmentos.",
+  RevenueComparisonDashboard: "Compara un periodo con el anterior, con el mismo periodo del año pasado o con un rango a tu elección.",
+  RevenueMeeting: "Todo lo que necesita la reunión semanal: pace, pickup, precisión de la previsión, competencia, presupuesto y una calculadora de desplazamiento de grupos.",
+  RateShopperSettings: "Las tarifas de tus competidores y las alertas de paridad con tus canales.",
+  DemandCalendarAdmin: "Eventos, festivos y periodos de alta demanda que alimentan la previsión y explican los precios.",
+  CancellationPolicies: "Ventana de cancelación gratuita y penalizaciones; se aplican al cancelar o en el cierre del día.",
+  // Finanzas
+  BillingCenter: "Folios, cargos, cobros y facturas. Desde aquí emites facturas y rectificativas y defines a qué folio va cada cargo.",
+  FinancePositionDashboard: "Tesorería: lo que te deben, lo que debes y la posición de caja, con los tipos de cambio.",
+  BankReconciliationScreen: "Cuadra los movimientos del banco con los apuntes contables; extractos y remesas SEPA.",
+  TrialBalanceScreen: "Balance de sumas y saldos, balance de situación, flujos de efectivo y cierre de ejercicio.",
+  CommissionsScreen: "Comisiones que cobra cada canal de venta y su devengo automático al facturar.",
+  PayrollScreen: "Contratos y periodos de nómina para exportar a la gestoría.",
+  // Cumplimiento
+  ComplianceInbox: "Tu lista de tareas legales: envíos rechazados, plazos a punto de vencer y certificados que caducan, en un solo sitio.",
+  ComplianceCenter: "El estado de todas las obligaciones legales del alojamiento (VeriFactu, partes de viajeros, protección de datos) con un asistente que explica cada una.",
+  FiscalDashboard: "VeriFactu: certificado, series y envío de facturas a la AEAT. La pestaña TicketBAI cubre los territorios forales.",
+  FiscalSubmissionsCenter: "El historial de cada envío a las autoridades (AEAT, haciendas forales, Canarias, Ministerio del Interior) y sus reintentos.",
+  Modelo303Screen: "Los modelos de la AEAT preparados desde tus datos: 303 (IVA), 111, 115, 180 y 390.",
+  PropertyTaxesScreen: "Los impuestos de la propiedad (IVA o IGIC por categoría) y la tasa turística.",
+  GuestRegisterSettings: "El registro de viajeros: configuración, comunicación a SES.Hospedajes, autoridades y plazos de conservación.",
+  GdprRequestsScreen: "Solicitudes de acceso, rectificación o borrado de datos de los huéspedes (RGPD) y su plazo de respuesta.",
+  SustainabilityDashboard: "Indicadores de sostenibilidad del alojamiento y el informe ESRS.",
+  // Informes
+  ReportingCenter: "Genera y exporta informes de reservas, facturación y operaciones; incluye las exportaciones de revenue.",
+  AnalyticsCenterDashboard: "Los indicadores clave del hotel reunidos en un panel, con anomalías detectadas automáticamente.",
+  RoomProfitabilityDashboard: "Qué tipos de habitación y qué canales dejan más margen.",
+  PortfolioDashboard: "Si tienes varios hoteles, aquí los comparas y entras en el detalle de cada uno.",
+  ChannelPerformanceDashboard: "Reparto de ventas por canal, rentabilidad de cada uno y alertas de paridad.",
+  // Configuración
+  SetupCenterScreen: "Todo lo necesario para dejar el hotel listo: comprobaciones de salida en vivo e importación desde documentos con ayuda de la IA.",
+  PropertyProfileSetupForm: "Los datos del hotel: perfil legal, edificios, plantas, zonas, departamentos, categorías y campos personalizados.",
+  RoomSetupForm: "Tipos de habitación, inventario de habitaciones y espacios (salas, recursos para eventos).",
+  UserRoleManager: "Quién puede entrar y con qué rol; invitaciones y desactivación de accesos.",
+  NotificationsScreen: "Plantillas y envíos de correo y mensajes, y los buzones de correo entrante que la IA lee para preparar reservas.",
+  BillingSettings: "Series de facturación, datos del emisor y proveedores de pago.",
+  AccountingSettings: "Plan contable, ajustes fiscales (VeriFactu), perfil inicial y categorías de ingresos.",
+  ModuleManager: "Activa o desactiva las funciones que usa tu hotel y consulta qué entradas del menú desbloquea cada módulo; integraciones y salud de los módulos.",
+  PropertyAiScreen: "Cómo trabaja la IA en esta propiedad: idioma, tono, nivel de automatización, herramientas permitidas, actividad y gobernanza.",
+  AuditLogViewer: "Registro de auditoría, webhooks, aplicaciones conectadas, referencia de la API y organizaciones (administración de la plataforma)."
+};
 
-  {
-    id: "reservas",
-    title: "Reservas y huéspedes",
-    summary: "Gestionar reservas, folios y fichas de cliente.",
-    badge: "Ops",
-    steps: [
-      {
-        center: true,
-        title: "Reservas y huéspedes",
-        body: "Todo el ciclo de una reserva: buscarla, abrirla, cobrar el folio y consultar al huésped."
-      },
-      {
-        navigateTo: "ReservationWorkspace",
-        title: "Espacio de reservas",
-        body: "Busca y filtra todas las reservas. Desde aquí abres cualquiera para trabajar con ella."
-      },
-      {
-        navigateTo: "ReservationDetailWorkspace",
-        title: "Ficha de la reserva",
-        body: "El folio con todos los cargos, la asignación de habitación y los botones de check-in y check-out."
-      },
-      {
-        navigateTo: "GuestsList",
-        title: "Lista de huéspedes",
-        body: "El directorio de clientes con sus datos de contacto, identidad y preferencias."
-      },
-      {
-        navigateTo: "GuestJourneyWorkspace",
-        title: "Recorrido del huésped",
-        body: "La actividad del huésped en un solo hilo: mensajes, peticiones, incidencias y servicios."
-      }
-    ]
-  },
+const CATEGORY_INTRO: Record<string, { summary: string; body: string; badge: string }> = {
+  hoy: { badge: "Hoy", summary: "Mi día, el asistente, el turno y el cierre.", body: "Lo que necesitas cada día nada más entrar: tu panel, el asistente, el turno, el cierre del día y lo que la IA espera de ti." },
+  recepcion: { badge: "Recepción", summary: "Reservas, huéspedes, mensajes y grupos.", body: "Todo el ciclo de una reserva: crearla, encontrarla, atender al huésped y cerrar la estancia." },
+  operaciones: { badge: "Operaciones", summary: "Pisos, mantenimiento, punto de venta y más.", body: "Los tableros con los que trabajan los equipos de pisos, mantenimiento, restauración y servicios." },
+  comercial: { badge: "Comercial", summary: "Clientes, reputación, ventas y canales.", body: "Las herramientas para vender más y mejor: clientes, reputación, extras, empresas y canales de venta." },
+  revenue: { badge: "Revenue", summary: "Tarifas, previsión, competencia y reglas.", body: "Las herramientas para maximizar ingresos: panel, parrilla de tarifas, reglas, previsión y competencia." },
+  finanzas: { badge: "Finanzas", summary: "Facturación, tesorería, contabilidad y nóminas.", body: "El control económico del hotel: cobros, facturas, banco, estados contables, comisiones y nóminas." },
+  cumplimiento: { badge: "Cumplimiento", summary: "VeriFactu, viajeros, AEAT y protección de datos.", body: "Las obligaciones legales de un alojamiento en España: facturación verificable, registro de viajeros, modelos de la AEAT y protección de datos." },
+  informes: { badge: "Informes", summary: "Informes, analítica, rentabilidad y cartera.", body: "Para entender el negocio: informes, indicadores, rentabilidad por habitación y por canal, y la cartera de hoteles." },
+  configuracion: { badge: "Configuración", summary: "Puesta en marcha, propiedad, usuarios, módulos e IA.", body: "Donde se define cómo funciona tu hotel en la aplicación: estructura, usuarios, facturación, módulos, integraciones e inteligencia artificial." }
+};
 
-  {
-    id: "operaciones",
-    title: "Tableros operativos",
-    summary: "Limpieza, mantenimiento, personal y más.",
-    badge: "Ops",
-    steps: [
-      {
-        center: true,
-        title: "Operaciones del hotel",
-        body: "Los tableros con los que trabajan los equipos de piso, mantenimiento y servicios."
-      },
-      {
-        navigateTo: "HousekeepingDashboard",
-        title: "Limpieza (housekeeping)",
-        body: "Estado de cada habitación (limpia, sucia, en proceso) y asignación de tareas al equipo de piso."
-      },
-      {
-        navigateTo: "MaintenanceDashboard",
-        title: "Mantenimiento",
-        body: "Incidencias y órdenes de trabajo: crear, asignar y cerrar averías."
-      },
-      {
-        navigateTo: "WorkforceDashboard",
-        title: "Personal y turnos",
-        body: "La plantilla del día: turnos, presencias y cargas de trabajo por equipo."
-      },
-      {
-        navigateTo: "SafetyDashboard",
-        title: "Seguridad e incidentes",
-        body: "Registro de incidentes de seguridad y su seguimiento hasta la resolución."
-      },
-      {
-        navigateTo: "PosDashboard",
-        title: "Puntos de venta (TPV)",
-        body: "Restaurante, bar y otros consumos que se cargan a la habitación del huésped."
-      }
-    ]
-  },
+function tabsSentence(item: NavItem): string {
+  const labels = item.tabs.filter((tab) => !tab.detail).map((tab) => tab.label);
+  if (labels.length === 0) return "";
+  const base = item.baseTab ? [item.baseTab, ...labels] : labels;
+  return ` Pestañas: ${base.join(" · ")}.`;
+}
 
-  {
-    id: "comercial",
-    title: "Comercial y revenue",
-    summary: "Precios, previsión, canales y ventas.",
-    badge: "Comercial",
-    steps: [
-      {
-        center: true,
-        title: "Comercial y revenue",
-        body: "Las herramientas para maximizar ingresos: tarifas, previsión, competencia, canales y grupos."
-      },
-      {
-        navigateTo: "RevenueHomeDashboard",
-        title: "Panel de revenue",
-        body: "Ocupación, ADR y RevPAR de un vistazo, con las señales clave del día."
-      },
-      {
-        navigateTo: "RevenueHistoryForecastDashboard",
-        title: "Histórico y previsión",
-        body: "Compara el rendimiento pasado con la previsión y revísalo en la tabla en vivo."
-      },
-      {
-        navigateTo: "RevenueMeeting",
-        title: "Reunión de revenue",
-        body: "El resumen para la reunión semanal: pace, pickup, presupuesto y recomendaciones de precio."
-      },
-      {
-        navigateTo: "RateShopperSettings",
-        title: "Rate shopper (comp-set)",
-        body: "Vigila las tarifas de tus competidores y detecta diferencias de paridad."
-      },
-      {
-        navigateTo: "ChannelAggregatorHub",
-        title: "Channel Manager",
-        body: "Conexión con las OTAs (Booking, Expedia…): disponibilidad, precios y sincronización."
-      },
-      {
-        navigateTo: "SalesPipelineDashboard",
-        title: "Pipeline de ventas",
-        body: "Cuentas, oportunidades y negociaciones comerciales (corporate, agencias…)."
-      },
-      {
-        navigateTo: "GroupsEventsDashboard",
-        title: "Grupos y eventos",
-        body: "Bloqueos de habitaciones, salas y eventos, con su impacto en la disponibilidad."
-      }
-    ]
-  },
+/** One narrated step per menu item; roles and modules come from the tree. */
+export function buildCategoryTour(category: NavCategory): Tour {
+  const intro = CATEGORY_INTRO[category.key] ?? { badge: category.label, summary: category.label, body: category.label };
+  const roles = Array.from(new Set(category.items.flatMap((item) => item.roles)));
+  const steps: TourStep[] = [
+    { center: true, title: category.label, body: intro.body },
+    ...category.items.map((item) => ({
+      navigateTo: item.screenKey,
+      roles: item.roles,
+      modulesAny: item.modulesAny,
+      title: item.label,
+      body: `${ITEM_NARRATION[item.screenKey] ?? `${item.label}.`}${tabsSentence(item)}`
+    }))
+  ];
+  return { id: category.key, title: category.label, summary: intro.summary, badge: intro.badge, roles, steps };
+}
 
-  {
-    id: "experiencia",
-    title: "Experiencia del huésped",
-    summary: "Mensajería, reputación, fidelización y CRM.",
-    badge: "Ops",
-    steps: [
-      {
-        center: true,
-        title: "Experiencia del huésped",
-        body: "Todo lo que mejora la relación con el cliente, antes, durante y después de la estancia."
-      },
-      {
-        navigateTo: "ReceptionCopilotScreen",
-        title: "Copiloto de recepción",
-        body: "Asistente con IA que te sugiere respuestas y resuelve dudas del huésped al instante."
-      },
-      {
-        navigateTo: "ConciergeInboxDashboard",
-        title: "Conserjería y mensajería",
-        body: "Conversaciones con los huéspedes por todos los canales, en una sola bandeja."
-      },
-      {
-        navigateTo: "ReputationDashboard",
-        title: "Reputación y reseñas",
-        body: "Reseñas de OTAs y portales, su puntuación y la respuesta a cada una."
-      },
-      {
-        navigateTo: "UpsellsDashboard",
-        title: "Ventas adicionales",
-        body: "Mejoras de habitación y extras que aumentan el ingreso por estancia."
-      },
-      {
-        navigateTo: "SurveysDashboard",
-        title: "Encuestas / NPS",
-        body: "Satisfacción del huésped y NPS para detectar qué mejorar."
-      },
-      {
-        navigateTo: "CrmDashboard",
-        title: "CRM y fidelización",
-        body: "Segmentos de clientes, campañas y el programa de fidelización."
-      }
-    ]
-  },
-
-  {
-    id: "finanzas",
-    title: "Finanzas y fiscalidad",
-    summary: "Contabilidad, tesorería e impuestos (España).",
-    badge: "Finanzas",
-    steps: [
-      {
-        center: true,
-        title: "Finanzas y fiscalidad",
-        body: "El control económico del hotel: cobros, contabilidad, nóminas e impuestos."
-      },
-      {
-        navigateTo: "FiscalDashboard",
-        title: "Centro fiscal",
-        body: "VeriFactu y los modelos de la AEAT (303, 111, 115, 180, 390) en un solo sitio."
-      },
-      {
-        navigateTo: "FinancePositionDashboard",
-        title: "Tesorería (AR · AP · caja)",
-        body: "Lo que te deben, lo que debes y la posición de caja actual."
-      },
-      {
-        navigateTo: "BankReconciliationScreen",
-        title: "Conciliación bancaria",
-        body: "Cuadra los movimientos del banco con los apuntes contables."
-      },
-      {
-        navigateTo: "TrialBalanceScreen",
-        title: "Estados financieros",
-        body: "Balance de sumas y saldos, balance de situación y estado de flujos de caja."
-      },
-      {
-        navigateTo: "CommissionsScreen",
-        title: "Comisiones de OTA",
-        body: "Comisiones que cobran los canales y su conciliación."
-      },
-      {
-        navigateTo: "PayrollScreen",
-        title: "Nóminas",
-        body: "Cálculo y exportación de nóminas del personal."
-      },
-      {
-        navigateTo: "FiscalSubmissionsCenter",
-        title: "Envíos a la AEAT",
-        body: "Historial y estado de las presentaciones fiscales realizadas."
-      }
-    ]
-  },
-
-  {
-    id: "cumplimiento",
-    title: "Cumplimiento (España)",
-    summary: "Registro de viajeros, SES.HOSPEDAJES y RGPD.",
-    badge: "Compliance",
-    steps: [
-      {
-        center: true,
-        title: "Cumplimiento legal en España",
-        body: "Las obligaciones legales de un alojamiento: registro de viajeros, comunicación a autoridades y protección de datos."
-      },
-      {
-        navigateTo: "ComplianceInbox",
-        title: "Bandeja de cumplimiento",
-        body: "Tu lista de tareas legales pendientes y su estado, todo en un sitio."
-      },
-      {
-        navigateTo: "GuestRegisterSettings",
-        title: "Registro de viajeros",
-        body: "Los datos obligatorios de cada huésped (parte de viajeros) y su configuración."
-      },
-      {
-        navigateTo: "SesHospedajesSettings",
-        title: "SES.HOSPEDAJES",
-        body: "Credenciales y envío automático del registro de hospedaje al Ministerio del Interior."
-      },
-      {
-        navigateTo: "AuthorityRoutingSettings",
-        title: "Envío a autoridades",
-        body: "A qué organismo se envía cada comunicación y con qué reglas."
-      },
-      {
-        navigateTo: "GdprRequestsScreen",
-        title: "Solicitudes RGPD",
-        body: "Peticiones de acceso o borrado de datos de los huéspedes (derechos RGPD)."
-      }
-    ]
-  },
-
-  {
-    id: "ia",
-    title: "Operaciones de IA",
-    summary: "Configurar, supervisar y gobernar la IA.",
-    badge: "IA",
-    steps: [
-      {
-        center: true,
-        title: "Operaciones de IA",
-        body: "Cómo la IA trabaja para tu hotel y cómo la mantienes bajo control. Toda acción importante pasa por revisión humana."
-      },
-      {
-        navigateTo: "AiOwnerSummaryScreen",
-        title: "Resumen de IA (dirección)",
-        body: "Para gerencia: qué ha hecho la IA, qué ha ahorrado y dónde ha ayudado."
-      },
-      {
-        navigateTo: "AiPipelineStatusScreen",
-        title: "Actividad de la IA",
-        body: "Registro en vivo de cada acción de la IA y su resultado."
-      },
-      {
-        navigateTo: "PropertyAiScreen",
-        title: "Configuración de IA",
-        body: "Ajusta el comportamiento de la IA para esta propiedad (idioma, tono, límites)."
-      },
-      {
-        navigateTo: "EmailConnectors",
-        title: "Correo → reservas (IA)",
-        body: "Conecta buzones para que la IA lea correos y prepare reservas. Cada borrador pasa por revisión humana."
-      },
-      {
-        navigateTo: "AiToolRegistryScreen",
-        title: "Catálogo de herramientas",
-        body: "Qué herramientas puede usar la IA y cuáles están activas por propiedad."
-      },
-      {
-        navigateTo: "AiHumanReviewQueueScreen",
-        title: "Revisión humana (HITL)",
-        body: "La cola donde una persona aprueba o rechaza lo que propone la IA antes de aplicarlo."
-      }
-    ]
-  },
-
-  {
-    id: "alta",
-    title: "Alta y migración",
-    summary: "Poner en marcha un hotel nuevo con IA.",
-    badge: "Onboarding",
-    steps: [
-      {
-        center: true,
-        title: "Alta y migración con IA",
-        body: "El proceso para dar de alta un alojamiento nuevo importando sus datos con ayuda de la IA."
-      },
-      {
-        navigateTo: "PropertyMapper",
-        title: "Mapear desde documentos",
-        body: "Sube documentos del hotel y la IA propone su estructura (edificios, plantas, habitaciones)."
-      },
-      {
-        navigateTo: "SourceConnections",
-        title: "Conexiones de origen",
-        body: "Conecta el PMS o las hojas de cálculo de donde vienen los datos a migrar."
-      },
-      {
-        navigateTo: "FileUploadAndClassification",
-        title: "Subir y clasificar ficheros",
-        body: "Carga los exports y la IA los clasifica por tipo (reservas, huéspedes, tarifas…)."
-      },
-      {
-        navigateTo: "AIExtractionReview",
-        title: "Revisión de extracción",
-        body: "Comprueba y corrige lo que la IA ha extraído antes de importarlo."
-      },
-      {
-        navigateTo: "OnboardingGoLiveReadiness",
-        title: "Preparación para go-live",
-        body: "La lista de comprobaciones que deben superarse antes de pasar a producción."
-      }
-    ]
-  },
-
-  {
-    id: "configuracion",
-    title: "Configuración (Back Office)",
-    summary: "Estructura, módulos, usuarios e integraciones.",
-    badge: "Back Office",
-    steps: [
-      {
-        center: true,
-        title: "Configuración del sistema",
-        body: "Donde se define cómo funciona tu hotel en la app: estructura, módulos, usuarios e integraciones."
-      },
-      {
-        navigateTo: "SetupCenterScreen",
-        title: "Centro de configuración",
-        body: "El punto de partida con todo lo necesario para dejar el hotel listo."
-      },
-      {
-        navigateTo: "ConfigurationCenterScreen",
-        title: "Configuración de la propiedad",
-        body: "Datos del hotel, edificios, plantas y zonas."
-      },
-      {
-        navigateTo: "RoomSetupForm",
-        title: "Habitaciones y tipos",
-        body: "Crea los tipos de habitación y el inventario de habitaciones reales."
-      },
-      {
-        navigateTo: "CategoryManagerScreen",
-        title: "Categorías y campos",
-        body: "Listas y campos personalizados para adaptar la app a tu operativa."
-      },
-      {
-        navigateTo: "ModuleManager",
-        title: "Módulos",
-        body: "Activa o desactiva las funcionalidades que usa tu hotel."
-      },
-      {
-        navigateTo: "UserRoleManager",
-        title: "Usuarios y roles",
-        body: "Quién puede entrar y qué puede ver o hacer cada persona."
-      },
-      {
-        navigateTo: "IntegrationManager",
-        title: "Integraciones",
-        body: "Conexiones con pasarelas de pago, mensajería y otros sistemas externos."
-      }
-    ]
-  },
-
-  {
-    id: "analitica",
-    title: "Analítica e informes",
-    summary: "Métricas, rentabilidad y sostenibilidad.",
-    badge: "Datos",
-    steps: [
-      {
-        center: true,
-        title: "Analítica e informes",
-        body: "Para entender el negocio: métricas, informes a medida, rentabilidad y consumo de recursos."
-      },
-      {
-        navigateTo: "AnalyticsCenterDashboard",
-        title: "Centro de analítica",
-        body: "Los indicadores clave del hotel reunidos en un panel."
-      },
-      {
-        navigateTo: "ReportingCenter",
-        title: "Informes",
-        body: "Genera y exporta informes de reservas, facturación y operaciones."
-      },
-      {
-        navigateTo: "RoomProfitabilityDashboard",
-        title: "Rentabilidad por habitación",
-        body: "Qué habitaciones y tipos aportan más margen."
-      },
-      {
-        navigateTo: "EnergyDashboard",
-        title: "Energía",
-        body: "Consumo energético por zonas y su evolución."
-      },
-      {
-        navigateTo: "SustainabilityDashboard",
-        title: "Sostenibilidad",
-        body: "Huella e indicadores ESG del alojamiento."
-      },
-      {
-        navigateTo: "AssetsDashboard",
-        title: "Activos",
-        body: "Inventario de activos y equipamiento del hotel."
-      }
-    ]
-  }
-];
+/**
+ * The catalog: the welcome tour plus one tour per category of the tree, in
+ * menu order.
+ */
+export const tours: Tour[] = [WELCOME_TOUR, ...NAV_TREE.categories.map(buildCategoryTour)];
 
 export function getTourById(id: string): Tour {
   return tours.find((t) => t.id === id) ?? tours[0];
 }
 
-// Which personas each tour is relevant for (keyed by tour id so we don't have to
-// thread the Role type through every tour object). The welcome tour is universal.
-const TOUR_ROLES: Record<string, Role[]> = {
-  "primeros-pasos": ["reception", "operations", "asset", "owner"],
-  recepcion: ["reception", "operations"],
-  reservas: ["reception", "operations"],
-  operaciones: ["operations"],
-  comercial: ["operations", "asset", "owner"],
-  experiencia: ["reception", "operations", "asset"],
-  finanzas: ["asset", "owner"],
-  cumplimiento: ["reception", "operations", "asset"],
-  ia: ["operations", "asset"],
-  alta: ["operations", "asset"],
-  configuracion: ["operations", "asset"],
-  analitica: ["operations", "asset", "owner"]
-};
-
-export function tourRoles(id: string): Role[] {
-  return TOUR_ROLES[id] ?? PERSONA_ROLES;
+/** Screen keys narrated by the tours (test hook: they must all be `keep` items). */
+export function narratedScreenKeys(): string[] {
+  return Object.keys(ITEM_NARRATION);
 }
 
-/** The recommended starter tour for each persona. */
-export const ROLE_STARTER_TOUR: Record<string, string> = {
-  reception: "recepcion",
-  operations: "operaciones",
-  asset: "comercial",
-  owner: "comercial"
+export type TourAudience = {
+  roleTokens: readonly RoleToken[];
+  /** Enabled module codes; undefined = unknown (module gates are not applied). */
+  enabledModules?: readonly string[];
 };
 
-/** Area tours relevant to a role (excludes the universal welcome tour). */
-export function toursForRole(role: Role): Tour[] {
-  return tours.filter((t) => t.id !== WELCOME_TOUR_ID && (role === "all" || tourRoles(t.id).includes(role)));
+function stepVisible(step: TourStep, audience: TourAudience): boolean {
+  const gate = { roles: step.roles ?? [], modulesAny: audience.enabledModules ? (step.modulesAny ?? []) : [] };
+  if (audience.roleTokens.length === 0) return gate.modulesAny.length === 0 || canSee(gate, ["admin"], audience.enabledModules ?? []);
+  return canSee(gate, audience.roleTokens, audience.enabledModules ?? []);
 }
+
+/**
+ * Steps a given audience can follow: centered intros always, narrated
+ * screens only when the role (and, if known, the module) allows them.
+ * Returns [] when no screen remains, so callers can hide the tour.
+ */
+export function tourStepsFor(tour: Tour, audience: TourAudience): TourStep[] {
+  const steps = tour.steps.filter((step) => step.center || step.selector || stepVisible(step, audience));
+  const hasContent = steps.some((step) => !step.center);
+  return hasContent ? steps : [];
+}
+
+/** Area tours relevant to an audience (excludes the universal welcome tour). */
+export function toursForAudience(audience: TourAudience): Tour[] {
+  return tours.filter((tour) => tour.id !== WELCOME_TOUR_ID && tourStepsFor(tour, audience).length > 0);
+}
+
+/** The recommended starter tour for each role token (its landing category). */
+export const ROLE_STARTER_TOUR: Record<RoleToken, string> = {
+  direccion: "hoy",
+  recepcion: "recepcion",
+  pisos: "operaciones",
+  mantenimiento: "operaciones",
+  revenue: "revenue",
+  finanzas: "finanzas",
+  comercial: "comercial",
+  fnb: "operaciones",
+  admin: "configuracion",
+  publico: WELCOME_TOUR_ID
+};
 
 export type TaskGuide = {
   id: string;
   title: string;
   summary: string;
-  /** Optional screen key to deep-link to ("Ir ahora"). Must exist in App.tsx. */
+  /** Screen key to deep-link to («Ir ahora»); a `keep` item of the tree. */
   screen?: string;
   steps: string[];
 };
 
 /**
- * Step-by-step guides for the core daily jobs. Short, numbered, plain Spanish.
- * Each can deep-link to the right screen so guidance and action share a place.
+ * Step-by-step guides for the core daily jobs. Short, numbered, plain Spanish,
+ * using the labels of the nine-category menu.
  */
 export const taskGuides: TaskGuide[] = [
   {
@@ -616,9 +278,9 @@ export const taskGuides: TaskGuide[] = [
     summary: "Registrar la llegada de un huésped.",
     screen: "FrontDeskDashboard",
     steps: [
-      "Abre «Mi día (recepción)» en el menú, o busca al huésped con ⌘K.",
+      "Abre Hoy › Mi día, o busca al huésped con ⌘K.",
       "Localiza la reserva en la tarjeta «Llegadas de hoy».",
-      "Comprueba que tiene una habitación asignada. Si pone «sin asignar», asígnala primero.",
+      "Comprueba que tiene una habitación asignada. Si pone «sin asignar», asígnala primero desde Recepción › Reservas › Tablero de habitaciones.",
       "Verifica el documento de identidad del huésped y complétalo en la ficha si falta (obligatorio en España).",
       "Pulsa «Hacer check-in». El estado cambiará a «Alojado»."
     ]
@@ -629,23 +291,23 @@ export const taskGuides: TaskGuide[] = [
     summary: "Dar de alta una reserva nueva.",
     screen: "ReservationCreate",
     steps: [
-      "En «Mi día» pulsa «Crear reserva» (o ve a «Ops › Reservations & guests › Create reservation»).",
+      "Abre Recepción › Nueva reserva (o dicta la reserva en la pestaña «Dictar (IA)»).",
       "Elige las fechas de entrada y salida y el número de huéspedes.",
       "Selecciona un tipo de habitación disponible y su tarifa.",
       "Introduce los datos del huésped (nombre y, si es posible, documento de identidad).",
-      "Revisa el importe y pulsa «Guardar». La reserva aparecerá en el Live Timeline."
+      "Revisa el importe y pulsa «Guardar». La reserva aparecerá en Recepción › Reservas › Cronograma."
     ]
   },
   {
     id: "asignar",
     title: "Asignar una habitación",
     summary: "Dar habitación a una llegada sin asignar.",
-    screen: "FrontDeskDashboard",
+    screen: "ReservationWorkspace",
     steps: [
-      "En «Mi día», abre la tarjeta «Llegadas sin habitación».",
-      "Pulsa «Asignar habitación» en la reserva.",
-      "Elige una habitación libre del tipo reservado.",
-      "Guarda. Ya podrás hacer el check-in."
+      "Abre Recepción › Reservas › Tablero de habitaciones.",
+      "Localiza la llegada sin habitación y pulsa «Asignar habitación».",
+      "Elige una habitación libre y limpia del tipo reservado.",
+      "Guarda. Ya podrás hacer el check-in desde Mi día."
     ]
   },
   {
@@ -654,19 +316,31 @@ export const taskGuides: TaskGuide[] = [
     summary: "Cerrar la estancia y saldar el folio.",
     screen: "FrontDeskDashboard",
     steps: [
-      "Abre la tarjeta «Salidas de hoy» en «Mi día».",
+      "Abre la tarjeta «Salidas de hoy» en Hoy › Mi día.",
       "Pulsa «Ver folio» para revisar los cargos del huésped.",
-      "Si hay saldo pendiente («pendiente»), registra el cobro antes de cerrar.",
+      "Si hay saldo pendiente, registra el cobro antes de cerrar.",
       "Cuando el saldo esté a cero, pulsa «Hacer check-out».",
-      "Entrega o envía la factura al huésped."
+      "Entrega o envía la factura al huésped desde Finanzas › Facturación y cobros."
+    ]
+  },
+  {
+    id: "cierre",
+    title: "Cerrar el día",
+    summary: "Ejecutar el cierre del día al final del turno de noche.",
+    screen: "NightAuditScreen",
+    steps: [
+      "Abre Hoy › Cierre del día.",
+      "Revisa la lista de comprobaciones: llegadas sin registrar, salidas pendientes y folios abiertos.",
+      "Resuelve lo que bloquea desde el enlace de cada comprobación.",
+      "Cuando todo esté en verde, pulsa «Ejecutar el cierre». La fecha de negocio avanza."
     ]
   },
   {
     id: "buscar",
-    title: "Buscar un huésped o reserva",
+    title: "Buscar un huésped o una reserva",
     summary: "Encontrar información al instante.",
     steps: [
-      "Pulsa la barra de búsqueda de arriba o usa el atajo ⌘K.",
+      "Escribe en la barra de búsqueda de arriba o pulsa ⌘K (Ctrl+K en Windows).",
       "Escribe el nombre, el número de habitación o el localizador.",
       "Selecciona el resultado para abrir la ficha completa."
     ]

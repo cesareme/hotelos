@@ -309,7 +309,7 @@ export function InviteUserDialog(props: InviteUserDialogProps) {
         <form onSubmit={handleSubmit} style={formStyle} noValidate>
           <div style={fieldStyle} ref={firstFieldRef}>
             <label style={labelStyle} htmlFor={`${titleId}-email`}>
-              Email
+              Correo electrónico
             </label>
             <CocoaInput
               value={email}

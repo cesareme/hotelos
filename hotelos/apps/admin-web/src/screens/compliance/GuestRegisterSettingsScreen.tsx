@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { ErrorState, LoadingBlock, Spinner } from "../../components/States";
 import { getActivePropertyId } from "../../services/activeProperty";
+import { date, dateTime, plural } from "../../lib/format";
 import {
   createSpainGuestRegisterRecord,
   listPropertyGuestRegisterRecords,
@@ -171,7 +172,7 @@ export function GuestRegisterSettingsScreen() {
       // Queue authority submission (SES.HOSPEDAJES) after a successful create.
       setSubmission({ kind: "submitting", phase: "queue" });
       let submissionId: string | undefined;
-      let queueMessage = "Record created.";
+      let queueMessage = "Parte creado.";
       try {
         const queued = await queueSpainGuestRegisterSubmission(record.id, "checkin", {
           retries: 2,
@@ -196,7 +197,7 @@ export function GuestRegisterSettingsScreen() {
     } catch (err) {
       setSubmission({
         kind: "error",
-        message: err instanceof Error ? err.message : "Could not create the guest register record."
+        message: err instanceof Error ? err.message : "No se ha podido crear el parte de viajero."
       });
     }
   }
@@ -218,7 +219,7 @@ export function GuestRegisterSettingsScreen() {
     } catch (err) {
       setSubmission({
         kind: "error",
-        message: err instanceof Error ? err.message : "Could not queue the authority submission."
+        message: err instanceof Error ? err.message : "No se ha podido encolar el envío a la autoridad."
       });
     }
   }
@@ -235,14 +236,14 @@ export function GuestRegisterSettingsScreen() {
   const submittingLabel =
     submission.kind === "submitting"
       ? submission.phase === "create"
-        ? "Creating record…"
-        : "Queueing authority submission…"
+        ? "Creando el parte…"
+        : "Encolando el envío a la autoridad…"
       : "";
 
   if (loading) {
     return (
       <section className="bo-card">
-        <LoadingBlock label="Loading guest register…" />
+        <LoadingBlock label="Cargando el registro de viajeros…" />
       </section>
     );
   }
@@ -259,29 +260,29 @@ export function GuestRegisterSettingsScreen() {
       <section className="bo-card">
         <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
           <div>
-            <p className="bo-page-eyebrow">Spain compliance</p>
+            <p className="bo-page-eyebrow">Registro de viajeros</p>
             <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>
-              Guest Register (parte de entrada)
+              Partes de entrada
             </h2>
           </div>
-          <span className="bo-status info">{records.length} records</span>
+          <span className="bo-status info">{plural(records.length, "parte", "partes")}</span>
         </div>
         <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
-          Capture the RD 933/2021 traveller register and queue submissions to SES.HOSPEDAJES. Required identity,
-          residence, contract and contact fields are validated client-side before the record is created.
+          Registro de viajeros del RD 933/2021 y envío de los partes a SES.Hospedajes. Los datos obligatorios de
+          identidad, residencia, contrato y contacto se validan antes de crear el parte.
         </p>
 
         <div className="rev-kpi-grid" style={{ marginTop: "var(--space-4)" }}>
           <div className="rev-kpi rev-kpi-ok">
-            <span className="rev-kpi-label">Accepted</span>
+            <span className="rev-kpi-label">Aceptados</span>
             <span className="rev-kpi-value">{counts.accepted ?? 0}</span>
           </div>
           <div className="rev-kpi rev-kpi-warn">
-            <span className="rev-kpi-label">Missing data</span>
+            <span className="rev-kpi-label">Datos incompletos</span>
             <span className="rev-kpi-value">{counts.missing_data ?? 0}</span>
           </div>
           <div className="rev-kpi">
-            <span className="rev-kpi-label">Queued</span>
+            <span className="rev-kpi-label">En cola</span>
             <span className="rev-kpi-value">{counts.queued ?? 0}</span>
           </div>
           <div
@@ -289,23 +290,23 @@ export function GuestRegisterSettingsScreen() {
               (counts.rejected ?? 0) + (counts.failed ?? 0) ? "rev-kpi-error" : "rev-kpi-ok"
             }`}
           >
-            <span className="rev-kpi-label">Rejected / failed</span>
+            <span className="rev-kpi-label">Rechazados o fallidos</span>
             <span className="rev-kpi-value">{(counts.rejected ?? 0) + (counts.failed ?? 0)}</span>
           </div>
         </div>
 
         <div className="bo-actions" style={{ marginTop: "var(--space-4)" }}>
-          <button type="button" onClick={() => nav("SesHospedajesSettings")}>SES.HOSPEDAJES connector</button>
-          <button type="button" onClick={() => nav("ComplianceInbox")}>Open Compliance Inbox</button>
-          <button type="button" onClick={load} disabled={busy}>Refresh</button>
+          <button type="button" onClick={() => nav("SesHospedajesSettings")}>Conector SES.Hospedajes</button>
+          <button type="button" onClick={() => nav("ComplianceInbox")}>Abrir la bandeja de cumplimiento</button>
+          <button type="button" onClick={load} disabled={busy}>Actualizar</button>
         </div>
       </section>
 
       <section className="bo-card">
         <div className="bo-card-head">
           <div>
-            <p className="bo-muted">New register entry</p>
-            <h3 style={{ margin: 0 }}>Create parte de entrada</h3>
+            <p className="bo-muted">Nuevo parte</p>
+            <h3 style={{ margin: 0 }}>Crear parte de entrada</h3>
           </div>
         </div>
 
@@ -342,7 +343,7 @@ export function GuestRegisterSettingsScreen() {
                 disabled={busy}
               >
                 <option value="DNI">DNI</option>
-                <option value="PASSPORT">Passport</option>
+                <option value="PASSPORT">Pasaporte</option>
                 <option value="TIE">TIE</option>
               </select>
             </label>
@@ -410,7 +411,7 @@ export function GuestRegisterSettingsScreen() {
               ) : null}
             </label>
             <label className="bo-form-field">
-              <span>Country <strong>required</strong></span>
+              <span>País <strong>obligatorio</strong></span>
               <input
                 value={form.residenceCountry}
                 onChange={(e) => set("residenceCountry", e.target.value)}
@@ -423,11 +424,11 @@ export function GuestRegisterSettingsScreen() {
               ) : null}
             </label>
             <label className="bo-form-field">
-              <span>Mobile phone</span>
+              <span>Teléfono móvil</span>
               <input value={form.phoneMobile} onChange={(e) => set("phoneMobile", e.target.value)} disabled={busy} />
             </label>
             <label className="bo-form-field">
-              <span>Email</span>
+              <span>Correo electrónico</span>
               <input
                 type="email"
                 value={form.email}
@@ -490,11 +491,11 @@ export function GuestRegisterSettingsScreen() {
                   <Spinner size="sm" /> {submittingLabel}
                 </>
               ) : (
-                "Create and queue submission"
+                "Crear y encolar el envío"
               )}
             </button>
             <button type="button" onClick={() => setForm(EMPTY_FORM)} disabled={busy}>
-              Reset
+              Limpiar
             </button>
           </div>
 
@@ -522,23 +523,23 @@ export function GuestRegisterSettingsScreen() {
       <section className="bo-card">
         <div className="bo-card-head">
           <div>
-            <p className="bo-muted">Submission queue</p>
-            <h3 style={{ margin: 0 }}>Guest register records</h3>
+            <p className="bo-muted">Cola de envíos</p>
+            <h3 style={{ margin: 0 }}>Partes de viajeros</h3>
           </div>
         </div>
         {records.length === 0 ? (
-          <p className="bo-muted">No guest register records yet for this property.</p>
+          <p className="bo-muted">Todavía no hay partes de viajeros en esta propiedad.</p>
         ) : (
           <div className="bo-table-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>Guest</th>
-                  <th>Document</th>
-                  <th>Status</th>
-                  <th>Reservation</th>
-                  <th>Created</th>
-                  <th>Retention until</th>
+                  <th>Huésped</th>
+                  <th>Documento</th>
+                  <th>Estado</th>
+                  <th>Reserva</th>
+                  <th>Creado</th>
+                  <th>Conservar hasta</th>
                   <th></th>
                 </tr>
               </thead>
@@ -556,9 +557,9 @@ export function GuestRegisterSettingsScreen() {
                         <span className={`bo-status ${tone}`}>{r.status.replace(/_/g, " ")}</span>
                       </td>
                       <td>{r.reservationId}</td>
-                      <td>{new Date(r.createdAt).toLocaleString("es-ES")}</td>
+                      <td>{dateTime(r.createdAt)}</td>
                       <td>
-                        {r.retentionUntil ? new Date(r.retentionUntil).toLocaleDateString("es-ES") : "—"}
+                        {date(r.retentionUntil)}
                       </td>
                       <td>
                         {canRetryQueue ? (

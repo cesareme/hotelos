@@ -2,6 +2,8 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useState } from "react";
 import { MANUAL_SETUP_OPTIONS, type ManualSetupOption } from "@hotelos/product";
 import { fetchManualSetupOptions, saveManualSetupOption, type ManualSetupSummary } from "../../services/backofficeApi";
+import { date, plural } from "../../lib/format";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
 
 type ManualSetupOptionView = ManualSetupOption & {
   setupState?: "not_started" | "saved" | "failed";
@@ -11,10 +13,8 @@ type ManualSetupOptionView = ManualSetupOption & {
 function nav(screen: string) {
   window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
 }
-function go(path: string) {
-  window.history.pushState(null, "", path);
-  window.dispatchEvent(new PopStateEvent("popstate"));
-}
+// Deep links open through the shared openTabPath (CocoaRouteTabs): one channel, no local pushState copy (code-review#12).
+const go = (path: string) => openTabPath(path);
 
 function groupManualSetupOptions(options: ManualSetupOptionView[]): Array<[string, ManualSetupOptionView[]]> {
   const map = new Map<string, ManualSetupOptionView[]>();
@@ -36,9 +36,9 @@ function buildSetupSummary(options: ManualSetupOptionView[]): ManualSetupSummary
 }
 
 function setupBadge(option: ManualSetupOptionView): { label: string; cls: "ok" | "warn" | "error" } {
-  if (option.setupState === "saved") return { label: "Configured", cls: "ok" };
-  if (option.setupState === "failed") return { label: "Needs attention", cls: "error" };
-  return { label: "Pending", cls: "warn" };
+  if (option.setupState === "saved") return { label: "Configurado", cls: "ok" };
+  if (option.setupState === "failed") return { label: "Requiere atención", cls: "error" };
+  return { label: "Pendiente", cls: "warn" };
 }
 
 function countConfigured(options: ManualSetupOptionView[]): number {
@@ -46,12 +46,14 @@ function countConfigured(options: ManualSetupOptionView[]): number {
 }
 
 // Curated guided tools — entry points that are not part of the per-item index.
+// Tanda 5 (L1b): every entry is a screen of the tree (the Property Setup index,
+// the setup wizard and the AI setup center retired into this hub).
 const GUIDED_TOOLS: Array<{ label: string; screen: string; hint: string }> = [
-  { label: "Property Setup", screen: "PropertySetupHomeScreen", hint: "Structured forms for profile, rooms, spaces, departments" },
-  { label: "Category Manager", screen: "CategoryManagerScreen", hint: "Reservation, revenue & compliance category options" },
-  { label: "Property mapper", screen: "PropertyMapper", hint: "Visual map of buildings, floors, zones & rooms" },
-  { label: "Setup checklist", screen: "PropertySetupWizard", hint: "Step-by-step go-live readiness wizard" },
-  { label: "Start AI Setup", screen: "AISetupCenter", hint: "Open the AI-guided onboarding & migration wizard" }
+  { label: "Propiedad", screen: "PropertyProfileSetupForm", hint: "Perfil, edificios, plantas, zonas, departamentos y categorías" },
+  { label: "Habitaciones y espacios", screen: "RoomSetupForm", hint: "Inventario de habitaciones, tipos, espacios y recursos" },
+  { label: "Categorías", screen: "CategoryManagerScreen", hint: "Opciones de categoría de reservas, revenue y cumplimiento" },
+  { label: "Importar desde documentos", screen: "PropertyMapper", hint: "Extracción con IA de la estructura de la propiedad a partir de documentos" },
+  { label: "Salida en vivo", screen: "GoLiveChecklist", hint: "Lista de comprobación y estado de preparación para salir en vivo" }
 ];
 
 function OptionCard({ option, onSaved }: { option: ManualSetupOptionView; onSaved: (optionCode: string) => void }) {
@@ -98,23 +100,23 @@ function OptionCard({ option, onSaved }: { option: ManualSetupOptionView; onSave
       ) : null}
 
       <div className="bo-actions">
-        <button type="button" className="primary" onClick={() => go(option.adminPath)}>Configurar</button>
+        <button type="button" className="primary" onClick={() => go(option.url)}>Configurar</button>
         {option.latestSubmission ? (
           <small className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
-            Last saved {new Date(option.latestSubmission.createdAt).toLocaleDateString("es-ES")}
+            Guardado el {date(option.latestSubmission.createdAt)}
           </small>
         ) : null}
       </div>
 
       <details>
         <summary style={{ cursor: "pointer", fontSize: "var(--fs-sm)", fontWeight: 600, color: "var(--ink-soft)" }}>
-          Enter data here
+          Rellenar aquí
         </summary>
         <div className="bo-stack" style={{ marginTop: "var(--space-3)" }}>
           <div className="bo-grid two">
             {option.requiredInputs.map((input) => (
               <label className="bo-form-field" key={input}>
-                <span>{input}<strong> required</strong></span>
+                <span>{input}<strong> obligatorio</strong></span>
                 <input
                   aria-label={input}
                   value={values[input] ?? ""}
@@ -140,7 +142,7 @@ function OptionCard({ option, onSaved }: { option: ManualSetupOptionView; onSave
       {option.completionChecks.length ? (
         <details>
           <summary style={{ cursor: "pointer", fontSize: "var(--fs-xs)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)" }}>
-            Completion checks
+            Comprobaciones
           </summary>
           <ul className="bo-list" style={{ marginTop: "var(--space-3)", fontSize: "var(--fs-xs)", color: "var(--ink-muted)" }}>
             {option.completionChecks.map((check) => (
@@ -158,7 +160,9 @@ function OptionCard({ option, onSaved }: { option: ManualSetupOptionView; onSave
   );
 }
 
-export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overview" | "items" }) {
+// Setup Center (Puesta en marcha): the single configuration hub of Tanda 5. Rendered
+// as the base tab of Configuración › Puesta en marcha (`embedded`) or standalone.
+export function SetupCenter({ initialTab = "overview", embedded = false }: { initialTab?: "overview" | "items"; embedded?: boolean }) {
   const [tab, setTab] = useState<"overview" | "items">(initialTab);
   const [options, setOptions] = useState<ManualSetupOptionView[]>(MANUAL_SETUP_OPTIONS);
   const [summary, setSummary] = useState<ManualSetupSummary>(() => buildSetupSummary(MANUAL_SETUP_OPTIONS));
@@ -171,7 +175,9 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
     fetchManualSetupOptions(getActivePropertyId())
       .then((payload) => {
         if (!mounted) return;
-        setOptions(payload.options as ManualSetupOptionView[]);
+        // The services type still describes the pre-Tanda 5 shape (adminPath); the API
+        // already returns the product catalogue fields (url, screen), so widen here.
+        setOptions(payload.options as unknown as ManualSetupOptionView[]);
         setSummary(payload.setupSummary);
         setSource("api");
       })
@@ -211,22 +217,22 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
       <section className="bo-card">
         <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
           <div>
-            <p className="bo-page-eyebrow">Back Office · Setup</p>
-            <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>Setup Center</h2>
+            {embedded ? null : <p className="bo-page-eyebrow">Configuración</p>}
+            <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>{embedded ? "Estado de la configuración" : "Puesta en marcha"}</h2>
           </div>
           <div className="bo-row">
-            <button type="button" onClick={() => go("/backoffice/property-setup")}>Property Setup</button>
-            <button type="button" onClick={() => go("/backoffice/configuration/categories")}>Category Manager</button>
+            <button type="button" onClick={() => nav("PropertyProfileSetupForm")}>Propiedad</button>
+            <button type="button" onClick={() => nav("CategoryManagerScreen")}>Categorías</button>
           </div>
         </div>
         <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
-          One place to configure the property. <strong>Overview</strong> shows your go-live readiness; <strong>All setup items</strong> is the
-          complete manual index — open an item to configure it, or fill it in inline.
+          Un único lugar para configurar la propiedad. <strong>Resumen</strong> muestra el estado de preparación para salir en vivo;{" "}
+          <strong>Todos los ajustes</strong> es el índice manual completo: abre un ajuste para configurarlo o rellénalo aquí mismo.
         </p>
 
         <div className="bo-row" style={{ marginTop: "var(--space-4)", gap: "var(--space-2)" }}>
-          <button type="button" className={tab === "overview" ? "primary" : ""} onClick={() => setTab("overview")}>Overview</button>
-          <button type="button" className={tab === "items" ? "primary" : ""} onClick={() => setTab("items")}>All setup items</button>
+          <button type="button" className={tab === "overview" ? "primary" : ""} onClick={() => setTab("overview")}>Resumen</button>
+          <button type="button" className={tab === "items" ? "primary" : ""} onClick={() => setTab("items")}>Todos los ajustes</button>
         </div>
       </section>
 
@@ -236,21 +242,21 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
           <section className="bo-card">
             <div className="bo-stack" style={{ gap: "var(--space-3)" }}>
               <div className="bo-row" style={{ justifyContent: "space-between" }}>
-                <strong>{summary.savedOptions} of {summary.totalOptions} configured</strong>
+                <strong>{summary.savedOptions} de {summary.totalOptions} configurados</strong>
                 <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>{pct}%</span>
               </div>
               <div className={`bo-progress-bar${pct >= 100 ? " ok" : ""}`}><span style={{ width: `${pct}%` }} /></div>
               <div className="bo-grid three" style={{ marginTop: "var(--space-2)" }}>
-                <article className="rev-kpi rev-kpi-ok"><span className="rev-kpi-label">Configured</span><span className="rev-kpi-value">{summary.savedOptions}</span></article>
-                <article className="rev-kpi rev-kpi-warn"><span className="rev-kpi-label">Pending</span><span className="rev-kpi-value">{summary.notStartedOptions}</span></article>
-                <article className={`rev-kpi${summary.failedOptions ? " rev-kpi-error" : ""}`}><span className="rev-kpi-label">Needs attention</span><span className="rev-kpi-value">{summary.failedOptions}</span></article>
+                <article className="rev-kpi rev-kpi-ok"><span className="rev-kpi-label">Configurados</span><span className="rev-kpi-value">{summary.savedOptions}</span></article>
+                <article className="rev-kpi rev-kpi-warn"><span className="rev-kpi-label">Pendientes</span><span className="rev-kpi-value">{summary.notStartedOptions}</span></article>
+                <article className={`rev-kpi${summary.failedOptions ? " rev-kpi-error" : ""}`}><span className="rev-kpi-label">Requieren atención</span><span className="rev-kpi-value">{summary.failedOptions}</span></article>
               </div>
             </div>
           </section>
 
           {/* Readiness by area (live, derived from manual-setup progress) */}
           <section className="bo-section">
-            <div className="bo-card-head"><h3>Readiness by area</h3><span className="bo-chip">{groups.length} areas</span></div>
+            <div className="bo-card-head"><h3>Preparación por área</h3><span className="bo-chip">{plural(groups.length, "área", "áreas", { withCount: true })}</span></div>
             <div className="bo-grid three">
               {groups.map(([group, groupOptions]) => {
                 const done = countConfigured(groupOptions);
@@ -264,7 +270,7 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
                     </div>
                     <div className={`bo-progress-bar${gp >= 100 ? " ok" : done > 0 ? " warn" : ""}`}><span style={{ width: `${gp}%` }} /></div>
                     <div className="bo-actions">
-                      <button type="button" onClick={() => openGroup(group)}>View items</button>
+                      <button type="button" onClick={() => openGroup(group)}>Ver elementos</button>
                     </div>
                   </article>
                 );
@@ -274,7 +280,7 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
 
           {/* Guided tools */}
           <section className="bo-section">
-            <div className="bo-card-head"><h3>Guided tools</h3></div>
+            <div className="bo-card-head"><h3>Herramientas guiadas</h3></div>
             <div className="bo-grid three">
               {GUIDED_TOOLS.map((tool) => (
                 <article className="bo-card bo-stack" key={tool.screen} style={{ gap: "var(--space-2)" }}>
@@ -287,7 +293,7 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
           </section>
 
           <p className="bo-muted" style={{ textTransform: "none", letterSpacing: 0, textAlign: "center" }}>
-            {summary.totalOptions} setup items · data source: {source}
+            {plural(summary.totalOptions, "elemento de configuración", "elementos de configuración", { withCount: true })} · origen: {source === "api" ? "estado guardado en la base de datos" : "catálogo estático (sin conexión con el API)"}
           </p>
         </>
       ) : (
@@ -302,9 +308,9 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
                   <div className="bo-card-head" style={{ marginBottom: 0, alignItems: "center" }}>
                     <div className="bo-row" style={{ gap: "var(--space-3)" }}>
                       <h3 style={{ margin: 0 }}>{group}</h3>
-                      <span className={`bo-status ${gp >= 100 ? "ok" : done > 0 ? "warn" : "info"}`}>{done}/{groupOptions.length} configured</span>
+                      <span className={`bo-status ${gp >= 100 ? "ok" : done > 0 ? "warn" : "info"}`}>{done}/{groupOptions.length} configurados</span>
                     </div>
-                    <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>{groupOptions.length} items</span>
+                    <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>{plural(groupOptions.length, "elemento", "elementos", { withCount: true })}</span>
                   </div>
                 </summary>
                 <div className="bo-grid two" style={{ marginTop: "var(--space-4)" }}>
@@ -316,7 +322,7 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
             );
           })}
           <p className="bo-muted" style={{ textTransform: "none", letterSpacing: 0, textAlign: "center" }}>
-            {summary.totalOptions} setup items · data source: {source}
+            {plural(summary.totalOptions, "elemento de configuración", "elementos de configuración", { withCount: true })} · origen: {source === "api" ? "estado guardado en la base de datos" : "catálogo estático (sin conexión con el API)"}
           </p>
         </>
       )}
@@ -324,6 +330,6 @@ export function SetupCenter({ initialTab = "overview" }: { initialTab?: "overvie
   );
 }
 
-export function SetupCenterScreen() {
-  return <SetupCenter initialTab="overview" />;
+export function SetupCenterScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  return <SetupCenter initialTab="overview" embedded={embedded} />;
 }

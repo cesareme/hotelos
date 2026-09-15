@@ -9,6 +9,7 @@ import { getActivePropertyId } from "../../services/activeProperty";
 import { fetchSesSettings } from "../../services/sesApi";
 import { EmptyState, ErrorState, LoadingBlock } from "../../components/States";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { pageHead } from "../tabs/configuracion/tab-helpers";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
@@ -42,7 +43,9 @@ const REGION_LABELS: Record<string, string> = {
   EUSK: "País Vasco"
 };
 
-export function AuthorityRoutingSettingsScreen() {
+export function AuthorityRoutingSettingsScreen({ embedded = false }: { embedded?: boolean } = {}) {
+  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  const Head = pageHead(embedded);
   const [rules, setRules] = useState<RoutingRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -105,7 +108,7 @@ export function AuthorityRoutingSettingsScreen() {
 
   return (
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <CocoaPageHeader
+      <Head
         eyebrow="Cumplimiento · Registro de viajeros"
         title="Enrutamiento a autoridades"
         subtitle="A qué autoridad se envían los partes de viajeros según país y región"

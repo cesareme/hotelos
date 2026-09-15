@@ -1,16 +1,14 @@
-import {
-  getActiveOrganizationId,
-  loadSwitchableProperties,
-  setActiveProperty
-} from "../../services/activeProperty";
-import { navigateTo } from "../../lib/navigate";
+import { useTabHost } from "../tabs/TabHost";
+import { getActiveOrganizationId, loadSwitchableProperties } from "../../services/activeProperty";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { EmptyState } from "../../components/States";
+import { money, number, percent } from "../../lib/format";
 
 const ORGANIZATION_ID = getActiveOrganizationId();
 // Path registered for PropertyDetailScreen in routes/backoffice.routes.tsx.
-const PROPERTY_DETAIL_PATH = "/backoffice/property-detail";
 
 type PortfolioHealth = "ok" | "warn" | "error";
 type PortfolioPropertyStatus = "open" | "closed" | "maintenance";
@@ -92,23 +90,15 @@ const STATUS_LABEL: Record<PortfolioPropertyStatus, string> = {
 };
 
 function fmtNumber(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0";
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(value);
+  return number(value);
 }
 
 function fmtEur(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,00 €";
-  return new Intl.NumberFormat("es-ES", { useGrouping: true,
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(value);
+  return money(value);
 }
 
 function fmtPct(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,0 %";
-  return `${new Intl.NumberFormat("es-ES", { useGrouping: true, minimumFractionDigits: 1, maximumFractionDigits: 1 }).format(value)} %`;
+  return percent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
 function healthPill(health: PortfolioHealth) {
@@ -121,13 +111,10 @@ function statusPill(status: PortfolioPropertyStatus) {
   return <span className={`bo-status ${kind}`}>{STATUS_LABEL[status]}</span>;
 }
 
-// Repoint the active property at the chosen row through the shared service
-// (id + organization + name together, taken from the user's switchable list)
-// so the switcher label, the org key and the module-level PROPERTY_ID
-// constants of every screen stay in sync. setActiveProperty reloads when the
-// scope changes, so the detail path is pushed first and survives the reload;
-// when nothing changed we navigate in-app instead. Resolves to a user-facing
-// problem message when the drill-down cannot happen.
+// Drill-down to a property of the portfolio: the row must be one of the user's
+// switchable properties (never a raw id from the table), then the detail
+// sub-URL is opened in place. Resolves to a user-facing problem message when
+// the drill-down cannot happen.
 async function openPropertyDetail(propertyId: string): Promise<string | null> {
   if (typeof window === "undefined") return null;
   let list;
@@ -138,11 +125,12 @@ async function openPropertyDetail(propertyId: string): Promise<string | null> {
   }
   const row = list.find((property) => property.id === propertyId);
   if (!row) return "La propiedad seleccionada no está disponible para tu usuario.";
-  if (window.location.pathname !== PROPERTY_DETAIL_PATH) {
-    window.history.pushState(null, "", PROPERTY_DETAIL_PATH);
-  }
-  setActiveProperty({ propertyId: row.id, organizationId: row.organizationId, propertyName: row.name });
-  navigateTo("PropertyDetailScreen");
+  // Detalle de la propiedad: /informes/cartera/:propiedad (sub-URL of the Cartera
+  // container, Tanda 5). The id travels in the URL, so the active property and
+  // the page do not change (PropertyDetailScreen reads `propertyId` from it).
+  const url = urlForScreen("PropertyDetailScreen", { propiedad: row.id });
+  if (!url) return "No se pudo abrir el detalle de la propiedad.";
+  openTabPath(url);
   return null;
 }
 
@@ -214,6 +202,8 @@ const EMPTY_TOTALS: PortfolioTotals = {
 };
 
 export function PortfolioDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<PortfolioDashboardData>(
     `/dashboards/portfolio?organizationId=${ORGANIZATION_ID}`,
     { pollIntervalMs: 60000 }
@@ -252,10 +242,14 @@ export function PortfolioDashboard() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Grupo · Resumen de cartera
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Panel de cartera</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
+                Informes · Cartera de propiedades
+              </p>
+              <h2 style={{ color: "var(--ink)" }}>Cartera de propiedades</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ marginTop: 4 }}>
             Vista consolidada del grupo hotelero. KPIs agregados con media ponderada por habitaciones y drill-down por
             propiedad. Pensado para cadenas con 3–50+ hoteles.
@@ -323,27 +317,27 @@ export function PortfolioDashboard() {
 
       <div className="rev-kpi-grid">
         <article className={`rev-kpi ${totals.pendingFiscalSubmissions > 5 ? "rev-kpi-error" : totals.pendingFiscalSubmissions > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Pending fiscal submissions</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Envíos fiscales pendientes</span></div>
           <div className="rev-kpi-value">{fmtNumber(totals.pendingFiscalSubmissions)}</div>
           <div className="rev-kpi-delta">VeriFactu · TBAI · IGIC · SES</div>
         </article>
         <article className={`rev-kpi ${totals.pendingBalanceEur > 5000 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Pending balance (today)</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Saldo pendiente (hoy)</span></div>
           <div className="rev-kpi-value">{fmtEur(totals.pendingBalanceEur)}</div>
           <div className="rev-kpi-delta">open AR across properties</div>
         </article>
         <article className={`rev-kpi ${totals.unattended.reservations > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Unattended reservations</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Reservas sin atender</span></div>
           <div className="rev-kpi-value">{fmtNumber(totals.unattended.reservations)}</div>
           <div className="rev-kpi-delta">draft / not confirmed</div>
         </article>
         <article className={`rev-kpi ${totals.unattended.messages > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Unattended messages</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Mensajes sin atender</span></div>
           <div className="rev-kpi-value">{fmtNumber(totals.unattended.messages)}</div>
           <div className="rev-kpi-delta">open conversations</div>
         </article>
         <article className={`rev-kpi ${totals.unattended.tasks > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Unattended tasks</span></div>
+          <div className="rev-kpi-head"><span className="rev-kpi-label">Tareas sin atender</span></div>
           <div className="rev-kpi-value">{fmtNumber(totals.unattended.tasks)}</div>
           <div className="rev-kpi-delta">housekeeping pending</div>
         </article>
@@ -351,7 +345,7 @@ export function PortfolioDashboard() {
 
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Properties</h3>
+          <h3 style={{ color: "var(--ink)" }}>Propiedades</h3>
           <span className="bo-chip">{fmtNumber(properties.length)} rows · click a row to drill in</span>
         </div>
         {noProperties ? (
@@ -363,16 +357,16 @@ export function PortfolioDashboard() {
           <table className="cm-table">
             <thead>
               <tr>
-                <SortableHeader label="Property" field="name" sort={sort} onSort={onSort} />
-                <SortableHeader label="Status" field="status" sort={sort} onSort={onSort} />
-                <SortableHeader label="Rooms" field="roomsCount" sort={sort} onSort={onSort} align="right" />
+                <SortableHeader label="Propiedad" field="name" sort={sort} onSort={onSort} />
+                <SortableHeader label="Estado" field="status" sort={sort} onSort={onSort} />
+                <SortableHeader label="Habitaciones" field="roomsCount" sort={sort} onSort={onSort} align="right" />
                 <SortableHeader label="Occ %" field="occupancyPct" sort={sort} onSort={onSort} align="right" />
                 <SortableHeader label="ADR" field="adrEur" sort={sort} onSort={onSort} align="right" />
                 <SortableHeader label="RevPAR" field="revparEur" sort={sort} onSort={onSort} align="right" />
                 <SortableHeader label="Revenue MTD" field="revenueMtdEur" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="Pending fiscal" field="pendingFiscalSubmissions" sort={sort} onSort={onSort} align="right" />
+                <SortableHeader label="Fiscal pendiente" field="pendingFiscalSubmissions" sort={sort} onSort={onSort} align="right" />
                 <SortableHeader label="AR €" field="pendingBalanceEur" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="Health" field="health" sort={sort} onSort={onSort} />
+                <SortableHeader label="Salud" field="health" sort={sort} onSort={onSort} />
               </tr>
             </thead>
             <tbody>
@@ -381,7 +375,7 @@ export function PortfolioDashboard() {
                   key={row.propertyId}
                   style={{ cursor: "pointer" }}
                   onClick={() => navigateToProperty(row.propertyId)}
-                  title="Open property dashboard"
+                  title="Abrir el tablero de la propiedad"
                 >
                   <td>
                     <strong>{row.name}</strong>
@@ -419,7 +413,7 @@ export function PortfolioDashboard() {
 
       <article className="bo-card" style={{ background: "var(--surface)" }}>
         <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Critical alerts</h3>
+          <h3 style={{ color: "var(--ink)" }}>Alertas críticas</h3>
           <span className="bo-chip">{fmtNumber(alerts.length)} active</span>
         </div>
         {alerts.length === 0 ? (

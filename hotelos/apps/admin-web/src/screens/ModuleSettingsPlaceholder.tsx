@@ -1,5 +1,3 @@
-import { useToast } from "../components/Toast";
-
 function navigateTo(screen: string) {
   window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
 }
@@ -18,13 +16,8 @@ export type ModuleSettingsConfig = {
 };
 
 export function ModuleSettingsPlaceholder(props: ModuleSettingsConfig) {
-  const { showToast } = useToast();
-  const eyebrow = props.eyebrow ?? "Próximamente · Q4 2026";
+  const eyebrow = props.eyebrow ?? "Ajustes del módulo";
   const hasLinks = Boolean(props.dashboardScreen || props.setupScreen || props.relatedScreens?.length);
-
-  function notifyWhenReady() {
-    showToast("Apuntado. Te avisaremos al admin.", { variant: "info" });
-  }
 
   return (
     <>
@@ -92,7 +85,7 @@ export function ModuleSettingsPlaceholder(props: ModuleSettingsConfig) {
         </div>
 
         <div style={{ display: "grid", gap: "var(--space-2)", maxWidth: 520 }}>
-          <h2 style={{ margin: 0, color: "var(--ink)" }}>Esta función está en camino</h2>
+          <h2 style={{ margin: 0, color: "var(--ink)" }}>Este módulo no tiene ajustes propios</h2>
           <ul
             style={{
               listStyle: "none",
@@ -106,23 +99,20 @@ export function ModuleSettingsPlaceholder(props: ModuleSettingsConfig) {
           >
             <li style={{ paddingLeft: "var(--space-4)", position: "relative" }}>
               <span style={{ position: "absolute", left: 0, color: "var(--accent-strong)" }}>·</span>
-              Estamos puliendo los flujos de configuración para que se sientan nativos a Aurora.
+              Su configuración vive en el tablero del módulo y en Puesta en marcha.
             </li>
             <li style={{ paddingLeft: "var(--space-4)", position: "relative" }}>
               <span style={{ position: "absolute", left: 0, color: "var(--accent-strong)" }}>·</span>
-              Integraremos esta sección con el tablero operativo correspondiente.
+              Desde aquí puedes abrir el tablero y las pantallas relacionadas.
             </li>
             <li style={{ paddingLeft: "var(--space-4)", position: "relative" }}>
               <span style={{ position: "absolute", left: 0, color: "var(--accent-strong)" }}>·</span>
-              Tu feedback temprano nos ayuda a priorizar — déjanos saber que te interesa.
+              Si echas en falta un ajuste, pídelo a dirección: se activa desde Módulos e integraciones.
             </li>
           </ul>
         </div>
 
         <div className="bo-actions" style={{ gap: "var(--space-2)", flexWrap: "wrap", justifyContent: "center" }}>
-          <button type="button" className="primary" onClick={notifyWhenReady}>
-            Notifícame cuando esté lista
-          </button>
           {props.dashboardScreen ? (
             <button type="button" onClick={() => navigateTo(props.dashboardScreen!)}>
               {props.dashboardLabel ?? "Abrir tablero"}
@@ -173,7 +163,7 @@ export function ModuleSettingsPlaceholder(props: ModuleSettingsConfig) {
               margin: 0
             }}
           >
-            La configuración general (activar módulos, integraciones, campos personalizados) se gestiona en «Back Office › Módulos e integraciones».
+            La configuración general (activar módulos, integraciones, campos personalizados) se gestiona en «Configuración › Módulos e integraciones».
           </p>
         ) : null}
       </section>

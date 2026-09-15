@@ -23,6 +23,7 @@ import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
 import { toArray } from "../../utils/toArray";
 import { navigateTo } from "../../lib/navigate";
+import { dateTime } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 const HISTORY_PAGE_SIZE = 50;
@@ -108,9 +109,7 @@ function toForm(r?: SesReportingSettings): Form {
 }
 
 function fmtDateTime(value?: string | null): string {
-  if (!value) return "—";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("es-ES");
+  return dateTime(value);
 }
 
 export function SesHospedajesSettingsScreen() {
@@ -424,7 +423,7 @@ export function SesHospedajesSettingsScreen() {
           </div>
           {reporting?.updatedAt ? (
             <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
-              Actualizado {new Date(reporting.updatedAt).toLocaleString("es-ES")}
+              Actualizado {dateTime(reporting.updatedAt)}
             </span>
           ) : null}
         </div>

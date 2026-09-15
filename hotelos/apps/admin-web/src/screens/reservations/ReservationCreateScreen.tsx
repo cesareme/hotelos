@@ -1,5 +1,7 @@
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
 import { fetchConfigurationCategories, type ConfigurationCategoryGroup } from "../../services/backofficeApi";
 import {
   createReservation,
@@ -22,6 +24,8 @@ import { CocoaStepper } from "../../components/cocoa/CocoaStepper";
 import { CocoaDatePicker } from "../../components/cocoa/CocoaDatePicker";
 import { CocoaSwitch } from "../../components/cocoa/CocoaSwitch";
 import { CocoaFormFieldset } from "../../components/cocoa-extras/CocoaFormFieldset";
+import { useTabHost } from "../tabs/TabHost";
+import { money, plural } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -192,8 +196,8 @@ const LANGUAGE_OPTIONS = [
 // Mews "BookingSource" + Opera "Source" + Cloudbeds "Source of business".
 const BOOKING_SOURCE_OPTIONS = [
   { value: "direct", label: "Direct (web/email)" },
-  { value: "phone", label: "Phone" },
-  { value: "email", label: "Email" },
+  { value: "phone", label: "Teléfono" },
+  { value: "email", label: "Correo electrónico" },
   { value: "walk_in", label: "Walk-in" },
   { value: "booking_com", label: "Booking.com" },
   { value: "expedia", label: "Expedia" },
@@ -226,14 +230,14 @@ const PAYMENT_METHOD_OPTIONS = [
   { value: "voucher", label: "Voucher / Gift card" },
   { value: "company_invoice", label: "Company invoice" },
   { value: "online_prepaid", label: "Online prepaid (OTA)" },
-  { value: "pms_account", label: "PMS account / Direct billing" }
+  { value: "pms_account", label: "Cuenta PMS / facturación directa" }
 ];
 
 const CHANNEL_OPTIONS = [
-  { value: "direct", label: "Direct" },
-  { value: "booking_com_mock", label: "Booking.com Mock" },
-  { value: "expedia_mock", label: "Expedia Mock" },
-  { value: "corporate", label: "Corporate" }
+  { value: "direct", label: "Directo" },
+  { value: "booking_com_mock", label: "Booking.com (conector de pruebas)" },
+  { value: "expedia_mock", label: "Expedia (conector de pruebas)" },
+  { value: "corporate", label: "Corporativo" }
 ];
 
 const RATE_PLAN_OPTIONS = [
@@ -316,6 +320,7 @@ const sectionStackStyle: React.CSSProperties = {
 };
 
 export function ReservationCreateScreen() {
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const [form, setForm] = useState(defaultForm);
   const [companions, setCompanions] = useState<CompanionGuest[]>([]);
@@ -645,16 +650,18 @@ export function ReservationCreateScreen() {
 
   return (
     <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">PMS · Manual reservation</p>
-          <h2>Create Reservation</h2>
+      {hosted ? null : (
+        <div className="bo-card-head">
+          <div>
+            <p className="bo-muted">PMS · Reserva manual</p>
+            <h2>Nueva reserva</h2>
+          </div>
+          <span className="bo-chip">Entrada manual</span>
         </div>
-        <span className="bo-chip">Manual entry</span>
-      </div>
+      )}
       <p>
-        Manual reservation creation must collect the commercial categories, guest details, stay dates, rate context and billing instruction before
-        confirming. Critical lifecycle actions still use confirmation workflows.
+        Recoge las categorías comerciales, los datos del huésped, las fechas de estancia, el contexto de tarifa y la instrucción de
+        facturación antes de confirmar. Las acciones críticas del ciclo de vida siguen pidiendo confirmación.
       </p>
 
       <div style={sectionStackStyle}>
@@ -665,10 +672,10 @@ export function ReservationCreateScreen() {
           description={`Fechas, ocupación, tipo de habitación y asignación opcional · ${nightsCount} ${nightsCount === 1 ? "noche" : "noches"}`}
         >
           <div style={gridThreeStyle}>
-            <FieldRow label="Arrival date" required>
+            <FieldRow label="Fecha de llegada" required>
               <CocoaDatePicker value={form.arrivalDate} onChange={(v) => updateField(setForm, "arrivalDate", v)} />
             </FieldRow>
-            <FieldRow label="Departure date" required>
+            <FieldRow label="Fecha de salida" required>
               <CocoaDatePicker value={form.departureDate} onChange={(v) => updateField(setForm, "departureDate", v)} />
             </FieldRow>
             <FieldRow label="Noches (auto)" hint="Calculado automáticamente desde las fechas.">
@@ -760,7 +767,7 @@ export function ReservationCreateScreen() {
                     </span>
                   </div>
                   <div style={{ fontSize: "var(--cocoa-fs-title-2)", fontWeight: 600, color: "var(--cocoa-label)" }}>
-                    {quote.totalAmount} {quote.currency}
+                    {money(quote.totalAmount, quote.currency)}
                   </div>
                   <p style={{ marginTop: "var(--cocoa-space-1)", marginBottom: "var(--cocoa-space-3)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-subheadline)" }}>
                     {quote.cancellationPolicy}
@@ -846,7 +853,7 @@ export function ReservationCreateScreen() {
                 options={LANGUAGE_OPTIONS}
               />
             </FieldRow>
-            <FieldRow label="Email">
+            <FieldRow label="Correo electrónico">
               <CocoaInput value={form.email} onChange={(v) => updateField(setForm, "email", v)} type="email" />
             </FieldRow>
             <FieldRow label="Teléfono">
@@ -941,7 +948,7 @@ export function ReservationCreateScreen() {
             <FieldRow label="Código VIP">
               <CocoaInput value={form.vipCode} onChange={(v) => updateField(setForm, "vipCode", v)} placeholder="VIP1 / VVIP…" />
             </FieldRow>
-            <FieldRow label="Booker">
+            <FieldRow label="Titular de la reserva">
               <CocoaInput value={form.bookerName} onChange={(v) => updateField(setForm, "bookerName", v)} />
             </FieldRow>
             <FieldRow label="Programa de fidelización">
@@ -1051,7 +1058,7 @@ export function ReservationCreateScreen() {
         {/* ===== 3 · Tarifa ===== */}
         <CocoaFormFieldset
           title="3 · Tarifa"
-          description={`Plan tarifario, base, total y desglose de IVA · ${form.totalAmount || 0} EUR · ${nightsCount} ${nightsCount === 1 ? "noche" : "noches"}`}
+          description={`Plan tarifario, base, total y desglose de IVA · ${money(form.totalAmount || 0)} · ${plural(nightsCount, "noche", "noches")}`}
         >
           <div style={gridThreeStyle}>
             <FieldRow label="Plan tarifario">
@@ -1089,25 +1096,25 @@ export function ReservationCreateScreen() {
             <CocoaCard variant="bordered" padding="md">
               <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Base imponible</span>
               <strong style={{ display: "block", marginTop: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-title-3)", color: "var(--cocoa-label)" }}>
-                {taxesPreview.base} EUR
+                {money(taxesPreview.base)}
               </strong>
             </CocoaCard>
             <CocoaCard variant="bordered" padding="md">
               <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>IVA (10%)</span>
               <strong style={{ display: "block", marginTop: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-title-3)", color: "var(--cocoa-label)" }}>
-                {taxesPreview.tax} EUR
+                {money(taxesPreview.tax)}
               </strong>
             </CocoaCard>
             <CocoaCard variant="bordered" padding="md">
               <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Total</span>
               <strong style={{ display: "block", marginTop: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-title-3)", color: "var(--cocoa-label)" }}>
-                {form.totalAmount || 0} EUR
+                {money(form.totalAmount || 0)}
               </strong>
             </CocoaCard>
             <CocoaCard variant="bordered" padding="md">
               <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Precio / noche</span>
               <strong style={{ display: "block", marginTop: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-title-3)", color: "var(--cocoa-label)" }}>
-                {nightsCount > 0 ? (Number(form.totalAmount) / nightsCount).toFixed(2) : "0.00"} EUR
+                {money(nightsCount > 0 ? Number(form.totalAmount) / nightsCount : 0)}
               </strong>
             </CocoaCard>
           </div>
@@ -1119,28 +1126,28 @@ export function ReservationCreateScreen() {
           description={`Canal, fuente, segmento de mercado y referencias comerciales · ${form.bookingSource} · ${form.marketSegment}`}
         >
           <div style={gridThreeStyle}>
-            <FieldRow label="Booking source" hint="Cómo entró la reserva (directo, OTA, walk-in, teléfono…).">
+            <FieldRow label="Origen de la reserva" hint="Cómo entró la reserva (directo, OTA, walk-in, teléfono…).">
               <CocoaSelect
                 value={form.bookingSource}
                 onChange={(v) => updateField(setForm, "bookingSource", v)}
                 options={BOOKING_SOURCE_OPTIONS}
               />
             </FieldRow>
-            <FieldRow label="Market segment" hint="Corporate, Leisure, MICE, Wedding, Sports, Group…">
+            <FieldRow label="Segmento de mercado" hint="Corporate, Leisure, MICE, Wedding, Sports, Group…">
               <CocoaSelect
                 value={form.marketSegment}
                 onChange={(v) => updateField(setForm, "marketSegment", v)}
                 options={marketOptions.length ? marketOptions : MARKET_SEGMENT_OPTIONS}
               />
             </FieldRow>
-            <FieldRow label="Channel" hint="Canal técnico de distribución.">
+            <FieldRow label="Canal" hint="Canal técnico de distribución.">
               <CocoaSelect
                 value={form.channel}
                 onChange={(v) => updateField(setForm, "channel", v)}
                 options={CHANNEL_OPTIONS}
               />
             </FieldRow>
-            <FieldRow label="Source code">
+            <FieldRow label="Código de origen">
               <CocoaSelect
                 value={form.sourceCode}
                 onChange={(v) => updateField(setForm, "sourceCode", v)}
@@ -1149,7 +1156,7 @@ export function ReservationCreateScreen() {
                     ? sourceOptions
                     : [
                         { value: "direct_web", label: "Direct web" },
-                        { value: "phone", label: "Phone" }
+                        { value: "phone", label: "Teléfono" }
                       ]
                 }
               />
@@ -1189,14 +1196,14 @@ export function ReservationCreateScreen() {
                 placeholder="GRP-2026-..."
               />
             </FieldRow>
-            <FieldRow label="Booker name">
+            <FieldRow label="Nombre del titular">
               <CocoaInput
                 value={form.bookerName}
                 onChange={(v) => updateField(setForm, "bookerName", v)}
                 placeholder="Quien hace la reserva (si != huésped)"
               />
             </FieldRow>
-            <FieldRow label="Booker email">
+            <FieldRow label="Correo del titular">
               <CocoaInput
                 value={form.bookerEmail}
                 onChange={(v) => updateField(setForm, "bookerEmail", v)}
@@ -1209,7 +1216,7 @@ export function ReservationCreateScreen() {
         {/* ===== 5 · Pagos ===== */}
         <CocoaFormFieldset
           title="5 · Pagos"
-          description={`Método de pago, garantía, depósito y políticas comerciales · ${form.depositPaid || 0} / ${form.depositAmount || 0} EUR`}
+          description={`Método de pago, garantía, depósito y políticas comerciales · ${money(form.depositPaid || 0)} / ${money(form.depositAmount || 0)}`}
         >
           <div style={gridThreeStyle}>
             <FieldRow label="Método de pago" hint="Tipo de cobro acordado con el huésped.">
@@ -1438,28 +1445,25 @@ export function ReservationCreateScreen() {
             <h3 style={{ margin: 0, fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
               {createdReservation.code}
             </h3>
-            <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-success)" }}>Created</span>
+            <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-success)" }}>Creada</span>
           </div>
           <p style={{ color: "var(--cocoa-label-secondary)" }}>
-            Reserva guardada, primary guest linked and an open folio was created.
+            Reserva guardada, huésped principal vinculado y folio abierto.
           </p>
           <div style={actionsRowStyle}>
             <CocoaButton
               variant="bordered"
               tone="neutral"
-              onClick={() => {
-                window.history.pushState(null, "", `/backoffice/reservations/${createdReservation.id}`);
-                window.dispatchEvent(new PopStateEvent("popstate"));
-              }}
+              onClick={() => openTabPath(urlForScreen("ReservationDetailWorkspace", { id: createdReservation.id }) ?? "/recepcion/reservas")}
             >
-              Open reservation detail
+              Abrir el detalle de la reserva
             </CocoaButton>
             <CocoaButton
               variant="bordered"
               tone="neutral"
               onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "BillingCenter" }))}
             >
-              Open billing center
+              Abrir facturación
             </CocoaButton>
           </div>
         </CocoaCard>

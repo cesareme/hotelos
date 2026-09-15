@@ -16,6 +16,7 @@ import {
   type EsrsReportSummary
 } from "../../services/esrsApi";
 import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
+import { number, percent } from "../../lib/format";
 
 const ORG_ID = getActiveOrganizationId();
 
@@ -28,9 +29,7 @@ const STANDARD_LABEL: Record<string, { name: string; icon: string }> = {
 };
 
 function fmtNum(n: number | string | null): string {
-  if (n === null || n === undefined) return "—";
-  const x = typeof n === "number" ? n : Number(n);
-  return Number.isNaN(x) ? "—" : new Intl.NumberFormat("es-ES", { maximumFractionDigits: 2 }).format(x);
+  return number(n);
 }
 
 export function EsrsReportScreen() {
@@ -148,7 +147,7 @@ export function EsrsReportScreen() {
               {completeness === 100 ? "completo" : `${reqCount - reportedReq} faltan`}
             </span>
           </div>
-          <div className="rev-kpi-value">{completeness.toFixed(1)} %</div>
+          <div className="rev-kpi-value">{percent(completeness, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</div>
         </article>
         <article className="rev-kpi rev-kpi-ok">
           <div className="rev-kpi-head">
@@ -169,7 +168,7 @@ export function EsrsReportScreen() {
       {summary ? (
         <article className="bo-card" style={{ background: "var(--accent-soft, rgba(78,224,163,0.10))", border: "1px solid var(--accent)" }}>
           <p style={{ margin: 0, color: "var(--ink)" }}>
-            Informe generado · <strong>{summary.completenessPct.toFixed(1)} %</strong> de cumplimiento sobre disclosures obligatorios
+            Informe generado · <strong>{percent(summary.completenessPct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</strong> de cumplimiento sobre disclosures obligatorios
             ({summary.reportedRequired}/{summary.requiredDisclosures}).
             Estado: <strong>{summary.completenessPct === 100 ? "Listo para enviar" : "Borrador"}</strong>.
           </p>

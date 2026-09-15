@@ -34,6 +34,7 @@ import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaInput } from "../../components/cocoa/CocoaInput";
+import { dateTime, DEFAULT_CURRENCY, money, type CurrencyInput } from "../../lib/format";
 
 type FolioTab = "charges" | "payments" | "routing" | "notes";
 
@@ -63,8 +64,8 @@ type MoveChargesResponse = {
   moved: string[];
 };
 
-function fmtMoney(n: number, currency = "EUR"): string {
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
+function fmtMoney(n: number, currency?: CurrencyInput): string {
+  return money(n, currency);
 }
 
 function noteStorageKey(folioId: string): string {
@@ -323,7 +324,7 @@ export function FolioDetailScreen({ folioId: folioIdProp }: FolioDetailScreenPro
     showToast("Editor de reglas de routing: disponible en pantalla dedicada", { variant: "info" });
   }
 
-  const currency = folio?.currency ?? "EUR";
+  const currency = folio?.currency ?? DEFAULT_CURRENCY;
 
   const tabOptions = useMemo(
     () => [
@@ -341,7 +342,7 @@ export function FolioDetailScreen({ folioId: folioIdProp }: FolioDetailScreenPro
         key: "capturedAt",
         label: "Capturado",
         render: (payment) =>
-          payment.capturedAt ? new Date(payment.capturedAt).toLocaleString("es-ES") : "—"
+          dateTime(payment.capturedAt)
       },
       {
         key: "method",

@@ -9,11 +9,13 @@ import { FrontDeskActionQueue } from "./FrontDeskActionQueue";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { HOSTED_ACTIONS_ROW, useTabHost } from "../tabs/TabHost";
 import { CocoaCard } from "../../components/cocoa/CocoaCard";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
 import { FRONTDESK_COCKPIT_INSTRUCTIONS } from "../../content/screen-instructions/frontdesk-cockpit";
+import { date, money, number } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -94,26 +96,15 @@ const RESERVATION_STATUS_KIND: Record<string, StatusKind> = {
 };
 
 function fmtNumber(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0";
-  return new Intl.NumberFormat("es-ES", { useGrouping: true }).format(value);
+  return number(value);
 }
 
 function fmtEur(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) return "0,00 €";
-  return new Intl.NumberFormat("es-ES", {
-    useGrouping: true,
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(value);
+  return money(value);
 }
 
 function fmtDay(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleDateString("es-ES", { day: "2-digit", month: "short", timeZone: "UTC" });
+  return date(iso, "dayMonth");
 }
 
 function greeting(): string {
@@ -124,7 +115,7 @@ function greeting(): string {
 }
 
 function todayLabel(): string {
-  const label = new Date().toLocaleDateString("es-ES", { weekday: "long", day: "numeric", month: "long" });
+  const label = date(new Date(), "weekday");
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
@@ -347,6 +338,7 @@ const mutedTextStyle: CSSProperties = {
 };
 
 export function FrontDeskDashboard() {
+  const hosted = useTabHost() !== null;
   const { data, loading, error, refresh } = useApiData<FrontDeskDashboardData>(
     `/dashboards/front-desk?propertyId=${PROPERTY_ID}`,
     { pollIntervalMs: 30000 }
@@ -734,7 +726,7 @@ export function FrontDeskDashboard() {
         tone="neutral"
         onClick={() => navigateTo("LiveTimelineWorkspace")}
       >
-        Live Timeline
+        Cronograma
       </CocoaButton>
       <CocoaButton
         variant="filled"
@@ -748,12 +740,11 @@ export function FrontDeskDashboard() {
 
   return (
     <>
-      <CocoaPageHeader
-        eyebrow={`Operations · Recepción · ${todayLabel()}`}
-        title="Front Desk"
-        subtitle={subtitle}
-        actions={pageActions}
-      />
+      {hosted ? (
+        <div style={HOSTED_ACTIONS_ROW}>{pageActions}</div>
+      ) : (
+        <CocoaPageHeader eyebrow={`Recepción · ${todayLabel()}`} title="Recepción" subtitle={subtitle} actions={pageActions} />
+      )}
 
       <CocoaScreenInstructionsCard {...FRONTDESK_COCKPIT_INSTRUCTIONS} dismissible persistKey="frontdesk-cockpit" />
 

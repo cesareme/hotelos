@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
+import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { urlForScreen } from "../../navigation/nav-tree";
 import {
   fetchReservations,
   fetchRoomTypes,
@@ -12,6 +14,7 @@ import {
   type ReservationOperationalTab
 } from "../../services/pmsCommerceApi";
 import { PageHeader } from "../../components/v2/PageHeader";
+import { useTabHost } from "../tabs/TabHost";
 import { SearchInput } from "../../components/v2/SearchInput";
 import {
   SegmentedControl,
@@ -29,6 +32,7 @@ import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/Coc
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
 import { RESERVATIONS_INSTRUCTIONS } from "../../content/screen-instructions/reservations";
+import { money } from "../../lib/format";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -143,6 +147,7 @@ function mergeById(current: AdminReservation[], incoming: AdminReservation[]): A
 }
 
 export function ReservationsListScreen() {
+  const hosted = useTabHost() !== null;
   const [reservations, setReservations] = useState<AdminReservation[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [total, setTotal] = useState<number | null>(null);
@@ -316,7 +321,7 @@ export function ReservationsListScreen() {
       label: "Llegan hoy",
       badge: badge("today_arrivals")
     },
-    { value: "in_house", label: "In-house", badge: badge("in_house") },
+    { value: "in_house", label: "En casa", badge: badge("in_house") },
     {
       value: "today_departures",
       label: "Salen hoy",
@@ -374,7 +379,7 @@ export function ReservationsListScreen() {
       align: "right",
       render: (row) => (
         <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>
-          {row.totalAmount.toLocaleString("es-ES")} {row.currency}
+          {money(row.totalAmount, row.currency)}
         </span>
       )
     },
@@ -391,17 +396,11 @@ export function ReservationsListScreen() {
   ];
 
   function openReservation(row: ReservationRow) {
-    // Push the deep-link path so reload + browser-history both restore the
-    // workspace. The detail screen parses `res_*` from the trailing slug.
-    window.history.pushState(
-      null,
-      "",
-      `/backoffice/reservations/${row.id}`
-    );
-    window.dispatchEvent(new PopStateEvent("popstate"));
-    // Also fire `hotelos-nav` for environments where the router watches the
-    // CustomEvent instead of (or in addition to) the popstate URL.
-    navTo("ReservationDetailWorkspace");
+    // Deep link to /recepcion/reservas/:id (Detalle tab of the Reservas
+    // container, Tanda 5): reload + browser history restore the workspace and
+    // the detail screen parses the id from the trailing slug.
+    const url = urlForScreen("ReservationDetailWorkspace", { id: row.id });
+    if (url) openTabPath(url);
   }
 
   const wrapperStyle: CSSProperties = {
@@ -431,21 +430,23 @@ export function ReservationsListScreen() {
 
   return (
     <section style={wrapperStyle}>
-      <PageHeader
-        eyebrow="PMS · Reservas"
-        title="Reservas"
-        subtitle="Búsqueda, filtros operativos y acceso al espacio de cada reserva."
-        actions={
-          <CocoaButton
-            variant="filled"
-            tone="accent"
-            icon={<PlusIcon />}
-            onClick={() => navTo("ReservationCreate")}
-          >
-            Nueva reserva
-          </CocoaButton>
-        }
-      />
+      {hosted ? null : (
+        <PageHeader
+          eyebrow="PMS · Reservas"
+          title="Reservas"
+          subtitle="Búsqueda, filtros operativos y acceso al espacio de cada reserva."
+          actions={
+            <CocoaButton
+              variant="filled"
+              tone="accent"
+              icon={<PlusIcon />}
+              onClick={() => navTo("ReservationCreate")}
+            >
+              Nueva reserva
+            </CocoaButton>
+          }
+        />
+      )}
 
       <CocoaScreenInstructionsCard
         title="Reservas"
@@ -466,7 +467,7 @@ export function ReservationsListScreen() {
           onClick={() => setTab("today_arrivals")}
         />
         <StatTile
-          label="In-house"
+          label="En casa"
           value={tileValue("in_house")}
           color="default"
           helper="Huéspedes actualmente alojados"
@@ -477,7 +478,7 @@ export function ReservationsListScreen() {
           label="Salidas"
           value={tileValue("today_departures")}
           color="warn"
-          helper="Departure = hoy"
+          helper="Alojadas con salida hoy"
           loading={loading && tabCounts.today_departures === undefined}
           onClick={() => setTab("today_departures")}
         />

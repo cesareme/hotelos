@@ -32,7 +32,11 @@ const toolNames = readFileSync(new URL("../packages/ai-tools/src/tool-names.ts",
 const worker = readFileSync(new URL("../apps/worker/src/index.ts", import.meta.url), "utf8");
 const channelAdapter = readFileSync(new URL("../packages/integrations/src/channel-manager.ts", import.meta.url), "utf8");
 const adminApp = readFileSync(new URL("../apps/admin-web/src/App.tsx", import.meta.url), "utf8");
-const adminSidebar = readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8");
+// Tanda 5 · L1b: the sidebar renders nav-tree.generated.json (labels, keys, URLs and
+// the legacy /backoffice/* redirects live there), so the menu source is both files.
+const adminSidebar =
+  readFileSync(new URL("../apps/admin-web/src/navigation/Sidebar.tsx", import.meta.url), "utf8") +
+  readFileSync(new URL("../apps/admin-web/src/navigation/nav-tree.generated.json", import.meta.url), "utf8");
 const demoHtml = readFileSync(new URL("../demo/public/index.html", import.meta.url), "utf8");
 const demoScript = readFileSync(new URL("../demo/public/app.js", import.meta.url), "utf8");
 
@@ -44,7 +48,7 @@ describe("Revenue Management and Channel Manager module", () => {
   it("upgrades the product registry, permissions and mobile visibility for revenue_profit_engine", () => {
     assert.match(manifest, /code: "revenue_profit_engine"/);
     for (const marker of [
-      "Forecasting, dynamic pricing, channel management, restrictions, rate intelligence, demand prediction and profit optimization",
+      "Previsión, precios dinámicos, gestión de canales, restricciones, inteligencia tarifaria, predicción de demanda y optimización del beneficio",
       "\"payment_vault\"",
       "\"hotel_intelligence_platform\"",
       "\"channel_manager.sync\"",
@@ -281,6 +285,9 @@ describe("Revenue Management and Channel Manager module", () => {
     ]) {
       assert.equal(existsSync(new URL(path, import.meta.url)), true);
     }
+    // Tanda 5 · L1b: ChannelMappingsScreen is the «Correspondencias» tab of
+    // Comercial › Canales de venta, loaded by its container (CanalesTabs).
+    const canalesTabs = readFileSync(new URL("../apps/admin-web/src/screens/tabs/comercial/CanalesTabs.tsx", import.meta.url), "utf8");
     for (const marker of [
       "ChannelMappingsScreen",
       "RateShopperSettingsScreen",
@@ -288,7 +295,7 @@ describe("Revenue Management and Channel Manager module", () => {
       // The screen key (RevenueDataQuality) is also kept so deep links work.
       "Calidad de datos|RevenueDataQuality"
     ]) {
-      assert.match(adminApp + adminSidebar, new RegExp(marker));
+      assert.match(adminApp + adminSidebar + canalesTabs, new RegExp(marker));
     }
     for (const marker of [
       "Open Revenue",

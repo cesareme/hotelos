@@ -6,11 +6,11 @@
 // percentage badge, never as a fabricated confidence band. When the server
 // reports forecastMissing/budgetMissing the UI says so honestly and offers
 // the real remediation (generate forecasts / load budget).
+import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchHistoryForecastBoard,
   generateForecasts,
-  money,
   type BoardRow,
   type CriticalDate,
   type HistoryForecastBoard,
@@ -18,6 +18,7 @@ import {
 } from "../../services/revenueApi";
 import { ErrorState, LoadingBlock, SkeletonLines, Spinner } from "../../components/States";
 import { NarrowViewportBanner } from "../../components/NarrowViewportBanner";
+import { money, number, percent, time } from "../../lib/format";
 
 // ---- date helpers (UTC slicing, module convention) -------------------------
 const MS_DAY = 86_400_000;
@@ -44,20 +45,17 @@ const RANGE_PRESETS: { id: string; label: string; range: () => { from: string; t
 ];
 
 // ---- number/date formatting (es-ES) ----------------------------------------
-const nfInt = new Intl.NumberFormat("es-ES", { useGrouping: true, maximumFractionDigits: 0 });
-const nfPct1 = new Intl.NumberFormat("es-ES", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-const nfCompact = new Intl.NumberFormat("es-ES", { notation: "compact", maximumFractionDigits: 1 });
 
 function fmtInt(n: number): string {
-  return nfInt.format(Math.round(n));
+  return number(n, { maximumFractionDigits: 0 });
 }
 function fmtPct1(n: number): string {
-  return `${nfPct1.format(n)} %`;
+  return percent(n, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 /** Confidence can arrive as 0..1 or 0..100 depending on the model row; normalize defensively. */
 function fmtConfidence(n: number): string {
   const pct = n > 1.5 ? n : n * 100;
-  return `${nfInt.format(Math.round(pct))}%`;
+  return percent(pct, { maximumFractionDigits: 0 });
 }
 function signedInt(n: number): string {
   return `${n > 0 ? "+" : ""}${fmtInt(n)}`;
@@ -66,7 +64,7 @@ function signedMoney(n: number): string {
   return `${n > 0 ? "+" : ""}${money(n)}`;
 }
 function signedPct1(n: number): string {
-  return `${n > 0 ? "+" : ""}${nfPct1.format(n)} %`;
+  return percent(n, { signDisplay: "exceptZero", minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 function dash<T>(value: T | null | undefined, fmt: (v: T) => string): string {
   return value === null || value === undefined ? "—" : fmt(value);
@@ -81,11 +79,7 @@ function fmtDateFull(iso: string): string {
 }
 /** OTB timestamp → HH:MM in Europe/Madrid (spec convention: "OTB a las HH:MM"). */
 function fmtOtbTime(isoTimestamp: string): string {
-  try {
-    return new Intl.DateTimeFormat("es-ES", { timeZone: "Europe/Madrid", hour: "2-digit", minute: "2-digit" }).format(new Date(isoTimestamp));
-  } catch {
-    return isoTimestamp.slice(11, 16);
-  }
+  return time(isoTimestamp);
 }
 function confidenceTone(c: number): "ok" | "warn" | "error" {
   const pct = c > 1.5 ? c : c * 100;
@@ -332,6 +326,8 @@ const BOARD_CSS = `
 `;
 
 export function RevenueHistoryForecastDashboard() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   const [preset, setPreset] = useState<string>("-7+90");
   const [from, setFrom] = useState<string>(() => addDaysIso(todayIso(), -7));
   const [to, setTo] = useState<string>(() => addDaysIso(todayIso(), 90));
@@ -413,8 +409,12 @@ export function RevenueHistoryForecastDashboard() {
       <section className="bo-card">
         <div className="bo-card-head">
           <div>
-            <p className="bo-muted">Revenue · Histórico y previsión</p>
-            <h2>{board?.propertyName ?? "Histórico y previsión"}</h2>
+            {embedded ? null : (
+              <>
+                <p className="bo-muted">Revenue · Histórico y previsión</p>
+                <h2>{board?.propertyName ?? "Histórico y previsión"}</h2>
+              </>
+            )}
             {board ? (
               <p className="bo-muted" style={{ margin: "4px 0 0", textTransform: "none", fontSize: 12 }}>
                 Datos a cierre de {fmtDateFull(board.businessDate)} · OTB a las {fmtOtbTime(board.generatedAt)} (Europe/Madrid) · Ventana {fmtDateFull(board.from)} → {fmtDateFull(board.to)}
@@ -568,7 +568,7 @@ export function RevenueHistoryForecastDashboard() {
                 <BoardLineChart
                   points={revenuePoints}
                   fmtValue={money}
-                  fmtAxis={(n) => `${nfCompact.format(n)} €`}
+                  fmtAxis={(n) => money(n, { compact: true })}
                 />
               </article>
             </div>

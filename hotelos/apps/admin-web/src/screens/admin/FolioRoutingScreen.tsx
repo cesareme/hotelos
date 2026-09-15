@@ -13,6 +13,7 @@
 // service GET /folios/:id/balance). This is a read-write workspace; mutations
 // trigger refresh of the affected queries.
 
+import { useTabHost } from "../tabs/TabHost";
 import { useEffect, useMemo, useState } from "react";
 import {
   fetchReservationFolios,
@@ -27,6 +28,7 @@ import {
   type FolioRoutingRule
 } from "../../services/folioRoutingApi";
 import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
+import { dateTime, money, type CurrencyInput } from "../../lib/format";
 
 // Source types the auto-router can match on. "*" = catch-all.
 const SOURCE_TYPES = [
@@ -44,15 +46,16 @@ const SOURCE_TYPES = [
   { code: "adjustment", label: "Ajuste (adjustment)" }
 ];
 
-function fmtMoney(n: number, currency = "EUR"): string {
-  return new Intl.NumberFormat("es-ES", { style: "currency", currency, maximumFractionDigits: 2 }).format(n);
+function fmtMoney(n: number, currency?: CurrencyInput): string {
+  return money(n, currency);
 }
 function fmtDateTime(iso: string): string {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString("es-ES", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  return dateTime(iso, { style: "dayMonth" });
 }
 
 export function FolioRoutingScreen() {
+  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
+  const embedded = useTabHost() !== null;
   // Reservation lookup state
   const [reservationInput, setReservationInput] = useState<string>("");
   const [reservationId, setReservationId] = useState<string | null>(null);
@@ -213,8 +216,12 @@ export function FolioRoutingScreen() {
     <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
       <header className="bo-card-head">
         <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Finanzas · Folios</p>
-          <h2 style={{ color: "var(--ink)" }}>Folios divididos y enrutamiento</h2>
+          {embedded ? null : (
+            <>
+              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Finanzas · Facturación y cobros</p>
+              <h2 style={{ color: "var(--ink)" }}>Folios divididos y enrutamiento</h2>
+            </>
+          )}
           <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
             Divide los cargos de una reserva entre el huésped, la empresa o la agencia de viajes. Las reglas envían automáticamente
             cada nuevo cargo (p. ej. <em>minibar → folio company</em>) al folio adecuado. Pulsa <strong>Transferir</strong> para mover

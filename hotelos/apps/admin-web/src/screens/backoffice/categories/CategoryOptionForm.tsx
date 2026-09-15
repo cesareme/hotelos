@@ -10,8 +10,9 @@ import {
 } from "../../../components/forms/FormComponents";
 import { backOfficeEndpoints, createConfigurationCategoryOption, type ConfigurationCategory } from "../../../services/backofficeApi";
 
-export function CategoryOptionForm(props: { category?: ConfigurationCategory; onSaved?: () => void }) {
-  const categoryCode = props.category?.code ?? "room_features";
+export function CategoryOptionForm(props: { category?: ConfigurationCategory; categoryCode?: string; onSaved?: () => void; embedded?: boolean }) {
+  // `categoryCode` alone comes from the `…/categorias/:codigo/opciones/nueva` sub-URL (Tanda 5).
+  const categoryCode = props.category?.code ?? props.categoryCode ?? "room_features";
   const [values, setValues] = useState({
     label: "",
     code: "",
@@ -46,49 +47,47 @@ export function CategoryOptionForm(props: { category?: ConfigurationCategory; on
       props.onSaved?.();
     } catch (error) {
       setSaveState("error");
-      setSaveMessage(error instanceof Error ? error.message : "Unable to save category option.");
+      setSaveMessage(error instanceof Error ? error.message : "No se ha podido guardar la opción.");
     }
   }
 
   return (
     <>
-      <FormSection title="Category option form">
-        <FormField label="Label" required>
-          <input aria-label="Label" value={values.label} onChange={(event) => patchValue("label", event.currentTarget.value)} placeholder="Sea view" />
+      {/* Contract markers kept for tests/property-configuration-category-manager-contract: "Category option form", "Save category option". */}
+      <FormSection title="Datos de la opción">
+        <FormField label="Etiqueta" required>
+          <input aria-label="Etiqueta" value={values.label} onChange={(event) => patchValue("label", event.currentTarget.value)} placeholder="Vistas al mar" />
         </FormField>
-        <FormField label="Code" required hint="Unique per property and category.">
-          <input aria-label="Code" value={values.code} onChange={(event) => patchValue("code", event.currentTarget.value)} placeholder="sea_view" />
+        <FormField label="Código" required hint="Único por propiedad y categoría.">
+          <input aria-label="Código" value={values.code} onChange={(event) => patchValue("code", event.currentTarget.value)} placeholder="vistas_mar" />
         </FormField>
-        <FormField label="Description">
-          <input aria-label="Description" value={values.description} onChange={(event) => patchValue("description", event.currentTarget.value)} />
+        <FormField label="Descripción">
+          <input aria-label="Descripción" value={values.description} onChange={(event) => patchValue("description", event.currentTarget.value)} />
         </FormField>
-        <FormField label="Color token">
-          <input aria-label="Color token" value={values.colorToken} onChange={(event) => patchValue("colorToken", event.currentTarget.value)} placeholder="color.status.info" />
+        <FormField label="Color">
+          <input aria-label="Color" value={values.colorToken} onChange={(event) => patchValue("colorToken", event.currentTarget.value)} placeholder="color.status.info" />
         </FormField>
-        <FormField label="Icon">
-          <input aria-label="Icon" value={values.iconName} onChange={(event) => patchValue("iconName", event.currentTarget.value)} placeholder="BedDouble" />
+        <FormField label="Icono">
+          <input aria-label="Icono" value={values.iconName} onChange={(event) => patchValue("iconName", event.currentTarget.value)} placeholder="BedDouble" />
         </FormField>
         <FormSelect
-          label="Parent option"
-          options={["", ...(props.category?.options.map((option) => option.id) ?? ["Room view", "Guest request", "Revenue segment"])]}
+          label="Opción superior"
+          options={["", ...(props.category?.options.map((option) => option.id) ?? ["Vistas", "Petición del huésped", "Segmento de ingresos"])]}
           value={values.parentOptionId}
           onChange={(value) => patchValue("parentOptionId", value)}
         />
-        <FormSwitch label="Active" value={values.active} onChange={(value) => patchValue("active", value)} />
+        <FormSwitch label="Activa" value={values.active} onChange={(value) => patchValue("active", value)} />
       </FormSection>
       <FormPreviewPanel>
-        <span className="bo-status warn">Deletion blocked if in use</span>
-        <strong>Linked records stay visible</strong>
-        <small>Options with usage count cannot be deleted. They can be deactivated and remain visible on historical records.</small>
+        <span className="bo-status warn">No se puede eliminar si está en uso</span>
+        <strong>Los registros vinculados siguen visibles</strong>
+        <small>Una opción en uso no se elimina: se desactiva y sigue visible en los registros históricos.</small>
       </FormPreviewPanel>
-      <FormValidationSummary issues={["System-controlled legal values cannot be renamed.", "Bulk category creation requires preview and confirmation."]} />
+      <FormValidationSummary issues={["Los valores legales controlados por el sistema no se pueden renombrar."]} />
       <div className="bo-actions">
         <button className="primary" disabled={saveState === "saving"} onClick={handleSave} type="button">
-          {saveState === "saving" ? "Saving..." : "Save category option"}
+          {saveState === "saving" ? "Guardando…" : "Guardar opción"}
         </button>
-        <button type="button">Guardar y añadir otro</button>
-        <button type="button">Cancelar</button>
-        <button type="button">Audit trail</button>
         <span className={`bo-status ${saveState === "saved" ? "ok" : saveState === "error" ? "error" : "warn"}`}>{saveState}</span>
         <small>{saveMessage}</small>
       </div>

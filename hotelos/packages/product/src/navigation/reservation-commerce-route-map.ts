@@ -1,3 +1,10 @@
+// Reservation, billing and reporting flows (Tanda 5 · L1a): each flow names
+// the canonical screen of the Tanda 5 tree (`screen`) and its URL (`url`); the
+// legacy `/backoffice/*` `adminPath` was retired in L1c (the router redirects
+// old paths through NAV_TREE.legacyRoutes). Labels and input names are Spanish
+// (they are shown to hoteliers); codes stay stable for the demo and the
+// contract tests.
+
 export type ReservationCommerceArea = "reservations" | "billing" | "reports";
 
 export type ReservationCommerceRouteItem = {
@@ -5,8 +12,10 @@ export type ReservationCommerceRouteItem = {
   area: ReservationCommerceArea;
   label: string;
   description: string;
-  adminPath: string;
+  /** Tanda 5 URL of the screen. */
+  url: string;
   mobileRoute?: string;
+  /** Canonical SCREEN_COMPONENTS key. */
   screen: string;
   permission: string;
   apiEndpoint: string;
@@ -23,24 +32,24 @@ export const RESERVATION_COMMERCE_ROUTES: ReservationCommerceRouteItem[] = [
   {
     code: "reservation_workspace",
     area: "reservations",
-    label: "Reservations Workspace",
-    description: "Search, filter and open reservations with guest, journey, folio, compliance and action context.",
-    adminPath: "/backoffice/reservations",
+    label: "Reservas",
+    description: "Buscar, filtrar y abrir reservas con el contexto de huésped, recorrido, folio, cumplimiento y acciones.",
+    url: "/recepcion/reservas",
     mobileRoute: "Reservations",
     screen: "ReservationWorkspace",
     permission: "pms.reservation.read",
     apiEndpoint: "/properties/:propertyId/reservations",
     targetTables: ["reservations", "reservation_guests", "reservation_resources", "folios"],
-    inputCategories: ["Reservation status", "Channel category", "Market segment", "Guest segment", "Billing status"],
-    requiredInputs: ["Stay dates", "Guest or booker", "Room type or resource", "Reservation status"],
+    inputCategories: ["Estado de la reserva", "Categoría de canal", "Segmento de mercado", "Segmento de huésped", "Estado de facturación"],
+    requiredInputs: ["Fechas de estancia", "Huésped o reservante", "Tipo de habitación o recurso", "Estado de la reserva"],
     status: "ready"
   },
   {
     code: "reservation_create",
     area: "reservations",
-    label: "Create Reservation",
-    description: "Create direct, OTA, corporate, group, day-use or resource reservations from availability quote to confirmation.",
-    adminPath: "/backoffice/reservations/new",
+    label: "Nueva reserva",
+    description: "Crear reservas directas, de OTA, de empresa, de grupo, de uso diurno o de recurso desde la cotización hasta la confirmación.",
+    url: "/recepcion/reservas/nueva",
     mobileRoute: "CreateReservation",
     screen: "ReservationCreate",
     permission: "pms.reservation.create",
@@ -48,133 +57,133 @@ export const RESERVATION_COMMERCE_ROUTES: ReservationCommerceRouteItem[] = [
     saveEndpoint: "/properties/:propertyId/reservations",
     targetTables: ["reservations", "reservation_guests", "reservation_resources", "folios", "audit_events"],
     inputCategories: [
-      "Reservation source",
-      "Market segment",
-      "Guest details",
-      "Stay dates",
-      "Room/resource type",
-      "Rate plan",
-      "Guarantee policy",
-      "Billing instruction"
+      "Origen de la reserva",
+      "Segmento de mercado",
+      "Datos del huésped",
+      "Fechas de estancia",
+      "Tipo de habitación o recurso",
+      "Plan de tarifas",
+      "Política de garantía",
+      "Instrucción de facturación"
     ],
-    requiredInputs: ["Arrival date", "Departure date", "Adults", "Room type", "Primary guest first name", "Primary guest surname"],
+    requiredInputs: ["Fecha de llegada", "Fecha de salida", "Adultos", "Tipo de habitación", "Nombre del huésped principal", "Apellidos del huésped principal"],
     requiresConfirmation: true,
     status: "ready"
   },
   {
     code: "reservation_detail",
     area: "reservations",
-    label: "Reservation Detail",
-    description: "Manage room/resource assignment, check-in/out, move, cancel, no-show, folio, invoice and audit trail.",
-    adminPath: "/backoffice/reservations/:reservationId",
+    label: "Detalle de la reserva",
+    description: "Asignar habitación o recurso, hacer check-in y check-out, mover, cancelar, marcar no presentado y ver folio, factura y auditoría.",
+    url: "/recepcion/reservas/:id",
     mobileRoute: "ReservationDetail",
     screen: "ReservationDetailWorkspace",
     permission: "pms.reservation.read",
     apiEndpoint: "/reservations/:id",
     saveEndpoint: "/reservations/:id",
     targetTables: ["reservations", "reservation_resources", "stays", "folios", "folio_lines", "payments", "guest_register_records"],
-    inputCategories: ["Guest journey", "Room/resource assignment", "Payments", "Compliance", "Invoice status"],
-    requiredInputs: ["Reservation id"],
+    inputCategories: ["Recorrido del huésped", "Asignación de habitación o recurso", "Pagos", "Cumplimiento", "Estado de la factura"],
+    requiredInputs: ["Identificador de la reserva"],
     status: "ready"
   },
   {
     code: "reservation_categories",
     area: "reservations",
-    label: "Reservation Categories",
-    description: "Configure source codes, market segments, guarantee policies, cancellation policies and billing instructions.",
-    adminPath: "/backoffice/configuration/categories",
+    label: "Categorías de reserva",
+    description: "Configurar códigos de origen, segmentos de mercado, políticas de garantía, políticas de cancelación e instrucciones de facturación.",
+    url: "/configuracion/propiedad/categorias",
     mobileRoute: "CategoryManagerPreview",
     screen: "CategoryManagerScreen",
     permission: "categories.manage",
     apiEndpoint: "/backoffice/properties/:propertyId/configuration/categories",
     saveEndpoint: "/backoffice/properties/:propertyId/configuration/categories/:categoryCode/options",
     targetTables: ["category_definitions", "property_category_options", "property_custom_field_definitions"],
-    inputCategories: ["Reservation source", "Market segment", "Cancellation policy", "Guarantee type", "Billing instruction"],
-    requiredInputs: ["Option code", "Option label", "Mode", "Active state"],
+    inputCategories: ["Origen de la reserva", "Segmento de mercado", "Política de cancelación", "Tipo de garantía", "Instrucción de facturación"],
+    requiredInputs: ["Código de la opción", "Etiqueta de la opción", "Modo", "Estado activo"],
     status: "ready"
   },
   {
     code: "folio_billing",
     area: "billing",
-    label: "Folio Billing",
-    description: "Post charges, capture payments, close folios and prepare invoice drafts from reservation balances.",
-    adminPath: "/backoffice/billing/center",
+    label: "Facturación y cobros",
+    description: "Anotar cargos, registrar cobros, cerrar folios y preparar borradores de factura a partir de los saldos de la reserva.",
+    url: "/finanzas/facturacion",
     mobileRoute: "GuestFolio",
     screen: "BillingCenter",
     permission: "billing.compliance.view",
     apiEndpoint: "/reservations/:id/folio",
     saveEndpoint: "/folios/:id/lines",
     targetTables: ["folios", "folio_lines", "payments", "invoices"],
-    inputCategories: ["Charge category", "Payment method", "Tax code", "Invoice type", "Cost center"],
-    requiredInputs: ["Folio", "Charge or payment amount", "Tax code for charges"],
+    inputCategories: ["Categoría del cargo", "Método de pago", "Código de impuesto", "Tipo de factura", "Centro de coste"],
+    requiredInputs: ["Folio", "Importe del cargo o del cobro", "Código de impuesto de los cargos"],
     requiresConfirmation: true,
     status: "ready"
   },
   {
     code: "invoice_lifecycle",
     area: "billing",
-    label: "Invoice Lifecycle",
-    description: "Create drafts, issue invoices, cancel issued invoices and create rectifying invoices through compliant workflows.",
-    adminPath: "/backoffice/billing/invoices",
+    label: "Ciclo de la factura",
+    description: "Crear borradores, emitir facturas, anular facturas emitidas y crear rectificativas con flujos conformes a la normativa.",
+    url: "/finanzas/facturacion",
     mobileRoute: "Invoices",
     screen: "BillingCenter",
     permission: "invoice.issue",
     apiEndpoint: "/properties/:propertyId/invoices",
     saveEndpoint: "/invoices/drafts",
     targetTables: ["invoices", "invoice_lines", "invoice_sequences", "audit_events"],
-    inputCategories: ["Invoice sequence", "Invoice type", "Customer type", "Tax identity", "VERI*FACTU status"],
-    requiredInputs: ["Invoice type", "Customer type", "Total", "Tax total"],
+    inputCategories: ["Serie de facturación", "Tipo de factura", "Tipo de cliente", "Identidad fiscal", "Estado VeriFactu"],
+    requiredInputs: ["Tipo de factura", "Tipo de cliente", "Total", "Total de impuestos"],
     requiresConfirmation: true,
     status: "ready"
   },
   {
     code: "reporting_center",
     area: "reports",
-    label: "Reporting Center",
-    description: "Operational, reservation, billing, revenue and owner reports with export-ready data.",
-    adminPath: "/backoffice/reports",
+    label: "Centro de informes",
+    description: "Informes operativos, de reservas, de facturación, de revenue y del propietario con datos listos para exportar.",
+    url: "/informes",
     mobileRoute: "Reports",
     screen: "ReportingCenter",
     permission: "analytics.read",
     apiEndpoint: "/reports/properties/:propertyId/catalog",
     saveEndpoint: "/reports/properties/:propertyId/export",
     targetTables: ["reservations", "folios", "payments", "invoices", "revenue_daily_snapshots", "audit_events"],
-    inputCategories: ["Report type", "Date range", "Granularity", "Channel", "Segment", "Export format"],
-    requiredInputs: ["Report type", "From date", "To date"],
+    inputCategories: ["Tipo de informe", "Rango de fechas", "Granularidad", "Canal", "Segmento", "Formato de exportación"],
+    requiredInputs: ["Tipo de informe", "Fecha desde", "Fecha hasta"],
     reportFormats: ["pdf", "csv", "xlsx", "json"],
     status: "ready"
   },
   {
     code: "reservation_reports",
     area: "reports",
-    label: "Reservation Reports",
-    description: "Arrivals, departures, cancellations, no-shows, pickup and source/segment reports.",
-    adminPath: "/backoffice/reports/reservations",
+    label: "Informes de reservas",
+    description: "Llegadas, salidas, cancelaciones, no presentados, pickup e informes por origen y segmento.",
+    url: "/informes",
     mobileRoute: "ReservationReports",
     screen: "ReportingCenter",
     permission: "analytics.read",
     apiEndpoint: "/reports/properties/:propertyId/reservations",
     saveEndpoint: "/reports/properties/:propertyId/export",
     targetTables: ["reservations", "reservation_guests", "rooms", "room_types"],
-    inputCategories: ["Arrival range", "Departure range", "Reservation status", "Channel", "Market segment", "Room type"],
-    requiredInputs: ["From date", "To date"],
+    inputCategories: ["Rango de llegadas", "Rango de salidas", "Estado de la reserva", "Canal", "Segmento de mercado", "Tipo de habitación"],
+    requiredInputs: ["Fecha desde", "Fecha hasta"],
     reportFormats: ["pdf", "csv", "xlsx", "json"],
     status: "ready"
   },
   {
     code: "billing_reports",
     area: "reports",
-    label: "Billing Reports",
-    description: "Invoice, payment, folio balance, tax and export audit reports.",
-    adminPath: "/backoffice/reports/billing",
+    label: "Informes de facturación",
+    description: "Informes de facturas, cobros, saldos de folio, impuestos y auditoría de exportaciones.",
+    url: "/informes",
     mobileRoute: "BillingReports",
     screen: "ReportingCenter",
     permission: "analytics.read",
     apiEndpoint: "/reports/properties/:propertyId/billing",
     saveEndpoint: "/reports/properties/:propertyId/export",
     targetTables: ["folios", "folio_lines", "payments", "invoices", "invoice_lines"],
-    inputCategories: ["Invoice status", "Payment method", "Tax code", "Customer type", "Export format"],
-    requiredInputs: ["From date", "To date"],
+    inputCategories: ["Estado de la factura", "Método de pago", "Código de impuesto", "Tipo de cliente", "Formato de exportación"],
+    requiredInputs: ["Fecha desde", "Fecha hasta"],
     reportFormats: ["pdf", "csv", "xlsx", "json"],
     status: "ready"
   }
