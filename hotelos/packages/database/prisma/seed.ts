@@ -406,10 +406,25 @@ async function main() {
     } else {
       accountsCreated += 1;
     }
+    // Finanzas (2026-09-16): accounts.kind / group / level are NOT NULL since
+    // the PGC migration (20260915140000). Same derivation as the migration
+    // (revenue ≡ income, group = first digit, level = digits up to 4,
+    // postable from 3 digits). `update` no longer rewrites the name: the
+    // chart provisioner (accounting:provision-chart) never renames either.
+    const digits = acc.code.replace(/[^0-9]/g, "");
     await prisma.account.upsert({
       where: { organizationId_code: { organizationId: "org_123", code: acc.code } },
-      update: { name: acc.name, accountType: acc.accountType },
-      create: { organizationId: "org_123", code: acc.code, name: acc.name, accountType: acc.accountType }
+      update: { accountType: acc.accountType },
+      create: {
+        organizationId: "org_123",
+        code: acc.code,
+        name: acc.name,
+        accountType: acc.accountType,
+        kind: (acc.accountType === "revenue" ? "income" : acc.accountType) as "asset" | "liability" | "equity" | "income" | "expense",
+        group: Number(acc.code[0]),
+        level: Math.min(digits.length, 4),
+        isPostable: digits.length >= 3
+      }
     });
   }
   console.log(

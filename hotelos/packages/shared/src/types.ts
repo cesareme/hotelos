@@ -55,6 +55,11 @@ export type PermissionKey =
   | "banking.read"
   | "commissions.read"
   | "accounting.read"
+  // Finanzas (2026-09-16, fix t6#9): read key of the accounting books and
+  // reports that show amounts (diario, mayor, libros de IVA, modelos AEAT,
+  // cuentas anuales, USALI, facturas recibidas, amortizaciones);
+  // accounting.read stays the CALENDAR key (fiscal periods, exchange rates).
+  | "accounting.reports.read"
   | "housekeeping.task.manage"
   | "maintenance.workorder.manage"
   | "asset.capex.approve"

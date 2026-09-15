@@ -1,7 +1,14 @@
-import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { requireIsoDate } from "../../lib/query-dates.js";
+import { ZERO, aggregateAccountBalances, type AccountBalanceRow, type Decimal } from "./accounting.service.js";
+
+// Balance de situación (PGC Pymes layout) as of a date INCLUSIVE, read by
+// fecha contable. The regularización and apertura asientos count (they move
+// the result into 129 and reinstate the balances); the cierre asiento dated
+// on the requested day is excluded so the 31/12 balance is the pre-close
+// picture (a later date includes cierre + apertura). The result of the period
+// not yet regularised (Σ7 − Σ6) is shown as «Resultado del ejercicio».
 
 export type BalanceSheetItem = {
   accountCode: string;
@@ -26,6 +33,7 @@ export type FormalBalanceSheet = {
   };
   equity: {
     items: BalanceSheetItem[];
+    /** Result of the period not yet regularised into 129 (Σ income − Σ expense). */
     retainedEarnings: number;
     total: number;
   };
@@ -33,114 +41,102 @@ export type FormalBalanceSheet = {
   balanced: boolean;
 };
 
-function dateOnly(iso: string): Date {
-  return new Date(`${iso}T00:00:00.000Z`);
-}
-
-function round(n: number): number {
-  return Math.round(n * 100) / 100;
+function toNumber(value: Decimal): number {
+  return Number(value.toFixed(2));
 }
 
 // Spanish PGC classification helpers.
 // Asset codes starting with "20".."27" are non-current ("inmovilizado"),
-// "28" is accumulated depreciation (subtracts from non-current).
+// "28"/"29" accumulated depreciation / impairment (subtract from non-current).
 const NON_CURRENT_ASSET_PREFIXES = ["20", "21", "22", "23", "24", "25", "26", "27"];
-const ACC_DEPRECIATION_PREFIX = "28";
+const CONTRA_ASSET_PREFIXES = ["28", "29"];
 
-// Current asset prefixes / explicit codes (3-digit lookup against code's first 3 chars).
-const CURRENT_ASSET_3 = new Set([
-  "430", "431", "436", "440", "460", "470", "472", "473",
-  "544", "550", "570", "572", "574"
-]);
-const CURRENT_ASSET_PREFIX1 = ["3"]; // 3xx stocks
+// Current asset 3-digit codes.
+const CURRENT_ASSET_3 = new Set(["430", "431", "432", "433", "434", "435", "436", "437", "438", "440", "441", "460", "465", "470", "471", "472", "473", "474", "480", "540", "544", "548", "550", "551", "555", "558", "565", "566", "570", "571", "572", "573", "574", "575", "576"]);
 
-// Non-current liabilities: 17x
-const NON_CURRENT_LIABILITY_PREFIX2 = ["17"];
+// Non-current liabilities: 14x provisions, 17x long-term debts, 18x long-term deposits.
+const NON_CURRENT_LIABILITY_PREFIX2 = ["14", "17", "18"];
 
-// Current liability 3-digit codes
-const CURRENT_LIABILITY_3 = new Set([
-  "400", "401", "410", "438", "475", "476", "477", "520", "523", "551", "555"
-]);
+type Classified = "non_current" | "current" | "contra";
 
-// Equity 3-digit codes
-const EQUITY_3 = new Set([
-  "100", "110", "111", "112", "113", "114", "115", "118", "120", "121", "129"
-]);
-
-type AggregatedAccount = {
-  accountCode: string;
-  accountName: string;
-  accountType: string;
-  debit: number;
-  credit: number;
-};
-
-function classifyAsset(code: string): "non_current" | "current" | "acc_depreciation" | "none" {
+function classifyAsset(code: string): Classified {
   const p2 = code.slice(0, 2);
   const p3 = code.slice(0, 3);
-  if (p2 === ACC_DEPRECIATION_PREFIX) return "acc_depreciation";
+  if (CONTRA_ASSET_PREFIXES.includes(p2)) return "contra";
   if (NON_CURRENT_ASSET_PREFIXES.includes(p2)) return "non_current";
   if (CURRENT_ASSET_3.has(p3)) return "current";
-  if (CURRENT_ASSET_PREFIX1.includes(code.slice(0, 1))) return "current";
-  return "none";
+  if (code.startsWith("3")) return "current";
+  return "current";
 }
 
-function classifyLiability(code: string): "non_current" | "current" | "none" {
-  const p2 = code.slice(0, 2);
-  const p3 = code.slice(0, 3);
-  if (NON_CURRENT_LIABILITY_PREFIX2.includes(p2)) return "non_current";
-  if (CURRENT_LIABILITY_3.has(p3)) return "current";
-  return "none";
+function classifyLiability(code: string): "non_current" | "current" {
+  return NON_CURRENT_LIABILITY_PREFIX2.includes(code.slice(0, 2)) ? "non_current" : "current";
 }
 
-function isEquity(code: string): boolean {
-  return EQUITY_3.has(code.slice(0, 3));
+function kindOf(row: AccountBalanceRow): "asset" | "liability" | "equity" | "income" | "expense" {
+  const kind = row.kind === "revenue" ? "income" : row.kind;
+  if (kind === "asset" || kind === "liability" || kind === "equity" || kind === "income" || kind === "expense") return kind;
+  const legacy = row.accountType === "revenue" ? "income" : row.accountType;
+  return (legacy as "asset" | "liability" | "equity" | "income" | "expense") ?? "asset";
 }
 
-async function aggregateBalances(input: {
-  organizationId: string;
-  propertyId?: string;
-  upToInclusive: Date;
-}): Promise<AggregatedAccount[]> {
-  const entries = await prisma.journalEntry.findMany({
-    where: {
-      organizationId: input.organizationId,
-      ...(input.propertyId ? { propertyId: input.propertyId } : {}),
-      status: "posted",
-      postedAt: { lte: input.upToInclusive }
-    },
-    select: { id: true }
-  });
-  if (entries.length === 0) return [];
+export function classifyBalanceSheet(rows: AccountBalanceRow[]): Omit<FormalBalanceSheet, "organizationId" | "propertyId" | "asOf" | "generatedAt"> {
+  const assetsNonCurrent: Array<BalanceSheetItem & { d: Decimal }> = [];
+  const assetsCurrent: Array<BalanceSheetItem & { d: Decimal }> = [];
+  const liabilitiesNonCurrent: Array<BalanceSheetItem & { d: Decimal }> = [];
+  const liabilitiesCurrent: Array<BalanceSheetItem & { d: Decimal }> = [];
+  const equityItems: Array<BalanceSheetItem & { d: Decimal }> = [];
+  let income = ZERO;
+  let expense = ZERO;
 
-  const lines = await prisma.journalLine.findMany({
-    where: { journalEntryId: { in: entries.map((e) => e.id) } }
-  });
-  const accountIds = Array.from(new Set(lines.map((l) => l.accountId)));
-  const accounts = await prisma.account.findMany({ where: { id: { in: accountIds } } });
-  const accountById = new Map(accounts.map((a) => [a.id, a]));
-
-  const grouped = new Map<string, AggregatedAccount>();
-  for (const line of lines) {
-    const account = accountById.get(line.accountId);
-    if (!account) continue;
-    const debit = Number(line.debit);
-    const credit = Number(line.credit);
-    const existing = grouped.get(account.code);
-    if (existing) {
-      existing.debit += debit;
-      existing.credit += credit;
-    } else {
-      grouped.set(account.code, {
-        accountCode: account.code,
-        accountName: account.name,
-        accountType: account.accountType,
-        debit,
-        credit
-      });
+  for (const row of rows) {
+    const kind = kindOf(row);
+    const debitNatural = row.debit.minus(row.credit);
+    const creditNatural = row.credit.minus(row.debit);
+    if (kind === "income") {
+      income = income.plus(creditNatural);
+      continue;
     }
+    if (kind === "expense") {
+      expense = expense.plus(debitNatural);
+      continue;
+    }
+    if (debitNatural.isZero()) continue;
+    const item = (amount: Decimal): BalanceSheetItem & { d: Decimal } => ({ accountCode: row.accountCode, accountName: row.accountName, amount: toNumber(amount), d: amount });
+    if (kind === "asset") {
+      const cls = classifyAsset(row.accountCode);
+      if (cls === "contra") assetsNonCurrent.push(item(debitNatural)); // credit balance → negative amount
+      else if (cls === "non_current") assetsNonCurrent.push(item(debitNatural));
+      else assetsCurrent.push(item(debitNatural));
+      continue;
+    }
+    if (kind === "liability") {
+      if (classifyLiability(row.accountCode) === "non_current") liabilitiesNonCurrent.push(item(creditNatural));
+      else liabilitiesCurrent.push(item(creditNatural));
+      continue;
+    }
+    // equity (129 included)
+    equityItems.push(item(creditNatural));
   }
-  return Array.from(grouped.values());
+
+  const sortByCode = (a: BalanceSheetItem, b: BalanceSheetItem) => a.accountCode.localeCompare(b.accountCode);
+  for (const list of [assetsNonCurrent, assetsCurrent, liabilitiesNonCurrent, liabilitiesCurrent, equityItems]) list.sort(sortByCode);
+
+  const sum = (list: Array<{ d: Decimal }>) => list.reduce((acc, item) => acc.plus(item.d), ZERO);
+  const assetsTotal = sum(assetsNonCurrent).plus(sum(assetsCurrent));
+  const liabilitiesTotal = sum(liabilitiesNonCurrent).plus(sum(liabilitiesCurrent));
+  const retainedEarnings = income.minus(expense);
+  const equityTotal = sum(equityItems).plus(retainedEarnings);
+  const totalLiabPlusEquity = liabilitiesTotal.plus(equityTotal);
+  const strip = (list: Array<BalanceSheetItem & { d: Decimal }>): BalanceSheetItem[] => list.map(({ accountCode, accountName, amount }) => ({ accountCode, accountName, amount }));
+
+  return {
+    assets: { nonCurrent: strip(assetsNonCurrent), current: strip(assetsCurrent), total: toNumber(assetsTotal) },
+    liabilities: { nonCurrent: strip(liabilitiesNonCurrent), current: strip(liabilitiesCurrent), total: toNumber(liabilitiesTotal) },
+    equity: { items: strip(equityItems), retainedEarnings: toNumber(retainedEarnings), total: toNumber(equityTotal) },
+    totalLiabPlusEquity: toNumber(totalLiabPlusEquity),
+    balanced: assetsTotal.equals(totalLiabPlusEquity)
+  };
 }
 
 export async function buildBalanceSheet(input: {
@@ -150,145 +146,17 @@ export async function buildBalanceSheet(input: {
 }): Promise<FormalBalanceSheet> {
   requirePermissions(input.context, ["analytics.read"]);
   requireIsoDate(input.asOf, "asOf");
-
-  const cutoff = dateOnly(input.asOf);
-  const aggregated = await aggregateBalances({
+  const rows = await aggregateAccountBalances({
     organizationId: input.context.organizationId,
     propertyId: input.propertyId,
-    upToInclusive: cutoff
+    to: input.asOf,
+    closingCutoff: input.asOf
   });
-
-  const empty: FormalBalanceSheet = {
-    organizationId: input.context.organizationId,
-    propertyId: input.propertyId,
-    asOf: input.asOf,
-    generatedAt: new Date().toISOString(),
-    assets: { nonCurrent: [], current: [], total: 0 },
-    liabilities: { nonCurrent: [], current: [], total: 0 },
-    equity: { items: [], retainedEarnings: 0, total: 0 },
-    totalLiabPlusEquity: 0,
-    balanced: true
-  };
-  if (aggregated.length === 0) return empty;
-
-  const assetsNonCurrent: BalanceSheetItem[] = [];
-  const assetsCurrent: BalanceSheetItem[] = [];
-  const liabilitiesNonCurrent: BalanceSheetItem[] = [];
-  const liabilitiesCurrent: BalanceSheetItem[] = [];
-  const equityItems: BalanceSheetItem[] = [];
-
-  let revenueTotal = 0;
-  let expenseTotal = 0;
-
-  for (const row of aggregated) {
-    const code = row.accountCode;
-    const debitNaturalBalance = row.debit - row.credit; // positive for assets/expenses
-    const creditNaturalBalance = row.credit - row.debit; // positive for liab/equity/revenue
-
-    if (row.accountType === "revenue") {
-      revenueTotal += creditNaturalBalance;
-      continue;
-    }
-    if (row.accountType === "expense") {
-      expenseTotal += debitNaturalBalance;
-      continue;
-    }
-
-    if (row.accountType === "asset") {
-      const cls = classifyAsset(code);
-      if (cls === "acc_depreciation") {
-        // Accumulated depreciation has credit balance; it subtracts from non-current.
-        assetsNonCurrent.push({
-          accountCode: code,
-          accountName: row.accountName,
-          amount: round(-creditNaturalBalance)
-        });
-      } else if (cls === "non_current") {
-        assetsNonCurrent.push({
-          accountCode: code,
-          accountName: row.accountName,
-          amount: round(debitNaturalBalance)
-        });
-      } else if (cls === "current") {
-        assetsCurrent.push({
-          accountCode: code,
-          accountName: row.accountName,
-          amount: round(debitNaturalBalance)
-        });
-      } else {
-        // Fallback: classify by debit-balance default to current.
-        assetsCurrent.push({
-          accountCode: code,
-          accountName: row.accountName,
-          amount: round(debitNaturalBalance)
-        });
-      }
-      continue;
-    }
-
-    if (row.accountType === "liability") {
-      const cls = classifyLiability(code);
-      const amount = round(creditNaturalBalance);
-      const item = { accountCode: code, accountName: row.accountName, amount };
-      if (cls === "non_current") liabilitiesNonCurrent.push(item);
-      else if (cls === "current") liabilitiesCurrent.push(item);
-      else liabilitiesCurrent.push(item); // fallback to current
-      continue;
-    }
-
-    if (row.accountType === "equity") {
-      if (isEquity(code)) {
-        equityItems.push({
-          accountCode: code,
-          accountName: row.accountName,
-          amount: round(creditNaturalBalance)
-        });
-      } else {
-        equityItems.push({
-          accountCode: code,
-          accountName: row.accountName,
-          amount: round(creditNaturalBalance)
-        });
-      }
-      continue;
-    }
-  }
-
-  const sortByCode = (a: BalanceSheetItem, b: BalanceSheetItem) =>
-    a.accountCode.localeCompare(b.accountCode);
-  assetsNonCurrent.sort(sortByCode);
-  assetsCurrent.sort(sortByCode);
-  liabilitiesNonCurrent.sort(sortByCode);
-  liabilitiesCurrent.sort(sortByCode);
-  equityItems.sort(sortByCode);
-
-  const assetsNCTotal = assetsNonCurrent.reduce((s, i) => s + i.amount, 0);
-  const assetsCTotal = assetsCurrent.reduce((s, i) => s + i.amount, 0);
-  const assetsTotal = round(assetsNCTotal + assetsCTotal);
-
-  const liabNCTotal = liabilitiesNonCurrent.reduce((s, i) => s + i.amount, 0);
-  const liabCTotal = liabilitiesCurrent.reduce((s, i) => s + i.amount, 0);
-  const liabilitiesTotal = round(liabNCTotal + liabCTotal);
-
-  const retainedEarnings = round(revenueTotal - expenseTotal);
-  const equityBookTotal = equityItems.reduce((s, i) => s + i.amount, 0);
-  const equityTotal = round(equityBookTotal + retainedEarnings);
-
-  const totalLiabPlusEquity = round(liabilitiesTotal + equityTotal);
-
   return {
     organizationId: input.context.organizationId,
     propertyId: input.propertyId,
     asOf: input.asOf,
     generatedAt: new Date().toISOString(),
-    assets: { nonCurrent: assetsNonCurrent, current: assetsCurrent, total: assetsTotal },
-    liabilities: {
-      nonCurrent: liabilitiesNonCurrent,
-      current: liabilitiesCurrent,
-      total: liabilitiesTotal
-    },
-    equity: { items: equityItems, retainedEarnings, total: equityTotal },
-    totalLiabPlusEquity,
-    balanced: Math.abs(assetsTotal - totalLiabPlusEquity) < 0.01
+    ...classifyBalanceSheet(rows)
   };
 }

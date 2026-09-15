@@ -35,7 +35,9 @@ describe("previewIssuerTaxId — FISC-03 preview never shows an invalid NIF as p
     assert.match(preview.warnings[0]!, /«B99999999»/);
     assert.match(preview.warnings[0]!, /no es válido/);
     assert.match(preview.warnings[0]!, new RegExp(ISSUER_TAX_ID_PLACEHOLDER));
-    assert.match(preview.warnings[0]!, /en producción la emisión se bloquea/);
+    // Finanzas (2026-09-15): issuance is blocked in every mode, never stamped with the placeholder.
+    assert.match(preview.warnings[0]!, /se bloquea \(ISSUER_TAX_ID_MISSING\) en cualquier modo fiscal/);
+    assert.match(preview.warnings[0]!, /ninguna factura nueva sale con el NIF de relleno/);
   });
 
   it("reports a missing NIF with configured = null", () => {

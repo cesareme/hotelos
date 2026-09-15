@@ -7,6 +7,10 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { derivePaymentStatus, type InvoicePaymentStatus } from "../invoicing/invoice.service.js";
+import { getLedgerPort } from "../invoicing/ledger.port.js";
+import { CUSTOMER_ACCOUNT_CODE } from "../invoicing/invoice-snapshot.js";
+import { normalizePaymentMethod } from "../payments/payment-method.js";
+import { PAYMENT_METHOD_ACCOUNT_CODES, PAYMENT_METHOD_LABELS_ES, type PaymentMethodCode } from "../../../../../packages/shared/src/payments-types.js";
 
 // Transitional dual-write helpers; see pms.service.ts for context.
 function mirrorFolio(folio: FolioRecord): void {
@@ -30,9 +34,11 @@ export type FolioPaymentRecord = InvoicePaymentRecord & {
   /**
    * Σ PaymentRefund.amount recorded against this payment. A fully refunded
    * payment (status "refunded") reports its whole amount even when it predates
-   * the PaymentRefund ledger.
+   * the PaymentRefund ledger. Always 0 on refund rows (kind "refund").
    */
   refundedAmount: number;
+  /** capture = money received; refund = a reversal row (Payment.reversalOfId) of a capture. */
+  kind: "capture" | "refund";
 };
 
 export type FolioBalance = {
@@ -156,11 +162,14 @@ async function sumRefundsByPayment(client: RefundSumClient, paymentIds: string[]
   return out;
 }
 
-function withRefundedAmount<P extends PaymentRecord>(payment: P, refunded: number | undefined): P & { refundedAmount: number } {
+function withRefundedAmount<P extends PaymentRecord & { reversalOfId?: string | null }>(payment: P, refunded: number | undefined): P & { refundedAmount: number; kind: "capture" | "refund" } {
+  // Finanzas (2026-09-15): a reversal row (refund of a capture) is money going
+  // OUT; it never counts as captured (status refunded) and has nothing refunded on it.
+  if (payment.reversalOfId) return { ...payment, refundedAmount: 0, kind: "refund" };
   // A "refunded" payment predating the PaymentRefund ledger has no rows: it is
   // still fully returned by definition of its status.
   const refundedAmount = payment.status === "refunded" ? Math.max(refunded ?? 0, payment.amount) : refunded ?? 0;
-  return { ...payment, refundedAmount: roundCurrency(refundedAmount) };
+  return { ...payment, refundedAmount: roundCurrency(refundedAmount), kind: "capture" };
 }
 
 function mapFolio(row: NonNullable<Awaited<ReturnType<typeof prisma.folio.findUnique>>>): FolioRecord {
@@ -208,8 +217,17 @@ function mapPayment(row: PaymentRow): InvoicePaymentRecord {
     method: row.method as PaymentRecord["method"],
     pspReference: row.pspReference ?? undefined,
     status: row.status,
-    createdAt: row.createdAt.toISOString()
+    createdAt: row.createdAt.toISOString(),
+    methodCode: row.methodCode ?? null,
+    reversalOfId: row.reversalOfId ?? null,
+    journalEntryId: row.journalEntryId ?? null,
+    clientRequestId: row.clientRequestId ?? null
   };
+}
+
+/** Mirror a Prisma payment row into the transitional in-memory store (payments.service uses it). */
+export function mirrorPaymentRecord(row: PaymentRow): void {
+  mirrorPayment(mapPayment(row));
 }
 
 // Folio has no createdAt column; cuid ids are time-sortable, so `id asc` is
@@ -510,62 +528,41 @@ export async function postFolioLine(input: {
   return line;
 }
 
+/**
+ * @deprecated Finanzas (2026-09-15): POST /folios/:id/payments is served by
+ * modules/payments/payments.service.postFolioPayment (idempotent by
+ * clientRequestId, transactional, PaymentMethod enum, journal entry, PSP
+ * gate). This wrapper keeps the old signature for any remaining caller and
+ * delegates to it; a PSP method now answers with a payment intent, which
+ * this legacy shape cannot express, so it is refused here.
+ */
 export async function postPayment(input: {
   context: UserContext;
   folioId: string;
   amount: number;
   currency?: string;
-  method: PaymentRecord["method"];
+  method: PaymentRecord["method"] | PaymentMethodCode;
   pspReference?: string;
+  clientRequestId?: string;
   correlationId: string;
-}): Promise<PaymentRecord> {
-  requirePermissions(input.context, ["payment.capture"]);
-
-  const folio = await getOpenFolio(input.folioId);
-  const propertyId = await resolveFolioPropertyId(input.folioId);
-  if (input.amount <= 0) {
-    throw new BadRequestError("El importe del cobro debe ser positivo.");
+}): Promise<InvoicePaymentRecord> {
+  const { postFolioPayment } = await import("../payments/payments.service.js");
+  const result = await postFolioPayment({
+    context: input.context,
+    folioId: input.folioId,
+    amount: input.amount,
+    currency: input.currency,
+    method: input.method,
+    reference: input.pspReference ?? null,
+    clientRequestId: input.clientRequestId ?? null,
+    correlationId: input.correlationId
+  });
+  if (result.kind !== "payment") {
+    throw new ConflictError("Este cobro requiere pasarela de pago: usa POST /folios/:id/payment-links o el método card_online/payment_link en POST /folios/:id/payments.");
   }
-
-  const created = await prisma.payment.create({
-    data: {
-      propertyId,
-      folioId: folio.id,
-      amount: roundCurrency(input.amount),
-      currency: input.currency ?? folio.currency,
-      method: input.method,
-      pspReference: input.pspReference ?? null,
-      status: "captured"
-    }
-  });
-  const payment = mapPayment(created);
-  mirrorPayment(payment);
-
-  recordAuditEvent({
-    organizationId: input.context.organizationId,
-    propertyId,
-    actorUserId: input.context.userId,
-    actorType: "user",
-    action: "PAYMENT_CAPTURED",
-    entityType: "payment",
-    entityId: payment.id,
-    afterJson: payment,
-    correlationId: input.correlationId
-  });
-
-  recordDomainEvent({
-    organizationId: input.context.organizationId,
-    propertyId,
-    entityType: "payment",
-    entityId: payment.id,
-    eventType: "PaymentCaptured",
-    payload: { folioId: folio.id, amount: payment.amount, method: payment.method },
-    actorType: "user",
-    actorUserId: input.context.userId,
-    correlationId: input.correlationId
-  });
-
-  return payment;
+  const row = await prisma.payment.findUnique({ where: { id: result.id } });
+  if (!row) throw new NotFoundError("Pago no encontrado.");
+  return mapPayment(row);
 }
 
 export type PaymentRefundRecord = {
@@ -599,6 +596,10 @@ export function invoiceUnsettled(invoiceTotal: number, netPaid: number): boolean
  * rule as getFolioBalance) drops below the invoice total, and left untouched
  * while the invoice is still settled. Returns the resulting paidAt.
  */
+export async function syncInvoicePaidAfterRefund(tx: Prisma.TransactionClient, invoiceId: string): Promise<Date | null> {
+  return syncInvoicePaidAtAfterRefund(tx, invoiceId);
+}
+
 async function syncInvoicePaidAtAfterRefund(tx: Prisma.TransactionClient, invoiceId: string): Promise<Date | null> {
   const invoice = await tx.invoice.findUnique({ where: { id: invoiceId }, select: { total: true, paidAt: true } });
   if (!invoice || !invoice.paidAt) return invoice?.paidAt ?? null;
@@ -669,15 +670,11 @@ async function loadRefundedPayment(paymentId: string): Promise<RefundedPaymentRe
 }
 
 /**
- * Refund a captured payment, fully or partially.
- *  - `amount` omitted or equal to what is still pending → full refund: the
- *    payment flips to "refunded" and a PaymentRefund row records the amount.
- *  - 0 < amount < pending → partial refund: a PaymentRefund row is created and
- *    the payment STAYS "captured" (PaymentStatus has no partially_refunded
- *    value); getFolioBalance subtracts the refund ledger from the payment.
- *  - amount > pending (payment.amount − previous refunds) or ≤ 0 → 400.
- * The pending check and the status flip run inside one transaction so a
- * double click cannot over-refund.
+ * @deprecated Finanzas (2026-09-15): POST /payments/:id/refund is served by
+ * modules/payments/payments.service.refundFolioPayment (idempotent by
+ * clientRequestId, reversal Payment row + PaymentRefund ledger + inverse
+ * entry, PSP refund for online money). This wrapper keeps the old return
+ * shape for any remaining caller.
  */
 export async function refundPayment(input: {
   context: UserContext;
@@ -685,100 +682,19 @@ export async function refundPayment(input: {
   reason: string;
   /** Partial refund amount; omitted → refund everything still pending on the payment. */
   amount?: number;
+  clientRequestId?: string;
   correlationId: string;
 }): Promise<RefundedPaymentRecord> {
-  requirePermissions(input.context, ["payment.refund", "ai.high_risk.confirm"]);
-
-  const existing = await prisma.payment.findUnique({ where: { id: input.paymentId } });
-  if (!existing || existing.deletedAt) {
-    throw new NotFoundError("Pago no encontrado.");
-  }
-  if (existing.status !== "captured") {
-    throw new ConflictError(
-      existing.status === "refunded"
-        ? "El cobro ya está devuelto por completo."
-        : "Solo se pueden devolver cobros capturados."
-    );
-  }
-  if (input.amount !== undefined && (!Number.isFinite(input.amount) || input.amount <= 0)) {
-    throw new BadRequestError("El importe a devolver debe ser positivo.");
-  }
-
-  const before = mapPayment(existing);
-  const { plan, refund, invoicePaidAt } = await prisma.$transaction(async (tx) => {
-    const refundedBefore = (await sumRefundsByPayment(tx, [existing.id])).get(existing.id) ?? 0;
-    const plan = planRefund({ paymentAmount: dec(existing.amount), refundedBefore, requested: input.amount });
-    const refund = await tx.paymentRefund.create({
-      data: {
-        paymentId: existing.id,
-        amount: plan.amount,
-        status: "completed",
-        requiresApproval: false,
-        approvedBy: input.context.userId
-      }
-    });
-    if (plan.full) {
-      // Conditional flip: a concurrent full refund of the same payment loses
-      // here and the whole transaction (refund row included) rolls back.
-      const flipped = await tx.payment.updateMany({
-        where: { id: existing.id, status: "captured", deletedAt: null },
-        data: { status: "refunded" }
-      });
-      if (flipped.count === 0) {
-        throw new ConflictError("El cobro ya ha sido devuelto por otro usuario.");
-      }
-    }
-    // A payment linked to an invoice (markInvoicePaid) stamped Invoice.paidAt
-    // when it settled the balance; giving cash back re-opens that balance, so
-    // paidAt is re-derived in the same transaction as the refund row.
-    const invoicePaidAt = existing.invoiceId ? await syncInvoicePaidAtAfterRefund(tx, existing.invoiceId) : null;
-    return { plan, refund: mapRefund(refund), invoicePaidAt };
-  });
-
-  const after = await loadRefundedPayment(existing.id);
-  mirrorPayment({ ...before, status: after.status });
-
-  recordAuditEvent({
-    organizationId: input.context.organizationId,
-    propertyId: after.propertyId,
-    actorUserId: input.context.userId,
-    actorType: "user",
-    action: "PAYMENT_REFUNDED",
-    entityType: "payment",
-    entityId: after.id,
-    beforeJson: before,
-    afterJson: {
-      ...after,
-      refundId: refund.id,
-      amount: plan.amount,
-      partial: !plan.full,
-      reason: input.reason,
-      invoicePaidAt: existing.invoiceId ? invoicePaidAt?.toISOString() ?? null : undefined
-    },
+  const { refundFolioPayment } = await import("../payments/payments.service.js");
+  await refundFolioPayment({
+    context: input.context,
+    paymentId: input.paymentId,
+    reason: input.reason,
+    amount: input.amount,
+    clientRequestId: input.clientRequestId ?? null,
     correlationId: input.correlationId
   });
-
-  recordDomainEvent({
-    organizationId: input.context.organizationId,
-    propertyId: after.propertyId,
-    entityType: "payment",
-    entityId: after.id,
-    eventType: "PaymentRefunded",
-    payload: {
-      folioId: after.folioId,
-      paymentId: after.id,
-      refundId: refund.id,
-      amount: plan.amount,
-      method: after.method,
-      partial: !plan.full,
-      reason: input.reason
-    },
-    actorType: "user",
-    actorUserId: input.context.userId,
-    correlationId: input.correlationId
-  });
-
-  return after;
+  return loadRefundedPayment(input.paymentId);
 }
 
 export async function closeFolio(input: {
@@ -1120,13 +1036,24 @@ export async function moveChargesBetweenFolios(input: MoveChargesInput): Promise
 export type MarkInvoicePaidInput = {
   context: UserContext;
   invoiceId: string;
-  method?: PaymentRecord["method"];
+  /** Finanzas (2026-09-15): mandatory — «Marcar pagada» only with a method (PaymentMethod enum or legacy alias)… */
+  method: PaymentRecord["method"] | PaymentMethodCode | string;
+  /** …and a reference (bank / terminal / PSP), the idempotency key of the collection. */
+  reference: string;
+  /** @deprecated alias of `reference`. */
   pspReference?: string;
   amount?: number;
   correlationId: string;
 };
 
-export type InvoicePaymentRecord = PaymentRecord & { invoiceId: string | null };
+export type InvoicePaymentRecord = PaymentRecord & {
+  invoiceId: string | null;
+  // Finanzas (2026-09-15): canonical method, reversal link, journal entry and idempotency key.
+  methodCode?: PaymentMethodCode | null;
+  reversalOfId?: string | null;
+  journalEntryId?: string | null;
+  clientRequestId?: string | null;
+};
 
 export type MarkInvoicePaidResult = {
   invoiceId: string;
@@ -1262,7 +1189,20 @@ export async function markInvoicePaid(input: MarkInvoicePaidInput): Promise<Mark
   const amount = roundCurrency(input.amount ?? invoiceTotal);
   if (!Number.isFinite(amount) || amount <= 0) throw new BadRequestError("El importe del cobro debe ser positivo.");
 
-  const pspReference = input.pspReference?.trim() || null;
+  // Finanzas (2026-09-15): «Marcar pagada» only with method + reference; a
+  // card-online / payment-link method cannot be marked by hand (the PSP
+  // confirms it through the webhook).
+  const { methodCode, legacyMethod } = normalizePaymentMethod(input.method);
+  if (methodCode === "card_online" || methodCode === "payment_link") {
+    throw withDetails(
+      new ConflictError(`No se puede marcar pagada a mano con ${PAYMENT_METHOD_LABELS_ES[methodCode]}: el cobro en línea lo confirma la pasarela (webhook). Usa efectivo, datáfono o transferencia con su referencia.`),
+      { code: "PAYMENT_REQUIRES_PSP", methodCode }
+    );
+  }
+  const pspReference = (input.reference ?? input.pspReference)?.trim() || null;
+  if (!pspReference) throw new BadRequestError("Indica la referencia del cobro (justificante de transferencia, ticket del datáfono o referencia del PSP).");
+  const property = await prisma.property.findUnique({ where: { id: invoice.propertyId }, select: { organizationId: true } });
+  const organizationId = property?.organizationId ?? input.context.organizationId;
   const finish = async (payment: InvoicePaymentRecord, alreadyPaid: boolean): Promise<MarkInvoicePaidResult> => {
     const paidTotal = await linkedPaidTotal(prisma, invoice.id);
     const paymentStatus = derivePaymentStatus(invoice.status, invoiceTotal, paidTotal);
@@ -1311,18 +1251,39 @@ export async function markInvoicePaid(input: MarkInvoicePaidInput): Promise<Mark
       throw new ConflictError("La factura ya está cobrada.");
     }
 
-    const row = await tx.payment.create({
+    const created = await tx.payment.create({
       data: {
         propertyId: invoice.propertyId,
         folioId: folio.id,
         invoiceId: invoice.id,
         amount,
         currency: invoice.currencyCode ?? folio.currency ?? "EUR",
-        method: input.method ?? "bank_transfer",
+        method: legacyMethod,
+        methodCode,
         pspReference,
         status: "captured"
       }
     });
+    // Canonical rule «Cobro»: D 570 | 5721 | 572 / H 4300, same transaction.
+    const posted = await getLedgerPort().postJournalEntry(
+      {
+        organizationId,
+        propertyId: invoice.propertyId,
+        sourceType: "payment",
+        sourceId: created.id,
+        entryDate: created.createdAt,
+        description: `Cobro ${PAYMENT_METHOD_LABELS_ES[methodCode].toLowerCase()} factura ${invoice.invoiceNumber ?? invoice.id} · ref. ${pspReference}`,
+        reference: pspReference,
+        createdBy: input.context.userId,
+        currencyCode: created.currency,
+        lines: [
+          { accountCode: PAYMENT_METHOD_ACCOUNT_CODES[methodCode], debit: amount.toFixed(2), credit: "0.00", description: `Cobro ${PAYMENT_METHOD_LABELS_ES[methodCode].toLowerCase()}` },
+          { accountCode: CUSTOMER_ACCOUNT_CODE, debit: "0.00", credit: amount.toFixed(2), description: `Cancela factura ${invoice.invoiceNumber ?? invoice.id}` }
+        ]
+      },
+      tx
+    );
+    const row = await tx.payment.update({ where: { id: created.id }, data: { journalEntryId: posted.journalEntryId } });
     if (plan.settledAfter) {
       await tx.invoice.update({ where: { id: invoice.id }, data: { paidAt: row.createdAt } });
     }
@@ -1348,10 +1309,26 @@ export async function markInvoicePaid(input: MarkInvoicePaidInput): Promise<Mark
       folioId: folio.id,
       amount: payment.amount,
       method: payment.method,
+      methodCode,
       pspReference: payment.pspReference,
+      journalEntryId: payment.journalEntryId ?? null,
       paidTotal: roundCurrency(paidBefore + amount),
       invoiceTotal
     },
+    correlationId: input.correlationId
+  });
+
+  // PaymentCaptured on the payment entity: the legacy accounting projection
+  // (sourceType payment + entityId) finds the entry posted above and skips.
+  recordDomainEvent({
+    organizationId: input.context.organizationId,
+    propertyId: invoice.propertyId,
+    entityType: "payment",
+    entityId: payment.id,
+    eventType: "PaymentCaptured",
+    payload: { folioId: folio.id, amount: payment.amount, method: payment.method, methodCode, invoiceId: invoice.id, journalEntryId: payment.journalEntryId ?? null },
+    actorType: "user",
+    actorUserId: input.context.userId,
     correlationId: input.correlationId
   });
 
@@ -1361,78 +1338,11 @@ export async function markInvoicePaid(input: MarkInvoicePaidInput): Promise<Mark
     entityType: "invoice",
     entityId: invoice.id,
     eventType: "InvoiceMarkedPaid",
-    payload: { paymentId: payment.id, folioId: folio.id, amount: payment.amount, invoiceTotal },
+    payload: { paymentId: payment.id, folioId: folio.id, amount: payment.amount, invoiceTotal, methodCode },
     actorType: "user",
     actorUserId: input.context.userId,
     correlationId: input.correlationId
   });
 
   return finish(payment, false);
-}
-
-export type SendInvoiceByEmailInput = {
-  context: UserContext;
-  invoiceId: string;
-  recipient: string;
-  subject?: string;
-  message?: string;
-  correlationId: string;
-};
-
-export type SendInvoiceByEmailResult = {
-  acknowledged: true;
-  recipient: string;
-  invoiceId: string;
-  sentAt: string;
-};
-
-/**
- * Acknowledge an invoice-by-email send request. Does NOT dispatch a real
- * email — that is delegated to the messaging worker. Records an audit event
- * (which doubles as the send log) and a domain event so downstream listeners
- * can pick up the actual delivery. Returns `acknowledged: true` plus the
- * recipient address so the caller can render a confirmation UI.
- */
-export async function sendInvoiceByEmail(input: SendInvoiceByEmailInput): Promise<SendInvoiceByEmailResult> {
-  requirePermissions(input.context, ["invoice.issue"]);
-
-  const invoice = await prisma.invoice.findUnique({ where: { id: input.invoiceId } });
-  if (!invoice) throw new NotFoundError("Invoice was not found.");
-  const recipient = input.recipient?.trim();
-  if (!recipient || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) {
-    throw new BadRequestError("recipient must be a valid email address.");
-  }
-
-  const sentAt = new Date().toISOString();
-
-  recordAuditEvent({
-    organizationId: input.context.organizationId,
-    propertyId: invoice.propertyId,
-    actorUserId: input.context.userId,
-    actorType: "user",
-    action: "INVOICE_EMAIL_SENT",
-    entityType: "invoice",
-    entityId: invoice.id,
-    afterJson: {
-      recipient,
-      subject: input.subject ?? null,
-      messagePreview: input.message ? input.message.slice(0, 200) : null,
-      sentAt
-    },
-    correlationId: input.correlationId
-  });
-
-  recordDomainEvent({
-    organizationId: input.context.organizationId,
-    propertyId: invoice.propertyId,
-    entityType: "invoice",
-    entityId: invoice.id,
-    eventType: "InvoiceEmailQueued",
-    payload: { recipient, sentAt },
-    actorType: "user",
-    actorUserId: input.context.userId,
-    correlationId: input.correlationId
-  });
-
-  return { acknowledged: true, recipient, invoiceId: invoice.id, sentAt };
 }

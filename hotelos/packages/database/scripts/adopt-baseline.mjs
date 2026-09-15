@@ -179,8 +179,18 @@ export async function inspect(prisma, baseline) {
 
   const isClean = (row) => row.migration_name === BASELINE_NAME && row.finished_at !== null && row.rolled_back_at === null;
   const cleanBaselineRows = history.filter(isClean);
-  // Keep exactly one clean baseline row (the oldest); everything else is stale.
-  const staleRows = history.filter((row) => !isClean(row) || row.id !== cleanBaselineRows[0]?.id);
+  // Finanzas integration (2026-09-16): the versioned migrations that FOLLOW the
+  // baseline (prisma/migrations/<timestamp>_<name>, applied and not rolled
+  // back) are legitimate history, never stale — before, a freshly `migrate
+  // deploy`ed DB with 5 migrations reported "adopted-with-stale-rows" and
+  // `--apply` would have DELETED the rows of the real migrations.
+  const versionedMigrations = new Set(
+    existsSync(MIGRATIONS_DIR) ? readdirSync(MIGRATIONS_DIR).filter((name) => MIGRATION_DIR_RE.test(name) && name !== BASELINE_NAME) : []
+  );
+  const isVersioned = (row) => versionedMigrations.has(row.migration_name) && row.finished_at !== null && row.rolled_back_at === null;
+  // Keep exactly one clean baseline row (the oldest) plus the versioned
+  // migrations; everything else (archived names, failed or duplicated rows) is stale.
+  const staleRows = history.filter((row) => !isVersioned(row) && (!isClean(row) || row.id !== cleanBaselineRows[0]?.id));
 
   return {
     tables: dbTables.size,

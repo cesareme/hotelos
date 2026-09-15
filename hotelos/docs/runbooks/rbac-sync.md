@@ -33,7 +33,16 @@ roto) · `2` flag desconocido. Flags reconocidos por `parseFlags`: `--prune`,
 
 ### Estado actual (BD demo, 2026-09-15 · Tanda 5 · L1b api-side)
 
-- Catálogo: **215 claves** (214 org + 1 plataforma). El `--prune` de §3 **ya se
+- Catálogo (2026-09-16, Tanda 6 · Finanzas): **221 claves** (220 org + 1
+  plataforma) — Tanda 6 añadió `accounting.reports.read` (lectura de libros e
+  informes con importes; `accounting.read` queda como clave de calendario) y las
+  plantillas `accountant` (+`banking.reconcile`, `payroll.manage`,
+  `procurement.read/manage`, `assets.read/manage`, `analytics.export`,
+  `accounting.reports.read`), `manager` y `compliance` (+`accounting.reports.read`)
+  crecieron; `--dry-run` en la BD demo: 8 roles por completar hasta ejecutar el
+  sync (Faranda Owner +1, Dirección +1, Contabilidad +6, Cumplimiento +1; org_123
+  ídem; Local Super Admin +1) — ver `docs/runbooks/finanzas-contabilidad.md` §14.
+  Estado anterior (Tanda 5): 215 claves (214 org + 1 plataforma). El `--prune` de §3 **ya se
   ejecutó** en Tanda 4 (216 → 212); Tanda 5 (L1b) añadió **3 claves de
   lectura** — `folio.read`, `pos.read`, `tourist_tax.read` — para los GET que
   hasta L1a estaban gateados por claves de escritura (`folio.charge.post`,

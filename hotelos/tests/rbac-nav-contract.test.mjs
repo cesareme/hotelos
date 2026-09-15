@@ -90,12 +90,14 @@ const TOKEN_TEMPLATES = {
 const JUSTIFIED_GAPS = [
   // --- write -------------------------------------------------------------
   {
-    templates: ["manager", "compliance"],
-    permission: "accounting.journal.post",
+    // Finanzas (2026-09-16, FIN-17): the import is gated by banking.reconcile
+    // (manager and accountant hold it); compliance only consults.
+    templates: ["compliance"],
+    permission: "banking.reconcile",
     screens: /^BankingSpain$/,
     kind: "write",
-    evidence: "bankingApi.importCsb43 → POST /properties/:p/banking/csb43/import; la pestaña no tiene GET mapeado en el inventario",
-    reason: "asentar importaciones CSB43/SEPA es de Contabilidad; Dirección y Cumplimiento consultan (accountant la tiene)"
+    evidence: "bankingApi.importCsb43 → POST /properties/:p/banking/csb43/import [banking.reconcile]; la pestaña no tiene GET mapeado en el inventario",
+    reason: "importar extractos CSB43 y conciliar es de Contabilidad y Dirección (banking.reconcile); Cumplimiento consulta"
   },
   // --- sister (token finanzas) --------------------------------------------
   {

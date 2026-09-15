@@ -44,12 +44,16 @@ const routeFiles = [
 ];
 // Rate grid v2 convention: modules contribute their manifest entries from
 // modules/<module>/route-permissions.partial.ts (spread into the manifest), so
-// the parser reads the main file plus every partial.
+// the parser reads the main file plus every partial. Finanzas (2026-09-16): a
+// module that hosts several lotes may carry several partials
+// (modules/accounting: route-permissions.partial.ts for the ledger routes and
+// fiscal-route-permissions.partial.ts for /fiscal/*), so any
+// `*route-permissions.partial.ts` counts.
 const manifestPartials = readdirSync(new URL("modules/", apiSrcDir))
   .flatMap((mod) => {
     try {
       return readdirSync(new URL(`modules/${mod}/`, apiSrcDir))
-        .filter((name) => name === "route-permissions.partial.ts")
+        .filter((name) => name.endsWith("route-permissions.partial.ts"))
         .map((name) => `modules/${mod}/${name}`);
     } catch {
       return [];

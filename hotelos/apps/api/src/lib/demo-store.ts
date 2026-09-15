@@ -677,7 +677,9 @@ export type FolioRecord = {
 export type FolioLineRecord = {
   id: string;
   folioId: string;
-  type: "room" | "tax" | "breakfast" | "parking" | "minibar" | "adjustment";
+  // Finanzas (2026-09-16): `invoice_adjustment` is the folio line that
+  // reflects a rectificativa (never invoiced again, see FISCAL_REFLECTION_LINE_TYPES).
+  type: "room" | "tax" | "breakfast" | "parking" | "minibar" | "adjustment" | "invoice_adjustment";
   description: string;
   quantity: number;
   unitPrice: number;
@@ -2349,6 +2351,9 @@ export const demoStore: DemoStore = {
       "banking.read",
       "commissions.read",
       "accounting.read",
+      // Finanzas (2026-09-16, fix t6#9): the demo baseline holds the read key of
+      // the accounting books and reports like every other read key above.
+      "accounting.reports.read",
       "asset.capex.approve",
       "assets.read",
       "assets.manage",

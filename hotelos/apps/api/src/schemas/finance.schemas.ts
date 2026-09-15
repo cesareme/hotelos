@@ -4,6 +4,12 @@
 // is critical to keep the books reconciled and the GDPR audit trail honest.
 
 import { z } from "zod";
+import { STRICT_BODY_MESSAGE } from "./folios.schemas.js";
+
+// Finanzas (2026-09-16, fix t6#14 · integrador): every money body is strict —
+// an unknown key is a 400 in Spanish, never silently dropped (a dropped key
+// once made every rectificativa «I» answer «no produce ningún cambio neto»).
+const strictBody = { message: STRICT_BODY_MESSAGE };
 
 const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}/, "must be YYYY-MM-DD");
 
@@ -25,20 +31,26 @@ export const RectifyInvoiceSchema = z.object({
         lineType: z.string().max(40).optional(),
         taxCategory: z.enum(TAX_CATEGORY_VALUES).optional()
       })
+      .strict(strictBody)
     )
     .optional(),
+  // Finanzas (2026-09-16): a rectificativa «I» (por diferencias) adjusts an
+  // existing line to a new quantity and/or unit price — the shape
+  // invoice.service buildDifferenceLines reads. The former
+  // description/amountDelta/quantityDelta keys were dropped by zod, so every
+  // «I» with adjustments answered 400 «no produce ningún cambio neto».
   lineAdjustments: z
     .array(
       z.object({
-        lineId: z.string().optional(),
-        description: z.string().max(500).optional(),
-        amountDelta: z.number().optional(),
-        quantityDelta: z.number().optional()
+        lineId: z.string().min(1),
+        quantity: z.number().positive().optional(),
+        unitPrice: z.number().finite().optional()
       })
+      .strict(strictBody)
     )
     .optional(),
   fullReversal: z.boolean().optional()
-});
+}).strict(strictBody);
 
 export type RectifyInvoiceInput = z.infer<typeof RectifyInvoiceSchema>;
 
@@ -48,7 +60,7 @@ export const CreateFiscalYearSchema = z.object({
   code: z.string().min(1).max(40),
   startDate: isoDate,
   endDate: isoDate
-});
+}).strict(strictBody);
 
 export type CreateFiscalYearInput = z.infer<typeof CreateFiscalYearSchema>;
 
@@ -57,14 +69,15 @@ export const CloseFiscalYearSchema = z
   .object({
     createNextYear: z.boolean().optional()
   })
-  .partial();
+  .partial()
+  .strict(strictBody);
 
 export type CloseFiscalYearInput = z.infer<typeof CloseFiscalYearSchema>;
 
 // POST /accounting/fiscal-years/:id/reopen
 export const ReopenFiscalYearSchema = z.object({
   reason: z.string().min(1).max(1000)
-});
+}).strict(strictBody);
 
 export type ReopenFiscalYearInput = z.infer<typeof ReopenFiscalYearSchema>;
 

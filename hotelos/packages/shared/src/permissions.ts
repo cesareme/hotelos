@@ -159,6 +159,8 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   "banking.read": "Read bank accounts, balances, statements and reconciliation status",
   "commissions.read": "Read commission rules, accruals and summaries",
   "accounting.read": "Read fiscal years, fiscal periods and exchange rates",
+  "accounting.reports.read":
+    "Read the accounting books and reports with amounts: journal, ledger, VAT books, AEAT models, annual accounts, USALI, supplier bills and depreciation runs",
   "notifications.manage": "Manage notification templates, dispatch and delivery retries",
   "procurement.read": "Read procurement records",
   "procurement.manage": "Manage procurement records",
@@ -429,6 +431,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "banking.read",
     "commissions.read",
     "accounting.read",
+    // Finanzas (2026-09-16, fix t6#9): Dirección reads the books and the
+    // fiscal reports (Estados contables, Modelos AEAT, USALI).
+    "accounting.reports.read",
     "incidents.read",
     "safety_checks.read",
     "workforce.read",
@@ -478,6 +483,11 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     // are visible to reception and their GETs were 403; the compliance inbox
     // reads the fiscal periods to warn about a closing period
     // (accounting.read: fiscal calendar and exchange rates, no amounts).
+    // Finanzas (2026-09-16, fix t6#9): every finance GET that shows amounts
+    // (diario, mayor, IVA, modelos AEAT, cuentas anuales, USALI) is gated by
+    // accounting.reports.read, which reception does NOT hold — the calendar
+    // key stays here so existing Recepción roles keep the inbox warning
+    // (the boot top-up never revokes; a narrower key closes the leak).
     "modules.read",
     "invoice.read",
     "incidents.read",
@@ -542,7 +552,29 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "payroll.read",
     "banking.read",
     "commissions.read",
-    "accounting.read"
+    "accounting.read",
+    // Finanzas (2026-09-16, FIN-17): the route gate of the bank imports,
+    // reconciliation, SEPA remittances and payroll calculation/payment asks
+    // banking.reconcile / payroll.manage; the services accept those OR
+    // accounting.journal.post. Without the keys the accountant reached the
+    // service check only through the owner template.
+    "banking.reconcile",
+    "payroll.manage",
+    // Finanzas (2026-09-16, fix t6#9 / t6#10): the accounting read surface
+    // (diario, mayor, IVA, modelos, cuentas anuales, USALI) moved from the
+    // calendar key accounting.read to accounting.reports.read; and the
+    // accountant of a pyme registers suppliers and received invoices
+    // (procurement.*, payables partial), the fixed-asset register
+    // (assets.*, fixed-assets partial) and exports the books to the
+    // gestoría (analytics.export, financial-statements partial). Without
+    // them the Contabilidad template answered 403 on POST suppliers /
+    // supplier-bills / asset-register / gestoria-exports.
+    "accounting.reports.read",
+    "procurement.read",
+    "procurement.manage",
+    "assets.read",
+    "assets.manage",
+    "analytics.export"
   ],
   compliance: [
     "pms.reservation.read",
@@ -587,7 +619,11 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "modules.read",
     "invoice.read",
     "commissions.read",
-    "accounting.read"
+    "accounting.read",
+    // Finanzas (2026-09-16, fix t6#9): Modelos AEAT, libros de IVA and the
+    // fiscal reports are the finanzas token (sister of accountant); the
+    // calendar key alone no longer opens them.
+    "accounting.reports.read"
   ],
   // Revenue / distribution manager: pricing, restrictions, channels, forecasts.
   revenue: [

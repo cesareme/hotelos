@@ -4,6 +4,18 @@ import { ForbiddenError } from "../lib/http-error.js";
 import { rateGridRoutePermissions } from "../modules/rate-manager/route-permissions.partial.js";
 import { CHANNEL_MANAGER_ROUTE_PERMISSIONS } from "../modules/channel-manager/route-permissions.partial.js";
 import { recommendationsRoutePermissions } from "../modules/revenue/route-permissions.partial.js";
+// Finanzas (2026-09-16, integración): one partial per finance module (the
+// contract test reads every `*route-permissions.partial.ts` under modules/).
+import { ledgerRoutePermissions as ledgerRoutePermissionsAsWritten } from "../modules/accounting/route-permissions.partial.js";
+import { fiscalRoutePermissions as fiscalRoutePermissionsAsWritten } from "../modules/accounting/fiscal-route-permissions.partial.js";
+import { invoicingRoutePermissions } from "../modules/invoicing/route-permissions.partial.js";
+import { paymentsRoutePermissions } from "../modules/payments/route-permissions.partial.js";
+import { posRoutePermissions } from "../modules/pos/route-permissions.partial.js";
+import { nightAuditRoutePermissions } from "../modules/night-audit/route-permissions.partial.js";
+import { payablesRoutePermissions as payablesRoutePermissionsAsWritten } from "../modules/payables/route-permissions.partial.js";
+import { fixedAssetsRoutePermissions as fixedAssetsRoutePermissionsAsWritten } from "../modules/fixed-assets/route-permissions.partial.js";
+import { treasuryRoutePermissions } from "../modules/treasury/route-permissions.partial.js";
+import { FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS as FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS_AS_WRITTEN } from "../modules/financial-statements/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -20,11 +32,77 @@ export type ApiRoutePermission = {
   riskLevel: "public" | "low" | "medium" | "high" | "critical";
 };
 
+// Finanzas (2026-09-16, fix t6#9 · integrador): `accounting.read` is the
+// CALENDAR key of Tanda 5 (L1c) — "fiscal years, fiscal periods and exchange
+// rates", held by the Recepción template so the compliance inbox can warn
+// about a closing period. The finance partials (ledger, fiscal, payables,
+// fixed assets, financial statements) reused it for every read that shows
+// amounts, which opened the diario, the mayor, the CSV export, the Modelo
+// 303, the libros de IVA, the cuentas anuales and the USALI PyG to reception
+// under strict RBAC. The runtime manifest gates those reads with
+// `accounting.reports.read` instead (manager / accountant / compliance /
+// owner hold it; reception does not), leaving `accounting.read` only on the
+// calendar routes of this file. The boot top-up never revokes a grant, so a
+// NARROWER key — not a removal from the Recepción template — is what closes
+// the leak for the roles that already exist (Faranda, org_123).
+//
+// The remap is applied at the import boundary so the spread lines below stay
+// textually intact for the contract tests that parse this file
+// (`...<partial>,`). Partial owners may switch their entries to
+// `accounting.reports.read` directly; the remap is then a no-op.
+export const ACCOUNTING_CALENDAR_KEY: PermissionKey = "accounting.read";
+export const ACCOUNTING_REPORTS_KEY: PermissionKey = "accounting.reports.read";
+
+/** `accounting.read` → `accounting.reports.read` on every entry of a finance partial (other keys untouched). */
+export function requireAccountingReportsKey(entries: readonly ApiRoutePermission[]): ApiRoutePermission[] {
+  return entries.map((entry) =>
+    entry.permissions.includes(ACCOUNTING_CALENDAR_KEY)
+      ? {
+          ...entry,
+          permissions: entry.permissions.map((key) => (key === ACCOUNTING_CALENDAR_KEY ? ACCOUNTING_REPORTS_KEY : key))
+        }
+      : entry
+  );
+}
+
+const ledgerRoutePermissions = requireAccountingReportsKey(ledgerRoutePermissionsAsWritten);
+const fiscalRoutePermissions = requireAccountingReportsKey(fiscalRoutePermissionsAsWritten);
+const payablesRoutePermissions = requireAccountingReportsKey(payablesRoutePermissionsAsWritten);
+const fixedAssetsRoutePermissions = requireAccountingReportsKey(fixedAssetsRoutePermissionsAsWritten);
+const FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS = requireAccountingReportsKey(FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS_AS_WRITTEN);
+
+/**
+ * Calendar reads that legitimately keep `accounting.read` (no amounts):
+ * fiscal years and their status, fiscal periods, exchange rates. Every other
+ * GET carrying the key is a finance read and is pinned by
+ * security/__tests__/finance-report-keys.test.mts.
+ */
+export const ACCOUNTING_CALENDAR_GET_PATHS: readonly string[] = [
+  "/accounting/fiscal-years",
+  "/accounting/fiscal-years/:id/status",
+  "/accounting/fiscal-periods",
+  "/finance/exchange-rates"
+];
+
 export const routePermissionManifest: ApiRoutePermission[] = [
   // Rate grid v2 (2026-09-14): entries contributed by the modules that own the routes.
   ...rateGridRoutePermissions,
   ...CHANNEL_MANAGER_ROUTE_PERMISSIONS,
   ...recommendationsRoutePermissions,
+  // Finanzas (2026-09-16): ledger, fiscal (IVA/AEAT), invoicing PDF, payments
+  // (PSP), TPV/arqueo, night audit, payables, fixed assets, treasury and
+  // financial statements. The legacy POS / night-audit entries moved into
+  // their partials with the routes.
+  ...ledgerRoutePermissions,
+  ...fiscalRoutePermissions,
+  ...invoicingRoutePermissions,
+  ...paymentsRoutePermissions,
+  ...posRoutePermissions,
+  ...nightAuditRoutePermissions,
+  ...payablesRoutePermissions,
+  ...fixedAssetsRoutePermissions,
+  ...treasuryRoutePermissions,
+  ...FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },
@@ -81,8 +159,11 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/invoices/:id/tbai/submit", permissions: ["compliance.configure"], riskLevel: "high" },
   { method: "GET", path: "/properties/:propertyId/tbai/chain/:territory/verify", permissions: ["compliance.configure"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/tbai/submissions", permissions: ["billing.compliance.view"], riskLevel: "medium" },
-  { method: "POST", path: "/properties/:propertyId/banking/csb43/import", permissions: ["accounting.journal.post"], riskLevel: "high" },
-  { method: "POST", path: "/banking/sepa/remittances", permissions: ["accounting.journal.post"], riskLevel: "high" },
+  // Finanzas (2026-09-16, FIN-17): bank imports and SEPA remittances are the
+  // reconciler's work (banking.reconcile: manager/accountant); the services
+  // accept banking.reconcile OR accounting.journal.post.
+  { method: "POST", path: "/properties/:propertyId/banking/csb43/import", permissions: ["banking.reconcile"], riskLevel: "high" },
+  { method: "POST", path: "/banking/sepa/remittances", permissions: ["banking.reconcile"], riskLevel: "high" },
   { method: "POST", path: "/banking/iban/validate", permissions: [], riskLevel: "low" },
   { method: "GET", path: "/esrs/catalog", permissions: [], riskLevel: "low" },
   { method: "GET", path: "/organizations/:orgId/esrs/:year/indicators", permissions: ["compliance.configure"], riskLevel: "medium" },
@@ -709,9 +790,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/menu-items/:id/recipes", permissions: ["inventory.manage"], riskLevel: "low" },
   { method: "DELETE", path: "/menu-recipes/:id", permissions: ["inventory.manage"], riskLevel: "low" },
   { method: "DELETE", path: "/compliance/documents/:id", permissions: ["compliance.configure"], riskLevel: "medium" },
-  { method: "POST", path: "/pos/tickets", permissions: ["folio.charge.post"], riskLevel: "low" },
-  { method: "POST", path: "/pos/tickets/:id/lines", permissions: ["folio.charge.post"], riskLevel: "low" },
-  { method: "POST", path: "/pos/tickets/:id/close", permissions: ["folio.charge.post"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/capex", permissions: ["asset.capex.approve"], riskLevel: "medium" },
   { method: "GET", path: "/properties/:propertyId/assets", permissions: ["maintenance.workorder.manage"], riskLevel: "low" },
   { method: "POST", path: "/assets", permissions: ["maintenance.workorder.manage"], riskLevel: "medium" },
@@ -924,9 +1002,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/events", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
   { method: "GET", path: "/events/integrity", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
   { method: "GET", path: "/ai/tool-calls", permissions: ["ai.high_risk.confirm"], riskLevel: "high" },
-  { method: "GET", path: "/properties/:propertyId/night-audit/business-date", permissions: ["analytics.read"], riskLevel: "low" },
-  { method: "GET", path: "/properties/:propertyId/night-audit/runs", permissions: ["analytics.read"], riskLevel: "low" },
-  { method: "POST", path: "/properties/:propertyId/night-audit/run", permissions: ["accounting.journal.post"], riskLevel: "high" },
   { method: "POST", path: "/accounting/fiscal-periods", permissions: ["accounting.journal.post"], riskLevel: "high" },
   { method: "POST", path: "/accounting/fiscal-periods/:id/close", permissions: ["accounting.journal.post"], riskLevel: "high" },
   { method: "POST", path: "/accounting/fiscal-periods/:id/reopen", permissions: ["accounting.journal.post", "ai.high_risk.confirm"], riskLevel: "high" },
@@ -943,13 +1018,18 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/tbai/submissions/:id/retry", permissions: ["compliance.ses.submit"], riskLevel: "medium" },
   { method: "POST", path: "/igic/submissions/:id/retry", permissions: ["compliance.ses.submit"], riskLevel: "medium" },
   { method: "POST", path: "/ses/submissions/:id/retry", permissions: ["compliance.ses.submit"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/trial-balance", permissions: ["analytics.read"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/balance-sheet", permissions: ["analytics.read"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/cash-flow", permissions: ["analytics.read"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/pnl", permissions: ["analytics.read"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/modelo-111", permissions: ["analytics.read"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/modelo-115", permissions: ["analytics.read"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/modelo-180", permissions: ["analytics.read"], riskLevel: "medium" },
+  // Finanzas (2026-09-16, fix t6#9): the legacy accounting reports show
+  // amounts (sumas y saldos, balance, flujos, PyG, retenciones 111/115/180) —
+  // accounting.reports.read (finanzas + direccion) instead of analytics.read,
+  // which every template holds for «Mi día». The modelo services still check
+  // analytics.read themselves; the edge gate is the narrower one.
+  { method: "GET", path: "/accounting/reports/trial-balance", permissions: ["accounting.reports.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/balance-sheet", permissions: ["accounting.reports.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/cash-flow", permissions: ["accounting.reports.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/pnl", permissions: ["accounting.reports.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/modelo-111", permissions: ["accounting.reports.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/modelo-115", permissions: ["accounting.reports.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/modelo-180", permissions: ["accounting.reports.read"], riskLevel: "medium" },
   // Tanda 5 (L1c · api): commissions.read (finanzas, comercial, direccion) instead of analytics.read.
   { method: "GET", path: "/commissions/rules", permissions: ["commissions.read"], riskLevel: "medium" },
   { method: "POST", path: "/commissions/rules", permissions: ["accounting.journal.post"], riskLevel: "high" },
@@ -972,7 +1052,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/copilot/presets", permissions: [], riskLevel: "low" },
   { method: "POST", path: "/copilot/ask", permissions: [], riskLevel: "low" },
   { method: "GET", path: "/guests/:id/timeline", permissions: ["guests.read"], riskLevel: "low" },
-  { method: "GET", path: "/properties/:propertyId/night-audit/preflight", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/dashboards/maintenance", permissions: ["analytics.read"], riskLevel: "low" },
   { method: "GET", path: "/dashboards/finance-position", permissions: ["analytics.read"], riskLevel: "medium" },
   { method: "GET", path: "/dashboards/concierge", permissions: ["analytics.read"], riskLevel: "low" },
@@ -1221,16 +1300,14 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "GET", path: "/properties/:propertyId/stock-balances/low-stock", permissions: ["inventory.read"], riskLevel: "low" },
   { method: "GET", path: "/properties/:propertyId/menu-items", permissions: ["inventory.read"], riskLevel: "low" },
   { method: "GET", path: "/menu-items/:id", permissions: ["inventory.read"], riskLevel: "low" },
-  { method: "GET", path: "/properties/:propertyId/pos/outlets", permissions: ["pos.read"], riskLevel: "low" },
-  { method: "GET", path: "/properties/:propertyId/pos/tickets", permissions: ["pos.read"], riskLevel: "low" },
-  // FISC-05 · cash reconciliation (read) shares the POS read key.
-  { method: "GET", path: "/properties/:propertyId/pos/cash-summary", permissions: ["pos.read"], riskLevel: "low" },
   // Accounting & fiscal reports (modelo-303/390 also enforce analytics.read in
   // their service; the entry makes the edge gate explicit and uniform).
+  // Finanzas (2026-09-16, fix t6#9): the IVA models carry amounts →
+  // accounting.reports.read; the fiscal-periods calendar keeps accounting.read.
   { method: "GET", path: "/accounting/journal-entries/recent", permissions: ["accounting.journal.post"], riskLevel: "medium" },
   { method: "GET", path: "/accounting/fiscal-periods", permissions: ["accounting.read"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/modelo-303", permissions: ["analytics.read"], riskLevel: "medium" },
-  { method: "GET", path: "/accounting/reports/modelo-390", permissions: ["analytics.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/modelo-303", permissions: ["accounting.reports.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/reports/modelo-390", permissions: ["accounting.reports.read"], riskLevel: "medium" },
   // SES submissions (Prisma pipeline, Tanda 3 · QC-01/FISC-08). Reads share the
   // guest-register read key: the history of what was sent to the MIR is the
   // same audience as the traveller records themselves (compliance role +

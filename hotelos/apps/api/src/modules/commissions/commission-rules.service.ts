@@ -1,4 +1,16 @@
 import { prisma, type Prisma } from "@hotelos/database";
+import { BadRequestError } from "../../lib/http-error.js";
+import { dec, round2 } from "../treasury/money.js";
+
+export const DEFAULT_COMMISSION_EXPENSE_CODE = "629.1";
+const APPLIES_TO = new Set(["gross_revenue", "net_revenue", "total"]);
+
+/** "15", 15, "15,5" → "15.50"; refuses anything outside 0–100. */
+export function parseRatePct(value: number | string): string {
+  const rate = round2(dec(value));
+  if (rate.lte(0) || rate.gt(100)) throw new BadRequestError("ratePct debe estar entre 0 y 100.");
+  return rate.toFixed(2);
+}
 
 // CommissionRule service.
 //
@@ -87,7 +99,10 @@ export async function createRule(input: CreateRuleInput): Promise<CommissionRule
   if (!input.channelId && !input.channelCode) {
     throw new Error("Either channelId or channelCode must be provided.");
   }
-  const ratePct = typeof input.ratePct === "number" ? input.ratePct.toFixed(2) : String(input.ratePct);
+  const ratePct = parseRatePct(input.ratePct);
+  if (input.appliesTo && !APPLIES_TO.has(input.appliesTo)) {
+    throw new BadRequestError("appliesTo debe ser gross_revenue, net_revenue o total.");
+  }
 
   const effectiveFrom = input.effectiveFrom ? new Date(input.effectiveFrom) : null;
   const effectiveTo = input.effectiveTo ? new Date(input.effectiveTo) : null;
@@ -118,7 +133,8 @@ export async function createRule(input: CreateRuleInput): Promise<CommissionRule
         channelCode: input.channelCode ?? null,
         ratePct,
         appliesTo: input.appliesTo ?? "net_revenue",
-        ledgerAccountCode: input.ledgerAccountCode ?? "6230",
+        // Canonical PGC subaccount (629.1 Comisiones de canales); "6230" was the seed's legacy default.
+        ledgerAccountCode: input.ledgerAccountCode?.trim() || DEFAULT_COMMISSION_EXPENSE_CODE,
         active: true,
         effectiveFrom,
         effectiveTo
@@ -181,6 +197,33 @@ export async function resolveRule(input: ResolveRuleInput): Promise<CommissionRu
       orderBy: { createdAt: "desc" }
     });
     if (byCode) return toRecord(byCode);
+  }
+  // Fallback (lote tesoreria-banca): the channel manager's own contractual
+  // percentage (Channel.commissionPercent) acts as an implicit rule so an
+  // onboarded OTA accrues even before anyone writes a CommissionRule. The
+  // record is synthetic (id "channel:<id>") and never persisted.
+  const channel = await prisma.channel.findFirst({
+    where: {
+      propertyId: input.propertyId,
+      commissionPercent: { not: null },
+      ...(input.channelId ? { id: input.channelId } : { providerCode: input.channelCode ?? "__none__" })
+    },
+    select: { id: true, providerCode: true, commissionPercent: true, createdAt: true }
+  });
+  if (channel && channel.commissionPercent && round2(dec(channel.commissionPercent)).gt(0)) {
+    return {
+      id: `channel:${channel.id}`,
+      propertyId: input.propertyId,
+      channelId: channel.id,
+      channelCode: channel.providerCode,
+      ratePct: round2(dec(channel.commissionPercent)).toFixed(2),
+      appliesTo: "net_revenue",
+      ledgerAccountCode: DEFAULT_COMMISSION_EXPENSE_CODE,
+      active: true,
+      effectiveFrom: null,
+      effectiveTo: null,
+      createdAt: channel.createdAt.toISOString()
+    };
   }
   return null;
 }

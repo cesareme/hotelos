@@ -21,6 +21,9 @@
     "demo:fix-identity": "node --env-file-if-exists=../../.env --import tsx src/scripts/fix-demo-legal-identity.ts",
     "channels:seed-sandbox": "node --env-file-if-exists=../../.env --import tsx src/scripts/seed-sandbox-channels.ts",
     "pilot:provision-property": "node --env-file-if-exists=../../.env --import tsx src/scripts/provision-pilot-property.ts",
+    "accounting:provision-chart": "node --env-file-if-exists=../../.env --import tsx src/scripts/accounting-provision-chart.ts",
+    "accounting:replay": "node --env-file-if-exists=../../.env --import tsx src/scripts/accounting-replay.ts",
+    "accounting:relabel-customer-account": "node --env-file-if-exists=../../.env --import tsx src/scripts/accounting-relabel-customer-account.ts",
     "import:pms-history-forecast": "node --env-file-if-exists=../../.env --import tsx src/scripts/import-pms-history-forecast.ts"
   },
   "dependencies": {
@@ -40,6 +43,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
+    "qrcode-terminal": "0.11.0",
     "tsx": "^4.19.0",
     "typescript": "^5.8.0"
   }

@@ -1,7 +1,7 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
-import { requirePermissions } from "../auth/auth.service.js";
+import { PAYROLL_WRITE_KEYS, requireAnyPermission } from "../treasury/permissions.js";
 
 // ---- Sprint 23 / Track 5 — Payroll bridge a gestoría ----
 //
@@ -104,7 +104,7 @@ export async function createContract(input: {
   costCenterId?: string;
   correlationId: string;
 }): Promise<EmploymentContractRecord> {
-  requirePermissions(input.context, ["accounting.journal.post"]);
+  requireAnyPermission(input.context, PAYROLL_WRITE_KEYS);
 
   if (!Number.isFinite(input.grossSalary) || input.grossSalary < 0) {
     throw new Error("grossSalary must be a non-negative number.");
@@ -170,7 +170,7 @@ export async function deactivateContract(input: {
   contractId: string;
   correlationId: string;
 }): Promise<EmploymentContractRecord> {
-  requirePermissions(input.context, ["accounting.journal.post"]);
+  requireAnyPermission(input.context, PAYROLL_WRITE_KEYS);
 
   const existing = await prisma.employmentContract.findUnique({ where: { id: input.contractId } });
   if (!existing) throw new Error("Employment contract was not found.");

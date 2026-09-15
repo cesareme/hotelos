@@ -1,10 +1,44 @@
+// Night audit (cierre del día) — Finanzas (2026-09-15, lote «pos-noche»).
+//
+// What a run does for the property's CURRENT business date (business_dates):
+//   1. validate_open_folios   · in-house folios inspected (informational);
+//   2. snapshot_room_status   · rooms by status;
+//   3. post_room_charges      · ONE room charge per in-house reservation for
+//                               the business date, priced from the rate grid
+//                               (pms/room-charge.service: reservation plan →
+//                               BAR → lowest published → reservation total
+//                               split across nights); a reservation nothing
+//                               prices is a WARNING item («reserva sin
+//                               tarifa»), never a 0 € line; idempotent per
+//                               (folio, business date, reservation code) so a
+//                               re-run of the same day posts nothing twice;
+//                               each reservation in its own transaction, with
+//                               the folio engine's side effects (routing,
+//                               FOLIO_CHARGE_POSTED audit, ChargePosted event);
+//   4. process_no_shows       · cancellation-policy service;
+//   5. revenue_snapshot       · folio lines posted inside the property-local
+//                               business day, by type;
+//   6. payments_summary       · captured payments of the business day by
+//                               method (a summary, not a reconciliation: the
+//                               cash closure is the count);
+//   7. advance_business_date  · business_dates → next day.
+// The run row keeps `stepResultsJson = { steps, report }`: `report` is the
+// closing report (NightAuditReportWire) the front renders. A completed date
+// answers 409 NIGHT_AUDIT_ALREADY_COMPLETED; an in-progress one 409
+// NIGHT_AUDIT_IN_PROGRESS; a failed run can be re-executed (idempotent steps).
+// Texts are Spanish (they reach the operator and the folio).
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
+import { Prisma as PrismaRuntime } from "@prisma/client";
 import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { processNoShows } from "../cancellation-policy/cancellation-policy.service.js";
 import { ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { postNightlyRoomChargeTx, quoteNightlyRate, type NightlyPriceSource } from "../pms/room-charge.service.js";
+import { resolvePropertyTimeZone, zonedMidnight } from "../pos/pos.service.js";
+
+const Decimal = PrismaRuntime.Decimal;
 
 export type NightAuditStatus = "not_started" | "in_progress" | "completed" | "failed";
 
@@ -13,6 +47,30 @@ export type NightAuditStepResult = {
   status: "ok" | "warning" | "skipped" | "failed";
   detail?: string;
   metrics?: Record<string, number>;
+  items?: Array<{ ref: string; label: string; detail?: string }>;
+};
+
+export type NightAuditRoomChargeItem = {
+  reservationId: string;
+  reservationCode: string;
+  folioId: string | null;
+  outcome: "posted" | "already_posted" | "no_rate" | "no_open_folio";
+  amount: string | null;
+  priceSource: NightlyPriceSource;
+  detail?: string;
+};
+
+export type NightAuditReport = {
+  businessDate: string;
+  nextBusinessDate: string;
+  timeZone: string;
+  inHouseReservations: number;
+  roomCharges: { posted: number; alreadyPosted: number; withoutRate: number; withoutFolio: number; totalPosted: string; items: NightAuditRoomChargeItem[] };
+  noShows: { processed: number; totalCharged: string };
+  revenue: { total: string; lines: number; byType: Record<string, string> };
+  payments: { total: string; count: number; byMethod: Record<string, string> };
+  cashClosures: Array<{ outletId: string; status: "open" | "closed" | "approved"; difference: string | null }>;
+  warnings: string[];
 };
 
 export type NightAuditRunRecord = {
@@ -24,6 +82,7 @@ export type NightAuditRunRecord = {
   completedAt?: string;
   startedBy?: string;
   stepResults: NightAuditStepResult[];
+  report: NightAuditReport | null;
   errorMessage?: string;
   createdAt: string;
 };
@@ -42,7 +101,15 @@ function nextDay(iso: string): string {
   return isoDate(next);
 }
 
+function formatDayEs(iso: string): string {
+  const [y, m, d] = iso.split("-");
+  return `${d}/${m}/${y}`;
+}
+
+type StepResultsJson = { steps?: NightAuditStepResult[]; report?: NightAuditReport | null };
+
 function mapRun(row: NonNullable<Awaited<ReturnType<typeof prisma.nightAuditRun.findUnique>>>): NightAuditRunRecord {
+  const json = (row.stepResultsJson ?? {}) as StepResultsJson;
   return {
     id: row.id,
     propertyId: row.propertyId,
@@ -51,7 +118,8 @@ function mapRun(row: NonNullable<Awaited<ReturnType<typeof prisma.nightAuditRun.
     startedAt: row.startedAt?.toISOString(),
     completedAt: row.completedAt?.toISOString(),
     startedBy: row.startedBy ?? undefined,
-    stepResults: (row.stepResultsJson as { steps?: NightAuditStepResult[] })?.steps ?? [],
+    stepResults: json.steps ?? [],
+    report: json.report ?? null,
     errorMessage: row.errorMessage ?? undefined,
     createdAt: row.createdAt.toISOString()
   };
@@ -112,6 +180,15 @@ export async function listNightAuditRuns(propertyId: string): Promise<NightAudit
   return rows.map(mapRun);
 }
 
+/** One run (its steps and closing report); 404 when it is not a run of this property. */
+export async function getNightAuditRun(propertyId: string, runId: string): Promise<NightAuditRunRecord> {
+  const row = await prisma.nightAuditRun.findUnique({ where: { id: runId } });
+  if (!row || row.propertyId !== propertyId) throw new NotFoundError("Ejecución del cierre del día no encontrada.");
+  return mapRun(row);
+}
+
+type RunContext = { context: UserContext; propertyId: string; correlationId: string; businessDate: string; timeZone: string };
+
 export async function runNightAudit(input: {
   context: UserContext;
   propertyId: string;
@@ -121,15 +198,16 @@ export async function runNightAudit(input: {
 
   const businessDate = await getCurrentBusinessDate(input.propertyId);
   const businessDateOnly = dateOnly(businessDate);
+  const { timeZone } = await resolvePropertyTimeZone(input.propertyId);
 
   const existing = await prisma.nightAuditRun.findUnique({
     where: { propertyId_businessDate: { propertyId: input.propertyId, businessDate: businessDateOnly } }
   });
   if (existing && existing.status === "completed") {
-    throw new ConflictError(`El cierre nocturno de ${businessDate} ya está completado.`);
+    throw new ConflictError(`El cierre del día ${formatDayEs(businessDate)} ya está completado.`, { code: "NIGHT_AUDIT_ALREADY_COMPLETED", runId: existing.id, businessDate });
   }
   if (existing && existing.status === "in_progress") {
-    throw new ConflictError(`El cierre nocturno de ${businessDate} ya está en curso (ejecución ${existing.id}).`);
+    throw new ConflictError(`El cierre del día ${formatDayEs(businessDate)} ya está en curso (ejecución ${existing.id}).`, { code: "NIGHT_AUDIT_IN_PROGRESS", runId: existing.id, businessDate });
   }
 
   const run = await prisma.nightAuditRun.upsert({
@@ -160,28 +238,42 @@ export async function runNightAudit(input: {
     action: "NIGHT_AUDIT_STARTED",
     entityType: "night_audit_run",
     entityId: run.id,
-    afterJson: { businessDate, runId: run.id },
+    afterJson: { businessDate, runId: run.id, timeZone },
     deviceId: input.context.deviceId,
     correlationId: input.correlationId
   });
 
+  const ctx: RunContext = { ...input, businessDate, timeZone };
   const steps: NightAuditStepResult[] = [];
+  const report: NightAuditReport = {
+    businessDate,
+    nextBusinessDate: nextDay(businessDate),
+    timeZone,
+    inHouseReservations: 0,
+    roomCharges: { posted: 0, alreadyPosted: 0, withoutRate: 0, withoutFolio: 0, totalPosted: "0.00", items: [] },
+    noShows: { processed: 0, totalCharged: "0.00" },
+    revenue: { total: "0.00", lines: 0, byType: {} },
+    payments: { total: "0.00", count: 0, byMethod: {} },
+    cashClosures: [],
+    warnings: []
+  };
 
   try {
-    steps.push(await stepValidateOpenFolios(input.propertyId, businessDateOnly));
-    steps.push(await stepSnapshotRoomStatus(input.propertyId));
-    steps.push(await stepPostRoomChargesForInHouse(input));
-    steps.push(await stepProcessNoShows(input, businessDateOnly));
-    steps.push(await stepRevenueSnapshot(input.propertyId, businessDate));
-    steps.push(await stepReconcilePayments(input.propertyId, businessDateOnly));
-    steps.push(await stepAdvanceBusinessDate(input.propertyId, businessDate, input.context.userId));
+    steps.push(await stepValidateOpenFolios(ctx, report));
+    steps.push(await stepSnapshotRoomStatus(ctx));
+    steps.push(await stepPostRoomChargesForInHouse(ctx, report));
+    steps.push(await stepProcessNoShows(ctx, report));
+    steps.push(await stepRevenueSnapshot(ctx, report));
+    steps.push(await stepPaymentsSummary(ctx, report));
+    steps.push(await stepCashClosures(ctx, report));
+    steps.push(await stepAdvanceBusinessDate(ctx));
 
     const completed = await prisma.nightAuditRun.update({
       where: { id: run.id },
       data: {
         status: "completed",
         completedAt: new Date(),
-        stepResultsJson: { steps }
+        stepResultsJson: { steps, report } as unknown as Prisma.InputJsonValue
       }
     });
 
@@ -193,7 +285,7 @@ export async function runNightAudit(input: {
       action: "NIGHT_AUDIT_COMPLETED",
       entityType: "night_audit_run",
       entityId: completed.id,
-      afterJson: { businessDate, nextBusinessDate: nextDay(businessDate), steps },
+      afterJson: { businessDate, nextBusinessDate: nextDay(businessDate), steps, report },
       deviceId: input.context.deviceId,
       correlationId: input.correlationId
     });
@@ -204,7 +296,7 @@ export async function runNightAudit(input: {
       entityType: "night_audit_run",
       entityId: completed.id,
       eventType: "NightAuditCompleted",
-      payload: { businessDate, nextBusinessDate: nextDay(businessDate), stepCount: steps.length },
+      payload: { businessDate, nextBusinessDate: nextDay(businessDate), stepCount: steps.length, roomChargesPosted: report.roomCharges.posted, warnings: report.warnings.length },
       actorType: "user",
       actorUserId: input.context.userId,
       correlationId: input.correlationId
@@ -213,13 +305,14 @@ export async function runNightAudit(input: {
     return mapRun(completed);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    console.error(`[night-audit] corr=${input.correlationId} property=${input.propertyId} businessDate=${businessDate} run=${run.id} failed: ${message}`);
     const failed = await prisma.nightAuditRun.update({
       where: { id: run.id },
       data: {
         status: "failed",
         completedAt: new Date(),
         errorMessage: message,
-        stepResultsJson: { steps }
+        stepResultsJson: { steps, report } as unknown as Prisma.InputJsonValue
       }
     });
 
@@ -231,7 +324,7 @@ export async function runNightAudit(input: {
       action: "NIGHT_AUDIT_FAILED",
       entityType: "night_audit_run",
       entityId: failed.id,
-      afterJson: { businessDate, errorMessage: message, steps },
+      afterJson: { businessDate, errorMessage: message, steps, report },
       deviceId: input.context.deviceId,
       correlationId: input.correlationId
     });
@@ -240,33 +333,49 @@ export async function runNightAudit(input: {
   }
 }
 
-async function stepValidateOpenFolios(propertyId: string, businessDateOnly: Date): Promise<NightAuditStepResult> {
-  // Folio has no Prisma @relation to Reservation, so we resolve in-house
-  // reservations first and then filter open folios by id.
-  const inHouse = await prisma.reservation.findMany({
-    where: { propertyId, status: "checked_in" },
-    select: { id: true }
-  });
-  const reservationIds = inHouse.map((r) => r.id);
-  const openWithBalance = reservationIds.length === 0
-    ? []
-    : await prisma.folio.findMany({
-        where: { status: "open", reservationId: { in: reservationIds } },
-        select: { id: true, reservationId: true }
-      });
+type InHouseReservation = {
+  id: string;
+  code: string;
+  totalAmount: Prisma.Decimal;
+  currency: string;
+  arrivalDate: Date;
+  departureDate: Date;
+  roomTypeId: string | null;
+  ratePlanId: string | null;
+  assignedRoomId: string | null;
+};
 
+async function loadInHouse(propertyId: string): Promise<InHouseReservation[]> {
+  return prisma.reservation.findMany({
+    where: { propertyId, status: "checked_in", deletedAt: null },
+    select: { id: true, code: true, totalAmount: true, currency: true, arrivalDate: true, departureDate: true, roomTypeId: true, ratePlanId: true, assignedRoomId: true },
+    orderBy: { code: "asc" }
+  });
+}
+
+async function stepValidateOpenFolios(ctx: RunContext, report: NightAuditReport): Promise<NightAuditStepResult> {
+  const inHouse = await loadInHouse(ctx.propertyId);
+  const reservationIds = inHouse.map((r) => r.id);
+  const openFolios =
+    reservationIds.length === 0
+      ? []
+      : await prisma.folio.findMany({
+          where: { status: "open", deletedAt: null, reservationId: { in: reservationIds } },
+          select: { id: true, reservationId: true }
+        });
+  report.inHouseReservations = inHouse.length;
   return {
     step: "validate_open_folios",
     status: "ok",
-    detail: `Inspected ${openWithBalance.length} in-house folios for business date ${isoDate(businessDateOnly)}.`,
-    metrics: { inHouseFolios: openWithBalance.length }
+    detail: `${openFolios.length} folios abiertos de ${inHouse.length} reservas alojadas revisados para el día ${formatDayEs(ctx.businessDate)}.`,
+    metrics: { inHouseFolios: openFolios.length, inHouseReservations: inHouse.length }
   };
 }
 
-async function stepSnapshotRoomStatus(propertyId: string): Promise<NightAuditStepResult> {
+async function stepSnapshotRoomStatus(ctx: RunContext): Promise<NightAuditStepResult> {
   const counts = await prisma.room.groupBy({
     by: ["status"],
-    where: { propertyId },
+    where: { propertyId: ctx.propertyId },
     _count: { _all: true }
   });
   const metrics: Record<string, number> = {};
@@ -276,158 +385,293 @@ async function stepSnapshotRoomStatus(propertyId: string): Promise<NightAuditSte
   return {
     step: "snapshot_room_status",
     status: "ok",
-    detail: `Snapshot of ${counts.reduce((sum, c) => sum + c._count._all, 0)} rooms by status.`,
+    detail: `Instantánea de ${counts.reduce((sum, c) => sum + c._count._all, 0)} habitaciones por estado.`,
     metrics
   };
 }
 
-async function stepPostRoomChargesForInHouse(input: {
-  context: UserContext;
-  propertyId: string;
-  correlationId: string;
-}): Promise<NightAuditStepResult> {
-  const inHouse = await prisma.reservation.findMany({
-    where: { propertyId: input.propertyId, status: "checked_in" },
-    select: { id: true, code: true, totalAmount: true, currency: true, arrivalDate: true, departureDate: true }
-  });
-
+/**
+ * Room charge of the business date for every in-house reservation (see the
+ * header). One transaction per reservation: a failure on one folio (closed
+ * folio, lost lock…) is reported as an item and the others still post.
+ */
+async function stepPostRoomChargesForInHouse(ctx: RunContext, report: NightAuditReport): Promise<NightAuditStepResult> {
+  const inHouse = await loadInHouse(ctx.propertyId);
   if (inHouse.length === 0) {
-    return { step: "post_room_charges", status: "skipped", detail: "No in-house reservations." };
+    return { step: "post_room_charges", status: "skipped", detail: "No hay reservas alojadas: sin cargos de alojamiento." };
   }
+  const roomTypeIds = Array.from(new Set(inHouse.map((r) => r.roomTypeId).filter((id): id is string => Boolean(id))));
+  const roomTypes = roomTypeIds.length ? await prisma.roomType.findMany({ where: { id: { in: roomTypeIds } }, select: { id: true, name: true } }) : [];
+  const roomTypeName = new Map(roomTypes.map((rt) => [rt.id, rt.name]));
 
-  let posted = 0;
+  const items: NightAuditRoomChargeItem[] = [];
+  let totalPosted = new Decimal(0);
+  const postedLines: Array<{ lineId: string; folioId: string; total: string; description: string; reservationId: string }> = [];
+
   for (const reservation of inHouse) {
-    const folio = await prisma.folio.findFirst({ where: { reservationId: reservation.id, status: "open" } });
-    if (!folio) continue;
-    const nights = Math.max(
-      1,
-      Math.round((reservation.departureDate.getTime() - reservation.arrivalDate.getTime()) / 86_400_000)
-    );
-    const dailyRate = Number(reservation.totalAmount) / nights;
-    if (dailyRate <= 0) continue;
-
-    // audit 2026-06 R2 · #6: idempotency guard. A re-run of a failed audit
-    // previously posted duplicate room charges. Skip if today's charge already
-    // exists on this folio (matched by description prefix + today ISO date).
-    const today = new Date().toISOString().slice(0, 10);
-    const chargeKey = `Auto room charge (night audit) for ${reservation.code} [${today}]`;
-    const existing = await prisma.folioLine.findFirst({
-      where: { folioId: folio.id, type: "room", description: chargeKey }
+    const folio = await prisma.folio.findFirst({
+      where: { reservationId: reservation.id, status: "open", deletedAt: null },
+      orderBy: [{ isPrimary: "desc" }, { id: "asc" }],
+      select: { id: true }
     });
-    if (existing) continue;
-
-    await prisma.folioLine.create({
-      data: {
-        folioId: folio.id,
-        type: "room",
-        description: chargeKey,
-        quantity: 1,
-        unitPrice: dailyRate,
-        total: dailyRate,
-        postedBy: input.context.userId
+    if (!folio) {
+      items.push({ reservationId: reservation.id, reservationCode: reservation.code, folioId: null, outcome: "no_open_folio", amount: null, priceSource: "none", detail: "Sin folio abierto: no se ha cargado el alojamiento." });
+      continue;
+    }
+    const quote = await quoteNightlyRate(prisma, {
+      propertyId: ctx.propertyId,
+      date: ctx.businessDate,
+      reservation: {
+        roomTypeId: reservation.roomTypeId,
+        ratePlanId: reservation.ratePlanId,
+        assignedRoomId: reservation.assignedRoomId,
+        totalAmount: reservation.totalAmount,
+        arrivalDate: reservation.arrivalDate,
+        departureDate: reservation.departureDate,
+        currency: reservation.currency
       }
     });
-    posted += 1;
+    if (quote.price === null) {
+      items.push({ reservationId: reservation.id, reservationCode: reservation.code, folioId: folio.id, outcome: "no_rate", amount: null, priceSource: quote.source, detail: quote.warning ?? "Reserva sin tarifa." });
+      continue;
+    }
+    try {
+      const posted = await prisma.$transaction(
+        (tx) =>
+          postNightlyRoomChargeTx(tx, {
+            folioId: folio.id,
+            reservationCode: reservation.code,
+            businessDate: ctx.businessDate,
+            unitPrice: quote.price as string,
+            postedBy: ctx.context.userId,
+            roomTypeName: reservation.roomTypeId ? roomTypeName.get(reservation.roomTypeId) ?? null : null
+          }),
+        { maxWait: 10_000, timeout: 20_000 }
+      );
+      if (posted.created) {
+        totalPosted = totalPosted.plus(posted.total);
+        postedLines.push({ lineId: posted.lineId, folioId: posted.folioId, total: posted.total, description: posted.description, reservationId: reservation.id });
+        items.push({ reservationId: reservation.id, reservationCode: reservation.code, folioId: folio.id, outcome: "posted", amount: posted.total, priceSource: quote.source, detail: quote.warning ?? undefined });
+      } else {
+        items.push({ reservationId: reservation.id, reservationCode: reservation.code, folioId: folio.id, outcome: "already_posted", amount: posted.total, priceSource: quote.source, detail: "El cargo de esta noche ya estaba en el folio." });
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[night-audit] corr=${ctx.correlationId} room charge failed for ${reservation.code} (folio ${folio.id}): ${message}`);
+      items.push({ reservationId: reservation.id, reservationCode: reservation.code, folioId: folio.id, outcome: "no_open_folio", amount: null, priceSource: quote.source, detail: message });
+    }
   }
 
+  // Folio-engine side effects, after the commits (same as folio.service.postFolioLine).
+  for (const line of postedLines) {
+    try {
+      const { routeLine } = await import("../folio/folio-routing.service.js");
+      await routeLine({ lineId: line.lineId, context: ctx.context, correlationId: ctx.correlationId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[night-audit] corr=${ctx.correlationId} routing failed for line ${line.lineId}: ${message}`);
+      recordAuditEvent({
+        organizationId: ctx.context.organizationId,
+        propertyId: ctx.propertyId,
+        actorUserId: ctx.context.userId,
+        actorType: "system",
+        action: "FOLIO_ROUTING_FAILED",
+        entityType: "folio_line",
+        entityId: line.lineId,
+        afterJson: { lineId: line.lineId, folioId: line.folioId, lineType: "room", error: message },
+        correlationId: ctx.correlationId
+      });
+    }
+    const finalLine = await prisma.folioLine.findUnique({ where: { id: line.lineId }, select: { folioId: true, postedAt: true } });
+    recordAuditEvent({
+      organizationId: ctx.context.organizationId,
+      propertyId: ctx.propertyId,
+      actorUserId: ctx.context.userId,
+      actorType: "user",
+      action: "FOLIO_CHARGE_POSTED",
+      entityType: "folio_line",
+      entityId: line.lineId,
+      afterJson: {
+        id: line.lineId,
+        folioId: finalLine?.folioId ?? line.folioId,
+        type: "room",
+        taxCategory: "accommodation",
+        description: line.description,
+        quantity: 1,
+        unitPrice: Number(line.total),
+        total: Number(line.total),
+        postedAt: (finalLine?.postedAt ?? new Date()).toISOString(),
+        postedBy: ctx.context.userId,
+        source: "night_audit",
+        businessDate: ctx.businessDate,
+        reservationId: line.reservationId
+      },
+      correlationId: ctx.correlationId
+    });
+    recordDomainEvent({
+      organizationId: ctx.context.organizationId,
+      propertyId: ctx.propertyId,
+      entityType: "folio",
+      entityId: finalLine?.folioId ?? line.folioId,
+      eventType: "ChargePosted",
+      payload: { lineId: line.lineId, total: Number(line.total), type: "room", source: "night_audit", businessDate: ctx.businessDate },
+      actorType: "user",
+      actorUserId: ctx.context.userId,
+      correlationId: ctx.correlationId
+    });
+  }
+
+  const posted = items.filter((i) => i.outcome === "posted").length;
+  const alreadyPosted = items.filter((i) => i.outcome === "already_posted").length;
+  const withoutRate = items.filter((i) => i.outcome === "no_rate").length;
+  const withoutFolio = items.filter((i) => i.outcome === "no_open_folio").length;
+  report.roomCharges = { posted, alreadyPosted, withoutRate, withoutFolio, totalPosted: totalPosted.toFixed(2), items };
+  for (const item of items) {
+    if (item.outcome === "no_rate") report.warnings.push(`Reserva ${item.reservationCode} sin tarifa para la noche del ${formatDayEs(ctx.businessDate)}: no se ha cargado el alojamiento.`);
+    if (item.outcome === "no_open_folio") report.warnings.push(`Reserva ${item.reservationCode}: ${item.detail ?? "sin folio abierto"}.`);
+  }
+  const warnings = withoutRate + withoutFolio;
   return {
     step: "post_room_charges",
-    status: "ok",
-    detail: `Auto-posted ${posted} nightly room charges for in-house reservations.`,
-    metrics: { postedCharges: posted, inHouseReservations: inHouse.length }
+    status: warnings > 0 ? "warning" : "ok",
+    detail:
+      `Cargos de alojamiento del ${formatDayEs(ctx.businessDate)}: ${posted} nuevos (${totalPosted.toFixed(2)} €), ${alreadyPosted} ya existentes` +
+      (withoutRate > 0 ? `, ${withoutRate} reservas sin tarifa` : "") +
+      (withoutFolio > 0 ? `, ${withoutFolio} sin folio abierto` : "") +
+      ".",
+    metrics: { postedCharges: posted, alreadyPosted, withoutRate, withoutFolio, inHouseReservations: inHouse.length, totalPosted: Number(totalPosted.toFixed(2)) },
+    items: items.filter((i) => i.outcome !== "posted").map((i) => ({ ref: i.reservationId, label: i.reservationCode, detail: i.detail }))
   };
 }
 
 // Process no-shows: any confirmed/draft reservation whose arrival is in the
 // past and that never checked in becomes status="no_show" and its
 // CancellationPolicy auto-posts the no-show fee to the folio.
-async function stepProcessNoShows(input: { context: UserContext; propertyId: string; correlationId: string }, businessDateOnly: Date): Promise<NightAuditStepResult> {
+async function stepProcessNoShows(ctx: RunContext, report: NightAuditReport): Promise<NightAuditStepResult> {
   const result = await processNoShows({
-    context: input.context,
-    propertyId: input.propertyId,
-    businessDate: businessDateOnly,
-    correlationId: input.correlationId
+    context: ctx.context,
+    propertyId: ctx.propertyId,
+    businessDate: dateOnly(ctx.businessDate),
+    correlationId: ctx.correlationId
   });
+  const totalCharged = new Decimal(result.totalChargedEur).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
+  report.noShows = { processed: result.processedCount, totalCharged: totalCharged.toFixed(2) };
   return {
     step: "process_no_shows",
     status: "ok",
-    detail: result.processedCount > 0
-      ? `Marked ${result.processedCount} reservation(s) as no_show and posted ${result.totalChargedEur.toFixed(2)} € in penalty fees.`
-      : "No pending no-shows to process.",
-    metrics: { processedCount: result.processedCount, totalChargedEur: result.totalChargedEur }
+    detail:
+      result.processedCount > 0
+        ? `${result.processedCount} reserva(s) marcadas como no-show con ${totalCharged.toFixed(2)} € de penalización.`
+        : "Sin no-shows pendientes.",
+    metrics: { processedCount: result.processedCount, totalChargedEur: Number(totalCharged.toFixed(2)) }
   };
 }
 
-async function stepRevenueSnapshot(propertyId: string, businessDate: string): Promise<NightAuditStepResult> {
-  const businessDateOnly = dateOnly(businessDate);
-  // Resolve property's folios first (no @relation declared on Folio).
-  const reservations = await prisma.reservation.findMany({ where: { propertyId }, select: { id: true } });
+/** [local midnight of the business date, local midnight of the next day) in the property's time zone. */
+function businessDayWindow(ctx: RunContext): { from: Date; to: Date } {
+  const [y, m, d] = ctx.businessDate.split("-").map(Number) as [number, number, number];
+  const next = nextDay(ctx.businessDate).split("-").map(Number) as [number, number, number];
+  return { from: zonedMidnight(y, m, d, ctx.timeZone), to: zonedMidnight(next[0], next[1], next[2], ctx.timeZone) };
+}
+
+async function stepRevenueSnapshot(ctx: RunContext, report: NightAuditReport): Promise<NightAuditStepResult> {
+  const window = businessDayWindow(ctx);
+  // Resolve property's folios first (no @relation declared on Folio → property).
+  const reservations = await prisma.reservation.findMany({ where: { propertyId: ctx.propertyId }, select: { id: true } });
   const reservationIds = reservations.map((r) => r.id);
-  const folios = reservationIds.length === 0 ? [] : await prisma.folio.findMany({
-    where: { reservationId: { in: reservationIds } },
-    select: { id: true }
-  });
+  const folios = reservationIds.length === 0 ? [] : await prisma.folio.findMany({ where: { reservationId: { in: reservationIds } }, select: { id: true } });
   const folioIds = folios.map((f) => f.id);
-  const lines = folioIds.length === 0 ? [] : await prisma.folioLine.findMany({
-    where: {
-      folioId: { in: folioIds },
-      postedAt: { gte: businessDateOnly, lt: dateOnly(nextDay(businessDate)) }
-    },
-    select: { total: true, type: true }
-  });
+  const lines =
+    folioIds.length === 0
+      ? []
+      : await prisma.folioLine.findMany({
+          where: { folioId: { in: folioIds }, deletedAt: null, postedAt: { gte: window.from, lt: window.to } },
+          select: { total: true, type: true }
+        });
 
-  const totalsByType: Record<string, number> = {};
+  const totalsByType = new Map<string, PrismaRuntime.Decimal>();
+  let total = new Decimal(0);
   for (const line of lines) {
-    const key = line.type;
-    totalsByType[key] = (totalsByType[key] ?? 0) + Number(line.total);
+    const amount = new Decimal(line.total);
+    totalsByType.set(line.type, (totalsByType.get(line.type) ?? new Decimal(0)).plus(amount));
+    total = total.plus(amount);
   }
-  const totalRevenue = Object.values(totalsByType).reduce((sum, v) => sum + v, 0);
-
+  const byType: Record<string, string> = {};
+  const metrics: Record<string, number> = { totalRevenue: Number(total.toFixed(2)), lineCount: lines.length };
+  for (const [type, amount] of totalsByType) {
+    byType[type] = amount.toFixed(2);
+    metrics[`revenue_${type}`] = Number(amount.toFixed(2));
+  }
+  report.revenue = { total: total.toFixed(2), lines: lines.length, byType };
   return {
     step: "revenue_snapshot",
     status: "ok",
-    detail: `Captured €${totalRevenue.toFixed(2)} revenue across ${lines.length} lines on ${businessDate}.`,
-    metrics: { totalRevenue: Math.round(totalRevenue * 100) / 100, lineCount: lines.length, ...Object.fromEntries(Object.entries(totalsByType).map(([k, v]) => [`revenue_${k}`, Math.round(v * 100) / 100])) }
+    detail: `Producción del ${formatDayEs(ctx.businessDate)}: ${total.toFixed(2)} € en ${lines.length} cargos.`,
+    metrics
   };
 }
 
-async function stepReconcilePayments(propertyId: string, businessDateOnly: Date): Promise<NightAuditStepResult> {
-  const nextDayDate = dateOnly(nextDay(isoDate(businessDateOnly)));
+async function stepPaymentsSummary(ctx: RunContext, report: NightAuditReport): Promise<NightAuditStepResult> {
+  const window = businessDayWindow(ctx);
   const captured = await prisma.payment.findMany({
-    where: {
-      propertyId,
-      status: "captured",
-      createdAt: { gte: businessDateOnly, lt: nextDayDate }
-    },
-    select: { amount: true, method: true }
+    where: { propertyId: ctx.propertyId, deletedAt: null, status: { in: ["captured", "refunded"] }, reversalOfId: null, createdAt: { gte: window.from, lt: window.to } },
+    select: { amount: true, method: true, methodCode: true }
   });
-  const totalsByMethod: Record<string, number> = {};
+  const totalsByMethod = new Map<string, PrismaRuntime.Decimal>();
+  let total = new Decimal(0);
   for (const p of captured) {
-    totalsByMethod[p.method] = (totalsByMethod[p.method] ?? 0) + Number(p.amount);
+    const method = p.methodCode ?? p.method;
+    const amount = new Decimal(p.amount);
+    totalsByMethod.set(method, (totalsByMethod.get(method) ?? new Decimal(0)).plus(amount));
+    total = total.plus(amount);
   }
-  const total = Object.values(totalsByMethod).reduce((sum, v) => sum + v, 0);
+  const byMethod: Record<string, string> = {};
+  const metrics: Record<string, number> = { totalCaptured: Number(total.toFixed(2)), paymentCount: captured.length };
+  for (const [method, amount] of totalsByMethod) {
+    byMethod[method] = amount.toFixed(2);
+    metrics[`captured_${method}`] = Number(amount.toFixed(2));
+  }
+  report.payments = { total: total.toFixed(2), count: captured.length, byMethod };
   return {
-    step: "reconcile_payments",
+    step: "payments_summary",
     status: "ok",
-    detail: `Reconciled €${total.toFixed(2)} captured across ${captured.length} payments.`,
-    metrics: { totalCaptured: Math.round(total * 100) / 100, paymentCount: captured.length, ...Object.fromEntries(Object.entries(totalsByMethod).map(([k, v]) => [`captured_${k}`, Math.round(v * 100) / 100])) }
+    detail: `Cobros del ${formatDayEs(ctx.businessDate)}: ${total.toFixed(2)} € en ${captured.length} cobros (el arqueo de caja es el recuento).`,
+    metrics
   };
 }
 
-async function stepAdvanceBusinessDate(propertyId: string, businessDate: string, userId: string): Promise<NightAuditStepResult> {
-  const next = nextDay(businessDate);
+/** Cash closures of the business date (informational: an open count is a warning for the operator). */
+async function stepCashClosures(ctx: RunContext, report: NightAuditReport): Promise<NightAuditStepResult> {
+  const rows = await prisma.cashClosure.findMany({
+    where: { propertyId: ctx.propertyId, businessDate: dateOnly(ctx.businessDate) },
+    select: { outletId: true, status: true, difference: true },
+    orderBy: { outletId: "asc" }
+  });
+  report.cashClosures = rows.map((row) => ({ outletId: row.outletId, status: row.status, difference: row.difference === null ? null : new Decimal(row.difference).toFixed(2) }));
+  const open = rows.filter((row) => row.status === "open").length;
+  if (open > 0) report.warnings.push(`${open} cierre(s) de caja del ${formatDayEs(ctx.businessDate)} siguen abiertos.`);
+  return {
+    step: "cash_closures",
+    status: open > 0 ? "warning" : "ok",
+    detail: rows.length === 0 ? `Sin cierres de caja registrados para el ${formatDayEs(ctx.businessDate)}.` : `${rows.length} cierre(s) de caja: ${rows.length - open} cerrados/aprobados, ${open} abiertos.`,
+    metrics: { closures: rows.length, open }
+  };
+}
+
+async function stepAdvanceBusinessDate(ctx: RunContext): Promise<NightAuditStepResult> {
+  const next = nextDay(ctx.businessDate);
   await prisma.businessDate.update({
-    where: { propertyId },
+    where: { propertyId: ctx.propertyId },
     data: {
       currentDate: dateOnly(next),
       closedAt: new Date(),
-      closedBy: userId
+      closedBy: ctx.context.userId
     }
   });
   return {
     step: "advance_business_date",
     status: "ok",
-    detail: `Business date advanced from ${businessDate} to ${next}.`,
+    detail: `Fecha de negocio avanzada de ${formatDayEs(ctx.businessDate)} a ${formatDayEs(next)}.`,
     metrics: {}
   };
 }

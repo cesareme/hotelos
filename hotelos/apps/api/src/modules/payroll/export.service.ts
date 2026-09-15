@@ -1,29 +1,27 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
+import { ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
-import { requirePermissions } from "../auth/auth.service.js";
+import { money } from "../treasury/money.js";
+import { PAYROLL_EXPORT_KEYS, requireAnyPermission } from "../treasury/permissions.js";
 
-// ---- Sprint 23 / Track 5 — Payroll bridge a gestoría ----
+// ---- Payroll export to the gestoría (lote tesoreria-banca) ----
 //
-// Two export formats are supported for the demo:
-//   • A3 Nóminas-style:    pipe-delimited TXT, one line per slip.
-//     `nif_empresa|nif_empleado|nombre|periodo|gross|irpf|ss_emp|ss_company|net`
-//   • Sage Payroll / Holded-style:  CSV with header.
-//     `Employee,Period,Gross,IRPF,SSEmployee,SSEmployer,Net`
+// Formats:
+//   · csv   — CSV universal (;, UTF-8 BOM, decimal comma) with one row per
+//             slip: periodo;empleado;nif;dias;bruto;irpf_pct;irpf;ss_trabajador;ss_empresa;neto
+//   · a3    — «compatible A3 Nóminas» pipe-delimited text (the official A3
+//             fixed-width layout is NOT implemented: validateWithAdvisor).
+//   · sage  — «compatible Sage / Holded» CSV with header (idem).
 //
-// Neither is a 1:1 of the real gestoría feeds — both are pragmatic minimums
-// the gestoría can import via "load custom layout". The point is to unblock
-// the operational flow; Sprint 24 can replace these with the official A3 fixed-
-// width layout once a real client signs the integration.
-//
-// Sharp edges:
-//   • The employer's NIF and the employee's NIF aren't on PayrollSlip /
-//     EmploymentContract today. We surface them via StaffProfile / the
-//     Organization record if available, otherwise the placeholder "—".
-//   • The export sets `exportedAt = now()` and flips status to "exported".
-//     Re-exporting is allowed; the timestamp is overwritten.
+// Building an export is a READ (GET keeps returning the text without touching
+// state). Marking the period as exported (`exportedAt`, status `exported`) is
+// a mutation and lives behind the POST route (`exportPeriod` with
+// `markExported: true`). Employee NIF is not stored on StaffProfile /
+// EmploymentContract: the column carries the employee code and the export says
+// so instead of inventing one.
 
-export type PayrollExportFormat = "a3" | "sage";
+export type PayrollExportFormat = "a3" | "sage" | "csv";
 
 export type PayrollExportResult = {
   periodId: string;
@@ -33,166 +31,114 @@ export type PayrollExportResult = {
   contentType: string;
   text: string;
   slipCount: number;
-  exportedAt: string;
+  exportedAt: string | null;
+  /** Always true: neither layout is the official one of the gestoría's software. */
+  validateWithAdvisor: boolean;
+  warnings: string[];
 };
 
-function decimalToNumber(d: unknown): number {
-  if (d === null || d === undefined) return 0;
-  if (typeof d === "number") return d;
-  return Number(d);
-}
-
-function fmtEuro(n: number): string {
-  // Two decimals, dot separator (gestoría layouts expect en-US-style decimals,
-  // not the Spanish locale comma).
-  return n.toFixed(2);
-}
-
 function sanitizePipe(value: string): string {
-  // Strip the delimiter so a stray pipe in a person's name doesn't break the
-  // record. Newlines too — one line per slip is the whole contract.
   return value.replace(/[|\r\n]+/g, " ").trim();
 }
 
-function sanitizeCsv(value: string): string {
-  // Conservative CSV escape: double-quote if the value contains delimiters or
-  // quotes; double internal quotes.
-  if (/[",\r\n]/.test(value)) {
-    return `"${value.replace(/"/g, '""')}"`;
-  }
+function sanitizeCsv(value: string, sep = ","): string {
+  if (new RegExp(`["${sep}\\r\\n]`).test(value)) return `"${value.replace(/"/g, '""')}"`;
   return value;
 }
 
+function commaDecimal(value: unknown): string {
+  return money(value as string).replace(".", ",");
+}
+
 type SlipRow = NonNullable<Awaited<ReturnType<typeof prisma.payrollSlip.findFirst>>>;
-type ProfileRow = NonNullable<Awaited<ReturnType<typeof prisma.staffProfile.findFirst>>>;
+type EmployeeInfo = { code: string; name: string; nif: string };
 
-async function gatherSlips(periodId: string): Promise<{
-  slips: SlipRow[];
-  profiles: Map<string, ProfileRow>;
-}> {
-  const slips = await prisma.payrollSlip.findMany({
-    where: { periodId },
-    orderBy: { createdAt: "asc" }
-  });
+async function gatherSlips(periodId: string): Promise<{ slips: SlipRow[]; employees: Map<string, EmployeeInfo> }> {
+  const slips = await prisma.payrollSlip.findMany({ where: { periodId }, orderBy: { createdAt: "asc" } });
   const profileIds = Array.from(new Set(slips.map((s) => s.staffProfileId)));
-  const profileRows = profileIds.length
-    ? await prisma.staffProfile.findMany({ where: { id: { in: profileIds } } })
-    : [];
-  const profiles = new Map(profileRows.map((p) => [p.id, p]));
-  return { slips, profiles };
-}
-
-async function lookupEmployerNif(organizationId: string): Promise<string> {
-  // The Organization model has a `taxId` (NIF/CIF) field in many sprints; we
-  // try a soft lookup and fall back to "—" so the layout never breaks.
-  try {
-    const row = (await prisma.organization.findUnique({
-      where: { id: organizationId }
-    })) as { taxId?: string | null; nif?: string | null } | null;
-    if (!row) return "—";
-    return row.taxId ?? row.nif ?? "—";
-  } catch {
-    return "—";
+  const profiles = profileIds.length ? await prisma.staffProfile.findMany({ where: { id: { in: profileIds } }, select: { id: true, employeeCode: true, userId: true } }) : [];
+  const userIds = Array.from(new Set(profiles.map((p) => p.userId)));
+  const users = userIds.length ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, fullName: true } }) : [];
+  const userById = new Map(users.map((u) => [u.id, u]));
+  const employees = new Map<string, EmployeeInfo>();
+  for (const profile of profiles) {
+    employees.set(profile.id, {
+      code: profile.employeeCode ?? profile.id,
+      name: userById.get(profile.userId)?.fullName ?? profile.employeeCode ?? profile.id,
+      nif: "" // not stored: the gestoría completes it (see module header)
+    });
   }
+  return { slips, employees };
 }
 
-export async function exportPeriodA3Format(input: {
-  context: UserContext;
-  periodId: string;
-  correlationId: string;
-}): Promise<PayrollExportResult> {
-  requirePermissions(input.context, ["accounting.journal.post"]);
+async function employerNif(organizationId: string): Promise<string> {
+  const row = await prisma.organization.findUnique({ where: { id: organizationId }, select: { taxId: true } });
+  return row?.taxId ?? "";
+}
 
+/** Read-only: builds the export text of a period (no state change). */
+export async function buildPayrollExport(periodId: string, format: PayrollExportFormat): Promise<PayrollExportResult> {
+  const period = await prisma.payrollPeriod.findUnique({ where: { id: periodId } });
+  if (!period) throw new NotFoundError("El periodo de nómina no existe.");
+  if (period.status === "open") throw new ConflictError(`El periodo ${period.periodCode} todavía no está calculado.`, { code: "PAYROLL_PERIOD_NOT_CALCULATED" });
+  const [{ slips, employees }, nif] = await Promise.all([gatherSlips(period.id), employerNif(period.organizationId)]);
+  const warnings: string[] = ["Formato compatible, no el diseño de registro oficial: validar con la gestoría."];
+  if (!nif) warnings.push("La organización no tiene NIF configurado: columna nif_empresa vacía.");
+  warnings.push("El NIF del empleado no se almacena en HotelOS: la columna lleva el código de empleado.");
+
+  const employee = (slip: SlipRow): EmployeeInfo => employees.get(slip.staffProfileId) ?? { code: slip.staffProfileId, name: slip.staffProfileId, nif: "" };
+
+  let text: string;
+  let filename: string;
+  let contentType: string;
+  if (format === "a3") {
+    const lines = slips.map((slip) => {
+      const e = employee(slip);
+      return [sanitizePipe(nif), sanitizePipe(e.nif || e.code), sanitizePipe(e.name), period.periodCode, money(slip.grossSalary), money(slip.irpfRetention), money(slip.ssEmployee), money(slip.ssEmployer), money(slip.netSalary)].join("|");
+    });
+    text = lines.length ? `${lines.join("\n")}\n` : "";
+    filename = `nominas-${period.periodCode}-a3.txt`;
+    contentType = "text/plain";
+  } else if (format === "sage") {
+    const header = "Employee,Period,Gross,IRPF,SSEmployee,SSEmployer,Net";
+    const rows = slips.map((slip) => {
+      const e = employee(slip);
+      return [sanitizeCsv(e.code), sanitizeCsv(period.periodCode), money(slip.grossSalary), money(slip.irpfRetention), money(slip.ssEmployee), money(slip.ssEmployer), money(slip.netSalary)].join(",");
+    });
+    text = `${[header, ...rows].join("\n")}${rows.length ? "\n" : ""}`;
+    filename = `nominas-${period.periodCode}-sage.csv`;
+    contentType = "text/csv";
+  } else {
+    const header = "periodo;empleado;codigo_empleado;nif_empleado;dias;bruto;irpf_pct;irpf;ss_trabajador;ss_empresa;neto";
+    const lineRows = slips.length ? await prisma.payrollLine.findMany({ where: { slipId: { in: slips.map((s) => s.id) }, code: "irpf" }, select: { slipId: true, description: true } }) : [];
+    const irpfPctBySlip = new Map(lineRows.map((l) => [l.slipId, /([\d.,]+)\s*%/.exec(l.description ?? "")?.[1] ?? ""]));
+    const rows = slips.map((slip) => {
+      const e = employee(slip);
+      return [period.periodCode, sanitizeCsv(e.name, ";"), sanitizeCsv(e.code, ";"), e.nif, String(slip.daysWorked), commaDecimal(slip.grossSalary), (irpfPctBySlip.get(slip.id) ?? "").replace(".", ","), commaDecimal(slip.irpfRetention), commaDecimal(slip.ssEmployee), commaDecimal(slip.ssEmployer), commaDecimal(slip.netSalary)].join(";");
+    });
+    text = `﻿${[header, ...rows].join("\n")}\n`;
+    filename = `nominas-${period.periodCode}.csv`;
+    contentType = "text/csv";
+  }
+  return { periodId: period.id, periodCode: period.periodCode, format, filename, contentType, text, slipCount: slips.length, exportedAt: period.exportedAt?.toISOString() ?? null, validateWithAdvisor: true, warnings };
+}
+
+export function normalisePayrollExportFormat(value: unknown): PayrollExportFormat {
+  return value === "sage" ? "sage" : value === "csv" ? "csv" : "a3";
+}
+
+/** POST: builds the export and marks the period exported (audited). */
+export async function exportPeriod(input: { context: UserContext; periodId: string; format: PayrollExportFormat; correlationId: string; markExported?: boolean }): Promise<PayrollExportResult> {
+  requireAnyPermission(input.context, PAYROLL_EXPORT_KEYS);
+  const result = await buildPayrollExport(input.periodId, input.format);
+  if (input.markExported === false) return result;
   const period = await prisma.payrollPeriod.findUnique({ where: { id: input.periodId } });
-  if (!period) throw new Error("Payroll period was not found.");
-  if (period.status === "open") {
-    throw new Error(`Payroll period ${period.periodCode} has not been calculated yet.`);
-  }
-
-  const [{ slips, profiles }, employerNif] = await Promise.all([
-    gatherSlips(period.id),
-    lookupEmployerNif(period.organizationId)
-  ]);
-
-  const lines = slips.map((slip) => {
-    const profile = profiles.get(slip.staffProfileId);
-    const employeeNif = profile?.employeeCode ?? "—";
-    const employeeName = profile?.employeeCode ?? slip.staffProfileId;
-    return [
-      sanitizePipe(employerNif),
-      sanitizePipe(employeeNif),
-      sanitizePipe(employeeName),
-      period.periodCode,
-      fmtEuro(decimalToNumber(slip.grossSalary)),
-      fmtEuro(decimalToNumber(slip.irpfRetention)),
-      fmtEuro(decimalToNumber(slip.ssEmployee)),
-      fmtEuro(decimalToNumber(slip.ssEmployer)),
-      fmtEuro(decimalToNumber(slip.netSalary))
-    ].join("|");
-  });
-  const text = lines.length ? lines.join("\n") + "\n" : "";
-
-  const result = await markExported(input, period, "a3", slips.length);
-  return {
-    ...result,
-    text,
-    filename: `payroll-${period.periodCode}-a3.txt`,
-    contentType: "text/plain"
-  };
-}
-
-export async function exportPeriodSageFormat(input: {
-  context: UserContext;
-  periodId: string;
-  correlationId: string;
-}): Promise<PayrollExportResult> {
-  requirePermissions(input.context, ["accounting.journal.post"]);
-
-  const period = await prisma.payrollPeriod.findUnique({ where: { id: input.periodId } });
-  if (!period) throw new Error("Payroll period was not found.");
-  if (period.status === "open") {
-    throw new Error(`Payroll period ${period.periodCode} has not been calculated yet.`);
-  }
-
-  const { slips, profiles } = await gatherSlips(period.id);
-
-  const header = "Employee,Period,Gross,IRPF,SSEmployee,SSEmployer,Net";
-  const rows = slips.map((slip) => {
-    const profile = profiles.get(slip.staffProfileId);
-    const employeeLabel = profile?.employeeCode ?? slip.staffProfileId;
-    return [
-      sanitizeCsv(employeeLabel),
-      sanitizeCsv(period.periodCode),
-      fmtEuro(decimalToNumber(slip.grossSalary)),
-      fmtEuro(decimalToNumber(slip.irpfRetention)),
-      fmtEuro(decimalToNumber(slip.ssEmployee)),
-      fmtEuro(decimalToNumber(slip.ssEmployer)),
-      fmtEuro(decimalToNumber(slip.netSalary))
-    ].join(",");
-  });
-  const text = [header, ...rows].join("\n") + (rows.length ? "\n" : "");
-
-  const result = await markExported(input, period, "sage", slips.length);
-  return {
-    ...result,
-    text,
-    filename: `payroll-${period.periodCode}-sage.csv`,
-    contentType: "text/csv"
-  };
-}
-
-async function markExported(
-  input: { context: UserContext; periodId: string; correlationId: string },
-  period: NonNullable<Awaited<ReturnType<typeof prisma.payrollPeriod.findUnique>>>,
-  format: PayrollExportFormat,
-  slipCount: number
-): Promise<PayrollExportResult> {
+  if (!period) throw new NotFoundError("El periodo de nómina no existe.");
   const exportedAt = new Date();
-  const updated = await prisma.payrollPeriod.update({
+  await prisma.payrollPeriod.update({
     where: { id: period.id },
-    data: { status: "exported", exportedAt }
+    data: { exportedAt, ...(period.status === "calculated" ? { status: "exported" } : {}) }
   });
-
   recordAuditEvent({
     organizationId: period.organizationId,
     propertyId: period.propertyId ?? undefined,
@@ -201,34 +147,28 @@ async function markExported(
     action: "PAYROLL_PERIOD_EXPORTED",
     entityType: "payroll_period",
     entityId: period.id,
-    afterJson: { format, slipCount, exportedAt: exportedAt.toISOString() },
+    afterJson: { format: input.format, slipCount: result.slipCount, exportedAt: exportedAt.toISOString() },
     correlationId: input.correlationId
   });
-
   recordDomainEvent({
     organizationId: period.organizationId,
     propertyId: period.propertyId ?? "",
     entityType: "payroll_period",
     entityId: period.id,
     eventType: "PayrollPeriodExported",
-    payload: {
-      periodCode: period.periodCode,
-      format,
-      slipCount
-    } as Record<string, unknown>,
+    payload: { periodCode: period.periodCode, format: input.format, slipCount: result.slipCount } as Record<string, unknown>,
     actorType: "user",
     actorUserId: input.context.userId,
     correlationId: input.correlationId
   });
+  return { ...result, exportedAt: exportedAt.toISOString() };
+}
 
-  return {
-    periodId: updated.id,
-    periodCode: updated.periodCode,
-    format,
-    filename: "",
-    contentType: "text/plain",
-    text: "",
-    slipCount,
-    exportedAt: exportedAt.toISOString()
-  };
+/** Legacy GET entry points: now READ-ONLY (the GET route in server.ts no longer mutates). */
+export async function exportPeriodA3Format(input: { context: UserContext; periodId: string; correlationId: string }): Promise<PayrollExportResult> {
+  return buildPayrollExport(input.periodId, "a3");
+}
+
+export async function exportPeriodSageFormat(input: { context: UserContext; periodId: string; correlationId: string }): Promise<PayrollExportResult> {
+  return buildPayrollExport(input.periodId, "sage");
 }

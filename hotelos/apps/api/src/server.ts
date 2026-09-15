@@ -65,6 +65,21 @@ import { registerChannelManagerRoutes } from "./modules/channel-manager/channel-
 import { startChannelDeliveryDrain } from "./modules/channel-manager/drain.service.js";
 import { enqueueRateGridPush, getCellSyncMap as getCellSyncMapFromOutbox } from "./modules/channel-manager/delivery.service.js";
 import { registerRecommendationRoutes } from "./modules/revenue/recommendations.routes.js";
+// Finanzas (2026-09-16, integración): every finance module owns its routes in
+// <modulo>.routes.ts + route-permissions.partial.ts (convention of rate grid
+// v2). Registered below, right after registerChannelManagerRoutes(app); the
+// legacy POS / night-audit handlers that lived here were retired (same paths).
+import { registerLedgerRoutes } from "./modules/accounting/ledger.routes.js";
+import { registerFiscalRoutes } from "./modules/accounting/fiscal.routes.js";
+import { canonicalLedgerEngine } from "./modules/accounting/vat-settlement.service.js";
+import { registerInvoicingRoutes } from "./modules/invoicing/invoicing.routes.js";
+import { registerPaymentsRoutes } from "./modules/payments/payments.routes.js";
+import { registerPosRoutes } from "./modules/pos/pos.routes.js";
+import { registerNightAuditRoutes } from "./modules/night-audit/night-audit.routes.js";
+import { registerPayablesRoutes } from "./modules/payables/payables.routes.js";
+import { registerFixedAssetsRoutes } from "./modules/fixed-assets/fixed-assets.routes.js";
+import { registerTreasuryRoutes } from "./modules/treasury/treasury.routes.js";
+import { registerFinancialStatementsRoutes } from "./modules/financial-statements/financial-statements.routes.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
 import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport, parseReportWindow } from "./modules/revenue/forecast.service.js";
 import { getHistoryForecastBoard, parseBoardWindow, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
@@ -139,7 +154,6 @@ import {
   submitServiceRequest as guestPortalSubmitServiceRequest
 } from "./modules/guest-portal/guest-portal.service.js";
 import { hydrateAuditChainFromPostgres, recordAuditEvent, verifyAuditIntegrity, verifyDomainEventIntegrity } from "./modules/audit/audit.service.js";
-import { getCurrentBusinessDate, listNightAuditRuns, runNightAudit } from "./modules/night-audit/night-audit.service.js";
 import { closeFiscalPeriod, listFiscalPeriods, openFiscalPeriod, reopenFiscalPeriod } from "./modules/accounting/fiscal-period.service.js";
 import {
   closeFiscalYear,
@@ -171,10 +185,7 @@ import {
   listPeriods as listPayrollPeriods,
   listSlipsForPeriod as listPayrollSlipsForPeriod
 } from "./modules/payroll/periods.service.js";
-import {
-  exportPeriodA3Format,
-  exportPeriodSageFormat
-} from "./modules/payroll/export.service.js";
+import { exportPeriod, normalisePayrollExportFormat } from "./modules/payroll/export.service.js";
 import {
   listRates as listExchangeRates,
   upsertRate as upsertExchangeRate
@@ -367,15 +378,17 @@ import {
   getFolioBalance,
   getReservationFolio,
   postFolioLine,
-  postPayment,
-  refundPayment,
   splitFolio,
   moveChargesBetweenFolios,
   markInvoicePaid,
-  sendInvoiceByEmail,
   getReservationBalance
 } from "./modules/folio/folio.service.js";
-import { addPosLine, closePosTicket, getPosCashSummary, listPosOutlets, listPosTickets, openPosTicket } from "./modules/pos/pos.service.js";
+// Finanzas (2026-09-15) · lote facturación-cobros: idempotent captures /
+// refunds with journal entry and PSP gate, real invoice email with PDF.
+import { createPaymentLink, postFolioPayment, refundFolioPayment } from "./modules/payments/payments.service.js";
+import { pspStatusFor } from "./modules/payments/psp/index.js";
+import { sendInvoiceByEmail } from "./modules/invoicing/invoice-email.service.js";
+import { verifyGuestToken } from "./modules/guest-portal/guest-portal-auth.service.js";
 import { getComplianceCenter, updateComplianceItem, updateComplianceProfile, listComplianceTasks, createComplianceTask, updateComplianceTask, deleteComplianceTask, listComplianceDocuments, createComplianceDocument, deleteComplianceDocument, getComplianceAlerts } from "./modules/compliance/compliance-center.service.js";
 import { exportInspectionFolder } from "./modules/compliance/compliance-inspection.service.js";
 import {
@@ -550,15 +563,8 @@ const ReservationListQuerySchema = z.object({
 // business day; `from`/`to` remain the explicit window. Unknown keys are
 // rejected (a typo such as `outlet=` would otherwise silently widen the
 // closure to every outlet). The window itself is resolved by
-// `resolveCashSummaryWindow` (pos-cash-closure.service).
-const PosCashSummaryQuerySchema = z
-  .object({
-    from: isoDateOrDateTime.optional(),
-    to: isoDateOrDateTime.optional(),
-    date: isoDateOnly.optional(),
-    outletId: z.string().trim().min(1).optional()
-  })
-  .strict();
+// `resolveCashSummaryWindow` (pos-cash-closure.service). Finanzas 2026-09-16:
+// the POS query/body schemas moved to modules/pos/pos.schemas.ts with the routes.
 // NEW-REV-A: a calendar month. `2024-13` used to reach the services and blow
 // up in Date arithmetic (500); now it is a 400 at the handler boundary.
 const isoMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "month debe tener formato YYYY-MM");
@@ -572,23 +578,6 @@ const BudgetVarianceQuerySchema = z.object({
 });
 /** Longest window GET /revenue/properties/:id/period-metrics serves per call (one leap year). */
 const PERIOD_METRICS_MAX_DAYS = 366;
-// FISC-05: POS bodies. Wrong types used to reach the service (TypeError on
-// `.trim()`, NaN → Prisma Decimal, 1e15 overflowing Decimal(12,2)) → 500.
-const PosTicketOpenSchema = z
-  .object({
-    propertyId: z.string().min(1).max(64).optional(),
-    outletId: z.string().trim().min(1).max(60),
-    roomNumber: z.string().trim().min(1).max(20).optional()
-  })
-  .strict();
-const PosLineSchema = z
-  .object({
-    name: z.string().trim().min(1).max(200),
-    quantity: z.number().int().min(1).max(999).optional(),
-    unitPrice: z.number().min(0).max(100000)
-  })
-  .strict();
-const PosCloseSchema = z.object({ settlement: z.enum(["room", "cash", "card"]) }).strict();
 // NEW-REV-C: the legacy history-forecast export only produces csv/xls. A
 // `format` outside that set (e.g. "pdf") is a 400, never a silent csv.
 const HistoryForecastExportBodySchema = z.object({
@@ -642,6 +631,9 @@ import {
   IssueInvoiceSchema,
   RefundPaymentSchema,
   CancelInvoiceSchema,
+  MarkInvoicePaidSchema,
+  SendInvoiceEmailSchema,
+  PaymentTokenSchema,
   CreateGuestSchema,
   UpdateGuestSchema,
   RectifyInvoiceSchema,
@@ -651,7 +643,11 @@ import {
   CreateGdprRequestSchema,
   ExecuteErasureSchema,
   RejectGdprRequestSchema,
-  QuoteAvailabilitySchema
+  QuoteAvailabilitySchema,
+  CreatePayrollContractSchema,
+  PayrollListQuerySchema,
+  CreateCommissionRuleSchema,
+  decimalInputToNumber
 } from "./schemas/index.js";
 import { globalSearch, type SearchHit } from "./modules/search/search.service.js";
 import { webhooksRoutes } from "./routes/webhooks.routes.js";
@@ -712,7 +708,6 @@ import { getComplianceAssistant, extractComplianceDocumentDates } from "./module
 import {
   createJournalEntryDraft,
   createSupplierBillDraft,
-  listAccounts,
   listJournalEntries,
   listSupplierBills,
   postJournalEntry
@@ -1994,8 +1989,18 @@ export async function buildApiServer() {
   // --- Banking España: CSB-43 + SEPA Norma 19 (P2-3) ----------------------
   app.post("/properties/:propertyId/banking/csb43/import", async (request) => {
     const params = request.params as { propertyId: string };
-    const body = (request.body ?? {}) as { content: string };
-    return importCsb43({ context: request.userContext, propertyId: params.propertyId, content: body.content });
+    // Finanzas (2026-09-16): the import persists the statement; the body may
+    // pin the bank account, skip auto-matching or refuse to create an unknown
+    // account (banking-spain/banking.service importCsb43).
+    const body = (request.body ?? {}) as { content: string; bankAccountId?: string | null; autoMatch?: boolean; createMissingAccount?: boolean };
+    return importCsb43({
+      context: request.userContext,
+      propertyId: params.propertyId,
+      content: body.content,
+      bankAccountId: body.bankAccountId ?? null,
+      autoMatch: body.autoMatch,
+      createMissingAccount: body.createMissingAccount
+    });
   });
   app.post("/banking/sepa/remittances", async (request) => {
     return generateSepaRemittanceSvc({ context: request.userContext, remittance: request.body as never });
@@ -2704,6 +2709,21 @@ export async function buildApiServer() {
   // (channels/sync/sync-health/reservations import/webhook/external
   // reservations) were retired: everything is Prisma + outbox now.
   registerChannelManagerRoutes(app);
+  // Finanzas (2026-09-16, integración): the finance modules. Same tenant guard
+  // as the inline billing routes (assertBillingAccess, defined above) for the
+  // invoice PDF and the payment links; the fiscal routes post the VAT
+  // settlement through the canonical ledger engine (accounting.service) instead
+  // of their interim engine, so every asiento is numbered under one lock.
+  registerLedgerRoutes(app);
+  registerFiscalRoutes(app, { ledger: canonicalLedgerEngine });
+  registerInvoicingRoutes(app, { assertInvoiceAccess: (request, id) => assertBillingAccess(request as never, "invoice", id) });
+  registerPaymentsRoutes(app, { assertFolioAccess: (request, id) => assertBillingAccess(request as never, "folio", id) });
+  registerPosRoutes(app);
+  registerNightAuditRoutes(app);
+  registerPayablesRoutes(app);
+  registerFixedAssetsRoutes(app);
+  registerTreasuryRoutes(app);
+  registerFinancialStatementsRoutes(app);
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to
@@ -2934,8 +2954,52 @@ export async function buildApiServer() {
   app.get("/guest-portal/session/:token", async (request) => ({ token: (request.params as { token: string }).token, status: "active" }));
   app.post("/guest-portal/session/:token/check-in", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_portal_action", auditAction: "GuestOnlineCheckInCompleted", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.post("/guest-portal/session/:token/check-out", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_portal_action", auditAction: "GuestMobileCheckoutCompleted", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
-  app.get("/guest-portal/session/:token/folio", async (request) => ({ status: "ready_for_review", balanceDue: 0 }));
-  app.post("/guest-portal/session/:token/pay", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_portal_payment", auditAction: "GuestMobileCheckoutCompleted", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
+  // Finanzas (2026-09-15): the guest sees the REAL balance of the primary
+  // folio of the reservation the token belongs to (never a literal 0), and
+  // «pagar» creates a PSP payment link — or answers 409 PSP_NOT_CONFIGURED
+  // honestly. No payment is ever recorded here.
+  app.get("/guest-portal/session/:token/folio", async (request, reply) => {
+    const session = await verifyGuestToken((request.params as { token: string }).token);
+    if (!session) {
+      reply.code(401);
+      return { message: "Sesión del portal del huésped no válida o caducada." };
+    }
+    const folio = await findReservationFolio(session.reservationId);
+    if (!folio) return { status: "no_folio", balanceDue: 0, currency: null, charges: [], payments: [] };
+    return {
+      status: folio.balanceDue > 0.005 ? "balance_due" : "settled",
+      folioId: folio.folio.id,
+      currency: folio.folio.currency,
+      chargesTotal: folio.chargesTotal,
+      paymentsTotal: folio.paymentsTotal,
+      balanceDue: folio.balanceDue,
+      reservationBalanceDue: folio.reservationBalanceDue,
+      charges: folio.lines.map((line) => ({ description: line.description, quantity: line.quantity, total: line.total, postedAt: line.postedAt })),
+      payments: folio.payments.map((payment) => ({ amount: payment.amount, method: payment.methodCode ?? payment.method, status: payment.status, createdAt: payment.createdAt }))
+    };
+  });
+  app.post("/guest-portal/session/:token/pay", async (request, reply) => {
+    const session = await verifyGuestToken((request.params as { token: string }).token);
+    if (!session) {
+      reply.code(401);
+      return { message: "Sesión del portal del huésped no válida o caducada." };
+    }
+    const folio = await findReservationFolio(session.reservationId);
+    if (!folio) throw new ConflictError("La reserva no tiene folio: no hay nada que pagar.");
+    if (folio.balanceDue <= 0.005) throw new ConflictError("El folio no tiene saldo pendiente.");
+    const body = (request.body ?? {}) as { returnUrl?: string; clientRequestId?: string };
+    const result = await createPaymentLink({
+      context: request.userContext,
+      folioId: folio.folio.id,
+      amount: folio.balanceDue,
+      methodCode: "payment_link",
+      clientRequestId: typeof body.clientRequestId === "string" ? body.clientRequestId : `guest-portal:${session.reservationId}:${folio.balanceDue.toFixed(2)}`,
+      returnUrl: typeof body.returnUrl === "string" ? body.returnUrl : null,
+      correlationId: createId("corr")
+    });
+    reply.code(result.idempotent ? 200 : 202);
+    return result;
+  });
   app.post("/guest-portal/session/:token/invoice-request", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_portal_invoice_request", auditAction: "GuestMobileCheckoutCompleted", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
   app.get("/guest-portal/session/:token/upsells", async (request) => listAdvancedRecords(request.userContext.propertyId, "guest_self_service", "upsell_offers"));
   app.post("/guest-portal/session/:token/upsells/:offerId/purchase", async (request) => createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "guest_self_service", entityType: "guest_upsell_purchase", auditAction: "GuestUpsellPurchased", requiredPermissions: ["guest_self_service.manage"], payload: request.body as never, correlationId: createId("corr") }));
@@ -4970,30 +5034,46 @@ export async function buildApiServer() {
     });
   });
 
-  app.post("/folios/:id/payments", async (request) => {
+  // Finanzas (2026-09-15): idempotent by clientRequestId (same request → same
+  // payment, 200; different body with the same key → 409 IDEMPOTENCY_CONFLICT),
+  // transactional, PaymentMethod enum, journal entry in the same transaction.
+  // card_online / payment_link never capture here: 202 with a PaymentIntent +
+  // hosted-page redirect when a PSP is configured, 409 PSP_NOT_CONFIGURED otherwise.
+  app.post("/folios/:id/payments", async (request, reply) => {
     const params = request.params as { id: string };
     const body = parse(ApplyPaymentSchema, request.body);
     await assertBillingAccess(request, "folio", params.id);
-    return postPayment({
+    const result = await postFolioPayment({
       context: request.userContext,
       folioId: params.id,
       amount: body.amount,
       currency: body.currency,
-      method: body.method as Parameters<typeof postPayment>[0]["method"],
-      pspReference: body.pspReference,
+      method: body.method,
+      reference: body.reference ?? body.pspReference ?? null,
+      clientRequestId: body.clientRequestId ?? null,
+      invoiceId: body.invoiceId ?? null,
+      returnUrl: body.returnUrl ?? null,
       correlationId: createId("corr")
     });
+    if (result.kind === "payment_intent" && !result.idempotent) reply.code(202);
+    else reply.code(result.idempotent ? 200 : 201);
+    return result;
   });
 
+  // Finanzas (2026-09-15): idempotent by clientRequestId; reversal Payment row
+  // + PaymentRefund ledger + inverse entry; online money goes back through
+  // the PSP (or as a manual transfer when refundMethod says so).
   app.post("/payments/:id/refund", async (request) => {
     const params = request.params as { id: string };
     const body = parse(RefundPaymentSchema, request.body ?? {});
     await assertBillingAccess(request, "payment", params.id);
-    return refundPayment({
+    return refundFolioPayment({
       context: request.userContext,
       paymentId: params.id,
-      reason: body.reason ?? "Manual refund",
+      reason: body.reason ?? "Devolución manual",
       amount: body.amount,
+      clientRequestId: body.clientRequestId ?? null,
+      refundMethod: body.refundMethod ?? null,
       correlationId: createId("corr")
     });
   });
@@ -5087,10 +5167,13 @@ export async function buildApiServer() {
     const params = request.params as { id: string };
     await assertBillingAccess(request, "invoice", params.id);
     const body = parse(CancelInvoiceSchema, request.body ?? {});
+    // Finanzas (2026-09-15): the linked payments are unlinked (they stay on the
+    // folio, visible in its balance) and refunded when refundPayments is true.
     return cancelInvoice({
       context: request.userContext,
       invoiceId: params.id,
-      reason: body.reason ?? "Manual cancellation",
+      reason: body.reason ?? "Anulación manual",
+      refundPayments: body.refundPayments ?? false,
       correlationId: createId("corr")
     });
   });
@@ -5160,33 +5243,28 @@ export async function buildApiServer() {
     });
   });
 
+  // Finanzas (2026-09-15): «Marcar pagada» only with method (enum) + reference;
+  // idempotent by (invoice, reference); journal entry in the same transaction.
   app.post("/invoices/:id/mark-paid", async (request) => {
     const params = request.params as { id: string };
     await assertBillingAccess(request, "invoice", params.id);
-    const body = (request.body ?? {}) as {
-      method?: Parameters<typeof markInvoicePaid>[0]["method"];
-      pspReference?: string;
-      amount?: number;
-    };
+    const body = parse(MarkInvoicePaidSchema, request.body ?? {});
     return markInvoicePaid({
       context: request.userContext,
       invoiceId: params.id,
       method: body.method,
-      pspReference: body.pspReference,
+      reference: body.reference ?? body.pspReference ?? "",
       amount: body.amount,
       correlationId: createId("corr")
     });
   });
 
+  // Finanzas (2026-09-15): real email with the PDF attached through the
+  // configured provider; {simulated:true} and an audit «SIMULADO» when none.
   app.post("/invoices/:id/send-email", async (request) => {
     const params = request.params as { id: string };
     await assertBillingAccess(request, "invoice", params.id);
-    const body = (request.body ?? {}) as {
-      recipient?: string;
-      subject?: string;
-      message?: string;
-    };
-    if (!body.recipient) throw new BadRequestError("recipient es obligatorio.");
+    const body = parse(SendInvoiceEmailSchema, request.body ?? {});
     return sendInvoiceByEmail({
       context: request.userContext,
       invoiceId: params.id,
@@ -5231,17 +5309,25 @@ export async function buildApiServer() {
 
   app.get("/organizations/:organizationId/accounts", async (request) => {
     await assertEntityAccess(request, { entity: "organization", id: (request.params as { organizationId: string }).organizationId });
-    // Serve the real seeded chart of accounts (Sprint 36 — 77 PGC accounts) for
-    // this org. Fall back to the static template when the org has no rows yet so
-    // the chart-of-accounts picker still renders during fresh setup.
+    // Finanzas (2026-09-16): the organisation's own chart (PGC Pymes hotelero,
+    // provisioned by chart-of-accounts.service). No rows → 409
+    // CHART_NOT_PROVISIONED instead of the old static 7-account fallback: the
+    // picker must never offer accounts that do not exist in the ledger. The
+    // hierarchy fields let the front hide headers (isPostable=false).
     const { organizationId } = request.params as { organizationId: string };
     const { prisma } = await import("@hotelos/database");
     const rows = await prisma.account.findMany({
       where: { organizationId },
-      select: { code: true, name: true, accountType: true },
+      select: { id: true, code: true, name: true, accountType: true, kind: true, group: true, level: true, isPostable: true, parentId: true, usaliDepartment: true, usaliLine: true },
       orderBy: { code: "asc" }
     });
-    return rows.length > 0 ? rows : listAccounts();
+    if (rows.length === 0) {
+      throw new ConflictError("La organización no tiene plan contable provisionado: ejecuta accounting:provision-chart (plantilla «PGC Pymes hotelero»).", {
+        code: "CHART_NOT_PROVISIONED",
+        organizationId
+      });
+    }
+    return rows;
   });
 
   app.get("/organizations/:organizationId/journal-entries", async (request) => {
@@ -5842,40 +5928,9 @@ export async function buildApiServer() {
     return deleteMenuRecipe((request.params as { id: string }).id);
   });
 
-  // --- Point of sale (TPV) ---
-  app.get("/properties/:propertyId/pos/outlets", async (request) => {
-    return listPosOutlets((request.params as { propertyId: string }).propertyId);
-  });
-  app.get("/properties/:propertyId/pos/tickets", async (request) => {
-    return listPosTickets((request.params as { propertyId: string }).propertyId);
-  });
-  app.post("/pos/tickets", async (request) => {
-    // FISC-05.d: no body → 400 (was a TypeError → 500 reading `outletId`).
-    const body = parse(PosTicketOpenSchema, requireObjectBody(request.body));
-    return openPosTicket({ propertyId: body.propertyId ?? request.userContext.propertyId, outletId: body.outletId, roomNumber: body.roomNumber });
-  });
-  app.post("/pos/tickets/:id/lines", async (request) => {
-    await assertEntityAccess(request, { entity: "posTicket", id: (request.params as { id: string }).id });
-    const body = parse(PosLineSchema, requireObjectBody(request.body));
-    return addPosLine({ ticketId: (request.params as { id: string }).id, name: body.name, quantity: body.quantity ?? 1, unitPrice: body.unitPrice });
-  });
-  app.post("/pos/tickets/:id/close", async (request) => {
-    await assertEntityAccess(request, { entity: "posTicket", id: (request.params as { id: string }).id });
-    const body = parse(PosCloseSchema, requireObjectBody(request.body));
-    return closePosTicket({ context: request.userContext, ticketId: (request.params as { id: string }).id, settlement: body.settlement, correlationId: createId("corr") });
-  });
-  // FISC-05: cash reconciliation from persisted PosOrder rows (settlement /
-  // closedAt / closedByUserId), grouped by outlet and settlement method.
-  app.get("/properties/:propertyId/pos/cash-summary", async (request) => {
-    const params = request.params as { propertyId: string };
-    const q = parse(PosCashSummaryQuerySchema, request.query ?? {}, "query");
-    // FISC-05.c: `date=YYYY-MM-DD` (property-local business day) or an explicit
-    // from/to window. The window is resolved ONCE, inside the service
-    // (`resolveCashSummaryWindow`, pos-cash-closure.service) against the
-    // property's IANA time zone — date+from/to together, a bad day or
-    // from >= to are its 400s; the handler only forwards the validated keys.
-    return getPosCashSummary({ propertyId: params.propertyId, date: q.date, from: q.from, to: q.to, outletId: q.outletId });
-  });
+  // --- Point of sale (TPV) --- Finanzas 2026-09-16: outlets, tickets, close,
+  // cash-summary and the new cash closures live in modules/pos/pos.routes.ts
+  // (registerPosRoutes, mounted next to registerChannelManagerRoutes).
 
   app.get("/properties/:propertyId/capex", async (request) => {
     const params = request.params as { propertyId: string };
@@ -6609,31 +6664,8 @@ export async function buildApiServer() {
     });
   });
 
-  app.get("/properties/:propertyId/night-audit/business-date", async (request) => {
-    const params = request.params as { propertyId: string };
-    const current = await getCurrentBusinessDate(params.propertyId);
-    return { propertyId: params.propertyId, currentDate: current };
-  });
-
-  app.get("/properties/:propertyId/night-audit/runs", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listNightAuditRuns(params.propertyId);
-  });
-
-  app.post("/properties/:propertyId/night-audit/run", async (request) => {
-    const params = request.params as { propertyId: string };
-    return runNightAudit({
-      context: request.userContext,
-      propertyId: params.propertyId,
-      correlationId: createId("corr")
-    });
-  });
-
-  app.get("/properties/:propertyId/night-audit/preflight", async (request) => {
-    const params = request.params as { propertyId: string };
-    const { buildPreflight } = await import("./modules/night-audit/night-audit-preflight.service.js");
-    return buildPreflight({ propertyId: params.propertyId });
-  });
+  // Night audit (business-date, runs, run, preflight, run report): Finanzas
+  // 2026-09-16 → modules/night-audit/night-audit.routes.ts (registerNightAuditRoutes).
 
   app.get("/accounting/journal-entries/recent", async (request) => {
     const params = (request.query as { propertyId?: string; limit?: string }) ?? {};
@@ -7060,11 +7092,15 @@ export async function buildApiServer() {
     return { status: "queued" };
   });
 
+  // Finanzas (2026-09-16): legacy report routes kept for the front until it
+  // moves to GET /fiscal/models/:modelo; they accept `period=2026-Q3|2026-09`
+  // as well as the old fromDate/toDate window and return the FiscalModelReport.
   app.get("/accounting/reports/modelo-303", async (request) => {
-    const query = request.query as { propertyId?: string; fromDate: string; toDate: string; periodType?: "monthly" | "quarterly" };
+    const query = request.query as { propertyId?: string; period?: string; fromDate?: string; toDate?: string; periodType?: "monthly" | "quarterly" };
     return buildModelo303({
       context: request.userContext,
       propertyId: query.propertyId,
+      period: query.period,
       fromDate: query.fromDate,
       toDate: query.toDate,
       periodType: query.periodType
@@ -7072,10 +7108,11 @@ export async function buildApiServer() {
   });
 
   app.get("/accounting/reports/modelo-111", async (request) => {
-    const query = request.query as { propertyId?: string; fromDate: string; toDate: string; periodType?: "monthly" | "quarterly" };
+    const query = request.query as { propertyId?: string; period?: string; fromDate?: string; toDate?: string; periodType?: "monthly" | "quarterly" };
     return buildModelo111({
       context: request.userContext,
       propertyId: query.propertyId,
+      period: query.period,
       fromDate: query.fromDate,
       toDate: query.toDate,
       periodType: query.periodType
@@ -7083,10 +7120,11 @@ export async function buildApiServer() {
   });
 
   app.get("/accounting/reports/modelo-115", async (request) => {
-    const query = request.query as { propertyId?: string; fromDate: string; toDate: string; periodType?: "monthly" | "quarterly" };
+    const query = request.query as { propertyId?: string; period?: string; fromDate?: string; toDate?: string; periodType?: "monthly" | "quarterly" };
     return buildModelo115({
       context: request.userContext,
       propertyId: query.propertyId,
+      period: query.period,
       fromDate: query.fromDate,
       toDate: query.toDate,
       periodType: query.periodType
@@ -7119,16 +7157,16 @@ export async function buildApiServer() {
   });
 
   app.post("/commissions/rules", async (request) => {
-    const body = request.body as {
-      propertyId: string;
-      channelId?: string | null;
-      channelCode?: string | null;
-      ratePct: number | string;
-      appliesTo?: "gross_revenue" | "net_revenue" | "total";
-      ledgerAccountCode?: string;
-      effectiveFrom?: string;
-      effectiveTo?: string;
-    };
+    // Finanzas (2026-09-16, fix t6#11): strict zod body (Spanish messages) —
+    // `{ ratePct: "abc" }` used to reach decimal.js and answer 500. The
+    // property is granted by the global hook (body.propertyId); a channelId
+    // must belong to THAT property (opaque 404 otherwise, no existence oracle).
+    const body = parse(CreateCommissionRuleSchema, requireObjectBody(request.body ?? {}), "body");
+    if (body.channelId) {
+      const { prisma } = await import("@hotelos/database");
+      const channel = await prisma.channel.findUnique({ where: { id: body.channelId }, select: { propertyId: true } });
+      if (!channel || channel.propertyId !== body.propertyId) throw new NotFoundError("Canal no encontrado.");
+    }
     return createCommissionRule({
       propertyId: body.propertyId,
       channelId: body.channelId ?? null,
@@ -7172,37 +7210,54 @@ export async function buildApiServer() {
   });
 
   // Payroll bridge to gestoría (Sprint 23 — Track 5)
+  // Finanzas (2026-09-16, fix t6#6): `?organizationId=<other org>` was taken
+  // at face value on the two payroll lists (listContracts / listPeriods carry
+  // no tenant context and the global hook only guards propertyId), so any
+  // payroll.read holder read the salaries, IRPF rates and contracts of another
+  // organization. resolveOrganizationScope answers the opaque 404 of
+  // assertEntityAccess for a foreign organization and always returns the
+  // caller's scope (a platform admin is re-pointed to the requested one); the
+  // propertyId filter is granted by the global grantPropertyAccess hook like
+  // every other route that reads `query.propertyId`.
   app.get("/payroll/contracts", async (request) => {
-    const query = request.query as { organizationId?: string; propertyId?: string };
-    const organizationId = query.organizationId ?? request.userContext.organizationId;
+    const query = parse(PayrollListQuerySchema, request.query ?? {}, "query");
+    const organizationId = await resolveOrganizationScope(request, query.organizationId);
     return listPayrollContracts(organizationId, query.propertyId);
   });
 
+  const STAFF_PROFILE_NOT_FOUND = "Perfil de empleado no encontrado.";
+
   app.post("/payroll/contracts", async (request) => {
-    const body = request.body as {
-      staffProfileId: string;
-      propertyId?: string;
-      contractType: string;
-      startDate: string;
-      endDate?: string;
-      grossSalary: number;
-      payFrequency?: string;
-      payCount?: number;
-      irpfRatePct?: number;
-      socialSecurityCategory?: string;
-      costCenterId?: string;
-    };
+    // Finanzas (2026-09-16, fix t6#11): strict zod body (Spanish messages) —
+    // `{ grossSalary: "abc" }` answered 500 and `{ staffProfileId: "nope" }`
+    // stored an orphan contract. The employee profile must exist and hang
+    // from a property the caller may act on (same opaque 404 for a missing
+    // id, another organization or an unassigned property); when the body
+    // names a propertyId it has to be the profile's own.
+    const body = parse(CreatePayrollContractSchema, requireObjectBody(request.body ?? {}), "body");
+    const { prisma } = await import("@hotelos/database");
+    const staffProfile = await prisma.staffProfile.findUnique({
+      where: { id: body.staffProfileId },
+      select: { id: true, propertyId: true }
+    });
+    if (!staffProfile) throw new NotFoundError(STAFF_PROFILE_NOT_FOUND);
+    await grantPropertyAccess(request, staffProfile.propertyId, STAFF_PROFILE_NOT_FOUND);
+    if (body.propertyId !== undefined && body.propertyId !== staffProfile.propertyId) {
+      const mismatch = new BadRequestError("propertyId no coincide con la propiedad del perfil de empleado.");
+      mismatch.details = { code: "STAFF_PROFILE_PROPERTY_MISMATCH" };
+      throw mismatch;
+    }
     return createPayrollContract({
       context: request.userContext,
-      staffProfileId: body.staffProfileId,
-      propertyId: body.propertyId,
+      staffProfileId: staffProfile.id,
+      propertyId: body.propertyId ?? staffProfile.propertyId,
       contractType: body.contractType,
       startDate: body.startDate,
       endDate: body.endDate,
-      grossSalary: Number(body.grossSalary),
+      grossSalary: decimalInputToNumber(body.grossSalary),
       payFrequency: body.payFrequency,
       payCount: body.payCount,
-      irpfRatePct: body.irpfRatePct === undefined ? undefined : Number(body.irpfRatePct),
+      irpfRatePct: body.irpfRatePct === undefined ? undefined : decimalInputToNumber(body.irpfRatePct),
       socialSecurityCategory: body.socialSecurityCategory,
       costCenterId: body.costCenterId,
       correlationId: createId("corr")
@@ -7220,8 +7275,9 @@ export async function buildApiServer() {
   });
 
   app.get("/payroll/periods", async (request) => {
-    const query = request.query as { organizationId?: string };
-    const organizationId = query.organizationId ?? request.userContext.organizationId;
+    // Finanzas (2026-09-16, fix t6#6): same tenant scope as GET /payroll/contracts.
+    const query = parse(PayrollListQuerySchema, request.query ?? {}, "query");
+    const organizationId = await resolveOrganizationScope(request, query.organizationId);
     return listPayrollPeriods(organizationId);
   });
 
@@ -7256,20 +7312,17 @@ export async function buildApiServer() {
   app.get("/payroll/periods/:id/export", async (request) => {
     await assertEntityAccess(request, { entity: "payrollPeriod", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
-    const query = request.query as { format?: "a3" | "sage" };
-    const format = query.format === "sage" ? "sage" : "a3";
-    const result =
-      format === "sage"
-        ? await exportPeriodSageFormat({
-            context: request.userContext,
-            periodId: params.id,
-            correlationId: createId("corr")
-          })
-        : await exportPeriodA3Format({
-            context: request.userContext,
-            periodId: params.id,
-            correlationId: createId("corr")
-          });
+    const query = request.query as { format?: string };
+    // Finanzas (2026-09-16): read-only preview (markExported:false) of the a3 /
+    // sage / csv export; POST /payroll/periods/:id/export (treasury.routes.ts)
+    // is the audited export that stamps exportedAt.
+    const result = await exportPeriod({
+      context: request.userContext,
+      periodId: params.id,
+      format: normalisePayrollExportFormat(query.format),
+      correlationId: createId("corr"),
+      markExported: false
+    });
     // The browser side downloads the text via Blob/URL.createObjectURL after
     // unwrapping `text`; we keep the HTTP body JSON so apiRequest works
     // unchanged across the codebase.
@@ -8098,37 +8151,52 @@ export async function buildApiServer() {
     });
   });
 
-  // Tokenization endpoint for stored cards. The Prisma client extension
-  // encrypts `tokenRef` at rest via PII_FIELDS — see crypto-fields.ts. In
-  // sandbox we synthesize a deterministic tokenRef so tests can assert
-  // exact values; production should call adapter.tokenize() after the
-  // frontend has collected card data through a PCI-compliant SDK (Stripe
-  // Elements / Redsys SIS iframe).
-  app.post("/payment-tokens", async (request) => {
-    const body = parse(
-      z.object({
-        guestId: z.string().optional(),
-        provider: z.enum(["redsys", "stripe", "adyen"]),
-        cardData: z.object({ pan: z.string().optional(), token: z.string().optional() }).optional()
-      }),
-      request.body
-    );
-    // En sandbox: tokeniza determinísticamente y persiste.
-    const tokenRef = "tok_" + body.provider + "_" + (body.cardData?.token ?? "sandbox").slice(0, 16);
-    const last4 = body.cardData?.pan?.slice(-4) ?? "4242";
+  // Stored cards (finanzas 2026-09-15): this endpoint ONLY stores a token
+  // issued by the PSP's PCI-compliant front-end SDK (Stripe Elements pm_… /
+  // Redsys DS_MERCHANT_IDENTIFIER). A PAN — in any field — is refused with 400
+  // PAN_NOT_ACCEPTED: card numbers never reach this API. Nothing is
+  // synthesised: without a configured PSP the token cannot be validated and
+  // the request answers 409 PSP_NOT_CONFIGURED. The Prisma client extension
+  // encrypts `tokenRef` at rest via PII_FIELDS — see crypto-fields.ts.
+  app.post("/payment-tokens", async (request, reply) => {
+    const raw = (request.body ?? {}) as Record<string, unknown>;
+    const looksLikePan = (value: unknown): boolean => typeof value === "string" && /^[0-9 -]{12,23}$/.test(value.trim()) && value.replace(/\D/g, "").length >= 12;
+    const cardData = (raw.cardData ?? {}) as Record<string, unknown>;
+    if (looksLikePan(raw.pan) || looksLikePan(cardData.pan) || looksLikePan(raw.token) || looksLikePan(cardData.token)) {
+      const error = new BadRequestError("Este API no acepta números de tarjeta (PAN): tokeniza la tarjeta en el navegador con el SDK del PSP (Stripe Elements / Redsys) y envía solo el token.");
+      error.details = { code: "PAN_NOT_ACCEPTED" };
+      throw error;
+    }
+    if (raw.cardData && typeof raw.cardData === "object" && !("token" in raw)) {
+      throw new BadRequestError("Envía { provider, token, last4?, brand? }: cardData ya no se admite (solo tokens emitidos por el PSP).");
+    }
+    const body = parse(PaymentTokenSchema, raw);
+    const propertyId = request.userContext.propertyId;
+    const psp = await pspStatusFor(propertyId);
+    if (!psp.configured || psp.provider !== body.provider) {
+      const error = new ConflictError(`No se puede guardar un token de ${body.provider}: ${psp.message}`);
+      error.details = { code: "PSP_NOT_CONFIGURED", provider: body.provider, psp };
+      throw error;
+    }
+    if (body.provider === "stripe" && !/^pm_[A-Za-z0-9]+$/.test(body.token)) {
+      throw new BadRequestError("Para Stripe el token debe ser un PaymentMethod (pm_…) emitido por Stripe Elements.");
+    }
     const { prisma } = await import("@hotelos/database");
     const created = await prisma.paymentToken.create({
       data: {
         organizationId: request.userContext.organizationId,
         guestId: body.guestId,
         provider: body.provider,
-        tokenRef,
-        last4,
-        brand: "demo",
-        isDefault: false
+        tokenRef: body.token,
+        last4: body.last4 ?? null,
+        brand: body.brand ?? null,
+        expiryMonth: body.expiryMonth ?? null,
+        expiryYear: body.expiryYear ?? null,
+        isDefault: body.isDefault ?? false
       }
     });
-    return { id: created.id, last4: created.last4, brand: created.brand };
+    reply.code(201);
+    return { id: created.id, provider: created.provider, last4: created.last4, brand: created.brand, expiryMonth: created.expiryMonth, expiryYear: created.expiryYear };
   });
 
   // List sealed audit events for the current organization, with server-side

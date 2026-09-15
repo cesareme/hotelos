@@ -1,7 +1,16 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { isIsoDate } from "../../lib/query-dates.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+
+// Fiscal periods (month / quarter / year) — the lock of the diario: the
+// engine (accounting.service.postJournalEntry) refuses any asiento whose
+// fecha contable falls inside a CLOSED period (409 FISCAL_PERIOD_CLOSED).
+// Closing a period requires that no draft asiento remains inside it (a draft
+// posted later would land in a closed period); reopening is audited and
+// requires the high-risk confirmation.
 
 export type FiscalPeriodRecord = {
   id: string;
@@ -24,6 +33,11 @@ function isoDate(d: Date): string {
 
 function dateOnly(iso: string): Date {
   return new Date(`${iso}T00:00:00.000Z`);
+}
+
+function requireDay(value: unknown, name: string): string {
+  if (!isIsoDate(value)) throw new BadRequestError(`El parámetro ${name} debe ser una fecha YYYY-MM-DD.`);
+  return value;
 }
 
 function mapPeriod(row: NonNullable<Awaited<ReturnType<typeof prisma.fiscalPeriod.findUnique>>>): FiscalPeriodRecord {
@@ -53,9 +67,24 @@ export async function openFiscalPeriod(input: {
   correlationId: string;
 }): Promise<FiscalPeriodRecord> {
   requirePermissions(input.context, ["accounting.journal.post"]);
+  const startDate = requireDay(input.startDate, "startDate");
+  const endDate = requireDay(input.endDate, "endDate");
+  if (startDate >= endDate) throw new BadRequestError("startDate debe ser anterior a endDate.");
+  if (!["month", "quarter", "year"].includes(input.periodType)) throw new BadRequestError("periodType debe ser month, quarter o year.");
+  if (!input.periodCode || input.periodCode.length > 32) throw new BadRequestError("periodCode es obligatorio (máximo 32 caracteres).");
 
-  if (input.startDate >= input.endDate) {
-    throw new Error("startDate must be before endDate.");
+  const overlapping = await prisma.fiscalPeriod.findFirst({
+    where: {
+      organizationId: input.context.organizationId,
+      propertyId: input.propertyId ?? null,
+      periodType: input.periodType,
+      startDate: { lte: dateOnly(endDate) },
+      endDate: { gte: dateOnly(startDate) }
+    },
+    select: { periodCode: true }
+  });
+  if (overlapping) {
+    throw new ConflictError(`El periodo se solapa con ${overlapping.periodCode}.`, { periodCode: overlapping.periodCode, code: "FISCAL_PERIOD_OVERLAP" });
   }
 
   const created = await prisma.fiscalPeriod.create({
@@ -64,8 +93,8 @@ export async function openFiscalPeriod(input: {
       propertyId: input.propertyId ?? null,
       periodCode: input.periodCode,
       periodType: input.periodType,
-      startDate: dateOnly(input.startDate),
-      endDate: dateOnly(input.endDate),
+      startDate: dateOnly(startDate),
+      endDate: dateOnly(endDate),
       status: "open"
     }
   });
@@ -94,8 +123,27 @@ export async function closeFiscalPeriod(input: {
   requirePermissions(input.context, ["accounting.journal.post"]);
 
   const period = await prisma.fiscalPeriod.findUnique({ where: { id: input.periodId } });
-  if (!period) throw new Error("Fiscal period was not found.");
-  if (period.status === "closed") throw new Error(`Fiscal period ${period.periodCode} is already closed.`);
+  if (!period || period.organizationId !== input.context.organizationId) throw new NotFoundError("Periodo fiscal no encontrado.");
+  if (period.status === "closed") {
+    throw new ConflictError(`El periodo ${period.periodCode} ya está cerrado.`, { code: "FISCAL_PERIOD_ALREADY_CLOSED", periodCode: period.periodCode });
+  }
+
+  // A draft inside the period would be posted into a closed period later.
+  const drafts = await prisma.journalEntry.count({
+    where: {
+      organizationId: period.organizationId,
+      ...(period.propertyId ? { propertyId: period.propertyId } : {}),
+      status: "draft",
+      entryDate: { gte: period.startDate, lte: period.endDate }
+    }
+  });
+  if (drafts > 0) {
+    throw new ConflictError(`El periodo ${period.periodCode} tiene ${drafts} asiento(s) en borrador: contabilízalos o elimínalos antes de cerrar.`, {
+      code: "FISCAL_PERIOD_HAS_DRAFTS",
+      periodCode: period.periodCode,
+      drafts
+    });
+  }
 
   const before = mapPeriod(period);
   const updated = await prisma.fiscalPeriod.update({
@@ -140,8 +188,11 @@ export async function reopenFiscalPeriod(input: {
 }): Promise<FiscalPeriodRecord> {
   requirePermissions(input.context, ["accounting.journal.post", "ai.high_risk.confirm"]);
   const period = await prisma.fiscalPeriod.findUnique({ where: { id: input.periodId } });
-  if (!period) throw new Error("Fiscal period was not found.");
-  if (period.status !== "closed") throw new Error(`Period ${period.periodCode} is not closed.`);
+  if (!period || period.organizationId !== input.context.organizationId) throw new NotFoundError("Periodo fiscal no encontrado.");
+  if (period.status !== "closed") {
+    throw new ConflictError(`El periodo ${period.periodCode} no está cerrado.`, { code: "FISCAL_PERIOD_NOT_CLOSED", periodCode: period.periodCode });
+  }
+  if (!input.reason || input.reason.trim().length === 0) throw new BadRequestError("Indica el motivo de la reapertura.");
   const before = mapPeriod(period);
   const updated = await prisma.fiscalPeriod.update({
     where: { id: period.id },
@@ -177,8 +228,10 @@ export async function listFiscalPeriods(input: {
   return rows.map(mapPeriod);
 }
 
-// Returns true if posting into the given date for the given property is allowed
-// (no overlapping closed period). Used by the projection engine before persisting.
+/**
+ * True when no CLOSED period (organisation-wide or of the property) covers
+ * the posting date. Used by the engine before every asiento.
+ */
 export async function isPostingAllowed(organizationId: string, propertyId: string | undefined, postingDate: Date): Promise<{ allowed: boolean; closedPeriodCode?: string }> {
   const period = await prisma.fiscalPeriod.findFirst({
     where: {

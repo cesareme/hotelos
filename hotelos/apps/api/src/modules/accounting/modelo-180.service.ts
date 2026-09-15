@@ -1,183 +1,103 @@
-import { prisma } from "@hotelos/database";
+// Finanzas · lote «iva-modelos» — Modelo 180 (resumen anual de retenciones
+// sobre arrendamientos de inmuebles urbanos, Modelo 115).
+//
+// Consolidates the four quarters (or twelve months) of Modelo 115 of the year
+// and lists every lessor (NIF, name, address of the property, cadastral
+// reference, importe íntegro, retención). Boxes of the summary: 01 número
+// total de perceptores · 02 importe total de las percepciones · 03 importe
+// total de las retenciones e ingresos a cuenta. Decimal arithmetic. Read-only.
+
+import type { FiscalBox, FiscalModelReport } from "@hotelos/shared/src/fiscal-types.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
-import { buildModelo115, MODELO_115_ROW_PREFIX } from "./modelo-115.service.js";
 import { requireYear } from "../../lib/query-dates.js";
+import { PRESENTACION_MANUAL_NOTA, declaranteOf } from "./modelo-303.service.js";
+import { MODELO_115_ROW_PREFIX, loadWithholdingRecords } from "./modelo-111.service.js";
+import { compute115 } from "./modelo-115.service.js";
+import { ZERO, annualPeriod, money, periodsOfYear, round2, toWire, type Money } from "./vat-books.service.js";
 
-// Modelo 180 — resumen anual de las retenciones del Modelo 115 sobre
-// arrendamientos urbanos. Consolida los 4 modelos 115 trimestrales del año y
-// presenta el desglose por arrendador (NIF, nombre, dirección del inmueble,
-// referencia catastral, importe íntegro y retención practicada).
+export const MODELO_180_TITLE = "Modelo 180 · Retenciones e ingresos a cuenta · Rentas de arrendamiento de inmuebles urbanos · Resumen anual";
 
-export type Modelo180Quarter = {
-  quarter: 1 | 2 | 3 | 4;
-  fromDate: string;
-  toDate: string;
-  perceptores: number;
-  base: number;
-  retenciones: number;
+export type LessorRecord = {
+  rowCode: string;
+  recipientNif: string | null;
+  recipientName: string | null;
+  recipientAddress: string | null;
+  cadastralReference: string | null;
+  grossAmount: Money | string | number;
+  retentionAmount: Money | string | number;
 };
 
-export type Modelo180Lessor = {
-  recipientNif: string;
-  recipientName: string;
-  recipientAddress: string;
-  cadastralReference: string;
-  importeIntegro: number;
-  retencion: number;
-};
+export type Modelo180Lessor = { nif: string; nombre: string; direccion: string; referenciaCatastral: string; importeIntegro: Money; retencion: Money; registros: number };
 
-export type Modelo180Report = {
-  organizationId: string;
-  propertyId?: string;
-  year: number;
-  generatedAt: string;
-  quarters: Modelo180Quarter[];
-  lessors: Modelo180Lessor[];
-  totals: {
-    perceptores: number;
-    baseAnual: number;
-    retencionAnual: number;
-  };
-  casillas: Record<string, number>;
-};
-
-function round(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
-function dateOnly(iso: string): Date {
-  return new Date(`${iso}T00:00:00.000Z`);
-}
-
-function nextDay(iso: string): string {
-  const d = new Date(`${iso}T00:00:00.000Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
-function quarterRanges(year: number): Array<{ q: 1 | 2 | 3 | 4; from: string; to: string }> {
-  return [
-    { q: 1, from: `${year}-01-01`, to: `${year}-03-31` },
-    { q: 2, from: `${year}-04-01`, to: `${year}-06-30` },
-    { q: 3, from: `${year}-07-01`, to: `${year}-09-30` },
-    { q: 4, from: `${year}-10-01`, to: `${year}-12-31` }
-  ];
-}
-
-export async function buildModelo180(input: {
-  context: UserContext;
-  propertyId?: string;
-  year: number;
-}): Promise<Modelo180Report> {
-  requirePermissions(input.context, ["analytics.read"]);
-  requireYear(input.year);
-
-  const ranges = quarterRanges(input.year);
-  const quarterReports = await Promise.all(
-    ranges.map((range) =>
-      buildModelo115({
-        context: input.context,
-        propertyId: input.propertyId,
-        fromDate: range.from,
-        toDate: range.to,
-        periodType: "quarterly"
-      })
-    )
-  );
-
-  const quarters: Modelo180Quarter[] = quarterReports.map((report, idx) => ({
-    quarter: (idx + 1) as 1 | 2 | 3 | 4,
-    fromDate: ranges[idx].from,
-    toDate: ranges[idx].to,
-    perceptores: report.totals.perceptores,
-    base: report.totals.base,
-    retenciones: report.totals.retenciones
-  }));
-
-  // Desglose anual por arrendador.
-  const yearStart = dateOnly(`${input.year}-01-01`);
-  const yearEnd = dateOnly(nextDay(`${input.year}-12-31`));
-
-  const records = await prisma.withholdingTaxRecord.findMany({
-    where: {
-      organizationId: input.context.organizationId,
-      ...(input.propertyId ? { propertyId: input.propertyId } : {}),
-      paymentDate: { gte: yearStart, lt: yearEnd },
-      rowCode: { startsWith: MODELO_115_ROW_PREFIX }
-    },
-    select: {
-      recipientNif: true,
-      recipientName: true,
-      recipientAddress: true,
-      cadastralReference: true,
-      grossAmount: true,
-      retentionAmount: true
-    }
-  });
-
-  type LessorBucket = {
-    recipientNif: string;
-    recipientName: string;
-    recipientAddress: string;
-    cadastralReference: string;
-    importeIntegro: number;
-    retencion: number;
-  };
-  const byKey = new Map<string, LessorBucket>();
+/** Pure: lessors of the year (one row per NIF + cadastral reference). */
+export function lessorsOf(records: readonly LessorRecord[]): Modelo180Lessor[] {
+  const byKey = new Map<string, Modelo180Lessor>();
   for (const record of records) {
-    const nif = record.recipientNif ?? "<sin-nif>";
-    const cad = record.cadastralReference ?? "";
-    const key = `${nif}|${cad}`;
-    const existing = byKey.get(key) ?? {
-      recipientNif: nif,
-      recipientName: record.recipientName ?? "",
-      recipientAddress: record.recipientAddress ?? "",
-      cadastralReference: cad,
-      importeIntegro: 0,
-      retencion: 0
-    };
-    existing.importeIntegro += Number(record.grossAmount.toString());
-    existing.retencion += Number(record.retentionAmount.toString());
-    if (!existing.recipientName && record.recipientName) existing.recipientName = record.recipientName;
-    if (!existing.recipientAddress && record.recipientAddress) existing.recipientAddress = record.recipientAddress;
+    if (!record.rowCode.startsWith(MODELO_115_ROW_PREFIX)) continue;
+    const nif = record.recipientNif?.trim() ? record.recipientNif.trim().toUpperCase() : "<sin-nif>";
+    const referencia = record.cadastralReference?.trim() ?? "";
+    const key = `${nif}|${referencia}`;
+    const existing = byKey.get(key) ?? { nif, nombre: record.recipientName?.trim() ?? "", direccion: record.recipientAddress?.trim() ?? "", referenciaCatastral: referencia, importeIntegro: ZERO, retencion: ZERO, registros: 0 };
+    existing.importeIntegro = existing.importeIntegro.plus(money(record.grossAmount));
+    existing.retencion = existing.retencion.plus(money(record.retentionAmount));
+    existing.registros += 1;
+    if (!existing.nombre && record.recipientName) existing.nombre = record.recipientName.trim();
+    if (!existing.direccion && record.recipientAddress) existing.direccion = record.recipientAddress.trim();
     byKey.set(key, existing);
   }
+  return Array.from(byKey.values())
+    .map((lessor) => ({ ...lessor, importeIntegro: round2(lessor.importeIntegro), retencion: round2(lessor.retencion) }))
+    .sort((a, b) => b.retencion.comparedTo(a.retencion) || a.nif.localeCompare(b.nif));
+}
 
-  const lessors: Modelo180Lessor[] = Array.from(byKey.values())
-    .map((l) => ({
-      recipientNif: l.recipientNif,
-      recipientName: l.recipientName,
-      recipientAddress: l.recipientAddress,
-      cadastralReference: l.cadastralReference,
-      importeIntegro: round(l.importeIntegro),
-      retencion: round(l.retencion)
-    }))
-    .sort((a, b) => b.retencion - a.retencion);
-
-  const baseAnual = round(quarters.reduce((s, q) => s + q.base, 0));
-  const retencionAnual = round(quarters.reduce((s, q) => s + q.retenciones, 0));
-  const perceptoresAnuales = byKey.size;
-
-  // Modelo 180 headline casillas.
-  const casillas: Record<string, number> = {
-    casilla_01: perceptoresAnuales,
-    casilla_02: baseAnual,
-    casilla_03: retencionAnual
-  };
-
+export async function buildModelo180(input: { context: UserContext; propertyId?: string | null; year: number }): Promise<FiscalModelReport> {
+  requirePermissions(input.context, ["accounting.read"]);
+  const year = requireYear(input.year);
+  const organizationId = input.context.organizationId;
+  const periodo = annualPeriod(year);
+  const records = await loadWithholdingRecords({ organizationId, propertyId: input.propertyId, from: periodo.from, to: periodo.to, rowPrefix: MODELO_115_ROW_PREFIX });
+  const lessors = lessorsOf(records);
+  const annual = compute115(records);
+  const quarters = periodsOfYear(year, "quarterly").map((quarter) => {
+    const computation = compute115(records.filter((record) => {
+      const day = record.paymentDate.toISOString().slice(0, 10);
+      return day >= quarter.from && day <= quarter.to;
+    }));
+    return { periodo: quarter.code, resultado: toWire(computation.retenciones), base: toWire(computation.base), perceptores: computation.perceptores };
+  });
+  const avisos: string[] = [];
+  if (lessors.length === 0) avisos.push("Sin arrendadores con retención en el ejercicio: el resumen sale a cero.");
+  const incomplete = lessors.filter((lessor) => lessor.nif === "<sin-nif>" || !lessor.referenciaCatastral || !lessor.direccion);
+  if (incomplete.length > 0) avisos.push(`${incomplete.length} arrendador(es) sin NIF, dirección del inmueble o referencia catastral: completa los datos antes de presentar.`);
+  if (input.propertyId) avisos.push("Vista parcial por establecimiento: el Modelo 180 se presenta por NIF (organización).");
+  const seccion = "Resumen de los datos";
+  const casillas: FiscalBox[] = [
+    { casilla: "01", clave: "PERCEPTORES", descripcion: "Número total de perceptores", seccion, importe: lessors.length, tipo: "contador" },
+    { casilla: "02", clave: "BASE", descripcion: "Importe total de las percepciones (base de las retenciones)", seccion, importe: toWire(annual.base), tipo: "base" },
+    { casilla: "03", clave: "RETENCIONES", descripcion: "Importe total de las retenciones e ingresos a cuenta", seccion, importe: toWire(annual.retenciones), tipo: "cuota" }
+  ];
   return {
-    organizationId: input.context.organizationId,
-    propertyId: input.propertyId,
-    year: input.year,
-    generatedAt: new Date().toISOString(),
-    quarters,
-    lessors,
-    totals: {
-      perceptores: perceptoresAnuales,
-      baseAnual,
-      retencionAnual
-    },
-    casillas
+    modelo: "180",
+    titulo: MODELO_180_TITLE,
+    organizationId,
+    propertyId: input.propertyId ?? null,
+    periodo,
+    declarante: await declaranteOf(organizationId),
+    casillas,
+    totales: { perceptores: lessors.length, base: toWire(annual.base), retenciones: toWire(annual.retenciones), registros: annual.registros },
+    avisos,
+    fuentes: { origen: "retenciones", registros: annual.registros, periodos: quarters.map((quarter) => ({ periodo: quarter.periodo, resultado: quarter.resultado })) },
+    detalle: lessors.map((lessor) => ({
+      nif: lessor.nif,
+      nombre: lessor.nombre,
+      direccion: lessor.direccion,
+      referenciaCatastral: lessor.referenciaCatastral,
+      importeIntegro: toWire(lessor.importeIntegro),
+      retencion: toWire(lessor.retencion),
+      registros: lessor.registros
+    })),
+    presentacion: { modo: "manual", ficheroOficial: false, nota: PRESENTACION_MANUAL_NOTA },
+    generatedAt: new Date().toISOString()
   };
 }

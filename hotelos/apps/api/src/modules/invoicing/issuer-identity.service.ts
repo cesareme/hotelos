@@ -6,10 +6,14 @@
 //   * The NIF comes from Organization.taxId (normalised). Property.legalName is
 //     a display name, never a NIF source — no regex over it, no demoStore.
 //   * Fiscal mode = VERIFACTU_MODE === "production" (the same switch the AEAT
-//     submitter and the QR builder read). In production an invalid / missing
-//     NIF blocks issuance with a 409; in sandbox the documented placeholder
-//     (SPANISH_TAX_ID_PLACEHOLDER) is used and flagged so nothing downstream
-//     mistakes it for a real identifier.
+//     submitter and the QR builder read). Since the finanzas lote
+//     (2026-09-15) an invalid / missing NIF blocks issuance with a 409
+//     ISSUER_TAX_ID_MISSING in EVERY mode: the sandbox placeholder
+//     (SPANISH_TAX_ID_PLACEHOLDER, B00000000) is never stamped on a new
+//     document any more — a series that mixes real and placeholder NIFs is
+//     not a fiscal series (hallazgo: FAC-2026 de Faranda con tres NIF). The
+//     placeholder constant survives only to recognise the legacy invoices
+//     that were issued with it before this change.
 //   * Once an invoice is issued its identity is a SNAPSHOT (Invoice.issuerTaxId
 //     / issuerLegalName / issuerTaxIdPlaceholder): hash, QR and every XML must
 //     be reproducible even if the organisation changes its NIF afterwards.
@@ -122,8 +126,8 @@ export async function resolveIssuerIdentity(propertyId: string, db: IssuerDb = p
 /** Message shown when fiscal production mode has no valid NIF to issue with. */
 export function issuerTaxIdMissingMessage(identity: Pick<IssuerIdentity, "taxId">): string {
   return identity.taxId
-    ? `El NIF emisor configurado (${identity.taxId}) no es válido; corrígelo en Configuración › Perfil del establecimiento antes de emitir.`
-    : "La propiedad no tiene NIF emisor configurado; complétalo en Configuración › Perfil del establecimiento antes de emitir.";
+    ? `No se puede emitir: el NIF emisor configurado (${identity.taxId}) no es válido. Corrígelo en Configuración › Perfil del establecimiento; ninguna factura sale con NIF de relleno.`
+    : "No se puede emitir: la organización no tiene NIF emisor configurado. Complétalo en Configuración › Perfil del establecimiento; ninguna factura sale con NIF de relleno.";
 }
 
 /**
@@ -134,8 +138,8 @@ export function issuerTaxIdMissingMessage(identity: Pick<IssuerIdentity, "taxId"
 export function issuerIdentityWarnings(identity: Pick<IssuerIdentity, "taxId" | "taxIdValid">, fiscalMode: FiscalMode = resolveFiscalMode()): string[] {
   if (identity.taxIdValid && identity.taxId) return [];
   const consequence =
-    `En sandbox la factura se emite con el NIF de relleno ${ISSUER_TAX_ID_PLACEHOLDER}; en producción la emisión se bloquea (${ISSUER_TAX_ID_MISSING_CODE}) ` +
-    `hasta corregirlo en Configuración › Perfil del establecimiento. Modo fiscal actual: ${fiscalMode}.`;
+    `La emisión de facturas se bloquea (${ISSUER_TAX_ID_MISSING_CODE}) en cualquier modo fiscal hasta corregirlo en Configuración › Perfil del establecimiento: ` +
+    `ninguna factura nueva sale con el NIF de relleno ${ISSUER_TAX_ID_PLACEHOLDER}. Modo fiscal actual: ${fiscalMode}.`;
   if (!identity.taxId) {
     return [`La organización no tiene NIF emisor configurado. ${consequence}`];
   }
@@ -144,9 +148,9 @@ export function issuerIdentityWarnings(identity: Pick<IssuerIdentity, "taxId" | 
 }
 
 export type IssuerTaxIdPreview = {
-  /** NIF the document will carry when issued now: the valid configured NIF, or the sandbox placeholder. */
+  /** NIF the document will carry when issued now: the valid configured NIF. When `placeholder` is true issuance is BLOCKED and this is the placeholder constant only so the UI can label the state. */
   taxId: string;
-  /** True when taxId is the placeholder (configured NIF missing or invalid). */
+  /** True when no valid NIF is configured: issuance answers 409 ISSUER_TAX_ID_MISSING (no document is ever stamped with the placeholder). */
   placeholder: boolean;
   /** Normalised Organization.taxId as configured, valid or not (null when not configured). */
   configured: string | null;
@@ -172,10 +176,11 @@ export function previewIssuerTaxId(identity: Pick<IssuerIdentity, "taxId" | "tax
 }
 
 /**
- * Identity for a fiscal document. Production: 409 (ISSUER_TAX_ID_MISSING,
- * details.reason = "missing" | "invalid") when the organisation has no
- * checksum-valid NIF. Sandbox: the placeholder, flagged, so demos keep working
- * while the snapshot records the fact.
+ * Identity for a fiscal document: 409 (ISSUER_TAX_ID_MISSING, details.reason
+ * = "missing" | "invalid") when the organisation has no checksum-valid NIF —
+ * in every fiscal mode. The placeholder is never returned for a new document;
+ * `placeholder` stays in the type because issuerForInvoice reports it for the
+ * legacy invoices that were issued with it.
  */
 export async function requireIssuerIdentity(propertyId: string, db: IssuerDb = prisma): Promise<IssuerFiscalIdentity> {
   const identity = await resolveIssuerIdentity(propertyId, db);
@@ -184,16 +189,14 @@ export async function requireIssuerIdentity(propertyId: string, db: IssuerDb = p
   if (identity.taxIdValid && identity.taxId) {
     return { ...identity, taxId: identity.taxId, placeholder: false, fiscalMode };
   }
-  if (fiscalMode === "production") {
-    throw withDetails(new ConflictError(issuerTaxIdMissingMessage(identity)), {
-      code: ISSUER_TAX_ID_MISSING_CODE,
-      reason: identity.taxId ? "invalid" : "missing",
-      propertyId,
-      organizationId: identity.organizationId,
-      taxId: identity.taxId
-    });
-  }
-  return { ...identity, taxId: ISSUER_TAX_ID_PLACEHOLDER, placeholder: true, fiscalMode };
+  throw withDetails(new ConflictError(issuerTaxIdMissingMessage(identity)), {
+    code: ISSUER_TAX_ID_MISSING_CODE,
+    reason: identity.taxId ? "invalid" : "missing",
+    propertyId,
+    organizationId: identity.organizationId,
+    taxId: identity.taxId,
+    fiscalMode
+  });
 }
 
 /** The `nif=` the AEAT QR of an already-issued invoice was built with (legacy snapshot). */

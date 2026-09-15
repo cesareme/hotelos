@@ -82,7 +82,12 @@ const PUBLIC_PREFIXES = [
   "/guest-portal/reservation",
   "/guest-portal/pre-check-in",
   "/guest-portal/service-request",
-  "/integrations/email/oauth/callback"
+  "/integrations/email/oauth/callback",
+  // Finanzas (2026-09-16): PSP notifications (Stripe / Redsys → API, signed
+  // over the raw body) and the customer's landing after the hosted payment
+  // page. Both carry no staff token; their manifest entries are riskLevel public.
+  "/payments/webhooks",
+  "/payments/return"
 ];
 
 /**

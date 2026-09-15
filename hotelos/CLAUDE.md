@@ -154,6 +154,18 @@ reinicio de :3000/:3400 y los lotes de corrección finales):
   15/09/2026 (recorrido final, `docs/audits/RATE-GRID-V2-CIERRE-2026-09-15.md`
   §6.5); solo BUX-05 sigue pendiente por exigir teclado físico
 
+Estado verificado (cierre Tanda 6 · Finanzas backend, 2026-09-16, integrador
+final; working tree sin commit, :3000/:5173 sin reiniciar):
+- 200 screens alcanzables · 167/167 URLs · 0 broken links · placeholders 16/20
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · `.husky/pre-commit` OK
+- contratos 410/410 · unitarios api 1.220 (1.219 pass · 1 skipped) · integración
+  194 (189 pass · 5 skipped preexistentes · 0 fail) · env 136/136 · validate-env OK
+- migraciones 5/5 aplicadas (`migrate status` al día, drift 0, migrations↔schema
+  264 tablas / 24 enums) · fresh-install OK (264 tablas, 79 permisos, 4 s) ·
+  `install --frozen-lockfile --offline` al día (deuda 12(a) cerrada por el
+  lockfile regenerado con `install --offline` al declarar `qrcode-terminal`)
+- `rbac:sync -- --dry-run`: catálogo 221 · +0 · 8 roles por completar (no aplicado)
+
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).
@@ -561,6 +573,74 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     con su motivo; el contrato documental impide marcadores de navegador sin
     motivo).
 
+14. **Tanda 6 · Finanzas (PGC Pymes + USALI + ERP, 2026-09-15/16):** diez
+    módulos en `apps/api/src/modules/`: `accounting` (motor único
+    `postJournalEntry`/`reverseJournalEntry` con numeración por ejercicio bajo
+    `pg_advisory_xact_lock`, fecha contable, idempotencia por
+    `(org, sourceType, sourceId)`, reversos marcados — nunca `deleteMany` —,
+    plan «PGC Pymes hotelero» de 239 cuentas provisionable, libros de IVA,
+    modelos 303/390/347/111/115/180, liquidación del IVA, replay histórico),
+    `invoicing` (snapshot que congela el folio, PDF real con QR VeriFactu y
+    escritor PDF propio, email con adjunto o `{ status: "simulated" }`,
+    simplificada `SIM` ≤ 400 €), `payments` (Stripe/Redsys por env, 409
+    `PSP_NOT_CONFIGURED` en vez de `captured` ficticio, idempotencia por
+    `clientRequestId`, token de retorno HMAC), `pos` (factura simplificada +
+    asiento por comanda, `CashClosure` persistido), `night-audit` (cargo de
+    alojamiento desde la tarifa, idempotente por fecha de negocio),
+    `payables` (proveedores NIF/IBAN validados, facturas recibidas por líneas,
+    gastos), `fixed-assets` (tablas art. 12 LIS, corridas mes a mes),
+    `treasury` (posición desde el libro y extractos, CSB43 persistido, SEPA
+    19/34, comisiones que devengan solas, nóminas que revierten antes de
+    recalcular) y `financial-statements` (USALI 11.ª con mapeo por
+    organización, balance/PyG/ECPN/memoria Pymes, exportación a gestoría CSV
+    universal / «compatible Contaplus» / A3 no implementado). Convención por
+    módulo: `*.routes.ts` + `route-permissions.partial.ts` (registrados en
+    `server.ts` tras `registerChannelManagerRoutes`; el contract test lee
+    cualquier `*route-permissions.partial.ts`) + contrato en
+    `packages/shared/src/*-types.ts` (`MoneyString`, nunca float).
+    **Decisiones:** cuenta de clientes ÚNICA `4300` (`CUSTOMER_ACCOUNT_CODE`;
+    `430` cabecera; CLI `accounting:relabel-customer-account` dry-run por
+    defecto); venta TPV al contado = UN asiento `pos_ticket/<ticket>`; regla
+    única de lectura de los estados (`status ≠ draft` y fuera de parejas de
+    anulación marcadas; el diario y la gestoría conservan ambas mitades); 409
+    `FISCAL_YEAR_CLOSED` para todo escritor dentro de un ejercicio cerrado;
+    clave `accounting.reports.read` (informes con importes: manager, accountant,
+    compliance, owner) frente a `accounting.read` (solo calendario, Recepción)
+    remapeada en `security/route-permissions.ts`; corridas de amortización sin
+    huecos (409 `PREVIOUS_PERIOD_MISSING`); cotejo del 303 con `posted+reversed`;
+    todos los bodies del dinero `.strict()`; `presentacion.modo = manual` en
+    los modelos (sin fichero BOE); PDF/XLSX con escritores propios (no hay
+    librerías en `node_modules` y la regla impide añadirlas). Revisión
+    adversarial: 15 hallazgos (6 alta · 7 media · 2 baja), todos corregidos y
+    pinados (runbook §12). **Faranda (BD local):** plan 239 cuentas; replay
+    2026 → 61 asientos / 150 líneas / Σ 2.595,00 = 2.595,00; 303 2026-Q3 desde
+    los documentos (27 = 71 = 74,94; cotejo con el diario −4,55 por la
+    rectificativa por sustitución REC-2026-000003 contada íntegra en libros).
+    **Deuda:** (a) Faranda pendiente de `accounting:relabel-customer-account`
+    (61 líneas en `430`), `rbac:sync` (8 roles sin `accounting.reports.read`)
+    y night audit de Rías Altas/Los Tilos (nunca ejecutado) — escriben en el
+    piloto: solo con autorización de César, backup y API parados; (b) PSP,
+    banco, gestoría/formato, certificados VeriFactu, periodicidad de IVA y
+    convenio de nóminas de Faranda solo los puede aportar César (runbook §15);
+    (c) los servicios de lectura siguen exigiendo `accounting.read` internamente
+    (el borde exige `accounting.reports.read`; sin efecto en las plantillas, sí
+    en un rol custom con solo la clave nueva); (d) `SepaRemittance` sin modelo
+    (remesas en `worker_job_runs`), dispatcher de notificaciones sin adjuntos
+    (`providers/types.ts`), `Payment.method`/`JournalEntry.sourceType` siguen
+    `String`, `JournalLine` sin `@@index([accountId])`, `openingAccumulatedDepreciation`
+    inexistente (elementos heredados de ejercicios cerrados), parejas de
+    anulación a caballo de dos periodos excluidas de ambos en los estados por
+    periodo, reverso huérfano `cmu37gqkt0015fym4g9fcl0y4` en org_123 (residuo
+    de test, no cuenta), duplicado residual de F2 entre DOS instancias del API
+    cerrando la misma comanda a la vez; (e) los API :3000/:5173 NO se han
+    reiniciado: sirven el código anterior hasta que el integrador humano lo
+    haga (después: `test:integration` de nuevo y recorrido en navegador); (f)
+    el front no consume ninguna ruta nueva (siguiente workflow: lista en
+    `docs/audits/TANDA-6-FINANZAS-BACKEND-2026-09-15.md` §5). Runbook
+    completo: `docs/runbooks/finanzas-contabilidad.md` (§11 integración, §12
+    correcciones, §13 rutas y permisos, §14 comandos, §15 límites, §16
+    puertas); rutas en `docs/api-contracts.md` «Finanzas · módulos».
+
 ## Docs prioritarios
 
 Antes de tomar decisiones de producto, lee:
@@ -573,6 +653,8 @@ Antes de tomar decisiones de producto, lee:
 - `docs/runbooks/rate-grid-v2.md` — Rate Grid v2 operativo: contrato, outbox/drenaje, modos de canal, alta de canal y mapeo, política de la UI, Channex como vía a producción, límites, contrato del cierre (§6)
 - `docs/channel-manager-connectivity.md` + `docs/booking-adapter.md` — estado honesto de la conectividad OTA (Booking OTA XML, Expedia EQC, Channex): simulador estructural, credenciales, procedimiento de certificación Channex
 - `docs/audits/RATE-GRID-V2-CIERRE-2026-09-15.md` — cierre de la verificación adversarial de Rate Grid v2: qué se construyó, cómo se verificó, límites y lo que solo César puede aportar
+- `docs/audits/TANDA-6-FINANZAS-BACKEND-2026-09-15.md` — cierre de la Tanda 6 · Finanzas backend: qué era mock y qué es real, cifras de Faranda tras el replay, los 15 hallazgos de la revisión y su estado, lo que el front debe consumir y lo que solo César puede aportar
+- `docs/runbooks/finanzas-contabilidad.md` — contrato de datos PGC/USALI, reglas canónicas con ejemplos de asiento, rutas y permisos por módulo, comandos (plan, replay, cierre, amortización, IVA, exportaciones) y límites
 - `docs/director-dashboard/DESIGN-PROPOSAL.md`
 - `deploy/README-HOSTINGER.md` — playbook deploy producción
 - `deploy/README-REMOTE-DEV.md` — workflow remoto desde el Mac Pro (cliente único)

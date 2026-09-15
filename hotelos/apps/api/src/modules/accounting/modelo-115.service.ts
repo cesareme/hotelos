@@ -1,152 +1,109 @@
-import { prisma } from "@hotelos/database";
+// Finanzas · lote «iva-modelos» — Modelo 115 (retenciones e ingresos a cuenta
+// sobre rentas procedentes del arrendamiento de inmuebles urbanos).
+//
+// Source: `WithholdingTaxRecord` rows whose rowCode starts with "L" (L01 =
+// arrendamientos / subarrendamientos de inmuebles urbanos; the prefix keeps
+// them apart from the 111 rows 01-05). Boxes of the form:
+//   01 número de perceptores · 02 base de las retenciones e ingresos a cuenta ·
+//   03 retenciones e ingresos a cuenta · 04 resultados a ingresar de anteriores
+//   autoliquidaciones · 05 resultado a ingresar (03 − 04).
+// Decimal arithmetic. Read-only.
+
+import type { FiscalBox, FiscalModelReport, FiscalPeriodDto } from "@hotelos/shared/src/fiscal-types.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
-import { requireDateRange } from "../../lib/query-dates.js";
+import { PRESENTACION_MANUAL_NOTA, declaranteOf, resolveSettlementPeriod } from "./modelo-303.service.js";
+import { MODELO_115_ROW_PREFIX, loadWithholdingRecords, type WithholdingRecordForModel } from "./modelo-111.service.js";
+import { ZERO, money, round2, toWire, type Money } from "./vat-books.service.js";
 
-// Modelo 115 (AEAT) — declaración trimestral de retenciones e ingresos a cuenta
-// del IRPF correspondientes a rentas o rendimientos procedentes del arrendamiento
-// o subarrendamiento de inmuebles urbanos. Se nutre de `WithholdingTaxRecord`
-// filtrando filas cuyo rowCode comienza por "L" (Lessor / arrendamiento urbano),
-// para que no colisione con los row codes 01–05 del Modelo 111.
-//
-// Casillas oficiales:
-//   01 = número de perceptores (arrendadores)
-//   02 = base de las retenciones (importe íntegro satisfecho)
-//   03 = importe de las retenciones
-//   04 = resultados a ingresar de declaraciones anteriores (0 por defecto)
-//   05 = resultado a ingresar de la autoliquidación (= 03 - 04)
+export { MODELO_115_ROW_PREFIX };
 
-export const MODELO_115_ROW_PREFIX = "L";
+export const MODELO_115_TITLE = "Modelo 115 · Retenciones e ingresos a cuenta · Rentas de arrendamiento de inmuebles urbanos";
+
 export const MODELO_115_ROW_CODES = ["L01"] as const;
 
-export type Modelo115Row = {
-  rowCode: string;
-  label: string;
-  perceptores: number;
-  base: number;
-  retenciones: number;
-};
-
-export type Modelo115Report = {
-  organizationId: string;
-  propertyId?: string;
-  periodCode: string;
-  periodType: "monthly" | "quarterly";
-  fromDate: string;
-  toDate: string;
-  generatedAt: string;
-  rows: Modelo115Row[];
-  totals: {
-    perceptores: number;
-    base: number;
-    retenciones: number;
-    resultadoLiquidacion: number;
-  };
-  casillas: Record<string, number>;
-};
-
-const ROW_DEFINITIONS: Array<{ code: string; label: string }> = [
-  { code: "L01", label: "Arrendamientos / subarrendamientos de inmuebles urbanos" }
-];
-
-function round(n: number): number {
-  return Math.round(n * 100) / 100;
-}
-
-function dateOnly(iso: string): Date {
-  return new Date(`${iso}T00:00:00.000Z`);
-}
-
-function nextDay(iso: string): string {
-  const d = new Date(`${iso}T00:00:00.000Z`);
-  d.setUTCDate(d.getUTCDate() + 1);
-  return d.toISOString().slice(0, 10);
-}
-
-export async function buildModelo115(input: {
-  context: UserContext;
-  propertyId?: string;
-  fromDate: string;
-  toDate: string;
-  periodType?: "monthly" | "quarterly";
-}): Promise<Modelo115Report> {
-  requirePermissions(input.context, ["analytics.read"]);
-  requireDateRange(input.fromDate, input.toDate);
-
-  const start = dateOnly(input.fromDate);
-  const end = dateOnly(nextDay(input.toDate));
-
-  const records = await prisma.withholdingTaxRecord.findMany({
-    where: {
-      organizationId: input.context.organizationId,
-      ...(input.propertyId ? { propertyId: input.propertyId } : {}),
-      paymentDate: { gte: start, lt: end },
-      rowCode: { startsWith: MODELO_115_ROW_PREFIX }
-    },
-    select: {
-      rowCode: true,
-      recipientNif: true,
-      grossAmount: true,
-      retentionAmount: true
-    }
-  });
-
-  type Bucket = { base: number; retenciones: number; nifs: Set<string> };
-  const byRow = new Map<string, Bucket>();
-  for (const def of ROW_DEFINITIONS) {
-    byRow.set(def.code, { base: 0, retenciones: 0, nifs: new Set() });
-  }
-
-  for (const record of records) {
-    const bucket = byRow.get(record.rowCode) ?? byRow.get("L01")!;
-    bucket.base += Number(record.grossAmount.toString());
-    bucket.retenciones += Number(record.retentionAmount.toString());
-    bucket.nifs.add(record.recipientNif ?? "<sin-nif>");
-  }
-
-  const rows: Modelo115Row[] = ROW_DEFINITIONS.map((def) => {
-    const bucket = byRow.get(def.code)!;
-    return {
-      rowCode: def.code,
-      label: def.label,
-      perceptores: bucket.nifs.size > 0 && bucket.base > 0 ? bucket.nifs.size : 0,
-      base: round(bucket.base),
-      retenciones: round(bucket.retenciones)
-    };
-  });
-
-  const totalPerceptores = rows.reduce((sum, r) => sum + r.perceptores, 0);
-  const totalBase = round(rows.reduce((sum, r) => sum + r.base, 0));
-  const totalRetenciones = round(rows.reduce((sum, r) => sum + r.retenciones, 0));
-
-  // Modelo 115 headline casillas.
-  const casillas: Record<string, number> = {
-    casilla_01: totalPerceptores,
-    casilla_02: totalBase,
-    casilla_03: totalRetenciones,
-    casilla_04: 0,
-    casilla_05: totalRetenciones
-  };
-
-  return {
-    organizationId: input.context.organizationId,
-    propertyId: input.propertyId,
-    periodCode: `${input.fromDate}_${input.toDate}`,
-    periodType: input.periodType ?? "quarterly",
-    fromDate: input.fromDate,
-    toDate: input.toDate,
-    generatedAt: new Date().toISOString(),
-    rows,
-    totals: {
-      perceptores: totalPerceptores,
-      base: totalBase,
-      retenciones: totalRetenciones,
-      resultadoLiquidacion: totalRetenciones
-    },
-    casillas
-  };
-}
+const ROW_DEFINITIONS: ReadonlyArray<{ code: string; label: string }> = [{ code: "L01", label: "Arrendamientos y subarrendamientos de inmuebles urbanos" }];
 
 export function listModelo115RowCodes(): Array<{ code: string; label: string }> {
-  return ROW_DEFINITIONS.map((def) => ({ code: def.code, label: def.label }));
+  return ROW_DEFINITIONS.map((row) => ({ code: row.code, label: row.label }));
+}
+
+export type Modelo115Computation = {
+  perceptores: number;
+  base: Money;
+  retenciones: Money;
+  registros: number;
+  casillas: FiscalBox[];
+  totales: Record<string, number>;
+  avisos: string[];
+};
+
+/** Pure: 115 boxes from the L-rows of the period. */
+export function compute115(records: readonly WithholdingRecordForModel[]): Modelo115Computation {
+  const avisos: string[] = [];
+  const nifs = new Set<string>();
+  let base = ZERO;
+  let retenciones = ZERO;
+  let registros = 0;
+  let ignored = 0;
+  for (const record of records) {
+    if (!record.rowCode.startsWith(MODELO_115_ROW_PREFIX)) {
+      ignored += 1;
+      continue;
+    }
+    registros += 1;
+    base = base.plus(money(record.grossAmount));
+    retenciones = retenciones.plus(money(record.retentionAmount));
+    nifs.add(record.recipientNif?.trim() ? record.recipientNif.trim().toUpperCase() : `<sin-nif:${registros}>`);
+  }
+  if (ignored > 0) avisos.push(`${ignored} registro(s) sin clave L ignorados: pertenecen al Modelo 111.`);
+  if (registros === 0) avisos.push("Sin retenciones de arrendamiento en el periodo: el modelo sale a cero.");
+  base = round2(base);
+  retenciones = round2(retenciones);
+  const perceptores = registros > 0 ? nifs.size : 0;
+  const seccion = "Liquidación";
+  const casillas: FiscalBox[] = [
+    { casilla: "01", clave: "PERCEPTORES", descripcion: "Número de perceptores", seccion, importe: perceptores, tipo: "contador" },
+    { casilla: "02", clave: "BASE", descripcion: "Base de las retenciones e ingresos a cuenta", seccion, importe: toWire(base), tipo: "base" },
+    { casilla: "03", clave: "RETENCIONES", descripcion: "Retenciones e ingresos a cuenta", seccion, importe: toWire(retenciones), tipo: "cuota" },
+    { casilla: "04", clave: "ANTERIORES", descripcion: "Resultados a ingresar de anteriores autoliquidaciones del mismo periodo", seccion, importe: 0, tipo: "cuota" },
+    { casilla: "05", clave: "RESULTADO", descripcion: "Resultado a ingresar (03 − 04)", seccion, importe: toWire(retenciones), tipo: "resultado" }
+  ];
+  return {
+    perceptores,
+    base,
+    retenciones,
+    registros,
+    casillas,
+    totales: { perceptores, base: toWire(base), retenciones: toWire(retenciones), resultado: toWire(retenciones), registros },
+    avisos
+  };
+}
+
+export async function modelo115ForPeriod(input: { organizationId: string; periodo: FiscalPeriodDto; propertyId?: string | null }): Promise<{ report: FiscalModelReport; computation: Modelo115Computation }> {
+  const records = await loadWithholdingRecords({ organizationId: input.organizationId, propertyId: input.propertyId, from: input.periodo.from, to: input.periodo.to, rowPrefix: MODELO_115_ROW_PREFIX });
+  const computation = compute115(records);
+  const report: FiscalModelReport = {
+    modelo: "115",
+    titulo: MODELO_115_TITLE,
+    organizationId: input.organizationId,
+    propertyId: input.propertyId ?? null,
+    periodo: input.periodo,
+    declarante: await declaranteOf(input.organizationId),
+    casillas: computation.casillas,
+    totales: computation.totales,
+    avisos: computation.avisos,
+    fuentes: { origen: "retenciones", registros: computation.registros },
+    detalle: [],
+    presentacion: { modo: "manual", ficheroOficial: false, nota: PRESENTACION_MANUAL_NOTA },
+    generatedAt: new Date().toISOString()
+  };
+  return { report, computation };
+}
+
+/** Public entry point (route + legacy server.ts handler). */
+export async function buildModelo115(input: { context: UserContext; propertyId?: string | null; period?: string; fromDate?: string; toDate?: string; periodType?: "monthly" | "quarterly" }): Promise<FiscalModelReport> {
+  requirePermissions(input.context, ["accounting.read"]);
+  const periodo = resolveSettlementPeriod(input);
+  return (await modelo115ForPeriod({ organizationId: input.context.organizationId, periodo, propertyId: input.propertyId ?? null })).report;
 }

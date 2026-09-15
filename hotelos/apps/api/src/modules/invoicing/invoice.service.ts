@@ -36,6 +36,20 @@ import {
   type IssuerIdentity
 } from "./issuer-identity.service.js";
 import { prepareVerifactuAnulacion, queueVerifactuAnulacion } from "./verifactu-submission.service.js";
+import type { InvoiceCancellationPayments, InvoiceDraftSnapshot, InvoiceSnapshotV1 } from "../../../../../packages/shared/src/payments-types.js";
+import { PAYMENT_ERROR_CODES } from "../../../../../packages/shared/src/payments-types.js";
+import { getLedgerPort } from "./ledger.port.js";
+import {
+  buildInvoiceJournalLines,
+  buildInvoiceSnapshot,
+  buildVatBookRows,
+  customerRequiredFor,
+  FISCAL_REFLECTION_LINE_TYPES,
+  folioLinesFingerprint,
+  parseInvoiceSnapshot,
+  type SnapshotLineInput
+} from "./invoice-snapshot.js";
+import { writeIssuedVatBookRows } from "./vat-book.js";
 
 export type InvoiceLineDraft = {
   description: string;
@@ -128,6 +142,12 @@ export type InvoiceListItem = {
   // Tanda 3: VeriFactu desglose persisted in Invoice.taxBreakdownJson — the
   // single source for XML / PDF / UI. Empty on invoices created before Tanda 3.
   taxBreakdown: TaxBreakdownGroup[];
+  // Finanzas (2026-09-15): series the number was allocated in (FAC / SIM /
+  // REC), simplified-invoice flag (art. 4 RD 1619/2012) and whether the
+  // recipient had to be identified. Null / defaults on legacy rows.
+  seriesCode: string | null;
+  simplified: boolean;
+  customerRequired: boolean;
 };
 
 export type InvoiceRecord = InvoiceListItem & {
@@ -135,6 +155,9 @@ export type InvoiceRecord = InvoiceListItem & {
   // Issuer branding/legal block for rendering the invoice (logo + legal
   // disclaimer footer configured per property, plus the issuer fiscal data).
   issuer?: InvoiceIssuer;
+  // Finanzas (2026-09-15): the frozen document (Invoice.snapshotJson) of an
+  // issued invoice; null on drafts and on invoices issued before the column.
+  snapshot: InvoiceSnapshotV1 | null;
 };
 
 export type InvoiceIssuer = {
@@ -262,7 +285,7 @@ export function totalsForInvoiceLines(lines: Array<InvoiceLineTaxFields & { tota
 }
 
 /** Prisma Json input for Invoice.taxBreakdownJson. */
-function breakdownJson(breakdown: TaxBreakdownGroup[]): Prisma.InputJsonValue {
+export function breakdownJson(breakdown: TaxBreakdownGroup[]): Prisma.InputJsonValue {
   return breakdown as unknown as Prisma.InputJsonValue;
 }
 
@@ -361,7 +384,7 @@ export type ChainLink = {
  * the rest of the transaction: number allocation, previous-link lookup and
  * the write happen with no interleaving, so the chain cannot fork.
  */
-async function lockVerifactuChain(tx: Prisma.TransactionClient, propertyId: string): Promise<void> {
+export async function lockVerifactuChain(tx: Prisma.TransactionClient, propertyId: string): Promise<void> {
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${propertyId}::text || ':verifactu-chain'))`;
 }
 
@@ -390,7 +413,7 @@ const CHAIN_LINK_SELECT = {
   qrPayload: true
 } as const;
 
-async function findPreviousChainLink(tx: Pick<Prisma.TransactionClient, "invoice">, propertyId: string): Promise<ChainLink | null> {
+export async function findPreviousChainLink(tx: Pick<Prisma.TransactionClient, "invoice">, propertyId: string): Promise<ChainLink | null> {
   const lastAlta = await tx.invoice.findFirst({
     where: { propertyId, deletedAt: null, verifactuHash: { not: null }, issuedAt: { not: null } },
     orderBy: [{ issuedAt: "desc" }, { id: "desc" }],
@@ -427,7 +450,7 @@ async function findPreviousChainLink(tx: Pick<Prisma.TransactionClient, "invoice
 }
 
 /** Audit / event fields describing the previous chain link (null fields on the first record). */
-function previousLinkFields(previous: ChainLink | null): {
+export function previousLinkFields(previous: ChainLink | null): {
   previousInvoiceId: string | null;
   previousRegistroType: ChainLinkKind | null;
   previousInvoiceNumber: string | null;
@@ -570,7 +593,10 @@ function toListItem(row: InvoiceRow, paid: PaidSummary | undefined): InvoiceList
     rectificationType: row.rectificationType === "S" || row.rectificationType === "I" ? row.rectificationType : null,
     cancellationHash: row.cancellationHash ?? null,
     warnings: parseInvoiceWarnings(row.warningsJson),
-    taxBreakdown: parseTaxBreakdown(row.taxBreakdownJson)
+    taxBreakdown: parseTaxBreakdown(row.taxBreakdownJson),
+    seriesCode: row.seriesCode ?? null,
+    simplified: row.simplified,
+    customerRequired: row.customerRequired
   };
 }
 
@@ -643,11 +669,12 @@ async function hydrateInvoiceRecords(rows: InvoiceRow[]): Promise<InvoiceRecord[
   return rows.map((row) => ({
     ...toListItem(row, paid.get(row.id)),
     issuer: issuerBlock(identities.get(row.propertyId) ?? null, row),
-    lines: linesByInvoice.get(row.id) ?? []
+    lines: linesByInvoice.get(row.id) ?? [],
+    snapshot: parseInvoiceSnapshot(row.snapshotJson)
   }));
 }
 
-async function loadInvoice(invoiceId: string): Promise<InvoiceRecord> {
+export async function loadInvoice(invoiceId: string): Promise<InvoiceRecord> {
   const row = await prisma.invoice.findUnique({ where: { id: invoiceId } });
   if (!row) throw new NotFoundError("Factura no encontrada.");
   const [record] = await hydrateInvoiceRecords([row]);
@@ -1265,7 +1292,7 @@ export async function taxReadinessForInvoice(invoiceId: string): Promise<TaxRead
 }
 
 /** Persisted-line shape used by the folio / rectify paths before createMany. */
-type InvoiceLineData = {
+export type InvoiceLineData = {
   description: string;
   quantity: number;
   unitPrice: number;
@@ -1278,7 +1305,7 @@ type InvoiceLineData = {
 };
 
 /** InvoiceLine fields + warning input from a resolveTaxRate answer. */
-function lineFromResolvedRate(input: {
+export function lineFromResolvedRate(input: {
   lineType: string;
   description: string;
   quantity: number;
@@ -1351,7 +1378,13 @@ export async function createInvoiceFromFolio(input: {
   const blocking = findBlockingFolioInvoice([...linkedInvoices, ...legacyInvoices]);
   if (blocking) throw folioAlreadyInvoicedError(blocking);
 
-  const folioLines = await prisma.folioLine.findMany({ where: { folioId: folio.id } });
+  // Finanzas (2026-09-15): only live charges are invoiced — soft-deleted lines
+  // used to be dragged into the draft — and the folio reflections of fiscal
+  // documents (invoice_adjustment lines written by a rectificativa) are never
+  // invoiced themselves.
+  const folioLines = (await prisma.folioLine.findMany({ where: { folioId: folio.id, deletedAt: null }, orderBy: [{ postedAt: "asc" }, { id: "asc" }] })).filter(
+    (line) => !FISCAL_REFLECTION_LINE_TYPES.includes(line.type)
+  );
   if (folioLines.length === 0) throw new BadRequestError("El folio no tiene cargos que facturar.");
 
   // Tanda 3 (cierre): recipient snapshot for Destinatarios/NombreRazon. A
@@ -1422,6 +1455,15 @@ export async function createInvoiceFromFolio(input: {
     await tx.$queryRaw`SELECT id FROM folios WHERE id = ${folio.id} FOR UPDATE`;
     const concurrent = findBlockingFolioInvoice(await loadFolioInvoices(tx, folio.id));
     if (concurrent) throw folioAlreadyInvoicedError(concurrent);
+    // Draft-time freeze: the folio lines the draft was built from and their
+    // fingerprint. issueInvoice recomputes the fingerprint over the live folio
+    // and refuses (409 FOLIO_CHANGED_SINCE_DRAFT) when the charges moved.
+    const draftSnapshot: InvoiceDraftSnapshot = {
+      version: 1,
+      status: "draft",
+      folioLineIds: folioLines.map((line) => line.id),
+      folioFingerprint: folioLinesFingerprint(folioLines.map((line) => ({ ...line, quantity: dec(line.quantity), unitPrice: dec(line.unitPrice), total: dec(line.total) })))
+    };
     const invoice = await tx.invoice.create({
       data: {
         propertyId: reservation.propertyId,
@@ -1439,12 +1481,16 @@ export async function createInvoiceFromFolio(input: {
         folioId: folio.id,
         reservationId: folio.reservationId,
         taxBreakdownJson: breakdownJson(totals.breakdown),
-        warningsJson: warnings
+        warningsJson: warnings,
+        snapshotJson: draftSnapshot as unknown as Prisma.InputJsonValue,
+        simplified: (input.invoiceType ?? "F1") === "F2"
       }
     });
-    await tx.invoiceLine.createMany({
-      data: invoiceLinesData.map((l) => ({ invoiceId: invoice.id, ...l }))
-    });
+    // Lines are inserted in folio order; their cuid ids are time-sortable, so
+    // issueInvoice can pair InvoiceLine ↔ FolioLine by position (id asc).
+    for (const l of invoiceLinesData) {
+      await tx.invoiceLine.create({ data: { invoiceId: invoice.id, ...l } });
+    }
     return invoice;
   });
 
@@ -1474,6 +1520,67 @@ export async function createInvoiceFromFolio(input: {
   return loadInvoice(created.id);
 }
 
+/** Draft snapshot of an invoice row (folio lines it was built from), or null. Pure. */
+export function parseDraftSnapshot(value: unknown): InvoiceDraftSnapshot | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Partial<InvoiceDraftSnapshot>;
+  if (v.version !== 1 || v.status !== "draft" || !Array.isArray(v.folioLineIds) || typeof v.folioFingerprint !== "string") return null;
+  return v as InvoiceDraftSnapshot;
+}
+
+/** 409 when the folio changed since the draft was generated (details.code = FOLIO_CHANGED_SINCE_DRAFT). Pure. */
+export function folioChangedSinceDraftError(input: { invoiceId: string; folioId: string }): ConflictError {
+  return new ConflictError(
+    "Los cargos del folio han cambiado desde que se generó el borrador (líneas añadidas, modificadas o eliminadas): regenera el borrador antes de emitir.",
+    { code: PAYMENT_ERROR_CODES.FOLIO_CHANGED_SINCE_DRAFT, invoiceId: input.invoiceId, folioId: input.folioId }
+  );
+}
+
+/**
+ * 409 when the recipient must be identified on a simplified invoice above the
+ * art. 4 RD 1619/2012 limit (details.code = SIMPLIFIED_LIMIT_EXCEEDED). Pure.
+ */
+export function simplifiedLimitExceededError(input: { total: number; limit: number }): ConflictError {
+  return new ConflictError(
+    `Una factura simplificada sin identificar al cliente no puede superar ${input.limit.toFixed(2)} € (IVA incluido, art. 4 RD 1619/2012); esta suma ${input.total.toFixed(2)} €. Emite una factura completa (F1) o indica el NIF y nombre del cliente.`,
+    { code: PAYMENT_ERROR_CODES.SIMPLIFIED_LIMIT_EXCEEDED, total: input.total, limit: input.limit }
+  );
+}
+
+/**
+ * 409 when the series already carries invoices of another issuer NIF
+ * (details.code = ISSUER_TAX_ID_SERIES_MISMATCH). A series belongs to ONE
+ * issuer; a change of NIF opens a new series. Pure.
+ */
+export function issuerSeriesMismatchError(input: { series: string; year: number; seriesTaxId: string; currentTaxId: string; lastInvoiceNumber: string | null }): ConflictError {
+  return new ConflictError(
+    `La serie ${input.series}-${input.year} ya tiene facturas emitidas con el NIF ${input.seriesTaxId} (última: ${input.lastInvoiceNumber ?? "—"}) y el emisor configurado es ${input.currentTaxId}: una serie pertenece a un único emisor. Revisa el NIF en Configuración › Perfil del establecimiento o abre una serie nueva.`,
+    { code: PAYMENT_ERROR_CODES.ISSUER_TAX_ID_SERIES_MISMATCH, ...input }
+  );
+}
+
+/**
+ * Most recent invoice of the (property, series, year) issued with a real NIF
+ * (placeholder rows of the sandbox era are ignored), to enforce one issuer
+ * per series.
+ */
+async function findSeriesIssuerTaxId(tx: Pick<Prisma.TransactionClient, "invoice">, propertyId: string, series: InvoiceSeries, year: number): Promise<{ taxId: string; invoiceNumber: string | null } | null> {
+  const row = await tx.invoice.findFirst({
+    where: {
+      propertyId,
+      deletedAt: null,
+      issuedAt: { not: null },
+      issuerTaxId: { not: null },
+      issuerTaxIdPlaceholder: false,
+      invoiceNumber: { startsWith: `${series}-` },
+      OR: [{ invoiceNumber: { contains: `-${year}-` } }]
+    },
+    orderBy: [{ issuedAt: "desc" }, { id: "desc" }],
+    select: { issuerTaxId: true, invoiceNumber: true }
+  });
+  return row?.issuerTaxId ? { taxId: row.issuerTaxId, invoiceNumber: row.invoiceNumber } : null;
+}
+
 export async function issueInvoice(input: {
   context: UserContext;
   invoiceId: string;
@@ -1494,9 +1601,10 @@ export async function issueInvoice(input: {
   const customerName = cleanName(input.customerName) ?? cleanName(existing.customerName);
   if (recipientNameRequired(existing.invoiceType, existing.customerTaxId, customerName)) throw recipientNameMissingError();
 
-  // FISC-03: single source of the issuer NIF (409 in fiscal production mode
-  // without a valid NIF; flagged placeholder in sandbox). Snapshotted below so
-  // hash / QR / XML stay reproducible.
+  // FISC-03 (finanzas 2026-09-15): the issuer NIF is mandatory in every mode
+  // — 409 ISSUER_TAX_ID_MISSING without a checksum-valid NIF, never the
+  // B00000000 placeholder. Snapshotted below so hash / QR / XML stay
+  // reproducible.
   const issuer = await requireIssuerIdentity(existing.propertyId);
   const emitterTaxId = issuer.taxId;
   const fiscalMode = resolveFiscalMode();
@@ -1515,7 +1623,7 @@ export async function issueInvoice(input: {
   // CuotaTotal that enters the huella equals Σ CuotaRepercutida of the XML.
   // Drafts created before Tanda 3 (per-line rounding, no breakdown) get their
   // breakdown here; Tanda 3 drafts recompute to the identical values.
-  const lineRows = await prisma.invoiceLine.findMany({ where: { invoiceId: existing.id } });
+  const lineRows = await prisma.invoiceLine.findMany({ where: { invoiceId: existing.id }, orderBy: { id: "asc" } });
   const totals = totalsForInvoiceLines(lineRows.map((l) => ({ ...l, taxRate: dec(l.taxRate), total: dec(l.total) })));
   if (lineRows.length > 0 && Math.abs(totals.total - dec(existing.total)) > CENT_TOLERANCE) {
     throw new ConflictError(
@@ -1525,7 +1633,15 @@ export async function issueInvoice(input: {
   const total = lineRows.length > 0 ? totals.total : dec(existing.total);
   const taxTotal = lineRows.length > 0 ? totals.taxTotal : dec(existing.taxTotal);
 
+  // Simplified invoice (F2): the recipient may be omitted only up to the
+  // art. 4 RD 1619/2012 limit (400 € · 3.000 € for pure F&B sales).
+  const requirement = customerRequiredFor({ invoiceType: existing.invoiceType, total, lines: lineRows });
+  if (requirement.required && existing.invoiceType === "F2" && !normalizeTaxId(existing.customerTaxId)) {
+    throw simplifiedLimitExceededError({ total, limit: requirement.limit ?? 400 });
+  }
+
   const series = seriesForInvoiceType(existing.invoiceType);
+  const draftSnapshot = parseDraftSnapshot(existing.snapshotJson);
 
   const issued = await prisma.$transaction(async (tx) => {
     // Chain lock: number allocation + previous link + write are serialised per
@@ -1535,9 +1651,29 @@ export async function issueInvoice(input: {
     if (!fresh || fresh.status !== "draft") {
       throw new ConflictError("Las facturas emitidas son inmutables: usa anulación, abono o rectificativa.");
     }
+
+    // Freeze check: the live folio must still match the draft (same lines,
+    // same amounts, none deleted). The folio row lock serialises this against
+    // concurrent charge posting for the rest of the transaction.
+    let folioLineIds: string[] = [];
+    if (existing.folioId && draftSnapshot) {
+      await tx.$queryRaw`SELECT id FROM folios WHERE id = ${existing.folioId} FOR UPDATE`;
+      const liveLines = (await tx.folioLine.findMany({ where: { folioId: existing.folioId, deletedAt: null } })).filter((line) => !FISCAL_REFLECTION_LINE_TYPES.includes(line.type));
+      const fingerprint = folioLinesFingerprint(liveLines.map((line) => ({ ...line, quantity: dec(line.quantity), unitPrice: dec(line.unitPrice), total: dec(line.total) })));
+      if (fingerprint !== draftSnapshot.folioFingerprint) throw folioChangedSinceDraftError({ invoiceId: existing.id, folioId: existing.folioId });
+      folioLineIds = draftSnapshot.folioLineIds;
+    }
+
     const issuedAt = new Date();
     const allocated = await allocateInvoiceNumber(tx, { propertyId: existing.propertyId, series, issuedAt });
     const invoiceNumber = allocated.invoiceNumber;
+
+    // One issuer per series: the series may not mix NIFs.
+    const seriesIssuer = await findSeriesIssuerTaxId(tx, existing.propertyId, series, allocated.year);
+    if (seriesIssuer && seriesIssuer.taxId !== emitterTaxId) {
+      throw issuerSeriesMismatchError({ series, year: allocated.year, seriesTaxId: seriesIssuer.taxId, currentTaxId: emitterTaxId, lastInvoiceNumber: seriesIssuer.invoiceNumber });
+    }
+
     const previous = await findPreviousChainLink(tx, existing.propertyId);
     const { canonical, hash } = computeVerifactuHash({
       emitterTaxId,
@@ -1556,6 +1692,31 @@ export async function issueInvoice(input: {
       preProduction: issuer.fiscalMode !== "production"
     });
 
+    // The frozen document: lines (with their folio line ids), totals and the
+    // group breakdown. PDF, VAT books and the journal read this, never the folio.
+    const snapshotLines: SnapshotLineInput[] = lineRows.map((l, index) => ({
+      folioLineId: folioLineIds.length === lineRows.length ? (folioLineIds[index] ?? null) : null,
+      description: l.description,
+      quantity: dec(l.quantity),
+      unitPrice: dec(l.unitPrice),
+      total: dec(l.total),
+      taxCode: l.taxCode,
+      taxRate: dec(l.taxRate),
+      taxCategory: l.taxCategory,
+      taxCalificacion: l.taxCalificacion,
+      taxFigure: l.taxFigure
+    }));
+    const snapshot = buildInvoiceSnapshot({
+      issuedAt,
+      currencyCode: existing.currencyCode ?? "EUR",
+      lines: snapshotLines,
+      totals: { total, taxTotal },
+      breakdown: lineRows.length > 0 ? totals.breakdown : parseTaxBreakdown(existing.taxBreakdownJson),
+      folioLineIds,
+      issuer: { taxId: emitterTaxId, legalName: issuer.legalName },
+      customer: { type: existing.customerType, taxId: normalizeTaxId(existing.customerTaxId), name: customerName }
+    });
+
     const updated = await tx.invoice.update({
       where: { id: existing.id },
       data: {
@@ -1565,17 +1726,52 @@ export async function issueInvoice(input: {
         customerName,
         total,
         taxTotal,
-        taxBreakdownJson: breakdownJson(totals.breakdown),
+        taxBreakdownJson: breakdownJson(lineRows.length > 0 ? totals.breakdown : parseTaxBreakdown(existing.taxBreakdownJson)),
         warningsJson: issueWarnings,
         verifactuHash: hash,
         previousInvoiceHash: previous?.hash ?? null,
         qrPayload: qrUrl,
         issuerTaxId: emitterTaxId,
         issuerLegalName: issuer.legalName,
-        issuerTaxIdPlaceholder: issuer.placeholder
+        issuerTaxIdPlaceholder: issuer.placeholder,
+        snapshotJson: snapshot as unknown as Prisma.InputJsonValue,
+        seriesCode: series,
+        simplified: existing.invoiceType === "F2",
+        customerRequired: requirement.required
       }
     });
-    return { invoice: updated, canonical, hash, previous, year: allocated.year, sequenceId: allocated.sequenceId };
+
+    // Libro de facturas emitidas (same transaction as the document).
+    await writeIssuedVatBookRows(tx, {
+      organizationId: input.context.organizationId,
+      propertyId: existing.propertyId,
+      sourceType: existing.invoiceType === "F2" ? "simplified" : "invoice",
+      sourceId: existing.id,
+      date: issuedAt,
+      series,
+      number: invoiceNumber,
+      counterpartyNif: snapshot.customer.taxId,
+      counterpartyName: customerName,
+      rows: buildVatBookRows(snapshot.taxBreakdown)
+    });
+
+    // Canonical rule «Factura emitida»: D 4300 / H 705.x / H 477.tipo [/ H 4759].
+    const posted = await getLedgerPort().postJournalEntry(
+      {
+        organizationId: input.context.organizationId,
+        propertyId: existing.propertyId,
+        sourceType: "invoice",
+        sourceId: existing.id,
+        entryDate: issuedAt,
+        description: `Factura ${invoiceNumber} · ${customerName ?? existing.customerType}`,
+        reference: invoiceNumber,
+        createdBy: input.context.userId,
+        currencyCode: existing.currencyCode ?? "EUR",
+        lines: buildInvoiceJournalLines(snapshot, invoiceNumber)
+      },
+      tx
+    );
+    return { invoice: updated, canonical, hash, previous, year: allocated.year, sequenceId: allocated.sequenceId, journalEntryId: posted.journalEntryId, snapshot };
   });
 
   const after = await loadInvoice(issued.invoice.id);
@@ -1605,7 +1801,11 @@ export async function issueInvoice(input: {
       issuerTaxIdPlaceholder: issuer.placeholder,
       customerName,
       fiscalMode: issuer.fiscalMode,
-      taxWarnings: issueWarnings
+      taxWarnings: issueWarnings,
+      journalEntryId: issued.journalEntryId,
+      folioLineIds: issued.snapshot.folioLineIds,
+      simplified: after.simplified,
+      customerRequired: after.customerRequired
     },
     correlationId: input.correlationId
   });
@@ -1635,6 +1835,9 @@ export async function issueInvoice(input: {
       verifactuHash: after.verifactuHash!,
       total: after.total,
       taxTotal: after.taxTotal,
+      reservationId: after.reservationId,
+      folioId: after.folioId,
+      journalEntryId: issued.journalEntryId,
       ...previousFields
     },
     actorType: "user",
@@ -1645,12 +1848,21 @@ export async function issueInvoice(input: {
   return after;
 }
 
+export type CancelInvoiceResult = InvoiceRecord & { cancellation: InvoiceCancellationPayments };
+
 export async function cancelInvoice(input: {
   context: UserContext;
   invoiceId: string;
   reason: string;
+  /**
+   * Finanzas (2026-09-15): the payments linked to the invoice are ALWAYS
+   * unlinked (they stay on the folio, available for the replacing invoice);
+   * with `refundPayments: true` every captured one is also refunded in full
+   * through the payments service (reversal payment + inverse entry).
+   */
+  refundPayments?: boolean;
   correlationId: string;
-}): Promise<InvoiceRecord> {
+}): Promise<CancelInvoiceResult> {
   requirePermissions(input.context, ["invoice.cancel"]);
   const existing = await prisma.invoice.findUnique({ where: { id: input.invoiceId } });
   if (!existing) throw new NotFoundError("Factura no encontrada.");
@@ -1671,6 +1883,9 @@ export async function cancelInvoice(input: {
   // invoice) compute and persist Invoice.cancellationHash inside the SAME
   // transaction, so the cancel and its huella commit together and the send
   // path reuses the stored hash instead of recomputing a different one.
+  // Finanzas (2026-09-15): the same transaction unlinks the payments, writes
+  // the counter-rows of the libro de emitidas and posts the inverse entry of
+  // the issuance entry (canonical rule «Anulación: inverso total»).
   const cancelled = await prisma.$transaction(async (tx) => {
     await lockVerifactuChain(tx, existing.propertyId);
     const fresh = await tx.invoice.findUnique({ where: { id: existing.id }, select: { status: true } });
@@ -1681,8 +1896,91 @@ export async function cancelInvoice(input: {
     if (!prepared) {
       throw new ConflictError("No se pudo generar el registro de anulación VeriFactu de la factura; revisa que esté emitida con número y huella.");
     }
-    return { hash: prepared.hash, canonical: prepared.canonical, cancelledAt, previous: prepared.previous, emitterTaxId: prepared.emitterTaxId };
+
+    // Payments never stay attached to a cancelled document: they go back to
+    // the folio (visible in its balance) so they can be reassigned or refunded.
+    const linked = await tx.payment.findMany({ where: { invoiceId: existing.id, deletedAt: null }, select: { id: true, status: true } });
+    if (linked.length > 0) {
+      await tx.payment.updateMany({ where: { invoiceId: existing.id, deletedAt: null }, data: { invoiceId: null } });
+    }
+    await tx.invoice.update({ where: { id: existing.id }, data: { paidAt: null } });
+
+    const snapshot = parseInvoiceSnapshot(existing.snapshotJson);
+    const breakdown = snapshot ? snapshot.taxBreakdown : parseTaxBreakdown(existing.taxBreakdownJson);
+    await writeIssuedVatBookRows(tx, {
+      organizationId: input.context.organizationId,
+      propertyId: existing.propertyId,
+      sourceType: existing.invoiceType === "F2" ? "simplified" : "invoice",
+      sourceId: `${existing.id}#anulacion`,
+      date: cancelledAt,
+      series: existing.seriesCode ?? seriesForInvoiceType(existing.invoiceType),
+      number: invoiceNumber,
+      counterpartyNif: normalizeTaxId(existing.customerTaxId),
+      counterpartyName: existing.customerName,
+      rows: buildVatBookRows(breakdown),
+      negate: true
+    });
+
+    const reversal = await getLedgerPort().reverseJournalEntry(
+      {
+        organizationId: input.context.organizationId,
+        propertyId: existing.propertyId,
+        original: { sourceType: "invoice", sourceId: existing.id },
+        sourceType: "invoice_cancellation",
+        sourceId: existing.id,
+        entryDate: cancelledAt,
+        description: `Anulación factura ${invoiceNumber} · ${input.reason}`,
+        reference: invoiceNumber,
+        createdBy: input.context.userId
+      },
+      tx
+    );
+    return {
+      hash: prepared.hash,
+      canonical: prepared.canonical,
+      cancelledAt,
+      previous: prepared.previous,
+      emitterTaxId: prepared.emitterTaxId,
+      unlinkedPaymentIds: linked.map((p) => p.id),
+      capturedPaymentIds: linked.filter((p) => p.status === "captured").map((p) => p.id),
+      reversal
+    };
   });
+
+  // Optional refunds run AFTER the commit through the payments service (each
+  // one is its own transaction, idempotent by clientRequestId): a refund that
+  // fails never un-cancels the invoice, it is reported and can be retried.
+  const refundedPaymentIds: string[] = [];
+  if (input.refundPayments && cancelled.capturedPaymentIds.length > 0) {
+    const { refundFolioPayment } = await import("../payments/payments.service.js");
+    for (const paymentId of cancelled.capturedPaymentIds) {
+      try {
+        const refunded = await refundFolioPayment({
+          context: input.context,
+          paymentId,
+          reason: `Anulación de la factura ${invoiceNumber}: ${input.reason}`,
+          clientRequestId: `invoice-cancel:${existing.id}:${paymentId}`,
+          correlationId: input.correlationId
+        });
+        refundedPaymentIds.push(refunded.reversal.id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error(`[invoice.cancel] corr=${input.correlationId} invoice=${existing.id} payment=${paymentId}: refund failed: ${message}`);
+        recordAuditEvent({
+          organizationId: input.context.organizationId,
+          propertyId: existing.propertyId,
+          actorUserId: input.context.userId,
+          actorType: "system",
+          action: "INVOICE_CANCELLATION_REFUND_FAILED",
+          entityType: "payment",
+          entityId: paymentId,
+          afterJson: { invoiceId: existing.id, invoiceNumber, error: message },
+          correlationId: input.correlationId
+        });
+      }
+    }
+  }
+
   const after = await loadInvoice(existing.id);
   const emitterTaxId = cancelled.emitterTaxId;
   const previousFields = {
@@ -1690,19 +1988,34 @@ export async function cancelInvoice(input: {
     previousEmitterTaxId: cancelled.previous?.emitterTaxId ?? null,
     previousInvoiceHash: cancelled.previous?.hash ?? null
   };
+  let folioBalanceDue: number | null = null;
+  if (existing.folioId) {
+    const { getFolioBalance } = await import("../folio/folio.service.js");
+    folioBalanceDue = (await getFolioBalance(existing.folioId)).balanceDue;
+  }
+  const cancellation: InvoiceCancellationPayments = {
+    unlinkedPaymentIds: cancelled.unlinkedPaymentIds,
+    refundedPaymentIds,
+    folioId: existing.folioId ?? null,
+    folioBalanceDue
+  };
 
-  // Post reversal journal entry (DR revenue + DR VAT-output, CR customer A/R).
-  // Idempotent by (sourceType="invoice_cancellation", sourceId=invoiceId).
-  await postCancellationReversal({
-    organizationId: input.context.organizationId,
-    propertyId: existing.propertyId,
-    invoiceId: existing.id,
-    total: before.total,
-    taxTotal: before.taxTotal,
-    invoiceNumber: before.invoiceNumber,
-    actorUserId: input.context.userId,
-    reason: input.reason
-  });
+  if (cancelled.reversal.status === "no_original") {
+    // Legacy invoice issued before issuance posted an entry: there is nothing
+    // to reverse and nothing is invented (the old code posted a blind reversal
+    // that left the ledger negative).
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: existing.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "system",
+      action: "INVOICE_CANCELLATION_WITHOUT_ISSUE_ENTRY",
+      entityType: "invoice",
+      entityId: existing.id,
+      afterJson: { invoiceNumber, note: "La factura no tenía asiento de emisión: no se genera asiento de anulación." },
+      correlationId: input.correlationId
+    });
+  }
 
   recordAuditEvent({
     organizationId: input.context.organizationId,
@@ -1719,6 +2032,8 @@ export async function cancelInvoice(input: {
       cancellationHash: cancelled.hash,
       cancellationHashCanonical: cancelled.canonical,
       cancellationEmitterTaxId: emitterTaxId,
+      journalEntryId: cancelled.reversal.journalEntryId,
+      cancellation,
       ...previousFields
     },
     correlationId: input.correlationId
@@ -1737,6 +2052,8 @@ export async function cancelInvoice(input: {
       taxTotal: before.taxTotal,
       cancellationHash: cancelled.hash,
       cancelledAt: cancelled.cancelledAt.toISOString(),
+      unlinkedPaymentIds: cancellation.unlinkedPaymentIds,
+      refundedPaymentIds,
       ...previousFields
     },
     actorType: "user",
@@ -1769,106 +2086,7 @@ export async function cancelInvoice(input: {
     });
   }
 
-  return after;
-}
-
-/**
- * Best-effort reversal posting for a cancelled invoice. Mirrors the original
- * revenue posting in reverse (DR 705 net, DR 477 VAT, CR 4300 total).
- * Idempotent on (sourceType="invoice_cancellation", sourceId=invoiceId).
- * Silently degrades if the organization's chart of accounts is incomplete —
- * the cancellation itself still succeeds; the reversal is logged for follow-up.
- */
-async function postCancellationReversal(input: {
-  organizationId: string;
-  propertyId: string;
-  invoiceId: string;
-  total: number;
-  taxTotal: number;
-  invoiceNumber?: string;
-  actorUserId?: string;
-  reason: string;
-}): Promise<void> {
-  const sourceType = "invoice_cancellation";
-  try {
-    const existing = await prisma.journalEntry.findFirst({
-      where: { organizationId: input.organizationId, sourceType, sourceId: input.invoiceId },
-      select: { id: true }
-    });
-    if (existing) return;
-
-    const net = round(input.total - input.taxTotal);
-    const vat = round(input.taxTotal);
-    const total = round(input.total);
-    if (total === 0) return;
-
-    const lines: Array<{ accountCode: string; debit: number; credit: number; description: string }> = [];
-    if (net !== 0) {
-      lines.push({
-        accountCode: "705",
-        debit: net,
-        credit: 0,
-        description: `Reverse revenue (cancellation ${input.invoiceNumber ?? input.invoiceId})`
-      });
-    }
-    if (vat !== 0) {
-      lines.push({
-        accountCode: "477",
-        debit: vat,
-        credit: 0,
-        description: `Reverse VAT output (cancellation ${input.invoiceNumber ?? input.invoiceId})`
-      });
-    }
-    lines.push({
-      accountCode: "4300",
-      debit: 0,
-      credit: total,
-      description: `Reverse A/R (cancellation ${input.invoiceNumber ?? input.invoiceId})`
-    });
-
-    const codes = Array.from(new Set(lines.map((l) => l.accountCode)));
-    const accounts = await prisma.account.findMany({
-      where: { organizationId: input.organizationId, code: { in: codes } },
-      select: { id: true, code: true }
-    });
-    const codeToId = new Map(accounts.map((a) => [a.code, a.id]));
-    if (lines.some((l) => !codeToId.get(l.accountCode))) {
-      console.warn(
-        `[invoice.cancel] skipping reversal journal for invoice ${input.invoiceId}: chart accounts missing for org ${input.organizationId}`
-      );
-      return;
-    }
-
-    await prisma.$transaction(async (tx) => {
-      const entry = await tx.journalEntry.create({
-        data: {
-          organizationId: input.organizationId,
-          propertyId: input.propertyId,
-          sourceType,
-          sourceId: input.invoiceId,
-          status: "posted",
-          postedAt: new Date(),
-          createdBy: input.actorUserId ?? null,
-          entryKind: "reversal"
-        }
-      });
-      await tx.journalLine.createMany({
-        data: lines.map((line) => ({
-          journalEntryId: entry.id,
-          accountId: codeToId.get(line.accountCode)!,
-          debit: line.debit,
-          credit: line.credit,
-          currency: "EUR",
-          description: line.description
-        }))
-      });
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(
-      `[invoice.cancel] reversal posting failed for invoice ${input.invoiceId}: ${message}`
-    );
-  }
+  return { ...after, cancellation };
 }
 
 export type RectifyingReasonCode = "R1" | "R2" | "R3" | "R4" | "R5";
@@ -1899,6 +2117,19 @@ export type RectifyingSubstituteLine = {
   unitPrice: number;
   lineType?: string;
   taxCategory?: string | null;
+};
+
+/** Folio / payment side effects of a rectificativa (finanzas 2026-09-15). */
+export type RectifyInvoiceResult = InvoiceRecord & {
+  rectification: {
+    idempotent: boolean;
+    /** Amount reflected on the folio as an invoice_adjustment line (0 = none). */
+    folioDelta: number;
+    folioAdjustmentLineId: string | null;
+    relinkedPaymentIds: string[];
+    unlinkedPaymentIds: string[];
+    journalEntryId: string | null;
+  };
 };
 
 const DEFAULT_SUBSTITUTE_LINE_TYPE = "room";
@@ -1996,7 +2227,7 @@ export async function createRectifyingInvoice(input: {
   rectificationType?: RectificationType;
   substituteLines?: RectifyingSubstituteLine[];
   correlationId: string;
-}): Promise<InvoiceRecord> {
+}): Promise<RectifyInvoiceResult> {
   requirePermissions(input.context, ["invoice.issue"]);
 
   if (!["R1", "R2", "R3", "R4", "R5"].includes(input.reasonCode)) {
@@ -2024,7 +2255,7 @@ export async function createRectifyingInvoice(input: {
     where: { rectifyingForId: original.id, rectifyingReasonCode: input.reasonCode },
     select: { id: true }
   });
-  if (duplicate) return loadInvoice(duplicate.id);
+  if (duplicate) return { ...(await loadInvoice(duplicate.id)), rectification: { idempotent: true, folioDelta: 0, folioAdjustmentLineId: null, relinkedPaymentIds: [], unlinkedPaymentIds: [], journalEntryId: null } };
 
   const originalLines = await prisma.invoiceLine.findMany({ where: { invoiceId: original.id } });
   if (originalLines.length === 0) {
@@ -2104,6 +2335,21 @@ export async function createRectifyingInvoice(input: {
   const issuer = await requireIssuerIdentity(original.propertyId);
   const emitterTaxId = issuer.taxId;
 
+  // Folio reflection of the rectificativa (finanzas 2026-09-15):
+  //   · "I" with line adjustments → an `invoice_adjustment` folio line for the
+  //     delta (credit when negative), so the guest's balance follows the
+  //     corrected charges and a refund is due when it goes negative — visible,
+  //     never hidden; the payments stay on the rectified original;
+  //   · "S" (substitute) → the delta between substitute and original, and the
+  //     original's payments are relinked to the substitute (it is the live
+  //     document for the same charges);
+  //   · "I" full reversal (credit note) → no folio line: the charges are
+  //     un-invoiced (findBlockingFolioInvoice) and re-invoiced by the next
+  //     invoice; the original's payments are unlinked so the next invoice can
+  //     take them.
+  const fullReversal = rectificationType === "I" && (!!input.fullReversal || !input.lineAdjustments || input.lineAdjustments.length === 0);
+  const folioDelta = rectificationType === "S" ? round(total - dec(original.total)) : fullReversal ? 0 : total;
+
   const created = await prisma.$transaction(async (tx) => {
     await lockVerifactuChain(tx, original.propertyId);
     const fresh = await tx.invoice.findUnique({ where: { id: original.id }, select: { status: true } });
@@ -2111,6 +2357,10 @@ export async function createRectifyingInvoice(input: {
     const issuedAt = new Date();
     const allocated = await allocateInvoiceNumber(tx, { propertyId: original.propertyId, series: "REC", issuedAt });
     const invoiceNumber = allocated.invoiceNumber;
+    const seriesIssuer = await findSeriesIssuerTaxId(tx, original.propertyId, "REC", allocated.year);
+    if (seriesIssuer && seriesIssuer.taxId !== emitterTaxId) {
+      throw issuerSeriesMismatchError({ series: "REC", year: allocated.year, seriesTaxId: seriesIssuer.taxId, currentTaxId: emitterTaxId, lastInvoiceNumber: seriesIssuer.invoiceNumber });
+    }
 
     // Hash chain: link to the most recent record (alta or anulación) of the property.
     const previous = await findPreviousChainLink(tx, original.propertyId);
@@ -2129,6 +2379,17 @@ export async function createRectifyingInvoice(input: {
       issuedAt: issuedAt.toISOString(),
       invoiceTotal: total,
       preProduction: issuer.fiscalMode !== "production"
+    });
+
+    const snapshot = buildInvoiceSnapshot({
+      issuedAt,
+      currencyCode: original.currencyCode ?? "EUR",
+      lines: rectLines.map((l) => ({ ...l, folioLineId: null })),
+      totals: { total, taxTotal },
+      breakdown: totals.breakdown,
+      folioLineIds: [],
+      issuer: { taxId: emitterTaxId, legalName: issuer.legalName },
+      customer: { type: original.customerType, taxId: normalizeTaxId(original.customerTaxId), name: original.customerName }
     });
 
     const invoice = await tx.invoice.create({
@@ -2159,13 +2420,17 @@ export async function createRectifyingInvoice(input: {
         reservationId: original.reservationId,
         issuerTaxId: emitterTaxId,
         issuerLegalName: issuer.legalName,
-        issuerTaxIdPlaceholder: issuer.placeholder
+        issuerTaxIdPlaceholder: issuer.placeholder,
+        snapshotJson: snapshot as unknown as Prisma.InputJsonValue,
+        seriesCode: "REC",
+        simplified: false,
+        customerRequired: true
       }
     });
 
-    await tx.invoiceLine.createMany({
-      data: rectLines.map((l) => ({ invoiceId: invoice.id, ...l }))
-    });
+    for (const l of rectLines) {
+      await tx.invoiceLine.create({ data: { invoiceId: invoice.id, ...l } });
+    }
 
     // Mark the original as rectified.
     await tx.invoice.update({
@@ -2173,7 +2438,106 @@ export async function createRectifyingInvoice(input: {
       data: { status: "rectified" }
     });
 
-    return { invoice, canonical, hash, previous, year: allocated.year, sequenceId: allocated.sequenceId };
+    // Libro de emitidas: negative rows on a credit rectificativa, deltas otherwise.
+    await writeIssuedVatBookRows(tx, {
+      organizationId: input.context.organizationId,
+      propertyId: original.propertyId,
+      sourceType: "rectification",
+      sourceId: invoice.id,
+      date: issuedAt,
+      series: "REC",
+      number: invoiceNumber,
+      counterpartyNif: snapshot.customer.taxId,
+      counterpartyName: original.customerName,
+      rows: buildVatBookRows(snapshot.taxBreakdown)
+    });
+
+    // A substitute invoice ("S") replaces the original document entirely: the
+    // original's issue entry is reversed and its VAT rows countered, then the
+    // substitute posts its own full lines (no double revenue).
+    if (rectificationType === "S") {
+      const originalSnapshot = parseInvoiceSnapshot(original.snapshotJson);
+      await writeIssuedVatBookRows(tx, {
+        organizationId: input.context.organizationId,
+        propertyId: original.propertyId,
+        sourceType: original.invoiceType === "F2" ? "simplified" : "invoice",
+        sourceId: `${original.id}#sustituida`,
+        date: issuedAt,
+        series: original.seriesCode ?? seriesForInvoiceType(original.invoiceType),
+        number: original.invoiceNumber,
+        counterpartyNif: normalizeTaxId(original.customerTaxId),
+        counterpartyName: original.customerName,
+        rows: buildVatBookRows(originalSnapshot ? originalSnapshot.taxBreakdown : parseTaxBreakdown(original.taxBreakdownJson)),
+        negate: true
+      });
+      await getLedgerPort().reverseJournalEntry(
+        {
+          organizationId: input.context.organizationId,
+          propertyId: original.propertyId,
+          original: { sourceType: "invoice", sourceId: original.id },
+          // Same key the accounting projection uses for a superseded invoice.
+          sourceType: "invoice_rectification",
+          sourceId: `${invoice.id}:supersedes:${original.id}`,
+          entryDate: issuedAt,
+          description: `Reversión factura ${original.invoiceNumber ?? original.id} sustituida por ${invoiceNumber}`,
+          reference: original.invoiceNumber,
+          createdBy: input.context.userId
+        },
+        tx
+      );
+    }
+
+    // Canonical rule «Rectificativa»: the same lines in the opposite direction
+    // (negative amounts flip the side), proportional to the rectified amounts;
+    // a substitute posts its full lines after the original was reversed above.
+    const posted = await getLedgerPort().postJournalEntry(
+      {
+        organizationId: input.context.organizationId,
+        propertyId: original.propertyId,
+        sourceType: "invoice_rectification",
+        sourceId: invoice.id,
+        entryDate: issuedAt,
+        description: `Rectificativa ${invoiceNumber} (${input.reasonCode}) de ${original.invoiceNumber ?? original.id}`,
+        reference: invoiceNumber,
+        createdBy: input.context.userId,
+        currencyCode: original.currencyCode ?? "EUR",
+        lines: buildInvoiceJournalLines(snapshot, invoiceNumber)
+      },
+      tx
+    );
+
+    // Folio reflection + payment linkage (see the note above the transaction).
+    let folioAdjustmentLineId: string | null = null;
+    let relinkedPaymentIds: string[] = [];
+    let unlinkedPaymentIds: string[] = [];
+    if (original.folioId) {
+      if (folioDelta !== 0) {
+        const line = await tx.folioLine.create({
+          data: {
+            folioId: original.folioId,
+            type: "invoice_adjustment",
+            description: `${folioDelta < 0 ? "Abono" : "Cargo"} por factura rectificativa ${invoiceNumber} (rectifica ${original.invoiceNumber ?? original.id})`,
+            quantity: 1,
+            unitPrice: folioDelta,
+            total: folioDelta,
+            taxCode: null,
+            taxCategory: null,
+            postedBy: input.context.userId
+          }
+        });
+        folioAdjustmentLineId = line.id;
+      }
+      const linked = await tx.payment.findMany({ where: { invoiceId: original.id, deletedAt: null }, select: { id: true } });
+      if (linked.length > 0 && rectificationType === "S") {
+        await tx.payment.updateMany({ where: { invoiceId: original.id, deletedAt: null }, data: { invoiceId: invoice.id } });
+        relinkedPaymentIds = linked.map((p) => p.id);
+      } else if (linked.length > 0 && fullReversal) {
+        await tx.payment.updateMany({ where: { invoiceId: original.id, deletedAt: null }, data: { invoiceId: null } });
+        unlinkedPaymentIds = linked.map((p) => p.id);
+      }
+    }
+
+    return { invoice, canonical, hash, previous, year: allocated.year, sequenceId: allocated.sequenceId, journalEntryId: posted.journalEntryId, folioAdjustmentLineId, relinkedPaymentIds, unlinkedPaymentIds };
   });
 
   const after = await loadInvoice(created.invoice.id);
@@ -2200,13 +2564,18 @@ export async function createRectifyingInvoice(input: {
       total: after.total,
       taxTotal: after.taxTotal,
       taxBreakdown: after.taxBreakdown,
-      fullReversal: !!input.fullReversal,
+      fullReversal,
       hashCanonical: created.canonical,
       issuerTaxId: emitterTaxId,
       issuerLegalName: issuer.legalName,
       issuerTaxIdPlaceholder: issuer.placeholder,
       fiscalMode: issuer.fiscalMode,
-      taxWarnings: warnings
+      taxWarnings: warnings,
+      journalEntryId: created.journalEntryId,
+      folioDelta,
+      folioAdjustmentLineId: created.folioAdjustmentLineId,
+      relinkedPaymentIds: created.relinkedPaymentIds,
+      unlinkedPaymentIds: created.unlinkedPaymentIds
     },
     correlationId: input.correlationId
   });
@@ -2235,7 +2604,17 @@ export async function createRectifyingInvoice(input: {
     correlationId: input.correlationId
   });
 
-  return after;
+  return {
+    ...after,
+    rectification: {
+      idempotent: false,
+      folioDelta,
+      folioAdjustmentLineId: created.folioAdjustmentLineId,
+      relinkedPaymentIds: created.relinkedPaymentIds,
+      unlinkedPaymentIds: created.unlinkedPaymentIds,
+      journalEntryId: created.journalEntryId
+    }
+  };
 }
 
 export async function listRectifyingInvoices(originalInvoiceId: string): Promise<InvoiceRecord[]> {

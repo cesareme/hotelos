@@ -1,28 +1,48 @@
-// Point-of-sale (TPV) — outlets + tickets with charge-to-room.
+// Point-of-sale (TPV) — outlets + tickets settled to the room, in cash or by card.
 //
 // Tanda 2 · FISC-05 / FISC-10: tickets are Prisma-first. A ticket IS a PosOrder
 // row (+ PosOrderLine rows, same id): the board, the tenancy resolver and the
 // cash summary (pos-cash-closure.service.ts) all read `pos_orders`, so POS
 // sales survive restarts and are shared by every API instance on the same
-// database. Closing a ticket persists settlement / closedAt / closedByUserId on
-// the row in the SAME transaction as the folio charge when it is settled to the
-// room, so a cash count can never see a closed ticket without its charge (or
-// the reverse).
+// database.
 //
-// The only in-memory state left is the synthetic demo board: five invented
-// tickets seeded for the two demo properties (prop_123 / prop_456) so a fresh
-// demo is never empty. They are flagged `synthetic: true`, are NEVER served for
-// a real property (FISC-10) and are materialised into Prisma the first time
-// they are written to (line added / closed) — from then on Prisma is the
-// source and the mirror copy is ignored.
+// Finanzas (2026-09-15, lote «pos-noche»):
+//   · The synthetic in-memory demo board (five invented tickets for prop_123 /
+//     prop_456) is GONE: a board shows persisted tickets or nothing — an
+//     invented ticket is invented revenue in a cash count, whatever the
+//     property (the «33 comandas cerradas» of the diagnosis never existed in
+//     pos_orders: they could only have come from the in-memory mirror).
+//   · Closing a ticket settles it in ONE transaction:
+//       room → one FolioLine per tax group (10 % hostelería / 21 % alcoholic
+//              beverages and general services), typed by the outlet
+//              (restaurant / bar / room_service / minibar / spa…), NO journal
+//              entry until the folio is invoiced;
+//       cash | card → simplified invoice through the invoicing lote
+//              (invoicing/simplified-invoice.service createSimplifiedInvoice:
+//              F2, series SIM, VeriFactu chain, one VAT-book row per rate and
+//              the journal entry D 570|5721 / H 705.x / H 477.tipo, idempotent
+//              by posOrderId), then the PosOrder is closed carrying
+//              invoiceId / journalEntryId / taxTotal / businessDate. No
+//              Payment row is created (there is no folio).
+//   · Sales in cash/card are refused (409 CASH_CLOSURE_CLOSED) once the cash
+//     closure of that outlet — or the property-wide one — is closed for the
+//     business day.
+//   · `?status` on the board listing is honoured (open | closed | all).
+// Money: Prisma.Decimal inside; the wire keeps plain 2-decimal numbers.
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
-import { getReservationFolio } from "../folio/folio.service.js";
+import { Prisma as PrismaRuntime } from "@prisma/client";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { resolveTaxRate } from "../accounting/tax-rate.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
+import type { SimplifiedInvoiceResult } from "../invoicing/simplified-invoice.service.js";
+import { computePosTicketTax, folioLineTypeForOutlet, type PosRateTable, type PosTaxCategory, type PosTaxableLine, type PosTicketTax } from "./pos-tax.js";
+import { findBlockingCashClosureTx } from "./pos-cash-closure.service.js";
+
+const Decimal = PrismaRuntime.Decimal;
 
 export type PosSettlement = "room" | "cash" | "card";
 export const POS_SETTLEMENTS: readonly PosSettlement[] = ["room", "cash", "card"];
@@ -48,24 +68,40 @@ function ticketAlreadyClosed(ticketId: string): ConflictError {
 }
 
 export type PosOutlet = { id: string; name: string; category: string };
-export type PosLine = { name: string; quantity: number; unitPrice: number; total: number };
+export type PosLine = {
+  name: string;
+  quantity: number;
+  unitPrice: number;
+  total: number;
+  productId?: string | null;
+  /** Resolved at close (cash/card/room); absent on open tickets. */
+  taxCategory?: PosTaxCategory;
+  alcohol?: boolean;
+};
+export type PosTicketStatus = "open" | "closed";
 export type PosTicket = {
   id: string;
   propertyId: string;
   /** Board outlet id (`out_<outletType>`), shared across properties — see resolveOutletRowId. */
   outletId: string;
   outletName: string;
-  status: "open" | "closed";
+  status: PosTicketStatus;
   roomNumber?: string;
   lines: PosLine[];
+  /** Gross total (tax included). */
   total: number;
+  /** Tax included in `total`; 0 on open tickets and on legacy rows closed before this contract. */
+  taxTotal: number;
   settlement?: PosSettlement;
   createdAt: string;
   closedAt?: string;
   /** User who closed the ticket; null on rows closed before this column existed. */
   closedByUserId?: string | null;
-  /** Invented demo ticket (seeded board of prop_123 / prop_456). Never real revenue. */
-  synthetic?: boolean;
+  businessDate?: string | null;
+  invoiceId?: string | null;
+  invoiceNumber?: string | null;
+  journalEntryId?: string | null;
+  cashClosureId?: string | null;
 };
 
 const OUTLET_DEFS: { code: string; name: string }[] = [
@@ -92,73 +128,6 @@ function outletName(outletId: string): string {
   return OUTLET_DEFS.find((o) => boardOutletId(o.code) === outletId)?.name ?? outletId;
 }
 
-// ── Synthetic demo board (FISC-10) ───────────────────────────────────────────
-// Demo tickets exist ONLY for the two synthetic demo properties. A real
-// property whose board is empty stays empty: an invented ticket on a real
-// hotel's board would be invented revenue in its cash count.
-const SYNTHETIC_DEMO_PROPERTY_IDS: ReadonlySet<string> = new Set(["prop_123", "prop_456"]);
-
-export function isSyntheticDemoProperty(propertyId: string): boolean {
-  return SYNTHETIC_DEMO_PROPERTY_IDS.has(propertyId);
-}
-
-const syntheticTickets: PosTicket[] = [];
-const syntheticTicketIds = new Set<string>();
-const seededProperties = new Set<string>();
-
-function seedSyntheticTickets(propertyId: string): void {
-  if (!isSyntheticDemoProperty(propertyId) || seededProperties.has(propertyId)) return;
-  seededProperties.add(propertyId);
-  const mk = (
-    code: string,
-    roomNumber: string | undefined,
-    lines: PosLine[],
-    status: "open" | "closed",
-    settlement?: PosSettlement,
-    minsAgo = 30
-  ): PosTicket => {
-    const created = new Date(Date.now() - minsAgo * 60_000).toISOString();
-    const outletId = boardOutletId(code);
-    return {
-      id: createId("pos"),
-      propertyId,
-      outletId,
-      outletName: outletName(outletId),
-      status,
-      roomNumber,
-      lines,
-      total: round2(lines.reduce((s, l) => s + l.total, 0)),
-      settlement,
-      createdAt: created,
-      closedAt: status === "closed" ? new Date(Date.now() - (minsAgo - 5) * 60_000).toISOString() : undefined,
-      closedByUserId: null,
-      synthetic: true
-    };
-  };
-  const line = (name: string, quantity: number, unitPrice: number): PosLine => ({ name, quantity, unitPrice, total: round2(quantity * unitPrice) });
-  const seeded = [
-    mk("restaurant", "204", [line("Menú del día", 2, 18.5), line("Copa de vino", 2, 4.5)], "open", undefined, 25),
-    mk("bar", undefined, [line("Caña", 3, 3), line("Ración de jamón", 1, 14)], "open", undefined, 12),
-    mk("roomservice", "312", [line("Club sándwich", 1, 16), line("Agua mineral", 2, 3)], "open", undefined, 8),
-    mk("cafe", undefined, [line("Café con leche", 2, 2.4), line("Tarta de queso", 1, 5.5)], "closed", "card", 95),
-    mk("restaurant", "118", [line("Cena carta", 2, 41)], "closed", "room", 140)
-  ];
-  for (const ticket of seeded) {
-    syntheticTickets.push(ticket);
-    syntheticTicketIds.add(ticket.id);
-  }
-}
-
-/** Synthetic (in-memory) ticket by id — used by the tenancy resolver as a fallback after Prisma. */
-export function findSyntheticPosTicket(ticketId: string): PosTicket | undefined {
-  return syntheticTickets.find((ticket) => ticket.id === ticketId);
-}
-
-function syntheticTicketsFor(propertyId: string): PosTicket[] {
-  seedSyntheticTickets(propertyId);
-  return syntheticTickets.filter((ticket) => ticket.propertyId === propertyId);
-}
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -169,6 +138,9 @@ function dec(value: Prisma.Decimal | number | null | undefined): number {
 }
 function lineTotal(lines: PosLine[]): number {
   return round2(lines.reduce((s, l) => s + l.total, 0));
+}
+function isoDay(date: Date | null | undefined): string | null {
+  return date ? date.toISOString().slice(0, 10) : null;
 }
 
 /**
@@ -189,7 +161,10 @@ export function zonedMidnight(year: number, month: number, day: number, timeZone
   return new Date(guess - tzOffsetMs(new Date(firstPass), timeZone));
 }
 
-function zonedParts(instant: Date, timeZone: string): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
+export type ZonedParts = { year: number; month: number; day: number; hour: number; minute: number; second: number };
+
+/** Wall-clock parts of `instant` in `timeZone`. */
+export function zonedParts(instant: Date, timeZone: string): ZonedParts {
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone,
     hourCycle: "h23",
@@ -212,6 +187,11 @@ function zonedParts(instant: Date, timeZone: string): { year: number; month: num
     minute: values.minute ?? 0,
     second: values.second ?? 0
   };
+}
+
+/** `YYYY-MM-DD` of a calendar day. */
+export function formatCalendarDay(day: { year: number; month: number; day: number }): string {
+  return `${String(day.year).padStart(4, "0")}-${String(day.month).padStart(2, "0")}-${String(day.day).padStart(2, "0")}`;
 }
 
 /** Offset of `timeZone` at `instant`, in ms (local wall clock minus UTC). */
@@ -246,6 +226,13 @@ export async function startOfBusinessDay(propertyId: string, now = new Date()): 
   return startOfDayInTimeZone(now, timeZone);
 }
 
+/** Business day of a sale: the property-local calendar day of the instant (UTC midnight Date for the @db.Date column + ISO string). */
+export function businessDayOf(instant: Date, timeZone: string): { iso: string; date: Date; parts: { year: number; month: number; day: number } } {
+  const p = zonedParts(instant, timeZone);
+  const parts = { year: p.year, month: p.month, day: p.day };
+  return { iso: formatCalendarDay(parts), date: new Date(Date.UTC(p.year, p.month - 1, p.day)), parts };
+}
+
 // ── Outlet rows ──────────────────────────────────────────────────────────────
 // PosOrder.outletId must reference a real Outlet row so the POS dashboard and
 // the cash summary can label revenue per outlet. The board uses synthetic ids
@@ -266,7 +253,7 @@ export async function loadOutletRows(propertyId: string): Promise<OutletRow[]> {
 }
 
 const outletRowIdCache = new Map<string, string>();
-async function resolveOutletRowId(propertyId: string, posOutletId: string): Promise<string> {
+export async function resolveOutletRowId(propertyId: string, posOutletId: string): Promise<string> {
   const code = outletCode(posOutletId);
   const cacheKey = `${propertyId}:${code}`;
   const cached = outletRowIdCache.get(cacheKey);
@@ -276,7 +263,9 @@ async function resolveOutletRowId(propertyId: string, posOutletId: string): Prom
   // has can back a ticket: an arbitrary slug used to create a persistent
   // Outlet row named after the typo.
   if (!existing && !OUTLET_DEFS.some((o) => o.code === code)) {
-    throw new NotFoundError("Punto de venta no encontrado.");
+    const error = new NotFoundError("Punto de venta no encontrado.");
+    error.details = { code: "POS_OUTLET_NOT_FOUND", outletId: posOutletId };
+    throw error;
   }
   const outlet =
     existing ??
@@ -299,18 +288,18 @@ type PosOrderRow = Prisma.PosOrderGetPayload<Record<string, never>>;
 type PosOrderLineRow = Prisma.PosOrderLineGetPayload<Record<string, never>>;
 
 /** Board statuses. Anything else (voided/cancelled…) is not a ticket to settle or count. */
-function boardStatus(status: string): "open" | "closed" | null {
+function boardStatus(status: string): PosTicketStatus | null {
   return status === "open" ? "open" : status === "closed" ? "closed" : null;
 }
 
 function mapLine(row: PosOrderLineRow): PosLine {
-  return { name: row.description, quantity: dec(row.quantity), unitPrice: dec(row.unitPrice), total: dec(row.total) };
+  return { name: row.description, quantity: dec(row.quantity), unitPrice: dec(row.unitPrice), total: dec(row.total), productId: row.productId ?? null };
 }
 
 /**
- * Hydrates PosOrder rows of ONE property into board tickets with three batched
- * queries (lines, outlets, rooms) — never per row. Rows written before the
- * `room_number` column existed fall back to the linked Room's number.
+ * Hydrates PosOrder rows of ONE property into board tickets with batched
+ * queries (lines, outlets, rooms, invoices) — never per row. Rows written
+ * before the `room_number` column existed fall back to the linked Room's number.
  */
 async function hydrateTickets(propertyId: string, orders: PosOrderRow[]): Promise<PosTicket[]> {
   const visible = orders.filter((order) => order.propertyId === propertyId && boardStatus(order.status) !== null);
@@ -319,12 +308,16 @@ async function hydrateTickets(propertyId: string, orders: PosOrderRow[]): Promis
   const missingRoomIds = Array.from(
     new Set(visible.filter((order) => !order.roomNumber && order.roomId).map((order) => order.roomId as string))
   );
-  const [lineRows, outletRows, roomRows] = await Promise.all([
+  const invoiceIds = Array.from(new Set(visible.map((order) => order.invoiceId).filter((id): id is string => Boolean(id))));
+  const [lineRows, outletRows, roomRows, invoiceRows] = await Promise.all([
     prisma.posOrderLine.findMany({ where: { posOrderId: { in: ids } }, orderBy: { id: "asc" }, take: 5000 }),
     loadOutletRows(propertyId),
     missingRoomIds.length > 0
       ? prisma.room.findMany({ where: { id: { in: missingRoomIds } }, select: { id: true, number: true } })
-      : Promise.resolve([] as Array<{ id: string; number: string }>)
+      : Promise.resolve([] as Array<{ id: string; number: string }>),
+    invoiceIds.length > 0
+      ? prisma.invoice.findMany({ where: { id: { in: invoiceIds } }, select: { id: true, invoiceNumber: true } })
+      : Promise.resolve([] as Array<{ id: string; invoiceNumber: string | null }>)
   ]);
   const linesByOrder = new Map<string, PosLine[]>();
   for (const row of lineRows) {
@@ -334,13 +327,14 @@ async function hydrateTickets(propertyId: string, orders: PosOrderRow[]): Promis
   }
   const outletById = new Map(outletRows.map((row) => [row.id, row]));
   const roomNumberById = new Map(roomRows.map((row) => [row.id, row.number]));
+  const invoiceNumberById = new Map(invoiceRows.map((row) => [row.id, row.invoiceNumber]));
 
   return visible.map((order) => {
     const outlet = outletById.get(order.outletId);
     // An orphan outlet FK keeps the raw id so the ticket is still visible and attributable.
     const outletId = outlet ? boardOutletId(outlet.outletType) : order.outletId;
     const roomNumber = order.roomNumber ?? (order.roomId ? roomNumberById.get(order.roomId) : undefined) ?? undefined;
-    const status = boardStatus(order.status) as "open" | "closed";
+    const status = boardStatus(order.status) as PosTicketStatus;
     return {
       id: order.id,
       propertyId: order.propertyId,
@@ -350,63 +344,34 @@ async function hydrateTickets(propertyId: string, orders: PosOrderRow[]): Promis
       roomNumber,
       lines: linesByOrder.get(order.id) ?? [],
       total: dec(order.total),
+      taxTotal: dec(order.taxTotal),
       settlement: isPosSettlement(order.settlement) ? order.settlement : undefined,
       createdAt: order.createdAt.toISOString(),
       closedAt: order.closedAt?.toISOString(),
       closedByUserId: status === "closed" ? order.closedByUserId : undefined,
-      ...(syntheticTicketIds.has(order.id) ? { synthetic: true } : {})
+      businessDate: isoDay(order.businessDate),
+      invoiceId: order.invoiceId ?? null,
+      invoiceNumber: order.invoiceId ? (invoiceNumberById.get(order.invoiceId) ?? null) : null,
+      journalEntryId: order.journalEntryId ?? null,
+      cashClosureId: order.cashClosureId ?? null
     };
   });
 }
 
-/** Prisma-first ticket lookup; synthetic demo tickets not yet materialised are the fallback. */
-async function loadTicket(ticketId: string): Promise<PosTicket | null> {
+type LoadedTicket = { order: PosOrderRow; ticket: PosTicket; outlet: OutletRow | null };
+
+/** Prisma-first ticket lookup (row + board view + outlet row). */
+async function loadTicketRow(ticketId: string): Promise<LoadedTicket | null> {
   const row = await prisma.posOrder.findUnique({ where: { id: ticketId } });
-  if (row) {
-    const [ticket] = await hydrateTickets(row.propertyId, [row]);
-    return ticket ?? null;
-  }
-  return findSyntheticPosTicket(ticketId) ?? null;
+  if (!row) return null;
+  const [ticket] = await hydrateTickets(row.propertyId, [row]);
+  if (!ticket) return null;
+  const outlet = await prisma.outlet.findUnique({ where: { id: row.outletId }, select: { id: true, outletType: true, name: true } });
+  return { order: row, ticket, outlet };
 }
 
-/**
- * Guarantees the PosOrder row behind a ticket exists (same id). New tickets
- * are persisted at open; synthetic demo tickets are materialised here (order +
- * their current lines + settlement snapshot) the first time they are written to.
- */
-async function ensurePosOrderRow(ticket: PosTicket): Promise<void> {
-  const existing = await prisma.posOrder.findUnique({ where: { id: ticket.id }, select: { id: true } });
-  if (existing) return;
-  const outletRowId = await resolveOutletRowId(ticket.propertyId, ticket.outletId);
-  const roomId = await findRoomId(ticket.propertyId, ticket.roomNumber);
-  await prisma.$transaction(async (tx) => {
-    await tx.posOrder.create({
-      data: {
-        id: ticket.id,
-        propertyId: ticket.propertyId,
-        outletId: outletRowId,
-        roomId,
-        roomNumber: ticket.roomNumber ?? null,
-        status: ticket.status,
-        total: ticket.total,
-        settlement: ticket.settlement ?? null,
-        closedAt: ticket.closedAt ? new Date(ticket.closedAt) : null,
-        closedByUserId: ticket.closedByUserId ?? null,
-        createdAt: new Date(ticket.createdAt)
-      }
-    });
-    if (ticket.lines.length > 0) {
-      await tx.posOrderLine.createMany({
-        data: ticket.lines.map((line) => ({
-          posOrderId: ticket.id,
-          description: line.name,
-          quantity: line.quantity,
-          unitPrice: line.unitPrice,
-          total: line.total
-        }))
-      });
-    }
-  });
+async function loadTicket(ticketId: string): Promise<PosTicket | null> {
+  return (await loadTicketRow(ticketId))?.ticket ?? null;
 }
 
 // ── Public API ───────────────────────────────────────────────────────────────
@@ -414,7 +379,11 @@ export function listPosOutlets(_propertyId: string): PosOutlet[] {
   return OUTLET_DEFS.map((o) => ({ id: boardOutletId(o.code), name: o.name, category: o.code }));
 }
 
+export type PosTicketListStatus = "open" | "closed" | "all";
+
 export type ListPosTicketsOptions = {
+  /** open (only pending tickets) · closed (only closed since `closedFrom`) · all (default: both). */
+  status?: PosTicketListStatus;
   /** Closed tickets are listed from this instant on; default = start of the property's current business day. */
   closedFrom?: Date;
   /** Cap on closed tickets returned (1..500, default 200). Open tickets are always all returned (cap 500). */
@@ -432,50 +401,56 @@ function sortBoard(a: PosTicket, b: PosTicket): number {
 
 /**
  * Board tickets of a property from Prisma: every open ticket plus the tickets
- * closed since `closedFrom` (default: today, property-local). Synthetic demo
- * tickets are appended ONLY for prop_123 / prop_456 and only while they are
- * not materialised (a persisted copy always wins).
+ * closed since `closedFrom` (default: today, property-local), filtered by
+ * `status`. Nothing is invented for an empty board.
  */
 export async function listPosTickets(propertyId: string, options: ListPosTicketsOptions = {}): Promise<PosTicket[]> {
+  const status = options.status ?? "all";
   const closedFrom = options.closedFrom ?? (await startOfBusinessDay(propertyId));
   const closedLimit = Math.min(MAX_BOARD_TICKETS, Math.max(1, Math.floor(options.closedLimit ?? DEFAULT_CLOSED_LIMIT)));
   const [openRows, closedRows] = await Promise.all([
-    prisma.posOrder.findMany({
-      where: { propertyId, status: "open" },
-      orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-      take: MAX_BOARD_TICKETS
-    }),
-    prisma.posOrder.findMany({
-      where: { propertyId, status: "closed", closedAt: { gte: closedFrom } },
-      orderBy: [{ closedAt: "desc" }, { id: "desc" }],
-      take: closedLimit
-    })
+    status === "closed"
+      ? Promise.resolve([] as PosOrderRow[])
+      : prisma.posOrder.findMany({
+          where: { propertyId, status: "open" },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          take: MAX_BOARD_TICKETS
+        }),
+    status === "open"
+      ? Promise.resolve([] as PosOrderRow[])
+      : prisma.posOrder.findMany({
+          where: { propertyId, status: "closed", closedAt: { gte: closedFrom } },
+          orderBy: [{ closedAt: "desc" }, { id: "desc" }],
+          take: closedLimit
+        })
   ]);
   const persisted = await hydrateTickets(propertyId, [...openRows, ...closedRows]);
-  const persistedIds = new Set(persisted.map((ticket) => ticket.id));
-  const synthetic = syntheticTicketsFor(propertyId).filter((ticket) => !persistedIds.has(ticket.id));
-  return [...persisted, ...synthetic].sort(sortBoard);
+  return persisted.sort(sortBoard);
 }
 
 export async function openPosTicket(input: { propertyId: string; outletId: string; roomNumber?: string }): Promise<PosTicket> {
   const outletId = typeof input.outletId === "string" ? input.outletId.trim() : "";
   if (!outletId) throw new BadRequestError("Indica el punto de venta de la comanda.");
-  const ticket: PosTicket = {
-    id: createId("pos"),
-    propertyId: input.propertyId,
-    outletId,
-    outletName: outletName(outletId),
-    status: "open",
-    roomNumber: input.roomNumber?.trim() || undefined,
-    lines: [],
-    total: 0,
-    createdAt: nowIso()
-  };
-  await ensurePosOrderRow(ticket);
-  return (await loadTicket(ticket.id)) ?? ticket;
+  const outletRowId = await resolveOutletRowId(input.propertyId, outletId);
+  const roomNumber = input.roomNumber?.trim() || undefined;
+  const roomId = await findRoomId(input.propertyId, roomNumber);
+  const created = await prisma.posOrder.create({
+    data: {
+      id: createId("pos"),
+      propertyId: input.propertyId,
+      outletId: outletRowId,
+      roomId,
+      roomNumber: roomNumber ?? null,
+      status: "open",
+      total: 0,
+      taxTotal: 0,
+      createdAt: new Date(nowIso())
+    }
+  });
+  return (await loadTicket(created.id)) as PosTicket;
 }
 
-export async function addPosLine(input: { ticketId: string; name: string; quantity: number; unitPrice: number }): Promise<PosTicket> {
+export async function addPosLine(input: { ticketId: string; name: string; quantity: number; unitPrice: number; productId?: string | null }): Promise<PosTicket> {
   const ticket = await loadTicket(input.ticketId);
   if (!ticket) throw new NotFoundError("Comanda no encontrada.");
   if (ticket.status !== "open") throw ticketAlreadyClosed(ticket.id);
@@ -485,13 +460,22 @@ export async function addPosLine(input: { ticketId: string; name: string; quanti
   const line: PosLine = { name: (input.name ?? "").trim() || "Consumo", quantity: qty, unitPrice: unit, total: round2(qty * unit) };
   const newTotal = lineTotal([...ticket.lines, line]);
 
-  await ensurePosOrderRow(ticket);
-  // Best-effort product link so the dashboard's "top products" can attribute
-  // the sale when a configured PosProduct matches the free-text line name.
-  const product = await prisma.posProduct.findFirst({
-    where: { propertyId: ticket.propertyId, name: { equals: line.name, mode: "insensitive" } },
-    select: { id: true }
-  });
+  // Catalogue link: an explicit productId must belong to the property; without
+  // one, a configured PosProduct with the same name (case-insensitive) is
+  // linked so the sale takes its fiscal class (alcohol → 21 %) and the
+  // dashboard's "top products" can attribute it.
+  let productId: string | null = null;
+  if (input.productId) {
+    const product = await prisma.posProduct.findFirst({ where: { id: input.productId, propertyId: ticket.propertyId }, select: { id: true } });
+    if (!product) throw new NotFoundError("Artículo del catálogo no encontrado.");
+    productId = product.id;
+  } else {
+    const product = await prisma.posProduct.findFirst({
+      where: { propertyId: ticket.propertyId, name: { equals: line.name, mode: "insensitive" } },
+      select: { id: true }
+    });
+    productId = product?.id ?? null;
+  }
   await prisma.$transaction(async (tx) => {
     // Re-check under the transaction: a concurrent close must not gain a line.
     const stillOpen = await tx.posOrder.updateMany({ where: { id: ticket.id, status: "open" }, data: { total: newTotal } });
@@ -499,7 +483,7 @@ export async function addPosLine(input: { ticketId: string; name: string; quanti
     await tx.posOrderLine.create({
       data: {
         posOrderId: ticket.id,
-        productId: product?.id ?? null,
+        productId,
         description: line.name,
         quantity: line.quantity,
         unitPrice: line.unitPrice,
@@ -511,17 +495,17 @@ export async function addPosLine(input: { ticketId: string; name: string; quanti
 }
 
 type RoomChargeTarget = { roomId: string; reservationId: string; folioId: string };
-type PostedFolioLine = { id: string; folioId: string; total: number; postedAt: Date; taxCategory: PosTaxCategory };
+type PostedFolioLine = { id: string; folioId: string; type: string; total: number; postedAt: Date; taxCategory: PosTaxCategory; description: string };
 
 /** Fiscal category of a room charge (Tanda 3): food & beverage outlets vs general services (spa, shop…). */
-export type PosTaxCategory = "food_beverage" | "general_services";
+export type PosTaxCategoryLegacy = PosTaxCategory;
 
 // Outlet types whose tickets are restaurant / bar / room-service consumption
 // (hostelería: IVA 10 %, IGIC 7 %, IPSI 2 %). Anything else (spa, shop,
 // laundry…) is a general service (IVA 21 %, IGIC 7 %, IPSI 4 %).
 const FOOD_BEVERAGE_OUTLET_TYPES: ReadonlySet<string> = new Set(["restaurant", "bar", "cafe", "cafeteria", "roomservice", "room_service", "minibar", "breakfast"]);
 
-/** Tax category a ticket takes when charged to the room, from its outlet type. Pure. */
+/** Tax category a ticket takes by default from its outlet type (alcoholic beverages override it per line). Pure. */
 export function taxCategoryForOutlet(outletType: string | null | undefined): PosTaxCategory {
   const code = (outletType ?? "").trim().toLowerCase();
   return FOOD_BEVERAGE_OUTLET_TYPES.has(code) ? "food_beverage" : "general_services";
@@ -535,36 +519,101 @@ export function taxCategoryForOutlet(outletType: string | null | undefined): Pos
  * `postFolioLine({ ..., tx })`. The post-commit side effects it performs
  * (routing, audit event, domain event) are replayed by closePosTicket.
  *
- * Tanda 3: the line keeps the historical type "minibar" (posting rules and
- * reports key on it) but carries FolioLine.taxCategory derived from the
- * outlet — food_beverage for restaurant / bar / café / room service, else
- * general_services — which is what invoicing resolves the rate from.
+ * The line type follows the outlet (restaurant / bar / room_service / minibar
+ * / spa…, LINE_TYPE_CATEGORY of the catalogue) and FolioLine.taxCategory the
+ * tax group of the lines it carries (food_beverage 10 % / general_services
+ * 21 % for alcoholic beverages), which is what invoicing resolves the rate from.
  */
 async function postRoomChargeTx(
   tx: Prisma.TransactionClient,
-  input: { folioId: string; description: string; amount: number; postedBy: string; outletType?: string | null }
+  input: { folioId: string; type: string; description: string; amount: string; postedBy: string; taxCategory: PosTaxCategory }
 ): Promise<PostedFolioLine> {
   const folio = await tx.folio.findUnique({ where: { id: input.folioId }, select: { id: true, status: true } });
   if (!folio) throw new NotFoundError("El folio no existe.");
   if (folio.status !== "open") throw new ConflictError("El folio está cerrado; no admite más cargos ni movimientos.");
-  const total = round2(input.amount);
-  const taxCategory = taxCategoryForOutlet(input.outletType);
+  const total = new Decimal(input.amount).toDecimalPlaces(2, Decimal.ROUND_HALF_UP);
   const created = await tx.folioLine.create({
     data: {
       folioId: folio.id,
-      type: "minibar",
+      type: input.type,
       description: input.description,
       quantity: 1,
-      unitPrice: total,
+      unitPrice: total.toFixed(2),
       taxCode: null,
-      taxCategory,
-      total,
+      taxCategory: input.taxCategory,
+      total: total.toFixed(2),
       postedBy: input.postedBy
     },
     select: { id: true, folioId: true, total: true, postedAt: true }
   });
-  return { id: created.id, folioId: created.folioId, total: dec(created.total), postedAt: created.postedAt, taxCategory };
+  return { id: created.id, folioId: created.folioId, type: input.type, total: dec(created.total), postedAt: created.postedAt, taxCategory: input.taxCategory, description: input.description };
 }
+
+/** Rate table of the property for the two POS categories (catalogue / manual override, never UNKNOWN). Same lineType as the invoice lines so both resolve identically. */
+export async function resolvePosRates(propertyId: string, outletType: string | null | undefined, postingDate: Date): Promise<PosRateTable> {
+  const lineType = folioLineTypeForOutlet(outletType);
+  const [fb, gs] = await Promise.all([
+    resolveTaxRate({ propertyId, lineType, postingDate, taxCategory: "food_beverage" }),
+    resolveTaxRate({ propertyId, lineType, postingDate, taxCategory: "general_services" })
+  ]);
+  const spec = (r: typeof fb) => ({
+    ratePercent: r.ratePercent,
+    canonicalTaxCode: r.canonicalTaxCode,
+    rateCode: String(Math.round(r.ratePercent * 100) / 100),
+    figure: r.figure,
+    impuesto: r.impuesto,
+    calificacion: r.calificacion
+  });
+  return { food_beverage: spec(fb), general_services: spec(gs) };
+}
+
+/** Lines of a ticket with the catalogue data the taxation needs. */
+async function taxableLinesOf(ticket: PosTicket): Promise<PosTaxableLine[]> {
+  const productIds = Array.from(new Set(ticket.lines.map((line) => line.productId).filter((id): id is string => Boolean(id))));
+  const products = productIds.length
+    ? await prisma.posProduct.findMany({ where: { id: { in: productIds } }, select: { id: true, category: true, taxCode: true } })
+    : [];
+  const byId = new Map(products.map((p) => [p.id, p]));
+  return ticket.lines.map((line) => {
+    const product = line.productId ? byId.get(line.productId) : undefined;
+    return { name: line.name, quantity: line.quantity, unitPrice: line.unitPrice, total: line.total, productId: line.productId ?? null, productCategory: product?.category ?? null, productTaxCode: product?.taxCode ?? null };
+  });
+}
+
+function groupDescription(outletLabel: string, group: PosTicketTax["groups"][number]): string {
+  const items = group.lines.map((l) => `${l.quantity}× ${l.name}`).join(", ");
+  const suffix = group.lines.some((l) => l.alcohol) ? " (bebidas alcohólicas)" : "";
+  return `${outletLabel}${suffix}: ${items}`;
+}
+
+function cashClosureClosedError(businessDateIso: string, outletLabel: string, blocking: { id: string; outletId: string; status: string }): ConflictError {
+  const error = new ConflictError(
+    `La caja de ${blocking.outletId === "*" ? "recepción" : outletLabel} del ${businessDateIso} ya está cerrada (${blocking.status}): no admite más ventas al contado.`
+  );
+  error.details = { code: "CASH_CLOSURE_CLOSED", cashClosureId: blocking.id, businessDate: businessDateIso, status: blocking.status };
+  return error;
+}
+
+// One ticket closes at a time per process: createSimplifiedInvoice is
+// idempotent by posOrderId but its existence check runs before its
+// transaction, so two closers racing inside one API instance are serialised
+// here (across instances the optimistic close below still yields one 409;
+// the second invoice that race could leave is the residual risk, documented).
+const closingTickets = new Map<string, Promise<unknown>>();
+async function withTicketLock<T>(ticketId: string, run: () => Promise<T>): Promise<T> {
+  const previous = closingTickets.get(ticketId) ?? Promise.resolve();
+  const current = previous.catch(() => undefined).then(run);
+  closingTickets.set(ticketId, current);
+  try {
+    return await current;
+  } finally {
+    if (closingTickets.get(ticketId) === current) closingTickets.delete(ticketId);
+  }
+}
+
+type CloseOutcome =
+  | { kind: "room"; lines: PostedFolioLine[]; target: RoomChargeTarget }
+  | { kind: "sale"; invoice: SimplifiedInvoiceResult["invoice"]; journalEntryId: string; idempotent: boolean };
 
 export async function closePosTicket(input: {
   context: UserContext;
@@ -575,10 +624,21 @@ export async function closePosTicket(input: {
   if (!isPosSettlement(input.settlement)) {
     throw new BadRequestError("Forma de cobro no válida: usa room, cash o card.");
   }
-  const ticket = await loadTicket(input.ticketId);
-  if (!ticket) throw new NotFoundError("Comanda no encontrada.");
+  return withTicketLock(input.ticketId, () => closePosTicketLocked(input));
+}
+
+async function closePosTicketLocked(input: { context: UserContext; ticketId: string; settlement: PosSettlement; correlationId: string }): Promise<PosTicket> {
+  const loaded = await loadTicketRow(input.ticketId);
+  if (!loaded) throw new NotFoundError("Comanda no encontrada.");
+  const { ticket, order } = loaded;
   if (ticket.status !== "open") throw ticketAlreadyClosed(ticket.id);
   if (ticket.lines.length === 0) throw new BadRequestError("Añade al menos un consumo antes de cerrar.");
+  const outletType = loaded.outlet?.outletType ?? outletCode(ticket.outletId);
+  const outletLabel = ticket.outletName;
+
+  const property = await prisma.property.findUnique({ where: { id: ticket.propertyId }, select: { organizationId: true } });
+  if (!property) throw new NotFoundError("Propiedad no encontrada.");
+  const { timeZone } = await resolvePropertyTimeZone(ticket.propertyId);
 
   let target: RoomChargeTarget | null = null;
   if (input.settlement === "room") {
@@ -587,89 +647,163 @@ export async function closePosTicket(input: {
     const room = await prisma.room.findFirst({ where: { propertyId: ticket.propertyId, number: ticket.roomNumber }, select: { id: true } });
     if (!room) throw new NotFoundError(`No existe la habitación ${ticket.roomNumber}.`);
     const reservation = await prisma.reservation.findFirst({
-      where: { propertyId: ticket.propertyId, assignedRoomId: room.id, status: "checked_in" },
+      where: { propertyId: ticket.propertyId, assignedRoomId: room.id, status: "checked_in", deletedAt: null },
       select: { id: true }
     });
-    if (!reservation) throw new BadRequestError(`No hay ningún huésped alojado en la habitación ${ticket.roomNumber}.`);
+    if (!reservation) {
+      const error = new BadRequestError(`No hay ningún huésped alojado en la habitación ${ticket.roomNumber}.`);
+      error.details = { code: "POS_ROOM_NOT_OCCUPIED", roomNumber: ticket.roomNumber };
+      throw error;
+    }
+    // Lazy import (same reason as the invoicing service below): the folio
+    // engine pulls the invoicing graph at load time.
+    const { getReservationFolio } = await import("../folio/folio.service.js");
     const folio = await getReservationFolio(reservation.id);
     target = { roomId: room.id, reservationId: reservation.id, folioId: folio.folio.id };
   }
 
-  await ensurePosOrderRow(ticket);
   const closedAt = new Date();
-  const description = `${ticket.outletName}: ${ticket.lines.map((l) => `${l.quantity}× ${l.name}`).join(", ")}`;
+  const businessDay = businessDayOf(closedAt, timeZone);
+  const rates = await resolvePosRates(ticket.propertyId, outletType, closedAt);
+  const tax = computePosTicketTax(await taxableLinesOf(ticket), outletType, rates);
+
+  // Cash / card: the fiscal document first (invoicing lote: F2 + libro de
+  // emitidas + asiento D 570|5721 / H 705.x / H 477.tipo, idempotent by
+  // posOrderId), then the ticket is closed and linked. Pre-check the cash
+  // closure so no invoice is issued for a day whose count is signed.
+  let sale: SimplifiedInvoiceResult | null = null;
+  if (input.settlement !== "room") {
+    const blocking = await findBlockingCashClosureTx(prisma, ticket.propertyId, order.outletId, businessDay.date);
+    if (blocking) throw cashClosureClosedError(businessDay.iso, outletLabel, blocking);
+    const lineType = folioLineTypeForOutlet(outletType);
+    // Lazy import: keeps the POS module (imported by lib/tenancy.ts) free of
+    // the invoicing graph at load time; the fiscal document is only needed here.
+    const { createSimplifiedInvoice } = await import("../invoicing/simplified-invoice.service.js");
+    sale = await createSimplifiedInvoice({
+      context: input.context,
+      propertyId: ticket.propertyId,
+      paidWith: input.settlement === "cash" ? "cash" : "card_terminal",
+      posOrderId: ticket.id,
+      soldAt: closedAt,
+      correlationId: input.correlationId,
+      lines: tax.lines.map((line) => ({ description: line.name, quantity: line.quantity, unitPrice: line.unitPrice, lineType, taxCategory: line.taxCategory }))
+    });
+    // Cuadre: the ticket taxation and the invoice must agree to the cent.
+    const invoiceTotal = new Decimal(sale.invoice.total).toFixed(2);
+    const invoiceTax = new Decimal(sale.invoice.taxTotal).toFixed(2);
+    if (invoiceTotal !== tax.total || invoiceTax !== tax.taxTotal) {
+      throw new ConflictError(`La factura simplificada ${sale.invoice.invoiceNumber ?? sale.invoice.id} (${invoiceTotal} / IVA ${invoiceTax}) no cuadra con la comanda (${tax.total} / IVA ${tax.taxTotal}).`, {
+        code: "POS_INVOICE_MISMATCH",
+        invoiceId: sale.invoice.id,
+        ticketId: ticket.id
+      });
+    }
+  }
 
   // One transaction: the conditional update is the optimistic lock (a
   // concurrent close from another tab or API instance finds no open row and
-  // gets a 409 instead of a second charge), and the folio charge rides on the
+  // gets a 409 instead of a second charge), and the folio charges ride on the
   // same transaction so neither side can be committed without the other.
-  const posted = await prisma.$transaction(async (tx) => {
-    const closed = await tx.posOrder.updateMany({
-      where: { id: ticket.id, status: "open" },
-      data: {
-        status: "closed",
-        total: ticket.total,
-        settlement: input.settlement,
-        closedAt,
-        closedByUserId: input.context.userId,
-        roomNumber: ticket.roomNumber ?? null,
-        ...(target ? { roomId: target.roomId, reservationId: target.reservationId } : {})
+  const outcome = await prisma.$transaction(
+    async (tx): Promise<CloseOutcome> => {
+      if (sale) {
+        const blocking = await findBlockingCashClosureTx(tx, ticket.propertyId, order.outletId, businessDay.date);
+        if (blocking) throw cashClosureClosedError(businessDay.iso, outletLabel, blocking);
       }
-    });
-    if (closed.count === 0) throw ticketAlreadyClosed(ticket.id);
-    if (!target) return null;
-    return postRoomChargeTx(tx, {
-      folioId: target.folioId,
-      description,
-      amount: ticket.total,
-      postedBy: input.context.userId,
-      outletType: outletCode(ticket.outletId)
-    });
-  });
+      const closed = await tx.posOrder.updateMany({
+        where: { id: ticket.id, status: "open" },
+        data: {
+          status: "closed",
+          total: tax.total,
+          taxTotal: tax.taxTotal,
+          settlement: input.settlement,
+          closedAt,
+          closedByUserId: input.context.userId,
+          roomNumber: ticket.roomNumber ?? null,
+          businessDate: businessDay.date,
+          ...(target ? { roomId: target.roomId, reservationId: target.reservationId } : {}),
+          ...(sale ? { invoiceId: sale.invoice.id, journalEntryId: sale.journalEntryId || null } : {})
+        }
+      });
+      if (closed.count === 0) throw ticketAlreadyClosed(ticket.id);
+      if (sale) return { kind: "sale", invoice: sale.invoice, journalEntryId: sale.journalEntryId, idempotent: sale.idempotent };
 
-  if (posted && target) {
-    // Same post-commit side effects as folio.service postFolioLine.
-    try {
-      const { routeLine } = await import("../folio/folio-routing.service.js");
-      await routeLine({ lineId: posted.id, context: input.context, correlationId: input.correlationId });
-    } catch (error) {
-      console.warn(`[pos] Folio routing failed for line ${posted.id} (ticket ${ticket.id}); charge stays on the primary folio.`, error);
+      const lines: PostedFolioLine[] = [];
+      for (const group of tax.groups) {
+        lines.push(
+          await postRoomChargeTx(tx, {
+            folioId: (target as RoomChargeTarget).folioId,
+            type: folioLineTypeForOutlet(outletType),
+            description: groupDescription(outletLabel, group),
+            amount: group.total,
+            postedBy: input.context.userId,
+            taxCategory: group.taxCategory
+          })
+        );
+      }
+      return { kind: "room", lines, target: target as RoomChargeTarget };
+    },
+    { maxWait: 10_000, timeout: 30_000 }
+  );
+
+  if (outcome.kind === "room") {
+    // Same post-commit side effects as folio.service postFolioLine, per line.
+    for (const posted of outcome.lines) {
+      try {
+        const { routeLine } = await import("../folio/folio-routing.service.js");
+        await routeLine({ lineId: posted.id, context: input.context, correlationId: input.correlationId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`[pos] corr=${input.correlationId} folio routing failed for line ${posted.id} (ticket ${ticket.id}); charge stays on the primary folio: ${message}`);
+        recordAuditEvent({
+          organizationId: input.context.organizationId,
+          propertyId: ticket.propertyId,
+          actorUserId: input.context.userId,
+          actorType: "system",
+          action: "FOLIO_ROUTING_FAILED",
+          entityType: "folio_line",
+          entityId: posted.id,
+          afterJson: { lineId: posted.id, folioId: posted.folioId, lineType: posted.type, ticketId: ticket.id, error: message },
+          correlationId: input.correlationId
+        });
+      }
+      const finalLine = await prisma.folioLine.findUnique({ where: { id: posted.id } });
+      const lineJson = {
+        id: posted.id,
+        folioId: finalLine?.folioId ?? posted.folioId,
+        type: posted.type,
+        taxCategory: posted.taxCategory,
+        description: posted.description,
+        quantity: 1,
+        unitPrice: posted.total,
+        total: posted.total,
+        postedAt: (finalLine?.postedAt ?? posted.postedAt).toISOString(),
+        postedBy: input.context.userId,
+        posOrderId: ticket.id
+      };
+      recordAuditEvent({
+        organizationId: input.context.organizationId,
+        propertyId: ticket.propertyId,
+        actorUserId: input.context.userId,
+        actorType: "user",
+        action: "FOLIO_CHARGE_POSTED",
+        entityType: "folio_line",
+        entityId: posted.id,
+        afterJson: lineJson,
+        correlationId: input.correlationId
+      });
+      recordDomainEvent({
+        organizationId: input.context.organizationId,
+        propertyId: ticket.propertyId,
+        entityType: "folio",
+        entityId: lineJson.folioId,
+        eventType: "ChargePosted",
+        payload: { lineId: posted.id, total: posted.total, type: posted.type },
+        actorType: "user",
+        actorUserId: input.context.userId,
+        correlationId: input.correlationId
+      });
     }
-    const finalLine = await prisma.folioLine.findUnique({ where: { id: posted.id } });
-    const lineJson = {
-      id: posted.id,
-      folioId: finalLine?.folioId ?? posted.folioId,
-      type: "minibar",
-      taxCategory: posted.taxCategory,
-      description,
-      quantity: 1,
-      unitPrice: posted.total,
-      total: posted.total,
-      postedAt: (finalLine?.postedAt ?? posted.postedAt).toISOString(),
-      postedBy: input.context.userId
-    };
-    recordAuditEvent({
-      organizationId: input.context.organizationId,
-      propertyId: ticket.propertyId,
-      actorUserId: input.context.userId,
-      actorType: "user",
-      action: "FOLIO_CHARGE_POSTED",
-      entityType: "folio_line",
-      entityId: posted.id,
-      afterJson: lineJson,
-      correlationId: input.correlationId
-    });
-    recordDomainEvent({
-      organizationId: input.context.organizationId,
-      propertyId: ticket.propertyId,
-      entityType: "folio",
-      entityId: lineJson.folioId,
-      eventType: "ChargePosted",
-      payload: { lineId: posted.id, total: posted.total, type: "minibar" },
-      actorType: "user",
-      actorUserId: input.context.userId,
-      correlationId: input.correlationId
-    });
   }
 
   recordAuditEvent({
@@ -683,12 +817,19 @@ export async function closePosTicket(input: {
     afterJson: {
       outletId: ticket.outletId,
       settlement: input.settlement,
-      total: ticket.total,
+      total: tax.total,
+      taxTotal: tax.taxTotal,
+      taxGroups: tax.groups.map((g) => ({ taxCategory: g.taxCategory, ratePercent: g.ratePercent, base: g.base, quota: g.quota, total: g.total })),
+      businessDate: businessDay.iso,
       roomNumber: ticket.roomNumber ?? null,
       closedAt: closedAt.toISOString(),
       closedByUserId: input.context.userId,
-      folioLineId: posted?.id ?? null,
-      reservationId: target?.reservationId ?? null
+      folioLineIds: outcome.kind === "room" ? outcome.lines.map((l) => l.id) : [],
+      reservationId: outcome.kind === "room" ? outcome.target.reservationId : null,
+      invoiceId: outcome.kind === "sale" ? outcome.invoice.id : null,
+      invoiceNumber: outcome.kind === "sale" ? outcome.invoice.invoiceNumber ?? null : null,
+      journalEntryId: outcome.kind === "sale" ? outcome.journalEntryId || null : null,
+      invoiceReused: outcome.kind === "sale" ? outcome.idempotent : false
     },
     correlationId: input.correlationId
   });
@@ -696,7 +837,7 @@ export async function closePosTicket(input: {
   // F&B inventory consumption: try to decrement stock for any ticket lines
   // that match a configured MenuItem (case-insensitive). Best-effort — a
   // failure here must not block the ticket close (POS revenue is the
-  // priority, not inventory bookkeeping), but it must leave a trace.
+  // priority, not inventory bookkeeping), but it must leave a trace (QC-06).
   try {
     const { consumeStockForPosTicket } = await import("../fnb-inventory/fnb-inventory.service.js");
     await consumeStockForPosTicket({
@@ -706,18 +847,27 @@ export async function closePosTicket(input: {
       lines: ticket.lines.map((l) => ({ name: l.name, quantity: l.quantity }))
     });
   } catch (error) {
-    console.warn(
-      `[pos] Stock consumption failed for ticket ${ticket.id} (property ${ticket.propertyId}, outlet ${ticket.outletId}); ticket closed but inventory was not decremented.`,
-      error
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[pos] corr=${input.correlationId} stock consumption failed for ticket ${ticket.id} (property ${ticket.propertyId}, outlet ${ticket.outletId}); ticket closed but inventory was not decremented: ${message}`);
+    recordAuditEvent({
+      organizationId: input.context.organizationId,
+      propertyId: ticket.propertyId,
+      actorUserId: input.context.userId,
+      actorType: "system",
+      action: "POS_STOCK_CONSUMPTION_FAILED",
+      entityType: "pos_order",
+      entityId: ticket.id,
+      afterJson: { outletId: ticket.outletId, error: message },
+      correlationId: input.correlationId
+    });
   }
 
   return (await loadTicket(ticket.id)) as PosTicket;
 }
 
-// Cash summary lives in pos-cash-closure.service.ts (it depends on the outlet
-// and time-zone helpers above). Re-exported here because server.ts imports the
-// whole POS surface from this module; the cycle is safe — neither module reads
-// the other's bindings while evaluating.
+// Cash summary and cash closures live in pos-cash-closure.service.ts (they
+// depend on the outlet and time-zone helpers above). Re-exported here because
+// server.ts imports the whole POS surface from this module; the cycle is safe
+// — neither module reads the other's bindings while evaluating.
 export { getPosCashSummary, getCashSummary } from "./pos-cash-closure.service.js";
 export type { PosCashSummary, PosCashSummaryInput, PosCashSummaryQuery } from "./pos-cash-closure.service.js";

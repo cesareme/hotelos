@@ -11,3 +11,4 @@ export * from "./reservations.schemas.js";
 export * from "./folios.schemas.js";
 export * from "./guests.schemas.js";
 export * from "./finance.schemas.js";
+export * from "./payroll-commissions.schemas.js";

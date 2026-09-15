@@ -1,34 +1,28 @@
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
+import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { isIsoDate } from "../../lib/query-dates.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { ZERO, aggregateAccountBalances, dateOnlyUtc, isoDay, nextDay, postJournalEntry, reverseJournalEntry, type AccountBalanceRow } from "./accounting.service.js";
+import { buildClosingEntry, buildOpeningEntry, buildRegularizationEntry, RESULT_ACCOUNT, type YearBalance } from "./posting-rules.js";
 
 // ---------------------------------------------------------------------------
-// Spanish PGC year-end close
+// Spanish PGC year-end close (canonical rule «Regularización» of the runbook §2)
 // ---------------------------------------------------------------------------
 //
-// A Spanish ejercicio close requires THREE asientos at 31/12:
-//
-//   1) Asiento de regularización (entryKind = "regularization"):
-//      Closes the P&L accounts (6xx expenses + 7xx revenues) against
-//      cuenta 129 "Resultado del ejercicio".
-//        - DR 7xx (their credit balances)  → CR 129  (revenue side)
-//        - CR 6xx (their debit balances)   → DR 129  (expense side)
-//      The net plug on 129 is the year's result.
-//
-//   2) Asiento de cierre (entryKind = "closing"):
-//      Brings every account with a non-zero balance to zero at 31/12 by
-//      posting its inverse DR/CR. After regularization this includes assets,
-//      liabilities, equity (incl. 129 with its final result).
-//
-//   3) Asiento de apertura (entryKind = "opening"), posted at 1/1 of the
-//      NEXT year and stamped with the next year's fiscalYearId:
-//      Replicates the closing balances in their original DR/CR direction so
-//      the new year starts with the right opening balance per account.
-//
-// Cuenta 129 ends opening as 0; rolling its net into reservas (113 / 1130)
-// is a SEPARATE manual asiento, intentionally out of scope for this sprint.
-// ---------------------------------------------------------------------------
+// Three asientos through the ledger engine (numbered, dated, marked):
+//   1) Regularización (entryKind regularization, fecha = último día):
+//      6xx → 129 ← 7xx — the net on 129 is the result of the year.
+//   2) Cierre (closing, same date): every balance-sheet account (129 with
+//      the result included) to zero with its inverse.
+//   3) Apertura (opening, first day of the NEXT year, stamped with that
+//      year's fiscalYearId): the closing lines with their sides swapped.
+// Balances come from the diario by FECHA CONTABLE (entryDate, inclusive),
+// never by postedAt. Reopening REVERSES the three asientos (reversalOfId /
+// reversedById, entryKind reversal) — nothing is deleted — so a later close
+// starts clean and the trail keeps both.
+// Rolling 129 into reservas (113) is a separate manual asiento by design.
 
 export type FiscalYearStatus = "open" | "closing" | "closed";
 
@@ -65,7 +59,8 @@ export type FiscalYearStatusReport = FiscalYearRecord & {
 
 export type CloseFiscalYearResult = {
   fiscalYear: FiscalYearRecord;
-  regularizationEntryId: string;
+  /** null when the year had no P&L movement (nothing to regularise). */
+  regularizationEntryId: string | null;
   closingEntryId: string;
   openingEntryId: string;
   nextFiscalYearId?: string;
@@ -73,20 +68,8 @@ export type CloseFiscalYearResult = {
   followUps: string[];
 };
 
-const RESULT_ACCOUNT_CODE = "129";
+const RESULT_ACCOUNT_CODE = RESULT_ACCOUNT;
 const RESULT_ACCOUNT_NAME = "Resultado del ejercicio";
-
-function isoDate(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-function dateOnly(iso: string): Date {
-  return new Date(`${iso}T00:00:00.000Z`);
-}
-
-function round(n: number): number {
-  return Math.round(n * 100) / 100;
-}
 
 type FiscalYearRow = NonNullable<Awaited<ReturnType<typeof prisma.fiscalYear.findUnique>>>;
 
@@ -96,8 +79,8 @@ function mapYear(row: FiscalYearRow): FiscalYearRecord {
     organizationId: row.organizationId,
     propertyId: row.propertyId ?? undefined,
     code: row.code,
-    startDate: isoDate(row.startDate),
-    endDate: isoDate(row.endDate),
+    startDate: isoDay(row.startDate),
+    endDate: isoDay(row.endDate),
     status: row.status as FiscalYearStatus,
     closedAt: row.closedAt?.toISOString(),
     closingEntryId: row.closingEntryId ?? undefined,
@@ -106,6 +89,10 @@ function mapYear(row: FiscalYearRow): FiscalYearRecord {
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString()
   };
+}
+
+function yearConflict(code: string, message: string, extra: Record<string, unknown> = {}): ConflictError {
+  return new ConflictError(message, { ...extra, code });
 }
 
 // ---------------------------------------------------------------------------
@@ -135,16 +122,26 @@ export async function createFiscalYear(input: {
   correlationId: string;
 }): Promise<FiscalYearRecord> {
   requirePermissions(input.context, ["accounting.journal.post"]);
-  if (input.startDate >= input.endDate) {
-    throw new Error("startDate must be before endDate.");
-  }
+  if (!isIsoDate(input.startDate) || !isIsoDate(input.endDate)) throw new BadRequestError("startDate y endDate deben ser fechas YYYY-MM-DD.");
+  if (input.startDate >= input.endDate) throw new BadRequestError("startDate debe ser anterior a endDate.");
+  if (!input.code || input.code.length > 16) throw new BadRequestError("code es obligatorio (máximo 16 caracteres).");
+  const overlapping = await prisma.fiscalYear.findFirst({
+    where: {
+      organizationId: input.context.organizationId,
+      propertyId: input.propertyId ?? null,
+      startDate: { lte: dateOnlyUtc(input.endDate) },
+      endDate: { gte: dateOnlyUtc(input.startDate) }
+    },
+    select: { code: true }
+  });
+  if (overlapping) throw yearConflict("FISCAL_YEAR_OVERLAP", `El ejercicio se solapa con ${overlapping.code}.`, { yearCode: overlapping.code });
   const created = await prisma.fiscalYear.create({
     data: {
       organizationId: input.context.organizationId,
       propertyId: input.propertyId ?? null,
       code: input.code,
-      startDate: dateOnly(input.startDate),
-      endDate: dateOnly(input.endDate),
+      startDate: dateOnlyUtc(input.startDate),
+      endDate: dateOnlyUtc(input.endDate),
       status: "open"
     }
   });
@@ -162,57 +159,53 @@ export async function createFiscalYear(input: {
   return mapYear(created);
 }
 
+async function loadYear(context: UserContext, id: string): Promise<FiscalYearRow> {
+  const year = await prisma.fiscalYear.findUnique({ where: { id } });
+  if (!year || year.organizationId !== context.organizationId) throw new NotFoundError("Ejercicio fiscal no encontrado.");
+  return year;
+}
+
 export async function getFiscalYearStatus(input: {
   context: UserContext;
   id: string;
 }): Promise<FiscalYearStatusReport> {
-  const year = await prisma.fiscalYear.findUnique({ where: { id: input.id } });
-  if (!year) throw new Error("Fiscal year was not found.");
-
-  const periodWhere = {
-    organizationId: year.organizationId,
-    ...(year.propertyId ? { propertyId: year.propertyId } : {}),
-    startDate: { gte: year.startDate },
-    endDate: { lte: year.endDate }
-  } as const;
-
+  const year = await loadYear(input.context, input.id);
   const [openPeriods, draftJournals] = await Promise.all([
-    prisma.fiscalPeriod.count({ where: { ...periodWhere, status: { not: "closed" } } }),
+    prisma.fiscalPeriod.count({
+      where: {
+        organizationId: year.organizationId,
+        ...(year.propertyId ? { propertyId: year.propertyId } : {}),
+        startDate: { gte: year.startDate },
+        endDate: { lte: year.endDate },
+        status: { not: "closed" }
+      }
+    }),
     prisma.journalEntry.count({
       where: {
         organizationId: year.organizationId,
         ...(year.propertyId ? { propertyId: year.propertyId } : {}),
         status: "draft",
-        postedAt: { gte: year.startDate, lte: year.endDate }
+        entryDate: { gte: year.startDate, lte: year.endDate }
       }
     })
   ]);
 
-  // Preview the regularization lines so the UI can show what will be posted.
   const preview = await previewRegularization(year);
 
   const blockingChecks: FiscalYearStatusReport["blockingChecks"] = [];
   if (year.status === "closed") {
-    blockingChecks.push({ code: "ALREADY_CLOSED", message: `Year ${year.code} is already closed.`, severity: "error" });
+    blockingChecks.push({ code: "ALREADY_CLOSED", message: `El ejercicio ${year.code} ya está cerrado.`, severity: "error" });
   }
   if (openPeriods > 0) {
-    blockingChecks.push({
-      code: "OPEN_PERIODS",
-      message: `${openPeriods} fiscal period(s) within ${year.code} are not yet closed.`,
-      severity: "error"
-    });
+    blockingChecks.push({ code: "OPEN_PERIODS", message: `${openPeriods} periodo(s) fiscal(es) de ${year.code} siguen abiertos.`, severity: "error" });
   }
   if (draftJournals > 0) {
-    blockingChecks.push({
-      code: "DRAFT_JOURNALS",
-      message: `${draftJournals} draft journal entry/entries exist in ${year.code}.`,
-      severity: "error"
-    });
+    blockingChecks.push({ code: "DRAFT_JOURNALS", message: `Hay ${draftJournals} asiento(s) en borrador dentro de ${year.code}.`, severity: "error" });
   }
   if (preview.missingResultAccount) {
     blockingChecks.push({
       code: "MISSING_ACCOUNT_129",
-      message: `Cuenta ${RESULT_ACCOUNT_CODE} "${RESULT_ACCOUNT_NAME}" not found in chart of accounts. Seed it before closing.`,
+      message: `La cuenta ${RESULT_ACCOUNT_CODE} «${RESULT_ACCOUNT_NAME}» no existe en el plan de cuentas: provisiónalo antes de cerrar.`,
       severity: "error"
     });
   }
@@ -223,139 +216,62 @@ export async function getFiscalYearStatus(input: {
     draftJournals,
     hasOpenJournals: draftJournals > 0,
     blockingChecks,
-    netResultPreview: round(preview.netResult),
+    netResultPreview: preview.netResult,
     regularizationLinePreview: preview.lines
   };
 }
 
 // ---------------------------------------------------------------------------
-// Preview / aggregation helpers
+// Balances by fecha contable
 // ---------------------------------------------------------------------------
 
-type AccountBalance = {
-  accountId: string;
-  accountCode: string;
-  accountName: string;
-  accountType: string;
-  debit: number;
-  credit: number;
-};
+/** Balances of every account with movement in the year (normal + reversal entries; never the close itself). */
+async function balancesForYear(year: FiscalYearRow): Promise<AccountBalanceRow[]> {
+  return aggregateAccountBalances({
+    organizationId: year.organizationId,
+    propertyId: year.propertyId,
+    from: isoDay(year.startDate),
+    to: isoDay(year.endDate),
+    excludeKinds: ["regularization", "closing"]
+  });
+}
+
+function toYearBalances(rows: AccountBalanceRow[]): YearBalance[] {
+  return rows.map((row) => ({ accountCode: row.accountCode, accountName: row.accountName, kind: row.kind, debit: row.debit, credit: row.credit }));
+}
 
 type PreviewResult = {
   netResult: number;
-  lines: Array<{
-    accountCode: string;
-    accountName: string;
-    accountType: string;
-    debit: number;
-    credit: number;
-  }>;
+  lines: FiscalYearStatusReport["regularizationLinePreview"];
   missingResultAccount: boolean;
 };
 
-async function aggregateBalancesForYear(year: FiscalYearRow): Promise<AccountBalance[]> {
-  const entries = await prisma.journalEntry.findMany({
-    where: {
-      organizationId: year.organizationId,
-      ...(year.propertyId ? { propertyId: year.propertyId } : {}),
-      status: "posted",
-      entryKind: "normal",
-      postedAt: { gte: year.startDate, lte: year.endDate }
-    },
-    select: { id: true }
-  });
-  if (entries.length === 0) return [];
-
-  const lines = await prisma.journalLine.findMany({
-    where: { journalEntryId: { in: entries.map((e) => e.id) } }
-  });
-  const accountIds = Array.from(new Set(lines.map((l) => l.accountId)));
-  const accounts = await prisma.account.findMany({ where: { id: { in: accountIds } } });
-  const byId = new Map(accounts.map((a) => [a.id, a]));
-
-  const grouped = new Map<string, AccountBalance>();
-  for (const line of lines) {
-    const account = byId.get(line.accountId);
-    if (!account) continue;
-    const entry = grouped.get(account.id);
-    const debit = Number(line.debit);
-    const credit = Number(line.credit);
-    if (entry) {
-      entry.debit += debit;
-      entry.credit += credit;
-    } else {
-      grouped.set(account.id, {
-        accountId: account.id,
-        accountCode: account.code,
-        accountName: account.name,
-        accountType: account.accountType,
-        debit,
-        credit
-      });
-    }
-  }
-  return Array.from(grouped.values()).map((b) => ({
-    ...b,
-    debit: round(b.debit),
-    credit: round(b.credit)
-  }));
-}
-
 async function previewRegularization(year: FiscalYearRow): Promise<PreviewResult> {
-  const balances = await aggregateBalancesForYear(year);
-  const lines: PreviewResult["lines"] = [];
-  let revenueCredit = 0;
-  let expenseDebit = 0;
-  for (const bal of balances) {
-    const code1 = bal.accountCode.slice(0, 1);
-    if (code1 === "7" || bal.accountType === "revenue") {
-      // Revenue: natural credit balance. Reverse with a DR so it goes to 0.
-      const net = round(bal.credit - bal.debit);
-      if (Math.abs(net) < 0.005) continue;
-      lines.push({
-        accountCode: bal.accountCode,
-        accountName: bal.accountName,
-        accountType: bal.accountType,
-        debit: net > 0 ? net : 0,
-        credit: net < 0 ? -net : 0
-      });
-      revenueCredit += net;
-    } else if (code1 === "6" || bal.accountType === "expense") {
-      // Expense: natural debit balance. Reverse with a CR so it goes to 0.
-      const net = round(bal.debit - bal.credit);
-      if (Math.abs(net) < 0.005) continue;
-      lines.push({
-        accountCode: bal.accountCode,
-        accountName: bal.accountName,
-        accountType: bal.accountType,
-        debit: net < 0 ? -net : 0,
-        credit: net > 0 ? net : 0
-      });
-      expenseDebit += net;
-    }
-  }
-  const netResult = round(revenueCredit - expenseDebit);
-
-  // Resolve cuenta 129 to know whether the close can run at all.
+  const rows = await balancesForYear(year);
   const resultAccount = await prisma.account.findUnique({
     where: { organizationId_code: { organizationId: year.organizationId, code: RESULT_ACCOUNT_CODE } },
     select: { id: true, name: true }
   });
-
-  // Plug 129 into the preview so the UI shows the full balanced asiento.
-  if (Math.abs(netResult) >= 0.005) {
-    lines.push({
-      accountCode: RESULT_ACCOUNT_CODE,
-      accountName: resultAccount?.name ?? RESULT_ACCOUNT_NAME,
-      accountType: "equity",
-      // Profit: revenues > expenses → net plugs as CR 129 (equity ↑).
-      // Loss:   expenses > revenues → net plugs as DR 129 (equity ↓).
-      debit: netResult < 0 ? -netResult : 0,
-      credit: netResult > 0 ? netResult : 0
-    });
-  }
-
-  return { netResult, lines, missingResultAccount: !resultAccount };
+  const regularization = buildRegularizationEntry({
+    organizationId: year.organizationId,
+    propertyId: year.propertyId,
+    fiscalYearId: year.id,
+    yearCode: year.code,
+    entryDate: isoDay(year.endDate),
+    balances: toYearBalances(rows)
+  });
+  const nameByCode = new Map(rows.map((row) => [row.accountCode, { name: row.accountName, type: row.accountType }]));
+  return {
+    netResult: Number(regularization.netResult.toFixed(2)),
+    lines: regularization.lines.map((line) => ({
+      accountCode: line.accountCode,
+      accountName: line.accountCode === RESULT_ACCOUNT_CODE ? resultAccount?.name ?? RESULT_ACCOUNT_NAME : nameByCode.get(line.accountCode)?.name ?? "",
+      accountType: line.accountCode === RESULT_ACCOUNT_CODE ? "equity" : nameByCode.get(line.accountCode)?.type ?? "",
+      debit: Number(line.debit),
+      credit: Number(line.credit)
+    })),
+    missingResultAccount: !resultAccount
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -370,11 +286,9 @@ export async function closeFiscalYear(input: {
 }): Promise<CloseFiscalYearResult> {
   requirePermissions(input.context, ["accounting.journal.post", "ai.high_risk.confirm"]);
 
-  const year = await prisma.fiscalYear.findUnique({ where: { id: input.id } });
-  if (!year) throw new Error("Fiscal year was not found.");
-  if (year.status === "closed") throw new Error(`Fiscal year ${year.code} is already closed.`);
+  const year = await loadYear(input.context, input.id);
+  if (year.status === "closed") throw yearConflict("FISCAL_YEAR_ALREADY_CLOSED", `El ejercicio ${year.code} ya está cerrado.`, { yearCode: year.code });
 
-  // (a) All fiscal periods in the year must be closed.
   const openPeriodCount = await prisma.fiscalPeriod.count({
     where: {
       organizationId: year.organizationId,
@@ -385,261 +299,66 @@ export async function closeFiscalYear(input: {
     }
   });
   if (openPeriodCount > 0) {
-    throw new Error(`Cannot close ${year.code}: ${openPeriodCount} fiscal period(s) are still open.`);
+    throw yearConflict("FISCAL_YEAR_OPEN_PERIODS", `No se puede cerrar ${year.code}: ${openPeriodCount} periodo(s) fiscal(es) siguen abiertos.`, { openPeriods: openPeriodCount });
   }
-
-  // (b) No draft journal entry inside the year.
   const draftCount = await prisma.journalEntry.count({
     where: {
       organizationId: year.organizationId,
       ...(year.propertyId ? { propertyId: year.propertyId } : {}),
       status: "draft",
-      postedAt: { gte: year.startDate, lte: year.endDate }
+      entryDate: { gte: year.startDate, lte: year.endDate }
     }
   });
   if (draftCount > 0) {
-    throw new Error(`Cannot close ${year.code}: ${draftCount} draft journal entry/entries exist within the year.`);
+    throw yearConflict("FISCAL_YEAR_DRAFT_JOURNALS", `No se puede cerrar ${year.code}: hay ${draftCount} asiento(s) en borrador dentro del ejercicio.`, { drafts: draftCount });
   }
-
-  // (c) Aggregate balances for every account that had movement in normal entries.
-  const balances = await aggregateBalancesForYear(year);
-
-  // (d) Resolve cuenta 129. Without it we cannot post regularización/cierre.
   const resultAccount = await prisma.account.findUnique({
-    where: { organizationId_code: { organizationId: year.organizationId, code: RESULT_ACCOUNT_CODE } }
+    where: { organizationId_code: { organizationId: year.organizationId, code: RESULT_ACCOUNT_CODE } },
+    select: { id: true }
   });
   if (!resultAccount) {
-    throw new Error(
-      `Cuenta ${RESULT_ACCOUNT_CODE} "${RESULT_ACCOUNT_NAME}" is missing from the chart of accounts for organization ${year.organizationId}. Seed it before closing.`
-    );
+    throw yearConflict("MISSING_ACCOUNT_129", `La cuenta ${RESULT_ACCOUNT_CODE} «${RESULT_ACCOUNT_NAME}» no existe en el plan de cuentas de la organización: provisiónalo antes de cerrar.`);
   }
 
-  // Compute regularization lines + net result.
-  const regularizationLines: Array<{ accountId: string; debit: number; credit: number; description: string }> = [];
-  let revenueCredit = 0;
-  let expenseDebit = 0;
-  for (const bal of balances) {
-    const code1 = bal.accountCode.slice(0, 1);
-    if (code1 === "7" || bal.accountType === "revenue") {
-      const net = round(bal.credit - bal.debit);
-      if (Math.abs(net) < 0.005) continue;
-      regularizationLines.push({
-        accountId: bal.accountId,
-        debit: net > 0 ? net : 0,
-        credit: net < 0 ? -net : 0,
-        description: `Regularización ${year.code} — ${bal.accountCode} ${bal.accountName}`
-      });
-      revenueCredit += net;
-    } else if (code1 === "6" || bal.accountType === "expense") {
-      const net = round(bal.debit - bal.credit);
-      if (Math.abs(net) < 0.005) continue;
-      regularizationLines.push({
-        accountId: bal.accountId,
-        debit: net < 0 ? -net : 0,
-        credit: net > 0 ? net : 0,
-        description: `Regularización ${year.code} — ${bal.accountCode} ${bal.accountName}`
-      });
-      expenseDebit += net;
-    }
+  const balances = toYearBalances(await balancesForYear(year));
+  if (balances.length === 0) {
+    throw yearConflict("FISCAL_YEAR_NO_MOVEMENTS", `El ejercicio ${year.code} no tiene asientos: no hay nada que regularizar ni cerrar.`, { yearCode: year.code });
   }
-  const netResult = round(revenueCredit - expenseDebit);
-
-  // Plug cuenta 129 to balance the regularization asiento.
-  if (Math.abs(netResult) >= 0.005) {
-    regularizationLines.push({
-      accountId: resultAccount.id,
-      debit: netResult < 0 ? -netResult : 0,
-      credit: netResult > 0 ? netResult : 0,
-      description: `Regularización ${year.code} — 129 Resultado del ejercicio`
-    });
-  }
-
-  // After regularization, every account in `balances` that is a P&L account is
-  // logically at zero. We must now close everything else (assets, liabilities,
-  // equity) AND cuenta 129 with its new balance. Build the closing lines.
-  const closingLines: Array<{ accountId: string; debit: number; credit: number; description: string }> = [];
-  let closing129Net = netResult; // 129 starts the closing entry with the just-plugged net result
-  for (const bal of balances) {
-    const code1 = bal.accountCode.slice(0, 1);
-    const isPnl = code1 === "6" || code1 === "7" || bal.accountType === "revenue" || bal.accountType === "expense";
-    if (isPnl) continue;
-    const net = round(bal.debit - bal.credit); // signed: + = debit-side balance
-    if (Math.abs(net) < 0.005) continue;
-    closingLines.push({
-      accountId: bal.accountId,
-      // Inverse posting: a debit-side balance closes with a CR.
-      debit: net < 0 ? -net : 0,
-      credit: net > 0 ? net : 0,
-      description: `Cierre ${year.code} — ${bal.accountCode} ${bal.accountName}`
-    });
-    // If we happened to find prior 129 movements in `balances`, fold them in.
-    if (bal.accountId === resultAccount.id) {
-      closing129Net += -net; // bring its sign convention into our credit-natural 129 tracker
-    }
-  }
-  // Close cuenta 129 with the regularization-derived net result.
-  if (Math.abs(closing129Net) >= 0.005) {
-    closingLines.push({
-      accountId: resultAccount.id,
-      // 129 is credit-natural with a profit → credit balance → close with a DR.
-      debit: closing129Net > 0 ? closing129Net : 0,
-      credit: closing129Net < 0 ? -closing129Net : 0,
-      description: `Cierre ${year.code} — 129 Resultado del ejercicio`
-    });
-  }
-
-  // Opening (next year) mirrors the closing lines in their original DR/CR
-  // direction so balances are reinstated at 1/1.
-  const openingLines = closingLines.map((line) => ({
-    accountId: line.accountId,
-    debit: line.credit, // swap: closing-CR → opening-DR (reinstates a debit balance)
-    credit: line.debit,
-    description: line.description.replace("Cierre", "Apertura")
-  }));
-
-  // Resolve / create the next fiscal year (always — opening must land somewhere).
-  const nextYearStart = new Date(year.endDate);
-  nextYearStart.setUTCDate(nextYearStart.getUTCDate() + 1);
-  const nextYearEnd = new Date(nextYearStart);
-  nextYearEnd.setUTCFullYear(nextYearEnd.getUTCFullYear() + 1);
-  nextYearEnd.setUTCDate(nextYearEnd.getUTCDate() - 1);
-  const nextCode = String(Number(year.code) + 1);
+  const yearEnd = isoDay(year.endDate);
+  const regularization = buildRegularizationEntry({ organizationId: year.organizationId, propertyId: year.propertyId, fiscalYearId: year.id, yearCode: year.code, entryDate: yearEnd, balances });
+  const closing = buildClosingEntry({ organizationId: year.organizationId, propertyId: year.propertyId, fiscalYearId: year.id, yearCode: year.code, entryDate: yearEnd, balances, netResult: regularization.netResult });
+  const nextYearStart = nextDay(yearEnd);
+  const nextYearEndDate = dateOnlyUtc(nextYearStart);
+  nextYearEndDate.setUTCFullYear(nextYearEndDate.getUTCFullYear() + 1);
+  nextYearEndDate.setUTCDate(nextYearEndDate.getUTCDate() - 1);
+  const nextCode = /^\d+$/.test(year.code) ? String(Number(year.code) + 1) : `${year.code}+1`;
+  const opening = buildOpeningEntry(closing, { fiscalYearId: year.id, nextYearCode: nextCode, entryDate: nextYearStart });
+  const netResult = Number(regularization.netResult.toFixed(2));
 
   const result = await prisma.$transaction(async (tx) => {
-    // Ensure next year exists. We use findFirst (not findUnique on the
-    // composite unique) because `propertyId` may be null and Prisma's typed
-    // composite-unique key isn't ergonomic with nulls.
-    let nextYear = await tx.fiscalYear.findFirst({
-      where: {
-        organizationId: year.organizationId,
-        propertyId: year.propertyId,
-        code: nextCode
-      }
-    });
+    let nextYear = await tx.fiscalYear.findFirst({ where: { organizationId: year.organizationId, propertyId: year.propertyId, code: nextCode } });
     if (!nextYear) {
       nextYear = await tx.fiscalYear.create({
-        data: {
-          organizationId: year.organizationId,
-          propertyId: year.propertyId,
-          code: nextCode,
-          startDate: nextYearStart,
-          endDate: nextYearEnd,
-          status: "open"
-        }
+        data: { organizationId: year.organizationId, propertyId: year.propertyId, code: nextCode, startDate: dateOnlyUtc(nextYearStart), endDate: nextYearEndDate, status: "open" }
       });
     }
-
-    const yearEndDate = new Date(year.endDate);
-    yearEndDate.setUTCHours(23, 59, 59, 0);
-
-    // Asiento 1: Regularización
-    const regEntry = await tx.journalEntry.create({
-      data: {
-        organizationId: year.organizationId,
-        propertyId: year.propertyId,
-        sourceType: "manual",
-        sourceId: `year-close:${year.id}:regularization`,
-        status: "posted",
-        postedAt: yearEndDate,
-        createdBy: input.context.userId,
-        fiscalYearId: year.id,
-        entryKind: "regularization"
-      }
-    });
-    if (regularizationLines.length > 0) {
-      await tx.journalLine.createMany({
-        data: regularizationLines.map((l) => ({
-          journalEntryId: regEntry.id,
-          accountId: l.accountId,
-          debit: l.debit,
-          credit: l.credit,
-          currency: "EUR",
-          description: l.description
-        }))
-      });
-    }
-
-    // Asiento 2: Cierre
-    const closeEntry = await tx.journalEntry.create({
-      data: {
-        organizationId: year.organizationId,
-        propertyId: year.propertyId,
-        sourceType: "manual",
-        sourceId: `year-close:${year.id}:closing`,
-        status: "posted",
-        postedAt: yearEndDate,
-        createdBy: input.context.userId,
-        fiscalYearId: year.id,
-        entryKind: "closing"
-      }
-    });
-    if (closingLines.length > 0) {
-      await tx.journalLine.createMany({
-        data: closingLines.map((l) => ({
-          journalEntryId: closeEntry.id,
-          accountId: l.accountId,
-          debit: l.debit,
-          credit: l.credit,
-          currency: "EUR",
-          description: l.description
-        }))
-      });
-    }
-
-    // Asiento 3: Apertura del año siguiente
-    const openEntry = await tx.journalEntry.create({
-      data: {
-        organizationId: year.organizationId,
-        propertyId: year.propertyId,
-        sourceType: "manual",
-        sourceId: `year-close:${year.id}:opening`,
-        status: "posted",
-        postedAt: nextYearStart,
-        createdBy: input.context.userId,
-        fiscalYearId: nextYear.id,
-        entryKind: "opening"
-      }
-    });
-    if (openingLines.length > 0) {
-      await tx.journalLine.createMany({
-        data: openingLines.map((l) => ({
-          journalEntryId: openEntry.id,
-          accountId: l.accountId,
-          debit: l.debit,
-          credit: l.credit,
-          currency: "EUR",
-          description: l.description
-        }))
-      });
-    }
-
+    const common = { organizationId: year.organizationId, propertyId: year.propertyId, createdBy: input.context.userId, correlationId: input.correlationId, ignoreClosedPeriod: true, tx };
+    const regEntry = regularization.lines.length > 0
+      ? await postJournalEntry({ ...common, ...regularization, fiscalYearId: year.id, entryKind: "regularization" })
+      : null;
+    const closeEntry = await postJournalEntry({ ...common, ...closing, fiscalYearId: year.id, entryKind: "closing" });
+    const openEntry = await postJournalEntry({ ...common, ...opening, fiscalYearId: nextYear.id, entryKind: "opening" });
     const updatedYear = await tx.fiscalYear.update({
       where: { id: year.id },
-      data: {
-        status: "closed",
-        closedAt: new Date(),
-        closingEntryId: closeEntry.id,
-        openingEntryId: openEntry.id,
-        netResult: netResult
-      }
+      data: { status: "closed", closedAt: new Date(), closingEntryId: closeEntry.id, openingEntryId: openEntry.id, netResult: regularization.netResult.toFixed(2) }
     });
+    return { year: updatedYear, nextYear, regEntryId: regEntry?.id ?? null, closeEntryId: closeEntry.id, openEntryId: openEntry.id };
+  }, { maxWait: 15_000, timeout: 120_000 });
 
-    return {
-      year: updatedYear,
-      nextYear,
-      regEntryId: regEntry.id,
-      closeEntryId: closeEntry.id,
-      openEntryId: openEntry.id
-    };
-  });
-
-  const followUps: string[] = [];
-  followUps.push(
-    `Roll cuenta 129 net result (${netResult.toFixed(2)} EUR) into reservas (cuenta 113/1130) via a separate manual asiento.`
-  );
-  if (Math.abs(netResult) >= 0.005) {
-    followUps.push("Distribute result of the year per shareholder resolution; this sprint only handles the close mechanics.");
-  }
+  const followUps: string[] = [
+    `Traspasar el resultado de la cuenta 129 (${netResult.toFixed(2)} EUR) a reservas (113) o a resultados negativos (121) con un asiento manual tras la aprobación de cuentas.`
+  ];
+  if (Math.abs(netResult) >= 0.005) followUps.push("Aplicar el resultado según el acuerdo de la junta; este cierre solo ejecuta la mecánica contable.");
 
   recordAuditEvent({
     organizationId: year.organizationId,
@@ -650,30 +369,16 @@ export async function closeFiscalYear(input: {
     entityType: "fiscal_year",
     entityId: year.id,
     beforeJson: mapYear(year),
-    afterJson: {
-      ...mapYear(result.year),
-      regularizationEntryId: result.regEntryId,
-      closingEntryId: result.closeEntryId,
-      openingEntryId: result.openEntryId,
-      netResult
-    },
+    afterJson: { ...mapYear(result.year), regularizationEntryId: result.regEntryId, closingEntryId: result.closeEntryId, openingEntryId: result.openEntryId, netResult },
     correlationId: input.correlationId
   });
-
   recordDomainEvent({
     organizationId: year.organizationId,
     propertyId: year.propertyId ?? "",
     entityType: "fiscal_year",
     entityId: year.id,
     eventType: "FiscalYearClosed",
-    payload: {
-      code: year.code,
-      netResult,
-      regularizationEntryId: result.regEntryId,
-      closingEntryId: result.closeEntryId,
-      openingEntryId: result.openEntryId,
-      nextFiscalYearId: result.nextYear.id
-    },
+    payload: { code: year.code, netResult, regularizationEntryId: result.regEntryId, closingEntryId: result.closeEntryId, openingEntryId: result.openEntryId, nextFiscalYearId: result.nextYear.id },
     actorType: "user",
     actorUserId: input.context.userId,
     correlationId: input.correlationId
@@ -691,7 +396,7 @@ export async function closeFiscalYear(input: {
 }
 
 // ---------------------------------------------------------------------------
-// Reopen
+// Reopen — reverses (never deletes) the three asientos
 // ---------------------------------------------------------------------------
 
 export async function reopenFiscalYear(input: {
@@ -701,53 +406,55 @@ export async function reopenFiscalYear(input: {
   correlationId: string;
 }): Promise<FiscalYearRecord> {
   requirePermissions(input.context, ["accounting.journal.post", "ai.high_risk.confirm"]);
-  const year = await prisma.fiscalYear.findUnique({ where: { id: input.id } });
-  if (!year) throw new Error("Fiscal year was not found.");
-  if (year.status !== "closed") throw new Error(`Fiscal year ${year.code} is not closed.`);
+  const year = await loadYear(input.context, input.id);
+  if (year.status !== "closed") throw yearConflict("FISCAL_YEAR_NOT_CLOSED", `El ejercicio ${year.code} no está cerrado.`, { yearCode: year.code });
+  if (!input.reason || input.reason.trim().length === 0) throw new BadRequestError("Indica el motivo de la reapertura.");
 
-  // Refuse if any subsequent year is also closed — reopen has to cascade in
-  // reverse chronological order, and that's out of scope for an automated path.
   const laterClosed = await prisma.fiscalYear.findFirst({
-    where: {
-      organizationId: year.organizationId,
-      propertyId: year.propertyId,
-      startDate: { gt: year.startDate },
-      status: "closed"
-    },
+    where: { organizationId: year.organizationId, propertyId: year.propertyId, startDate: { gt: year.startDate }, status: "closed" },
     select: { code: true }
   });
   if (laterClosed) {
-    throw new Error(
-      `Cannot reopen ${year.code}: a subsequent year (${laterClosed.code}) is also closed. Reopen later years first.`
-    );
+    throw yearConflict("FISCAL_YEAR_LATER_CLOSED", `No se puede reabrir ${year.code}: el ejercicio posterior ${laterClosed.code} también está cerrado. Reábrelo primero.`, { yearCode: laterClosed.code });
   }
 
-  // Remove the regularización/cierre/apertura asientos so a subsequent close
-  // does not POST A DUPLICATE SET (the previous behaviour left them in place,
-  // which double-counted closing balances on re-close). The reopen is itself an
-  // audited action (FISCAL_YEAR_REOPENED below), preserving the paper trail.
   const closeEntries = await prisma.journalEntry.findMany({
     where: {
+      organizationId: year.organizationId,
+      status: "posted",
+      reversedById: null,
       OR: [
-        { fiscalYearId: year.id, entryKind: { in: ["regularization", "closing", "opening"] } },
+        { fiscalYearId: year.id, entryKind: { in: ["regularization", "closing"] } },
+        { sourceType: { in: ["regularization", "closing", "opening"] }, sourceId: { startsWith: `year-close:${year.id}:` } },
         ...(year.closingEntryId ? [{ id: year.closingEntryId }] : []),
         ...(year.openingEntryId ? [{ id: year.openingEntryId }] : [])
       ]
     },
-    select: { id: true }
+    select: { id: true, entryKind: true, entryDate: true }
   });
-  const closeEntryIds = closeEntries.map((e) => e.id);
 
+  const reversals: string[] = [];
   const updated = await prisma.$transaction(async (tx) => {
-    if (closeEntryIds.length > 0) {
-      await tx.journalLine.deleteMany({ where: { journalEntryId: { in: closeEntryIds } } });
-      await tx.journalEntry.deleteMany({ where: { id: { in: closeEntryIds } } });
+    for (const entry of closeEntries) {
+      const reversal = await reverseJournalEntry({
+        organizationId: year.organizationId,
+        journalEntryId: entry.id,
+        reason: `reapertura del ejercicio ${year.code}: ${input.reason}`,
+        entryDate: isoDay(entry.entryDate),
+        sourceType: "reversal",
+        sourceId: `year-reopen:${year.id}:${entry.entryKind}:${entry.id}`,
+        createdBy: input.context.userId,
+        correlationId: input.correlationId,
+        ignoreClosedPeriod: true,
+        tx
+      });
+      reversals.push(reversal.id);
     }
     return tx.fiscalYear.update({
       where: { id: year.id },
       data: { status: "open", closedAt: null, closingEntryId: null, openingEntryId: null, netResult: null }
     });
-  });
+  }, { maxWait: 15_000, timeout: 120_000 });
 
   recordAuditEvent({
     organizationId: year.organizationId,
@@ -758,9 +465,16 @@ export async function reopenFiscalYear(input: {
     entityType: "fiscal_year",
     entityId: year.id,
     beforeJson: mapYear(year),
-    afterJson: { ...mapYear(updated), reason: input.reason },
+    afterJson: { ...mapYear(updated), reason: input.reason, reversedEntryIds: closeEntries.map((e) => e.id), reversalEntryIds: reversals },
     correlationId: input.correlationId
   });
 
   return mapYear(updated);
+}
+
+/** Net result of a year as computed from the diario (for tests and the UI). */
+export async function computeYearResult(year: { organizationId: string; propertyId: string | null; startDate: Date; endDate: Date }): Promise<number> {
+  const rows = await aggregateAccountBalances({ organizationId: year.organizationId, propertyId: year.propertyId, from: isoDay(year.startDate), to: isoDay(year.endDate), excludeKinds: ["regularization", "closing"], kinds: ["income", "expense"] });
+  const net = rows.reduce((acc, row) => acc.plus(row.credit).minus(row.debit), ZERO);
+  return Number(net.toFixed(2));
 }

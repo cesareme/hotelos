@@ -243,7 +243,7 @@ solo cubre `/health`).
 | | `--demo` | `--real` |
 |---|---|---|
 | Datos | org_123 / prop_123 (Faranda), reservas, facturas, snapshots, F&B… | Ninguno |
-| Usuario inicial | `reception@example.com` / `hotelos-demo` (215 permisos: prune de Tanda 4 más `folio.read`, `pos.read` y `tourist_tax.read` de Tanda 5, credencial pública) | Creado por `POST /onboarding/bootstrap`; resto por invitación |
+| Usuario inicial | `reception@example.com` / `hotelos-demo` (catálogo de 221 permisos: prune de Tanda 4, `folio.read`/`pos.read`/`tourist_tax.read` de Tanda 5 y `accounting.reports.read` de Tanda 6 — la plantilla Recepción NO la lleva —, credencial pública) | Creado por `POST /onboarding/bootstrap`; resto por invitación |
 | `HOTELOS_ALLOW_DEMO_AUTH` | `false` (el smoke exige 401 sin token) | `false` |
 | `BOOTSTRAP_TOKEN` | vacío | generado; se autodesactiva tras la primera organización |
 | Uso | demo pública, formación, QA | cualquier hotel con datos reales |

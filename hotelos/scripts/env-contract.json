@@ -14,6 +14,7 @@
     "Schedulers",
     "IA",
     "OTA",
+    "Pagos",
     "Wallet",
     "Sentry",
     "Frontend",
@@ -148,7 +149,8 @@
       "productionExample": "https://app.example.com/api",
       "doc": "URL pública del API para los callbacks OAuth de las bandejas de correo (Gmail/Microsoft). Sin barra final.",
       "readBy": [
-        "apps/api/src/modules/integrations/email/email-reservation.service.ts"
+        "apps/api/src/modules/integrations/email/email-reservation.service.ts",
+        "apps/api/src/modules/payments/payments.service.ts"
       ]
     },
     "API_URL": {
@@ -407,6 +409,7 @@
       "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$",
       "doc": "Remitente verificado en el proveedor (ej. no-reply@tu-hotel.com).",
       "readBy": [
+        "apps/api/src/modules/invoicing/invoice-email.service.ts",
         "apps/api/src/modules/notifications/providers/email.provider.ts"
       ]
     },
@@ -419,6 +422,7 @@
       ],
       "doc": "Proveedor de email saliente (invitaciones, reset de contraseña, magic links). Vacío = envío simulado en desarrollo (la API devuelve el enlace) y 'disabled' en producción. Los tres EMAIL_* van juntos.",
       "readBy": [
+        "apps/api/src/modules/invoicing/invoice-email.service.ts",
         "apps/api/src/modules/notifications/providers/email.provider.ts"
       ]
     },
@@ -433,6 +437,7 @@
       ],
       "doc": "API key del proveedor de email.",
       "readBy": [
+        "apps/api/src/modules/invoicing/invoice-email.service.ts",
         "apps/api/src/modules/notifications/providers/email.provider.ts"
       ]
     },
@@ -678,6 +683,7 @@
       "generate": "openssl rand -base64 48",
       "doc": "Firma los JWT de sesión. Vacía o con el valor de ejemplo el API arranca pero rechaza el primer login.",
       "readBy": [
+        "apps/api/src/modules/payments/return-token.ts",
         "packages/database/src/jwt.ts"
       ]
     },
@@ -787,6 +793,28 @@
         "apps/api/src/server.ts"
       ]
     },
+    "PAYMENTS_PSP_PROVIDER": {
+      "section": "Pagos",
+      "format": "enum",
+      "values": [
+        "stripe",
+        "redsys"
+      ],
+      "doc": "Fuerza el PSP de todos los cobros en línea (stripe | redsys). Vacío = la conexión «connected» de la propiedad y, si no hay, el primer proveedor con credenciales (Stripe, luego Redsys).",
+      "readBy": [
+        "apps/api/src/modules/payments/psp/index.ts"
+      ]
+    },
+    "PAYMENTS_PUBLIC_BASE_URL": {
+      "section": "Pagos",
+      "format": "url",
+      "origin": true,
+      "httpsInProduction": true,
+      "doc": "Origen público al que el PSP redirige al cliente tras pagar y donde envía las notificaciones (/payments/webhooks/:provider). Vacío = API_PUBLIC_URL. Sin barra final.",
+      "readBy": [
+        "apps/api/src/modules/payments/payments.service.ts"
+      ]
+    },
     "PILOT_PUBLIC_ORIGIN": {
       "section": "Rate limit/CORS",
       "format": "url",
@@ -842,6 +870,52 @@
       "doc": "Reservada: hoy no hay cliente Redis (el rate-limit es en memoria); solo se refleja en /health. El compose la fija a redis://redis:6379.",
       "readBy": [
         "apps/api/src/server.ts"
+      ]
+    },
+    "REDSYS_MERCHANT_CODE": {
+      "section": "Pagos",
+      "format": "string",
+      "pattern": "^[0-9]{9}$",
+      "doc": "Código de comercio (FUC, 9 dígitos) del TPV Virtual de Redsys. Vacío = Redsys no configurado.",
+      "readBy": [
+        "apps/api/src/modules/payments/psp/redsys.adapter.ts"
+      ]
+    },
+    "REDSYS_MODE": {
+      "section": "Pagos",
+      "format": "enum",
+      "values": [
+        "test",
+        "live"
+      ],
+      "default": "test",
+      "productionExample": "live",
+      "doc": "Entorno del SIS de Redsys: test (sis-t.redsys.es, sin dinero real) o live (sis.redsys.es).",
+      "readBy": [
+        "apps/api/src/modules/payments/psp/redsys.adapter.ts"
+      ]
+    },
+    "REDSYS_SECRET_KEY": {
+      "section": "Pagos",
+      "format": "string",
+      "required": {
+        "when": "REDSYS_MERCHANT_CODE"
+      },
+      "tags": [
+        "secret"
+      ],
+      "doc": "Clave secreta (base64, 24 bytes) del comercio en Redsys: deriva la clave de cada operación con 3DES y firma HMAC-SHA256 (HMAC_SHA256_V1).",
+      "readBy": [
+        "apps/api/src/modules/payments/psp/redsys.adapter.ts"
+      ]
+    },
+    "REDSYS_TERMINAL": {
+      "section": "Pagos",
+      "format": "string",
+      "default": "001",
+      "doc": "Número de terminal del TPV Virtual de Redsys (normalmente 001).",
+      "readBy": [
+        "apps/api/src/modules/payments/psp/redsys.adapter.ts"
       ]
     },
     "RUN_SCHEDULERS": {
@@ -1133,6 +1207,33 @@
       "doc": "Reservada: solo el /health del ai-gateway la refleja como configured/unconfigured.",
       "readBy": [
         "apps/ai-gateway/src/server.ts"
+      ]
+    },
+    "STRIPE_SECRET_KEY": {
+      "section": "Pagos",
+      "format": "string",
+      "pattern": "^sk_(test|live)_[A-Za-z0-9]+$",
+      "tags": [
+        "secret"
+      ],
+      "doc": "Clave secreta de Stripe. sk_test_… = sandbox real de Stripe (llamadas HTTPS a api.stripe.com en modo test); sk_live_… = producción. Vacío = Stripe no configurado (409 PSP_NOT_CONFIGURED).",
+      "readBy": [
+        "apps/api/src/modules/payments/psp/stripe.adapter.ts"
+      ]
+    },
+    "STRIPE_WEBHOOK_SECRET": {
+      "section": "Pagos",
+      "format": "string",
+      "pattern": "^whsec_[A-Za-z0-9]+$",
+      "required": {
+        "when": "STRIPE_SECRET_KEY"
+      },
+      "tags": [
+        "secret"
+      ],
+      "doc": "Secreto de firma del endpoint de webhooks de Stripe (whsec_…). Sin él ningún webhook de Stripe se acepta: un cobro en línea nunca pasa a «captured».",
+      "readBy": [
+        "apps/api/src/modules/payments/psp/stripe.adapter.ts"
       ]
     },
     "TBAI_CERT_PASSPHRASE": {

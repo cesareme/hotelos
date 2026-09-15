@@ -50,6 +50,105 @@ enum JournalStatus {
   reversed
 }
 
+// ---- Finanzas · contabilidad PGC Pymes (tanda 2026-09-15, lote schema) ----
+// Contrato de datos: docs/runbooks/finanzas-contabilidad.md §«Contrato de datos».
+
+/// Naturaleza contable PGC de una cuenta. `Account.accountType` queda como alias heredado (revenue == income).
+enum AccountKind {
+  asset
+  liability
+  equity
+  income
+  expense
+}
+
+/// Método de cobro canónico (Payment.methodCode). Cuenta de contrapartida: cash→570, card_terminal→5721,
+/// card_online→5722, bank_transfer→572, payment_link→5722, other→572.
+enum PaymentMethod {
+  cash
+  card_terminal
+  card_online
+  bank_transfer
+  payment_link
+  other
+}
+
+enum SupplierBillStatus {
+  draft
+  approved
+  posted
+  paid
+  cancelled
+}
+
+/// Con qué se pagó un gasto menor (Expense): cash→570, card→5721 (tarjeta de empresa: 572 si es débito directo), bank→572.
+enum ExpensePaidWith {
+  cash
+  card
+  bank
+}
+
+enum FixedAssetStatus {
+  active
+  fully_depreciated
+  disposed
+}
+
+enum DepreciationRunStatus {
+  draft
+  posted
+  reversed
+}
+
+enum CashClosureStatus {
+  open
+  closed
+  approved
+}
+
+/// Libros registro de IVA (RD 1619/2012 art. 62 RIVA): emitidas, recibidas, bienes de inversión.
+enum VatBook {
+  emitidas
+  recibidas
+  bienes_inversion
+}
+
+enum VatBookSourceType {
+  invoice
+  rectification
+  simplified
+  supplier_bill
+  expense
+}
+
+enum VatPeriodicity {
+  quarterly
+  monthly
+}
+
+/// general · redeme (devolución mensual, periodicidad mensual obligatoria) · recargo (recargo de equivalencia).
+enum VatRegime {
+  general
+  redeme
+  recargo
+}
+
+enum FinancialStatementKind {
+  balance
+  pyg
+  ecpn
+  memoria
+  usali
+}
+
+/// csv_universal SIEMPRE disponible; contaplus_diario / a3 se marcan «validar con la gestoría»; vat_books_csv = libros de IVA.
+enum GestoriaExportFormat {
+  csv_universal
+  contaplus_diario
+  a3
+  vat_books_csv
+}
+
 enum HousekeepingTaskStatus {
   pending
   assigned
@@ -1287,13 +1386,30 @@ model Supplier {
   id               String   @id @default(cuid())
   organizationId   String   @map("organization_id")
   name             String
+  /// NIF/CIF del proveedor (normalizado en mayúsculas sin espacios). `nifValidatedAt` marca cuándo pasó la validación de dígito de control.
   taxId            String?  @map("tax_id")
   contactJson      Json     @default("{}") @map("contact_json")
   paymentTermsJson Json     @default("{}") @map("payment_terms_json")
   active           Boolean  @default(true)
   createdAt        DateTime @default(now()) @map("created_at")
+  // Finanzas (2026-09-15): datos fiscales y contables del proveedor (libro de recibidas, 347, SEPA).
+  nifValidatedAt            DateTime? @map("nif_validated_at")
+  address                   String?
+  postalCode                String?   @map("postal_code")
+  city                      String?
+  province                  String?
+  countryCode               String    @default("ES") @map("country_code")
+  iban                      String?
+  /// Cuenta 6xx por defecto de sus facturas (p. ej. "628" suministros, "623" profesionales).
+  defaultExpenseAccountCode String?   @map("default_expense_account_code")
+  /// Retención IRPF por defecto (15 profesionales, 7 nuevos profesionales, 19 alquileres); null = sin retención.
+  retentionRate             Decimal?  @map("retention_rate") @db.Decimal(5, 2)
+  /// Clave Modelo 111 (02 profesionales) / 115 (alquileres) de la retención por defecto.
+  retentionRowCode          String?   @map("retention_row_code")
+  updatedAt                 DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([organizationId, active])
+  @@index([organizationId, taxId])
   @@map("suppliers")
 }
 
@@ -2383,6 +2499,7 @@ model ExternalReservation {
   @@map("external_reservations")
 }
 
+/// PENDIENTE PSP (finanzas 2026-09-15): sin lector ni escritor en el API hasta que se cablee Stripe/Redsys. Se mantiene el modelo.
 model PaymentProviderConnection {
   id                   String   @id @default(cuid())
   propertyId           String   @map("property_id")
@@ -2396,6 +2513,8 @@ model PaymentProviderConnection {
   @@map("payment_provider_connections")
 }
 
+/// PENDIENTE PSP (finanzas 2026-09-15): un cobro con tarjeta en línea / enlace de pago debe nacer como PaymentIntent y convertirse en Payment
+/// (methodCode card_online|payment_link) solo cuando el PSP confirma. Sin PSP cableado, la UI no debe marcar «captured».
 model PaymentIntent {
   id                 String   @id @default(cuid())
   propertyId         String   @map("property_id")
@@ -2488,10 +2607,19 @@ model PosOrder {
   closedByUserId String?   @map("closed_by_user_id")
   createdAt      DateTime  @default(now()) @map("created_at")
   updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+  // Finanzas (2026-09-15): venta al contado (settlement cash|card) → factura simplificada (serie FS) + asiento
+  // D 570|5721 / H 705.2 / H 477.tipo; cargo a habitación (settlement room) → sin asiento hasta la factura del folio.
+  invoiceId      String?   @map("invoice_id")
+  journalEntryId String?   @map("journal_entry_id")
+  cashClosureId  String?   @map("cash_closure_id")
+  taxTotal       Decimal   @default(0) @map("tax_total") @db.Decimal(12, 2)
+  businessDate   DateTime? @map("business_date") @db.Date
 
   @@index([propertyId, status])
   @@index([propertyId, closedAt])
   @@index([propertyId, outletId, closedAt])
+  @@index([invoiceId])
+  @@index([cashClosureId])
   @@map("pos_orders")
 }
 
@@ -3158,10 +3286,19 @@ model Payment {
   status       PaymentStatus @default(pending)
   createdAt    DateTime      @default(now()) @map("created_at")
   deletedAt    DateTime?     @map("deleted_at")
+  // Finanzas (2026-09-15): idempotencia, método canónico, reversos y enlace contable.
+  /// Clave de idempotencia del cliente, única por folio: un reintento con la misma clave devuelve el mismo cobro.
+  clientRequestId String?       @map("client_request_id")
+  /// Método canónico (enum). null = fila heredada: el lector cae a `method` (cash|card|bank_transfer|payment_link|ota_virtual_card).
+  methodCode      PaymentMethod? @map("method_code")
+  /// Cobro que este registro deshace (devolución / anulación): importe positivo, asiento inverso.
+  reversalOfId    String?       @map("reversal_of_id")
+  journalEntryId  String?       @map("journal_entry_id")
 
   folio        Folio         @relation(fields: [folioId], references: [id], onDelete: Cascade)
   invoice      Invoice?      @relation("InvoicePayments", fields: [invoiceId], references: [id], onDelete: SetNull)
 
+  @@unique([folioId, clientRequestId])
   @@index([propertyId, folioId])
   @@index([invoiceId])
   // markInvoicePaid idempotency lookup by (invoiceId, pspReference) → hash.
@@ -3172,6 +3309,9 @@ model Payment {
   // Hot-fix perf: PSP reference lookup (webhook reconciliation, refund tools).
   @@index([pspReference])
   @@index([deletedAt])
+  @@index([reversalOfId])
+  // Cash closure: cobros del día por propiedad y método.
+  @@index([propertyId, methodCode, createdAt])
   @@map("payments")
 }
 
@@ -3216,6 +3356,15 @@ model Invoice {
   updatedAt           DateTime      @default(now()) @updatedAt @map("updated_at")
   createdAt           DateTime      @default(now()) @map("created_at")
   deletedAt           DateTime?     @map("deleted_at")
+  // Finanzas (2026-09-15): congelación al emitir, serie y factura simplificada.
+  /// Líneas, totales, desglose de IVA e ids de FolioLine congelados al emitir ({ lines, totals, taxBreakdown, folioLineIds }); inmutable después.
+  snapshotJson        Json?         @map("snapshot_json")
+  /// Serie (InvoiceSequence.sequenceCode) con la que se numeró: FAC (F1/F2), FS (simplificada), R (rectificativa)…
+  seriesCode          String?       @map("series_code")
+  /// Factura simplificada (art. 4 RD 1619/2012): serie propia, sin NIF de cliente hasta 400 € (TPV al contado).
+  simplified          Boolean       @default(false)
+  /// false solo en simplificadas dentro de límite: el emisor no exige identificar al cliente.
+  customerRequired    Boolean       @default(true) @map("customer_required")
 
   folio               Folio?        @relation("FolioInvoices", fields: [folioId], references: [id], onDelete: SetNull)
   payments            Payment[]     @relation("InvoicePayments")
@@ -3228,6 +3377,7 @@ model Invoice {
   @@index([reservationId])
   @@index([rectifyingForId])
   @@index([deletedAt])
+  @@index([propertyId, seriesCode, issuedAt])
   @@map("invoices")
 }
 
@@ -3249,18 +3399,38 @@ model InvoiceLine {
   @@map("invoice_lines")
 }
 
+/// Plan de cuentas por organización (plantilla «PGC Pymes hotelero»: apps/api/src/modules/accounting/chart-of-accounts.service.ts).
 model Account {
   id             String  @id @default(cuid())
   organizationId String  @map("organization_id")
+  /// Código PGC: grupo (1 dígito), subgrupo (2), cuenta (3), subcuenta ("4300", "705.1", "477.21").
   code           String
   name           String
+  /// Alias heredado de `kind` para los lectores antiguos (balance/PyG/cash-flow): asset|liability|equity|revenue|expense.
   accountType    String  @map("account_type")
   parentId       String? @map("parent_id")
+  // Finanzas (2026-09-15): metadatos PGC + mapeo USALI por defecto.
+  kind           AccountKind
+  /// Grupo PGC 1-7 (Pymes); 8-9 reservados al PGC general.
+  group          Int     @map("pgc_group")
+  /// 1 grupo · 2 subgrupo · 3 cuenta · 4 subcuenta.
+  level          Int
+  /// false en grupos y subgrupos (cabeceras): no admiten apuntes.
+  isPostable     Boolean @default(true) @map("is_postable")
+  /// Mapeo USALI por defecto (departamento · línea) de la plantilla; UsaliMapping lo sobreescribe por organización. null en cuentas de balance.
+  usaliDepartment String? @map("usali_department")
+  usaliLine      String? @map("usali_line")
 
   @@unique([organizationId, code])
+  @@index([organizationId, kind])
+  @@index([organizationId, parentId])
   @@map("accounts")
 }
 
+/// Asiento del libro diario. `sourceType` (String, contrato en docs/runbooks/finanzas-contabilidad.md): folio_line · payment ·
+/// payment_refund · invoice · invoice_rectification · invoice_cancellation · pos_ticket · supplier_bill · supplier_bill_payment ·
+/// expense · payroll_slip · payroll_payment · commission · depreciation · vat_settlement · cash_closure · card_settlement ·
+/// tourist_tax · manual · regularization · closing · opening · reversal. (Sigue siendo texto: los escritores heredados lo tipan como string.)
 model JournalEntry {
   id             String        @id @default(cuid())
   organizationId String        @map("organization_id")
@@ -3274,9 +3444,27 @@ model JournalEntry {
   fxRate         Decimal?      @db.Decimal(14, 8) @map("fx_rate")
   fiscalYearId   String?       @map("fiscal_year_id")
   entryKind      String        @default("normal") @map("entry_kind")
+  // Finanzas (2026-09-15): fecha contable, numeración por ejercicio, concepto y reversos.
+  /// Fecha contable (devengo): ordena el diario y fija ejercicio/periodo. `postedAt` es el instante técnico de la proyección.
+  entryDate      DateTime      @default(now()) @map("entry_date") @db.Date
+  /// Número de asiento secuencial por (organización, ejercicio). null = pendiente de numerar (solo escritores heredados; el lote asientos numera al contabilizar).
+  entryNumber    Int?          @map("entry_number")
+  /// Ejercicio al que pertenece entryNumber: FiscalYear.code si existe, si no el año natural de entryDate ("2026").
+  fiscalYearCode String?       @map("fiscal_year_code")
+  /// Concepto del asiento (español, para el diario y la exportación a gestoría).
+  description    String?
+  /// Documento de referencia (número de factura, nómina, extracto…).
+  reference      String?
+  /// Asiento que este asiento anula (inverso total). Reabrir un ejercicio genera asientos de anulación: nunca se borra.
+  reversalOfId   String?       @map("reversal_of_id")
+  reversedById   String?       @map("reversed_by_id")
 
+  @@unique([organizationId, fiscalYearCode, entryNumber])
   @@index([organizationId, propertyId])
   @@index([fiscalYearId, entryKind])
+  @@index([organizationId, entryDate])
+  @@index([organizationId, sourceType, sourceId])
+  @@index([reversalOfId])
   @@map("journal_entries")
 }
 
@@ -3288,14 +3476,101 @@ model JournalLine {
   credit         Decimal @default(0) @db.Decimal(12, 2)
   currency       String  @default("EUR")
   description    String?
+  // Finanzas (2026-09-15): código desnormalizado, centro de coste y datos de IVA de la línea.
+  /// = Account.code de accountId (desnormalizado para diario/exportación). null solo en filas de escritores heredados: el lector cae a accountId.
+  accountCode    String?  @map("account_code")
+  costCenterId   String?  @map("cost_center_id")
+  /// Tipo de IVA de la línea ("21", "10", "4", "0") cuando es cuota (472/477) o base; alimenta libros y Modelo 303.
+  taxRateCode    String?  @map("tax_rate_code")
+  /// Base imponible asociada a una línea de cuota (472/477), para el 303 sin reconstruir desde la cuota.
+  taxBase        Decimal? @map("tax_base") @db.Decimal(12, 2)
 
   @@index([journalEntryId])
+  @@index([accountCode])
   @@map("journal_lines")
 }
 
+/// Mapeo cuenta PGC → línea USALI por organización (sobreescribe Account.usaliDepartment/usaliLine).
+/// El resolutor elige la coincidencia activa de mayor prioridad y, a igualdad, el prefijo más largo; sin coincidencia cae al valor por defecto de la cuenta.
+model UsaliMapping {
+  id              String   @id @default(cuid())
+  organizationId  String   @map("organization_id")
+  /// Prefijo de código PGC ("705.1" exacto o "62" para todo el subgrupo).
+  accountPrefix   String   @map("account_prefix")
+  /// rooms · fnb · other_operated · misc_income · admin_general · it · sales_marketing · pom · utilities · management_fees · non_operating · below_ebitda
+  usaliDepartment String   @map("usali_department")
+  /// revenue · cost_of_sales · labor · other_expense · management_fee · rent · property_taxes · insurance · other · interest · depreciation_amortization · income_tax
+  usaliLine       String   @map("usali_line")
+  priority        Int      @default(0)
+  active          Boolean  @default(true)
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, accountPrefix])
+  @@index([organizationId, active, priority])
+  @@map("usali_mappings")
+}
+
+/// Configuración de IVA por organización (una fila por organización).
+model VatSettings {
+  id             String         @id @default(cuid())
+  organizationId String         @unique @map("organization_id")
+  /// quarterly (régimen general, Modelo 303 trimestral) · monthly (REDEME / gran empresa).
+  periodicity    VatPeriodicity @default(quarterly)
+  regime         VatRegime      @default(general)
+  /// Prorrata general (%) si la organización tiene actividades exentas; null = deducción íntegra.
+  prorrataPct    Decimal?       @map("prorrata_pct") @db.Decimal(5, 2)
+  /// Figura principal: IVA | IGIC | IPSI.
+  taxFigure      String         @default("IVA") @map("tax_figure")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+
+  @@map("vat_settings")
+}
+
+/// Libros registro de IVA (RD 1619/2012): una fila por documento y tipo impositivo. Fuente única del Modelo 303/390/347.
+model VatBookEntry {
+  id               String            @id @default(cuid())
+  organizationId   String            @map("organization_id")
+  propertyId       String?           @map("property_id")
+  book             VatBook
+  /// Fecha de expedición (emitidas) o de recepción/devengo (recibidas).
+  date             DateTime          @db.Date
+  series           String?
+  number           String?
+  counterpartyNif  String?           @map("counterparty_nif")
+  counterpartyName String?           @map("counterparty_name")
+  base             Decimal           @db.Decimal(12, 2)
+  /// Tipo impositivo en % (21, 10, 4, 0 exenta/no sujeta; IGIC 7/3; IPSI 4/2).
+  rate             Decimal           @db.Decimal(5, 2)
+  quota            Decimal           @db.Decimal(12, 2)
+  total            Decimal           @db.Decimal(12, 2)
+  /// Retención IRPF practicada (recibidas de profesionales / alquileres); 0 si no aplica.
+  retention        Decimal           @default(0) @db.Decimal(12, 2)
+  taxFigure        String            @default("IVA") @map("tax_figure")
+  surchargeRate    Decimal?          @map("surcharge_rate") @db.Decimal(5, 2)
+  surchargeQuota   Decimal?          @map("surcharge_quota") @db.Decimal(12, 2)
+  sourceType       VatBookSourceType @map("source_type")
+  sourceId         String            @map("source_id")
+  /// Periodo de liquidación: "2026-Q3" (trimestral) o "2026-09" (mensual), calculado con VatSettings al registrar.
+  period           String
+  /// false si la cuota soportada no es deducible (ticket sin NIF, prorrata 0…): la cuota va a gasto.
+  deductible       Boolean           @default(true)
+  createdAt        DateTime          @default(now()) @map("created_at")
+
+  @@unique([organizationId, book, sourceType, sourceId, rate])
+  @@index([organizationId, book, period])
+  @@index([organizationId, book, date])
+  @@index([organizationId, counterpartyNif, period])
+  @@map("vat_book_entries")
+}
+
+/// Factura recibida de proveedor (contabilizada línea a línea: D 6xx / D 472.tipo / H 400|410 [/ H 4751 retención]).
 model SupplierBill {
   id                   String    @id @default(cuid())
   propertyId           String    @map("property_id")
+  /// null solo en filas heredadas; el lote proveedores lo rellena siempre (= Property.organizationId).
+  organizationId       String?   @map("organization_id")
   supplierId           String?   @map("supplier_id")
   supplierName         String?   @map("supplier_name")
   supplierTaxId        String?   @map("supplier_tax_id")
@@ -3303,6 +3578,8 @@ model SupplierBill {
   issueDate            DateTime? @map("issue_date") @db.Date
   dueDate              DateTime? @map("due_date") @db.Date
   paymentDate          DateTime? @map("payment_date") @db.Date
+  /// Suma de bases de las líneas (redondeo por línea, cuadre al céntimo con total = baseTotal + taxTotal − retentionAmount).
+  baseTotal            Decimal   @default(0) @map("base_total") @db.Decimal(12, 2)
   total                Decimal   @default(0) @db.Decimal(12, 2)
   taxTotal             Decimal   @default(0) @map("tax_total") @db.Decimal(12, 2)
   retentionRate        Decimal?  @db.Decimal(5, 2) @map("retention_rate")
@@ -3310,13 +3587,194 @@ model SupplierBill {
   rowCode              String?   @map("row_code")
   suggestedAccountCode String?   @map("suggested_account_code")
   roomId               String?   @map("room_id")
-  status               String    @default("draft")
+  status               SupplierBillStatus @default(draft)
+  /// Adjunto (PDF/imagen de la factura) en el almacén de objetos.
   documentObjectKey    String?   @map("document_object_key")
+  journalEntryId       String?   @map("journal_entry_id")
+  /// Asiento del pago (D 400|410 / H 572|570).
+  paidJournalEntryId   String?   @map("paid_journal_entry_id")
+  postedAt             DateTime? @map("posted_at")
+  approvedAt           DateTime? @map("approved_at")
+  approvedBy           String?   @map("approved_by")
+  cancelledAt          DateTime? @map("cancelled_at")
   createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @default(now()) @updatedAt @map("updated_at")
 
+  lines                SupplierBillLine[]
+
+  @@unique([organizationId, supplierId, invoiceNumber])
   @@index([propertyId, status])
   @@index([supplierId, issueDate])
+  @@index([organizationId, status])
+  @@index([organizationId, issueDate])
   @@map("supplier_bills")
+}
+
+model SupplierBillLine {
+  id                 String   @id @default(cuid())
+  supplierBillId     String   @map("supplier_bill_id")
+  lineNo             Int      @default(1) @map("line_no")
+  description        String
+  /// Cuenta de gasto/inversión (6xx o 21x para bienes de inversión).
+  expenseAccountCode String   @map("expense_account_code")
+  base               Decimal  @db.Decimal(12, 2)
+  taxRate            Decimal  @map("tax_rate") @db.Decimal(5, 2)
+  quota              Decimal  @db.Decimal(12, 2)
+  retention          Decimal  @default(0) @db.Decimal(12, 2)
+  costCenterId       String?  @map("cost_center_id")
+  /// true → libro de bienes de inversión y alta en FixedAsset (fixedAssetId).
+  investmentGood     Boolean  @default(false) @map("investment_good")
+  fixedAssetId       String?  @map("fixed_asset_id")
+
+  supplierBill       SupplierBill @relation(fields: [supplierBillId], references: [id], onDelete: Cascade)
+
+  @@index([supplierBillId])
+  @@map("supplier_bill_lines")
+}
+
+/// Gasto menor / ticket pagado en el acto: D 6xx (base [+ cuota si no deducible]) / D 472.tipo / H 570|5721|572.
+model Expense {
+  id                     String          @id @default(cuid())
+  organizationId         String          @map("organization_id")
+  propertyId             String?         @map("property_id")
+  date                   DateTime        @db.Date
+  supplierName           String          @map("supplier_name")
+  supplierNif            String?         @map("supplier_nif")
+  concept                String
+  accountCode            String          @map("account_code")
+  base                   Decimal         @db.Decimal(12, 2)
+  taxRate                Decimal         @map("tax_rate") @db.Decimal(5, 2)
+  quota                  Decimal         @db.Decimal(12, 2)
+  total                  Decimal         @db.Decimal(12, 2)
+  paidWith               ExpensePaidWith @map("paid_with")
+  /// IVA deducible solo con factura completa (o simplificada con NIF del destinatario); ticket sin NIF → false y la cuota va a gasto.
+  vatDeductible          Boolean         @default(true) @map("vat_deductible")
+  receiptObjectKey       String?         @map("receipt_object_key")
+  journalEntryId         String?         @map("journal_entry_id")
+  reversalJournalEntryId String?         @map("reversal_journal_entry_id")
+  cancelledAt            DateTime?       @map("cancelled_at")
+  createdBy              String?         @map("created_by")
+  createdAt              DateTime        @default(now()) @map("created_at")
+  updatedAt              DateTime        @updatedAt @map("updated_at")
+
+  @@index([organizationId, date])
+  @@index([propertyId, date])
+  @@map("expenses")
+}
+
+/// Amortización mensual por organización: una corrida por mes, un asiento D 68x / H 28x con una línea por elemento.
+model DepreciationRun {
+  id                     String                @id @default(cuid())
+  organizationId         String                @map("organization_id")
+  propertyId             String?               @map("property_id")
+  /// "YYYY-MM".
+  period                 String
+  periodStart            DateTime              @map("period_start") @db.Date
+  periodEnd              DateTime              @map("period_end") @db.Date
+  status                 DepreciationRunStatus @default(draft)
+  totalAmount            Decimal               @default(0) @map("total_amount") @db.Decimal(12, 2)
+  journalEntryId         String?               @map("journal_entry_id")
+  reversalJournalEntryId String?               @map("reversal_journal_entry_id")
+  createdBy              String?               @map("created_by")
+  createdAt              DateTime              @default(now()) @map("created_at")
+  updatedAt              DateTime              @updatedAt @map("updated_at")
+
+  lines                  DepreciationLine[]
+
+  @@unique([organizationId, period])
+  @@index([organizationId, status])
+  @@map("depreciation_runs")
+}
+
+model DepreciationLine {
+  id                String   @id @default(cuid())
+  runId             String   @map("run_id")
+  fixedAssetId      String   @map("fixed_asset_id")
+  amount            Decimal  @db.Decimal(12, 2)
+  accumulatedAfter  Decimal  @map("accumulated_after") @db.Decimal(12, 2)
+  netBookValueAfter Decimal  @map("net_book_value_after") @db.Decimal(12, 2)
+
+  run               DepreciationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, fixedAssetId])
+  @@index([fixedAssetId])
+  @@map("depreciation_lines")
+}
+
+/// Arqueo / cierre de caja por propiedad, caja (outletId "*" = recepción) y fecha de negocio.
+model CashClosure {
+  id                   String            @id @default(cuid())
+  propertyId           String            @map("property_id")
+  /// "*" = caja de recepción (toda la propiedad); Outlet.id = caja de ese punto de venta.
+  outletId             String            @default("*") @map("outlet_id")
+  businessDate         DateTime          @map("business_date") @db.Date
+  status               CashClosureStatus @default(open)
+  openedAt             DateTime          @default(now()) @map("opened_at")
+  closedAt             DateTime?         @map("closed_at")
+  /// Fondo de caja inicial.
+  openingFloat         Decimal           @default(0) @map("opening_float") @db.Decimal(12, 2)
+  /// Efectivo esperado = fondo + cobros en efectivo (Payment cash + TPV cash) − devoluciones en efectivo − pagos de caja (Expense cash).
+  expectedCash         Decimal           @default(0) @map("expected_cash") @db.Decimal(12, 2)
+  countedCash          Decimal?          @map("counted_cash") @db.Decimal(12, 2)
+  /// countedCash − expectedCash (positivo = sobrante).
+  difference           Decimal?          @db.Decimal(12, 2)
+  /// { cash: {expected, counted, difference}, card_terminal: {...}, bank_transfer: {...}, ... } (importes en string decimal).
+  expectedByMethodJson Json              @default("{}") @map("expected_by_method_json")
+  countedByMethodJson  Json              @default("{}") @map("counted_by_method_json")
+  /// Recuento físico: [{ denomination: "50", quantity: 3, amount: "150.00" }, ...] y lotes de datáfono.
+  countsJson           Json              @default("[]") @map("counts_json")
+  notes                String?
+  openedBy             String?           @map("opened_by")
+  closedBy             String?           @map("closed_by")
+  approvedBy           String?           @map("approved_by")
+  approvedAt           DateTime?         @map("approved_at")
+  /// Asiento de la diferencia de arqueo (D 659 / H 570 faltante · D 570 / H 759 sobrante) y, si procede, del traspaso a banco.
+  journalEntryId       String?           @map("journal_entry_id")
+  createdAt            DateTime          @default(now()) @map("created_at")
+  updatedAt            DateTime          @updatedAt @map("updated_at")
+
+  @@unique([propertyId, outletId, businessDate])
+  @@index([propertyId, status])
+  @@index([propertyId, businessDate])
+  @@map("cash_closures")
+}
+
+/// Cuentas anuales / USALI generados y guardados (json con el estado completo tal como se presentó).
+model FinancialStatementSnapshot {
+  id             String                 @id @default(cuid())
+  organizationId String                 @map("organization_id")
+  fiscalYearId   String?                @map("fiscal_year_id")
+  kind           FinancialStatementKind
+  periodFrom     DateTime               @map("period_from") @db.Date
+  periodTo       DateTime               @map("period_to") @db.Date
+  json           Json
+  /// Etiqueta libre: "provisional", "definitivo", "presentado en el Registro"…
+  label          String?
+  generatedAt    DateTime               @default(now()) @map("generated_at")
+  generatedBy    String?                @map("generated_by")
+
+  @@index([organizationId, kind, generatedAt])
+  @@index([fiscalYearId, kind])
+  @@map("financial_statement_snapshots")
+}
+
+/// Exportación a gestoría (diario, libros de IVA). Contenido en objectKey (almacén) o inline (ficheros pequeños).
+model GestoriaExport {
+  id                  String               @id @default(cuid())
+  organizationId      String               @map("organization_id")
+  format              GestoriaExportFormat
+  periodFrom          DateTime             @map("period_from") @db.Date
+  periodTo            DateTime             @map("period_to") @db.Date
+  objectKey           String?              @map("object_key")
+  inline              String?
+  rowCount            Int                  @default(0) @map("row_count")
+  /// true en formatos «compatible Contaplus/Sage 50» y «compatible A3»: el diseño de registro debe validarlo la gestoría.
+  validateWithAdvisor Boolean              @default(false) @map("validate_with_advisor")
+  createdBy           String?              @map("created_by")
+  createdAt           DateTime             @default(now()) @map("created_at")
+
+  @@index([organizationId, createdAt])
+  @@map("gestoria_exports")
 }
 
 // ---- GDPR data subject requests (Sprint 31) ----
@@ -3535,6 +3993,7 @@ model CapexItem {
   @@map("capex_items")
 }
 
+/// Inmovilizado: alta en 21x/20x, amortización mensual D 68x / H 28x con coeficiente máximo de tablas (art. 12 LIS).
 model FixedAsset {
   id                      String    @id @default(cuid())
   propertyId              String    @map("property_id")
@@ -3545,8 +4004,29 @@ model FixedAsset {
   depreciationMethod      String?   @map("depreciation_method")
   usefulLifeMonths        Int?      @map("useful_life_months")
   accumulatedDepreciation Decimal   @default(0) @map("accumulated_depreciation") @db.Decimal(12, 2)
+  // Finanzas (2026-09-15): cuentas, coeficiente y ciclo de vida contable.
+  /// null solo en filas heredadas (= Property.organizationId).
+  organizationId          String?   @map("organization_id")
+  /// mobiliario (10 %) · instalaciones (10 %) · informatica (25 %) · construcciones (3 %) · vehiculos (16 %) · intangible · otro.
+  category                String?
+  /// Cuenta de activo (21x material, 20x intangible).
+  accountCode             String?   @map("account_code")
+  /// Cuenta de amortización acumulada (28x).
+  depreciationAccountCode String?   @map("depreciation_account_code")
+  /// Cuenta de dotación (681 material, 680 intangible).
+  expenseAccountCode      String?   @map("expense_account_code")
+  /// Coeficiente anual aplicado (%), ≤ máximo de tablas art. 12 LIS para su categoría.
+  coefficientPct          Decimal?  @map("coefficient_pct") @db.Decimal(5, 2)
+  /// Inicio de la amortización (puesta en condiciones de funcionamiento); null = acquisitionDate.
+  startDate               DateTime? @map("start_date") @db.Date
+  residualValue           Decimal   @default(0) @map("residual_value") @db.Decimal(12, 2)
+  status                  FixedAssetStatus @default(active)
+  disposedAt              DateTime? @map("disposed_at") @db.Date
+  supplierBillId          String?   @map("supplier_bill_id")
+  updatedAt               DateTime  @default(now()) @updatedAt @map("updated_at")
 
   @@index([propertyId])
+  @@index([organizationId, status])
   @@map("fixed_assets")
 }
 
@@ -4377,9 +4857,16 @@ model CommissionAccrual {
   commissionAmount Decimal  @db.Decimal(14, 2) @map("commission_amount")
   currencyCode     String   @default("EUR") @map("currency_code")
   accruedAt        DateTime @default(now()) @map("accrued_at")
+  /// Asiento de devengo D 629.1 / H 410 (check-out o factura, según regla).
   journalEntryId   String?  @map("journal_entry_id")
+  /// accrued · settled · reversed.
   status           String   @default("accrued")
+  // Finanzas (2026-09-15): reverso y liquidación al canal.
+  reversalJournalEntryId   String?   @map("reversal_journal_entry_id")
+  settledAt                DateTime? @map("settled_at")
+  settlementJournalEntryId String?   @map("settlement_journal_entry_id")
 
+  @@unique([propertyId, reservationId, channelCode])
   @@index([propertyId, accruedAt])
   @@index([channelId, status])
   @@index([reservationId])
@@ -4425,6 +4912,13 @@ model PayrollPeriod {
   totalSs        Decimal   @default(0) @db.Decimal(14, 2) @map("total_ss")
   exportedAt     DateTime? @map("exported_at")
   createdAt      DateTime  @default(now()) @map("created_at")
+  // Finanzas (2026-09-15): asientos de devengo (uno por nómina) y su reverso al recalcular; pago D 465 / H 572.
+  journalEntryIds         String[]  @default([]) @map("journal_entry_ids")
+  reversalJournalEntryIds String[]  @default([]) @map("reversal_journal_entry_ids")
+  postedAt                DateTime? @map("posted_at")
+  reversedAt              DateTime? @map("reversed_at")
+  paymentJournalEntryId   String?   @map("payment_journal_entry_id")
+  paidAt                  DateTime? @map("paid_at")
 
   @@unique([organizationId, periodCode, propertyId])
   @@index([organizationId, status])

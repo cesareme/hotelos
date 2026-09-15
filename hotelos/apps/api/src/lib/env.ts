@@ -18,6 +18,7 @@
 // VPS without TypeScript can pre-flight a .env file; keep both in sync via
 // tests/env-contract.test.mjs.
 import { CHANNEL_MANAGER_ENV_CONTRACT } from "../modules/channel-manager/env.partial.js";
+import { PAYMENTS_ENV_CONTRACT } from "../modules/payments/env.partial.js";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { z } from "zod";
 import { isValidSpanishTaxId, resolveVerifactuCredentials, resolveVerifactuSoftware } from "@hotelos/compliance";
@@ -36,6 +37,7 @@ export type EnvSection =
   | "Schedulers"
   | "IA"
   | "OTA"
+  | "Pagos"
   | "Wallet"
   | "Sentry"
   | "Frontend"
@@ -722,6 +724,11 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
   BOOKING_API_BASE_URL: { section: "OTA", format: "url", doc: "Base de la API real de Booking (vacío = por defecto del adaptador)." },
   BOOKING_OAUTH_URL: { section: "OTA", format: "url", doc: "Endpoint de token exchange JWT de Booking Connectivity (por defecto https://connectivity-authentication.booking.com/token-based-authentication/exchange)." },
   EXPEDIA_API_BASE_URL: { section: "OTA", format: "url", doc: "Base de la API de Expedia (vacío = por defecto)." },
+
+  // ----------------------------------------------------------------- Pagos
+  // Finanzas (2026-09-15): the payments module owns its contract (PSP
+  // credentials, provider selection, public base URL) in modules/payments/env.partial.ts.
+  ...PAYMENTS_ENV_CONTRACT,
 
   // ---------------------------------------------------------------- Wallet
   APPLE_WALLET_PASS_TYPE_ID: { section: "Wallet", format: "string", default: "pass.com.hotelos.roomkey", doc: "Pass Type ID de las llaves móviles en Apple Wallet." },
