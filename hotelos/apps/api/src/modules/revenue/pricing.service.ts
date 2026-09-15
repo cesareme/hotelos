@@ -101,6 +101,72 @@ export async function createBarLevel(input: { context: UserContext; propertyId: 
   return row;
 }
 
+// ---- Comp-set median (shared by the BAR engine, the rate-grid RMS and the board) ----
+export type CompsetDay = {
+  median: number;
+  /** "real" = shopped from a live provider; "deterministic" = synthetic spread around our own BAR (rate-shop.service). */
+  source: "real" | "deterministic";
+  /** Shop date the median comes from (latest shop that covers the stay date). */
+  shopDate: string;
+  samples: number;
+};
+
+export type CompsetWindow = {
+  byDate: Map<string, CompsetDay>;
+  activeCompetitors: number;
+  /** Aggregate provenance: "deterministic" when every day is synthetic, "real" otherwise; null when no data. */
+  source: "real" | "deterministic" | null;
+};
+
+/**
+ * Comp-set median per stay date in [from, to] using ONLY active competitors
+ * and, for each stay date, ONLY the snapshots of the LATEST shopDate that
+ * covers it (older shops of the same night are stale and must not dilute the
+ * median). Provenance is read from `metadataJson.source`: the deterministic
+ * provider labels every row it writes; anything else counts as real.
+ * Days with no shop are simply absent → consumers treat them as "sin compset".
+ */
+export async function compsetMedianByDate(propertyId: string, from: Date | string, to: Date | string): Promise<CompsetWindow> {
+  const start = dayUtc(from);
+  const end = dayUtc(to);
+  const empty: CompsetWindow = { byDate: new Map(), activeCompetitors: 0, source: null };
+  if (start.getTime() > end.getTime()) return empty;
+  const competitors = await prisma.competitorHotel.findMany({ where: { propertyId, active: true }, select: { id: true }, take: 100 });
+  if (competitors.length === 0) return empty;
+  const rows = await prisma.competitorRateSnapshot.findMany({
+    where: { propertyId, competitorHotelId: { in: competitors.map((c) => c.id) }, stayDate: { gte: start, lte: end }, price: { not: null } },
+    select: { stayDate: true, shopDate: true, price: true, metadataJson: true },
+    orderBy: [{ stayDate: "asc" }, { shopDate: "desc" }],
+    take: 20000
+  });
+  const acc = new Map<string, { shopDate: string; prices: number[]; deterministic: number }>();
+  for (const r of rows) {
+    const price = dec(r.price);
+    if (price <= 0) continue;
+    const key = isoDate(r.stayDate);
+    const shop = isoDate(r.shopDate);
+    let a = acc.get(key);
+    if (!a || shop > a.shopDate) {
+      a = { shopDate: shop, prices: [], deterministic: 0 };
+      acc.set(key, a);
+    } else if (shop < a.shopDate) {
+      continue; // older shop of a night already covered by a newer one
+    }
+    a.prices.push(price);
+    const meta = r.metadataJson && typeof r.metadataJson === "object" && !Array.isArray(r.metadataJson) ? (r.metadataJson as Record<string, unknown>) : {};
+    if (meta.source === "deterministic") a.deterministic++;
+  }
+  const byDate = new Map<string, CompsetDay>();
+  let realDays = 0;
+  for (const [key, a] of acc) {
+    if (!a.prices.length) continue;
+    const source = a.deterministic === a.prices.length ? "deterministic" : "real";
+    if (source === "real") realDays++;
+    byDate.set(key, { median: round2(median(a.prices)), source, shopDate: a.shopDate, samples: a.prices.length });
+  }
+  return { byDate, activeCompetitors: competitors.length, source: byDate.size === 0 ? null : realDays > 0 ? "real" : "deterministic" };
+}
+
 // ---- Recommendation engine ------------------------------------------------
 export type GenerateRecommendationsResult = {
   generated: number;
@@ -159,10 +225,8 @@ export async function generateRecommendations(input: { context: UserContext; pro
   // Current BAR per day: published BAR of the BAR plan (lead rate), never a default.
   const publishedBar = await getPublishedBar(propertyId, from, to);
 
-  // Comp-set median per day from the latest shop.
-  const compRows = await prisma.competitorRateSnapshot.findMany({ where: { propertyId, stayDate: { gte: from, lte: to }, price: { not: null } }, select: { stayDate: true, price: true } });
-  const compByDay = new Map<string, number[]>();
-  for (const r of compRows) { const k = isoDate(r.stayDate); const arr = compByDay.get(k) ?? []; arr.push(dec(r.price)); compByDay.set(k, arr); }
+  // Comp-set median per day: active competitors, latest shop per stay date (shared resolver).
+  const compset = await compsetMedianByDate(propertyId, from, to);
 
   // Rules + BAR ladder: loaded once for the whole window (no per-day queries).
   const [rules, levels] = await Promise.all([
@@ -182,7 +246,8 @@ export async function generateRecommendations(input: { context: UserContext; pro
       skippedNoBar++;
       continue; // no published BAR → nothing to recommend against
     }
-    const compMedian = compByDay.has(key) ? round2(median(compByDay.get(key) as number[])) : null;
+    const compDay = compset.byDate.get(key);
+    const compMedian = compDay ? compDay.median : null;
 
     // First matching rule by occupancy band.
     const rule = rules.find((r) => {
@@ -197,7 +262,7 @@ export async function generateRecommendations(input: { context: UserContext; pro
       { driver: "current_bar", value: baseBar },
       { driver: "current_bar_source", value: "rate_grid" }
     ];
-    if (compMedian !== null) reasons.push({ driver: "compset_median", value: compMedian });
+    if (compDay) reasons.push({ driver: "compset_median", value: compDay.median }, { driver: "compset_source", value: compDay.source }, { driver: "compset_shop_date", value: compDay.shopDate });
 
     if (rule) {
       recommended = rule.adjustType === "amount" ? baseBar + dec(rule.adjustValue) : baseBar * (1 + dec(rule.adjustValue) / 100);
@@ -255,25 +320,45 @@ export async function generateRecommendations(input: { context: UserContext; pro
 }
 
 /**
- * `current.bar` is only exposed when the row records its provenance
- * (`barSource: "rate_grid"`, written by this engine). Legacy rows generated
- * against a default price have no provenance → bar null, barSource "unknown".
+ * `current.bar` solo se expone cuando la fila registra su procedencia
+ * (`barSource: "rate_grid"`). La escriben dos motores con claves distintas:
+ * este (`bar`, recomendaciones de BAR por día) y el RMS de la parrilla
+ * (`price`, recommendations.routes apply: filas `recommendationType
+ * "rate_grid"` con `currentValueJson.price`). Sin leer `price`, «Reglas y
+ * recomendaciones de BAR» pintaba «sin tarifario» para toda decisión tomada
+ * desde el editor (browser-ux#11). Filas antiguas sin procedencia → bar null,
+ * barSource "unknown". Exportada para el test unitario.
  */
-function mapCurrentValue(json: unknown): Record<string, unknown> & { bar: number | null; barSource: string } {
+export function mapCurrentValue(json: unknown): Record<string, unknown> & { bar: number | null; barSource: string } {
   const current = json && typeof json === "object" && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
   const barSource = typeof current.barSource === "string" ? current.barSource : "unknown";
-  const bar = barSource === "rate_grid" ? num(current.bar) ?? null : null;
+  const bar = barSource === "rate_grid" ? num(current.bar) ?? num(current.price) ?? null : null;
   return { ...current, bar, barSource };
+}
+
+/**
+ * Misma lectura para `recommended.bar`: el RMS de la parrilla guarda
+ * `appliedPrice` (lo publicado) y `price` (la sugerencia del motor); la pantalla
+ * de BAR muestra `bar`, así que se deriva de ellos solo cuando la fila viene de
+ * la parrilla (`barSource "rate_grid"`); el resto del JSON se devuelve tal cual.
+ * Sin `bar` derivable → null explícito (la UI pinta «—»).
+ */
+export function mapRecommendedValue(json: unknown, barSource: string): Record<string, unknown> & { bar: number | null } {
+  const recommended = json && typeof json === "object" && !Array.isArray(json) ? (json as Record<string, unknown>) : {};
+  const own = num(recommended.bar);
+  const fromGrid = barSource === "rate_grid" ? num(recommended.appliedPrice) ?? num(recommended.price) : undefined;
+  return { ...recommended, bar: own ?? fromGrid ?? null };
 }
 
 function mapRecommendation(r: Awaited<ReturnType<typeof prisma.revenueRecommendation.findFirst>>) {
   if (!r) return null;
+  const current = mapCurrentValue(r.currentValueJson);
   return {
     id: r.id,
     recommendationType: r.recommendationType,
     targetDate: isoDate(r.targetDate),
-    current: mapCurrentValue(r.currentValueJson),
-    recommended: r.recommendedValueJson,
+    current,
+    recommended: mapRecommendedValue(r.recommendedValueJson, current.barSource),
     expectedImpact: r.expectedImpactJson,
     reasons: r.reasonJson,
     confidence: dec(r.confidence),

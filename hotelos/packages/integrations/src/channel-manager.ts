@@ -1,4 +1,11 @@
 /**
+ * @deprecated (rate grid v2, 2026-09-14) · Superseded by the API module
+ * `apps/api/src/modules/channel-manager/**` (adapter contract v2, per-channel
+ * mode stub|sandbox|real, ChannelDelivery outbox + drain, Booking OTA 2003B /
+ * Expedia EQC AR / Channex adapters validated against a local simulator). Keep
+ * for the demo boards and the product catalogue that still import the mock
+ * codes; do not add features here. See docs/channel-manager-connectivity.md.
+ *
  * Channel-manager adapters · HONEST STATUS (audit 2026-06 · #11).
  *
  * Every adapter in CHANNEL_MANAGER_ADAPTERS is a MOCK: booking_com_mock,

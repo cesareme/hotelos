@@ -14,6 +14,16 @@ import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../components/Sta
 function fmtDate(iso: string): string {
   return new Date(`${iso}T00:00:00.000Z`).toLocaleDateString("es-ES", { weekday: "short", day: "2-digit", month: "short", timeZone: "UTC" });
 }
+// es-ES percentage with an explicit sign («+4,5 %», «−3 %»), never en-US.
+const pctFormat = new Intl.NumberFormat("es-ES", { signDisplay: "always", maximumFractionDigits: 1 });
+function fmtPct(value: number): string {
+  return `${pctFormat.format(value)}\u00a0%`;
+}
+/** Deep link to the rate grid editor on the recommendation's night (the editor reads ?from&to). */
+function rateGridHref(iso: string): string {
+  const q = new URLSearchParams({ from: iso, to: iso });
+  return `/backoffice/revenue/rate-grid?${q.toString()}`;
+}
 function statusPill(status: string): string {
   if (status === "applied") return "ok";
   if (status === "approved") return "ok";
@@ -119,7 +129,7 @@ export function RevenueRulesScreen() {
               <div className="rev-report-wrap">
                 <table className="cm-table">
                   <thead>
-                    <tr><th>Fecha</th><th>Ocup.</th><th>BAR actual</th><th>Comp-set</th><th>BAR sugerido</th><th>Δ</th><th>Estado</th><th>Acciones</th></tr>
+                    <tr><th>Fecha</th><th>Ocup.</th><th>BAR actual</th><th>Compset</th><th>BAR sugerido</th><th>Δ</th><th>Estado</th><th>Acciones</th></tr>
                   </thead>
                   <tbody>
                     {recs.slice(0, 30).map((r) => {
@@ -129,8 +139,12 @@ export function RevenueRulesScreen() {
                       const noBar = r.current?.bar == null;
                       return (
                         <tr key={r.id} className={r.riskLevel === "high" ? "cm-row-warn" : undefined}>
-                          <td><strong>{fmtDate(r.targetDate)}</strong></td>
-                          <td>{r.current?.occupancyPct != null ? `${r.current.occupancyPct}%` : "—"}</td>
+                          <td>
+                            <a href={rateGridHref(r.targetDate)} className="bo-button-link" title="Abrir esa noche en el editor de tarifas">
+                              <strong>{fmtDate(r.targetDate)}</strong>
+                            </a>
+                          </td>
+                          <td>{r.current?.occupancyPct != null ? `${pctFormat.format(r.current.occupancyPct).replace(/^\+/, "")}\u00a0%` : "—"}</td>
                           <td title={noBar ? "Sin BAR publicado en la parrilla para esta fecha" : undefined}>
                             {noBar ? "—" : money(r.current.bar as number)}
                             {noBar ? <small className="bo-muted" style={{ display: "block", textTransform: "none" }}>sin tarifario</small> : null}
@@ -138,7 +152,7 @@ export function RevenueRulesScreen() {
                           <td>{r.current?.compsetMedian != null ? money(r.current.compsetMedian) : "—"}</td>
                           <td><strong>{r.recommended?.bar != null ? money(r.recommended.bar) : "—"}</strong></td>
                           <td style={{ color: delta == null ? undefined : delta >= 0 ? "var(--ok-ink, #0a7e57)" : "var(--danger-ink, #c2413a)" }}>
-                            {delta == null ? "—" : `${delta >= 0 ? "+" : ""}${delta}%`}
+                            {delta == null ? "—" : fmtPct(delta)}
                           </td>
                           <td><span className={`bo-status ${statusPill(r.status)}`} style={{ textTransform: "none" }}>{STATUS_ES[r.status] ?? r.status}</span></td>
                           <td>
@@ -176,7 +190,7 @@ export function RevenueRulesScreen() {
                         <td>{r.priority}</td>
                         <td><strong>{r.name}</strong></td>
                         <td>{r.minOccupancy ?? "0"}% – {r.maxOccupancy ?? "100"}%</td>
-                        <td>{r.adjustType === "percent" ? `${Number(r.adjustValue) >= 0 ? "+" : ""}${r.adjustValue}%` : money(Number(r.adjustValue))}</td>
+                        <td>{r.adjustType === "percent" ? fmtPct(Number(r.adjustValue)) : money(Number(r.adjustValue))}</td>
                         <td><span className={`bo-status ${r.active ? "ok" : "info"}`}>{r.active ? "activa" : "inactiva"}</span></td>
                       </tr>
                     ))}

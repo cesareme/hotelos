@@ -25,11 +25,42 @@ const apiSrcDir = new URL("../apps/api/src/", import.meta.url);
 const readApi = (relative) => readFileSync(new URL(relative, apiSrcDir), "utf8");
 
 const server = readApi("server.ts");
-const routeFiles = readdirSync(new URL("routes/", apiSrcDir))
-  .filter((name) => name.endsWith(".ts"))
-  .sort()
-  .map((name) => ({ file: `routes/${name}`, source: readApi(`routes/${name}`) }));
+const routeFiles = [
+  ...readdirSync(new URL("routes/", apiSrcDir))
+    .filter((name) => name.endsWith(".ts"))
+    .sort()
+    .map((name) => ({ file: `routes/${name}`, source: readApi(`routes/${name}`) })),
+  // Rate grid v2 convention: a module registers its own routes in
+  // modules/<module>/*.routes.ts (registerXRoutes(app)); they are part of the
+  // inventory exactly like routes/*.ts.
+  ...readdirSync(new URL("modules/", apiSrcDir))
+    .flatMap((mod) => {
+      let names = [];
+      try { names = readdirSync(new URL(`modules/${mod}/`, apiSrcDir)); } catch { return []; }
+      return names.filter((name) => name.endsWith(".routes.ts")).sort().map((name) => `modules/${mod}/${name}`);
+    })
+    .sort()
+    .map((relative) => ({ file: relative, source: readApi(relative) }))
+];
+// Rate grid v2 convention: modules contribute their manifest entries from
+// modules/<module>/route-permissions.partial.ts (spread into the manifest), so
+// the parser reads the main file plus every partial.
+const manifestPartials = readdirSync(new URL("modules/", apiSrcDir))
+  .flatMap((mod) => {
+    try {
+      return readdirSync(new URL(`modules/${mod}/`, apiSrcDir))
+        .filter((name) => name === "route-permissions.partial.ts")
+        .map((name) => `modules/${mod}/${name}`);
+    } catch {
+      return [];
+    }
+  })
+  .sort();
 const manifestSource = readApi("security/route-permissions.ts");
+const manifestSources = [
+  { file: "security/route-permissions.ts", source: manifestSource },
+  ...manifestPartials.map((relative) => ({ file: relative, source: readApi(relative) }))
+];
 const authContextSource = readApi("lib/auth-context.ts");
 const permissionsSource = readFileSync(new URL("../packages/shared/src/permissions.ts", import.meta.url), "utf8");
 const docs = readFileSync(new URL("../docs/api-contracts.md", import.meta.url), "utf8");
@@ -83,10 +114,20 @@ function extractRoutes(rawSource, file) {
   return { routes, unsupported };
 }
 
-function parseManifest(source) {
-  const start = source.indexOf("export const routePermissionManifest");
+function parseManifest(rawSource, file = "security/route-permissions.ts") {
+  // Same treatment as extractRoutes: a commented-out entry (`// NOTE: { method:
+  // "POST", path: … }`) is NOT part of the manifest. Without this, a comment
+  // quoting an entry satisfied check (a) while the live route stayed unmapped
+  // (DR-01: POST /channel-manager/_sandbox/:provider answered 403 with the
+  // suite green). Line count is preserved by stripLineComments, so `line`
+  // below still points at the real source line.
+  const source = stripLineComments(rawSource);
+  // The main file declares `routePermissionManifest`; a module partial declares
+  // `export const <name>: ApiRoutePermission[] = [ … ]` (same entry shape).
+  const declMatch = /export const \w+(?:: ApiRoutePermission\[\])? = \[/.exec(source);
+  const start = file === "security/route-permissions.ts" ? source.indexOf("export const routePermissionManifest") : (declMatch ? declMatch.index : -1);
   const end = source.indexOf("\n];", start);
-  assert.ok(start >= 0 && end > start, "routePermissionManifest array not found in route-permissions.ts");
+  assert.ok(start >= 0 && end > start, `permission manifest array not found in ${file}`);
   const body = source.slice(start, end);
   const entries = [];
   const entryPattern =
@@ -127,8 +168,18 @@ const extracted = [{ file: "server.ts", source: server }, ...routeFiles].map(({ 
 }));
 const registered = extracted.flatMap((x) => x.routes);
 const unsupported = extracted.flatMap((x) => x.unsupported);
-const manifest = parseManifest(manifestSource);
+const manifest = manifestSources.flatMap(({ file, source }) => parseManifest(source, file).map((entry) => ({ ...entry, file })));
 const catalog = permissionCatalog(permissionsSource);
+
+// PUBLIC_PREFIXES of lib/auth-context.ts (the routes the staff auth hook lets
+// through without a bearer). Matched exactly like isPublicRoute: the prefix
+// itself or a sub-path of it.
+const publicPrefixes = [
+  ...authContextSource
+    .slice(authContextSource.indexOf("const PUBLIC_PREFIXES"), authContextSource.indexOf("];", authContextSource.indexOf("const PUBLIC_PREFIXES")))
+    .matchAll(/"([^"]+)"/g)
+].map((m) => m[1]);
+const isPublicPath = (path) => publicPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}/`));
 
 describe("API route permission manifest (AUTH-03)", () => {
   it("extracts a credible route inventory from server.ts and routes/*.ts", () => {
@@ -142,9 +193,11 @@ describe("API route permission manifest (AUTH-03)", () => {
       assert.ok(routes.length > 0, `no routes extracted from ${file}`);
     }
     const has = (method, path) => registered.some((r) => r.method === method && r.path === path);
+    // Rate grid v2: the template-loop channel routes were retired; the module
+    // route files (modules/<module>/*.routes.ts) must be part of the inventory.
     assert.ok(
-      has("POST", "/channel-manager/channels/:channelId/sync/full"),
-      "template-loop routes (CHANNEL_SYNC_ROUTE_TEMPLATES) not extracted"
+      has("GET", "/properties/:propertyId/channels") && has("POST", "/properties/:propertyId/rate-grid/bulk-update"),
+      "module *.routes.ts registrations (channel-manager, rate-manager) not extracted"
     );
     assert.ok(has("GET", "/admin/tenants"), "single-quoted registrations not extracted");
     assert.ok(has("GET", "/webhooks/subscriptions"), "routes/*.ts plugin registrations not extracted");
@@ -160,6 +213,27 @@ describe("API route permission manifest (AUTH-03)", () => {
       [],
       `registered routes without a manifest entry — add them to routePermissionManifest:\n${missing.join("\n")}`
     );
+  });
+
+  it("(a′) every registered route under PUBLIC_PREFIXES has a riskLevel \"public\" manifest entry (a token-less route can never be gated by the manifest)", () => {
+    // The auth hook lets these requests through WITHOUT a session, so the
+    // permission preHandler evaluates them against an EMPTY permission set:
+    // anything but an explicit `public` entry (none in strict mode, or a
+    // permission-carrying entry) turns the route into a 403 for everyone.
+    // DR-01: POST /channel-manager/_sandbox/:provider was registered and
+    // listed in PUBLIC_PREFIXES while its manifest entry was only a comment.
+    assert.ok(publicPrefixes.length >= 10, "PUBLIC_PREFIXES not parsed");
+    const byKey = new Map(manifest.map((entry) => [routeKey(entry), entry]));
+    const problems = registered
+      .filter((route) => isPublicPath(route.path))
+      .map((route) => {
+        const entry = byKey.get(routeKey(route));
+        if (!entry) return `${routeKey(route)}  has no manifest entry (${route.file}:${route.line})`;
+        if (entry.riskLevel !== "public") return `${routeKey(route)}  mapped ${entry.riskLevel} with ${JSON.stringify(entry.permissions.map((p) => p.key))} (${entry.file}:${entry.line})`;
+        return null;
+      })
+      .filter(Boolean);
+    assert.deepEqual(problems, [], `public-prefix routes that the manifest would gate:\n${problems.join("\n")}`);
   });
 
   it("(b) every manifest entry corresponds to a registered route — no orphans", () => {
@@ -464,11 +538,10 @@ describe("Tanda 3 · cierre (server-rutas): dangling promises, process guards, d
     assert.match(manifestSource, /export function routeRiskLevel\(method: string, path: string\): RiskLevel \| null \{/);
     // Every PUBLIC_PREFIXES route is riskLevel "public": the gate can never
     // reach a token-less public route (guest portal, login, oauth callback…).
-    const publicPrefixes = [...authContextSource.slice(authContextSource.indexOf("const PUBLIC_PREFIXES"), authContextSource.indexOf("];", authContextSource.indexOf("const PUBLIC_PREFIXES"))).matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    // (a′) above already requires the exact `public` entry; this keeps the
+    // narrower H1 invariant explicit next to the gate it protects.
     assert.ok(publicPrefixes.length >= 10, "PUBLIC_PREFIXES not parsed");
-    const gatedPublic = manifest.filter(
-      (entry) => publicPrefixes.some((prefix) => entry.path === prefix || entry.path.startsWith(`${prefix}/`)) && (entry.riskLevel === "high" || entry.riskLevel === "critical")
-    );
+    const gatedPublic = manifest.filter((entry) => isPublicPath(entry.path) && (entry.riskLevel === "high" || entry.riskLevel === "critical"));
     assert.deepEqual(gatedPublic.map(routeKey), [], "a public-prefix route mapped high/critical would be refused without a token");
   });
 

@@ -32,6 +32,10 @@ export type CocoaInputProps = {
     | "decimal"
     | "search";
   required?: boolean;
+  /** Accessible name when there is no visible <label> (cierre 2026-09-15). */
+  "aria-label"?: string;
+  /** Explicit id so an external <label htmlFor> can point at the input; defaults to a generated one. */
+  id?: string;
 };
 
 type SizeMetrics = {
@@ -91,10 +95,13 @@ export function CocoaInput(props: CocoaInputProps) {
     error = false,
     inputMode,
     required = false,
+    "aria-label": ariaLabel,
+    id,
   } = props;
 
   const [focused, setFocused] = useState(false);
-  const inputId = useId();
+  const generatedId = useId();
+  const inputId = id ?? generatedId;
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   const metrics = SIZE_METRICS[size];
@@ -194,6 +201,7 @@ export function CocoaInput(props: CocoaInputProps) {
         inputMode={inputMode}
         aria-invalid={error || undefined}
         aria-required={required || undefined}
+        aria-label={ariaLabel}
         style={inputStyle}
       />
       {rightSlot ? <span style={slotStyle}>{rightSlot}</span> : null}

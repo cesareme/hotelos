@@ -167,7 +167,12 @@ export const PII_FIELDS: Record<string, readonly string[]> = {
   // audit 2026-06 R2 · #9: webhook signing secret. A leaked DB would let an
   // attacker forge valid HMAC-SHA256 webhook signatures to any endpoint registered
   // on this platform. Encrypt at rest like other credential references.
-  WebhookSubscription: ["secretRef"]
+  WebhookSubscription: ["secretRef"],
+  // Rate grid v2 (channel outbox): OTA / aggregator credentials of a channel
+  // (Booking client_secret, Expedia EQC password, Channex api key, webhook
+  // secret) stored as a JSON string. Written by channels.service, never
+  // returned by the API (GET answers hasCredentials + key names only).
+  Channel: ["credentialsEncrypted"]
 };
 
 // Test-only helper: reset the one-time warning latch so unit tests can

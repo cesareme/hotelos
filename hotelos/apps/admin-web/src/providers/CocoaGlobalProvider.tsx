@@ -291,9 +291,18 @@ function buildDefaultCommands(bindings: DefaultCommandBindings): CocoaCommandPal
 // ---------------------------------------------------------------------------
 export interface CocoaGlobalProviderProps {
   children: ReactNode;
+  /**
+   * Bind ⌘K / Ctrl+K to the Cocoa command palette (default true). The
+   * back-office shell has its own CommandPalette (screens + live search
+   * hits) on the same shortcut: with both bound, ⌘K opened TWO stacked
+   * palettes and Enter picked the first item of this one («Reservaciones»).
+   * App.tsx passes false so only the shell's palette answers the shortcut;
+   * this palette stays reachable through `useCocoaCommandPalette().open()`.
+   */
+  commandPaletteHotkey?: boolean;
 }
 
-export function CocoaGlobalProvider({ children }: CocoaGlobalProviderProps) {
+export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: CocoaGlobalProviderProps) {
   // Overlay open/close state — each overlay is independent so opening one
   // doesn't dismiss another (e.g. About opened from the palette while the
   // palette is closing).
@@ -450,6 +459,9 @@ export function CocoaGlobalProvider({ children }: CocoaGlobalProviderProps) {
       if (mod && !event.shiftKey && !event.altKey) {
         const key = event.key.toLowerCase();
         if (key === "k") {
+          // Without the hotkey the event is left untouched for the shell's
+          // own ⌘K listener (BackOfficeLayout), which also prevents default.
+          if (!commandPaletteHotkey) return;
           event.preventDefault();
           openPalette();
           return;
@@ -476,7 +488,7 @@ export function CocoaGlobalProvider({ children }: CocoaGlobalProviderProps) {
     }
     document.addEventListener("keydown", handleKey);
     return () => document.removeEventListener("keydown", handleKey);
-  }, [openPalette, openShortcuts, openPreferences]);
+  }, [openPalette, openShortcuts, openPreferences, commandPaletteHotkey]);
 
   // Merge default + externally-registered commands for the palette. Defaults
   // come first so the navigation entries always appear at the top of the

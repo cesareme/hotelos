@@ -93,11 +93,13 @@ paths para CI o referencias, recuerda el prefijo.
 
 ### OTAs e integraciones (packages/integrations/src)
 
-- `channel-manager.ts` — agregador unificado con interfaz común. OJO: los 5
-  adapters (`booking_com_mock`, `expedia_mock`, `google_hotels_mock`,
-  `direct_booking_engine`, `manual_channel`) son **MOCK** — datos sintéticos,
-  sin credenciales ni mapeo de payload OTA. NO hay conexión OTA real todavía;
-  `pullReservations` devuelve un huésped hardcodeado. (audit 2026-06 · #11)
+- `channel-manager.ts` — **deprecado (rate grid v2, 2026-09-14)**: agregador
+  v1 con 5 adapters mock (`booking_com_mock`, `expedia_mock`,
+  `google_hotels_mock`, `direct_booking_engine`, `manual_channel`); se
+  conserva solo para los tableros demo. La conectividad real (Booking OTA
+  XML, Expedia EQC, Channex; outbox `ChannelDelivery` y drenaje) vive en
+  `apps/api/src/modules/channel-manager` (Deuda 13,
+  `docs/channel-manager-connectivity.md`).
 - `messaging.ts` — WhatsApp Business + Email + SMS
 - `bank-reconciliation.ts` — CSB-43 + SEPA Norma 19
 - `einvoice.ts` + `ses-hospedajes.ts`
@@ -126,6 +128,31 @@ Estado verificado (cierre Tanda 4, 2026-09-14):
 - typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web: sin
   `@types/react`, ~266 errores preexistentes; añadirla exige regenerar el lockfile)
 - contratos 281/281 · unitarios api 504/504 · integración 31/31 · env 135/135
+
+Estado verificado (cierre Rate Grid v2, 2026-09-15, integrador final):
+- 190 screens alcanzables · 0 broken links · placeholders 71/80
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · `.husky/pre-commit` OK
+- contratos 293/293 · unitarios api 815 (814 pass · 1 skipped) · integración 80/80 · env 128/128
+- migraciones 3/3 aplicadas en local (`migrate status` al día, drift 0); (histórico,
+  14/09) los API :3000/:3400 siguen sirviendo el código anterior hasta que el
+  integrador humano los reinicie — hoy (15/09/2026) sirven el working tree completo
+  tras dos reinicios, y las correcciones de pantalla de los lotes finales se
+  verificaron en navegador en el recorrido final (informe de cierre §6.5)
+
+Estado verificado (cierre documental final Rate Grid v2, 2026-09-15, tras el
+reinicio de :3000/:3400 y los lotes de corrección finales):
+- :3000/:3400 reiniciados dos veces el 2026-09-15 (tras el cierre y tras los
+  lotes finales): sirven el working tree completo; integración 80/80 tras el
+  primer reinicio (no repetida tras los lotes finales: pendiente antes del commit)
+- 190 screens alcanzables · 0 broken links · placeholders 71/80
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web)
+- contratos 293/293 · unitarios api 840 (839 pass · 1 skipped) · env 128/128
+- recorrido en navegador como Carmen y sonda del API tras el reinicio: 19
+  hallazgos (BUX-01..14, ALF-1..5): 16 corregidos (BUX-07 y ALF-4 parciales),
+  1 nota de comportamiento (ALF-5), 1 atribuido al driver (BUX-05), 1 abierto
+  (ALF-1); las correcciones de pantalla se verificaron en navegador el
+  15/09/2026 (recorrido final, `docs/audits/RATE-GRID-V2-CIERRE-2026-09-15.md`
+  §6.5); solo BUX-05 sigue pendiente por exigir teclado físico
 
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
@@ -321,9 +348,14 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
 6. E2E tests son TODO (Playwright no montado). Sí hay tests de integración
    reales con `app.inject` (`pnpm test:integration`, audit #8) además de los
    contract tests readFileSync.
-7. **OTAs son MOCK** (audit #11): el channel manager no recibe reservas reales
-   de Booking/Expedia. Para un PMS de producción hay que implementar 1 adapter
-   real (Booking XML/push-pull o Channex) con credenciales + sandbox round-trip.
+7. **OTAs (audit #11) — CERRADA por Rate Grid v2 (deuda 13):** adaptadores
+   Booking OTA XML, Expedia EQC y Channex «contract-ready» contra el simulador
+   local (validación estructural, no certificación); sin credenciales reales
+   de Booking (altas pausadas) ni Expedia (contrato/PCI); vía a producción
+   Channex (`CHANNEL_MAX_MODE=real` + cuenta staging). Estado real en
+   `docs/channel-manager-connectivity.md`.
+   `packages/integrations/src/channel-manager.ts` queda deprecado (solo
+   tableros demo).
 8. **Seguridad multi-tenant (audit 2026-06 · auditoría 360 2026-09-13):** IDOR
    de escritura y rate limit cerrados. El RBAC fail-open de GET está CERRADO
    por defecto en producción (AUTH-03): las 62 GET sin manifiesto quedaron
@@ -437,6 +469,95 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     (FAC-2026-000014 enlaza al `cancellation_hash` de FAC-2026-000009, no al
     `verifactu_hash` de la anterior por numeración): válida como grafo, residuo de
     sandbox.
+13. **Rate Grid v2 (2026-09-14/15):** parrilla de tarifas + outbox de canales.
+    Módulos: `apps/api/src/modules/rate-manager` (grid, bulk-update en UNA
+    transacción con journal y rematerialización de derivados, push, sync-status,
+    journal/revert, rederive), `modules/channel-manager` (canales, credenciales
+    cifradas write-only, product mappings, outbox `ChannelDelivery`, drenaje con
+    toma atómica `FOR UPDATE SKIP LOCKED`, simulador stub/sandbox de Booking OTA
+    XML / Expedia EQC / Channex JSON — validación estructural local, no
+    certificación del proveedor —, webhook con HMAC sobre bytes originales) y
+    `modules/revenue/recommendations.routes.ts` (RMS por día × tipo; `apply`
+    devuelve parches, nunca escribe `rate_days`; acepta ventana o `cells[]`).
+    Convención por módulo: `*.routes.ts` + `route-permissions.partial.ts` +
+    `env.partial.ts` — los contract tests (`api-route-permissions-contract`,
+    `revenue-channel-manager-contract`) ya los leen, así que una ruta nueva va
+    con su entrada de permisos en el partial y una variable nueva en el partial
+    de entorno. Contrato: `packages/shared/src/rate-manager-types.ts` (contrato
+    acordado del cierre 2026-09-15 en el runbook §6). Reglas: ops antes que
+    cells, `ratePlanId "*"` para restricciones/disponibilidad, 409
+    `ALL_CELLS_CONFLICT` cuando todo conflige, 400 para precio por canal, 400
+    `NO_CELLS` / `TOO_MANY_CELLS` / `INACTIVE_RATE_PLANS` / `UNKNOWN_IDS` /
+    `DERIVATION_CHAIN` / `DERIVATION_YIELDS_ZERO`; UNA transacción por propiedad
+    (`pg_advisory_xact_lock` + `lock_timeout` 30 s → 409 `RATE_GRID_BUSY`);
+    concurrencia optimista con `cells[].expected { price, lastModifiedAt }`
+    (conflicto «la celda cambió desde que se cargó»); el revert exige el `after`
+    del asiento → 409 `JOURNAL_STALE` con `details.cells` (`{ force: true }` lo
+    fuerza), restaura `source` y NO toca canales (el editor ofrece «Enviar a
+    canales»); journal con un item por (celda, campo); outbox: la entrega más
+    reciente por celda lleva el payload actual (supersede incondicional,
+    reencolado de una confirmada adelantada, retiro `superseded` en cada
+    drenaje) y los `Date` del SQL crudo del drenaje van en UTC explícito
+    (`AT TIME ZONE 'UTC'`); `DELETE /channel-manager/channels/:id` = archivado
+    lógico. Verificación adversarial 2026-09-15 (6 dimensiones, 94 hallazgos
+    tratados: corregidos, traspasados o justificados):
+    `docs/audits/RATE-GRID-V2-CIERRE-2026-09-15.md`.
+    Tests: `tests/integration/rate-grid-v2.test.mts` y `channel-outbox.test.mts`
+    (`corepack pnpm test:integration`; ambos ficheros de integración cargan
+    `hotelos/.env` con `process.loadEnvFile` antes de nada, sin pisar variables ya
+    definidas, para descifrar las credenciales sembradas: sin `.env` usan valores
+    por defecto de CI y los casos de publish encolan 0; 80/80 el 2026-09-15 tras
+    el reinicio de :3000/:3400) y el contrato documental
+    `tests/rate-grid-docs-contract.test.mjs` (tabla de permisos del runbook ↔
+    partials, límites ↔ constantes, contrato compartido ↔ runbook). Runbook:
+    `docs/runbooks/rate-grid-v2.md`. **Deuda:** overrides de precio por celda y
+    canal no soportados (`RateDay` sin canal; el precio por canal es base ×
+    `defaultMarkupPercent`; la fila de canal en el editor solo admite
+    restricciones), `pull-reservations` solo alimenta `ExternalReservation` (no
+    crea reservas PMS), Booking en pausa de onboarding y Expedia EQC sin
+    cuenta/PCI (adaptadores listos contra el simulador; la vía a producción es
+    Channex: faltan cuenta staging + API key, ids de propiedad/productos de
+    Channex, extranet ids de Booking/Expedia de Rías Altas y Los Tilos, y
+    `CHANNEL_MAX_MODE=real` SOLO en producción), token bucket del limitador por
+    proceso, filas `sending` de un worker caído se retoman a los 10 min salvo
+    que exista una entrega posterior de la misma celda (entonces se retiran
+    como `superseded`); **patrón TimeZone de sesión** en `$queryRaw`/
+    `$executeRaw` sin revisar fuera del drenaje (`server.ts`, `lib/tenancy.ts`,
+    `lib/reservation-code.ts`, `modules/pms/pms.service.ts`,
+    `modules/folio/folio.service.ts`, `modules/invoicing/invoice.service.ts`,
+    `modules/invoicing/verifactu-submission.service.ts`,
+    `modules/mobile-keys/wallet-pass.service.ts`,
+    `modules/assistant/assistant.tools.ts`, `jobs/pii-backfill.ts`,
+    `scripts/refresh-demo-dataset.ts`) — o fijar `TimeZone=UTC` en
+    `DATABASE_URL` (`?options=-c%20TimeZone%3DUTC`) y documentarlo en el
+    contrato de env; **agrupado de escrituras del `bulk-update`** (upsert por
+    celda dentro de la transacción; solo acotado a 366 días / 5.000 parches);
+    **programación de publicaciones (`scheduleAt`) no implementada** (el editor
+    retiró el control decorativo); **asimetría de permisos**
+    `deliveries/enqueue` (`channel_manager.sync`) vs `rate-grid/push`
+    (`distribution.sync`); contrato del cierre ya en el working tree
+    (`CellSyncStatus` `stale`, `pushStatus` `draft|queued|pushed|partial|failed|
+    superseded` recalculado desde las entregas, reversión con `reason`
+    «Reversión: <motivo>[ — <texto>]» y `revertsJournalId` en `changesJson`,
+    `RateGridErrorCode` con todos los `details.code` 4xx, encolado acotado desde los
+    parches, `currentPrice`/`suggestedPrice` en `recommendations/apply` llamado
+    tras el `bulk-update`, `CHANNEL_DELIVERY_RETENTION_DAYS` con purga horaria de
+    `superseded`, `@@unique([propertyId, clientRequestId])` aplicado en local —
+    el VPS debe deduplicar antes de `migrate deploy` —, etiqueta 413 `Payload
+    Too Large`; `scheduleAt` sigue sin existir) — ver runbook §6. Puesta en
+    vigor el 2026-09-15: :3000/:3400 reiniciados con este código,
+    `test:integration` 80/80 después, recorrido en navegador como Carmen y
+    sonda del API (19 hallazgos BUX/ALF corregidos el mismo día en los lotes
+    `fix:admin-web` / `fix:api-channel-manager` / `fix:api-rate-manager` /
+    `fix:docs`, API reiniciados otra vez después; abiertos ALF-1 y el `nan` de
+    `typeNameEs`; las correcciones de pantalla se verificaron en navegador el
+    15/09/2026 en un recorrido final tras el segundo reinicio —Carmen, Los
+    Tilos 2027-08-15..31, datos restaurados, sin regresiones; runbook §2.2 e
+    informe §6.5— salvo BUX-05 (teclado físico), las ramas «Fijar otro
+    precio»/«Aceptar con ajuste» del popover, los recuentos de `bulk-update` +
+    `publish` y la línea «Efectivo» con un canal activo, que siguen marcadas
+    con su motivo; el contrato documental impide marcadores de navegador sin
+    motivo).
 
 ## Docs prioritarios
 
@@ -446,7 +567,10 @@ Antes de tomar decisiones de producto, lee:
 - `docs/audits/MOCK-SCREENS-FIX-PLAN.md` — mocks pendientes
 - `docs/cocoa-design/EXECUTIVE-SUMMARY.md` — visión Cocoa
 - `docs/cocoa-design/CHEAT-SHEET.md` — paths + tokens del DS
-- `docs/rate-manager/DESIGN-PROPOSAL.md` — Rate Manager v2 spec
+- `docs/rate-manager/DESIGN-PROPOSAL.md` — Rate Manager v2 spec de producto/UX (su sección «Endpoints backend» está obsoleta: las rutas reales son las del runbook §1.2)
+- `docs/runbooks/rate-grid-v2.md` — Rate Grid v2 operativo: contrato, outbox/drenaje, modos de canal, alta de canal y mapeo, política de la UI, Channex como vía a producción, límites, contrato del cierre (§6)
+- `docs/channel-manager-connectivity.md` + `docs/booking-adapter.md` — estado honesto de la conectividad OTA (Booking OTA XML, Expedia EQC, Channex): simulador estructural, credenciales, procedimiento de certificación Channex
+- `docs/audits/RATE-GRID-V2-CIERRE-2026-09-15.md` — cierre de la verificación adversarial de Rate Grid v2: qué se construyó, cómo se verificó, límites y lo que solo César puede aportar
 - `docs/director-dashboard/DESIGN-PROPOSAL.md`
 - `deploy/README-HOSTINGER.md` — playbook deploy producción
 - `deploy/README-REMOTE-DEV.md` — workflow remoto desde el Mac Pro (cliente único)

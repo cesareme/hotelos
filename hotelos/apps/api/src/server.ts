@@ -56,22 +56,15 @@ import {
 import { isLlmConfigured, llmComplete, llmExtractDocument } from "./lib/llm.js";
 import { recordToolCall } from "./modules/ai-operations/pipeline.service.js";
 import { MAPPING_CATALOGS } from "@hotelos/ai-tools";
-import {
-  getRateGrid,
-  applyRateUpdates,
-  applyRestrictionUpdates,
-  applyInventoryUpdates
-} from "./modules/revenue/rate-grid.service.js";
-// Rate Manager v2 service (separate module — SiteMinder-style bulk editor +
-// per-channel overrides + audit journal). The legacy `getRateGrid` above only
-// supports a flat read; this v2 service adds filters, bulk-update, push and
-// journal. Aliased to avoid clobbering the legacy export.
-import {
-  getRateGrid as getRateGridV2,
-  bulkUpdateRateGrid,
-  pushRateGrid,
-  getRateJournal
-} from "./modules/rate-manager/rate-grid.service.js";
+// Rate grid v2 (2026-09-14): ONE canonical backend (modules/rate-manager) whose
+// routes live in rate-grid.routes.ts; the old /revenue/…/rate-grid family and the
+// flat v1 routes were retired. Publishing goes through the channel-manager
+// outbox (delivery.service) and its drain job below.
+import { registerRateGridRoutes } from "./modules/rate-manager/rate-grid.routes.js";
+import { registerChannelManagerRoutes } from "./modules/channel-manager/channel-manager.routes.js";
+import { startChannelDeliveryDrain } from "./modules/channel-manager/drain.service.js";
+import { enqueueRateGridPush, getCellSyncMap as getCellSyncMapFromOutbox } from "./modules/channel-manager/delivery.service.js";
+import { registerRecommendationRoutes } from "./modules/revenue/recommendations.routes.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
 import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport, parseReportWindow } from "./modules/revenue/forecast.service.js";
 import { getHistoryForecastBoard, parseBoardWindow, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
@@ -1107,6 +1100,7 @@ export async function buildApiServer() {
       403: "Forbidden",
       404: "Not Found",
       409: "Conflict",
+      413: "Payload Too Large",
       429: "Too Many Requests"
     };
     // Typed 4xx errors may carry machine-readable `details` (e.g. the check-out
@@ -2633,119 +2627,17 @@ export async function buildApiServer() {
     return deleteRatePlan({ context: request.userContext, id: (request.params as { id: string }).id });
   });
 
-  app.get("/revenue/properties/:propertyId/rate-grid", async (request) => {
-    const params = request.params as { propertyId: string };
-    const q = request.query as { from?: string; to?: string };
-    return getRateGrid({ propertyId: params.propertyId, from: q.from, to: q.to });
-  });
-  app.patch("/revenue/properties/:propertyId/rate-grid/rates", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = (request.body ?? {}) as { updates?: Parameters<typeof applyRateUpdates>[0]["updates"] };
-    return applyRateUpdates({ context: request.userContext, propertyId: params.propertyId, updates: body.updates ?? [], correlationId: createId("corr") });
-  });
-  app.patch("/revenue/properties/:propertyId/rate-grid/restrictions", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = (request.body ?? {}) as { updates?: Parameters<typeof applyRestrictionUpdates>[0]["updates"] };
-    return applyRestrictionUpdates({ context: request.userContext, propertyId: params.propertyId, updates: body.updates ?? [], correlationId: createId("corr") });
-  });
-  app.patch("/revenue/properties/:propertyId/rate-grid/inventory", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = (request.body ?? {}) as { updates?: Parameters<typeof applyInventoryUpdates>[0]["updates"] };
-    return applyInventoryUpdates({ context: request.userContext, propertyId: params.propertyId, updates: body.updates ?? [], correlationId: createId("corr") });
-  });
-  app.post("/revenue/properties/:propertyId/rate-grid/bulk-update", async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = (request.body ?? {}) as {
-      rates?: Parameters<typeof applyRateUpdates>[0]["updates"];
-      restrictions?: Parameters<typeof applyRestrictionUpdates>[0]["updates"];
-      inventory?: Parameters<typeof applyInventoryUpdates>[0]["updates"];
-    };
-    const ctx = request.userContext;
-    const corr = createId("corr");
-    const out: Record<string, number> = {};
-    if (body.rates?.length) out.rates = (await applyRateUpdates({ context: ctx, propertyId: params.propertyId, updates: body.rates, correlationId: corr })).applied;
-    if (body.restrictions?.length) out.restrictions = (await applyRestrictionUpdates({ context: ctx, propertyId: params.propertyId, updates: body.restrictions, correlationId: corr })).applied;
-    if (body.inventory?.length) out.inventory = (await applyInventoryUpdates({ context: ctx, propertyId: params.propertyId, updates: body.inventory, correlationId: corr })).applied;
-    return out;
-  });
-  app.get('/properties/:propertyId/rate-grid', async (request) => {
-    const params = request.params as { propertyId: string };
-    const query = request.query as { from?: string; to?: string; roomTypeIds?: string; channelId?: string };
-    return getRateGridV2({
-      propertyId: params.propertyId,
-      from: query.from!,
-      to: query.to!,
-      roomTypeIds: query.roomTypeIds?.split(','),
-      channelId: query.channelId
-    });
-  });
-
-  app.post('/properties/:propertyId/rate-grid/bulk-update', async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = request.body as RateGridBulkUpdateRequest;
-    // Resolve the property's default BAR rate plan once so each cell that
-    // arrives without an explicit `ratePlanId` lands on the right BAR row.
-    // The UI sends nested `restrictions` (shared DTO shape); the service
-    // expects flat fields — translate here at the wire boundary.
-    const { prisma: db } = await import("@hotelos/database");
-    const defaultPlan = await db.ratePlan.findFirst({
-      where: { propertyId: params.propertyId, code: { equals: "BAR" } },
-      select: { id: true }
-    });
-    if (!defaultPlan) {
-      throw Object.assign(new Error("Default BAR rate plan not configured for this property."), { statusCode: 400 });
+  // Rate grid v2 · rate-manager routes (grid, bulk-update, push, sync-status,
+  // journal, revert, rederive) and the per-day recommendations + demand
+  // calendar (Prisma) of the revenue module. The outbox adapter turns the
+  // delivery service's Map into the bridge's Record.
+  registerRateGridRoutes(app, {
+    outbox: {
+      enqueueRateGridPush,
+      getCellSyncMap: async (propertyId, from, to) => Object.fromEntries(await getCellSyncMapFromOutbox(propertyId, from, to))
     }
-    return bulkUpdateRateGrid({
-      propertyId: params.propertyId,
-      context: request.userContext,
-      cells: body.cells.map((c) => ({
-        roomTypeId: c.roomTypeId,
-        ratePlanId: defaultPlan.id,
-        date: c.date,
-        channelId: c.channelId,
-        price: c.price,
-        minStay: c.restrictions?.minLos,
-        maxStay: c.restrictions?.maxLos,
-        closedToArrival: c.restrictions?.cta,
-        closedToDeparture: c.restrictions?.ctd,
-        stopSell: c.restrictions?.stopSell ?? c.restrictions?.closed
-      })),
-      reason: body.reason
-    });
   });
-
-  app.post('/properties/:propertyId/rate-grid/push', async (request) => {
-    const params = request.params as { propertyId: string };
-    const body = request.body as RateGridPushRequest;
-    return pushRateGrid({ propertyId: params.propertyId, context: request.userContext, ...body });
-  });
-
-  app.get('/properties/:propertyId/rate-journal', async (request) => {
-    const params = request.params as { propertyId: string };
-    const query = request.query as { limit?: string };
-    return getRateJournal({ propertyId: params.propertyId, limit: query.limit ? Number(query.limit) : 50 });
-  });
-  app.get("/revenue/properties/:propertyId/demand-calendar", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "demand_calendar");
-  });
-  app.post("/revenue/properties/:propertyId/demand-calendar", async (request) => {
-    const params = request.params as { propertyId: string };
-    return createAdvancedRecord({ context: request.userContext, propertyId: params.propertyId, moduleCode: "revenue_profit_engine", entityType: "demand_calendar_event", auditAction: "DemandCalendarEventCreated", requiredPermissions: ["revenue.recommend"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  // Legacy revenue legs addressed by id (Tanda 1 · tenancy by id): the tenant
-  // guard resolves the row's property (unknown/foreign → opaque 404 instead of
-  // the service's 500) and the transition runs in THAT property.
-  app.patch("/revenue/demand-calendar/:eventId", async (request) => {
-    const params = request.params as { eventId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "demandCalendarEvent", id: params.eventId });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "demand_calendar_event", entityId: params.eventId, status: "updated", auditAction: "DemandCalendarEventCreated", requiredPermissions: ["revenue.recommend"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  app.delete("/revenue/demand-calendar/:eventId", async (request) => {
-    const params = request.params as { eventId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "demandCalendarEvent", id: params.eventId });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "demand_calendar_event", entityId: params.eventId, status: "deleted", auditAction: "DemandCalendarEventCreated", requiredPermissions: ["revenue.recommend"], payload: {}, correlationId: createId("corr") });
-  });
+  registerRecommendationRoutes(app);
   app.post("/revenue/properties/:propertyId/scenarios/simulate", async (request) => {
     const params = request.params as { propertyId: string };
     return createAdvancedRecord({ context: request.userContext, propertyId: params.propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_scenario", auditAction: "RevenueScenarioSimulated", requiredPermissions: ["revenue.recommend"], payload: request.body as never, correlationId: createId("corr") });
@@ -2783,21 +2675,11 @@ export async function buildApiServer() {
     return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "revenue_automation_rule", entityId: params.ruleId, status: "disabled", auditAction: "RevenueAutomationRuleUpdated", requiredPermissions: ["revenue.automation.manage"], payload: request.body as never, correlationId: createId("corr") });
   });
 
-  app.get("/channel-manager/properties/:propertyId/channels", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "channels");
-  });
-  app.post("/channel-manager/properties/:propertyId/channels", async (request) => {
-    const params = request.params as { propertyId: string };
-    return createAdvancedRecord({ context: request.userContext, propertyId: params.propertyId, moduleCode: "revenue_profit_engine", entityType: "channel", auditAction: "ChannelConnected", requiredPermissions: ["channel_manager.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
-  // Legacy channel legs (in-memory board): `revenueChannel` = Prisma channel
-  // first, then the demoStore mirror (strict) — see lib/tenancy.ts.
-  app.patch("/channel-manager/channels/:channelId", async (request) => {
-    const params = request.params as { channelId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueChannel", id: params.channelId });
-    return transitionAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "channel", entityId: params.channelId, status: "updated", auditAction: "ChannelConnected", requiredPermissions: ["channel_manager.manage"], payload: request.body as never, correlationId: createId("corr") });
-  });
+  // Rate grid v2 · channel manager routes (channels, credentials, product
+  // mappings, deliveries, drain, webhooks). The demoStore legs that lived here
+  // (channels/sync/sync-health/reservations import/webhook/external
+  // reservations) were retired: everything is Prisma + outbox now.
+  registerChannelManagerRoutes(app);
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to
@@ -2857,45 +2739,6 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
     return channelReadinessChecklist(params.channelId);
-  });
-  const CHANNEL_SYNC_ROUTE_TEMPLATES = [
-    "/channel-manager/channels/:channelId/sync/availability",
-    "/channel-manager/channels/:channelId/sync/rates",
-    "/channel-manager/channels/:channelId/sync/restrictions",
-    "/channel-manager/channels/:channelId/sync/full"
-  ] as const;
-  for (const routeTemplate of CHANNEL_SYNC_ROUTE_TEMPLATES) {
-    app.post(routeTemplate, async (request) => {
-      const params = request.params as { channelId: string };
-      const syncType = routeTemplate.split("/").pop() as "availability" | "rates" | "restrictions" | "full";
-      return createAdvancedRecord({ context: request.userContext, propertyId: request.userContext.propertyId, moduleCode: "revenue_profit_engine", entityType: "channel_sync_job", auditAction: "ChannelSyncStarted", requiredPermissions: ["channel_manager.sync"], payload: { channelId: params.channelId, syncType, ...(request.body as Record<string, unknown>) }, correlationId: createId("corr") });
-    });
-  }
-  app.get("/channel-manager/channels/:channelId/sync-jobs", async (request) => {
-    const params = request.params as { channelId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueChannel", id: params.channelId });
-    return (listAdvancedRecords(propertyId, "revenue_profit_engine", "channel_sync_jobs").items as Array<Record<string, unknown>>).filter((record) => record.channelId === params.channelId);
-  });
-  app.get("/channel-manager/properties/:propertyId/sync-health", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "sync_health");
-  });
-  // The channel id used to be taken on faith (any string created an
-  // external_reservation under the caller's property): it is now resolved and
-  // tenant-checked, and the import lands in the CHANNEL's property.
-  app.post("/channel-manager/channels/:channelId/reservations/import", async (request) => {
-    const params = request.params as { channelId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueChannel", id: params.channelId });
-    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "external_reservation", auditAction: "ExternalReservationImported", requiredPermissions: ["channel_manager.sync"], payload: { channelId: params.channelId, ...((request.body ?? {}) as Record<string, unknown>) }, correlationId: createId("corr") });
-  });
-  app.post("/channel-manager/channels/:channelId/webhook", async (request) => {
-    const params = request.params as { channelId: string };
-    const propertyId = await assertPropertyEntityAccess(request, { entity: "revenueChannel", id: params.channelId });
-    return createAdvancedRecord({ context: request.userContext, propertyId, moduleCode: "revenue_profit_engine", entityType: "external_reservation", auditAction: "ExternalReservationImported", requiredPermissions: ["channel_manager.sync"], payload: { channelId: params.channelId, payload: request.body }, correlationId: createId("corr") });
-  });
-  app.get("/channel-manager/properties/:propertyId/external-reservations", async (request) => {
-    const params = request.params as { propertyId: string };
-    return listAdvancedRecords(params.propertyId, "revenue_profit_engine", "external_reservations");
   });
   app.get("/rate-shopper/properties/:propertyId/competitors", async (request) => {
     const params = request.params as { propertyId: string };
@@ -7736,28 +7579,6 @@ export async function buildApiServer() {
       })
     };
   });
-  app.post("/channel-manager/channels", async (request) => {
-    const body = (request.body ?? {}) as {
-      propertyId?: string;
-      providerCode: string;
-      displayName: string;
-      credentialsJson?: Record<string, unknown> | null;
-    };
-    if (!body.providerCode || !body.displayName) {
-      throw new BadRequestError("providerCode and displayName are required.");
-    }
-    return createChannelManagerChannel({
-      propertyId: body.propertyId ?? request.userContext.propertyId,
-      providerCode: body.providerCode,
-      displayName: body.displayName,
-      credentialsJson: body.credentialsJson ?? null
-    });
-  });
-  app.post("/channel-manager/channels/:channelId/test", async (request) => {
-    await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
-    const params = request.params as { channelId: string };
-    return testChannelManagerChannel(params.channelId);
-  });
   app.post("/channel-manager/channels/:channelId/ingest", async (request) => {
     await assertEntityAccess(request, { entity: "channel", id: (request.params as { channelId: string }).channelId });
     const params = request.params as { channelId: string };
@@ -7864,38 +7685,6 @@ export async function buildApiServer() {
     await assertEntityAccess(request, { entity: "rateParityAlert", id: (request.params as { id: string }).id });
     const params = request.params as { id: string };
     return resolveChannelParityAlert(params.id, request.userContext?.userId ?? "user_demo");
-  });
-
-  // Sprint 44: local "sandbox" mock OTA endpoint. Registered as a public (loopback
-  // test) target so a channel adapter in sandbox mode can do a REAL HTTP
-  // round-trip — proving the network path works — without external credentials.
-  // Accepts whatever XML/JSON body the adapter sends and echoes a realistic
-  // success envelope. Counts the items in the body so the confirmation looks live.
-  app.post("/channel-manager/_sandbox/:provider", async (request) => {
-    const params = request.params as { provider: string };
-    const raw = request.body;
-    let bodyText = "";
-    if (typeof raw === "string") {
-      bodyText = raw;
-    } else if (raw && typeof raw === "object") {
-      try { bodyText = JSON.stringify(raw); } catch { bodyText = ""; }
-    }
-    // Rough item count: number of self-closing leaf nodes in the XML payload
-    // (rate / room / restriction), falling back to 1 so a non-empty probe still
-    // confirms. Empty probe bodies (e.g. a credentials test) confirm with 0.
-    const leafMatches = bodyText.match(/<(?:rate|room|restriction)\b[^>]*\/>/gi);
-    const itemCount = leafMatches ? leafMatches.length : 0;
-    const confirmations = Array.from({ length: itemCount }, (_, i) => ({
-      index: i,
-      confirmationId: `${params.provider}-sbx-${createId("conf")}`,
-      accepted: true
-    }));
-    return {
-      status: "ok",
-      provider: params.provider,
-      receivedBytes: bodyText.length,
-      confirmations
-    };
   });
 
   // Operational dashboards (Sprint 17 — P2.b)
@@ -8638,6 +8427,20 @@ if (entryFile === argFile) {
     }, intervalMs);
     verifactuTimer.unref();
     app.log.info(`[verifactu.scheduler] enabled (every ${Math.round(intervalMs / 1000)}s)`);
+  }
+
+  // Rate grid v2 · channel delivery drain: batches queued ChannelDelivery rows
+  // per channel, calls the adapter (simulator in stub/sandbox) with retries and
+  // backoff, and marks sent/confirmed/rejected so the editor shows the state per
+  // cell. Disable with CHANNEL_DRAIN_DISABLED=true.
+  if (schedulerLeader && process.env.CHANNEL_DRAIN_DISABLED !== "true") {
+    const channelDrain = startChannelDeliveryDrain({ log: app.log });
+    // The instance is already listening here, so no Fastify hooks: stop the
+    // interval on process shutdown like the other in-process schedulers.
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      process.once(signal, () => channelDrain.stop());
+    }
+    app.log.info("[channel.drain] enabled");
   }
 
   // Revenue pace scheduler: capture a daily OTB snapshot per property so PACE has

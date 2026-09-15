@@ -167,10 +167,20 @@ export function ToastHost() {
 
   const visible = toasts.slice(-MAX_VISIBLE);
 
+  // Absolute offset, not a spacing token: the rate grid editor keeps a sticky
+  // 44 px action bar at the bottom of the workspace, which itself ends ~48 px
+  // above the viewport (shell chrome), and a toast at 24 px covered the
+  // primary button («Revisar y publicar») for 4 s (cierre 2026-09-15,
+  // browser-ux#21). 120 px = 48 + 44 + 28 of clearance (the bar rises ~11 px
+  // more while a side panel is open), measured at 1280×800. When the bar
+  // grows past one row (restore banner, «celdas guardadas sin enviar» chip)
+  // RateGridStatusBar publishes the extra height through
+  // `--hotelos-toast-offset` (helpers.toastOffsetForBar) so the toast keeps
+  // clearing it (browser-ux-final#9); elsewhere the fallback applies.
   const containerStyle: React.CSSProperties = {
     position: "fixed",
     right: "var(--space-6, 24px)",
-    bottom: "var(--space-6, 24px)",
+    bottom: "var(--hotelos-toast-offset, 120px)",
     display: "flex",
     flexDirection: "column",
     gap: "var(--space-2, 8px)",

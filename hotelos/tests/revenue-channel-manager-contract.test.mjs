@@ -9,6 +9,22 @@ const sharedTypes = readFileSync(new URL("../packages/shared/src/types.ts", impo
 const schema = readFileSync(new URL("../packages/database/prisma/schema.prisma", import.meta.url), "utf8");
 const server = readFileSync(new URL("../apps/api/src/server.ts", import.meta.url), "utf8");
 const routePermissions = readFileSync(new URL("../apps/api/src/security/route-permissions.ts", import.meta.url), "utf8");
+// Rate grid v2: route registrations and manifest entries also live in
+// apps/api/src/modules/<module>/{*.routes.ts,route-permissions.partial.ts}.
+import { readdirSync } from "node:fs";
+const apiModulesDir = new URL("../apps/api/src/modules/", import.meta.url);
+const moduleFiles = (suffix) =>
+  readdirSync(apiModulesDir).flatMap((mod) => {
+    try {
+      return readdirSync(new URL(`${mod}/`, apiModulesDir))
+        .filter((name) => name.endsWith(suffix))
+        .map((name) => readFileSync(new URL(`${mod}/${name}`, apiModulesDir), "utf8"));
+    } catch {
+      return [];
+    }
+  });
+const apiRoutesSource = [server, ...moduleFiles(".routes.ts")].join("\n");
+const routePermissionsSource = [routePermissions, ...moduleFiles("route-permissions.partial.ts")].join("\n");
 const advancedService = readFileSync(new URL("../apps/api/src/modules/advanced/advanced-modules.service.ts", import.meta.url), "utf8");
 const demoStore = readFileSync(new URL("../apps/api/src/lib/demo-store.ts", import.meta.url), "utf8");
 const aiTools = readFileSync(new URL("../packages/ai-tools/src/registry.ts", import.meta.url), "utf8");
@@ -100,24 +116,32 @@ describe("Revenue Management and Channel Manager module", () => {
       "/revenue/properties/:propertyId/forecasts/generate",
       "/revenue/properties/:propertyId/recommendations/generate",
       "/revenue/recommendations/:recommendationId/apply",
-      "/revenue/properties/:propertyId/rate-grid",
-      "/revenue/properties/:propertyId/rate-grid/bulk-update",
+      // Rate grid v2 (2026-09-14): the grid lives in modules/rate-manager and the
+      // channel manager in modules/channel-manager, each with its own *.routes.ts
+      // and route-permissions.partial.ts; the /revenue/…/rate-grid family and the
+      // demoStore channel legs were retired.
+      "/properties/:propertyId/rate-grid",
+      "/properties/:propertyId/rate-grid/bulk-update",
+      "/properties/:propertyId/rate-grid/push",
       "/revenue/properties/:propertyId/scenarios/simulate",
       "/revenue/properties/:propertyId/automation-rules",
-      "/channel-manager/properties/:propertyId/channels",
+      "/properties/:propertyId/channels",
       "/channel-manager/channels/:channelId/room-mappings",
-      "/channel-manager/channels/:channelId/sync/rates",
-      "/channel-manager/channels/:channelId/reservations/import",
+      "/channel-manager/channels/:channelId/product-mappings",
+      "/channel-manager/deliveries",
       "/rate-shopper/properties/:propertyId/competitors",
       "/rate-shopper/properties/:propertyId/shop",
       "/rate-shopper/properties/:propertyId/parity-alerts"
     ]) {
-      assert.match(server, new RegExp(escaped(route)));
-      assert.match(routePermissions, new RegExp(escaped(route)));
+      assert.match(apiRoutesSource, new RegExp(escaped(route)), `route ${route} not registered in server.ts or modules/*/*.routes.ts`);
+      assert.match(routePermissionsSource, new RegExp(escaped(route)), `route ${route} missing from the permission manifest (+partials)`);
     }
-    assert.match(routePermissions, /"revenue.manage_restrictions"/);
-    assert.match(routePermissions, /"channel_manager.mappings.manage"/);
-    assert.match(routePermissions, /riskLevel: "critical"/);
+    // Restrictions are guarded inside the rate-manager services (bulk-update /
+    // revert / applyRestrictionPatches escalate to revenue.manage_restrictions
+    // when a patch touches restrictions), not by a dedicated route.
+    assert.match(moduleFiles(".service.ts").join("\n"), /"revenue.manage_restrictions"/);
+    assert.match(routePermissionsSource, /"channel_manager.mappings.manage"/);
+    assert.match(routePermissionsSource, /riskLevel: "critical"/);
   });
 
   it("seeds explainable revenue behavior, health checks, audit events and safety gates", () => {

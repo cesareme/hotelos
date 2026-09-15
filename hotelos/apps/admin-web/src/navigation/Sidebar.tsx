@@ -113,7 +113,9 @@ const adminRouteScreenMap: Record<string, string> = {
   "/backoffice/revenue": "RevenueHomeDashboard",
   "/backoffice/revenue/history-forecast": "RevenueHistoryForecastDashboard",
   "/backoffice/revenue/rate-plans": "RatePlans",
-  "/backoffice/revenue/rate-grid": "RevenueRules",
+  "/backoffice/revenue/rate-grid": "RateGridEditorScreen",
+  "/backoffice/revenue/rate-journal": "RateJournalScreen",
+  "/backoffice/revenue/rules": "RevenueRules",
   "/backoffice/revenue/recommendations": "RevenueRules",
   "/backoffice/revenue/forecast-explorer": "RevenueForecastExplorer",
   "/backoffice/revenue/demand-calendar": "DemandCalendarAdmin",
@@ -301,6 +303,9 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
     roles: R_MGMT,
     items: dedupe([
       { label: "Channel Manager (agregador OTA)", screen: "ChannelAggregatorHub", roles: R_OPS_ASSET },
+      // Same neighbourhood as the hub: mapping products is the step right after
+      // connecting a channel (it is also reachable from Ajustes comerciales).
+      { label: "Mapeos de canales", screen: "ChannelMappings", roles: R_OPS_ASSET },
       { label: "Rendimiento de canales", screen: "ChannelPerformanceDashboard", roles: R_OPS_ASSET },
       { label: "CRM", screen: "CrmDashboard", roles: R_OPS_ASSET },
       { label: "Segmentos de huéspedes", screen: "GuestSegmentsReal", roles: R_OPS_ASSET },
@@ -334,7 +339,13 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
       { label: "Comparación de revenue", screen: "RevenueComparisonDashboard", roles: R_ASSET_OWNER },
       { label: "Rate shopper (comp-set)", screen: "RateShopperSettings", roles: R_ASSET },
       { label: "Planes tarifarios (BAR + variantes)", screen: "RatePlans", roles: R_MGMT },
-      { label: "Editor de tarifas (Rate Grid)", screen: "RateGridEditorScreen", roles: R_ASSET_OWNER },
+      // Rate grid v2 (2026-09): the editor is the revenue manager's daily tool
+      // (asset persona) and the owner's read surface; "Historial de tarifas"
+      // opens the same HistoryDrawer as a standalone page (RateJournalScreen).
+      // ONE name everywhere ("Editor de tarifas", as the screen header): the
+      // module-driven label from @hotelos/product says the same since the
+      // 2026-09-15 close, and this manual entry still comes first for the dedupe.
+      { label: "Editor de tarifas", screen: "RateGridEditorScreen", roles: R_ASSET_OWNER },
       { label: "Historial de tarifas", screen: "RateJournalScreen", roles: R_ASSET_OWNER },
       { label: "Políticas de cancelación", screen: "CancellationPolicies", roles: R_MGMT },
       { label: "Tasa turística por CCAA", screen: "TouristTax", roles: R_MGMT },
@@ -491,6 +502,10 @@ export const backOfficeNavigationGroups: BackOfficeNavGroup[] = [
           { label: "Reglas de revenue", screen: "RevenueRules" },
           { label: "Mapeos de canales", screen: "ChannelMappings" },
           { label: "Calendario de demanda", screen: "DemandCalendarAdmin" },
+          // Curated label BEFORE the module spread so dedupe keeps "Editor de
+          // tarifas" for the same screen (the product map says the same since
+          // the 2026-09-15 close; the order still protects against a drift).
+          { label: "Editor de tarifas", screen: "RateGridEditorScreen" },
           ...revenueNavigationItems
         ])
       },

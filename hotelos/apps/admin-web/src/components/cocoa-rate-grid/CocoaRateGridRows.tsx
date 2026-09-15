@@ -1,279 +1,257 @@
-// CocoaRateGrid — Header / body row renderers and grid-level layout styles.
+// CocoaRateGridRows — one virtualised row of the rate grid (memoised).
 //
-// Pulled out of `CocoaRateGrid.tsx` so the parent file stays focused on the
-// stateful logic (selection, drag, keyboard, clipboard). These components are
-// pure presentational — they receive callbacks and the index Map and just
-// render the right `<CocoaRateGridCell>` instances.
+// A row is absolutely positioned at `top` inside the body sizer and renders
+// only the columns in [colStart, colEnd]. The sticky row label (left) is in
+// flow so `position: sticky` works against the scroll container; cells are
+// absolutely positioned at `labelWidth + col * cellWidth`.
+//
+// Row kinds: group (room type, collapsible, no cells) · availability
+// ("Disponibles", editable count) · plan (BAR editable, derived greyed with
+// formula chip + lock) · channel (channels view: effective price per channel).
 
-import type {
-  CSSProperties,
-  MouseEvent as ReactMouseEvent
-} from "react";
+import { memo, type MouseEvent as ReactMouseEvent } from "react";
 import type { RateGridCell } from "@hotelos/shared";
-import { CocoaRateGridCell } from "./CocoaRateGridCell";
-import { formatDateHeader, isWeekend, makeCellId } from "./helpers";
-import type { CellId, RoomType } from "./types";
+import { CocoaRateGridCell, type CellCommitMode, type CellRowKind } from "./CocoaRateGridCell";
+import { cellKey, channelModeLabel, derivationLabel, isWeekend, markupLabel, mealPlanLabel } from "./helpers";
+import { rowCellKey } from "./rate-grid-utils";
+import type { CellKey, DraftEntry, GridRow } from "./types";
 
-/* ------------------------------------------------------------------ */
-/*  Layout constants (shared with the parent grid)                     */
-/* ------------------------------------------------------------------ */
-
-export const CORNER_WIDTH = 180;
-export const HEADER_HEIGHT = 44;
-export const CELL_WIDTH = 80; // matches CocoaRateGridCell
-export const ROW_HEIGHT = 40;
-
-/* ------------------------------------------------------------------ */
-/*  Header row                                                         */
-/* ------------------------------------------------------------------ */
-
-export interface HeaderRowProps {
-  dates: Date[];
-  isoDates: string[];
-}
-
-export function HeaderRow({ dates, isoDates }: HeaderRowProps) {
-  return (
-    <div role="row" style={{ display: "contents" }}>
-      <div
-        role="columnheader"
-        aria-label="Tipo de habitación"
-        style={cornerStyle}
-      />
-      {dates.map((d, i) => {
-        const { weekday, day } = formatDateHeader(d);
-        const weekend = isWeekend(d);
-        return (
-          <div
-            key={isoDates[i]}
-            role="columnheader"
-            data-date={isoDates[i]}
-            style={headerCellStyle(weekend)}
-          >
-            <span style={weekdayStyle}>{weekday}</span>
-            <span style={dayStyle}>{day}</span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Body row                                                           */
-/* ------------------------------------------------------------------ */
-
-export interface BodyRowProps {
-  roomType: RoomType;
-  rowIdx: number;
-  isoDates: string[];
-  dates: Date[];
-  cellIndex: Map<CellId, RateGridCell>;
-  selectedCellIds: Set<CellId>;
-  activeCellId: CellId | null;
-  editingCellId: CellId | null;
+export interface GridRowViewProps {
+  row: GridRow;
+  /** Index in the rows array (aria-rowindex = index + 2, header is 1). */
+  rowIndex: number;
+  top: number;
+  totalWidth: number;
+  dates: string[];
+  colStart: number;
+  colEnd: number;
+  cellWidth: number;
+  labelWidth: number;
+  index: Map<CellKey, RateGridCell>;
+  patches: Map<CellKey, DraftEntry>;
+  rejected: Map<CellKey, string>;
+  selection: Set<CellKey>;
+  rowSelected: boolean;
+  active: CellKey | null;
+  editing: CellKey | null;
+  editInitial: string;
+  fillKeys: Set<CellKey> | null;
+  today: string;
+  currency: string;
   readOnly: boolean;
-  onCellMouseDown: (id: CellId, event: ReactMouseEvent<HTMLDivElement>) => void;
-  onCellMouseEnter: (id: CellId, event: ReactMouseEvent<HTMLDivElement>) => void;
-  onCellSelect: (cell: RateGridCell, event: ReactMouseEvent<HTMLDivElement>) => void;
-  onCellEdit: (cell: RateGridCell) => void;
-  onCellCommit: (cell: RateGridCell, value: number | null) => void;
+  canEditAvailability: boolean;
+  showRecommendation: boolean;
+  showSync: boolean;
+  /** Restrictions view (see CocoaRateGridCell). */
+  restrictionsView?: boolean;
+  channelNames: Record<string, string>;
+  /** Plan whose cells carry the room-type inventory (BAR or first plan). */
+  inventoryPlanId: string | null;
+  onCellMouseDown: (key: CellKey, event: ReactMouseEvent<HTMLDivElement>) => void;
+  onCellMouseEnter: (key: CellKey, event: ReactMouseEvent<HTMLDivElement>) => void;
+  onCellDoubleClick: (key: CellKey, event: ReactMouseEvent<HTMLDivElement>) => void;
+  onCommitEdit: (key: CellKey, raw: string, mode: CellCommitMode) => void;
+  onRecommendationClick: (key: CellKey, event: ReactMouseEvent<HTMLElement>) => void;
+  onRowHeadMouseDown: (rowIndex: number, event: ReactMouseEvent<HTMLDivElement>) => void;
+  onToggleGroup: (roomTypeId: string) => void;
 }
 
-export function BodyRow(props: BodyRowProps) {
+function rowLabelOf(row: GridRow): string {
+  switch (row.kind) {
+    case "group":
+      return row.roomType.name;
+    case "availability":
+      return `${row.roomType.name} · Disponibles`;
+    case "plan":
+      return `${row.roomType.name} · ${row.ratePlan.code}`;
+    case "channel":
+      return `${row.roomType.name} · ${row.ratePlan.code} · ${row.channel.name}`;
+    default:
+      return "";
+  }
+}
+
+function GridRowViewImpl(props: GridRowViewProps) {
   const {
-    roomType,
-    rowIdx,
-    isoDates,
+    row,
+    rowIndex,
+    top,
+    totalWidth,
     dates,
-    cellIndex,
-    selectedCellIds,
-    activeCellId,
-    editingCellId,
+    colStart,
+    colEnd,
+    cellWidth,
+    labelWidth,
+    index,
+    patches,
+    rejected,
+    selection,
+    rowSelected,
+    active,
+    editing,
+    editInitial,
+    fillKeys,
+    today,
+    currency,
     readOnly,
+    canEditAvailability,
+    showRecommendation,
+    showSync,
+    restrictionsView = false,
+    channelNames,
+    inventoryPlanId,
     onCellMouseDown,
     onCellMouseEnter,
-    onCellSelect,
-    onCellEdit,
-    onCellCommit
+    onCellDoubleClick,
+    onCommitEdit,
+    onRecommendationClick,
+    onRowHeadMouseDown,
+    onToggleGroup
   } = props;
 
-  return (
-    <div role="row" aria-rowindex={rowIdx + 2} style={{ display: "contents" }}>
-      <div role="rowheader" style={rowHeaderStyle}>
-        <div style={rowLabelTitleStyle}>{roomType.name}</div>
-        <div style={rowLabelSubStyle}>
-          {roomType.code}
-          {typeof roomType.baseOccupancy === "number" ? ` · ${roomType.baseOccupancy} pax` : ""}
+  const ariaRowIndex = rowIndex + 2;
+  const label = rowLabelOf(row);
+
+  if (row.kind === "group") {
+    const rt = row.roomType;
+    return (
+      <div role="row" aria-rowindex={ariaRowIndex} className="crg__row crg__row--group" style={{ top, width: totalWidth }}>
+        <div className="crg__groupfill" aria-hidden="true" />
+        <div
+          role="rowheader"
+          aria-colindex={1}
+          aria-expanded={!row.collapsed}
+          className="crg__rowhead crg__rowhead--group"
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            e.preventDefault();
+            onToggleGroup(rt.id);
+          }}
+          title={row.collapsed ? "Mostrar planes" : "Ocultar planes"}
+        >
+          <span className={`crg__collapse${row.collapsed ? "" : " crg__collapse--open"}`} aria-hidden="true">
+            ▸
+          </span>
+          <span className="crg__rowhead-title">{rt.name}</span>
+          <span className="crg__rowhead-sub">
+            {rt.rooms} hab.{rt.code ? ` · ${rt.code}` : ""}
+          </span>
         </div>
       </div>
-      {isoDates.map((iso, colIdx) => {
-        const id = makeCellId(roomType.id, iso);
-        const cell = cellIndex.get(id);
-        const selected = selectedCellIds.has(id);
-        const active = activeCellId === id;
-        const editing = editingCellId === id;
-        const weekend = isWeekend(dates[colIdx]);
-        return (
-          <div
-            key={id}
-            data-weekend={weekend || undefined}
-            onMouseDown={(e) => onCellMouseDown(id, e)}
-            onMouseEnter={(e) => onCellMouseEnter(id, e)}
-          >
-            {cell ? (
-              <CocoaRateGridCell
-                cell={cell}
-                selected={selected}
-                editing={editing}
-                active={active}
-                readOnly={readOnly}
-                onSelect={onCellSelect}
-                onEdit={onCellEdit}
-                onCommit={onCellCommit}
-              />
-            ) : (
-              <PlaceholderCell selected={selected} active={active} weekend={weekend} />
-            )}
-          </div>
-        );
-      })}
+    );
+  }
+
+  const kind: CellRowKind = row.kind;
+  const derivedRow = row.kind === "plan" && row.derived;
+  const cellReadOnly = readOnly || (row.kind === "availability" && !canEditAvailability);
+  const cells = [];
+  for (let c = colStart; c <= colEnd && c < dates.length; c++) {
+    const date = dates[c];
+    const key = rowCellKey(row, date);
+    if (!key) continue;
+    const sourceKey = row.kind === "availability" ? (inventoryPlanId ? cellKey(inventoryPlanId, row.roomType.id, date) : null) : cellKey(row.ratePlan.id, row.roomType.id, date);
+    const cell = sourceKey ? (index.get(sourceKey) ?? null) : null;
+    cells.push(
+      <CocoaRateGridCell
+        key={key}
+        cellKey={key}
+        rowIndex={ariaRowIndex}
+        colIndex={c + 2}
+        left={labelWidth + c * cellWidth}
+        kind={kind}
+        cell={cell}
+        entry={patches.get(key) ?? null}
+        currency={currency}
+        rowLabel={label}
+        date={date}
+        selected={selection.has(key)}
+        active={active === key}
+        editing={editing === key}
+        editInitial={editing === key ? editInitial : ""}
+        fillPreview={fillKeys ? fillKeys.has(key) : false}
+        weekend={isWeekend(date)}
+        today={date === today}
+        readOnly={cellReadOnly}
+        derivedRow={derivedRow}
+        showRecommendation={showRecommendation && row.kind === "plan"}
+        recommendationRejected={rejected.has(key)}
+        showSync={showSync}
+        restrictionsView={restrictionsView}
+        channelNames={channelNames}
+        channelId={row.kind === "channel" ? row.channel.id : undefined}
+        channelMarkup={row.kind === "channel" ? row.channel.markupPercent : undefined}
+        onMouseDown={onCellMouseDown}
+        onMouseEnter={onCellMouseEnter}
+        onDoubleClick={onCellDoubleClick}
+        onCommitEdit={onCommitEdit}
+        onRecommendationClick={onRecommendationClick}
+      />
+    );
+  }
+
+  const headClasses = ["crg__rowhead", `crg__rowhead--${row.kind}`];
+  if (rowSelected) headClasses.push("crg__rowhead--selected");
+
+  return (
+    <div role="row" aria-rowindex={ariaRowIndex} className="crg__row" style={{ top, width: totalWidth }}>
+      <div
+        role="rowheader"
+        aria-colindex={1}
+        className={headClasses.join(" ")}
+        title={`${label}. Clic para seleccionar la fila`}
+        onMouseDown={(e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          onRowHeadMouseDown(rowIndex, e);
+        }}
+      >
+        {row.kind === "availability" ? (
+          <>
+            <span className="crg__rowhead-title">Disponibles</span>
+            <span className="crg__rowhead-sub">{canEditAvailability && !readOnly ? "editable" : "solo lectura"}</span>
+          </>
+        ) : row.kind === "plan" ? (
+          <>
+            <span className="crg__rowhead-title" title={row.ratePlan.name}>
+              {row.ratePlan.code}
+            </span>
+            {row.derived ? (
+              <span className="crg__rowhead-formula" title={`Derivado de ${parentCode(row, index, dates)}`}>
+                <span aria-hidden="true">🔒</span>
+                {derivationLabel(parentCode(row, index, dates), row.ratePlan.derivation, currency)}
+              </span>
+            ) : row.ratePlan.mealPlan ? (
+              <span className="crg__rowhead-sub" title={row.ratePlan.mealPlan}>
+                {mealPlanLabel(row.ratePlan.mealPlan)}
+              </span>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <span className="crg__rowhead-title" title={row.channel.name}>
+              {row.channel.name}
+            </span>
+            <span className="crg__rowhead-sub" title="El precio de la fila es el precio base con el recargo del canal; solo se editan sus restricciones">
+              {markupLabel(row.channel.markupPercent)}
+              {row.channel.mode !== "real" ? ` · ${channelModeLabel(row.channel.mode)}` : ""}
+            </span>
+          </>
+        )}
+      </div>
+      {cells}
     </div>
   );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Placeholder (no cell data for this room/date)                      */
-/* ------------------------------------------------------------------ */
-
-function PlaceholderCell({
-  selected,
-  active,
-  weekend
-}: {
-  selected: boolean;
-  active: boolean;
-  weekend: boolean;
-}) {
-  const style: CSSProperties = {
-    boxSizing: "border-box",
-    width: CELL_WIDTH,
-    height: ROW_HEIGHT,
-    minWidth: CELL_WIDTH,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    border: `1px solid ${
-      active || selected ? "var(--cocoa-accent)" : "var(--cocoa-separator)"
-    }`,
-    background: selected
-      ? "color-mix(in srgb, var(--cocoa-accent) 12%, var(--cocoa-background-content))"
-      : weekend
-        ? "rgba(0,0,0,0.025)"
-        : "var(--cocoa-background-content)",
-    color: "var(--cocoa-label-tertiary)",
-    fontSize: "var(--cocoa-fs-body)",
-    cursor: "cell",
-    userSelect: "none"
-  };
-  return <div style={style}>—</div>;
+function parentCode(row: Extract<GridRow, { kind: "plan" }>, index: Map<CellKey, RateGridCell>, dates: string[]): string {
+  // The parent code travels with the cells (`derivedFrom.ratePlanCode`); fall back to "BAR".
+  for (const d of dates) {
+    const c = index.get(cellKey(row.ratePlan.id, row.roomType.id, d));
+    if (c?.derivedFrom) return c.derivedFrom.ratePlanCode;
+    if (c) break;
+  }
+  return "BAR";
 }
 
-/* ------------------------------------------------------------------ */
-/*  Shared styles                                                      */
-/* ------------------------------------------------------------------ */
-
-export function gridContainerStyle(numCols: number): CSSProperties {
-  return {
-    display: "grid",
-    gridTemplateColumns: `${CORNER_WIDTH}px repeat(${numCols}, ${CELL_WIDTH}px)`,
-    gridAutoRows: `${ROW_HEIGHT}px`,
-    maxHeight: "70vh",
-    overflow: "auto",
-    background: "var(--cocoa-background-content)",
-    fontFamily: "var(--cocoa-font)"
-  };
-}
-
-const cornerStyle: CSSProperties = {
-  position: "sticky",
-  top: 0,
-  left: 0,
-  zIndex: 3,
-  height: HEADER_HEIGHT,
-  background: "var(--cocoa-background-sidebar)",
-  borderRight: "1px solid var(--cocoa-separator)",
-  borderBottom: "1px solid var(--cocoa-separator)",
-  boxSizing: "border-box"
-};
-
-function headerCellStyle(weekend: boolean): CSSProperties {
-  return {
-    position: "sticky",
-    top: 0,
-    zIndex: 2,
-    height: HEADER_HEIGHT,
-    minWidth: CELL_WIDTH,
-    padding: "4px 6px",
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    background: weekend
-      ? "color-mix(in srgb, var(--cocoa-warning) 5%, var(--cocoa-background-sidebar))"
-      : "var(--cocoa-background-sidebar)",
-    borderRight: "1px solid var(--cocoa-separator)",
-    borderBottom: "1px solid var(--cocoa-separator)",
-    boxSizing: "border-box",
-    textTransform: "capitalize"
-  };
-}
-
-const weekdayStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-caption)",
-  color: "var(--cocoa-label-secondary)",
-  lineHeight: 1.1,
-  fontWeight: "var(--cocoa-fw-regular)" as unknown as number
-};
-
-const dayStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-title-3)",
-  color: "var(--cocoa-label)",
-  lineHeight: 1.1,
-  fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,
-  fontVariantNumeric: "tabular-nums"
-};
-
-const rowHeaderStyle: CSSProperties = {
-  position: "sticky",
-  left: 0,
-  zIndex: 1,
-  width: CORNER_WIDTH,
-  height: ROW_HEIGHT,
-  padding: "4px 12px",
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "flex-start",
-  justifyContent: "center",
-  background: "var(--cocoa-background-sidebar)",
-  borderRight: "1px solid var(--cocoa-separator)",
-  borderBottom: "1px solid var(--cocoa-separator)",
-  boxSizing: "border-box"
-};
-
-const rowLabelTitleStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-body)",
-  color: "var(--cocoa-label)",
-  fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,
-  lineHeight: 1.2,
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
-  maxWidth: CORNER_WIDTH - 24
-};
-
-const rowLabelSubStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-caption)",
-  color: "var(--cocoa-label-secondary)",
-  lineHeight: 1.2
-};
+export const GridRowView = memo(GridRowViewImpl);
+export default GridRowView;

@@ -801,16 +801,21 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
   }
 
   // Map an entity hit to a concrete URL + navigation event. Detail screens
-  // read their id from the URL, so we push the path first then dispatch the
-  // nav event so React re-mounts the right component.
+  // read their id from the URL, so the path must be in place before React
+  // mounts the component — but a screen guard (the rate grid editor with an
+  // unsaved draft) may veto the navigation, so the event goes out FIRST as a
+  // cancelable `hotelos-nav` and the URL only changes when nobody vetoed it
+  // (cierre 2026-09-15). App.tsx applies the switch in a microtask, i.e.
+  // after this synchronous pushState, so the mounted screen sees the new URL.
   function selectHit(hit: SearchHit) {
     setNavOpen(false);
+    const event = new CustomEvent("hotelos-nav", { detail: hit.screen, cancelable: true });
+    window.dispatchEvent(event);
+    if (event.defaultPrevented || event.cancelBubble) return;
     const path = buildHitPath(hit);
     if (path && window.location.pathname !== path) {
       window.history.pushState(null, "", path);
     }
-    // Nav event drives SCREEN_COMPONENTS swap in App.tsx (no full reload).
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: hit.screen }));
   }
 
   // --- Legacy fallback ------------------------------------------------------

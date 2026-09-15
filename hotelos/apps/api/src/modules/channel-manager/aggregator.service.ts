@@ -1,176 +1,42 @@
-// Aggregator: the single chokepoint where every "fan-out to all OTAs"
-// operation lives. The HTTP routes in server.ts call into this module; nothing
-// else in the codebase talks to the adapters directly.
+// Aggregator (rate grid v2): the LEGACY synchronous fan-out kept for the
+// routes server.ts still exposes (/channel-manager/channels, push-rates,
+// push-availability, push-restrictions, ingest…) and for
+// rate-manager/rate-grid.service (`pushRates`). New code publishes through the
+// outbox (delivery.service.enqueueRateGridPush + drain.service): these
+// helpers now ENQUEUE and DRAIN the affected channels immediately, so the
+// hub screen keeps its synchronous "push now" button while every push goes
+// through the same ChannelDelivery rows, translations and audit trail.
 //
-// Two design notes worth knowing:
-//
-//   * The schema uses `Channel.configurationJson` (Json) + an optional
-//     `credentialsSecretRef`. There is no `credentialsJson` column. We map the
-//     adapter-facing `credentialsJson` to `Channel.configurationJson.credentials`
-//     so stub credentials can be written without a secret store. In production
-//     the secret would be loaded by `credentialsSecretRef`.
-//
-//   * Sharp edge: rate plan / room type mappings must be configured before
-//     pushing. We surface this as a partial-success path: if a Channel has zero
-//     mappings (room or rate) the push is logged as `status="failed"` with a
-//     descriptive error, NOT silently skipped.
+// Channel creation/test/pull are thin wrappers over channels.service (one
+// implementation of credentials + mode). Nothing here talks to an adapter.
 
 import { prisma } from "@hotelos/database";
-import type { Prisma } from "@hotelos/database";
-import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
-import { listProviderCodes, resolveAdapter } from "./adapters/index.js";
-import { buildStubReservations, seedHash, simulateLatency } from "./adapters/stub-utils.js";
-import type {
-  AvailabilityPushItem,
-  ChannelAdapter,
-  ChannelContext,
-  ChannelProviderCode,
-  RatePushItem,
-  RestrictionPushItem
-} from "./adapter.types.js";
+import { BadRequestError } from "../../lib/http-error.js";
+import { resolveAdapter } from "./adapters/index.js";
+import {
+  channelTypeFor,
+  createChannel as createChannelV2,
+  effectiveChannelMode,
+  logSyncJob as logSyncJobV2,
+  pullChannelReservations,
+  readChannelCredentials,
+  testChannel as testChannelV2,
+  unsupportedProviderError
+} from "./channels.service.js";
+import { enqueueRateGridPush } from "./delivery.service.js";
+import { drainChannelDeliveries, type DrainSummary } from "./drain.service.js";
+
+export { channelTypeFor, unsupportedProviderError };
+/** Kept under the v1 name: drain.service and the routes log jobs through it. */
+export const logSyncJob = logSyncJobV2;
 
 type DateRange = { from: string; to: string };
 
-function parseDate(value: string): Date {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) throw new BadRequestError(`Fecha inválida: ${value}`);
-  return d;
-}
-
-function toChannelContext(ch: {
-  id: string;
-  propertyId: string;
-  providerCode: string;
-  configurationJson: Prisma.JsonValue;
-}): ChannelContext {
-  const config = (ch.configurationJson ?? {}) as Record<string, unknown>;
-  const credentials = (config.credentials as Record<string, unknown> | undefined) ?? null;
-  return {
-    id: ch.id,
-    propertyId: ch.propertyId,
-    providerCode: ch.providerCode as ChannelProviderCode,
-    credentialsJson: credentials
-  };
-}
-
-// ---- Provider registry bridge ----
-// The product UI and the demo data (RevenueChannelRecord in lib/demo-store.ts,
-// CHANNEL_MANAGER_ADAPTERS in packages/integrations/src/channel-manager.ts)
-// offer the mock provider codes below, while adapters/index.ts only registers
-// the five OTA stubs (booking/expedia/airbnb/hotelbeds/vrbo). Posting one of
-// the mock codes used to throw a plain Error → HTTP 500. They now resolve to an
-// in-process mock adapter with the same semantics as the integrations package
-// (every push succeeds; direct/manual channels have no reservation feed, the
-// OTA mocks reuse the deterministic stub feed). No real connector is invented.
-const MOCK_PROVIDER_CODES = [
-  "booking_com_mock",
-  "expedia_mock",
-  "google_hotels_mock",
-  "direct_booking_engine",
-  "manual_channel"
-] as const;
-type MockProviderCode = (typeof MOCK_PROVIDER_CODES)[number];
-
-function isMockProviderCode(code: string): code is MockProviderCode {
-  return (MOCK_PROVIDER_CODES as readonly string[]).includes(code);
-}
-
-const mockAdapters = new Map<MockProviderCode, ChannelAdapter>();
-
-function mockAdapterFor(providerCode: MockProviderCode): ChannelAdapter {
-  const cached = mockAdapters.get(providerCode);
-  if (cached) return cached;
-  const hasReservationFeed = providerCode !== "direct_booking_engine" && providerCode !== "manual_channel";
-  const push = async ({ channel, items }: { channel: ChannelContext; items: unknown[] }) => {
-    const latencyMs = await simulateLatency(seedHash(channel.id, providerCode, items.length));
-    return { ok: true, pushed: items.length, latencyMs, raw: { stub: true, provider: providerCode } };
-  };
-  const adapter: ChannelAdapter = {
-    // The adapter contract types providerCode as the OTA union; the mock codes
-    // travel through the same field (toChannelContext applies the same cast).
-    providerCode: providerCode as unknown as ChannelProviderCode,
-    pushRates: push,
-    pushAvailability: push,
-    pushRestrictions: push,
-    async fetchReservations({ channel, since }) {
-      await simulateLatency(seedHash(channel.id, providerCode, "fetchRes"));
-      return {
-        ok: true,
-        reservations: hasReservationFeed ? buildStubReservations(channel.id, since, providerCode) : []
-      };
-    },
-    async testCredentials({ channel }) {
-      await simulateLatency(seedHash(channel.id, providerCode, "testCreds"));
-      return { ok: true, metadata: { provider: providerCode, mode: "mock" } };
-    }
-  };
-  mockAdapters.set(providerCode, adapter);
-  return adapter;
-}
-
-/** Adapter for a stored/posted providerCode: OTA stubs first, then the mock codes; null when unknown. */
-function resolveChannelAdapter(providerCode: string): ChannelAdapter | null {
-  const code = providerCode.toLowerCase();
-  const registered = resolveAdapter(code);
-  if (registered) return registered;
-  return isMockProviderCode(code) ? mockAdapterFor(code) : null;
-}
-
-function supportedProviderCodes(): string[] {
-  return [...listProviderCodes(), ...MOCK_PROVIDER_CODES];
-}
-
-/** 400 (not 500) for a providerCode nobody registers, listing what is accepted. */
-function unsupportedProviderError(providerCode: string): BadRequestError {
-  return new BadRequestError(
-    `Proveedor de canal no soportado: ${providerCode}. Válidos: ${supportedProviderCodes().join(", ")}.`
-  );
-}
-
-/** Channel.channelType for a providerCode (same vocabulary as RevenueChannelRecord). */
-function channelTypeFor(providerCode: string): string {
-  switch (providerCode.toLowerCase()) {
-    case "hotelbeds":
-      return "wholesaler";
-    case "airbnb":
-    case "vrbo":
-      return "vacation_rental";
-    case "google_hotels_mock":
-      return "metasearch";
-    case "direct_booking_engine":
-      return "direct";
-    case "manual_channel":
-      return "manual";
-    default:
-      return "ota";
-  }
-}
-
-async function logSyncJob(input: {
-  propertyId: string;
-  channelId: string | null;
-  syncType: string;
-  status: "success" | "partial" | "failed" | "queued";
-  startedAt: Date;
-  finishedAt: Date;
-  errorMessage?: string;
-  requestPayload?: Record<string, unknown>;
-  responsePayload?: Record<string, unknown>;
-}): Promise<{ id: string }> {
-  const job = await prisma.channelSyncJob.create({
-    data: {
-      propertyId: input.propertyId,
-      channelId: input.channelId,
-      syncType: input.syncType,
-      status: input.status,
-      startedAt: input.startedAt,
-      finishedAt: input.finishedAt,
-      errorMessage: input.errorMessage ?? null,
-      requestPayloadJson: (input.requestPayload ?? {}) as Prisma.InputJsonValue,
-      responsePayloadJson: (input.responsePayload ?? {}) as Prisma.InputJsonValue
-    }
-  });
-  return { id: job.id };
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+function requireRange(range: DateRange): DateRange {
+  if (!ISO_DATE.test(range.from) || !ISO_DATE.test(range.to)) throw new BadRequestError("Fechas inválidas: use YYYY-MM-DD.");
+  if (range.from > range.to) throw new BadRequestError("from debe ser anterior o igual a to.");
+  return range;
 }
 
 export async function listChannels(input: { propertyId: string; active?: boolean }) {
@@ -182,18 +48,15 @@ export async function listChannels(input: { propertyId: string; active?: boolean
     orderBy: { createdAt: "desc" }
   });
   const channelIds = channels.map((c) => c.id);
-
-  const [latestSyncRows, roomMappings, rateMappings] = channelIds.length
+  const [latestSyncRows, roomMappings, rateMappings, productCounts, deliveryCounts] = channelIds.length
     ? await Promise.all([
-        prisma.channelSyncJob.findMany({
-          where: { channelId: { in: channelIds } },
-          orderBy: { createdAt: "desc" },
-          take: 200
-        }),
+        prisma.channelSyncJob.findMany({ where: { channelId: { in: channelIds } }, orderBy: { createdAt: "desc" }, take: 200 }),
         prisma.channelRoomMapping.findMany({ where: { channelId: { in: channelIds } } }),
-        prisma.channelRateMapping.findMany({ where: { channelId: { in: channelIds } } })
+        prisma.channelRateMapping.findMany({ where: { channelId: { in: channelIds } } }),
+        prisma.channelProductMapping.groupBy({ by: ["channelId"], where: { channelId: { in: channelIds }, status: "active" }, _count: { _all: true } }),
+        prisma.channelDelivery.groupBy({ by: ["channelId", "status"], where: { channelId: { in: channelIds } }, _count: { _all: true } })
       ])
-    : [[], [], []];
+    : [[], [], [], [], []];
 
   const latestByChannel = new Map<string, (typeof latestSyncRows)[number]>();
   for (const job of latestSyncRows) {
@@ -201,14 +64,24 @@ export async function listChannels(input: { propertyId: string; active?: boolean
     const existing = latestByChannel.get(job.channelId);
     if (!existing || job.createdAt > existing.createdAt) latestByChannel.set(job.channelId, job);
   }
-
-  const roomCount = new Map<string, number>();
-  for (const m of roomMappings) roomCount.set(m.channelId, (roomCount.get(m.channelId) ?? 0) + 1);
-  const rateCount = new Map<string, number>();
-  for (const m of rateMappings) rateCount.set(m.channelId, (rateCount.get(m.channelId) ?? 0) + 1);
+  const count = (rows: Array<{ channelId: string }>) => {
+    const m = new Map<string, number>();
+    for (const r of rows) m.set(r.channelId, (m.get(r.channelId) ?? 0) + 1);
+    return m;
+  };
+  const roomCount = count(roomMappings);
+  const rateCount = count(rateMappings);
+  const productCount = new Map(productCounts.map((p) => [p.channelId, p._count._all] as const));
+  const deliveries = new Map<string, Record<string, number>>();
+  for (const d of deliveryCounts) {
+    const bucket = deliveries.get(d.channelId) ?? {};
+    bucket[d.status] = d._count._all;
+    deliveries.set(d.channelId, bucket);
+  }
 
   return channels.map((c) => {
     const latest = latestByChannel.get(c.id);
+    const { credentials, legacy } = readChannelCredentials(c);
     return {
       id: c.id,
       propertyId: c.propertyId,
@@ -216,10 +89,17 @@ export async function listChannels(input: { propertyId: string; active?: boolean
       name: c.name,
       channelType: c.channelType,
       status: c.status,
+      mode: effectiveChannelMode(c.mode),
       commissionPercent: c.commissionPercent !== null ? Number(c.commissionPercent) : null,
+      markupPercent: c.defaultMarkupPercent !== null ? Number(c.defaultMarkupPercent) : null,
+      autoPushOnSave: c.autoPushOnSave,
+      hasCredentials: credentials !== null,
+      legacyPlaintextCredentials: legacy,
       lastSyncAt: c.lastSyncAt ? c.lastSyncAt.toISOString() : null,
       roomMappingsCount: roomCount.get(c.id) ?? 0,
       rateMappingsCount: rateCount.get(c.id) ?? 0,
+      productMappingsCount: productCount.get(c.id) ?? 0,
+      deliveries: deliveries.get(c.id) ?? {},
       latestSync: latest
         ? {
             id: latest.id,
@@ -235,437 +115,97 @@ export async function listChannels(input: { propertyId: string; active?: boolean
   });
 }
 
-export async function createChannel(input: {
-  propertyId: string;
-  providerCode: string;
-  displayName: string;
-  credentialsJson?: Record<string, unknown> | null;
-}) {
-  const adapter = resolveChannelAdapter(input.providerCode);
-  if (!adapter) throw unsupportedProviderError(input.providerCode);
-  const channelType = channelTypeFor(input.providerCode);
-  const configurationJson: Record<string, unknown> = input.credentialsJson
-    ? { credentials: input.credentialsJson }
-    : {};
-  const created = await prisma.channel.create({
-    data: {
-      propertyId: input.propertyId,
-      providerCode: input.providerCode,
-      name: input.displayName,
-      channelType,
-      status: "inactive",
-      configurationJson: configurationJson as Prisma.InputJsonValue
-    }
+/** v1 signature kept for POST /channel-manager/channels (server.ts). */
+export async function createChannel(input: { propertyId: string; providerCode: string; displayName: string; credentialsJson?: Record<string, unknown> | null }) {
+  if (!resolveAdapter(input.providerCode)) throw unsupportedProviderError(input.providerCode);
+  const created = await createChannelV2({
+    propertyId: input.propertyId,
+    providerCode: input.providerCode,
+    name: input.displayName,
+    credentials: input.credentialsJson ?? null
   });
-  return {
-    id: created.id,
-    providerCode: created.providerCode,
-    name: created.name,
-    status: created.status
-  };
+  return { id: created.id, providerCode: created.providerCode, name: created.name, status: created.status, mode: created.mode };
 }
 
 export async function testChannel(channelId: string) {
-  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
-  if (!channel) throw new NotFoundError("Canal no encontrado.");
-  const adapter = resolveChannelAdapter(channel.providerCode);
-  if (!adapter) throw unsupportedProviderError(channel.providerCode);
-  const startedAt = new Date();
-  const result = await adapter.testCredentials({ channel: toChannelContext(channel) });
-  const finishedAt = new Date();
-  await logSyncJob({
-    propertyId: channel.propertyId,
-    channelId: channel.id,
-    syncType: "test_credentials",
-    status: result.ok ? "success" : "failed",
-    startedAt,
-    finishedAt,
-    errorMessage: result.ok ? undefined : result.error,
-    responsePayload: { ok: result.ok, metadata: result.metadata, error: result.error }
-  });
-  if (result.ok) {
-    await prisma.channel.update({ where: { id: channel.id }, data: { lastSyncAt: finishedAt } });
-  }
-  return result;
+  return testChannelV2(channelId);
 }
 
-// ---- Push helpers ----
-// They share the pattern: resolve channels → load source rows → call adapter →
-// log a ChannelSyncJob → return per-channel summary.
+// ---- Push helpers: enqueue + immediate drain of the affected channels ----
 
-async function activeChannelsFor(input: {
-  propertyId: string;
-  channelIds?: string[];
-}): Promise<Awaited<ReturnType<typeof prisma.channel.findMany>>> {
-  return prisma.channel.findMany({
-    where: {
-      propertyId: input.propertyId,
-      ...(input.channelIds?.length ? { id: { in: input.channelIds } } : { status: "active" })
-    }
+async function channelIdsFor(input: { propertyId: string; channelIds?: string[] }): Promise<string[]> {
+  const rows = await prisma.channel.findMany({
+    where: { propertyId: input.propertyId, ...(input.channelIds?.length ? { id: { in: input.channelIds } } : { status: "active" }) },
+    select: { id: true }
   });
+  return rows.map((r) => r.id);
 }
 
-export async function pushRates(input: {
+async function enqueueAndDrain(input: {
   propertyId: string;
   dateRange: DateRange;
+  channelIds?: string[];
   ratePlanIds?: string[];
-  channelIds?: string[];
-}) {
-  const from = parseDate(input.dateRange.from);
-  const to = parseDate(input.dateRange.to);
-  const rateDays = await prisma.rateDay.findMany({
-    where: {
-      propertyId: input.propertyId,
-      date: { gte: from, lte: to },
-      ...(input.ratePlanIds?.length ? { ratePlanId: { in: input.ratePlanIds } } : {})
-    }
-  });
-
-  const channels = await activeChannelsFor({ propertyId: input.propertyId, channelIds: input.channelIds });
-  const channelIdList = channels.map((c) => c.id);
-  const rateMappings = channelIdList.length
-    ? await prisma.channelRateMapping.findMany({ where: { channelId: { in: channelIdList } } })
-    : [];
-
-  const results = [];
-  for (const channel of channels) {
-    const adapter = resolveChannelAdapter(channel.providerCode);
-    if (!adapter) {
-      results.push({ channelId: channel.id, providerCode: channel.providerCode, ok: false, errors: ["No adapter registered"] });
-      continue;
-    }
-    const mapped = rateMappings.filter((m) => m.channelId === channel.id);
-    if (mapped.length === 0) {
-      const startedAt = new Date();
-      await logSyncJob({
-        propertyId: channel.propertyId,
-        channelId: channel.id,
-        syncType: "push_rates",
-        status: "failed",
-        startedAt,
-        finishedAt: new Date(),
-        errorMessage: "No rate mappings configured for this channel",
-        requestPayload: { dateRange: input.dateRange }
-      });
-      results.push({
-        channelId: channel.id,
-        providerCode: channel.providerCode,
-        ok: false,
-        pushed: 0,
-        errors: ["No rate mappings configured for this channel"]
-      });
-      continue;
-    }
-    const mappedRatePlanIds = new Set(mapped.map((m) => m.ratePlanId));
-    const items: RatePushItem[] = rateDays
-      .filter((r) => mappedRatePlanIds.has(r.ratePlanId))
-      .map((r) => ({
-        date: r.date.toISOString().slice(0, 10),
-        ratePlanId: r.ratePlanId,
-        amount: Number(r.price),
-        currency: r.currency
-      }));
-    const startedAt = new Date();
-    const result = await adapter.pushRates({ channel: toChannelContext(channel), items });
-    const finishedAt = new Date();
-    const status = !result.ok ? "failed" : result.errors?.length ? "partial" : "success";
-    await logSyncJob({
-      propertyId: channel.propertyId,
-      channelId: channel.id,
-      syncType: "push_rates",
-      status,
-      startedAt,
-      finishedAt,
-      errorMessage: result.errors?.join("; "),
-      requestPayload: { dateRange: input.dateRange, itemCount: items.length },
-      responsePayload: { ok: result.ok, pushed: result.pushed, latencyMs: result.latencyMs }
-    });
-    if (result.ok) {
-      await prisma.channel.update({ where: { id: channel.id }, data: { lastSyncAt: finishedAt } });
-    }
-    results.push({
-      channelId: channel.id,
-      providerCode: channel.providerCode,
-      ok: result.ok,
-      pushed: result.pushed ?? items.length,
-      latencyMs: result.latencyMs,
-      errors: result.errors
-    });
-  }
-  return { propertyId: input.propertyId, dateRange: input.dateRange, results };
-}
-
-export async function pushAvailability(input: {
-  propertyId: string;
-  dateRange: DateRange;
   roomTypeIds?: string[];
-  channelIds?: string[];
+  kind: "rates" | "availability" | "restrictions";
 }) {
-  const from = parseDate(input.dateRange.from);
-  const to = parseDate(input.dateRange.to);
-  const invDays = await prisma.inventoryDay.findMany({
-    where: {
-      propertyId: input.propertyId,
-      date: { gte: from, lte: to },
-      ...(input.roomTypeIds?.length ? { roomTypeId: { in: input.roomTypeIds } } : {})
-    }
+  const range = requireRange(input.dateRange);
+  const channelIds = await channelIdsFor(input);
+  if (channelIds.length === 0) return { propertyId: input.propertyId, dateRange: range, queued: 0, byChannel: {}, warnings: ["Sin canales activos."], results: [] as Array<{ channelId: string; providerCode: string; ok: boolean; pushed: number; latencyMs?: number; errors?: string[] }> };
+  const enqueued = await enqueueRateGridPush({
+    propertyId: input.propertyId,
+    from: range.from,
+    to: range.to,
+    channelIds,
+    ratePlanIds: input.ratePlanIds,
+    roomTypeIds: input.roomTypeIds,
+    kinds: [input.kind],
+    actorUserId: "system"
   });
-
-  const channels = await activeChannelsFor({ propertyId: input.propertyId, channelIds: input.channelIds });
-  const channelIdList = channels.map((c) => c.id);
-  const roomMappings = channelIdList.length
-    ? await prisma.channelRoomMapping.findMany({ where: { channelId: { in: channelIdList } } })
-    : [];
-
-  const results = [];
-  for (const channel of channels) {
-    const adapter = resolveChannelAdapter(channel.providerCode);
-    if (!adapter) {
-      results.push({ channelId: channel.id, providerCode: channel.providerCode, ok: false, errors: ["No adapter registered"] });
-      continue;
-    }
-    const mapped = roomMappings.filter((m) => m.channelId === channel.id);
-    if (mapped.length === 0) {
-      const startedAt = new Date();
-      await logSyncJob({
-        propertyId: channel.propertyId,
-        channelId: channel.id,
-        syncType: "push_availability",
-        status: "failed",
-        startedAt,
-        finishedAt: new Date(),
-        errorMessage: "No room mappings configured for this channel",
-        requestPayload: { dateRange: input.dateRange }
-      });
-      results.push({
-        channelId: channel.id,
-        providerCode: channel.providerCode,
-        ok: false,
-        pushed: 0,
-        errors: ["No room mappings configured for this channel"]
-      });
-      continue;
-    }
-    const mappedRoomTypeIds = new Set(mapped.map((m) => m.roomTypeId));
-    const items: AvailabilityPushItem[] = invDays
-      .filter((r) => mappedRoomTypeIds.has(r.roomTypeId))
-      .map((r) => ({
-        date: r.date.toISOString().slice(0, 10),
-        roomTypeId: r.roomTypeId,
-        count: Math.max(0, r.availableCount)
-      }));
-    const startedAt = new Date();
-    const result = await adapter.pushAvailability({ channel: toChannelContext(channel), items });
-    const finishedAt = new Date();
-    const status = !result.ok ? "failed" : result.errors?.length ? "partial" : "success";
-    await logSyncJob({
-      propertyId: channel.propertyId,
-      channelId: channel.id,
-      syncType: "push_availability",
-      status,
-      startedAt,
-      finishedAt,
-      errorMessage: result.errors?.join("; "),
-      requestPayload: { dateRange: input.dateRange, itemCount: items.length },
-      responsePayload: { ok: result.ok, pushed: result.pushed, latencyMs: result.latencyMs }
-    });
-    if (result.ok) {
-      await prisma.channel.update({ where: { id: channel.id }, data: { lastSyncAt: finishedAt } });
-    }
-    results.push({
-      channelId: channel.id,
-      providerCode: channel.providerCode,
-      ok: result.ok,
-      pushed: result.pushed ?? items.length,
-      latencyMs: result.latencyMs,
-      errors: result.errors
-    });
-  }
-  return { propertyId: input.propertyId, dateRange: input.dateRange, results };
+  const drains: DrainSummary[] = [];
+  for (const channelId of channelIds) drains.push(await drainChannelDeliveries({ channelId }));
+  const results = channelIds.map((channelId) => {
+    const batches = drains.flatMap((d) => d.batches.filter((b) => b.channelId === channelId && b.kind === input.kind));
+    const confirmed = drains.reduce((acc, d) => acc + d.byStatus.confirmed, 0);
+    const errors = batches.flatMap((b) => b.errors);
+    return {
+      channelId,
+      providerCode: batches[0]?.providerCode ?? "",
+      ok: batches.length > 0 && batches.every((b) => b.status !== "failed"),
+      pushed: confirmed,
+      latencyMs: batches.reduce((acc, b) => acc + b.latencyMs, 0),
+      errors: errors.length ? errors : undefined
+    };
+  });
+  return { propertyId: input.propertyId, dateRange: range, queued: enqueued.queued, byChannel: enqueued.byChannel, warnings: enqueued.warnings, results };
 }
 
-export async function pushRestrictions(input: {
-  propertyId: string;
-  dateRange: DateRange;
-  channelIds?: string[];
-}) {
-  const from = parseDate(input.dateRange.from);
-  const to = parseDate(input.dateRange.to);
-  const restrictions = await prisma.restrictionDay.findMany({
-    where: { propertyId: input.propertyId, date: { gte: from, lte: to } }
-  });
-
-  const channels = await activeChannelsFor({ propertyId: input.propertyId, channelIds: input.channelIds });
-  const channelIdList = channels.map((c) => c.id);
-  const roomMappings = channelIdList.length
-    ? await prisma.channelRoomMapping.findMany({ where: { channelId: { in: channelIdList } } })
-    : [];
-
-  const results = [];
-  for (const channel of channels) {
-    const adapter = resolveChannelAdapter(channel.providerCode);
-    if (!adapter) {
-      results.push({ channelId: channel.id, providerCode: channel.providerCode, ok: false, errors: ["No adapter registered"] });
-      continue;
-    }
-    const mapped = roomMappings.filter((m) => m.channelId === channel.id);
-    if (mapped.length === 0) {
-      const startedAt = new Date();
-      await logSyncJob({
-        propertyId: channel.propertyId,
-        channelId: channel.id,
-        syncType: "push_restrictions",
-        status: "failed",
-        startedAt,
-        finishedAt: new Date(),
-        errorMessage: "No room mappings configured for this channel",
-        requestPayload: { dateRange: input.dateRange }
-      });
-      results.push({
-        channelId: channel.id,
-        providerCode: channel.providerCode,
-        ok: false,
-        pushed: 0,
-        errors: ["No room mappings configured for this channel"]
-      });
-      continue;
-    }
-    const mappedRoomTypeIds = new Set(mapped.map((m) => m.roomTypeId));
-    const items: RestrictionPushItem[] = restrictions
-      .filter((r) => mappedRoomTypeIds.has(r.roomTypeId))
-      .filter((r) => r.channelId === null || r.channelId === channel.id)
-      .map((r) => ({
-        date: r.date.toISOString().slice(0, 10),
-        roomTypeId: r.roomTypeId,
-        ratePlanId: r.ratePlanId ?? undefined,
-        minStay: r.minStay ?? undefined,
-        maxStay: r.maxStay ?? undefined,
-        cta: r.closedToArrival || undefined,
-        ctd: r.closedToDeparture || undefined,
-        closed: r.stopSell || undefined
-      }));
-    const startedAt = new Date();
-    const result = await adapter.pushRestrictions({ channel: toChannelContext(channel), items });
-    const finishedAt = new Date();
-    const status = !result.ok ? "failed" : result.errors?.length ? "partial" : "success";
-    await logSyncJob({
-      propertyId: channel.propertyId,
-      channelId: channel.id,
-      syncType: "push_restrictions",
-      status,
-      startedAt,
-      finishedAt,
-      errorMessage: result.errors?.join("; "),
-      requestPayload: { dateRange: input.dateRange, itemCount: items.length },
-      responsePayload: { ok: result.ok, pushed: result.pushed, latencyMs: result.latencyMs }
-    });
-    if (result.ok) {
-      await prisma.channel.update({ where: { id: channel.id }, data: { lastSyncAt: finishedAt } });
-    }
-    results.push({
-      channelId: channel.id,
-      providerCode: channel.providerCode,
-      ok: result.ok,
-      pushed: result.pushed ?? items.length,
-      latencyMs: result.latencyMs,
-      errors: result.errors
-    });
-  }
-  return { propertyId: input.propertyId, dateRange: input.dateRange, results };
+export async function pushRates(input: { propertyId: string; dateRange: DateRange; ratePlanIds?: string[]; channelIds?: string[] }) {
+  return enqueueAndDrain({ ...input, kind: "rates" });
 }
 
-// ---- Reservation ingest ----
-// Dedup: ExternalReservation has @@unique([propertyId, externalReservationId]).
-// We use Prisma upsert keyed on that compound unique so the same external
-// reference from the same property never produces two rows. The provider code
-// is folded into the externalReference at the adapter layer (see stub-utils
-// `buildStubReservations`), preventing collisions across providers.
+export async function pushAvailability(input: { propertyId: string; dateRange: DateRange; roomTypeIds?: string[]; channelIds?: string[] }) {
+  return enqueueAndDrain({ ...input, kind: "availability" });
+}
+
+export async function pushRestrictions(input: { propertyId: string; dateRange: DateRange; channelIds?: string[] }) {
+  return enqueueAndDrain({ ...input, kind: "restrictions" });
+}
+
+// ---- Reservation ingest (v1 names) ----
 
 export async function ingestReservations(input: { channelId: string; since?: Date }) {
-  const channel = await prisma.channel.findUnique({ where: { id: input.channelId } });
-  if (!channel) throw new NotFoundError("Canal no encontrado.");
-  const adapter = resolveChannelAdapter(channel.providerCode);
-  if (!adapter) throw unsupportedProviderError(channel.providerCode);
-  const since = input.since ?? new Date(Date.now() - 24 * 60 * 60 * 1000);
-  const startedAt = new Date();
-  const fetchResult = await adapter.fetchReservations({ channel: toChannelContext(channel), since });
-  const finishedAt = new Date();
-
-  let imported = 0;
-  if (fetchResult.ok) {
-    for (const r of fetchResult.reservations) {
-      const payload = r.payloadJson as Record<string, unknown>;
-      const arrivalRaw = payload.arrivalDate;
-      const departureRaw = payload.departureDate;
-      const arrival = typeof arrivalRaw === "string" ? new Date(arrivalRaw) : null;
-      const departure = typeof departureRaw === "string" ? new Date(departureRaw) : null;
-      await prisma.externalReservation.upsert({
-        where: {
-          propertyId_externalReservationId: {
-            propertyId: channel.propertyId,
-            externalReservationId: r.externalReference
-          }
-        },
-        update: {
-          status: r.status,
-          channelId: channel.id,
-          payloadJson: payload as Prisma.InputJsonValue
-        },
-        create: {
-          propertyId: channel.propertyId,
-          channelId: channel.id,
-          externalReservationId: r.externalReference,
-          status: r.status,
-          guestName: typeof payload.guestName === "string" ? payload.guestName : null,
-          arrivalDate: arrival && !Number.isNaN(arrival.getTime()) ? arrival : null,
-          departureDate: departure && !Number.isNaN(departure.getTime()) ? departure : null,
-          payloadJson: payload as Prisma.InputJsonValue
-        }
-      });
-      imported++;
-    }
-  }
-
-  await logSyncJob({
-    propertyId: channel.propertyId,
-    channelId: channel.id,
-    syncType: "ingest_reservations",
-    status: fetchResult.ok ? "success" : "failed",
-    startedAt,
-    finishedAt,
-    errorMessage: fetchResult.errors?.join("; "),
-    requestPayload: { since: since.toISOString() },
-    responsePayload: { ok: fetchResult.ok, imported }
-  });
-  if (fetchResult.ok) {
-    await prisma.channel.update({ where: { id: channel.id }, data: { lastSyncAt: finishedAt } });
-  }
-  return {
-    channelId: channel.id,
-    providerCode: channel.providerCode,
-    ok: fetchResult.ok,
-    imported,
-    errors: fetchResult.errors
-  };
+  return pullChannelReservations(input);
 }
 
 export async function ingestAllReservations(input: { propertyId: string; since?: Date }) {
-  const channels = await prisma.channel.findMany({
-    where: { propertyId: input.propertyId, status: "active" }
-  });
-  // Concurrent fan-out, but capped to the number of channels (usually 5 or so).
-  const results = await Promise.all(
-    channels.map((c) => ingestReservations({ channelId: c.id, since: input.since }))
-  );
+  const channels = await prisma.channel.findMany({ where: { propertyId: input.propertyId, status: "active" }, select: { id: true } });
+  const results = [];
+  for (const c of channels) results.push(await pullChannelReservations({ channelId: c.id, since: input.since }));
   return { propertyId: input.propertyId, results };
 }
 
-export async function listSyncJobs(input: {
-  propertyId: string;
-  channelId?: string;
-  jobType?: string;
-  since?: Date;
-}) {
+export async function listSyncJobs(input: { propertyId: string; channelId?: string; jobType?: string; since?: Date }) {
   const jobs = await prisma.channelSyncJob.findMany({
     where: {
       propertyId: input.propertyId,

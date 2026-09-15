@@ -17,6 +17,7 @@
 // scripts/validate-env.mjs re-implements the generic rules over the JSON so a
 // VPS without TypeScript can pre-flight a .env file; keep both in sync via
 // tests/env-contract.test.mjs.
+import { CHANNEL_MANAGER_ENV_CONTRACT } from "../modules/channel-manager/env.partial.js";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { z } from "zod";
 import { isValidSpanishTaxId, resolveVerifactuCredentials, resolveVerifactuSoftware } from "@hotelos/compliance";
@@ -715,28 +716,12 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
   SPEECH_PROVIDER_API_KEY: { section: "IA", format: "string", tags: ["secret"], doc: "Reservada: solo el /health del ai-gateway la refleja como configured/unconfigured." },
 
   // ------------------------------------------------------------------- OTA
-  BOOKING_ADAPTER_MODE: {
-    section: "OTA",
-    format: "enum",
-    values: ["stub", "sandbox", "real"],
-    default: "stub",
-    doc: "Channel manager Booking.com: stub (respuestas locales), sandbox (BOOKING_SANDBOX_URL) o real."
-  },
+  // Rate grid v2 (2026-09-14): the channel manager owns its contract (mode cap,
+  // Channex base URL, drain cadence) in modules/channel-manager/env.partial.ts.
+  ...CHANNEL_MANAGER_ENV_CONTRACT,
   BOOKING_API_BASE_URL: { section: "OTA", format: "url", doc: "Base de la API real de Booking (vacío = por defecto del adaptador)." },
-  BOOKING_SANDBOX_URL: { section: "OTA", format: "url", doc: "Base del sandbox de Booking." },
-  BOOKING_OAUTH_URL: { section: "OTA", format: "url", doc: "Endpoint OAuth de Booking." },
-  BOOKING_OAUTH_SCOPE: { section: "OTA", format: "string", doc: "Scope OAuth por defecto de Booking (cuando la credencial no lo trae)." },
-  EXPEDIA_ADAPTER_MODE: { section: "OTA", format: "enum", values: ADAPTER_MODE_VALUES, default: "stub", doc: "Expedia: stub o real." },
+  BOOKING_OAUTH_URL: { section: "OTA", format: "url", doc: "Endpoint de token exchange JWT de Booking Connectivity (por defecto https://connectivity-authentication.booking.com/token-based-authentication/exchange)." },
   EXPEDIA_API_BASE_URL: { section: "OTA", format: "url", doc: "Base de la API de Expedia (vacío = por defecto)." },
-  EXPEDIA_OAUTH_URL: { section: "OTA", format: "url", doc: "Endpoint OAuth de Expedia." },
-  AIRBNB_ADAPTER_MODE: { section: "OTA", format: "enum", values: ADAPTER_MODE_VALUES, default: "stub", doc: "Airbnb: stub o real." },
-  AIRBNB_API_BASE_URL: { section: "OTA", format: "url", doc: "Base de la API de Airbnb (vacío = por defecto)." },
-  AIRBNB_OAUTH_URL: { section: "OTA", format: "url", doc: "Endpoint OAuth de Airbnb." },
-  HOTELBEDS_ADAPTER_MODE: { section: "OTA", format: "enum", values: ADAPTER_MODE_VALUES, default: "stub", doc: "Hotelbeds: stub o real." },
-  HOTELBEDS_API_BASE_URL: { section: "OTA", format: "url", doc: "Base de la API de Hotelbeds (vacío = por defecto)." },
-  VRBO_ADAPTER_MODE: { section: "OTA", format: "enum", values: ADAPTER_MODE_VALUES, default: "stub", doc: "Vrbo: stub o real." },
-  VRBO_API_BASE_URL: { section: "OTA", format: "url", doc: "Base de la API de Vrbo (vacío = por defecto)." },
-  VRBO_OAUTH_URL: { section: "OTA", format: "url", doc: "Endpoint OAuth de Vrbo." },
 
   // ---------------------------------------------------------------- Wallet
   APPLE_WALLET_PASS_TYPE_ID: { section: "Wallet", format: "string", default: "pass.com.hotelos.roomkey", doc: "Pass Type ID de las llaves móviles en Apple Wallet." },

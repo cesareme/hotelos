@@ -535,7 +535,7 @@ function EmptyState() {
       <span style={{ color: "var(--cocoa-success, #34C759)" }} aria-hidden="true">
         <CheckCircleIcon size={48} />
       </span>
-      <div style={messageStyle}>Estas al dia</div>
+      <div style={messageStyle}>Estás al día</div>
       <div style={subStyle}>No hay notificaciones pendientes.</div>
     </div>
   );

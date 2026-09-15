@@ -19,25 +19,9 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { resolveAdapter } from "./adapters/index.js";
-import type { ChannelContext, ChannelProviderCode } from "./adapter.types.js";
+import { toChannelContext } from "./channels.service.js";
 
 const DEFAULT_THRESHOLD_PCT = 3;
-
-function toChannelContext(ch: {
-  id: string;
-  propertyId: string;
-  providerCode: string;
-  configurationJson: Prisma.JsonValue;
-}): ChannelContext {
-  const config = (ch.configurationJson ?? {}) as Record<string, unknown>;
-  const credentials = (config.credentials as Record<string, unknown> | undefined) ?? null;
-  return {
-    id: ch.id,
-    propertyId: ch.propertyId,
-    providerCode: ch.providerCode as ChannelProviderCode,
-    credentialsJson: credentials
-  };
-}
 
 function severityFor(absGapPct: number): "medium" | "high" | "critical" {
   if (absGapPct > 10) return "critical";

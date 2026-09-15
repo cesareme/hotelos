@@ -35,6 +35,13 @@ body {
   box-shadow: 0 0 0 3px var(--cocoa-focus-ring);
 }
 
+/* CocoaButton `loading` spinner (moved here from an inline <style> per button). */
+@keyframes cocoa-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }

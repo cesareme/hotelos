@@ -21,6 +21,7 @@ import { NotFoundError } from "../../lib/http-error.js";
 import { expand, type ResRow } from "./pace.service.js";
 import { REALIZED_STATUSES, parseRevenueWindow, realizeDays } from "./actuals.js";
 import { adrSourceFromDrivers, emptyAdrSourceCounts, forecastAdrSourceLabel } from "./forecast.service.js";
+import { buildRecommendations, summarizeDayRecommendation } from "./rate-recommendation.service.js";
 
 const MS_DAY = 86_400_000;
 /** Longest board window (inclusive days); the route and the service both enforce it. */
@@ -164,7 +165,15 @@ export type CriticalDate = {
   stlyOccPct: number | null;
   pickup7: number | null;
   recommendation: string | null;
+  /**
+   * Why `recommendation` is null ("sin BAR publicado", "datos insuficientes
+   * (sin previsión, sin compset)"…); null when a recommendation is present.
+   * Additive (rate grid v2): the RMS engine explains instead of going quiet.
+   */
+  recommendationMissing: string | null;
   compsetMedian: number | null;
+  /** "sin compset" when no active competitor was shopped for the night; null otherwise. */
+  compsetMissing: string | null;
 };
 export type BoardKpiBlock = { roomsSold: number; occPct: number; adr: number | null; revenue: number };
 export type BoardKpis = {
@@ -336,7 +345,7 @@ export async function getHistoryForecastBoard(
   const lyMonthsTo = endOfMonthUtc(addMonthsUtc(monthsStart, -9));
 
   // ---- ONE query per source -------------------------------------------------
-  const [reservations, snapshots, forecasts, paceRows, pendingRecs, compsetRows, budgets] = await Promise.all([
+  const [reservations, snapshots, forecasts, paceRows, budgets] = await Promise.all([
     prisma.reservation.findMany({
       where: {
         propertyId,
@@ -404,15 +413,6 @@ export async function getHistoryForecastBoard(
     prisma.revenuePaceSnapshot.findMany({
       where: { propertyId, captureDate: { in: captureDates }, stayDate: { gte: today, lte: extTo } },
       select: { captureDate: true, stayDate: true, roomsOtb: true, revenueOtb: true }
-    }),
-    prisma.revenueRecommendation.findMany({
-      where: { propertyId, status: "pending", targetDate: { gte: today, lte: to } },
-      orderBy: { createdAt: "desc" },
-      select: { targetDate: true, recommendationType: true, currentValueJson: true, recommendedValueJson: true }
-    }),
-    prisma.competitorRateSnapshot.findMany({
-      where: { propertyId, stayDate: { gte: today, lte: to }, price: { not: null } },
-      select: { stayDate: true, price: true }
     }),
     prisma.budget.findMany({ where: { propertyId, periodMonth: { in: budgetMonths } } })
   ]);
@@ -537,36 +537,8 @@ export async function getHistoryForecastBoard(
     }
   }
 
-  // Pending BAR recommendations (first per date, newest wins). `current.bar` is
-  // the published BAR the engine compared against and is only trusted when the
-  // row records its provenance (`barSource`); legacy rows without it were
-  // generated against a default price and read as "no published BAR".
-  const recByDate = new Map<string, string>();
-  for (const rec of pendingRecs) {
-    const key = isoDate(dayUtc(rec.targetDate));
-    if (recByDate.has(key)) continue;
-    const current = rec.currentValueJson as { bar?: unknown; barSource?: unknown } | null;
-    const cur = current?.barSource === "rate_grid" ? num(current.bar) : undefined;
-    const next = num((rec.recommendedValueJson as { bar?: unknown } | null)?.bar);
-    const text =
-      next !== undefined
-        ? cur !== undefined
-          ? `BAR recomendada ${fmtEs(next)} € (actual ${fmtEs(cur)} €)`
-          : `BAR recomendada ${fmtEs(next)} € (sin BAR publicado)`
-        : `Recomendación ${rec.recommendationType} pendiente`;
-    recByDate.set(key, text);
-  }
-
-  // Comp-set prices per stay date → median on demand.
-  const compByDate = new Map<string, number[]>();
-  for (const c of compsetRows) {
-    const key = isoDate(dayUtc(c.stayDate));
-    const p = dec(c.price);
-    if (p <= 0) continue;
-    const list = compByDate.get(key) ?? [];
-    list.push(p);
-    compByDate.set(key, list);
-  }
+  // Critical dates' recommendation + compset come from the rate-grid RMS engine
+  // (rate-recommendation.service): computed below, only for the dates flagged.
 
   // Budget per month (prorated per calendar day at row level).
   const budgetByMonth = new Map<string, number>();
@@ -951,14 +923,32 @@ export async function getHistoryForecastBoard(
       fcOccPct: day.fcOccPct,
       stlyOccPct: day.stlyOccPct,
       pickup7: day.pickup7,
-      recommendation: recByDate.get(day.date) ?? null,
-      compsetMedian: median(compByDate.get(day.date) ?? [])
+      recommendation: null,
+      recommendationMissing: "sin datos",
+      compsetMedian: null,
+      compsetMissing: "sin compset"
     });
   }
   candidates.sort((a, b) =>
     a.severity !== b.severity ? (a.severity === "high" ? -1 : 1) : a.daysOut - b.daysOut
   );
   const criticalDates = candidates.slice(0, 10);
+  // RMS recommendation (lead room type, short reason) + comp-set median of the
+  // latest shop for the flagged dates only. When the engine has no data it
+  // says why (`recommendationMissing` / `compsetMissing`) instead of null.
+  if (criticalDates.length > 0) {
+    const recFrom = criticalDates.reduce((m, c) => (c.date < m ? c.date : m), criticalDates[0].date);
+    const recTo = criticalDates.reduce((m, c) => (c.date > m ? c.date : m), criticalDates[0].date);
+    const recs = await buildRecommendations({ propertyId, from: recFrom, to: recTo, today, maxDays: BOARD_MAX_DAYS });
+    const recByDate = new Map(recs.days.map((d) => [d.date, d]));
+    for (const c of criticalDates) {
+      const summary = summarizeDayRecommendation(recByDate.get(c.date), recs.leadRoomTypeIdByDate[c.date]);
+      c.recommendation = summary.recommendation;
+      c.recommendationMissing = summary.recommendationMissing;
+      c.compsetMedian = summary.compsetMedian;
+      c.compsetMissing = summary.compsetMissing;
+    }
+  }
 
   // ---- KPIs --------------------------------------------------------------------
   const kpiBlock = (days: DaySeries[]): BoardKpiBlock => {

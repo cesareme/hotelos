@@ -97,7 +97,8 @@ export const MODULE_ROUTE_MAP: Partial<Record<HotelModuleCode | "backoffice", Mo
     admin: [
       { label: "Gestión de revenue", path: "/backoffice/revenue", permission: "revenue.read", description: "Commercial command center.", status: "ready" },
       { label: "Histórico y previsión", path: "/backoffice/revenue/history-forecast", permission: "revenue.history_forecast.read", description: "KPI cards, charts and report table.", status: "ready" },
-      { label: "Rate Grid (tarifas y restricciones)", path: "/backoffice/revenue/rate-grid", permission: "revenue.manage_rates", description: "Rates, inventory and restrictions.", status: "ready" },
+      { label: "Editor de tarifas", path: "/backoffice/revenue/rate-grid", permission: "revenue.manage_rates", description: "Rates, inventory and restrictions (rate grid v2 editor).", status: "ready" },
+      { label: "Historial de tarifas", path: "/backoffice/revenue/rate-journal", permission: "revenue.manage_rates", description: "Journal of rate changes with per-cell diff and revert.", status: "ready" },
       { label: "Recomendaciones", path: "/backoffice/revenue/recommendations", permission: "revenue.recommend", description: "Approve, reject and simulate recommendations.", status: "ready" },
       { label: "Explorador de forecast", path: "/backoffice/revenue/forecast-explorer", permission: "revenue.forecast.read", description: "Forecast confidence and drivers.", status: "ready" },
       { label: "Calendario de demanda", path: "/backoffice/revenue/demand-calendar", permission: "revenue.forecast.read", description: "Demand events and market signals.", status: "ready" },

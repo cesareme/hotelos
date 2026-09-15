@@ -15,6 +15,8 @@ const migrationFolders = readdirSync(migrationsDir, { withFileTypes: true })
   .map((entry) => entry.name)
   .sort();
 const baselineSql = readFileSync(new URL(`${BASELINE}/migration.sql`, migrationsDir), "utf8");
+// The whole chain (baseline + later migrations): what a fresh `migrate deploy` produces.
+const chainSql = migrationFolders.map((folder) => readFileSync(new URL(`${folder}/migration.sql`, migrationsDir), "utf8")).join("\n");
 const rootPackage = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const databasePackage = JSON.parse(readFileSync(new URL("../packages/database/package.json", import.meta.url), "utf8"));
 const schema = readFileSync(new URL("../packages/database/prisma/schema.prisma", import.meta.url), "utf8");
@@ -22,8 +24,16 @@ const schema = readFileSync(new URL("../packages/database/prisma/schema.prisma",
 const count = (source, re) => (source.match(re) ?? []).length;
 
 describe("Migrations squash contract (DATA-01)", () => {
-  it("has exactly one migration folder: the squashed baseline, plus migration_lock.toml", () => {
-    assert.deepEqual(migrationFolders, [BASELINE]);
+  it("starts with the squashed baseline; later migrations are timestamped after it (plus migration_lock.toml)", () => {
+    // DATA-01 squashed the old chain into ONE baseline. New schema changes land
+    // as ordinary `migrate` folders AFTER it (rate grid v2 was the first one),
+    // so the contract is: baseline first, every other folder newer than it.
+    assert.equal(migrationFolders[0], BASELINE, `the first migration must be the baseline, got ${migrationFolders[0]}`);
+    for (const folder of migrationFolders.slice(1)) {
+      assert.match(folder, /^\d{14}_[a-z0-9_]+$/, `migration folder ${folder} must be <timestamp>_<name>`);
+      assert.ok(folder > BASELINE, `${folder} must be newer than the baseline`);
+      assert.ok(existsSync(new URL(`${folder}/migration.sql`, migrationsDir)), `${folder}/migration.sql missing`);
+    }
     assert.ok(existsSync(new URL("migration_lock.toml", migrationsDir)), "migration_lock.toml must stay in prisma/migrations");
     assert.match(readFileSync(new URL("migration_lock.toml", migrationsDir), "utf8"), /provider = "postgresql"/);
   });
@@ -44,13 +54,13 @@ describe("Migrations squash contract (DATA-01)", () => {
     assert.ok(existsSync(new URL("README.md", archiveDir)));
   });
 
-  it("baseline covers every model and enum of schema.prisma (Tanda 3 + Role.templateKey included)", () => {
+  it("the migration chain covers every model and enum of schema.prisma (Tanda 3 + Role.templateKey included)", () => {
     const models = count(schema, /^model\s+\w+\s*\{/gm);
     const enums = count(schema, /^enum\s+\w+\s*\{/gm);
-    assert.equal(count(baselineSql, /^CREATE TABLE "/gm), models, "one CREATE TABLE per model");
-    assert.equal(count(baselineSql, /^CREATE TYPE "/gm), enums, "one CREATE TYPE per enum");
-    assert.ok(count(baselineSql, /^CREATE (UNIQUE )?INDEX "/gm) >= 380);
-    assert.equal(count(baselineSql, /ADD CONSTRAINT "\w+" FOREIGN KEY/g), count(schema, /@relation\([^)]*fields:/g), "one FOREIGN KEY per @relation(fields:)");
+    assert.equal(count(chainSql, /^CREATE TABLE "/gm), models, "one CREATE TABLE per model across the chain");
+    assert.equal(count(chainSql, /^CREATE TYPE "/gm), enums, "one CREATE TYPE per enum across the chain");
+    assert.ok(count(chainSql, /^CREATE (UNIQUE )?INDEX "/gm) >= 380);
+    assert.equal(count(chainSql, /ADD CONSTRAINT "\w+" FOREIGN KEY/g), count(schema, /@relation\([^)]*fields:/g), "one FOREIGN KEY per @relation(fields:)");
     assert.match(baselineSql, /^CREATE TABLE "user_invitations" \($/m);
     assert.match(baselineSql, /^CREATE TABLE "payment_tokens" \($/m);
     assert.match(baselineSql, /^CREATE TABLE "rate_change_journals" \($/m);

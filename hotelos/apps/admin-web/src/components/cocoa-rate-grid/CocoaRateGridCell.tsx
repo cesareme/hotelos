@@ -1,357 +1,339 @@
-// CocoaRateGridCell — Celda individual del grid de tarifas (Rate Manager).
+// CocoaRateGridCell — one memoised cell of the rate grid.
 //
-// Subcomponente puro: render + interactions a nivel celda. La gestion del
-// estado (que celda esta seleccionada, activa, en edicion, batches de cambios,
-// etc) vive en el contenedor padre (`CocoaRateGrid`).
+// Everything visible in a cell is derived from stable props (the persisted
+// `cell` object from the response index, the `entry` from the draft Map and
+// a handful of booleans) so `React.memo` skips re-renders for the thousands
+// of cells that did not change. Callbacks are keyed by cell key and must be
+// referentially stable (the grid wraps them with refs).
 //
-// Estados visuales:
-//   - default     : 80x40, fondo de control, valor formateado tabular.
-//   - selected    : tint accent (background + border) + aria-selected="true".
-//   - active      : focus ring accent (ultima celda navegada con teclado).
-//   - editing     : sustituye el span por un <input type="number" inline> que
-//                   recibe focus automatico y emite onCommit en blur/Enter.
-//   - readOnly    : opacidad reducida + cursor not-allowed; nunca entra a
-//                   editing y expone aria-readonly="true".
-//
-// Badges: restricciones (CTA/CTD/CLOSED/MIN/MAX) se renderizan como puntos
-// muy pequenos en la esquina inferior, para no competir con el valor.
-//
-// Accessibility: role="gridcell" + aria-selected + aria-readonly + tabIndex
-// controlado por el padre (active = 0, resto = -1) siguiendo el roving
-// tabindex pattern de WAI-ARIA grid.
+// Visual states (class toggles, see rate-grid.css):
+//   price (es-ES, "sin tarifa" when null) · restriction chips · amber
+//   "modificado sin publicar" triangle with before→after tooltip · violet
+//   dashed border + "→ 132 €" for a recommendation · sync dot (status is also
+//   in the aria-label and tooltip, never colour-only) · derived lock + grey
+//   background · today marker · weekend tint · inline expression input ·
+//   restrictions view (price dimmed, every restriction spelled out, "—" when
+//   none) · "hold" recommendations get a muted «=» button so the factors can
+//   still be inspected · channel rows are read-only for the price (base ×
+//   markup) and say so in the tooltip before any edit attempt.
 
-import { useEffect, useRef } from "react";
-import type {
-  CSSProperties,
-  KeyboardEvent as ReactKeyboardEvent,
-  MouseEvent as ReactMouseEvent
-} from "react";
-import type { RateGridCell, RateRestrictions } from "@hotelos/shared";
+import { memo, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import type { CellSyncState, RateGridCell } from "@hotelos/shared";
+import {
+  SYNC_STATUS_META,
+  aggregateSyncStatus,
+  describeRestrictions,
+  describeSync,
+  effectivePriceForChannel,
+  formatDateLong,
+  formatMoney,
+  formatPercent,
+  resolveViewCell,
+  restrictionChips
+} from "./helpers";
+import { parseExpression } from "./expressions";
+import type { CellKey, DraftEntry } from "./types";
+
+export type CellRowKind = "plan" | "availability" | "channel";
+
+export type CellCommitMode = "enter" | "tab" | "blur" | "escape" | "shift-enter" | "shift-tab";
 
 export interface CocoaRateGridCellProps {
-  cell: RateGridCell;
+  cellKey: CellKey;
+  rowIndex: number;
+  colIndex: number;
+  left: number;
+  kind: CellRowKind;
+  cell: RateGridCell | null;
+  entry: DraftEntry | null;
+  currency: string;
+  /** "Doble · BAR" — row-level label used in aria-label. */
+  rowLabel: string;
+  date: string;
   selected: boolean;
-  editing: boolean;
   active: boolean;
-  readOnly?: boolean;
-  onSelect: (cell: RateGridCell, event: ReactMouseEvent<HTMLDivElement>) => void;
-  onEdit: (cell: RateGridCell) => void;
-  onCommit: (cell: RateGridCell, value: number | null) => void;
+  editing: boolean;
+  /** Initial text of the inline editor (typed char or current price). */
+  editInitial: string;
+  fillPreview: boolean;
+  weekend: boolean;
+  today: boolean;
+  readOnly: boolean;
+  derivedRow: boolean;
+  showRecommendation: boolean;
+  recommendationRejected: boolean;
+  showSync: boolean;
+  /** Restrictions view: dim the price and list every restriction (or "—"). */
+  restrictionsView?: boolean;
+  channelNames: Record<string, string>;
+  /** Channel rows: channel id + markup; the price shown is the channel's effective price. */
+  channelId?: string;
+  channelMarkup?: number;
+  onMouseDown: (key: CellKey, event: ReactMouseEvent<HTMLDivElement>) => void;
+  onMouseEnter: (key: CellKey, event: ReactMouseEvent<HTMLDivElement>) => void;
+  onDoubleClick: (key: CellKey, event: ReactMouseEvent<HTMLDivElement>) => void;
+  onCommitEdit: (key: CellKey, raw: string, mode: CellCommitMode) => void;
+  onRecommendationClick: (key: CellKey, event: ReactMouseEvent<HTMLElement>) => void;
 }
 
-const CELL_WIDTH = 80;
-const CELL_HEIGHT = 40;
-
-function formatPrice(value: number): string {
-  // Sin separador de miles para mantener el ancho de 80px; 0 decimales es lo
-  // habitual para BAR en hospitalidad (los centimos se pierden en los OTAs).
-  if (!Number.isFinite(value)) return "—";
-  return Math.round(value).toString();
+function syncTooltip(sync: Record<string, CellSyncState> | undefined, channelNames: Record<string, string>, channelId?: string): string {
+  if (!sync) return "Sin enviar";
+  const entries = channelId ? [[channelId, sync[channelId]] as const] : Object.entries(sync);
+  const lines = entries.filter(([, s]) => s).map(([id, s]) => describeSync(channelNames[id] ?? id, s));
+  return lines.length ? lines.join("\n") : "Sin enviar";
 }
 
-type RestrictionFlag = {
-  key: keyof RateRestrictions;
-  label: string;
-  short: string;
-  tone: "warning" | "danger" | "info";
-};
-
-const RESTRICTION_FLAGS: ReadonlyArray<RestrictionFlag> = [
-  { key: "closed", label: "Cerrado", short: "X", tone: "danger" },
-  { key: "stopSell", label: "Stop sell", short: "S", tone: "danger" },
-  { key: "cta", label: "CTA (cerrado a llegada)", short: "A", tone: "warning" },
-  { key: "ctd", label: "CTD (cerrado a salida)", short: "D", tone: "warning" }
-];
-
-function collectBadges(r: RateRestrictions): RestrictionFlag[] {
-  const out: RestrictionFlag[] = [];
-  for (const flag of RESTRICTION_FLAGS) {
-    if (r[flag.key]) out.push(flag);
-  }
-  return out;
-}
-
-function describeRestrictions(r: RateRestrictions): string | null {
-  const parts: string[] = [];
-  for (const flag of RESTRICTION_FLAGS) {
-    if (r[flag.key]) parts.push(flag.label);
-  }
-  if (typeof r.minLos === "number") parts.push(`MIN LOS ${r.minLos}`);
-  if (typeof r.maxLos === "number") parts.push(`MAX LOS ${r.maxLos}`);
-  return parts.length > 0 ? parts.join(", ") : null;
-}
-
-function toneColor(tone: RestrictionFlag["tone"]): string {
-  switch (tone) {
-    case "danger":
-      return "var(--cocoa-danger, #FF3B30)";
-    case "warning":
-      return "var(--cocoa-warning, #FF9F0A)";
-    case "info":
-    default:
-      return "var(--cocoa-accent)";
-  }
-}
-
-export function CocoaRateGridCell(props: CocoaRateGridCellProps) {
+function CocoaRateGridCellImpl(props: CocoaRateGridCellProps) {
   const {
+    cellKey,
+    rowIndex,
+    colIndex,
+    left,
+    kind,
     cell,
+    entry,
+    currency,
+    rowLabel,
+    date,
     selected,
-    editing,
     active,
-    readOnly = false,
-    onSelect,
-    onEdit,
-    onCommit
+    editing,
+    editInitial,
+    fillPreview,
+    weekend,
+    today,
+    readOnly,
+    derivedRow,
+    showRecommendation,
+    recommendationRejected,
+    showSync,
+    restrictionsView = false,
+    channelNames,
+    channelId,
+    channelMarkup,
+    onMouseDown,
+    onMouseEnter,
+    onDoubleClick,
+    onCommitEdit,
+    onRecommendationClick
   } = props;
 
-  const inputRef = useRef<HTMLInputElement | null>(null);
+  const view = resolveViewCell(cellKey, cell, entry);
+  const isAvail = kind === "availability";
+  const isChannel = kind === "channel";
 
-  // Auto-focus + select cuando entramos a edicion. Usamos requestAnimationFrame
-  // para garantizar que el input ya esta en el DOM cuando llamamos a focus().
-  useEffect(() => {
-    if (!editing || readOnly) return;
-    const el = inputRef.current;
-    if (!el) return;
-    const handle = window.requestAnimationFrame(() => {
-      el.focus();
-      el.select();
-    });
-    return () => window.cancelAnimationFrame(handle);
-  }, [editing, readOnly]);
+  // Price to display: availability count, channel effective price, or base.
+  let displayPrice: number | null = view.basePrice;
+  if (isChannel) {
+    displayPrice = cell?.channelId === channelId && !entry ? (cell?.effectivePrice ?? null) : effectivePriceForChannel(view.basePrice, channelMarkup ?? 0);
+  }
+  const availValue = view.available;
 
-  const restrictions = cell.restrictions ?? {};
-  const badges = collectBadges(restrictions);
-  const restrictionsLabel = describeRestrictions(restrictions);
-  const isClosed = Boolean(restrictions.closed || restrictions.stopSell);
+  const chips = isAvail ? [] : restrictionChips(view.restrictions);
+  const closed = Boolean(view.restrictions.closed);
+  const stop = Boolean(view.restrictions.stopSell) || Boolean(cell?.inventory?.stopSell);
+  const anyRec = showRecommendation && !recommendationRejected && cell?.recommendation && cell.recommendation.action !== "no_data" ? cell.recommendation : null;
+  // Actionable (raise / lower with a price) → violet arrow; "hold" → muted «=»
+  // so the hotelier can still open the factors and see WHY nothing is suggested.
+  const rec = anyRec && anyRec.action !== "hold" && anyRec.suggestedPrice !== null ? anyRec : null;
+  const holdRec = anyRec && !rec ? anyRec : null;
+  const syncStatus = showSync && !isAvail ? (isChannel && channelId ? (cell?.sync?.[channelId]?.status ?? "never") : aggregateSyncStatus(cell?.sync)) : null;
+  const syncMeta = syncStatus ? SYNC_STATUS_META[syncStatus] : null;
+  const locked = derivedRow && view.derivedLocked && !isAvail && !isChannel;
 
-  // Border + background: selected > active > default.
-  // Mantenemos un border de 1px siempre para que el layout no salte al cambiar
-  // de estado (evita reflows en escenarios de seleccion rapida con shift+arrow).
-  const borderColor = selected
-    ? "var(--cocoa-accent)"
-    : active
-      ? "var(--cocoa-accent)"
-      : "var(--cocoa-separator)";
+  const classes = ["crg__cell"];
+  if (selected) classes.push("crg__cell--selected");
+  if (active) classes.push("crg__cell--active");
+  if (editing) classes.push("crg__cell--editing");
+  if (weekend) classes.push("crg__cell--weekend");
+  if (today) classes.push("crg__cell--today");
+  if (locked) classes.push("crg__cell--derived");
+  if (readOnly || (locked && !editing)) classes.push("crg__cell--readonly");
+  if (!isAvail && closed) classes.push("crg__cell--closed");
+  if (!isAvail && stop) classes.push("crg__cell--stop");
+  if (rec) classes.push("crg__cell--rec");
+  if (fillPreview) classes.push("crg__cell--fill");
+  if (isChannel) classes.push("crg__cell--channel");
+  if (restrictionsView && !isAvail) classes.push("crg__cell--restr");
 
-  const background = selected
-    ? "color-mix(in srgb, var(--cocoa-accent) 12%, var(--cocoa-background-control))"
-    : "var(--cocoa-background-control)";
+  // Tooltip: before → after for modified cells, restrictions otherwise.
+  const titleParts: string[] = [];
+  if (view.modified && entry) {
+    if (isAvail) titleParts.push(`Disponibles: ${entry.before.available ?? "—"} → ${availValue ?? "—"}`);
+    else if (entry.patch.price !== undefined) titleParts.push(`${formatMoney(entry.before.basePrice, currency)} → ${formatMoney(entry.patch.price, currency)} · sin publicar`);
+    else titleParts.push("Modificado sin publicar");
+    if (entry.patch.convertToManual) titleParts.push("Convertido en manual");
+    if (entry.patch.revertToDerived) titleParts.push("Vuelve a derivado");
+  }
+  const restrText = describeRestrictions(view.restrictions);
+  if (restrText && !isAvail) titleParts.push(restrText);
+  if (locked && cell?.derivedFrom) titleParts.push(`Derivado de ${cell.derivedFrom.ratePlanCode}`);
+  if (view.manualOverride && derivedRow) titleParts.push("Override manual (doble clic para volver a derivado con Supr)");
+  if (isChannel) titleParts.push("Precio calculado con el recargo del canal (solo lectura): edita el precio en la fila del plan. Las restricciones se cambian con la edición rápida o masiva.");
+  if (holdRec) titleParts.push(`Recomendación: mantener (confianza ${Math.round(holdRec.confidence)} %). Clic en «=» para ver los factores.`);
+  if (syncMeta) titleParts.push(syncTooltip(cell?.sync, channelNames, channelId));
 
-  const focusRing = active && !editing
-    ? "0 0 0 2px rgb(0 100 225 / 0.40)"
-    : "none";
-
-  const containerStyle: CSSProperties = {
-    position: "relative",
-    boxSizing: "border-box",
-    width: CELL_WIDTH,
-    height: CELL_HEIGHT,
-    minWidth: CELL_WIDTH,
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "flex-end",
-    padding: "0 8px",
-    border: `1px solid ${borderColor}`,
-    background,
-    color: "var(--cocoa-label)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-body)",
-    lineHeight: "var(--cocoa-lh-body)",
-    fontVariantNumeric: "tabular-nums",
-    boxShadow: focusRing,
-    cursor: readOnly ? "not-allowed" : editing ? "text" : "cell",
-    userSelect: "none",
-    opacity: readOnly ? 0.55 : 1,
-    transition:
-      "border-color var(--cocoa-duration-fast) var(--cocoa-ease-out), background var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out)",
-    outline: "none"
-  };
-
-  const valueStyle: CSSProperties = {
-    display: "inline-block",
-    fontWeight: "var(--cocoa-fw-medium)" as unknown as number,
-    letterSpacing: "var(--cocoa-tracking-tight)",
-    color: isClosed ? "var(--cocoa-label-secondary)" : "var(--cocoa-label)",
-    textDecoration: isClosed ? "line-through" : "none"
-  };
-
-  const inputStyle: CSSProperties = {
-    width: "100%",
-    height: "100%",
-    margin: 0,
-    padding: 0,
-    border: 0,
-    background: "transparent",
-    color: "var(--cocoa-label)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-body)",
-    lineHeight: "var(--cocoa-lh-body)",
-    fontVariantNumeric: "tabular-nums",
-    fontWeight: "var(--cocoa-fw-medium)" as unknown as number,
-    textAlign: "right",
-    outline: "none",
-    appearance: "textfield",
-    WebkitAppearance: "none",
-    MozAppearance: "textfield"
-  };
-
-  const badgeRowStyle: CSSProperties = {
-    position: "absolute",
-    left: 4,
-    bottom: 3,
-    display: "flex",
-    alignItems: "center",
-    gap: 2,
-    pointerEvents: "none"
-  };
-
-  const sourceDotStyle: CSSProperties | null =
-    cell.source === "rms" || cell.source === "derived"
-      ? {
-          position: "absolute",
-          top: 4,
-          left: 4,
-          width: 5,
-          height: 5,
-          borderRadius: "50%",
-          background:
-            cell.source === "rms"
-              ? "var(--cocoa-accent)"
-              : "var(--cocoa-label-tertiary)",
-          pointerEvents: "none"
-        }
-      : null;
-
-  const handleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (readOnly) {
-      onSelect(cell, event);
-      return;
-    }
-    onSelect(cell, event);
-  };
-
-  const handleDoubleClick = () => {
-    if (readOnly) return;
-    onEdit(cell);
-  };
-
-  const handleContainerKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (editing) return;
-    if (readOnly) return;
-    // Enter / F2 abren edicion; las flechas las maneja el padre (grid container).
-    if (event.key === "Enter" || event.key === "F2") {
-      event.preventDefault();
-      onEdit(cell);
-    }
-  };
-
-  const handleInputKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Enter") {
-      event.preventDefault();
-      commitFromInput(event.currentTarget.value);
-    } else if (event.key === "Escape") {
-      event.preventDefault();
-      onCommit(cell, null);
-    }
-  };
-
-  const commitFromInput = (raw: string) => {
-    const trimmed = raw.trim();
-    if (trimmed === "") {
-      onCommit(cell, null);
-      return;
-    }
-    // Aceptamos coma o punto como decimal (locale es-ES vs en-US).
-    const normalized = trimmed.replace(",", ".");
-    const parsed = Number(normalized);
-    if (!Number.isFinite(parsed) || parsed < 0) {
-      onCommit(cell, null);
-      return;
-    }
-    onCommit(cell, parsed);
-  };
-
-  const handleInputBlur = (event: React.FocusEvent<HTMLInputElement>) => {
-    commitFromInput(event.currentTarget.value);
-  };
-
-  const ariaLabel = (() => {
-    const priceLabel = `${formatPrice(cell.effectivePrice)}`;
-    const restrictionPart = restrictionsLabel ? `, ${restrictionsLabel}` : "";
-    const sourcePart = cell.source === "rms" ? ", origen RMS" : cell.source === "derived" ? ", origen derivado" : "";
-    return `Tarifa ${priceLabel} para ${cell.date}${restrictionPart}${sourcePart}`;
-  })();
+  const ariaParts = [rowLabel, formatDateLong(date)];
+  if (isAvail) ariaParts.push(availValue === null ? "disponibilidad no gestionada" : `${availValue} disponibles`);
+  else ariaParts.push(formatMoney(displayPrice, currency));
+  if (restrText && !isAvail) ariaParts.push(restrText);
+  if (view.modified) ariaParts.push("modificado sin publicar");
+  if (locked) ariaParts.push("derivado, solo lectura");
+  if (isChannel) ariaParts.push("precio de canal, solo lectura");
+  if (rec) ariaParts.push(`sugerido ${formatMoney(rec.suggestedPrice, currency)}`);
+  if (holdRec) ariaParts.push("recomendación: mantener");
+  if (restrictionsView && !isAvail && chips.length === 0) ariaParts.push("sin restricciones");
+  if (syncMeta) ariaParts.push(syncMeta.label);
 
   return (
     <div
       role="gridcell"
+      aria-rowindex={rowIndex}
+      aria-colindex={colIndex}
       aria-selected={selected}
-      aria-readonly={readOnly || undefined}
-      aria-label={ariaLabel}
-      data-date={cell.date}
-      data-room-type-id={cell.roomTypeId}
-      data-source={cell.source}
-      data-state={editing ? "editing" : selected ? "selected" : active ? "active" : "default"}
+      aria-readonly={readOnly || locked || isChannel || undefined}
+      aria-label={ariaParts.join(", ")}
+      data-key={cellKey}
       tabIndex={active ? 0 : -1}
-      style={containerStyle}
-      onClick={handleClick}
-      onDoubleClick={handleDoubleClick}
-      onKeyDown={handleContainerKeyDown}
+      className={classes.join(" ")}
+      style={{ left }}
+      title={titleParts.length ? titleParts.join("\n") : undefined}
+      onMouseDown={(e) => onMouseDown(cellKey, e)}
+      onMouseEnter={(e) => onMouseEnter(cellKey, e)}
+      onDoubleClick={(e) => onDoubleClick(cellKey, e)}
     >
-      {sourceDotStyle ? (
-        <span
-          aria-hidden="true"
-          title={cell.source === "rms" ? "Sugerido por RMS" : "Derivado"}
-          style={sourceDotStyle}
-        />
-      ) : null}
-
-      {editing && !readOnly ? (
-        <input
-          ref={inputRef}
-          type="number"
-          inputMode="decimal"
-          step="1"
-          min={0}
-          defaultValue={formatPrice(cell.effectivePrice)}
-          onKeyDown={handleInputKeyDown}
-          onBlur={handleInputBlur}
-          aria-label={`Editar tarifa para ${cell.date}`}
-          style={inputStyle}
-        />
+      {editing ? (
+        <CellEditor cellKey={cellKey} initial={editInitial} isAvail={isAvail} onCommit={onCommitEdit} />
       ) : (
-        <span style={valueStyle}>{formatPrice(cell.effectivePrice)}</span>
-      )}
-
-      {badges.length > 0 && !editing ? (
-        <span style={badgeRowStyle} aria-hidden="true">
-          {badges.map((b) => (
-            <span
-              key={b.key}
-              title={b.label}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 10,
-                height: 10,
-                borderRadius: 2,
-                background: toneColor(b.tone),
-                color: "var(--cocoa-accent-contrast, #fff)",
-                fontSize: 8,
-                lineHeight: 1,
-                fontWeight: 700,
-                letterSpacing: 0
-              }}
-            >
-              {b.short}
+        <>
+          {syncMeta ? <span className={`crg__sync crg__sync--${syncMeta.tone}`} aria-hidden="true" /> : null}
+          {locked ? (
+            <span className="crg__lock" aria-hidden="true" title="Derivado (bloqueado)">
+              🔒
             </span>
-          ))}
-        </span>
-      ) : null}
+          ) : null}
+          {view.modified ? <span className="crg__tri" aria-hidden="true" /> : null}
+          {isAvail ? (
+            <span className={`crg__price crg__price--avail${availValue === 0 ? " crg__price--zero" : availValue !== null && availValue <= 2 ? " crg__price--low" : ""}`}>
+              {availValue === null ? "—" : availValue}
+            </span>
+          ) : displayPrice === null ? (
+            <span className="crg__price crg__price--empty">sin tarifa</span>
+          ) : (
+            <span className="crg__price">{formatMoney(displayPrice, currency)}</span>
+          )}
+          {rec ? (
+            <button
+              type="button"
+              className="crg__rec-arrow"
+              style={{ background: "none", border: 0, padding: 0, cursor: "pointer" }}
+              title={`Sugerido ${formatMoney(rec.suggestedPrice, currency)} (${formatPercent(rec.deltaPct ?? 0)})`}
+              aria-label={`Ver recomendación: sugerido ${formatMoney(rec.suggestedPrice, currency)}`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => onRecommendationClick(cellKey, e)}
+            >
+              → {formatMoney(rec.suggestedPrice, currency)}
+            </button>
+          ) : holdRec ? (
+            <button
+              type="button"
+              className="crg__rec-hold"
+              title={`Mantener · confianza ${Math.round(holdRec.confidence)} %`}
+              aria-label={`Ver recomendación: mantener el precio (confianza ${Math.round(holdRec.confidence)} %)`}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => onRecommendationClick(cellKey, e)}
+            >
+              = mantener
+            </button>
+          ) : null}
+          {restrictionsView && !isAvail ? (
+            <span className="crg__restr" aria-hidden="true">
+              {chips.length === 0 ? (
+                <span className="crg__restr-none">—</span>
+              ) : (
+                <>
+                  {chips.slice(0, 4).map((c) => (
+                    <span key={c.key} className={`crg__chip crg__chip--${c.tone}`} title={c.label}>
+                      {c.text}
+                    </span>
+                  ))}
+                  {chips.length > 4 ? <span className="crg__chip crg__chip--muted">+{chips.length - 4}</span> : null}
+                </>
+              )}
+            </span>
+          ) : chips.length ? (
+            <span className="crg__chips" aria-hidden="true">
+              {chips.slice(0, 3).map((c) => (
+                <span key={c.key} className={`crg__chip crg__chip--${c.tone}`} title={c.label}>
+                  {c.text}
+                </span>
+              ))}
+              {chips.length > 3 ? <span className="crg__chip crg__chip--muted">+{chips.length - 3}</span> : null}
+            </span>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Inline editor                                                      */
+/* ------------------------------------------------------------------ */
+
+function CellEditor({ cellKey, initial, isAvail, onCommit }: { cellKey: CellKey; initial: string; isAvail: boolean; onCommit: (key: CellKey, raw: string, mode: CellCommitMode) => void }) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  const [value, setValue] = useState(initial);
+  const committed = useRef(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    // When the editor opens with the current price, select it so typing replaces it.
+    if (initial && /^\d/.test(initial)) el.select();
+    else el.setSelectionRange(el.value.length, el.value.length);
+  }, [initial]);
+
+  const invalid = value.trim() !== "" && (isAvail ? !/^\d{1,3}$/.test(value.trim()) : !parseExpression(value).ok);
+
+  const commit = (mode: CellCommitMode) => {
+    if (committed.current) return;
+    committed.current = true;
+    onCommit(cellKey, value, mode);
+  };
+
+  const onKeyDown = (e: ReactKeyboardEvent<HTMLInputElement>) => {
+    // The grid container also listens; stop propagation so arrows edit text.
+    e.stopPropagation();
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit(e.shiftKey ? "shift-enter" : "enter");
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      commit(e.shiftKey ? "shift-tab" : "tab");
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      commit("escape");
+    }
+  };
+
+  return (
+    <input
+      ref={ref}
+      className={`crg__input${invalid ? " crg__input--invalid" : ""}`}
+      value={value}
+      inputMode="decimal"
+      aria-label={isAvail ? "Editar disponibles" : "Precio. Escribe 132, +10 % o −5 €"}
+      aria-invalid={invalid || undefined}
+      placeholder={isAvail ? "0" : "132 · +10% · −5"}
+      onChange={(e) => setValue(e.target.value)}
+      onKeyDown={onKeyDown}
+      onBlur={() => commit("blur")}
+      onMouseDown={(e) => e.stopPropagation()}
+    />
+  );
+}
+
+export const CocoaRateGridCell = memo(CocoaRateGridCellImpl);
 export default CocoaRateGridCell;

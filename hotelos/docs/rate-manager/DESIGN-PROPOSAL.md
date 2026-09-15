@@ -1,5 +1,18 @@
 # Rate Manager v2.0 · Diseño
 
+> Nota (2026-09-15): la sección «Endpoints backend» (líneas 148-154) y el
+> roadmap de fases (líneas 200-220: `GET /rate-grid?propertyId=` con
+> `effectiveBARLevel`, `POST /rate-grid/bulk-update` con `{cells:[{rt,date,ch?…}]}`
+> y etag, `GET /rate-grid/journal?propertyId=`, `POST /rate-grid/schedule` y el
+> modelo `ScheduledRateChange`) quedaron SUSTITUIDOS por
+> `docs/runbooks/rate-grid-v2.md` §1.2 (rutas bajo `/properties/:propertyId/…`,
+> journal en `/rate-journal`, sin `schedule`/`etag`; `ScheduledRateChange` no
+> existe en `schema.prisma`; los «Channel-level overrides» de precio tampoco:
+> el precio por canal es base × recargo y la fila de canal solo admite
+> restricciones). Solo la parte de producto/UX sigue vigente; el contrato real
+> es `packages/shared/src/rate-manager-types.ts` y el cierre de la
+> verificación está en `docs/audits/RATE-GRID-V2-CIERRE-2026-09-15.md`.
+
 ## Resumen del research
 
 Análisis comparativo de cuatro líderes del mercado (SiteMinder, Mews, Cloudbeds, RMS) revela un patrón consolidado para la gestión moderna de tarifas hoteleras:

@@ -127,6 +127,8 @@ model Property {
   /// Tanda 3: reporting territory ('common' → VeriFactu; 'bizkaia' | 'gipuzkoa' | 'araba' | 'navarra' → TicketBAI/foral).
   fiscalTerritory       String?  @map("fiscal_territory")
   timezone              String   @default("Europe/Madrid")
+  /// Rate grid v2 · ISO 4217 currency of every rate of the property.
+  currency              String   @default("EUR")
   status                String   @default("open")
   sesHospedajesEnabled  Boolean  @default(false) @map("ses_hospedajes_enabled")
   verifactuEnabled      Boolean  @default(false) @map("verifactu_enabled")
@@ -2087,11 +2089,81 @@ model Channel {
   paymentCostPercent   Decimal?  @map("payment_cost_percent") @db.Decimal(5, 2)
   configurationJson    Json      @default("{}") @map("configuration_json")
   credentialsSecretRef String?   @map("credentials_secret_ref")
+  /// Rate grid v2 · AES-GCM encrypted JSON blob (field-level encryption
+  /// extension, see packages/database/src/crypto-fields.ts). Never returned by the API.
+  credentialsEncrypted String?   @map("credentials_encrypted")
+  /// Rate grid v2 · stub | sandbox | real (per channel, capped by CHANNEL_MAX_MODE).
+  mode                 String    @default("stub")
+  /// Rate grid v2 · markup over the base price for this channel (%), distinct from commission.
+  defaultMarkupPercent Decimal?  @map("default_markup_percent") @db.Decimal(5, 2)
+  /// Rate grid v2 · publish automatically after every saved change.
+  autoPushOnSave       Boolean   @default(false) @map("auto_push_on_save")
   lastSyncAt           DateTime? @map("last_sync_at")
   createdAt            DateTime  @default(now()) @map("created_at")
 
+  @@unique([propertyId, providerCode])
   @@index([propertyId, status])
   @@map("channels")
+}
+
+/// Rate grid v2 · product mapping = (room type × rate plan) → external codes of the
+/// channel. Replaces the separate room/rate mappings as the source for pushes
+/// (OTAs address prices by the pair room_id + rate_id).
+model ChannelProductMapping {
+  id               String   @id @default(cuid())
+  propertyId       String   @map("property_id")
+  channelId        String   @map("channel_id")
+  roomTypeId       String   @map("room_type_id")
+  ratePlanId       String   @map("rate_plan_id")
+  externalRoomCode String   @map("external_room_code")
+  externalRateCode String   @map("external_rate_code")
+  /// per_day | obp (occupancy based) | los
+  pricingModel     String   @default("per_day") @map("pricing_model")
+  status           String   @default("active")
+  createdAt        DateTime @default(now()) @map("created_at")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@unique([channelId, roomTypeId, ratePlanId])
+  @@index([propertyId, channelId, status])
+  @@map("channel_product_mappings")
+}
+
+/// Rate grid v2 · outbox of ARI deliveries: one row per (channel, kind, roomType,
+/// ratePlan, date). The editor reads the status per cell and channel; the drain
+/// job batches queued rows per channel, calls the adapter with retries and
+/// backoff, and marks the outcome. Idempotency key = sha256(channel, kind,
+/// roomType, plan, date, payload) so re-sending an unchanged value is a no-op.
+model ChannelDelivery {
+  id             String    @id @default(cuid())
+  propertyId     String    @map("property_id")
+  channelId      String    @map("channel_id")
+  /// rates | availability | restrictions
+  kind           String
+  roomTypeId     String    @map("room_type_id")
+  /// "*" for availability (room-level) deliveries.
+  ratePlanId     String    @default("*") @map("rate_plan_id")
+  date           DateTime  @db.Date
+  payloadJson    Json      @default("{}") @map("payload_json")
+  payloadHash    String    @map("payload_hash")
+  idempotencyKey String    @map("idempotency_key")
+  /// queued | sending | sent | confirmed | rejected | timeout | superseded
+  status         String    @default("queued")
+  attempts       Int       @default(0)
+  nextRetryAt    DateTime? @map("next_retry_at")
+  lastError      String?   @map("last_error")
+  externalRef    String?   @map("external_ref")
+  syncJobId      String?   @map("sync_job_id")
+  journalId      String?   @map("journal_id")
+  sentAt         DateTime? @map("sent_at")
+  confirmedAt    DateTime? @map("confirmed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@unique([channelId, idempotencyKey])
+  @@index([propertyId, channelId, status])
+  @@index([channelId, roomTypeId, ratePlanId, date])
+  @@index([status, nextRetryAt])
+  @@map("channel_deliveries")
 }
 
 model ChannelRoomMapping {
@@ -2134,22 +2206,34 @@ model InventoryDay {
   @@map("inventory_days")
 }
 
+/// Rate grid v2 · one row per (property, roomType, ratePlan, channel, date).
+/// `ratePlanId` and `channelId` are NOT NULL: the sentinel "*" means "all plans"
+/// / "base (every channel)" so the unique key has no NULLs (Postgres treats
+/// NULL ≠ NULL and the v1 upserts duplicated rows on every write).
 model RestrictionDay {
   id                String   @id @default(cuid())
   propertyId        String   @map("property_id")
   roomTypeId        String   @map("room_type_id")
-  ratePlanId        String?  @map("rate_plan_id")
-  channelId         String?  @map("channel_id")
+  ratePlanId        String   @default("*") @map("rate_plan_id")
+  channelId         String   @default("*") @map("channel_id")
   date              DateTime @db.Date
   minStay           Int?     @map("min_stay")
   maxStay           Int?     @map("max_stay")
+  minStayThrough    Int?     @map("min_stay_through")
   closedToArrival   Boolean  @default(false) @map("closed_to_arrival")
   closedToDeparture Boolean  @default(false) @map("closed_to_departure")
+  /// The rate plan is not bookable that night (plan-level).
+  closed            Boolean  @default(false)
+  /// The room type is pulled from sale that night (room-level).
   stopSell          Boolean  @default(false) @map("stop_sell")
+  minAdvanceDays    Int?     @map("min_advance_days")
+  maxAdvanceDays    Int?     @map("max_advance_days")
   restrictionSource String   @default("manual") @map("restriction_source")
+  updatedBy         String?  @map("updated_by")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
   @@unique([propertyId, roomTypeId, ratePlanId, channelId, date])
+  @@index([propertyId, date])
   @@map("restriction_days")
 }
 
@@ -2166,9 +2250,16 @@ model RateDay {
   manuallyOverridden Boolean @default(false) @map("manually_overridden")
   updatedBy        String?  @map("updated_by")
   updatedAt        DateTime @updatedAt @map("updated_at")
+  /// Legacy (rate grid v1): restrictions now live in restriction_days. Kept for
+  /// old readers; the v2 services never write it.
   restrictionsJson Json     @default("{}") @map("restrictions_json")
+  /// Rate grid v2 · who set this price: manual | rms | derived | import.
+  source           String   @default("manual")
+  /// Rate grid v2 · occupancy-based prices when configured, e.g. {"1": 80, "2": 95, "extraAdult": 20}.
+  occupancyPricesJson Json? @map("occupancy_prices_json")
 
   @@unique([propertyId, ratePlanId, roomTypeId, date])
+  @@index([propertyId, date])
   @@map("rate_days")
 }
 
@@ -4863,8 +4954,39 @@ model RateChangeJournal {
   changesJson   Json     // detalle de celdas afectadas
   reason        String?
   pushedTo      String[] @default([])  // channel ids
-  pushStatus    String   @default("draft") // draft|pushed|failed
+  pushStatus    String   @default("draft") // draft|pushed|failed|partial
+  /// Rate grid v2 · draft | published | reverted
+  status        String   @default("draft")
+  /// Rate grid v2 · on the ORIGINAL entry: id of the inverse entry that reverted it
+  /// (the inverse entry links back through changesJson.revertsJournalId — no column).
+  revertedByJournalId String? @map("reverted_by_journal_id")
+  /// Rate grid v2 · idempotency key of the editor's retries (uuid). Unique per
+  /// property (cierre 2026-09-15): the engine's advisory lock already serialises
+  /// retries; the constraint is the guarantee when the lock is not held (P2002 →
+  /// the engine re-reads the entry the other attempt wrote).
+  clientRequestId String? @map("client_request_id")
   property      Property @relation(fields: [propertyId], references: [id])
+  items         RateChangeJournalItem[]
+  @@unique([propertyId, clientRequestId])
   @@index([propertyId, timestamp])
   @@map("rate_change_journals")
+}
+
+/// Rate grid v2 · before/after per cell and field of a journal entry (revert source).
+model RateChangeJournalItem {
+  id         String   @id @default(cuid())
+  journalId  String   @map("journal_id")
+  ratePlanId String   @map("rate_plan_id")
+  roomTypeId String   @map("room_type_id")
+  date       DateTime @db.Date
+  channelId  String?  @map("channel_id")
+  /// price | occupancyPrices | minPrice | maxPrice | available | <restriction key>
+  field      String
+  beforeJson Json?    @map("before_json")
+  afterJson  Json?    @map("after_json")
+  journal    RateChangeJournal @relation(fields: [journalId], references: [id], onDelete: Cascade)
+
+  @@index([journalId])
+  @@index([ratePlanId, roomTypeId, date])
+  @@map("rate_change_journal_items")
 }

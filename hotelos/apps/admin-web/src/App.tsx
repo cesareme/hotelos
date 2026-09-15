@@ -794,8 +794,18 @@ export function App() {
       if (!detail) return;
       const target = resolveScreenTarget(detail);
       if (!target) return;
-      syncLocation(target.screen, target.hash);
-      setActiveScreen(target.screen);
+      // Screen guards (e.g. the rate grid editor with an unsaved draft) veto
+      // a navigation with preventDefault (cancelable events from selectScreen)
+      // or stopImmediatePropagation (any emitter). The event is dispatched on
+      // `window` itself, so at-target listeners run in REGISTRATION order —
+      // this listener (mounted with the shell) runs before any lazily mounted
+      // screen's, capture flag or not. Decide once the synchronous dispatch is
+      // over, when every listener has had its say.
+      queueMicrotask(() => {
+        if (event.defaultPrevented || event.cancelBubble) return;
+        syncLocation(target.screen, target.hash);
+        setActiveScreen(target.screen);
+      });
     }
     window.addEventListener("popstate", handlePopState);
     window.addEventListener("hotelos-nav", handleHotelosNav);
@@ -805,11 +815,13 @@ export function App() {
     };
   }, []);
 
+  // Sidebar / ⌘K / persona home: every shell-driven navigation goes through
+  // the same `hotelos-nav` channel as `navigateTo()` so screen guards can
+  // intercept it (RateGridEditorScreen cancels it while a draft is pending and
+  // re-dispatches the same target once the user confirms). The listener above
+  // performs the real switch (unknown screens still warn in resolveScreenTarget).
   function selectScreen(rawTarget: string) {
-    const target = resolveScreenTarget(rawTarget);
-    if (!target) return;
-    syncLocation(target.screen, target.hash);
-    setActiveScreen(target.screen);
+    window.dispatchEvent(new CustomEvent<string>("hotelos-nav", { detail: rawTarget, cancelable: true }));
   }
 
   // Public auth flows (invitation acceptance, password reset, forced password
@@ -817,7 +829,9 @@ export function App() {
   // pathname/session check and only renders its children (the AuthGate) when
   // no public screen applies.
   return (
-    <CocoaGlobalProvider>
+    // ⌘K belongs to the shell's CommandPalette (BackOfficeLayout); the Cocoa
+    // palette must not open on top of it (cierre 2026-09-15).
+    <CocoaGlobalProvider commandPaletteHotkey={false}>
       <ToastProvider>
         <PublicAuthRoutes>
           <AuthGate>

@@ -49,35 +49,6 @@
         "scripts/smoke-director-dashboard.mjs"
       ]
     },
-    "AIRBNB_ADAPTER_MODE": {
-      "section": "OTA",
-      "format": "enum",
-      "values": [
-        "stub",
-        "real"
-      ],
-      "default": "stub",
-      "doc": "Airbnb: stub o real.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/airbnb.adapter.ts"
-      ]
-    },
-    "AIRBNB_API_BASE_URL": {
-      "section": "OTA",
-      "format": "url",
-      "doc": "Base de la API de Airbnb (vacío = por defecto).",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/airbnb.adapter.ts"
-      ]
-    },
-    "AIRBNB_OAUTH_URL": {
-      "section": "OTA",
-      "format": "url",
-      "doc": "Endpoint OAuth de Airbnb.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/airbnb/auth.ts"
-      ]
-    },
     "AI_GATEWAY_MODE": {
       "section": "IA",
       "format": "enum",
@@ -260,20 +231,6 @@
         "apps/api/src/server.ts"
       ]
     },
-    "BOOKING_ADAPTER_MODE": {
-      "section": "OTA",
-      "format": "enum",
-      "values": [
-        "stub",
-        "sandbox",
-        "real"
-      ],
-      "default": "stub",
-      "doc": "Channel manager Booking.com: stub (respuestas locales), sandbox (BOOKING_SANDBOX_URL) o real.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/booking.adapter.ts"
-      ]
-    },
     "BOOKING_API_BASE_URL": {
       "section": "OTA",
       "format": "url",
@@ -282,28 +239,12 @@
         "apps/api/src/modules/channel-manager/adapters/booking.adapter.ts"
       ]
     },
-    "BOOKING_OAUTH_SCOPE": {
-      "section": "OTA",
-      "format": "string",
-      "doc": "Scope OAuth por defecto de Booking (cuando la credencial no lo trae).",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/booking/oauth.ts"
-      ]
-    },
     "BOOKING_OAUTH_URL": {
       "section": "OTA",
       "format": "url",
-      "doc": "Endpoint OAuth de Booking.",
+      "doc": "Endpoint de token exchange JWT de Booking Connectivity (por defecto https://connectivity-authentication.booking.com/token-based-authentication/exchange).",
       "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/booking/oauth.ts"
-      ]
-    },
-    "BOOKING_SANDBOX_URL": {
-      "section": "OTA",
-      "format": "url",
-      "doc": "Base del sandbox de Booking.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/booking.adapter.ts"
+        "apps/api/src/modules/channel-manager/adapters/booking/auth.ts"
       ]
     },
     "BOOTSTRAP_TOKEN": {
@@ -317,6 +258,78 @@
       "doc": "Token del endpoint POST /onboarding/bootstrap (primera organización de una instalación real). Se desactiva solo en cuanto existe una organización.",
       "readBy": [
         "apps/api/src/modules/onboarding/bootstrap.service.ts"
+      ]
+    },
+    "CHANNEL_DELIVERY_RETENTION_DAYS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 1,
+      "max": 3650,
+      "default": "30",
+      "doc": "Días que se conservan las entregas de canal sustituidas (ChannelDelivery status superseded); las más antiguas las purga la pasada de drenaje del líder (como máximo una vez por hora). El resto de estados nunca se purga.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/env.partial.ts"
+      ]
+    },
+    "CHANNEL_DRAIN_BATCH_LIMIT": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 10,
+      "max": 20000,
+      "default": "2000",
+      "doc": "Máximo de entregas (ChannelDelivery) que toma cada pasada del drenaje.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/env.partial.ts"
+      ]
+    },
+    "CHANNEL_DRAIN_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el drenaje automático del outbox de canales (las entregas quedan en cola; POST /channel-manager/deliveries/drain sigue disponible).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/env.partial.ts",
+        "apps/api/src/server.ts"
+      ]
+    },
+    "CHANNEL_DRAIN_INTERVAL_MS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 10000,
+      "max": 86400000,
+      "default": "15000",
+      "doc": "Periodo (ms) del drenaje del outbox de canales (ChannelDelivery → adaptadores). Solo corre en el líder de schedulers (RUN_SCHEDULERS).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/env.partial.ts"
+      ]
+    },
+    "CHANNEL_MAX_MODE": {
+      "section": "OTA",
+      "format": "enum",
+      "values": [
+        "stub",
+        "sandbox",
+        "real"
+      ],
+      "default": "sandbox",
+      "example": "sandbox",
+      "productionExample": "sandbox",
+      "doc": "Tope del modo de los canales (Channel.mode): stub (simulador, sin credenciales), sandbox (simulador local con validación estructural del payload; por defecto) o real (HTTPS al proveedor; exige credenciales reales). Nada sale a Internet sin real.",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/env.partial.ts"
+      ]
+    },
+    "CHANNEX_BASE_URL": {
+      "section": "OTA",
+      "format": "url",
+      "default": "https://staging.channex.io",
+      "example": "https://staging.channex.io",
+      "productionExample": "https://app.channex.io",
+      "httpsInProduction": true,
+      "doc": "Base de la API de Channex (agregador). staging.channex.io para certificación; app.channex.io en producción. La api key va por canal (credenciales cifradas).",
+      "readBy": [
+        "apps/api/src/modules/channel-manager/adapters/channex.adapter.ts",
+        "apps/api/src/modules/channel-manager/env.partial.ts"
       ]
     },
     "CORS_ALLOWED_ORIGINS": {
@@ -439,33 +452,12 @@
         "packages/database/src/crypto-fields.ts"
       ]
     },
-    "EXPEDIA_ADAPTER_MODE": {
-      "section": "OTA",
-      "format": "enum",
-      "values": [
-        "stub",
-        "real"
-      ],
-      "default": "stub",
-      "doc": "Expedia: stub o real.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/expedia.adapter.ts"
-      ]
-    },
     "EXPEDIA_API_BASE_URL": {
       "section": "OTA",
       "format": "url",
       "doc": "Base de la API de Expedia (vacío = por defecto).",
       "readBy": [
         "apps/api/src/modules/channel-manager/adapters/expedia.adapter.ts"
-      ]
-    },
-    "EXPEDIA_OAUTH_URL": {
-      "section": "OTA",
-      "format": "url",
-      "doc": "Endpoint OAuth de Expedia.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/expedia/auth.ts"
       ]
     },
     "EXPO_PUBLIC_ADMIN_WEB_URL": {
@@ -578,27 +570,6 @@
       "readBy": [
         "apps/ai-gateway/src/server.ts",
         "apps/api/src/server.ts"
-      ]
-    },
-    "HOTELBEDS_ADAPTER_MODE": {
-      "section": "OTA",
-      "format": "enum",
-      "values": [
-        "stub",
-        "real"
-      ],
-      "default": "stub",
-      "doc": "Hotelbeds: stub o real.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/hotelbeds.adapter.ts"
-      ]
-    },
-    "HOTELBEDS_API_BASE_URL": {
-      "section": "OTA",
-      "format": "url",
-      "doc": "Base de la API de Hotelbeds (vacío = por defecto).",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/hotelbeds.adapter.ts"
       ]
     },
     "HOTELOS_ALLOW_DEMO_AUTH": {
@@ -1531,35 +1502,6 @@
       "doc": "DSN de Sentry del admin-web (se hornea en el build de Vite).",
       "readBy": [
         "apps/admin-web/src/main.tsx"
-      ]
-    },
-    "VRBO_ADAPTER_MODE": {
-      "section": "OTA",
-      "format": "enum",
-      "values": [
-        "stub",
-        "real"
-      ],
-      "default": "stub",
-      "doc": "Vrbo: stub o real.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/vrbo.adapter.ts"
-      ]
-    },
-    "VRBO_API_BASE_URL": {
-      "section": "OTA",
-      "format": "url",
-      "doc": "Base de la API de Vrbo (vacío = por defecto).",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/vrbo.adapter.ts"
-      ]
-    },
-    "VRBO_OAUTH_URL": {
-      "section": "OTA",
-      "format": "url",
-      "doc": "Endpoint OAuth de Vrbo.",
-      "readBy": [
-        "apps/api/src/modules/channel-manager/adapters/vrbo/auth.ts"
       ]
     },
     "WHATSAPP_PHONE_ID": {

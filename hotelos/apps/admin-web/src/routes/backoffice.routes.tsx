@@ -57,7 +57,13 @@ export const BACKOFFICE_ROUTES = [
   { path: "/backoffice/revenue/history-forecast", screen: "RevenueHistoryForecastDashboard" },
   { path: "/backoffice/revenue/forecast-explorer", screen: "RevenueForecastExplorer" },
   { path: "/backoffice/revenue/comparison", screen: "RevenueComparisonDashboard" },
-  { path: "/backoffice/revenue/rate-grid", screen: "RevenueRules" },
+  // Rate grid v2: the editor owns /revenue/rate-grid (deep link ?from&to&view&plan).
+  // RevenueRules moved to /revenue/rules and stays FIRST among its paths so
+  // pathForScreen keeps resolving it there.
+  { path: "/backoffice/revenue/rate-grid", screen: "RateGridEditorScreen" },
+  // Journal of rate changes (same HistoryDrawer as the editor, standalone page).
+  { path: "/backoffice/revenue/rate-journal", screen: "RateJournalScreen" },
+  { path: "/backoffice/revenue/rules", screen: "RevenueRules" },
   { path: "/backoffice/revenue/recommendations", screen: "RevenueRules" },
   { path: "/backoffice/revenue/demand-calendar", screen: "DemandCalendarAdmin" },
   { path: "/backoffice/revenue/rate-shopper", screen: "RateShopperSettings" },

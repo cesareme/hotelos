@@ -1,606 +1,371 @@
-// RateJournalScreen — historial de cambios de tarifas (audit log).
+// RateJournalScreen — standalone host of the rate grid HistoryDrawer.
 //
-// Vista de solo lectura sobre el journal que crea cada bulk-update del rate
-// grid (`/properties/:id/rate-grid/journal`). Cada entrada captura quién hizo
-// el cambio, cuántas celdas se tocaron, el motivo opcional, a qué canales se
-// empujó y el estado del push (`draft`, `pushed`, `failed`). Permite filtrar
-// por rango de fechas y por email del usuario, y al hacer click sobre una
-// fila abre un drawer con el detalle completo formateado.
+// Rate grid v2 (2026-09): the history lives INSIDE the editor (drawer with
+// diff + revert). This screen keeps the sidebar entry "Historial de tarifas"
+// and the deep link /backoffice/revenue/... alive as a thin wrapper: it mounts
+// the same drawer, backed by the same `useRateJournal` hook the editor uses,
+// so there is a single implementation of paging, diff loading and revert.
 //
-// Diseño: Cocoa Edition. Solo tokens `--cocoa-*` para mantener paridad
-// light/dark. Comparte primitivas con el resto de pantallas (`CocoaPageHeader`,
-// `CocoaTable`, `CocoaCard`, `CocoaSheet`, `CocoaInput`, `CocoaButton`).
+// The hook is exported from here (not from a components/ file) because the
+// front-screen lot only owns screen + service files; the drawer component
+// itself belongs to the cocoa-rate-grid lot.
 //
-// El endpoint acepta `limit` pero no rango de fechas, así que filtramos en
-// cliente sobre la última ventana cargada (`JOURNAL_LIMIT` entradas). Es
-// coherente con otras pantallas de auditoría (ver `AuditLogViewer`).
+// Revert (cierre 2026-09-15): the API refuses with 409 JOURNAL_STALE when a
+// later edit changed any cell of the entry; the hook turns that into
+// `staleRevert` (cells + message) so both hosts render JournalStaleDialog
+// («Forzar reversión» → `{ force: true }`). Deep link: /backoffice/revenue/rate-journal.
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import type { RateChangeJournalEntry } from "@hotelos/shared";
-import { fetchRateJournal } from "../../services/rateGridApi";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import type { RateChangeJournalEntry, RateChangeJournalItem, RateGridRatePlan, RateGridRoomType } from "@hotelos/shared";
+import {
+  JOURNAL_STALE_CODE,
+  classifyRateGridError,
+  fetchJournal,
+  fetchJournalEntry,
+  fetchRatePlans,
+  revertJournal,
+  type JournalStaleCell
+} from "../../services/rateGridApi";
+import { fetchRoomTypes } from "../../services/pmsCommerceApi";
+import { listChannels } from "../../services/channelsApi";
+import { pluralize } from "../../components/cocoa-rate-grid/helpers";
+import type { RateGridChannel } from "@hotelos/shared";
 import { getActivePropertyId } from "../../services/activeProperty";
+import { navigateTo } from "../../lib/navigate";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaSheet } from "../../components/cocoa/CocoaSheet";
-import { CocoaInput } from "../../components/cocoa/CocoaInput";
 import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { LoadingBlock, ErrorState } from "../../components/States";
+import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { useToast } from "../../components/Toast";
+import { HistoryDrawer } from "../../components/cocoa-rate-grid/HistoryDrawer";
+import { JournalStaleDialog } from "../../components/cocoa-rate-grid/JournalStaleDialog";
 
-const JOURNAL_LIMIT = 200;
+const PAGE_SIZE = 50;
 
-// -----------------------------------------------------------------------------
-// Date / time helpers — `Intl` formatters en es-ES para mantener paridad con el
-// resto de pantallas. Las fechas vienen como ISO 8601 UTC desde el backend.
-// -----------------------------------------------------------------------------
-
-const RELATIVE_FORMATTER = new Intl.RelativeTimeFormat("es-ES", { numeric: "auto" });
-const DATE_TIME_FORMATTER = new Intl.DateTimeFormat("es-ES", {
-  day: "2-digit",
-  month: "short",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit"
-});
-
-function parseIso(value: string): Date | null {
-  if (!value) return null;
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? null : d;
-}
-
-function fmtAbsoluteDateTime(iso: string): string {
-  const d = parseIso(iso);
-  return d ? DATE_TIME_FORMATTER.format(d) : iso;
-}
-
-function fmtRelative(iso: string, now: Date): string {
-  const d = parseIso(iso);
-  if (!d) return iso;
-  const deltaMs = d.getTime() - now.getTime();
-  const absMs = Math.abs(deltaMs);
-  const MINUTE = 60_000;
-  const HOUR = 60 * MINUTE;
-  const DAY = 24 * HOUR;
-  const WEEK = 7 * DAY;
-  if (absMs < MINUTE) return RELATIVE_FORMATTER.format(Math.round(deltaMs / 1000), "second");
-  if (absMs < HOUR) return RELATIVE_FORMATTER.format(Math.round(deltaMs / MINUTE), "minute");
-  if (absMs < DAY) return RELATIVE_FORMATTER.format(Math.round(deltaMs / HOUR), "hour");
-  if (absMs < WEEK) return RELATIVE_FORMATTER.format(Math.round(deltaMs / DAY), "day");
-  return RELATIVE_FORMATTER.format(Math.round(deltaMs / WEEK), "week");
-}
-
-// `<input type="date">` espera YYYY-MM-DD; la comparación con el ISO completo
-// del backend funciona directamente porque ambos son lexicográficos.
-function isoDate(iso: string): string {
-  return iso.slice(0, 10);
-}
-
-// -----------------------------------------------------------------------------
-// Inline Cocoa primitives — pequeños badges y status pills coherentes con el
-// resto del Cocoa Edition. Vivirán inline hasta que el set primitivo cubra
-// estos casos.
-// -----------------------------------------------------------------------------
-
-type PushStatus = RateChangeJournalEntry["pushStatus"];
-
-const PUSH_STATUS_TONES: Record<PushStatus, { fg: string; bg: string; label: string }> = {
-  draft: {
-    fg: "var(--cocoa-label-secondary)",
-    bg: "var(--cocoa-background-sidebar)",
-    label: "Borrador"
-  },
-  pushed: {
-    fg: "var(--cocoa-success)",
-    bg: "rgb(48 209 88 / 0.18)",
-    label: "Pusheado"
-  },
-  failed: {
-    fg: "var(--cocoa-danger)",
-    bg: "rgb(255 69 58 / 0.18)",
-    label: "Fallido"
-  }
+export type RateJournalState = {
+  items: RateChangeJournalEntry[];
+  hasMore: boolean;
+  loading: boolean;
+  /** Load/diff error (already humanised). */
+  error: string | null;
+  expandedId: string | null;
+  expandedItems: RateChangeJournalItem[] | null;
+  /** Journal id whose revert is being confirmed (ConfirmDialog owner). */
+  pendingRevertId: string | null;
+  reverting: boolean;
+  /**
+   * 409 JOURNAL_STALE of the last revert attempt: the grid changed after the
+   * entry (cells listed). The screen shows JournalStaleDialog; `forceRevert`
+   * re-sends `{ force: true }`, `cancelStaleRevert` drops it.
+   */
+  staleRevert: { journalId: string; cells: JournalStaleCell[]; message: string } | null;
+  refresh: () => void;
+  loadMore: () => void;
+  showDiff: (journalId: string) => void;
+  requestRevert: (journalId: string) => void;
+  cancelRevert: () => void;
+  /** Runs the revert of `pendingRevertId`; resolves true when the API accepted it. */
+  confirmRevert: () => Promise<boolean>;
+  forceRevert: () => Promise<boolean>;
+  cancelStaleRevert: () => void;
 };
 
-function PushStatusPill({ status }: { status: PushStatus }) {
-  const tone = PUSH_STATUS_TONES[status];
-  const style: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px var(--cocoa-space-2)",
-    borderRadius: "var(--cocoa-radius-full)",
-    background: tone.bg,
-    color: tone.fg,
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    fontFamily: "var(--cocoa-font)",
-    lineHeight: 1.4,
-    whiteSpace: "nowrap"
-  };
-  return <span style={style}>{tone.label}</span>;
-}
+/**
+ * What a revert produced: the compensating entry id, the original entry (as
+ * listed, with its `pushedTo` channels) and the number of cells restored. The
+ * editor uses it to mark those cells as "pending re-send": the API restores
+ * rate_days but never touches the channels, which keep the reverted value.
+ */
+export type RateJournalRevertInfo = {
+  journalId: string;
+  originalId: string;
+  original: RateChangeJournalEntry | null;
+  updated: number;
+};
 
-function ChannelBadge({ children }: { children: ReactNode }) {
-  const style: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px var(--cocoa-space-2)",
-    borderRadius: "var(--cocoa-radius-full)",
-    background: "var(--cocoa-background-sidebar)",
-    color: "var(--cocoa-label-secondary)",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    fontFamily: "var(--cocoa-font)",
-    lineHeight: 1.4
-  };
-  return <span style={style}>{children}</span>;
-}
-
-function ChannelBadgeRow({ channels }: { channels: string[] }) {
-  if (channels.length === 0) {
-    return (
-      <span
-        style={{
-          color: "var(--cocoa-label-tertiary)",
-          fontFamily: "var(--cocoa-font)",
-          fontSize: "var(--cocoa-fs-callout)"
-        }}
-      >
-        —
-      </span>
-    );
-  }
-  return (
-    <span style={{ display: "inline-flex", flexWrap: "wrap", gap: 4 }}>
-      {channels.map((channel) => (
-        <ChannelBadge key={channel}>{channel}</ChannelBadge>
-      ))}
-    </span>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Detail drawer — muestra todos los campos disponibles de la entrada y un
-// bloque `<pre>` JSON-formateado. El tipo `RateChangeJournalEntry` no expone
-// hoy `changesJson` (solo `changesCount`), así que esta vista cubre el resto
-// del payload conocido. Cuando el backend exponga el delta detallado, se
-// inyecta aquí sin cambios estructurales.
-// -----------------------------------------------------------------------------
-
-interface DetailDrawerProps {
-  entry: RateChangeJournalEntry | null;
-  onClose: () => void;
-}
-
-function DetailDrawer({ entry, onClose }: DetailDrawerProps) {
-  const open = entry !== null;
-  // El cuerpo del drawer se renderiza solo cuando hay `entry`; CocoaSheet
-  // gestiona el unmount con animación.
-  return (
-    <CocoaSheet open={open} onClose={onClose} size="lg" title="Detalle del cambio">
-      {entry ? <DetailDrawerBody entry={entry} /> : null}
-    </CocoaSheet>
-  );
-}
-
-function DetailRow({ label, value }: { label: string; value: ReactNode }) {
-  const rowStyle: CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "160px 1fr",
-    gap: "var(--cocoa-space-3)",
-    paddingBlock: "var(--cocoa-space-2)",
-    borderBottom: "1px solid var(--cocoa-separator)"
-  };
-  const labelStyle: CSSProperties = {
-    color: "var(--cocoa-label-secondary)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: "var(--cocoa-tracking-wide)",
-    margin: 0
-  };
-  const valueStyle: CSSProperties = {
-    color: "var(--cocoa-label)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-body)",
-    margin: 0,
-    minWidth: 0,
-    overflowWrap: "anywhere"
-  };
-  return (
-    <div style={rowStyle}>
-      <span style={labelStyle}>{label}</span>
-      <div style={valueStyle}>{value}</div>
-    </div>
-  );
-}
-
-function DetailDrawerBody({ entry }: { entry: RateChangeJournalEntry }) {
-  // Pretty-print del payload conocido. Cuando el backend exponga
-  // `changesJson` (delta celda a celda) se sustituye este bloque.
-  const formatted = useMemo(() => JSON.stringify(entry, null, 2), [entry]);
-
-  const preStyle: CSSProperties = {
-    margin: 0,
-    padding: "var(--cocoa-space-3)",
-    background: "var(--cocoa-background-sidebar)",
-    border: "1px solid var(--cocoa-separator)",
-    borderRadius: "var(--cocoa-radius-md)",
-    color: "var(--cocoa-label)",
-    fontFamily: "var(--cocoa-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace)",
-    fontSize: "var(--cocoa-fs-callout)",
-    lineHeight: 1.5,
-    whiteSpace: "pre-wrap",
-    overflowWrap: "anywhere",
-    maxHeight: 360,
-    overflow: "auto"
-  };
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }}>
-      <section>
-        <DetailRow label="Fecha" value={fmtAbsoluteDateTime(entry.timestamp)} />
-        <DetailRow label="Usuario" value={entry.userEmail ?? entry.userId} />
-        <DetailRow label="User ID" value={<code>{entry.userId}</code>} />
-        <DetailRow label="Celdas cambiadas" value={entry.changesCount.toLocaleString("es-ES")} />
-        <DetailRow label="Motivo" value={entry.reason ?? "—"} />
-        <DetailRow label="Estado" value={<PushStatusPill status={entry.pushStatus} />} />
-        <DetailRow label="Canales" value={<ChannelBadgeRow channels={entry.pushedTo} />} />
-        <DetailRow label="Property" value={<code>{entry.propertyId}</code>} />
-        <DetailRow label="Entry ID" value={<code>{entry.id}</code>} />
-      </section>
-
-      <section>
-        <h3
-          style={{
-            color: "var(--cocoa-label)",
-            fontFamily: "var(--cocoa-font)",
-            fontSize: "var(--cocoa-fs-subheadline)",
-            fontWeight: 600,
-            margin: "0 0 var(--cocoa-space-2) 0"
-          }}
-        >
-          Payload JSON
-        </h3>
-        <pre style={preStyle}>{formatted}</pre>
-      </section>
-    </div>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Inline icons — coherentes con el resto de pantallas Cocoa.
-// -----------------------------------------------------------------------------
-
-const ICON_SIZE = 14;
-
-function IconRefresh() {
-  return (
-    <svg
-      width={ICON_SIZE}
-      height={ICON_SIZE}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <path d="M13.5 8.5a5.5 5.5 0 1 1-1.6-3.9" />
-      <path d="M13.5 2.5v3.5h-3.5" />
-    </svg>
-  );
-}
-
-function IconSearch() {
-  return (
-    <svg
-      width={ICON_SIZE}
-      height={ICON_SIZE}
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden
-    >
-      <circle cx="7" cy="7" r="4.5" />
-      <path d="m10.5 10.5 3 3" />
-    </svg>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Filters bar — rango de fechas + búsqueda por email. La eliminación de los
-// filtros se ofrece como un botón "plain" sólo cuando hay algún filtro activo.
-// -----------------------------------------------------------------------------
-
-interface FiltersBarProps {
-  fromDate: string;
-  toDate: string;
-  emailQuery: string;
-  filteredCount: number;
-  totalCount: number;
-  onFromDateChange: (value: string) => void;
-  onToDateChange: (value: string) => void;
-  onEmailQueryChange: (value: string) => void;
-  onClear: () => void;
-}
-
-function FiltersBar({
-  fromDate,
-  toDate,
-  emailQuery,
-  filteredCount,
-  totalCount,
-  onFromDateChange,
-  onToDateChange,
-  onEmailQueryChange,
-  onClear
-}: FiltersBarProps) {
-  const rowStyle: CSSProperties = {
-    display: "flex",
-    flexWrap: "wrap",
-    alignItems: "flex-end",
-    gap: "var(--cocoa-space-3)"
-  };
-  const fieldStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--cocoa-space-1)",
-    minWidth: 160
-  };
-  const labelStyle: CSSProperties = {
-    color: "var(--cocoa-label-secondary)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    textTransform: "uppercase",
-    letterSpacing: "var(--cocoa-tracking-wide)"
-  };
-  const nativeDateStyle: CSSProperties = {
-    height: 28,
-    padding: "0 8px",
-    borderRadius: "var(--cocoa-radius-md)",
-    border: "1px solid var(--cocoa-separator)",
-    background: "var(--cocoa-background-control)",
-    color: "var(--cocoa-label)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-body)"
-  };
-  const countStyle: CSSProperties = {
-    marginLeft: "auto",
-    color: "var(--cocoa-label-secondary)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-callout)"
-  };
-
-  const hasFilter = fromDate.length > 0 || toDate.length > 0 || emailQuery.length > 0;
-
-  return (
-    <div style={rowStyle}>
-      <div style={fieldStyle}>
-        <span style={labelStyle}>Desde</span>
-        <input
-          type="date"
-          value={fromDate}
-          onChange={(e) => onFromDateChange(e.target.value)}
-          style={nativeDateStyle}
-          aria-label="Fecha desde"
-        />
-      </div>
-      <div style={fieldStyle}>
-        <span style={labelStyle}>Hasta</span>
-        <input
-          type="date"
-          value={toDate}
-          onChange={(e) => onToDateChange(e.target.value)}
-          style={nativeDateStyle}
-          aria-label="Fecha hasta"
-        />
-      </div>
-      <div style={{ ...fieldStyle, minWidth: 240, flex: 1 }}>
-        <span style={labelStyle}>Email del usuario</span>
-        <CocoaInput
-          value={emailQuery}
-          onChange={onEmailQueryChange}
-          placeholder="Buscar por email…"
-          icon={<IconSearch />}
-          size="small"
-        />
-      </div>
-      {hasFilter ? (
-        <CocoaButton variant="plain" size="small" tone="neutral" onClick={onClear}>
-          Limpiar filtros
-        </CocoaButton>
-      ) : null}
-      <span style={countStyle}>
-        {filteredCount === totalCount
-          ? `${totalCount} entradas`
-          : `${filteredCount} de ${totalCount} entradas`}
-      </span>
-    </div>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Pantalla principal — carga el journal del propietario activo, expone los
-// filtros y abre el drawer al hacer click sobre una fila.
-// -----------------------------------------------------------------------------
-
-export function RateJournalScreen() {
-  const propertyId = useMemo(() => getActivePropertyId(), []);
-
-  const [entries, setEntries] = useState<RateChangeJournalEntry[]>([]);
-  const [loading, setLoading] = useState<boolean>(true);
+/**
+ * Journal paging + diff + revert, shared by the editor and this screen.
+ * `enabled: false` (drawer closed) skips the initial load until opened, and
+ * every re-open reloads the first page: entries published or saved while the
+ * drawer was closed showed up only after an F5 otherwise
+ * (browser-ux-final#4). `refresh()` reloads on demand (the screen's
+ * «Actualizar», the editor's «Recargar» and each successful save/publish).
+ */
+export function useRateJournal(propertyId: string, options: { enabled?: boolean; onReverted?: (info: RateJournalRevertInfo) => void } = {}): RateJournalState {
+  const enabled = options.enabled ?? true;
+  const { showToast } = useToast();
+  const [items, setItems] = useState<RateChangeJournalEntry[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [expandedItems, setExpandedItems] = useState<RateChangeJournalItem[] | null>(null);
+  const [pendingRevertId, setPendingRevertId] = useState<string | null>(null);
+  const [reverting, setReverting] = useState(false);
+  const [staleRevert, setStaleRevert] = useState<RateJournalState["staleRevert"]>(null);
+  const [nonce, setNonce] = useState(0);
+  const loadedForRef = useRef<string | null>(null);
+  const onRevertedRef = useRef(options.onReverted);
+  onRevertedRef.current = options.onReverted;
 
-  const [fromDate, setFromDate] = useState<string>("");
-  const [toDate, setToDate] = useState<string>("");
-  const [emailQuery, setEmailQuery] = useState<string>("");
-
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-
-  // `now` se fija en el primer render para que el formateo relativo de cada
-  // fila sea estable durante toda la sesión de la pantalla. Si quisiéramos
-  // refrescar la etiqueta cada minuto, lo movemos a un `setInterval`.
-  const now = useMemo(() => new Date(), []);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const items = await fetchRateJournal(propertyId, JOURNAL_LIMIT);
-      setEntries(items);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo cargar el historial de cambios.");
-    } finally {
-      setLoading(false);
-    }
-  }, [propertyId]);
+  const loadPage = useCallback(
+    async (after: string | null, replace: boolean) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const page = await fetchJournal(propertyId, { limit: PAGE_SIZE, cursor: after });
+        setItems((prev) => (replace ? page.items : [...prev, ...page.items]));
+        setCursor(page.nextCursor);
+      } catch (err) {
+        setError(classifyRateGridError(err).message);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [propertyId]
+  );
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!enabled) {
+      // Closed: forget the loaded token so the next open fetches page 1 again.
+      loadedForRef.current = null;
+      return;
+    }
+    const token = `${propertyId}:${nonce}`;
+    if (loadedForRef.current === token) return;
+    loadedForRef.current = token;
+    setExpandedId(null);
+    setExpandedItems(null);
+    void loadPage(null, true);
+  }, [enabled, propertyId, nonce, loadPage]);
 
-  const filtered = useMemo(() => {
-    const lowerEmail = emailQuery.trim().toLowerCase();
-    return entries.filter((entry) => {
-      const dateKey = isoDate(entry.timestamp);
-      if (fromDate && dateKey < fromDate) return false;
-      if (toDate && dateKey > toDate) return false;
-      if (lowerEmail.length > 0) {
-        const haystack = (entry.userEmail ?? "").toLowerCase();
-        if (!haystack.includes(lowerEmail)) return false;
+  const refresh = useCallback(() => setNonce((n) => n + 1), []);
+  const loadMore = useCallback(() => {
+    if (!cursor || loading) return;
+    void loadPage(cursor, false);
+  }, [cursor, loading, loadPage]);
+
+  const showDiff = useCallback(
+    (journalId: string) => {
+      if (expandedId === journalId) {
+        setExpandedId(null);
+        setExpandedItems(null);
+        return;
       }
-      return true;
-    });
-  }, [entries, fromDate, toDate, emailQuery]);
-
-  const selectedEntry = useMemo(
-    () => (selectedId ? entries.find((entry) => entry.id === selectedId) ?? null : null),
-    [entries, selectedId]
+      setExpandedId(journalId);
+      setExpandedItems(null);
+      fetchJournalEntry(propertyId, journalId)
+        .then((entry) => {
+          setExpandedItems(entry.items ?? []);
+          setItems((prev) => prev.map((row) => (row.id === journalId ? { ...row, ...entry } : row)));
+        })
+        .catch((err: unknown) => {
+          setError(classifyRateGridError(err).message);
+        });
+    },
+    [expandedId, propertyId]
   );
 
-  function handleClearFilters() {
-    setFromDate("");
-    setToDate("");
-    setEmailQuery("");
-  }
+  const requestRevert = useCallback((journalId: string) => setPendingRevertId(journalId), []);
+  const cancelRevert = useCallback(() => setPendingRevertId(null), []);
+  const cancelStaleRevert = useCallback(() => setStaleRevert(null), []);
 
-  // -----------------------------------------------------------------
-  // Columnas de la tabla. Los `render` funcionan sobre
-  // `RateChangeJournalEntry` para mantener type-safety con la API genérica
-  // de `CocoaTable<Row>`.
-  // -----------------------------------------------------------------
-  const columns: CocoaTableColumn<RateChangeJournalEntry>[] = useMemo(
-    () => [
-      {
-        key: "timestamp",
-        label: "Cuándo",
-        render: (entry) => (
-          <span title={fmtAbsoluteDateTime(entry.timestamp)}>{fmtRelative(entry.timestamp, now)}</span>
-        )
-      },
-      {
-        key: "userEmail",
-        label: "Usuario",
-        render: (entry) => (
-          <span style={{ color: "var(--cocoa-label)" }}>{entry.userEmail ?? entry.userId}</span>
-        )
-      },
-      {
-        key: "changesCount",
-        label: "Celdas",
-        align: "right",
-        render: (entry) => entry.changesCount.toLocaleString("es-ES")
-      },
-      {
-        key: "reason",
-        label: "Motivo",
-        render: (entry) => entry.reason ?? "—"
-      },
-      {
-        key: "pushedTo",
-        label: "Canales",
-        render: (entry) => <ChannelBadgeRow channels={entry.pushedTo} />
-      },
-      {
-        key: "pushStatus",
-        label: "Estado",
-        render: (entry) => <PushStatusPill status={entry.pushStatus} />
+  // One revert path for the confirmation dialog and for «Forzar reversión»:
+  // a 409 JOURNAL_STALE is not an error toast but a second, explicit dialog
+  // (the API wrote nothing); everything else keeps the toast + error notice.
+  const runRevert = useCallback(
+    async (journalId: string, force: boolean) => {
+      setReverting(true);
+      try {
+        const original = items.find((row) => row.id === journalId) ?? null;
+        const res = await revertJournal(propertyId, journalId, { reason: force ? "Reversión forzada desde el historial" : "Reversión desde el historial", ...(force ? { force: true } : {}) });
+        showToast(`Cambio revertido en Anfitorio (${pluralize(res.updated, "celda restaurada", "celdas restauradas")}). Los canales conservan el valor anterior hasta que lo envíes.`, { variant: "success" });
+        setPendingRevertId(null);
+        setStaleRevert(null);
+        refresh();
+        onRevertedRef.current?.({ journalId: res.journalId, originalId: journalId, original, updated: res.updated });
+        return true;
+      } catch (err) {
+        const info = classifyRateGridError(err);
+        if (info.code === JOURNAL_STALE_CODE && !force) {
+          setPendingRevertId(null);
+          setStaleRevert({ journalId, cells: info.staleCells, message: info.message });
+          return false;
+        }
+        showToast(info.message, { variant: "error" });
+        setError(info.message);
+        return false;
+      } finally {
+        setReverting(false);
       }
-    ],
-    [now]
+    },
+    [propertyId, items, refresh, showToast]
   );
 
-  const screenStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--cocoa-space-4)",
-    fontFamily: "var(--cocoa-font)"
+  const confirmRevert = useCallback(async () => {
+    if (!pendingRevertId) return false;
+    return runRevert(pendingRevertId, false);
+  }, [pendingRevertId, runRevert]);
+
+  const forceRevert = useCallback(async () => {
+    if (!staleRevert) return false;
+    return runRevert(staleRevert.journalId, true);
+  }, [staleRevert, runRevert]);
+
+  return {
+    items,
+    hasMore: Boolean(cursor),
+    loading,
+    error,
+    expandedId,
+    expandedItems,
+    pendingRevertId,
+    reverting,
+    staleRevert,
+    refresh,
+    loadMore,
+    showDiff,
+    requestRevert,
+    cancelRevert,
+    confirmRevert,
+    forceRevert,
+    cancelStaleRevert
   };
+}
 
-  const headerActions = (
-    <CocoaButton
-      variant="bordered"
-      tone="neutral"
-      icon={<IconRefresh />}
-      onClick={() => void load()}
-      loading={loading}
-    >
-      Actualizar
-    </CocoaButton>
-  );
+const screenStyle: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "var(--cocoa-space-4)",
+  fontFamily: "var(--cocoa-font)"
+};
+
+const noticeStyle: CSSProperties = {
+  padding: "var(--cocoa-space-3)",
+  borderRadius: "var(--cocoa-radius-md)",
+  border: "1px solid var(--cocoa-separator)",
+  background: "var(--cocoa-background-content)",
+  color: "var(--cocoa-label)",
+  fontSize: "var(--cocoa-fs-body)"
+};
+
+export function RateJournalScreen() {
+  // Snapshot at mount: setActiveProperty reloads the page, so no subscription needed here.
+  const propertyId = useMemo(() => getActivePropertyId(), []);
+  const journal = useRateJournal(propertyId);
+  const [roomTypes, setRoomTypes] = useState<RateGridRoomType[]>([]);
+  const [ratePlans, setRatePlans] = useState<RateGridRatePlan[]>([]);
+  const [channels, setChannels] = useState<RateGridChannel[]>([]);
+  const [open, setOpen] = useState(true);
+
+  // Names for the diff rows and for `pushedTo`. The three catalogues are
+  // best-effort: the drawer falls back to ids when a lookup fails (the
+  // failure is not the user's).
+  useEffect(() => {
+    let alive = true;
+    fetchRoomTypes(propertyId)
+      .then((rows) => {
+        if (alive) setRoomTypes(rows.map((r) => ({ id: r.id, code: r.code, name: r.name, rooms: 0, maxOccupancy: r.maxOccupancy })));
+      })
+      .catch(() => {
+        /* ids shown instead of names; the journal itself reports its own errors */
+      });
+    fetchRatePlans(propertyId)
+      .then((rows) => {
+        if (alive) setRatePlans(rows);
+      })
+      .catch(() => {
+        /* same: names are cosmetic here */
+      });
+    listChannels(propertyId)
+      .then((rows) => {
+        if (alive) setChannels(rows);
+      })
+      .catch(() => {
+        /* channel ids shown instead of names */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [propertyId]);
+
+  const openEditor = useCallback(() => navigateTo("RateGridEditorScreen"), []);
 
   return (
     <div style={screenStyle}>
       <CocoaPageHeader
         eyebrow="Revenue"
         title="Historial de cambios de tarifas"
-        subtitle="Audit log completo de cambios y push a canales."
-        actions={headerActions}
+        subtitle="Cada guardado o publicación del editor crea una entrada con su diff celda a celda. Desde aquí se revierte."
+        actions={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={journal.refresh} loading={journal.loading}>
+              Actualizar
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" size="small" onClick={openEditor}>
+              Abrir el editor de tarifas
+            </CocoaButton>
+          </>
+        }
       />
 
-      <CocoaCard variant="bordered" padding="md">
-        <FiltersBar
-          fromDate={fromDate}
-          toDate={toDate}
-          emailQuery={emailQuery}
-          filteredCount={filtered.length}
-          totalCount={entries.length}
-          onFromDateChange={setFromDate}
-          onToDateChange={setToDate}
-          onEmailQueryChange={setEmailQuery}
-          onClear={handleClearFilters}
-        />
-      </CocoaCard>
+      {journal.error ? (
+        <div role="status" style={noticeStyle}>
+          {journal.error}
+        </div>
+      ) : null}
 
-      {loading && entries.length === 0 ? (
-        <LoadingBlock label="Cargando historial…" />
-      ) : error ? (
-        <ErrorState title="No se pudo cargar" message={error} onRetry={() => void load()} />
-      ) : (
-        <CocoaCard variant="bordered" padding="none">
-          <CocoaTable<RateChangeJournalEntry>
-            columns={columns}
-            rows={filtered}
-            rowKey="id"
-            selectedKey={selectedId ?? undefined}
-            onSelect={(row) => setSelectedId(row.id)}
-            emptyState={
-              entries.length === 0
-                ? "Todavía no hay cambios registrados para esta propiedad."
-                : "Ninguna entrada coincide con los filtros aplicados."
-            }
-          />
-        </CocoaCard>
-      )}
+      {!open ? (
+        <div style={noticeStyle}>
+          El historial se ha cerrado.{" "}
+          <button type="button" className="bo-button-link" onClick={() => setOpen(true)}>
+            Volver a abrirlo
+          </button>{" "}
+          o{" "}
+          <button type="button" className="bo-button-link" onClick={openEditor}>
+            ir al editor
+          </button>
+          .
+        </div>
+      ) : null}
 
-      <DetailDrawer entry={selectedEntry} onClose={() => setSelectedId(null)} />
+      <HistoryDrawer
+        open={open}
+        items={journal.items}
+        hasMore={journal.hasMore}
+        loading={journal.loading}
+        roomTypes={roomTypes}
+        ratePlans={ratePlans}
+        channels={channels}
+        expandedId={journal.expandedId}
+        expandedItems={journal.expandedItems}
+        onLoadMore={journal.loadMore}
+        onRevert={journal.requestRevert}
+        onShowDiff={journal.showDiff}
+        onClose={() => setOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={journal.pendingRevertId !== null}
+        title="Revertir este cambio"
+        description="Se crea una entrada nueva que restaura en Anfitorio los valores anteriores de todas las celdas de este cambio. Los canales no se tocan: desde el editor de tarifas podrás enviarles las celdas revertidas."
+        confirmLabel={journal.reverting ? "Revirtiendo…" : "Revertir"}
+        cancelLabel="Cancelar"
+        variant="danger"
+        onConfirm={() => void journal.confirmRevert()}
+        onCancel={journal.cancelRevert}
+      />
+
+      <JournalStaleDialog
+        open={journal.staleRevert !== null}
+        cells={journal.staleRevert?.cells ?? []}
+        message={journal.staleRevert?.message}
+        roomTypes={roomTypes}
+        ratePlans={ratePlans}
+        channels={channels}
+        reverting={journal.reverting}
+        onForce={() => void journal.forceRevert()}
+        onCancel={journal.cancelStaleRevert}
+      />
     </div>
   );
 }

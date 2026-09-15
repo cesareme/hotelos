@@ -1,443 +1,234 @@
-// Expedia adapter.
+// Expedia adapter (rate grid v2 · EQC XML, contract-ready against the local
+// simulator).
 //
-// Two execution modes, selected by env var:
+// Expedia QuickConnect is XML with the credentials in the body (an EQC
+// username/password pair issued per connectivity provider, NOT OAuth — the v1
+// "v3 JSON + OAuth" description was wrong):
+//   AR  POST {EXPEDIA_API_BASE_URL}/eqc/ar   AvailRateUpdateRQ   (rates, availability, restrictions)
+//   BR  POST {EXPEDIA_API_BASE_URL}/eqc/br   BookingRetrievalRQ  (pending bookings)
+//   BC  POST {EXPEDIA_API_BASE_URL}/eqc/bc   BookingConfirmRQ    (ack with our confirmation number)
+//   Default base: https://services.expediapartnercentral.com · Content-Type: text/xml.
 //
-//   EXPEDIA_ADAPTER_MODE=stub   (default) — deterministic in-process responses.
-//   EXPEDIA_ADAPTER_MODE=real             — hits the real Expedia EQC / Rapid
-//                                           "Quick Connect" REST+JSON API via
-//                                           OAuth2 client_credentials.
+// HONEST STATUS: Anfitorio has no EQC account (EQC onboarding requires a
+// signed connectivity agreement and certification). `stub`/`sandbox` run
+// against the in-process simulator that enforces the AR schema; `real` mode is
+// wired but unused. The production route for Expedia is Channex.
 //
-// Real-mode endpoints (override the base via EXPEDIA_API_BASE_URL for sandbox):
-//   POST {base}/eqc/ar    (availability + rates + restrictions, AR message — JSON)
-//   GET  {base}/eqc/br    (reservations / booking retrieval)
-//   POST oauth /authentication/v1/token  (token exchange)
+// EQC semantics that drain.service must know: AR is all-or-nothing — one bad
+// element rejects the whole message (no per-item RecordID), so a failing batch
+// marks every delivery of the batch rejected with the same error. Error codes
+// 4xxx are Expedia system errors ("please retry"): transient, they go through
+// the backoff; 1xxx (authentication) and 2xxx/3xxx (schema, business) are
+// definitive. A <Success> that wraps <Warning> children is still a success:
+// the update was applied and the warnings are kept in the sync job.
 //
-//   Docs: https://developers.expediagroup.com/eqc
+// EQC AR has no advance-booking restriction: minAdvanceDays / maxAdvanceDays
+// of an item are reported as a warning instead of being dropped in silence.
 //
-// CREDENTIALS:
-//   channel.credentialsJson must contain { client_id, client_secret }. Optional:
-//   { resortID / eqcId } to scope the AR message. client_secret is a high-value
-//   secret handled exactly like Booking (plain credentialsJson today; moves
-//   behind credentialsSecretRef in a later sprint).
+// "Probar conexión" in real mode is a READ (BookingRetrievalRQ, pending
+// bookings): the previous AvailRateUpdateRQ probe with a RoomType "PROBE"
+// was a write against production that Expedia rejects (unknown room type),
+// so the check could never pass. The sandbox keeps the AR probe because the
+// simulator only knows AR.
+//
+// Credentials: { username, password, hotelId } (+ simulator in sandbox).
+// `hotelId` is mandatory in sandbox/real: <Hotel id=""/> never leaves the box.
 
 import type {
+  AdapterCapabilities,
+  AdapterDeps,
   AdapterResult,
+  AvailabilityPushItem,
   ChannelAdapter,
   ChannelContext,
-  ExternalReservationDTO
+  PullReservationsResult,
+  RatePushItem,
+  RestrictionPushItem,
+  TestCredentialsResult
 } from "../adapter.types.js";
-import { ExpediaOAuthError, getAccessToken } from "./expedia/auth.js";
-import { getJson, postJson } from "./expedia/http.js";
+import { failedResult } from "../adapter.types.js";
+import { executePush, type ParsedProviderResponse } from "./execute.js";
 import {
-  buildAvailabilityPayload,
-  buildRatesPayload,
-  buildRestrictionsPayload
-} from "./expedia/payload.js";
-import {
-  buildStubCompetitorRates,
-  buildStubReservations,
-  isInvalidCredentials,
-  seedHash,
-  simulateLatency
-} from "./stub-utils.js";
+  buildAvailRateUpdateAvailabilityXml,
+  buildAvailRateUpdateRatesXml,
+  buildAvailRateUpdateRestrictionsXml,
+  buildBookingConfirmXml,
+  buildBookingRetrievalXml,
+  isTransientEqcCode,
+  parseBookingRetrievalXml,
+  parseEqcResponse,
+  type EqcAuth
+} from "./expedia/xml.js";
+import { buildStubCompetitorRates, buildStubReservations } from "./stub-utils.js";
+import { httpRequest, joinUrl } from "./transport.js";
 
 const PROVIDER = "expedia" as const;
-const DEFAULT_API_BASE_URL = "https://services.expediapartnercentral.com";
+export const DEFAULT_EXPEDIA_API_BASE_URL = "https://services.expediapartnercentral.com";
+const MISSING_HOTEL_ID = "Falta hotelId (id de la propiedad en Expedia) en las credenciales del canal.";
 
-type AdapterMode = "stub" | "real";
-
-function resolveMode(): AdapterMode {
-  return process.env.EXPEDIA_ADAPTER_MODE === "real" ? "real" : "stub";
-}
-
-function resolveBaseUrl(): string {
-  const base = process.env.EXPEDIA_API_BASE_URL || DEFAULT_API_BASE_URL;
-  return base.endsWith("/") ? base.slice(0, -1) : base;
-}
-
-function endpoint(path: string): string {
-  return `${resolveBaseUrl()}${path}`;
-}
-
-function resortId(channel: ChannelContext): string | undefined {
-  const creds = channel.credentialsJson;
-  const id = creds?.resortID ?? creds?.resortId ?? creds?.eqcId;
-  return typeof id === "string" ? id : undefined;
-}
-
-// Coarse XML/JSON parser for the Expedia EQC BR (Booking Retrieval) message.
-//
-// The EQC "Quick Connect" spec emits BookingNotification XML envelopes shaped
-// roughly like:
-//
-//   <BookingNotifRQ>
-//     <Bookings>
-//       <Booking ConfirmationNumber="..." Status="Book">
-//         <RoomStays>
-//           <RoomStay RatePlanCode="..." RoomTypeCode="..." Start="YYYY-MM-DD" End="YYYY-MM-DD">
-//             <Total Amount="123.45" Currency="EUR"/>
-//             <GuestList>
-//               <Guest><GivenName>...</GivenName><Surname>...</Surname></Guest>
-//             </GuestList>
-//           </RoomStay>
-//         </RoomStays>
-//       </Booking>
-//     </Bookings>
-//   </BookingNotifRQ>
-//
-// EQC can also emit JSON (newer accounts) with a `Bookings:[{ConfirmationNumber,
-// Status, RoomStays:[...]}]` shape. We accept both — for the demo this is
-// regex-based and intentionally lenient. The full raw body is always stashed
-// on payloadJson.rawBody so a richer parser can replace this later without
-// data loss.
-//
-// SHARP EDGE: nested CDATA, namespaces, or repeated bookings inside a single
-// BookingNotifRQ envelope may be mis-parsed. We fall back to a single raw
-// entry whenever no <Booking> blocks are detected.
-export function parseBookingsBody(body: string): ExternalReservationDTO[] {
-  const trimmed = body.trim();
-  if (trimmed.length === 0) return [];
-
-  // 1) Try JSON first when it looks like JSON.
-  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    try {
-      const json = JSON.parse(trimmed) as unknown;
-      const list = pickBookingsFromJson(json);
-      if (list.length > 0) return list;
-    } catch {
-      /* fall through to XML */
-    }
-  }
-
-  // 2) XML BookingNotification envelopes — regex extraction.
-  const out: ExternalReservationDTO[] = [];
-  const bookingRegex = /<Booking\b([^>]*)>([\s\S]*?)<\/Booking>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = bookingRegex.exec(trimmed)) !== null) {
-    const attrs = m[1] ?? "";
-    const inner = m[2] ?? "";
-    const confirmation =
-      /\bConfirmationNumber="([^"]+)"/i.exec(attrs)?.[1] ??
-      /<ConfirmationNumber>([^<]+)<\/ConfirmationNumber>/i.exec(inner)?.[1] ??
-      `unknown-${out.length}`;
-    const status = (/\bStatus="([^"]+)"/i.exec(attrs)?.[1] ?? "unknown").toLowerCase();
-    const roomStay = /<RoomStay\b([^>]*)>([\s\S]*?)<\/RoomStay>/i.exec(inner);
-    const roomAttrs = roomStay?.[1] ?? "";
-    const roomInner = roomStay?.[2] ?? "";
-    const start = /\bStart="([^"]+)"/i.exec(roomAttrs)?.[1] ?? null;
-    const end = /\bEnd="([^"]+)"/i.exec(roomAttrs)?.[1] ?? null;
-    const roomType = /\bRoomTypeCode="([^"]+)"/i.exec(roomAttrs)?.[1] ?? null;
-    const ratePlan = /\bRatePlanCode="([^"]+)"/i.exec(roomAttrs)?.[1] ?? null;
-    const amountStr = /\bAmount="([^"]+)"/i.exec(roomInner)?.[1] ?? null;
-    const currency = /\bCurrency(?:Code)?="([^"]+)"/i.exec(roomInner)?.[1] ?? null;
-    const given = /<GivenName>([^<]+)<\/GivenName>/i.exec(roomInner)?.[1] ?? "";
-    const surname = /<Surname>([^<]+)<\/Surname>/i.exec(roomInner)?.[1] ?? "";
-    const guestName = [given, surname].filter(Boolean).join(" ").trim() || null;
-    out.push({
-      externalReference: confirmation,
-      status,
-      payloadJson: {
-        provider: PROVIDER,
-        guestName,
-        arrivalDate: start,
-        departureDate: end,
-        roomTypeCode: roomType,
-        ratePlanCode: ratePlan,
-        totalAmount: amountStr !== null ? Number.parseFloat(amountStr) : null,
-        currency,
-        rawXml: m[0]
-      }
-    });
-  }
-  return out;
-}
-
-function pickBookingsFromJson(json: unknown): ExternalReservationDTO[] {
-  const out: ExternalReservationDTO[] = [];
-  const root = (json as { Bookings?: unknown; bookings?: unknown }) ?? {};
-  const list = Array.isArray(root.Bookings) ? root.Bookings : Array.isArray(root.bookings) ? root.bookings : null;
-  if (!list) return out;
-  for (const entry of list) {
-    if (!entry || typeof entry !== "object") continue;
-    const b = entry as Record<string, unknown>;
-    const confirmation =
-      (typeof b.ConfirmationNumber === "string" && b.ConfirmationNumber) ||
-      (typeof b.confirmationNumber === "string" && b.confirmationNumber) ||
-      `unknown-${out.length}`;
-    const status = ((typeof b.Status === "string" && b.Status) || "unknown").toLowerCase();
-    const stays = Array.isArray(b.RoomStays) ? b.RoomStays : Array.isArray(b.roomStays) ? b.roomStays : [];
-    const stay = stays[0] && typeof stays[0] === "object" ? (stays[0] as Record<string, unknown>) : null;
-    out.push({
-      externalReference: confirmation,
-      status,
-      payloadJson: {
-        provider: PROVIDER,
-        guestName: pickGuestName(b),
-        arrivalDate: stay?.Start ?? stay?.start ?? null,
-        departureDate: stay?.End ?? stay?.end ?? null,
-        roomTypeCode: stay?.RoomTypeCode ?? stay?.roomTypeCode ?? null,
-        ratePlanCode: stay?.RatePlanCode ?? stay?.ratePlanCode ?? null,
-        totalAmount: pickTotalAmount(stay),
-        currency: pickTotalCurrency(stay),
-        rawJson: entry
-      }
-    });
-  }
-  return out;
-}
-
-function pickGuestName(booking: Record<string, unknown>): string | null {
-  const guest = booking.PrimaryGuest ?? booking.primaryGuest ?? booking.Guest;
-  if (!guest || typeof guest !== "object") return null;
-  const g = guest as Record<string, unknown>;
-  const given = typeof g.GivenName === "string" ? g.GivenName : typeof g.givenName === "string" ? g.givenName : "";
-  const surname = typeof g.Surname === "string" ? g.Surname : typeof g.surname === "string" ? g.surname : "";
-  return [given, surname].filter(Boolean).join(" ").trim() || null;
-}
-
-function pickTotalAmount(stay: Record<string, unknown> | null): number | null {
-  if (!stay) return null;
-  const total = stay.Total ?? stay.total;
-  if (total && typeof total === "object") {
-    const t = total as Record<string, unknown>;
-    const amount = t.Amount ?? t.amount;
-    if (typeof amount === "number") return amount;
-    if (typeof amount === "string") {
-      const parsed = Number.parseFloat(amount);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-  }
-  return null;
-}
-
-function pickTotalCurrency(stay: Record<string, unknown> | null): string | null {
-  if (!stay) return null;
-  const total = stay.Total ?? stay.total;
-  if (total && typeof total === "object") {
-    const t = total as Record<string, unknown>;
-    const c = t.Currency ?? t.currency ?? t.CurrencyCode;
-    return typeof c === "string" ? c : null;
-  }
-  return null;
-}
-
-// Best-effort error extraction from an EQC JSON response body.
-function extractErrors(result: { ok: boolean; status: number; body: string; errorMessage?: string }): string[] {
-  if (result.errorMessage !== undefined) return [result.errorMessage];
-  try {
-    const json = JSON.parse(result.body) as Record<string, unknown>;
-    const errors = json.Errors ?? json.errors ?? json.error;
-    if (Array.isArray(errors)) {
-      return errors.map((e) => (typeof e === "string" ? e : JSON.stringify(e)));
-    }
-    if (typeof errors === "string") return [errors];
-  } catch {
-    /* fall through */
-  }
-  return [`EQC returned ${result.status} (truncated): ${result.body.slice(0, 200)}`];
-}
-
-async function pushAr({
-  channel,
-  json,
-  itemCount,
-  opName
-}: {
-  channel: ChannelContext;
-  json: string;
-  itemCount: number;
-  opName: string;
-}): Promise<AdapterResult> {
-  let token: string;
-  try {
-    token = await getAccessToken(channel);
-  } catch (err) {
-    const message =
-      err instanceof ExpediaOAuthError ? err.message : err instanceof Error ? err.message : String(err);
-    return { ok: false, pushed: 0, errors: [`OAuth failed during ${opName}: ${message}`], latencyMs: 0 };
-  }
-
-  const result = await postJson({ url: endpoint("/eqc/ar"), token, json });
-  const raw = {
-    provider: PROVIDER,
-    mode: "real",
-    status: result.status,
-    requestHash: result.requestHash,
-    responseHash: result.responseHash
-  };
-  if (result.ok) {
-    return { ok: true, pushed: itemCount, latencyMs: result.latencyMs, raw };
-  }
-  return { ok: false, pushed: 0, errors: extractErrors(result), latencyMs: result.latencyMs, raw };
-}
-
-export const expediaAdapter: ChannelAdapter = {
-  providerCode: PROVIDER,
-
-  async pushRates({ channel, items }): Promise<AdapterResult> {
-    if (resolveMode() === "stub") {
-      const latencyMs = await simulateLatency(seedHash(channel.id, "pushRates", items.length));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, pushed: 0, errors: ["Expedia EQC credentials missing or invalid"], latencyMs };
-      }
-      // REAL CALL: POST /eqc/ar with AR (Availability + Rate) batch JSON envelope.
-      return { ok: true, pushed: items.length, latencyMs, raw: { stub: true, provider: PROVIDER } };
-    }
-    const json = JSON.stringify(buildRatesPayload(items, resortId(channel)));
-    return pushAr({ channel, json, itemCount: items.length, opName: "pushRates" });
-  },
-
-  async pushAvailability({ channel, items }): Promise<AdapterResult> {
-    if (resolveMode() === "stub") {
-      const latencyMs = await simulateLatency(seedHash(channel.id, "pushAvail", items.length));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, pushed: 0, errors: ["Expedia EQC credentials missing or invalid"], latencyMs };
-      }
-      // REAL CALL: POST /eqc/ar (same endpoint, different node subset).
-      return { ok: true, pushed: items.length, latencyMs, raw: { stub: true, provider: PROVIDER } };
-    }
-    const json = JSON.stringify(buildAvailabilityPayload(items, resortId(channel)));
-    return pushAr({ channel, json, itemCount: items.length, opName: "pushAvailability" });
-  },
-
-  async pushRestrictions({ channel, items }): Promise<AdapterResult> {
-    if (resolveMode() === "stub") {
-      const latencyMs = await simulateLatency(seedHash(channel.id, "pushRestr", items.length));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, pushed: 0, errors: ["Expedia EQC credentials missing or invalid"], latencyMs };
-      }
-      // REAL CALL: POST /eqc/ar (RestrictionStatus / StayRestriction nodes).
-      return { ok: true, pushed: items.length, latencyMs, raw: { stub: true, provider: PROVIDER } };
-    }
-    const json = JSON.stringify(buildRestrictionsPayload(items, resortId(channel)));
-    return pushAr({ channel, json, itemCount: items.length, opName: "pushRestrictions" });
-  },
-
-  async fetchReservations({ channel, since }) {
-    if (resolveMode() === "stub") {
-      await simulateLatency(seedHash(channel.id, "fetchRes"));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, reservations: [], errors: ["Expedia EQC credentials missing or invalid"] };
-      }
-      // REAL CALL: GET /eqc/br?modifiedSince=<ISO>.
-      return { ok: true, reservations: buildStubReservations(channel.id, since, PROVIDER) };
-    }
-
-    let token: string;
-    try {
-      token = await getAccessToken(channel);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, reservations: [], errors: [`OAuth failed during fetchReservations: ${message}`] };
-    }
-    const url = `${endpoint("/eqc/br")}?modifiedSince=${encodeURIComponent(since.toISOString())}`;
-    const result = await getJson({ url, token });
-    if (!result.ok) {
-      return { ok: false, reservations: [], errors: extractErrors(result) };
-    }
-    // parseBookingsBody handles both EQC XML (BookingNotifRQ) and the newer
-    // JSON envelope. If nothing parses, we keep the raw body around so the
-    // aggregator can still dedupe by response hash.
-    try {
-      const reservations = parseBookingsBody(result.body);
-      if (reservations.length > 0) return { ok: true, reservations };
-      return {
-        ok: true,
-        reservations: [
-          {
-            externalReference: `expedia-raw-${result.responseHash.slice(0, 12)}`,
-            status: "unknown",
-            payloadJson: { provider: PROVIDER, raw: result.body }
-          }
-        ]
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: true,
-        reservations: [
-          {
-            externalReference: `expedia-raw-${result.responseHash.slice(0, 12)}`,
-            status: "unknown",
-            payloadJson: { provider: PROVIDER, raw: result.body, parseError: message }
-          }
-        ]
-      };
-    }
-  },
-
-  async testCredentials({ channel }) {
-    if (resolveMode() === "stub") {
-      await simulateLatency(seedHash(channel.id, "testCreds"));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, error: "Credentials missing or rejected" };
-      }
-      return { ok: true, metadata: { eqcId: channel.credentialsJson?.eqcId ?? "STUB-EXP", provider: PROVIDER } };
-    }
-    // Real mode: validate via an OAuth round trip. Short-circuit when there are
-    // no creds so test runs never touch the network just to confirm the obvious.
-    if (isInvalidCredentials(channel.credentialsJson)) {
-      return { ok: false, error: "Expedia EQC credentials missing or invalid" };
-    }
-    try {
-      await getAccessToken(channel);
-      return { ok: true, metadata: { provider: PROVIDER, mode: "real" } };
-    } catch (err) {
-      const message =
-        err instanceof ExpediaOAuthError ? err.message : err instanceof Error ? err.message : String(err);
-      return { ok: false, error: message };
-    }
-  },
-
-  async fetchCompetitorRates({ channel, dateRange }) {
-    await simulateLatency(seedHash(channel.id, "fetchComp"));
-    return { ok: true, rates: buildStubCompetitorRates(channel.id, dateRange, PROVIDER) };
-  }
+export const EXPEDIA_CAPABILITIES: AdapterCapabilities = {
+  rates: true,
+  availability: true,
+  restrictions: true,
+  reservationsPull: true,
+  occupancyPricing: true,
+  derivedPricing: false,
+  maxItemsPerRequest: 500,
+  rateLimitPerMinute: 60
 };
 
-// ── Spec-extension surface ────────────────────────────────────────────────
-// The Sprint-58 OTA spec asked for three legacy-shaped helpers alongside the
-// full ChannelAdapter contract: parseInbound (normalise an inbound payload to
-// ExternalReservationDTO[]), pushAvailability (lightweight ack), healthCheck
-// (mode + note). These wrap the richer methods above without changing the
-// adapter contract used by the aggregator.
-
-export function parseInbound(payload: string | object): ExternalReservationDTO[] {
-  const body = typeof payload === "string" ? payload : JSON.stringify(payload);
-  return parseBookingsBody(body);
+function baseUrl(): string {
+  return process.env.EXPEDIA_API_BASE_URL || DEFAULT_EXPEDIA_API_BASE_URL;
 }
 
-export async function pushAvailability(
-  roomTypeId: string,
-  dateRange: { start: string; end: string },
-  available: number
-): Promise<{ acknowledged: boolean }> {
-  const mode = resolveMode();
-  if (mode === "stub") {
-    // Deterministic sandbox ack — the cells underneath are exercised by the
-    // ChannelAdapter.pushAvailability path in tests.
-    void roomTypeId;
-    void dateRange;
-    void available;
-    return { acknowledged: true };
-  }
-  // Production: refuse to do real I/O from this lightweight surface — callers
-  // should go through the full ChannelAdapter contract with credentials.
-  return { acknowledged: false };
-}
-
-export type ExpediaHealth =
-  | { ok: true; mode: "sandbox" | "production"; note: string }
-  | { ok: false; mode: "sandbox" | "production"; errorMessage: string };
-
-export function healthCheck(): ExpediaHealth {
-  const mode: "sandbox" | "production" = resolveMode() === "real" ? "production" : "sandbox";
-  if (mode === "sandbox") {
+export function eqcAuthFor(channel: ChannelContext): EqcAuth | null {
+  const creds = channel.credentials ?? {};
+  const username = creds.username ?? creds.user ?? creds.eqcUsername;
+  const password = creds.password ?? creds.eqcPassword;
+  const hotelId = channel.externalPropertyCode ?? creds.hotelId ?? creds.hotel_id ?? creds.resortID ?? creds.resortId;
+  if (channel.mode === "stub") {
     return {
-      ok: true,
-      mode,
-      note: "Expedia EQC adapter running in sandbox mode — deterministic stub responses only."
+      username: typeof username === "string" && username ? username : "EQC-STUB",
+      password: typeof password === "string" && password ? password : "stub",
+      hotelId: typeof hotelId === "string" || typeof hotelId === "number" ? String(hotelId) : "SBX-HOTEL"
     };
   }
-  return { ok: false, mode, errorMessage: "Expedia EQC requires EXPEDIA client_id/client_secret credentials" };
+  if (typeof username !== "string" || !username || typeof password !== "string" || !password) return null;
+  return { username, password, hotelId: typeof hotelId === "string" || typeof hotelId === "number" ? String(hotelId) : "" };
 }
+
+export function parseEqcPushResponse(body: string, itemCount: number): ParsedProviderResponse {
+  const rs = parseEqcResponse(body);
+  if (rs.error) {
+    return { ok: false, accepted: 0, rejected: [], errors: [`${rs.error.code}: ${rs.error.message}`], warnings: rs.warnings, retryable: isTransientEqcCode(rs.error.code) };
+  }
+  if (!rs.success) return { ok: false, accepted: 0, rejected: [], errors: ["Expedia no confirmó la petición (sin <Success/>)."], warnings: rs.warnings };
+  return { ok: true, accepted: itemCount, rejected: [], errors: [], warnings: rs.warnings };
+}
+
+/** Items carrying an advance-booking restriction EQC AR cannot express. */
+export function unsupportedAdvanceRestrictions(items: RestrictionPushItem[]): number {
+  return items.filter((i) => typeof i.minAdvanceDays === "number" || typeof i.maxAdvanceDays === "number").length;
+}
+
+export function createExpediaAdapter(deps: AdapterDeps = {}): ChannelAdapter {
+  const headers = { "Content-Type": "text/xml; charset=utf-8", Accept: "text/xml, application/xml" };
+
+  async function push(channel: ChannelContext, body: string, itemCount: number): Promise<AdapterResult> {
+    return executePush({ channel, provider: "expedia", endpoint: "ar", url: joinUrl(baseUrl(), "/eqc/ar"), headers, body, itemCount, deps, parse: parseEqcPushResponse });
+  }
+
+  function missingAuth(): AdapterResult {
+    return failedResult({ errors: ["Faltan username / password EQC de Expedia en las credenciales del canal."], retryable: false });
+  }
+
+  /** Credentials + hotel id, or the refusal to send. */
+  function authOrRefusal(channel: ChannelContext): { auth: EqcAuth } | { refused: AdapterResult } {
+    const auth = eqcAuthFor(channel);
+    if (!auth) return { refused: missingAuth() };
+    if (!auth.hotelId) return { refused: failedResult({ errors: [MISSING_HOTEL_ID], retryable: false }) };
+    return { auth };
+  }
+
+  return {
+    providerCode: PROVIDER,
+    capabilities: () => EXPEDIA_CAPABILITIES,
+
+    async pushRates({ channel, items }: { channel: ChannelContext; items: RatePushItem[] }) {
+      const gate = authOrRefusal(channel);
+      if ("refused" in gate) return gate.refused;
+      return push(channel, buildAvailRateUpdateRatesXml(gate.auth, items), items.length);
+    },
+
+    async pushAvailability({ channel, items }: { channel: ChannelContext; items: AvailabilityPushItem[] }) {
+      const gate = authOrRefusal(channel);
+      if ("refused" in gate) return gate.refused;
+      return push(channel, buildAvailRateUpdateAvailabilityXml(gate.auth, items), items.length);
+    },
+
+    async pushRestrictions({ channel, items }: { channel: ChannelContext; items: RestrictionPushItem[] }) {
+      const gate = authOrRefusal(channel);
+      if ("refused" in gate) return gate.refused;
+      const result = await push(channel, buildAvailRateUpdateRestrictionsXml(gate.auth, items), items.length);
+      const unsupported = unsupportedAdvanceRestrictions(items);
+      if (unsupported === 0) return result;
+      return {
+        ...result,
+        warnings: [...(result.warnings ?? []), `Expedia (EQC AR) no admite restricciones de antelación: minAdvanceDays / maxAdvanceDays de ${unsupported} item(s) no se envían.`]
+      };
+    },
+
+    async pullReservations({ channel, since, cursor }): Promise<PullReservationsResult> {
+      if (channel.mode !== "real") {
+        return { ok: true, reservations: buildStubReservations(channel.id, since, PROVIDER), nextCursor: null };
+      }
+      const auth = eqcAuthFor(channel);
+      if (!auth) return { ok: false, reservations: [], nextCursor: cursor ?? null, errors: ["Faltan credenciales EQC."] };
+      if (!auth.hotelId) return { ok: false, reservations: [], nextCursor: cursor ?? null, errors: [MISSING_HOTEL_ID] };
+      const res = await httpRequest({ url: joinUrl(baseUrl(), "/eqc/br"), method: "POST", headers, body: buildBookingRetrievalXml(auth), timeoutMs: deps.timeoutMs, fetchImpl: deps.fetchImpl, now: deps.now });
+      if (!res.ok) return { ok: false, reservations: [], nextCursor: cursor ?? null, errors: [res.errorMessage ?? `EQC BR respondió ${res.status}`] };
+      const rs = parseEqcResponse(res.body);
+      if (rs.error) return { ok: false, reservations: [], nextCursor: cursor ?? null, errors: [`${rs.error.code}: ${rs.error.message}`] };
+      const reservations = parseBookingRetrievalXml(res.body).map((b) => ({
+        externalReference: b.id,
+        status: b.type === "Cancel" ? "cancelled" : b.type === "Modify" ? "modified" : "confirmed",
+        payloadJson: {
+          provider: PROVIDER,
+          channelId: channel.id,
+          guestName: b.guestName,
+          arrivalDate: b.arrivalDate,
+          departureDate: b.departureDate,
+          totalAmount: b.totalAmount,
+          currency: b.currency,
+          rawXml: b.rawXml
+        }
+      }));
+      return { ok: true, reservations, nextCursor: null };
+    },
+
+    async acknowledgeReservations({ channel, ids }) {
+      if (ids.length === 0 || channel.mode !== "real") return { ok: true };
+      const auth = eqcAuthFor(channel);
+      if (!auth) return { ok: false, errors: ["Faltan credenciales EQC."] };
+      const res = await httpRequest({
+        url: joinUrl(baseUrl(), "/eqc/bc"),
+        method: "POST",
+        headers,
+        body: buildBookingConfirmXml(auth, ids.map((id) => ({ id, confirmNumber: `ANF-${id}` }))),
+        timeoutMs: deps.timeoutMs,
+        fetchImpl: deps.fetchImpl,
+        now: deps.now
+      });
+      return res.ok ? { ok: true } : { ok: false, errors: [res.errorMessage ?? `EQC BC respondió ${res.status}`] };
+    },
+
+    async testCredentials({ channel }): Promise<TestCredentialsResult> {
+      if (channel.mode === "stub") return { ok: true, metadata: { provider: PROVIDER, mode: "stub", note: "Modo stub: no se verifica ninguna credencial." } };
+      const auth = eqcAuthFor(channel);
+      if (!auth) return { ok: false, error: "Faltan username / password EQC de Expedia." };
+      if (!auth.hotelId) return { ok: false, error: MISSING_HOTEL_ID };
+      if (channel.mode === "sandbox") {
+        // The simulator only speaks AR: a closed-room probe is a valid AR
+        // message it fully validates, including Authentication. Never sent to
+        // Expedia (see real mode below).
+        const probe = buildAvailRateUpdateAvailabilityXml(auth, [{ date: new Date().toISOString().slice(0, 10), externalRoomCode: "PROBE", roomTypeId: "probe", count: 0 }]);
+        const result = await push(channel, probe, 1);
+        return result.ok
+          ? { ok: true, metadata: { provider: PROVIDER, mode: "sandbox", hotelId: auth.hotelId, responseHash: result.responseHash } }
+          : { ok: false, error: result.errors.join("; ") || "Expedia rechazó la sonda." };
+      }
+      // Real: a read (pending bookings) proves credentials + hotel id without writing ARI.
+      const res = await httpRequest({ url: joinUrl(baseUrl(), "/eqc/br"), method: "POST", headers, body: buildBookingRetrievalXml(auth), timeoutMs: deps.timeoutMs, fetchImpl: deps.fetchImpl, now: deps.now });
+      if (!res.ok) return { ok: false, error: res.errorMessage ?? `EQC BR respondió HTTP ${res.status}` };
+      const rs = parseEqcResponse(res.body);
+      if (rs.error) return { ok: false, error: `${rs.error.code}: ${rs.error.message}` };
+      return { ok: true, metadata: { provider: PROVIDER, mode: "real", hotelId: auth.hotelId, pendingBookings: parseBookingRetrievalXml(res.body).length, responseHash: res.responseHash } };
+    },
+
+    async fetchCompetitorRates({ channel, dateRange }) {
+      return { ok: true, rates: buildStubCompetitorRates(channel.id, dateRange, PROVIDER) };
+    }
+  };
+}
+
+export const expediaAdapter: ChannelAdapter = createExpediaAdapter();

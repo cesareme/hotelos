@@ -1,6 +1,9 @@
 import type { PermissionKey } from "@hotelos/shared";
 import { assertPermissions } from "@hotelos/shared";
 import { ForbiddenError } from "../lib/http-error.js";
+import { rateGridRoutePermissions } from "../modules/rate-manager/route-permissions.partial.js";
+import { CHANNEL_MANAGER_ROUTE_PERMISSIONS } from "../modules/channel-manager/route-permissions.partial.js";
+import { recommendationsRoutePermissions } from "../modules/revenue/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -18,6 +21,10 @@ export type ApiRoutePermission = {
 };
 
 export const routePermissionManifest: ApiRoutePermission[] = [
+  // Rate grid v2 (2026-09-14): entries contributed by the modules that own the routes.
+  ...rateGridRoutePermissions,
+  ...CHANNEL_MANAGER_ROUTE_PERMISSIONS,
+  ...recommendationsRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },
@@ -171,15 +178,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "POST", path: "/email/inbound/:id/approve", permissions: ["pms.reservation.create"], riskLevel: "high" },
   { method: "POST", path: "/email/inbound/:id/reject", permissions: ["integrations.connect"], riskLevel: "low" },
   { method: "GET", path: "/revenue/properties/:propertyId/channel-profitability", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "GET", path: "/revenue/properties/:propertyId/rate-grid", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "PATCH", path: "/revenue/properties/:propertyId/rate-grid/rates", permissions: ["revenue.manage_rates"], riskLevel: "critical" },
-  { method: "PATCH", path: "/revenue/properties/:propertyId/rate-grid/restrictions", permissions: ["revenue.manage_restrictions"], riskLevel: "critical" },
-  { method: "PATCH", path: "/revenue/properties/:propertyId/rate-grid/inventory", permissions: ["revenue.manage_rates"], riskLevel: "high" },
-  { method: "POST", path: "/revenue/properties/:propertyId/rate-grid/bulk-update", permissions: ["revenue.manage_rates", "revenue.manage_restrictions"], riskLevel: "critical" },
-  { method: "GET", path: "/revenue/properties/:propertyId/demand-calendar", permissions: ["revenue.forecast.read"], riskLevel: "medium" },
-  { method: "POST", path: "/revenue/properties/:propertyId/demand-calendar", permissions: ["revenue.recommend"], riskLevel: "medium" },
-  { method: "PATCH", path: "/revenue/demand-calendar/:eventId", permissions: ["revenue.recommend"], riskLevel: "medium" },
-  { method: "DELETE", path: "/revenue/demand-calendar/:eventId", permissions: ["revenue.recommend"], riskLevel: "high" },
   { method: "POST", path: "/revenue/properties/:propertyId/scenarios/simulate", permissions: ["revenue.recommend"], riskLevel: "high" },
   { method: "GET", path: "/revenue/properties/:propertyId/scenarios", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "GET", path: "/revenue/scenarios/:scenarioId", permissions: ["revenue.read"], riskLevel: "medium" },
@@ -188,26 +186,12 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "PATCH", path: "/revenue/automation-rules/:ruleId", permissions: ["revenue.automation.manage"], riskLevel: "critical" },
   { method: "POST", path: "/revenue/automation-rules/:ruleId/enable", permissions: ["revenue.automation.manage"], riskLevel: "critical" },
   { method: "POST", path: "/revenue/automation-rules/:ruleId/disable", permissions: ["revenue.automation.manage"], riskLevel: "critical" },
-  { method: "GET", path: "/channel-manager/properties/:propertyId/channels", permissions: ["channel_manager.read"], riskLevel: "medium" },
-  { method: "POST", path: "/channel-manager/properties/:propertyId/channels", permissions: ["channel_manager.manage"], riskLevel: "high" },
-  { method: "PATCH", path: "/channel-manager/channels/:channelId", permissions: ["channel_manager.manage"], riskLevel: "high" },
-  { method: "POST", path: "/channel-manager/channels/:channelId/test", permissions: ["channel_manager.sync"], riskLevel: "medium" },
   { method: "GET", path: "/channel-manager/channels/:channelId/room-mappings", permissions: ["channel_manager.read"], riskLevel: "medium" },
   { method: "POST", path: "/channel-manager/channels/:channelId/room-mappings", permissions: ["channel_manager.mappings.manage"], riskLevel: "high" },
   { method: "GET", path: "/channel-manager/channels/:channelId/rate-mappings", permissions: ["channel_manager.read"], riskLevel: "medium" },
   { method: "POST", path: "/channel-manager/channels/:channelId/rate-mappings", permissions: ["channel_manager.mappings.manage"], riskLevel: "high" },
-  { method: "POST", path: "/channel-manager/channels/:channelId/sync/availability", permissions: ["channel_manager.sync"], riskLevel: "critical" },
-  { method: "POST", path: "/channel-manager/channels/:channelId/sync/rates", permissions: ["channel_manager.sync"], riskLevel: "critical" },
-  { method: "POST", path: "/channel-manager/channels/:channelId/sync/restrictions", permissions: ["channel_manager.sync"], riskLevel: "critical" },
-  { method: "POST", path: "/channel-manager/channels/:channelId/sync/full", permissions: ["channel_manager.sync"], riskLevel: "critical" },
-  { method: "GET", path: "/channel-manager/channels/:channelId/sync-jobs", permissions: ["channel_manager.read"], riskLevel: "medium" },
-  { method: "GET", path: "/channel-manager/properties/:propertyId/sync-health", permissions: ["channel_manager.read"], riskLevel: "medium" },
-  { method: "POST", path: "/channel-manager/channels/:channelId/reservations/import", permissions: ["channel_manager.sync"], riskLevel: "high" },
-  { method: "POST", path: "/channel-manager/channels/:channelId/webhook", permissions: ["channel_manager.sync"], riskLevel: "high" },
-  { method: "GET", path: "/channel-manager/properties/:propertyId/external-reservations", permissions: ["channel_manager.read"], riskLevel: "medium" },
   // SiteMinder-style OTA aggregator (Sprint 28 — channel manager aggregator)
   { method: "GET", path: "/channel-manager/channels", permissions: ["channel_manager.read"], riskLevel: "medium" },
-  { method: "POST", path: "/channel-manager/channels", permissions: ["channel_manager.manage"], riskLevel: "high" },
   { method: "POST", path: "/channel-manager/channels/:channelId/ingest", permissions: ["channel_manager.sync"], riskLevel: "medium" },
   { method: "POST", path: "/channel-manager/push-rates", permissions: ["channel_manager.sync"], riskLevel: "medium" },
   { method: "POST", path: "/channel-manager/push-availability", permissions: ["channel_manager.sync"], riskLevel: "medium" },
@@ -222,7 +206,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   { method: "DELETE", path: "/channel-manager/rate-mappings/:id", permissions: ["channel_manager.mappings.manage"], riskLevel: "high" },
   { method: "GET", path: "/channel-manager/channels/:channelId/mapping-coverage", permissions: ["channel_manager.read"], riskLevel: "medium" },
   { method: "GET", path: "/channel-manager/channels/:channelId/readiness", permissions: ["channel_manager.read"], riskLevel: "medium" },
-  { method: "POST", path: "/channel-manager/_sandbox/:provider", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/rate-shopper/properties/:propertyId/competitors", permissions: ["revenue.read"], riskLevel: "medium" },
   { method: "POST", path: "/rate-shopper/properties/:propertyId/competitors", permissions: ["revenue.configure"], riskLevel: "high" },
   { method: "GET", path: "/rate-shopper/properties/:propertyId/rates", permissions: ["revenue.read"], riskLevel: "medium" },
@@ -1145,11 +1128,6 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   // invitation (user_invitations) the owner accepts through /auth/accept-invite.
   { method: "POST", path: "/admin/tenants/:orgId/users/:userId/reissue-invite", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
   { method: "PATCH", path: "/admin/tenants/:orgId/modules/:moduleCode", permissions: ["admin.tenants.manage" as PermissionKey], riskLevel: "critical" },
-  // Rate Grid V2 (rutas sin prefijo /revenue que usa RateGridEditorScreen).
-  { method: "GET", path: "/properties/:propertyId/rate-grid", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "GET", path: "/properties/:propertyId/rate-journal", permissions: ["revenue.read"], riskLevel: "medium" },
-  { method: "POST", path: "/properties/:propertyId/rate-grid/bulk-update", permissions: ["revenue.manage_rates"], riskLevel: "critical" },
-  { method: "POST", path: "/properties/:propertyId/rate-grid/push", permissions: ["distribution.sync"], riskLevel: "critical" },
 
   // ── AUTH-03 (auditoría 360 · 2026-09-13): the 62 GET routes that were
   // registered without a manifest entry and therefore ran fail-open. Keys reuse

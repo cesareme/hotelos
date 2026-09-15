@@ -76,6 +76,7 @@ const PUBLIC_PREFIXES = [
   "/auth/invitations",
   "/health",
   "/channel-manager/_sandbox",
+  "/channel-manager/webhooks",
   "/guest-portal/sign-in",
   "/guest-portal/sign-out",
   "/guest-portal/reservation",

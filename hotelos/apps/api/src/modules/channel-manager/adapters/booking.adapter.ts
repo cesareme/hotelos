@@ -1,342 +1,308 @@
-// Booking.com adapter.
+// Booking.com adapter (rate grid v2 · contract-ready, validated against the
+// local simulator).
 //
-// Three execution modes, selected by env var:
+// HONEST STATUS (2026-09): Booking.com has PAUSED onboarding of new
+// connectivity providers, so Anfitorio cannot obtain client_id/client_secret
+// today. This adapter therefore runs in `stub`/`sandbox` (in-process simulator
+// that validates the real OTA 2003B v1.1 shapes) and is wired for `real` mode
+// so that, the day credentials exist, only Channel.mode and the credentials
+// change. The realistic route to Booking/Expedia in production is the Channex
+// aggregator (see channex.adapter.ts and docs/channel-manager-connectivity.md).
 //
-//   BOOKING_ADAPTER_MODE=stub    (default) — deterministic in-process responses.
-//   BOOKING_ADAPTER_MODE=sandbox          — REAL HTTP round-trip against a local
-//                                           mock (default http://localhost:3000),
-//                                           using the same XML builders + http
-//                                           wrapper as real mode but skipping
-//                                           OAuth. Proves the full network path
-//                                           end-to-end with no external creds.
-//   BOOKING_ADAPTER_MODE=real             — hits the real Booking Connectivity
-//                                           API via OAuth2 + XML over HTTPS.
+// Real-mode surface:
+//   auth   POST https://connectivity-authentication.booking.com/token-based-authentication/exchange
+//          { client_id, client_secret } → { jwt } (1 h, cached per channel, <= 30/h)   (booking/auth.ts)
+//   rates  POST {BOOKING_API_BASE_URL}/hotels/ota/OTA_HotelRateAmountNotif
+//   avail  POST {BOOKING_API_BASE_URL}/hotels/ota/OTA_HotelAvailNotif   (availability AND restrictions)
+//   res    GET  https://secure-supply-xml.booking.com/hotels/ota/OTA_HotelResNotif?hotel_ids=…
+//          then POST the OTA_HotelResNotifRS ack to the same host (the
+//          extranet serves reservations from secure-supply-xml.booking.com,
+//          not from the ARI host; `hotel_ids` is the documented parameter —
+//          a plural list — without it Booking returns every hotel of the
+//          provider account). A non-default BOOKING_API_BASE_URL (a mock)
+//          serves both ARI and reservations, so tests point one variable.
+//   Headers: Authorization: Bearer <jwt>; Content-Type: text/xml.
 //
-// Real-mode endpoints (override the base via BOOKING_API_BASE_URL):
-//   POST {base}/hotels/xml/availability    (inventory push)
-//   POST {base}/hotels/xml/rates           (rate push)
-//   POST {base}/hotels/xml/restrictions    (CTA / CTD / MinLOS / MaxLOS)
-//   GET  {base}/hotels/xml/reservations    (reservations pull)
-//   POST oauth.booking.com/oauth2/token    (token exchange)
+// Rate limits (Booking Connectivity): ~10.000 requests/min globally per
+// provider and 75-700/min per endpoint depending on the message; we declare
+// the conservative per-endpoint figure (75/min) in capabilities() and let
+// drain.service batch up to 1.000 messages per request.
 //
-// Sandbox-mode endpoints (override the base via BOOKING_SANDBOX_URL; default
-// http://localhost:3000): the adapter POSTs the same XML bodies to the loopback
-// mock at POST {base}/channel-manager/_sandbox/booking, which echoes a realistic
-// success envelope. No OAuth is performed (a placeholder token is sent).
+// Credentials (decrypted by channels.service): { client_id, client_secret,
+// hotelId } (+ optional simulator: { failEvery, latencyMs } in sandbox).
+// `hotelId` is the HotelCode of every message: sandbox and real refuse to push
+// without it (only the credential-less stub gets a placeholder).
 //
-// CREDENTIALS:
-//   channel.credentialsJson must contain { client_id, client_secret } at minimum.
-//   Optional: { scope, hotelId }. We treat client_secret as a high-value secret
-//   that rotates via a vault flow (NOT through the Prisma field-encryption
-//   extension introduced in Sprint 32 — credentialsJson stays plain JSON in DB
-//   today; a follow-up sprint moves it behind credentialsSecretRef).
-//
-// RATE LIMITS:
-//   Booking enforces ~100 req/min per hotelId. The aggregator batches per
-//   sync job, but a per-channel queue would still belong here (see the
-//   `// TODO(rate-limit)` markers below).
+// Token exchange failures: 5xx / network / 429 are transient (the exchange
+// endpoint has its own outages and its 30/h cap); only 400/401/403 mean the
+// client credentials themselves are wrong (definitive).
 
 import type {
+  AdapterCapabilities,
+  AdapterDeps,
   AdapterResult,
   AvailabilityPushItem,
   ChannelAdapter,
   ChannelContext,
   ExternalReservationDTO,
+  PullReservationsResult,
   RatePushItem,
-  RestrictionPushItem
+  RestrictionPushItem,
+  TestCredentialsResult
 } from "../adapter.types.js";
-import { BookingOAuthError, getAccessToken } from "./booking/oauth.js";
-import { getXml, postXml } from "./booking/http.js";
-import { buildAvailabilityXml, buildRatesXml, buildRestrictionsXml } from "./booking/xml.js";
+import { failedResult } from "../adapter.types.js";
+import { BookingAuthError, extractClientCredentials, getBookingJwt } from "./booking/auth.js";
 import {
-  buildStubCompetitorRates,
-  buildStubReservations,
-  isInvalidCredentials,
-  seedHash,
-  simulateLatency
-} from "./stub-utils.js";
+  buildAvailNotifXml,
+  buildRateAmountNotifXml,
+  buildResNotifAckXml,
+  buildRestrictionsNotif,
+  parseOtaResponse,
+  parseResNotifXml,
+  unsupportedOccupancyKeys
+} from "./booking/xml.js";
+import { executePush, type ParsedProviderResponse } from "./execute.js";
+import { buildStubCompetitorRates, buildStubReservations } from "./stub-utils.js";
+import { httpRequest, joinUrl } from "./transport.js";
 
 const PROVIDER = "booking" as const;
-const DEFAULT_API_BASE_URL = "https://supply-xml.booking.com";
-// Loopback default for sandbox mode: the API hosts its own mock endpoint.
-const DEFAULT_SANDBOX_URL = "http://localhost:3000";
-// Single path the sandbox mock listens on; the real Distribution paths
-// (/hotels/xml/...) are folded into the JSON body as `op` for visibility.
-const SANDBOX_PATH = "/channel-manager/_sandbox/booking";
-// Placeholder bearer sent to the local mock — sandbox does not do OAuth.
-const SANDBOX_TOKEN = "sandbox-no-auth";
+export const DEFAULT_BOOKING_API_BASE_URL = "https://supply-xml.booking.com";
+export const DEFAULT_BOOKING_RESERVATIONS_BASE_URL = "https://secure-supply-xml.booking.com";
+const SANDBOX_HOTEL_CODE = "SBX-HOTEL";
+const MISSING_HOTEL_ID = "Falta hotelId (código del hotel en Booking.com) en las credenciales del canal.";
 
-type AdapterMode = "stub" | "sandbox" | "real";
+export const BOOKING_CAPABILITIES: AdapterCapabilities = {
+  rates: true,
+  availability: true,
+  restrictions: true,
+  reservationsPull: true,
+  occupancyPricing: true,
+  derivedPricing: false,
+  maxItemsPerRequest: 1000,
+  rateLimitPerMinute: 75
+};
 
-function resolveMode(): AdapterMode {
-  const mode = (process.env.BOOKING_ADAPTER_MODE ?? "").toLowerCase();
-  if (mode === "real") return "real";
-  if (mode === "sandbox") return "sandbox";
-  return "stub";
+function baseUrl(): string {
+  return process.env.BOOKING_API_BASE_URL || DEFAULT_BOOKING_API_BASE_URL;
 }
 
-function resolveBaseUrl(mode: AdapterMode): string {
-  const base =
-    mode === "sandbox"
-      ? process.env.BOOKING_SANDBOX_URL || DEFAULT_SANDBOX_URL
-      : process.env.BOOKING_API_BASE_URL || DEFAULT_API_BASE_URL;
-  return base.endsWith("/") ? base.slice(0, -1) : base;
+/** Reservations host: the extranet's secure host, unless BOOKING_API_BASE_URL was pointed elsewhere (a mock serves both). */
+export function reservationsBaseUrl(): string {
+  const ari = process.env.BOOKING_API_BASE_URL;
+  return ari && ari !== DEFAULT_BOOKING_API_BASE_URL ? ari : DEFAULT_BOOKING_RESERVATIONS_BASE_URL;
 }
 
-function endpoint(mode: AdapterMode, path: string): string {
-  // In sandbox mode every operation hits the one loopback mock path; the
-  // intended Distribution path is preserved in the request body for the mock.
-  if (mode === "sandbox") return `${resolveBaseUrl(mode)}${SANDBOX_PATH}`;
-  return `${resolveBaseUrl(mode)}${path}`;
+/**
+ * HotelCode of the messages. `null` when the channel has no hotel id in
+ * sandbox/real (the caller refuses the push); only the credential-less stub
+ * gets the placeholder, so a placeholder can never reach the extranet.
+ */
+export function hotelCodeFor(channel: ChannelContext): string | null {
+  const creds = channel.credentials ?? {};
+  const code = channel.externalPropertyCode ?? creds.hotelId ?? creds.hotel_id ?? creds.hotelCode;
+  if (typeof code === "string" && code.length > 0) return code;
+  if (typeof code === "number") return String(code);
+  return channel.mode === "stub" ? SANDBOX_HOTEL_CODE : null;
 }
 
-// Best-effort error extraction from a Booking-shaped XML response.
-function extractErrorsFromXml(body: string): string[] {
-  const errors: string[] = [];
-  const errorRegex = /<error[^>]*>([^<]*)<\/error>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = errorRegex.exec(body)) !== null) {
-    const text = m[1]?.trim();
-    if (text) errors.push(text);
+/** Transient exchange failures: no HTTP status (thrown before/without a response), network (0), throttled (429) or 5xx. */
+export function isTransientAuthStatus(status: number | undefined): boolean {
+  return status === undefined || status === 0 || status === 429 || status >= 500;
+}
+
+/**
+ * Turns an OTA_*RS body into per-item accept/reject counts. `itemIndexByMessage`
+ * translates a RecordID (message index) to the item that produced the message
+ * when the builder emitted several messages per item (restrictions); a
+ * RecordID outside the request is a request-level error (never a silent
+ * confirmation of the wrong item).
+ */
+export function parseOtaPushResponse(body: string, itemCount: number, itemIndexByMessage?: number[]): ParsedProviderResponse {
+  const rs = parseOtaResponse(body);
+  const requestLevel = rs.errors.filter((e) => e.recordId === undefined).map((e) => `${e.code}: ${e.shortText}`);
+  const rejectedByItem = new Map<number, { code: string; message: string }>();
+  for (const e of rs.errors) {
+    if (e.recordId === undefined) continue;
+    const itemIndex = itemIndexByMessage ? itemIndexByMessage[e.recordId] : e.recordId;
+    if (itemIndex === undefined || !Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= itemCount) {
+      requestLevel.push(`${e.code}: ${e.shortText} (RecordID ${e.recordId} fuera de rango)`);
+      continue;
+    }
+    if (!rejectedByItem.has(itemIndex)) rejectedByItem.set(itemIndex, { code: e.code, message: e.shortText });
   }
-  if (errors.length === 0 && body.length > 0) {
-    errors.push(`Unexpected response body (truncated): ${body.slice(0, 200)}`);
-  }
-  return errors;
+  if (requestLevel.length > 0) return { ok: false, accepted: 0, rejected: [], errors: requestLevel, warnings: rs.warnings };
+  const rejected = [...rejectedByItem.entries()].sort((a, b) => a[0] - b[0]).map(([itemIndex, r]) => ({ itemIndex, code: r.code, message: r.message }));
+  if (!rs.success && rejected.length === 0) return { ok: false, accepted: 0, rejected: [], errors: ["Booking.com no confirmó la petición (sin <Success/>)."], warnings: rs.warnings };
+  return { ok: true, accepted: Math.max(0, itemCount - rejected.length), rejected, errors: [], warnings: rs.warnings };
 }
 
-async function pushXml({
-  channel,
-  mode,
-  path,
-  xml,
-  itemCount,
-  opName
-}: {
-  channel: ChannelContext;
-  mode: Exclude<AdapterMode, "stub">;
-  path: string;
-  xml: string;
-  itemCount: number;
-  opName: string;
-}): Promise<AdapterResult> {
-  // TODO(rate-limit): per-channel token bucket (100 req/min) should wrap this call.
-  // Sandbox mode does a real HTTP round-trip but against a local mock that does
-  // not authenticate, so we skip OAuth and send a placeholder bearer.
-  let token: string;
-  if (mode === "sandbox") {
-    token = SANDBOX_TOKEN;
-  } else {
+function withWarnings(result: AdapterResult, warnings: string[]): AdapterResult {
+  if (warnings.length === 0) return result;
+  return { ...result, warnings: [...(result.warnings ?? []), ...warnings] };
+}
+
+export function createBookingAdapter(deps: AdapterDeps = {}): ChannelAdapter {
+  type AuthOutcome = { ok: true; headers: Record<string, string> } | { ok: false; error: string; status?: number };
+
+  async function authHeaders(channel: ChannelContext): Promise<AuthOutcome> {
+    const headers: Record<string, string> = { "Content-Type": "text/xml; charset=utf-8", Accept: "text/xml, application/xml" };
+    if (channel.mode !== "real") return { ok: true, headers: { ...headers, Authorization: "Bearer sandbox-no-auth" } };
     try {
-      token = await getAccessToken(channel);
+      const jwt = await getBookingJwt(channel, deps);
+      return { ok: true, headers: { ...headers, Authorization: `Bearer ${jwt}` } };
     } catch (err) {
-      const message = err instanceof BookingOAuthError ? err.message : err instanceof Error ? err.message : String(err);
-      return { ok: false, pushed: 0, errors: [`OAuth failed during ${opName}: ${message}`], latencyMs: 0 };
+      const message = err instanceof BookingAuthError ? err.message : err instanceof Error ? err.message : String(err);
+      return { ok: false, error: message, status: err instanceof BookingAuthError ? err.status : undefined };
     }
   }
 
-  const result = await postXml({ url: endpoint(mode, path), token, xml });
-  if (result.ok) {
-    return {
-      ok: true,
-      pushed: itemCount,
-      latencyMs: result.latencyMs,
-      raw: {
-        provider: PROVIDER,
-        mode,
-        status: result.status,
-        requestHash: result.requestHash,
-        responseHash: result.responseHash
-      }
-    };
+  /** Common pre-flight: credentials (sandbox), hotel id (sandbox/real). Null when the push may proceed. */
+  function preflight(channel: ChannelContext): AdapterResult | null {
+    if (channel.mode === "sandbox" && !extractClientCredentials(channel)) {
+      return failedResult({ errors: ["Sandbox de Booking.com: faltan client_id / client_secret en las credenciales del canal."], retryable: false });
+    }
+    if (channel.mode !== "stub" && hotelCodeFor(channel) === null) {
+      return failedResult({ errors: [MISSING_HOTEL_ID], retryable: false });
+    }
+    return null;
   }
-  const errors =
-    result.errorMessage !== undefined ? [result.errorMessage] : extractErrorsFromXml(result.body);
+
+  async function push(
+    channel: ChannelContext,
+    endpoint: "OTA_HotelRateAmountNotif" | "OTA_HotelAvailNotif",
+    body: string,
+    itemCount: number,
+    itemIndexByMessage?: number[]
+  ): Promise<AdapterResult> {
+    const auth = await authHeaders(channel);
+    if (!auth.ok) {
+      return failedResult({ errors: [`Autenticación Booking.com: ${auth.error}`], retryable: isTransientAuthStatus(auth.status) });
+    }
+    return executePush({
+      channel,
+      provider: "booking",
+      endpoint,
+      url: joinUrl(baseUrl(), `/hotels/ota/${endpoint}`),
+      headers: auth.headers,
+      body,
+      itemCount,
+      deps,
+      parse: (rs, count) => parseOtaPushResponse(rs, count, itemIndexByMessage)
+    });
+  }
+
   return {
-    ok: false,
-    pushed: 0,
-    errors,
-    latencyMs: result.latencyMs,
-    raw: {
-      provider: PROVIDER,
-      mode,
-      status: result.status,
-      requestHash: result.requestHash,
-      responseHash: result.responseHash
+    providerCode: PROVIDER,
+    capabilities: () => BOOKING_CAPABILITIES,
+
+    async pushRates({ channel, items }: { channel: ChannelContext; items: RatePushItem[] }) {
+      const refused = preflight(channel);
+      if (refused) return refused;
+      const hotelCode = hotelCodeFor(channel) as string;
+      const xml = buildRateAmountNotifXml({ hotelCode, items });
+      const result = await push(channel, "OTA_HotelRateAmountNotif", xml, items.length);
+      const dropped = unsupportedOccupancyKeys(items);
+      return withWarnings(result, dropped.length ? [`Booking.com no admite suplementos por ocupación (${dropped.join(", ")}): no se envían, solo los precios por número de huéspedes.`] : []);
+    },
+
+    async pushAvailability({ channel, items }: { channel: ChannelContext; items: AvailabilityPushItem[] }) {
+      const refused = preflight(channel);
+      if (refused) return refused;
+      const xml = buildAvailNotifXml({ hotelCode: hotelCodeFor(channel) as string, items });
+      return push(channel, "OTA_HotelAvailNotif", xml, items.length);
+    },
+
+    async pushRestrictions({ channel, items }: { channel: ChannelContext; items: RestrictionPushItem[] }) {
+      const refused = preflight(channel);
+      if (refused) return refused;
+      const notif = buildRestrictionsNotif({ hotelCode: hotelCodeFor(channel) as string, items });
+      return push(channel, "OTA_HotelAvailNotif", notif.xml, items.length, notif.itemIndexByMessage);
+    },
+
+    async pullReservations({ channel, since, cursor }): Promise<PullReservationsResult> {
+      if (channel.mode !== "real") {
+        // The simulator has no reservation feed: deterministic stub reservations
+        // keep the ingest path exercised (dedup by externalReference).
+        return { ok: true, reservations: buildStubReservations(channel.id, since, PROVIDER), nextCursor: null };
+      }
+      const hotelCode = hotelCodeFor(channel);
+      if (hotelCode === null) return { ok: false, reservations: [], nextCursor: cursor ?? null, errors: [MISSING_HOTEL_ID] };
+      const auth = await authHeaders(channel);
+      if (!auth.ok) return { ok: false, reservations: [], nextCursor: cursor ?? null, errors: [auth.error] };
+      const res = await httpRequest({
+        url: joinUrl(reservationsBaseUrl(), `/hotels/ota/OTA_HotelResNotif?hotel_ids=${encodeURIComponent(hotelCode)}`),
+        method: "GET",
+        headers: auth.headers,
+        timeoutMs: deps.timeoutMs,
+        fetchImpl: deps.fetchImpl,
+        now: deps.now
+      });
+      if (!res.ok) return { ok: false, reservations: [], nextCursor: cursor ?? null, errors: [res.errorMessage ?? `OTA_HotelResNotif respondió ${res.status}`] };
+      const reservations: ExternalReservationDTO[] = parseResNotifXml(res.body).map((r) => ({
+        externalReference: r.externalReference,
+        status: r.status === "cancel" ? "cancelled" : r.status === "modify" ? "modified" : "confirmed",
+        payloadJson: {
+          provider: PROVIDER,
+          channelId: channel.id,
+          guestName: r.guestName,
+          arrivalDate: r.arrivalDate,
+          departureDate: r.departureDate,
+          totalAmount: r.totalAmount,
+          currency: r.currency,
+          rawXml: r.rawXml
+        }
+      }));
+      return { ok: true, reservations, nextCursor: null };
+    },
+
+    async acknowledgeReservations({ channel, ids }) {
+      if (ids.length === 0) return { ok: true };
+      if (channel.mode !== "real") return { ok: true };
+      const auth = await authHeaders(channel);
+      if (!auth.ok) return { ok: false, errors: [auth.error] };
+      const res = await httpRequest({
+        url: joinUrl(reservationsBaseUrl(), "/hotels/ota/OTA_HotelResNotif"),
+        method: "POST",
+        headers: auth.headers,
+        body: buildResNotifAckXml(ids),
+        timeoutMs: deps.timeoutMs,
+        fetchImpl: deps.fetchImpl,
+        now: deps.now
+      });
+      return res.ok ? { ok: true } : { ok: false, errors: [res.errorMessage ?? `Ack respondió ${res.status}`] };
+    },
+
+    async testCredentials({ channel }): Promise<TestCredentialsResult> {
+      if (channel.mode === "stub") {
+        return { ok: true, metadata: { provider: PROVIDER, mode: "stub", hotelId: hotelCodeFor(channel), note: "Modo stub: no se verifica ninguna credencial." } };
+      }
+      if (!extractClientCredentials(channel)) {
+        return { ok: false, error: "Faltan client_id / client_secret de Booking.com." };
+      }
+      const hotelCode = hotelCodeFor(channel);
+      if (hotelCode === null) return { ok: false, error: MISSING_HOTEL_ID };
+      if (channel.mode === "sandbox") {
+        // Prove the full builder → schema validation path with an empty-safe probe.
+        const probe = buildAvailNotifXml({ hotelCode, items: [{ date: new Date().toISOString().slice(0, 10), externalRoomCode: "PROBE", roomTypeId: "probe", count: 0 }] });
+        const result = await push(channel, "OTA_HotelAvailNotif", probe, 1);
+        return result.ok
+          ? { ok: true, metadata: { provider: PROVIDER, mode: "sandbox", hotelId: hotelCode, responseHash: result.responseHash } }
+          : { ok: false, error: result.errors.join("; ") || "El simulador rechazó la sonda." };
+      }
+      try {
+        await getBookingJwt(channel, deps);
+        return { ok: true, metadata: { provider: PROVIDER, mode: "real", hotelId: hotelCode } };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    },
+
+    async fetchCompetitorRates({ channel, dateRange }) {
+      // Not part of the Connectivity surface (that is a Demand/Insights API):
+      // deterministic placeholder so the parity monitor keeps working.
+      return { ok: true, rates: buildStubCompetitorRates(channel.id, dateRange, PROVIDER) };
     }
   };
 }
 
-// Coarse XML parser for /reservations. This is intentionally regex-based —
-// the Distribution reservation envelope is small + flat enough that a real
-// SAX parser is overkill for our current usage pattern (we only need
-// externalReference + status; everything else stays in payloadJson).
-//
-// SHARP EDGE: if Booking ever embeds CDATA, namespaces, or nested guest blocks
-// with the same tag names, this parser will mis-extract. The fall-back of
-// stashing the whole raw XML on payloadJson means the aggregator can still
-// dedupe by externalReference even if the inner fields are wrong.
-export function parseReservationsXml(xml: string): ExternalReservationDTO[] {
-  const out: ExternalReservationDTO[] = [];
-  const blockRegex = /<reservation\b([^>]*)>([\s\S]*?)<\/reservation>/gi;
-  let blockMatch: RegExpExecArray | null;
-  while ((blockMatch = blockRegex.exec(xml)) !== null) {
-    const attrs = blockMatch[1] ?? "";
-    const inner = blockMatch[2] ?? "";
-    const idMatch = /\b(?:id|reservation_id|booking_id)="([^"]+)"/i.exec(attrs);
-    const statusAttr = /\bstatus="([^"]+)"/i.exec(attrs);
-    const statusInner = /<status>([^<]+)<\/status>/i.exec(inner);
-    const externalReference = idMatch?.[1] ?? `unknown-${out.length}`;
-    const status = (statusAttr?.[1] ?? statusInner?.[1] ?? "unknown").toLowerCase();
-    out.push({
-      externalReference,
-      status,
-      payloadJson: {
-        provider: PROVIDER,
-        rawXml: blockMatch[0]
-      }
-    });
-  }
-  return out;
-}
-
-export const bookingAdapter: ChannelAdapter = {
-  providerCode: PROVIDER,
-
-  async pushRates({ channel, items }): Promise<AdapterResult> {
-    const mode = resolveMode();
-    if (mode === "stub") {
-      const latencyMs = await simulateLatency(seedHash(channel.id, "pushRates", items.length));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, pushed: 0, errors: ["Booking.com credentials missing or invalid"], latencyMs };
-      }
-      return { ok: true, pushed: items.length, latencyMs, raw: { stub: true, provider: PROVIDER } };
-    }
-    const xml = buildRatesXml(items);
-    return pushXml({ channel, mode, path: "/hotels/xml/rates", xml, itemCount: items.length, opName: "pushRates" });
-  },
-
-  async pushAvailability({ channel, items }): Promise<AdapterResult> {
-    const mode = resolveMode();
-    if (mode === "stub") {
-      const latencyMs = await simulateLatency(seedHash(channel.id, "pushAvail", items.length));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, pushed: 0, errors: ["Booking.com credentials missing or invalid"], latencyMs };
-      }
-      return { ok: true, pushed: items.length, latencyMs, raw: { stub: true, provider: PROVIDER } };
-    }
-    const xml = buildAvailabilityXml(items);
-    return pushXml({ channel, mode, path: "/hotels/xml/availability", xml, itemCount: items.length, opName: "pushAvailability" });
-  },
-
-  async pushRestrictions({ channel, items }): Promise<AdapterResult> {
-    const mode = resolveMode();
-    if (mode === "stub") {
-      const latencyMs = await simulateLatency(seedHash(channel.id, "pushRestr", items.length));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, pushed: 0, errors: ["Booking.com credentials missing or invalid"], latencyMs };
-      }
-      return { ok: true, pushed: items.length, latencyMs, raw: { stub: true, provider: PROVIDER } };
-    }
-    const xml = buildRestrictionsXml(items);
-    return pushXml({ channel, mode, path: "/hotels/xml/restrictions", xml, itemCount: items.length, opName: "pushRestrictions" });
-  },
-
-  async fetchReservations({ channel, since }) {
-    const mode = resolveMode();
-    // Sandbox mode shares stub's reservation-pull behaviour: the loopback mock
-    // is a push target only (it has no reservation feed to read back), so we
-    // return deterministic reservations rather than GET the mock.
-    if (mode === "stub" || mode === "sandbox") {
-      const latencyMs = await simulateLatency(seedHash(channel.id, "fetchRes"));
-      void latencyMs;
-      if (mode === "stub" && isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, reservations: [], errors: ["Booking.com credentials missing or invalid"] };
-      }
-      return { ok: true, reservations: buildStubReservations(channel.id, since, PROVIDER) };
-    }
-
-    let token: string;
-    try {
-      token = await getAccessToken(channel);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      return { ok: false, reservations: [], errors: [`OAuth failed during fetchReservations: ${message}`] };
-    }
-    const url = `${endpoint(mode, "/hotels/xml/reservations")}?last_change=${encodeURIComponent(since.toISOString())}`;
-    const result = await getXml({ url, token });
-    if (!result.ok) {
-      const errors =
-        result.errorMessage !== undefined ? [result.errorMessage] : extractErrorsFromXml(result.body);
-      return { ok: false, reservations: [], errors };
-    }
-    try {
-      const reservations = parseReservationsXml(result.body);
-      return { ok: true, reservations };
-    } catch (err) {
-      // Parser fall-back: stash the raw XML so the aggregator can at least
-      // dedupe by externalReference once it has a proper parser.
-      const message = err instanceof Error ? err.message : String(err);
-      return {
-        ok: true,
-        reservations: [
-          {
-            externalReference: `booking-raw-${result.responseHash.slice(0, 12)}`,
-            status: "unknown",
-            payloadJson: { provider: PROVIDER, rawXml: result.body, parseError: message }
-          }
-        ]
-      };
-    }
-  },
-
-  async testCredentials({ channel }) {
-    const mode = resolveMode();
-    if (mode === "stub") {
-      await simulateLatency(seedHash(channel.id, "testCreds"));
-      if (isInvalidCredentials(channel.credentialsJson)) {
-        return { ok: false, error: "Credentials missing or rejected" };
-      }
-      return { ok: true, metadata: { hotelId: channel.credentialsJson?.hotelId ?? "STUB-BKG", provider: PROVIDER } };
-    }
-    if (mode === "sandbox") {
-      // Sandbox: prove the real HTTP path works by POSTing a probe to the local
-      // mock. No OAuth, no real creds required — this is exactly the round-trip
-      // validation a hotelier runs before going live.
-      const probe = buildAvailabilityXml([]);
-      const result = await postXml({ url: endpoint(mode, "/hotels/xml/availability"), token: SANDBOX_TOKEN, xml: probe });
-      if (result.ok) {
-        return {
-          ok: true,
-          metadata: { provider: PROVIDER, mode: "sandbox", status: result.status, responseHash: result.responseHash }
-        };
-      }
-      return {
-        ok: false,
-        error: result.errorMessage ?? `Sandbox mock returned ${result.status}`
-      };
-    }
-    // Real mode: validate by performing an OAuth round trip. We deliberately
-    // short-circuit if there are no creds at all so test runs don't hit the
-    // network just to confirm what we already know.
-    if (isInvalidCredentials(channel.credentialsJson)) {
-      return { ok: false, error: "Booking.com credentials missing or invalid" };
-    }
-    try {
-      await getAccessToken(channel);
-      return { ok: true, metadata: { provider: PROVIDER, mode: "real" } };
-    } catch (err) {
-      const message = err instanceof BookingOAuthError ? err.message : err instanceof Error ? err.message : String(err);
-      return { ok: false, error: message };
-    }
-  },
-
-  async fetchCompetitorRates({ channel, dateRange }) {
-    // Competitor rates aren't part of Booking's Distribution surface; the data
-    // would come from a separate Demand API. For both stub and real mode we
-    // currently return deterministic placeholder data so the UI keeps
-    // rendering.
-    await simulateLatency(seedHash(channel.id, "fetchComp"));
-    return { ok: true, rates: buildStubCompetitorRates(channel.id, dateRange, PROVIDER) };
-  }
-};
+export const bookingAdapter: ChannelAdapter = createBookingAdapter();

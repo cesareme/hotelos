@@ -24,6 +24,8 @@ export interface CocoaButtonProps {
   className?: string;
   style?: CSSProperties;
   "aria-label"?: string;
+  /** Native tooltip (callers used to wrap the button in <span title>). */
+  title?: string;
 }
 
 const HEIGHT_BY_SIZE: Record<CocoaButtonSize, number> = {
@@ -137,7 +139,8 @@ export function CocoaButton({
   type = "button",
   className,
   style,
-  "aria-label": ariaLabel
+  "aria-label": ariaLabel,
+  title
 }: CocoaButtonProps) {
   const isDisabled = disabled || loading;
   const coarse = useCoarsePointer();
@@ -303,13 +306,15 @@ export function CocoaButton({
       aria-busy={loading || undefined}
       aria-disabled={isDisabled || undefined}
       aria-label={ariaLabel}
+      title={title}
       onClick={onClick}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
     >
-      <style>{`@keyframes cocoa-spinner-rotate { to { transform: rotate(360deg); } }`}</style>
+      {/* The spinner keyframes live in styles/cocoa-base.css (cierre 2026-09-15):
+          an inline <style> per button leaked into textContent / a11y trees. */}
       {loading ? <Spinner size={iconSize} color={spinnerColor} /> : null}
       {!loading && iconNode && iconPosition === "left" ? iconNode : null}
       {children != null ? <span>{children}</span> : null}

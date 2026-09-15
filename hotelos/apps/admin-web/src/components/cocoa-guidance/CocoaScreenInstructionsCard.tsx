@@ -25,7 +25,7 @@
 //
 // A11y:
 //   - role="region" + aria-label = title
-//   - Dismiss button has aria-label "Dismiss instructions"
+//   - Dismiss button has aria-label "Cerrar instrucciones"
 //   - localStorage access is wrapped in try/catch to tolerate disabled
 //     storage (private mode, SSR, etc.)
 
@@ -367,7 +367,7 @@ export function CocoaScreenInstructionsCard({
           {dismissible ? (
             <button
               type="button"
-              aria-label="Dismiss instructions"
+              aria-label="Cerrar instrucciones"
               style={dismissButtonStyle}
               onClick={handleDismiss}
               onMouseEnter={handleDismissMouseEnter}

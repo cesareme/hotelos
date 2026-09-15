@@ -1,183 +1,124 @@
-// Go-live readiness checklist for a channel.
+// Go-live readiness checklist for a channel (rate grid v2).
 //
-// Sprint 44: before a hotelier flips a channel to "active" with real OTA
-// credentials, they need a single, honest answer to "is this safe to go live?".
-// The aggregator's push paths fail at runtime when mappings or credentials are
-// missing — this service surfaces those gaps *ahead* of time as a checklist.
+// Before a hotelier flips a channel to `real`, they need one honest answer to
+// "is this safe to publish?". The outbox fails at drain time when mappings or
+// credentials are missing — this surfaces those gaps ahead of time.
 //
 // Checks:
-//   (a) credentials present  — Channel.configurationJson.credentials non-null
-//                              AND contains the provider's required keys.
-//   (b) room mappings complete  — every active room type is mapped.
-//   (c) rate mappings complete  — every active rate plan is mapped.
-//   (d) recent successful push  — a ChannelSyncJob with status=success in the
-//                                 last 7 days (test_credentials counts too — it
-//                                 proves the credential round-trip works).
-//   (e) adapter mode  — stub / sandbox / real. `real` is required for go-live;
-//                       `sandbox` is "warn" (validated locally but not live);
-//                       `stub` is "error" (nothing actually leaves the box).
+//   (a) mode         — Channel.mode capped by CHANNEL_MAX_MODE. real = ok,
+//                      sandbox = warn (validated locally, not live), stub = error
+//                      for go-live (nothing leaves the box). The requested mode
+//                      being higher than the cap is reported explicitly.
+//   (b) credentials  — Channel.credentialsEncrypted present with the provider's
+//                      required keys (stub: not required). Legacy plaintext
+//                      credentials in configurationJson are a warn (debt).
+//   (c) products     — ChannelProductMapping coverage over
+//                      (active room types × distributable rate plans).
+//   (d) last delivery — most recent ChannelDelivery confirmed (7 days), or a
+//                      successful test_credentials sync job.
+//   (e) adapter      — provider registered (Channex-routed providers cannot go
+//                      real on their own: warn pointing at Channex).
+//   (f) product codes — external codes shared by several room types of the
+//                      channel (mapping.core.ts): a ROOM code on every
+//                      provider (availability — and, on Booking / Expedia,
+//                      prices — go by room, so two types would overwrite each
+//                      other), a RATE code only on Channex-routed ones (a
+//                      Channex rate plan belongs to ONE room type). Warn in
+//                      stub/sandbox (seeded placeholders), error in real mode
+//                      (only the last value of a batch would apply).
 //
-// readyToGoLive = every check is "ok".
+// The shape keeps the fields the admin-web hub renders (checks[], readyToGoLive,
+// adapterMode) and adds the v2 ones.
 
 import { prisma } from "@hotelos/database";
-import { mappingCoverage } from "./mapping.service.js";
+import type { ChannelMode } from "./adapter.types.js";
+import { isDirectProvider, normalizeProviderCode, resolveAdapter } from "./adapters/index.js";
+import { channelOrThrow, effectiveChannelMode, parseChannelMode, readChannelCredentials } from "./channels.service.js";
+import { readChannelEnv } from "./env.partial.js";
+import { productCoverage, sharedChannelProductCodes, type ProductCoverage } from "./mapping.service.js";
+import { credentialsCheck as credentialsCheckCore, modeCheck, productCodesCheck, recentSuccessCheck, type ReadinessCheck, type ReadinessCheckStatus } from "./readiness.core.js";
 
-export type ReadinessCheckStatus = "ok" | "warn" | "error";
+export type { ReadinessCheck, ReadinessCheckStatus };
+export { modeCheck };
 
-export type ReadinessCheck = {
-  key: string;
-  label: string;
-  status: ReadinessCheckStatus;
-  detail: string;
-};
+/** Kept for callers that pass the raw providerCode (the core takes the normalised one). */
+export function credentialsCheck(providerCode: string, credentials: Record<string, unknown> | null, legacy: boolean, mode: ChannelMode, undecryptable = false): ReadinessCheck {
+  return credentialsCheckCore(normalizeProviderCode(providerCode), credentials, legacy, mode, undecryptable);
+}
 
 export type ChannelReadiness = {
   channelId: string;
   providerCode: string;
-  adapterMode: AdapterMode;
+  /** Effective mode (capped). Kept under the v1 name for the hub screen. */
+  adapterMode: ChannelMode;
+  requestedMode: ChannelMode;
+  maxMode: ChannelMode;
+  hasCredentials: boolean;
+  coverage: Pick<ProductCoverage, "productsTotal" | "productsMapped" | "coveragePct" | "complete">;
+  lastConfirmedDeliveryAt: string | null;
   checks: ReadinessCheck[];
+  /** Every check ok: safe to publish in mode real. */
   readyToGoLive: boolean;
+  /** No error-level check for the CURRENT mode: the editor can enqueue. */
+  readyToPush: boolean;
 };
-
-type AdapterMode = "stub" | "sandbox" | "real";
-
-// Per-provider required credential keys. Booking authenticates via OAuth2
-// client-credentials; the rest carry an apiKey/secret pair or a listing id.
-// `accept` lets us treat snake_case and camelCase as equivalent.
-const REQUIRED_CREDENTIAL_KEYS: Record<string, string[][]> = {
-  booking: [["client_id", "clientId"], ["client_secret", "clientSecret"]],
-  expedia: [["apiKey", "api_key"], ["resortID", "resortId"]],
-  airbnb: [["apiKey", "api_key"], ["listingId", "listing_id"]],
-  hotelbeds: [["apiKey", "api_key"], ["secret"]],
-  vrbo: [["apiKey", "api_key"], ["propertyId", "property_id"]]
-};
-
-// Mirrors each adapter's `resolveMode()`: BOOKING_ADAPTER_MODE, EXPEDIA_ADAPTER_MODE, etc.
-// Only "real" and "sandbox" are explicit modes; everything else is "stub".
-export function resolveAdapterMode(providerCode: string): AdapterMode {
-  const envKey = `${providerCode.toUpperCase()}_ADAPTER_MODE`;
-  const value = (process.env[envKey] ?? "").toLowerCase();
-  if (value === "real") return "real";
-  if (value === "sandbox") return "sandbox";
-  return "stub";
-}
-
-function hasCredentialKey(creds: Record<string, unknown>, aliases: string[]): boolean {
-  return aliases.some((alias) => {
-    const v = creds[alias];
-    return typeof v === "string" ? v.length > 0 : v !== undefined && v !== null;
-  });
-}
-
-function credentialsCheck(providerCode: string, configurationJson: unknown): ReadinessCheck {
-  const config = (configurationJson ?? {}) as Record<string, unknown>;
-  const creds = (config.credentials as Record<string, unknown> | undefined) ?? null;
-  if (!creds || Object.keys(creds).length === 0) {
-    return {
-      key: "credentials",
-      label: "Credentials configured",
-      status: "error",
-      detail: "No credentials saved for this channel."
-    };
-  }
-  const required = REQUIRED_CREDENTIAL_KEYS[providerCode.toLowerCase()] ?? [];
-  const missing = required.filter((aliases) => !hasCredentialKey(creds, aliases));
-  if (missing.length > 0) {
-    return {
-      key: "credentials",
-      label: "Credentials configured",
-      status: "error",
-      detail: `Missing required credential${missing.length > 1 ? "s" : ""}: ${missing
-        .map((aliases) => aliases[0])
-        .join(", ")}.`
-    };
-  }
-  return {
-    key: "credentials",
-    label: "Credentials configured",
-    status: "ok",
-    detail: "All required credentials are present."
-  };
-}
-
-function adapterModeCheck(mode: AdapterMode): ReadinessCheck {
-  if (mode === "real") {
-    return {
-      key: "adapter_mode",
-      label: "Adapter mode",
-      status: "ok",
-      detail: "Adapter is in real mode — live OTA traffic."
-    };
-  }
-  if (mode === "sandbox") {
-    return {
-      key: "adapter_mode",
-      label: "Adapter mode",
-      status: "warn",
-      detail: "Adapter is in sandbox mode — real HTTP round-trip to a local mock, not live OTA."
-    };
-  }
-  return {
-    key: "adapter_mode",
-    label: "Adapter mode",
-    status: "error",
-    detail: "Adapter is in stub mode — nothing leaves the server. Switch to real mode for go-live."
-  };
-}
 
 export async function channelReadiness(channelId: string): Promise<ChannelReadiness> {
-  const channel = await prisma.channel.findUnique({ where: { id: channelId } });
-  if (!channel) throw new Error(`Channel not found: ${channelId}`);
-
+  const channel = await channelOrThrow(channelId);
+  const requestedMode = parseChannelMode(channel.mode);
+  const effective = effectiveChannelMode(channel.mode);
+  const maxMode = readChannelEnv().maxMode;
+  const { credentials, legacy, undecryptable } = readChannelCredentials(channel);
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
-  const [coverage, recentSuccess] = await Promise.all([
-    mappingCoverage(channelId),
-    prisma.channelSyncJob.findFirst({
-      where: { channelId, status: "success", createdAt: { gte: sevenDaysAgo } },
-      orderBy: { createdAt: "desc" }
-    })
+  const [coverage, lastConfirmed, recentTest, sharedCodes] = await Promise.all([
+    productCoverage(channelId),
+    prisma.channelDelivery.findFirst({ where: { channelId, status: "confirmed" }, orderBy: { confirmedAt: "desc" }, select: { confirmedAt: true, kind: true } }),
+    prisma.channelSyncJob.findFirst({ where: { channelId, status: "success", createdAt: { gte: sevenDaysAgo } }, orderBy: { createdAt: "desc" }, select: { syncType: true, createdAt: true } }),
+    sharedChannelProductCodes(channelId)
   ]);
-
-  const adapterMode = resolveAdapterMode(channel.providerCode);
+  const adapter = resolveAdapter(channel.providerCode);
+  const direct = isDirectProvider(channel.providerCode);
 
   const checks: ReadinessCheck[] = [
-    credentialsCheck(channel.providerCode, channel.configurationJson),
+    modeCheck(requestedMode, effective, maxMode),
+    credentialsCheck(channel.providerCode, credentials, legacy, effective, undecryptable),
     {
-      key: "room_mappings",
-      label: "Room mappings complete",
-      status: coverage.roomTypesTotal === 0 ? "error" : coverage.complete || coverage.roomTypesMapped >= coverage.roomTypesTotal ? "ok" : "error",
+      key: "product_mappings",
+      label: "Productos mapeados",
+      status: coverage.productsTotal === 0 ? "error" : coverage.complete ? "ok" : coverage.productsMapped > 0 ? "warn" : "error",
       detail:
-        coverage.roomTypesTotal === 0
-          ? "No active room types to map."
-          : `${coverage.roomTypesMapped}/${coverage.roomTypesTotal} room types mapped.`
+        coverage.productsTotal === 0
+          ? "No hay tipos activos × planes distribuibles que mapear."
+          : `${coverage.productsMapped}/${coverage.productsTotal} productos (tipo × plan) mapeados (${coverage.coveragePct} %).`
     },
+    recentSuccessCheck({
+      lastConfirmed: lastConfirmed?.confirmedAt ? { kind: lastConfirmed.kind, confirmedAt: lastConfirmed.confirmedAt } : null,
+      recentTest: recentTest ? { syncType: recentTest.syncType, createdAt: recentTest.createdAt } : null
+    }),
     {
-      key: "rate_mappings",
-      label: "Rate mappings complete",
-      status: coverage.ratePlansTotal === 0 ? "error" : coverage.ratePlansMapped >= coverage.ratePlansTotal ? "ok" : "error",
-      detail:
-        coverage.ratePlansTotal === 0
-          ? "No active rate plans to map."
-          : `${coverage.ratePlansMapped}/${coverage.ratePlansTotal} rate plans mapped.`
+      key: "adapter",
+      label: "Adaptador",
+      status: !adapter ? "error" : direct ? "ok" : effective === "real" ? "error" : "warn",
+      detail: !adapter
+        ? "Proveedor sin adaptador registrado."
+        : direct
+          ? `Adaptador ${normalizeProviderCode(channel.providerCode)} en modo ${effective}.`
+          : "Este proveedor se distribuye vía Channex: cree un canal channex y conecte la OTA allí; en stub/sandbox se simula localmente."
     },
-    {
-      key: "recent_success",
-      label: "Recent successful sync",
-      status: recentSuccess ? "ok" : "warn",
-      detail: recentSuccess
-        ? `Last successful ${recentSuccess.syncType} at ${recentSuccess.createdAt.toISOString()}.`
-        : "No successful sync in the last 7 days. Run a test push first."
-    },
-    adapterModeCheck(adapterMode)
+    productCodesCheck({ providerCode: channel.providerCode, mode: effective, shared: sharedCodes })
   ];
-
-  const readyToGoLive = checks.every((c) => c.status === "ok");
-
+  const hasError = checks.some((c) => c.status === "error");
   return {
     channelId,
     providerCode: channel.providerCode,
-    adapterMode,
+    adapterMode: effective,
+    requestedMode,
+    maxMode,
+    hasCredentials: credentials !== null,
+    coverage: { productsTotal: coverage.productsTotal, productsMapped: coverage.productsMapped, coveragePct: coverage.coveragePct, complete: coverage.complete },
+    lastConfirmedDeliveryAt: lastConfirmed?.confirmedAt ? lastConfirmed.confirmedAt.toISOString() : null,
     checks,
-    readyToGoLive
+    readyToGoLive: checks.every((c) => c.status === "ok"),
+    readyToPush: !hasError || (effective === "stub" && coverage.productsMapped > 0 && Boolean(adapter))
   };
 }
