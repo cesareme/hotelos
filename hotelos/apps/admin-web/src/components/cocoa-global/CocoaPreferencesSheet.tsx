@@ -6,16 +6,20 @@
 // "icon + label" arrangement. Switching tabs swaps the body panel below.
 //
 // Only the Appearance tab is wired to the preferences API. The remaining
-// tabs are placeholders with a "Coming soon" message.
+// tabs are placeholders with a «Próximamente» message.
 //
 // API contract:
-//   GET    /users/me/preferences   ->  { themePreference, accentColor,
-//                                        reducedMotion, highContrast }
+//   GET    /users/me/preferences   ->  { themePreference, reducedMotion,
+//                                        highContrast } (+ a legacy
+//                                        `accentColor` that is ignored)
 //   PATCH  /users/me/preferences   <-  partial of the same shape
 //
 // Real-time application: when the user changes any visual preference, the
-// component immediately applies it to <html> via data-theme attribute and
-// CSS custom properties so the whole window updates without a reload.
+// component immediately applies it to <html> (data-theme and the a11y
+// data-* attributes) through the pure helpers of ./cocoa-preferences.ts —
+// shared with CocoaGlobalProvider — so the whole window updates without a
+// reload. Cocoa 22: there is no accent preference; the single accent is
+// Esmeralda (`--cocoa-accent` in styles/cocoa-tokens.css).
 
 import {
   useCallback,
@@ -30,22 +34,24 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import CocoaSwitch from "../cocoa/CocoaSwitch";
-import CocoaColorWell from "../cocoa-extras/CocoaColorWell";
 import { apiRequest } from "../../services/api-client";
+import {
+  DEFAULT_COCOA_PREFERENCES,
+  applyPreferencesToRoot,
+  documentRoot,
+  normalizePreferences,
+  sanitizePreferencePatch,
+  type CocoaPreferences,
+  type CocoaThemePreference,
+} from "./cocoa-preferences";
 
 export interface CocoaPreferencesSheetProps {
   open: boolean;
   onClose: () => void;
 }
 
-type ThemePreference = "light" | "dark" | "auto";
-
-interface UserPreferences {
-  themePreference: ThemePreference;
-  accentColor: string;
-  reducedMotion: boolean;
-  highContrast: boolean;
-}
+type ThemePreference = CocoaThemePreference;
+type UserPreferences = CocoaPreferences;
 
 type TabId =
   | "general"
@@ -64,12 +70,7 @@ const PANEL_WIDTH = 720;
 const PANEL_HEIGHT = 540;
 const TAB_BAR_HEIGHT = 96;
 
-const DEFAULT_PREFERENCES: UserPreferences = {
-  themePreference: "auto",
-  accentColor: "#007aff",
-  reducedMotion: false,
-  highContrast: false,
-};
+const DEFAULT_PREFERENCES: UserPreferences = { ...DEFAULT_COCOA_PREFERENCES };
 
 const FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -208,40 +209,18 @@ function AdvancedIcon(): ReactNode {
 
 const TABS: TabDescriptor[] = [
   { id: "general", label: "General", icon: <GeneralIcon /> },
-  { id: "appearance", label: "Appearance", icon: <AppearanceIcon /> },
-  { id: "notifications", label: "Notifications", icon: <NotificationsIcon /> },
-  { id: "privacy", label: "Privacy", icon: <PrivacyIcon /> },
-  { id: "advanced", label: "Advanced", icon: <AdvancedIcon /> },
+  { id: "appearance", label: "Apariencia", icon: <AppearanceIcon /> },
+  { id: "notifications", label: "Notificaciones", icon: <NotificationsIcon /> },
+  { id: "privacy", label: "Privacidad", icon: <PrivacyIcon /> },
+  { id: "advanced", label: "Avanzado", icon: <AdvancedIcon /> },
 ];
 
 // Apply visual preferences to the document root so the rest of the app
-// picks them up via CSS custom properties + the data-theme attribute.
-function applyThemePreference(value: ThemePreference): void {
-  if (typeof document === "undefined") return;
-  document.documentElement.setAttribute("data-theme", value);
-}
-
-function applyAccentColor(color: string): void {
-  if (typeof document === "undefined") return;
-  document.documentElement.style.setProperty("--cocoa-accent", color);
-}
-
-function applyReducedMotion(enabled: boolean): void {
-  if (typeof document === "undefined") return;
-  if (enabled) {
-    document.documentElement.setAttribute("data-reduced-motion", "true");
-  } else {
-    document.documentElement.removeAttribute("data-reduced-motion");
-  }
-}
-
-function applyHighContrast(enabled: boolean): void {
-  if (typeof document === "undefined") return;
-  if (enabled) {
-    document.documentElement.setAttribute("data-high-contrast", "true");
-  } else {
-    document.documentElement.removeAttribute("data-high-contrast");
-  }
+// picks them up via the data-* attributes (shared helpers; every apply also
+// removes the legacy inline accent of older bundles).
+function applyPreferences(prefs: UserPreferences): void {
+  const root = documentRoot();
+  if (root) applyPreferencesToRoot(root, prefs);
 }
 
 export function CocoaPreferencesSheet({
@@ -332,27 +311,18 @@ export function CocoaPreferencesSheet({
     setLoading(true);
     setLoadError(null);
 
-    apiRequest<Partial<UserPreferences>>("/users/me/preferences", {
+    apiRequest<unknown>("/users/me/preferences", {
       method: "GET",
       signal: controller.signal,
     })
       .then((data) => {
         if (cancelled) return;
-        const merged: UserPreferences = {
-          themePreference:
-            data.themePreference ?? DEFAULT_PREFERENCES.themePreference,
-          accentColor: data.accentColor ?? DEFAULT_PREFERENCES.accentColor,
-          reducedMotion:
-            data.reducedMotion ?? DEFAULT_PREFERENCES.reducedMotion,
-          highContrast: data.highContrast ?? DEFAULT_PREFERENCES.highContrast,
-        };
+        // The legacy `accentColor` of the payload is dropped here.
+        const merged = normalizePreferences(data, DEFAULT_PREFERENCES);
         setPreferences(merged);
         // Apply on initial load so the displayed values match the active
         // window state — e.g. if the user reloads with stored prefs.
-        applyThemePreference(merged.themePreference);
-        applyAccentColor(merged.accentColor);
-        applyReducedMotion(merged.reducedMotion);
-        applyHighContrast(merged.highContrast);
+        applyPreferences(merged);
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -360,7 +330,7 @@ export function CocoaPreferencesSheet({
           return;
         }
         setLoadError(
-          error instanceof Error ? error.message : "Failed to load preferences",
+          error instanceof Error ? error.message : "No se pudieron cargar las preferencias.",
         );
       })
       .finally(() => {
@@ -379,21 +349,12 @@ export function CocoaPreferencesSheet({
   // also fire here so the document picks up the new theme/accent/a11y
   // settings without waiting for the server round trip.
   const patchPreferences = useCallback(
-    (patch: Partial<UserPreferences>) => {
+    (rawPatch: Partial<UserPreferences>) => {
+      const patch = sanitizePreferencePatch(rawPatch);
+      if (Object.keys(patch).length === 0) return;
       setPreferences((prev) => {
         const next: UserPreferences = { ...prev, ...patch };
-        if (patch.themePreference !== undefined) {
-          applyThemePreference(patch.themePreference);
-        }
-        if (patch.accentColor !== undefined) {
-          applyAccentColor(patch.accentColor);
-        }
-        if (patch.reducedMotion !== undefined) {
-          applyReducedMotion(patch.reducedMotion);
-        }
-        if (patch.highContrast !== undefined) {
-          applyHighContrast(patch.highContrast);
-        }
+        applyPreferences(next);
         // Fire-and-forget PATCH with optimistic rollback.
         apiRequest<Partial<UserPreferences>>("/users/me/preferences", {
           method: "PATCH",
@@ -402,18 +363,7 @@ export function CocoaPreferencesSheet({
           // On failure restore the previous values both in state and in
           // the document so the UI doesn't drift from the server.
           setPreferences(prev);
-          if (patch.themePreference !== undefined) {
-            applyThemePreference(prev.themePreference);
-          }
-          if (patch.accentColor !== undefined) {
-            applyAccentColor(prev.accentColor);
-          }
-          if (patch.reducedMotion !== undefined) {
-            applyReducedMotion(prev.reducedMotion);
-          }
-          if (patch.highContrast !== undefined) {
-            applyHighContrast(prev.highContrast);
-          }
+          applyPreferences(prev);
         });
         return next;
       });
@@ -477,13 +427,13 @@ export function CocoaPreferencesSheet({
     () => ({
       position: "fixed",
       inset: 0,
-      zIndex: 1000,
+      zIndex: "var(--cocoa-z-sheet)" as CSSProperties["zIndex"],
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
-      background: "rgba(0, 0, 0, 0.32)",
-      backdropFilter: "blur(8px)",
-      WebkitBackdropFilter: "blur(8px)",
+      background: "var(--cocoa-scrim)",
+      backdropFilter: "var(--cocoa-scrim-blur)",
+      WebkitBackdropFilter: "var(--cocoa-scrim-blur)",
       opacity: isVisible ? 1 : 0,
       transition:
         "opacity var(--cocoa-duration-slow) var(--cocoa-ease-out)",
@@ -503,7 +453,7 @@ export function CocoaPreferencesSheet({
       flexDirection: "column",
       background: "var(--cocoa-background-content)",
       boxShadow: "var(--cocoa-shadow-modal)",
-      borderRadius: "var(--cocoa-radius-xl)",
+      borderRadius: "var(--cocoa-radius-lg)",
       transform: isVisible ? "scale(1)" : "scale(0.96)",
       opacity: isVisible ? 1 : 0,
       transition:
@@ -549,12 +499,11 @@ export function CocoaPreferencesSheet({
       left: 12,
       width: 14,
       height: 14,
-      borderRadius: "50%",
-      background: "#ff5f57",
-      border: "1px solid color-mix(in srgb, #ff5f57 70%, black)",
+      borderRadius: "var(--cocoa-radius-full)",
+      background: "var(--cocoa-danger)",
+      border: "1px solid color-mix(in srgb, var(--cocoa-danger) 70%, var(--cocoa-label))",
       cursor: "pointer",
       padding: 0,
-      outline: "none",
       WebkitTapHighlightColor: "transparent",
       zIndex: 1,
     }),
@@ -582,6 +531,7 @@ export function CocoaPreferencesSheet({
         <button
           type="button"
           aria-label="Cerrar preferencias"
+          className="cocoa-focus-ring"
           onClick={onClose}
           style={closeButtonStyle}
         />
@@ -712,22 +662,24 @@ function AppearancePanel({
     margin: "0 0 16px 0",
     padding: "8px 12px",
     borderRadius: "var(--cocoa-radius-md)",
-    background:
-      "color-mix(in srgb, var(--cocoa-systemRed, #ff3b30) 12%, transparent)",
-    color: "var(--cocoa-systemRed, #ff3b30)",
+    background: "var(--cocoa-danger-bg)",
+    border: "1px solid var(--cocoa-danger-border)",
+    color: "var(--cocoa-danger-ink)",
     fontSize: "var(--cocoa-fs-subheadline)",
   };
 
   if (loading) {
     return (
       <div
+        role="status"
+        aria-busy="true"
         style={{
           padding: 24,
           color: "var(--cocoa-label-secondary)",
           fontSize: "var(--cocoa-fs-body)",
         }}
       >
-        Cargando preferencias...
+        Cargando preferencias…
       </div>
     );
   }
@@ -757,20 +709,11 @@ function AppearancePanel({
           />
           <ThemeRadioOption
             value="auto"
-            label="Automatico"
+            label="Automático"
             current={preferences.themePreference}
             onSelect={(value) => onPatch({ themePreference: value })}
           />
         </div>
-      </section>
-
-      <section style={sectionStyle}>
-        <h3 style={sectionTitleStyle}>Color de acento</h3>
-        <CocoaColorWell
-          value={preferences.accentColor}
-          onChange={(color) => onPatch({ accentColor: color })}
-          size="large"
-        />
       </section>
 
       <section style={{ ...sectionStyle, marginBottom: 0 }}>
@@ -871,10 +814,10 @@ interface PlaceholderPanelProps {
 function PlaceholderPanel({ tab }: PlaceholderPanelProps) {
   const TITLES: Record<TabId, string> = {
     general: "General",
-    appearance: "Appearance",
-    notifications: "Notifications",
-    privacy: "Privacy",
-    advanced: "Advanced",
+    appearance: "Apariencia",
+    notifications: "Notificaciones",
+    privacy: "Privacidad",
+    advanced: "Avanzado",
   };
 
   const wrapperStyle: CSSProperties = {
@@ -904,7 +847,7 @@ function PlaceholderPanel({ tab }: PlaceholderPanelProps) {
   return (
     <div style={wrapperStyle}>
       <h3 style={titleStyle}>{TITLES[tab]}</h3>
-      <p style={bodyTextStyle}>Proximamente</p>
+      <p style={bodyTextStyle}>Próximamente</p>
     </div>
   );
 }

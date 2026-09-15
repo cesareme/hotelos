@@ -1,8 +1,17 @@
-import {
-  useMemo,
-  type CSSProperties,
-  type ReactNode
-} from "react";
+// CocoaSegmentedControl — inner views of a page (≤ 4 options; COCOA-22.md
+// §3.3). Same skin as the routed tab strip: control bg, padding 2, radius 8;
+// active 600 label on content bg with the inset control shadow, radius 6;
+// inactive 500 secondary. WAI-ARIA tabs with roving tabindex: arrows / Home /
+// End move AND select (automatic activation — the views are cheap, unlike
+// the routed tabs which activate manually).
+//
+// Focus: the button itself never sets `box-shadow` inline — that would beat
+// the stylesheet's `.cocoa-focus-ring:focus-visible` ring, and the active
+// tab is the only tab stop of the strip. The active surface (content bg +
+// inset control shadow) is a decorative child (`tabSurfaceStyle`) painted
+// under the label, so the Esmeralda ring shows on whichever tab is focused.
+
+import { useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
 export type CocoaSegmentedControlSize = "small" | "regular";
 
@@ -10,6 +19,7 @@ export interface CocoaSegmentedControlOption {
   value: string;
   label: string;
   icon?: ReactNode;
+  disabled?: boolean;
 }
 
 export interface CocoaSegmentedControlProps {
@@ -17,125 +27,128 @@ export interface CocoaSegmentedControlProps {
   onChange: (value: string) => void;
   options: Array<CocoaSegmentedControlOption>;
   size?: CocoaSegmentedControlSize;
+  /** Stretch every segment to share the width (phones). */
+  fullWidth?: boolean;
   className?: string;
   style?: CSSProperties;
   "aria-label"?: string;
 }
 
-const ITEM_PADDING_BY_SIZE: Record<CocoaSegmentedControlSize, string> = {
-  small: "4px 12px",
-  regular: "6px 16px"
-};
+const ITEM_PADDING_BY_SIZE: Record<CocoaSegmentedControlSize, string> = { small: "4px 12px", regular: "6px 16px" };
+const FONT_SIZE_BY_SIZE: Record<CocoaSegmentedControlSize, string> = { small: "var(--cocoa-fs-subheadline)", regular: "var(--cocoa-fs-body)" };
+const ICON_SIZE_BY_SIZE: Record<CocoaSegmentedControlSize, number> = { small: 12, regular: 14 };
+const ITEM_GAP_BY_SIZE: Record<CocoaSegmentedControlSize, number> = { small: 4, regular: 6 };
 
-const FONT_SIZE_BY_SIZE: Record<CocoaSegmentedControlSize, string> = {
-  small: "var(--cocoa-fs-subheadline)",
-  regular: "var(--cocoa-fs-body)"
-};
+/** Next enabled value for a navigation key (pure): wraps; null for other keys. */
+export function nextSegmentValue(current: string, values: readonly string[], key: string): string | null {
+  if (values.length === 0) return null;
+  const index = Math.max(0, values.indexOf(current));
+  switch (key) {
+    case "ArrowRight":
+    case "ArrowDown":
+      return values[(index + 1) % values.length];
+    case "ArrowLeft":
+    case "ArrowUp":
+      return values[(index - 1 + values.length) % values.length];
+    case "Home":
+      return values[0];
+    case "End":
+      return values[values.length - 1];
+    default:
+      return null;
+  }
+}
 
-const ICON_SIZE_BY_SIZE: Record<CocoaSegmentedControlSize, number> = {
-  small: 12,
-  regular: 14
-};
+/** Radius of a tab inside the 2 px-padded strip (radius 8 − 2). */
+export const TAB_ITEM_RADIUS = "calc(var(--cocoa-radius-md) - 2px)";
 
-const ITEM_GAP_BY_SIZE: Record<CocoaSegmentedControlSize, number> = {
-  small: 4,
-  regular: 6
-};
+/**
+ * Active surface of a tab (pure): content background + inset control shadow
+ * on an absolutely positioned, decorative child; fades with `opacity` so the
+ * switch keeps the 200 ms transition. Sits at z-index −1 inside the button's
+ * own stacking context (`isolation: isolate`), i.e. under the label and
+ * above the strip.
+ */
+export function tabSurfaceStyle(isActive: boolean): CSSProperties {
+  return {
+    position: "absolute",
+    inset: 0,
+    borderRadius: TAB_ITEM_RADIUS,
+    background: "var(--cocoa-background-content)",
+    boxShadow: "inset var(--cocoa-shadow-control)",
+    opacity: isActive ? 1 : 0,
+    transition: "opacity var(--cocoa-duration-base) var(--cocoa-ease-out)",
+    pointerEvents: "none",
+    zIndex: -1
+  };
+}
 
-export function CocoaSegmentedControl({
-  value,
-  onChange,
-  options,
-  size = "regular",
-  className,
-  style,
-  "aria-label": ariaLabel
-}: CocoaSegmentedControlProps) {
-  const itemPadding = ITEM_PADDING_BY_SIZE[size];
-  const fontSize = FONT_SIZE_BY_SIZE[size];
+/** Button style of a segment (pure): NO `boxShadow` and a transparent background — both live on the surface child. */
+export function segmentItemStyle(input: { isActive: boolean; disabled?: boolean; size: CocoaSegmentedControlSize; fullWidth: boolean }): CSSProperties {
+  const { isActive, disabled = false, size, fullWidth } = input;
+  return {
+    position: "relative",
+    isolation: "isolate",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: ITEM_GAP_BY_SIZE[size],
+    padding: ITEM_PADDING_BY_SIZE[size],
+    flex: fullWidth ? 1 : undefined,
+    borderRadius: TAB_ITEM_RADIUS,
+    border: "1px solid transparent",
+    background: "transparent",
+    color: isActive ? "var(--cocoa-label)" : "var(--cocoa-label-secondary)",
+    fontFamily: "inherit",
+    fontSize: FONT_SIZE_BY_SIZE[size],
+    fontWeight: (isActive ? "var(--cocoa-fw-semibold)" : "var(--cocoa-fw-medium)") as CSSProperties["fontWeight"],
+    letterSpacing: "var(--cocoa-tracking-tight)",
+    lineHeight: 1,
+    whiteSpace: "nowrap",
+    cursor: disabled ? "not-allowed" : isActive ? "default" : "pointer",
+    opacity: disabled ? 0.4 : 1,
+    userSelect: "none",
+    WebkitAppearance: "none",
+    appearance: "none",
+    transition: "color var(--cocoa-duration-base) var(--cocoa-ease-out)"
+  };
+}
+
+export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, className, style, "aria-label": ariaLabel }: CocoaSegmentedControlProps) {
   const iconSize = ICON_SIZE_BY_SIZE[size];
-  const itemGap = ITEM_GAP_BY_SIZE[size];
+  const refs = useRef(new Map<string, HTMLButtonElement>());
+  const enabledValues = useMemo(() => options.filter((opt) => !opt.disabled).map((opt) => opt.value), [options]);
 
-  const containerStyle = useMemo<CSSProperties>(() => {
-    const base: CSSProperties = {
-      display: "flex",
+  const containerStyle = useMemo<CSSProperties>(
+    () => ({
+      display: fullWidth ? "flex" : "inline-flex",
       alignItems: "stretch",
       padding: 2,
       background: "var(--cocoa-background-control)",
       borderRadius: "var(--cocoa-radius-md)",
       fontFamily: "var(--cocoa-font)",
+      maxWidth: "100%",
+      overflowX: "auto",
       WebkitAppearance: "none",
-      appearance: "none"
-    };
-    if (style) {
-      Object.assign(base, style);
-    }
-    return base;
-  }, [style]);
+      appearance: "none",
+      ...style
+    }),
+    [fullWidth, style]
+  );
 
-  const itemRadius = "calc(var(--cocoa-radius-md) - 2px)";
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const target = nextSegmentValue(value, enabledValues, event.key);
+    if (!target) return;
+    event.preventDefault();
+    onChange(target);
+    refs.current.get(target)?.focus();
+  };
 
   return (
-    <div
-      role="tablist"
-      aria-label={ariaLabel}
-      className={className}
-      style={containerStyle}
-    >
+    <div role="tablist" aria-label={ariaLabel} className={["cocoa-segmented", className].filter(Boolean).join(" ")} style={containerStyle} onKeyDown={onKeyDown} data-cocoa="segmented" data-size={size}>
       {options.map((opt) => {
         const isActive = opt.value === value;
-
-        const itemStyle: CSSProperties = {
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          gap: itemGap,
-          padding: itemPadding,
-          borderRadius: itemRadius,
-          border: "1px solid transparent",
-          background: isActive
-            ? "var(--cocoa-background-content)"
-            : "transparent",
-          boxShadow: isActive ? "inset var(--cocoa-shadow-control)" : "none",
-          color: isActive
-            ? "var(--cocoa-label)"
-            : "var(--cocoa-label-secondary)",
-          fontFamily: "inherit",
-          fontSize,
-          fontWeight: isActive
-            ? ("var(--cocoa-fw-semibold)" as unknown as number)
-            : ("var(--cocoa-fw-medium)" as unknown as number),
-          letterSpacing: "var(--cocoa-tracking-tight)",
-          lineHeight: 1,
-          whiteSpace: "nowrap",
-          cursor: isActive ? "default" : "pointer",
-          userSelect: "none",
-          WebkitAppearance: "none",
-          appearance: "none",
-          transition:
-            "background var(--cocoa-duration-base) var(--cocoa-ease-out), color var(--cocoa-duration-base) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-base) var(--cocoa-ease-out)"
-        };
-
-        const handleClick = () => {
-          if (isActive) return;
-          onChange(opt.value);
-        };
-
-        const iconNode = opt.icon ? (
-          <span
-            aria-hidden="true"
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: iconSize,
-              height: iconSize,
-              flexShrink: 0
-            }}
-          >
-            {opt.icon}
-          </span>
-        ) : null;
+        const itemStyle = segmentItemStyle({ isActive, disabled: opt.disabled, size, fullWidth });
 
         return (
           <button
@@ -143,12 +156,26 @@ export function CocoaSegmentedControl({
             type="button"
             role="tab"
             aria-selected={isActive}
+            aria-disabled={opt.disabled || undefined}
+            disabled={opt.disabled}
             tabIndex={isActive ? 0 : -1}
             className="cocoa-focus-ring"
             style={itemStyle}
-            onClick={handleClick}
+            ref={(element) => {
+              if (element) refs.current.set(opt.value, element);
+              else refs.current.delete(opt.value);
+            }}
+            onClick={() => {
+              if (isActive || opt.disabled) return;
+              onChange(opt.value);
+            }}
           >
-            {iconNode}
+            <span aria-hidden="true" className="c22-tab__surface" style={tabSurfaceStyle(isActive)} />
+            {opt.icon ? (
+              <span aria-hidden="true" style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: iconSize, height: iconSize, flexShrink: 0 }}>
+                {opt.icon}
+              </span>
+            ) : null}
             <span>{opt.label}</span>
           </button>
         );

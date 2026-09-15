@@ -36,8 +36,8 @@ const items = NAV_TREE.categories.flatMap((category) => category.items);
 const tabs = items.flatMap((item) => item.tabs);
 
 describe("BACKOFFICE_ROUTES · one URL per screen of the tree", () => {
-  it("registers the 166 URLs of the tree in tree order, the base URL of every container before its tabs", () => {
-    assert.equal(BACKOFFICE_ROUTES.length, 166);
+  it("registers the 167 URLs of the tree in tree order, the base URL of every container before its tabs", () => {
+    assert.equal(BACKOFFICE_ROUTES.length, 167);
     assert.deepEqual(BACKOFFICE_ROUTES.map((route) => route.path), allUrls());
     for (const item of items) {
       const base = BACKOFFICE_ROUTES.findIndex((route) => route.path === item.url);
@@ -57,7 +57,7 @@ describe("BACKOFFICE_ROUTES · one URL per screen of the tree", () => {
       const sample = tab.url.replace(/:[A-Za-z0-9_]+/g, "abc");
       assert.equal(routeForPathname(sample)?.screen, tab.screenKey, tab.url);
     }
-    assert.equal(DEV_ONLY_ROUTES.length, 20);
+    assert.equal(DEV_ONLY_ROUTES.length, 21);
     assert.ok(DEV_ONLY_ROUTES.every((route) => route.path.startsWith("/desarrollo/") && route.devOnly));
     assert.equal(PUBLIC_ROUTES.length, 2);
     assert.deepEqual(PUBLIC_ROUTES.map((route) => route.path), ["/acceso", "/acceso/recuperar-contrasena"]);

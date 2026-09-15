@@ -46,8 +46,8 @@ const overlayStyle: CSSProperties = {
   justifyContent: "center",
   // 25% from the top of the viewport per the Mac signature look.
   paddingTop: "25vh",
-  background: "rgba(0, 0, 0, 0.32)",
-  zIndex: 1000
+  background: "var(--cocoa-scrim)",
+  zIndex: "var(--cocoa-z-modal)" as CSSProperties["zIndex"]
 };
 
 const panelBaseStyle: CSSProperties = {
@@ -55,9 +55,7 @@ const panelBaseStyle: CSSProperties = {
   maxWidth: 640,
   margin: "0 16px",
   background: "var(--cocoa-background-content)",
-  WebkitBackdropFilter: "blur(20px)",
-  backdropFilter: "blur(20px)",
-  borderRadius: "var(--cocoa-radius-xl)",
+  borderRadius: "var(--cocoa-radius-lg)",
   boxShadow: "var(--cocoa-shadow-modal)",
   border: "1px solid var(--cocoa-separator)",
   overflow: "hidden",
@@ -298,13 +296,13 @@ export function CocoaCommandPalette({
                   const rowStyle: CSSProperties = {
                     ...itemRowBase,
                     background: active ? "var(--cocoa-accent)" : "transparent",
-                    color: active ? "#FFFFFF" : "inherit"
+                    color: active ? "var(--cocoa-accent-contrast)" : "inherit"
                   };
                   const subStyle: CSSProperties = active
-                    ? { ...categoryStyle, color: "rgba(255,255,255,0.85)" }
+                    ? { ...categoryStyle, color: "var(--cocoa-accent-contrast)", opacity: 0.85 }
                     : categoryStyle;
                   const kbdStyle: CSSProperties = active
-                    ? { ...shortcutStyle, color: "rgba(255,255,255,0.85)" }
+                    ? { ...shortcutStyle, color: "var(--cocoa-accent-contrast)", opacity: 0.85 }
                     : shortcutStyle;
                   return (
                     <div

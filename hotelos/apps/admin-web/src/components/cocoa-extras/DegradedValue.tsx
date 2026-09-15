@@ -15,10 +15,13 @@
 //                                   that only accepts numbers
 //   - <DegradedBanner>              header chip "N indicadores no disponibles"
 //
-// Visuals use Cocoa tokens only (label-tertiary for the attenuated value,
-// warning tokens for the banner) so light/dark themes pick up automatically.
+// Visuals use Cocoa tokens only (label-tertiary for the attenuated value; the
+// banner is a `CocoaBadge tone="warning" variant="tinted"`, i.e. the AA-safe
+// warning INK on the warning wash — the hue itself was 1.96:1 at 10 px) so
+// light/dark themes pick up automatically.
 
 import type { CSSProperties, ReactNode } from "react";
+import { CocoaBadge } from "../cocoa/CocoaBadge";
 import { CocoaCard } from "../cocoa/CocoaCard";
 
 /** Tooltip / accessible text for a degraded counter. */
@@ -128,32 +131,21 @@ export function DegradedCard({ label, degraded, title, children }: DegradedCardP
   );
 }
 
-const bannerStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  padding: "2px var(--cocoa-space-2)",
-  fontSize: "var(--cocoa-fs-caption)",
-  fontWeight: 600,
-  letterSpacing: "var(--cocoa-tracking-wide)",
-  textTransform: "uppercase",
-  color: "var(--cocoa-warning)",
-  background: "var(--cocoa-warning-bg)",
-  border: "1px solid var(--cocoa-warning-border)",
-  borderRadius: "var(--cocoa-radius-sm)",
-  lineHeight: 1.4,
-  cursor: "help"
-};
+/** Copy of the header chip (pure): «1 indicador no disponible» · «N indicadores no disponibles». */
+export function degradedBannerLabel(count: number): string {
+  return `${count} ${count === 1 ? "indicador no disponible" : "indicadores no disponibles"}`;
+}
 
-/** Discreet header chip; renders nothing when `degraded` is empty. */
+/** Discreet header chip; renders nothing when `degraded` is empty. Announced once (role=status) when it appears. */
 export function DegradedBanner({ degraded }: { degraded: DegradedList }) {
   const labels = degraded ?? [];
   const count = labels.length;
   if (count === 0) return null;
   const title = `${DEGRADED_HINT}\n${labels.join("\n")}`;
   return (
-    <span role="status" title={title} style={bannerStyle}>
-      {count} {count === 1 ? "indicador no disponible" : "indicadores no disponibles"}
-    </span>
+    <CocoaBadge tone="warning" variant="tinted" role="status" title={title} style={{ cursor: "help" }}>
+      {degradedBannerLabel(count)}
+    </CocoaBadge>
   );
 }
 

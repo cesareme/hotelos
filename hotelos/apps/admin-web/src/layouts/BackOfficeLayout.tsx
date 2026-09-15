@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactElement, type ReactNode } from "react";
 import { SIDEBAR_ELEMENT_ID, Sidebar } from "../navigation/Sidebar";
 import { devQueryFrom, findByScreen } from "../navigation/nav-tree";
 import { useNavGate } from "../navigation/useEnabledModules";
@@ -9,6 +9,8 @@ import { CommandPalette } from "../components/CommandPalette";
 import type { SearchHit } from "../services/searchApi";
 import { GuideProvider } from "../components/guide/GuideProvider";
 import { CocoaToolbar } from "../components/cocoa/CocoaToolbar";
+import { CocoaButton, type CocoaButtonProps } from "../components/cocoa/CocoaButton";
+import { TAP_TARGET_PX, useCoarsePointer } from "../lib/useCoarsePointer";
 import { useSidebarRecent } from "../hooks/useSidebarRecent";
 import { CocoaSplitView } from "../components/cocoa/CocoaSplitView";
 import { CocoaToolbarSearchField } from "../components/cocoa-extras/CocoaToolbarSearchField";
@@ -53,11 +55,142 @@ const LOGIN_PATH = pathForScreen("LoginScreen") ?? "/acceso";
 // screen under 900px for the drawer); under COMPACT_BREAKPOINT_PX the layout
 // renders the Sidebar as a drawer of its own (`.bo-sidebar.open` + `.bo-scrim`)
 // instead of the empty drawer of CocoaSplitView.
+// Cocoa 22 (COCOA-22.md §2.3, §3.1): the phone drawer and its scrim take the
+// z-index / scrim / shadow / width tokens (styles.css still positions them
+// off-canvas in @layer cocoa-legacy, so these unlayered rules win); the
+// property switcher truncates its name inside CocoaButton's child span; the
+// raw menu / listbox rows get their hover wash here.
 const LAYOUT_CSS = `
 .cocoa-shell .cocoa-sidebar-host { display: flex; min-height: 0; height: 100%; }
 .cocoa-shell .cocoa-sidebar-host .bo-sidebar { position: relative; top: auto; left: auto; width: 100%; height: 100%; transform: none; box-shadow: none; z-index: auto; }
 .cocoa-shell .cocoa-sidebar-host .bo-sidebar-close { display: none; }
+.cocoa-shell > .bo-sidebar { z-index: var(--cocoa-z-sidebar); width: min(86vw, var(--cocoa-drawer-width)); box-shadow: var(--cocoa-shadow-modal); }
+.cocoa-shell > .bo-scrim { z-index: calc(var(--cocoa-z-sidebar) - 1); background: var(--cocoa-scrim); -webkit-backdrop-filter: var(--cocoa-scrim-blur); backdrop-filter: var(--cocoa-scrim-blur); }
+.cocoa-shell .cocoa-toolbar-property > span { min-width: 0; overflow: hidden; }
+.cocoa-shell .cocoa-menu-item { transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.cocoa-shell .cocoa-menu-item:hover { background: var(--cocoa-fill-tertiary); }
 `;
+
+// --- Toolbar chrome tokens -----------------------------------------------------
+
+/** Width of the square toolbar controls on a mouse (spec §3.1); 44 × 44 on a coarse pointer. */
+const TOOLBAR_ICON_PX = 32;
+
+/** 12 px 500 text of the toolbar buttons (measured on the canon: theme toggle, «Nueva reserva»). */
+const toolbarTextButtonStyle: CSSProperties = { fontSize: "var(--cocoa-fs-callout)", paddingInline: 10 };
+
+type ToolbarIconButtonProps = Omit<CocoaButtonProps, "variant" | "tone" | "size" | "aria-label"> & { "aria-label": string };
+
+/**
+ * Square toolbar control (menu, search, bell, help): a bordered neutral
+ * CocoaButton without horizontal padding whose width follows the pointer —
+ * 32 px on a mouse, the 44 px tap target on touch (measured before: 32 × 44,
+ * the width failed the target). `aria-label` is mandatory: icon only.
+ */
+function ToolbarIconButton({ style, ...rest }: ToolbarIconButtonProps) {
+  const coarse = useCoarsePointer();
+  return (
+    <CocoaButton
+      variant="bordered"
+      tone="neutral"
+      size="large"
+      {...rest}
+      style={{ paddingInline: 0, minWidth: coarse ? TAP_TARGET_PX : TOOLBAR_ICON_PX, ...style }}
+    />
+  );
+}
+
+// Floating menus of the toolbar (property list, user menu): the popover
+// surface of the spec — content bg, hairline, radius 8, popover shadow,
+// dropdown layer. `left`/`right`/`minWidth` are set per menu.
+const dropdownSurfaceStyle: CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 4px)",
+  padding: 4,
+  background: "var(--cocoa-background-content)",
+  border: "1px solid var(--cocoa-separator)",
+  borderRadius: "var(--cocoa-radius-md)",
+  boxShadow: "var(--cocoa-shadow-popover)",
+  fontFamily: "var(--cocoa-font)",
+  fontSize: "var(--cocoa-fs-body)",
+  color: "var(--cocoa-label)",
+  zIndex: "var(--cocoa-z-dropdown)" as CSSProperties["zIndex"]
+};
+
+// Rows of those menus stay raw <button>s (role="menuitem" / "option" and
+// aria-selected are not props of CocoaButton yet); they share the focus ring
+// class and the hover wash of LAYOUT_CSS.
+const menuItemStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  minHeight: 32,
+  textAlign: "left",
+  padding: "6px 8px",
+  background: "transparent",
+  border: "none",
+  borderRadius: "var(--cocoa-radius-sm)",
+  color: "var(--cocoa-label)",
+  font: "inherit",
+  cursor: "pointer"
+};
+
+// Shell banners under the toolbar (setup pending, invalid property): tinted
+// wash of their tone (§3.1), hairline below, body text, actions in a row.
+const shellBannerStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: "var(--cocoa-space-3)",
+  padding: "var(--cocoa-space-2) var(--cocoa-space-4)",
+  borderBottom: "1px solid var(--cocoa-separator)",
+  color: "var(--cocoa-label)",
+  fontFamily: "var(--cocoa-font)",
+  fontSize: "var(--cocoa-fs-body)"
+};
+
+const kbdStyle: CSSProperties = {
+  font: "inherit",
+  fontSize: "var(--cocoa-fs-subheadline)",
+  padding: "1px 4px",
+  border: "1px solid var(--cocoa-separator)",
+  borderRadius: "var(--cocoa-radius-sm)"
+};
+
+// Unread count pinned to the bell's corner (it lives in the aria-hidden icon
+// slot of CocoaButton; the count travels in the button's accessible name).
+const unreadBadgeStyle: CSSProperties = {
+  position: "absolute",
+  top: -5,
+  right: -5,
+  minWidth: 16,
+  height: 16,
+  padding: "0 4px",
+  borderRadius: "var(--cocoa-radius-full)",
+  background: "var(--cocoa-danger)",
+  color: "var(--cocoa-accent-contrast)",
+  fontSize: "var(--cocoa-fs-caption)",
+  fontWeight: 700,
+  lineHeight: "16px",
+  textAlign: "center",
+  boxSizing: "border-box",
+  fontVariantNumeric: "tabular-nums"
+};
+
+const avatarInitialsStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 24,
+  height: 24,
+  borderRadius: "var(--cocoa-radius-full)",
+  background: "var(--cocoa-accent)",
+  color: "var(--cocoa-accent-contrast)",
+  fontSize: "var(--cocoa-fs-subheadline)",
+  fontWeight: 600,
+  flexShrink: 0
+};
 
 // Map a SearchHit to the Tanda 5 URL of the screen the API points it to
 // (`hit.screen`, the same key the `hotelos-nav` below carries): URLs of the
@@ -149,59 +282,34 @@ function PropertySwitcher({ compact = false }: { compact?: boolean }) {
       style={{ position: "relative", display: "inline-flex", minWidth: 0, flex: compact ? "1 1 auto" : "0 0 auto" }}
       data-tour="property"
     >
-      <button
-        type="button"
+      <CocoaButton
+        variant="bordered"
+        tone="neutral"
+        size="large"
+        className="cocoa-toolbar-property"
         onClick={() => setOpen((value) => !value)}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-label={`Propiedad activa: ${active.propertyName}. Cambiar propiedad`}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          minWidth: 0,
-          maxWidth: "100%",
-          padding: "4px 10px",
-          background: "transparent",
-          border: "1px solid var(--cocoa-separator)",
-          borderRadius: "var(--cocoa-radius-md)",
-          color: "var(--cocoa-label)",
-          font: "inherit",
-          fontSize: "var(--cocoa-fs-body)",
-          cursor: "pointer"
-        }}
+        icon={
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden>
+            <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        }
+        iconPosition="right"
+        style={{ minWidth: 0, maxWidth: "100%", paddingInline: 10, fontSize: "var(--cocoa-fs-body)" }}
       >
-        <span style={{ flex: "1 1 auto", minWidth: 0, maxWidth: compact ? "none" : 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <span style={{ display: "block", minWidth: 0, maxWidth: compact ? "none" : 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {active.propertyName}
         </span>
-        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden>
-          <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      </button>
+      </CocoaButton>
       {open ? (
-        <div
-          role="listbox"
-          aria-label="Cambiar propiedad"
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            left: 0,
-            minWidth: 280,
-            maxHeight: 360,
-            overflowY: "auto",
-            background: "var(--cocoa-background-content)",
-            border: "1px solid var(--cocoa-separator)",
-            borderRadius: "var(--cocoa-radius-md)",
-            boxShadow: "var(--cocoa-shadow-modal)",
-            padding: 4,
-            zIndex: 100
-          }}
-        >
+        <div role="listbox" aria-label="Cambiar propiedad" style={{ ...dropdownSurfaceStyle, left: 0, minWidth: 280, maxHeight: 360, overflowY: "auto" }}>
           {loading ? (
-            <div style={{ padding: 8, color: "var(--cocoa-label-secondary)" }}>Cargando…</div>
+            <div role="status" style={{ padding: 8, color: "var(--cocoa-label-secondary)" }}>Cargando…</div>
           ) : null}
           {error ? (
-            <div style={{ padding: 8, color: "var(--cocoa-danger, #c0392b)" }}>{error}</div>
+            <div role="alert" style={{ padding: 8, color: "var(--cocoa-danger-ink)" }}>{error}</div>
           ) : null}
           {!loading && !error && properties.length === 0 ? (
             <div style={{ padding: 8, color: "var(--cocoa-label-secondary)" }}>Sin propiedades</div>
@@ -215,25 +323,19 @@ function PropertySwitcher({ compact = false }: { compact?: boolean }) {
                 type="button"
                 role="option"
                 aria-selected={selected}
+                className="cocoa-menu-item cocoa-focus-ring"
                 onClick={() => choose(property)}
                 style={{
-                  display: "flex",
+                  ...menuItemStyle,
                   flexDirection: "column",
                   alignItems: "flex-start",
                   gap: 2,
-                  width: "100%",
-                  textAlign: "left",
-                  padding: "6px 8px",
-                  background: selected ? "var(--cocoa-accent)" : "transparent",
-                  color: selected ? "var(--cocoa-accent-contrast)" : "inherit",
-                  border: "none",
-                  borderRadius: "var(--cocoa-radius-sm)",
-                  font: "inherit",
-                  cursor: "pointer"
+                  background: selected ? "var(--cocoa-accent-bg)" : "transparent",
+                  color: selected ? "var(--cocoa-tone-accent-text)" : "var(--cocoa-label)"
                 }}
               >
                 <span style={{ fontWeight: 600 }}>{property.name}</span>
-                <span style={{ fontSize: "var(--cocoa-fs-caption)", opacity: 0.8 }}>
+                <span style={{ fontSize: "var(--cocoa-fs-caption)", color: selected ? "inherit" : "var(--cocoa-label-secondary)" }}>
                   {property.organizationName ?? property.organizationId}
                   {location ? ` · ${location}` : ""}
                 </span>
@@ -288,36 +390,24 @@ function ThemeToggle() {
 
   // The toolbar previously used a 28x28 transparent button which made the
   // toggle effectively invisible — users reported "the dark mode option
-  // disappeared". We now ship the same control with a visible border, a
-  // larger touch target, and a label so it's discoverable at a glance.
+  // disappeared". The control keeps a visible border, the 32 px row height
+  // and a label so it's discoverable at a glance (bordered neutral, like the
+  // rest of the toolbar row). The wrapper carries the guide hook.
   return (
-    <button
-      type="button"
-      onClick={() => setTheme(cycleThemePreference())}
-      aria-label="Cambiar tema (claro/oscuro)"
-      title={themeMeta[theme].label}
-      data-tour="theme-toggle"
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 6,
-        height: 32,
-        padding: "0 10px",
-        background: "var(--cocoa-background-control)",
-        border: "1px solid var(--cocoa-separator)",
-        borderRadius: "var(--cocoa-radius-md)",
-        color: "var(--cocoa-label)",
-        font: "inherit",
-        fontSize: 12,
-        fontWeight: 500,
-        cursor: "pointer",
-        whiteSpace: "nowrap"
-      }}
-    >
-      <span style={{ display: "inline-flex" }}>{themeMeta[theme].icon}</span>
-      <span>{THEME_SHORT_LABELS[theme]}</span>
-    </button>
+    <span data-tour="theme-toggle" style={{ display: "inline-flex", flexShrink: 0 }}>
+      <CocoaButton
+        variant="bordered"
+        tone="neutral"
+        size="large"
+        icon={themeMeta[theme].icon}
+        onClick={() => setTheme(cycleThemePreference())}
+        aria-label="Cambiar tema (claro/oscuro)"
+        title={themeMeta[theme].label}
+        style={toolbarTextButtonStyle}
+      >
+        {THEME_SHORT_LABELS[theme]}
+      </CocoaButton>
+    </span>
   );
 }
 
@@ -404,73 +494,21 @@ function SetupPendingBanner(props: { activeScreen: string }) {
   }
 
   return (
-    <div
-      role="region"
-      aria-label="Puesta en marcha pendiente"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "8px 16px",
-        background: "var(--cocoa-accent-soft, rgba(10, 132, 255, 0.12))",
-        borderBottom: "1px solid var(--cocoa-separator)",
-        color: "var(--cocoa-label)",
-        font: "inherit",
-        fontSize: "var(--cocoa-fs-body)"
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden>
+    <div role="region" aria-label="Puesta en marcha pendiente" style={{ ...shellBannerStyle, background: "var(--cocoa-accent-bg)" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: "var(--cocoa-space-2)", minWidth: 0 }}>
+        <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden style={{ flexShrink: 0, color: "var(--cocoa-tone-accent-text)" }}>
           <circle cx="9" cy="9" r="7.25" stroke="currentColor" strokeWidth="1.5" />
           <path d="M9 5v4.5l2.5 2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
         <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{message}</span>
       </div>
-      <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-        <button
-          type="button"
-          onClick={openChecklist}
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 6,
-            height: 28,
-            padding: "0 12px",
-            background: "var(--cocoa-accent)",
-            color: "var(--cocoa-accent-contrast)",
-            border: "none",
-            borderRadius: "var(--cocoa-radius-md)",
-            font: "inherit",
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: "pointer",
-            whiteSpace: "nowrap"
-          }}
-        >
+      <div style={{ display: "flex", gap: "var(--cocoa-space-2)", flexShrink: 0 }}>
+        <CocoaButton variant="filled" tone="accent" onClick={openChecklist}>
           Ver qué falta
-        </button>
-        <button
-          type="button"
-          onClick={dismiss}
-          aria-label="Ocultar este aviso durante la sesión"
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            height: 28,
-            padding: "0 10px",
-            background: "transparent",
-            border: "1px solid var(--cocoa-separator)",
-            borderRadius: "var(--cocoa-radius-md)",
-            color: "var(--cocoa-label)",
-            font: "inherit",
-            fontSize: 12,
-            cursor: "pointer",
-            whiteSpace: "nowrap"
-          }}
-        >
+        </CocoaButton>
+        <CocoaButton variant="bordered" tone="neutral" onClick={dismiss} aria-label="Ocultar este aviso durante la sesión">
           Ahora no
-        </button>
+        </CocoaButton>
       </div>
     </div>
   );
@@ -522,150 +560,66 @@ function ActivePropertyInvalidBanner() {
       ? "Tu usuario ya no tiene propiedades asignadas. Contacta con un administrador."
       : "La propiedad activa no está disponible para tu usuario. Selecciona otra propiedad.";
 
-  const actionButtonStyle = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    height: 28,
-    padding: "0 12px",
-    border: "none",
-    borderRadius: "var(--cocoa-radius-md)",
-    font: "inherit",
-    fontSize: 12,
-    fontWeight: 600,
-    cursor: "pointer",
-    whiteSpace: "nowrap"
-  } as const;
-
   return (
-    <div
-      role="alert"
-      aria-label="Propiedad activa no disponible"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "8px 16px",
-        background: "var(--cocoa-warning-soft, rgba(255, 159, 10, 0.14))",
-        borderBottom: "1px solid var(--cocoa-separator)",
-        color: "var(--cocoa-label)",
-        font: "inherit",
-        fontSize: "var(--cocoa-fs-body)"
-      }}
-    >
+    <div role="alert" aria-label="Propiedad activa no disponible" style={{ ...shellBannerStyle, background: "var(--cocoa-warning-bg)" }}>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{message}</span>
-      <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+      <div style={{ display: "flex", gap: "var(--cocoa-space-2)", flexShrink: 0 }}>
         {notice === "unavailable" ? (
-          <button
-            type="button"
-            onClick={() => openPropertySwitcher()}
-            style={{
-              ...actionButtonStyle,
-              background: "var(--cocoa-accent)",
-              color: "var(--cocoa-accent-contrast)"
-            }}
-          >
+          <CocoaButton variant="filled" tone="accent" onClick={() => openPropertySwitcher()}>
             Cambiar propiedad
-          </button>
+          </CocoaButton>
         ) : null}
-        <button
-          type="button"
-          onClick={() => setNotice(null)}
-          style={{
-            ...actionButtonStyle,
-            background: "transparent",
-            border: "1px solid var(--cocoa-separator)",
-            color: "var(--cocoa-label)"
-          }}
-        >
+        <CocoaButton variant="bordered" tone="neutral" onClick={() => setNotice(null)}>
           Cerrar
-        </button>
+        </CocoaButton>
       </div>
     </div>
   );
 }
 
-// Shared visual contract of the toolbar icon buttons (theme toggle, bell,
-// help): same height, border and radius so the right slot reads as one row.
-const toolbarIconButtonStyle = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  flexShrink: 0,
-  width: 32,
-  height: 32,
-  background: "var(--cocoa-background-control)",
-  border: "1px solid var(--cocoa-separator)",
-  borderRadius: "var(--cocoa-radius-md)",
-  color: "var(--cocoa-label)",
-  cursor: "pointer",
-  position: "relative"
-} as const;
-
 function NotificationsBell() {
   // Tanda 5 (chrome): the bell is wired to the session's notification feed
   // (GET /notifications through CocoaGlobalProvider) and opens the Cocoa
-  // notification center; the badge shows the unread count.
+  // notification center; the badge shows the unread count (also in the name).
   const { unreadCount, openCenter } = useCocoaNotifications();
   const label = unreadCount > 0 ? `Avisos (${unreadCount} sin leer)` : "Avisos";
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      data-tour="notifications"
-      onClick={openCenter}
-      style={toolbarIconButtonStyle}
-    >
-      <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden>
-        <path d="M14 11V8a5 5 0 1 0-10 0v3l-1.5 2h13L14 11Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M7 15a2 2 0 0 0 4 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      </svg>
-      {unreadCount > 0 ? (
-        <span
-          aria-hidden
-          style={{
-            position: "absolute",
-            top: -5,
-            right: -5,
-            minWidth: 16,
-            height: 16,
-            padding: "0 4px",
-            borderRadius: 8,
-            background: "var(--cocoa-danger, #ff3b30)",
-            color: "#fff",
-            fontSize: 10,
-            fontWeight: 700,
-            lineHeight: "16px",
-            textAlign: "center",
-            boxSizing: "border-box"
-          }}
-        >
-          {unreadCount > 99 ? "99+" : unreadCount}
-        </span>
-      ) : null}
-    </button>
+    <span data-tour="notifications" style={{ display: "inline-flex", flexShrink: 0 }}>
+      <ToolbarIconButton
+        aria-label={label}
+        title={label}
+        onClick={openCenter}
+        icon={
+          <>
+            <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden>
+              <path d="M14 11V8a5 5 0 1 0-10 0v3l-1.5 2h13L14 11Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M7 15a2 2 0 0 0 4 0" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            </svg>
+            {unreadCount > 0 ? <span style={unreadBadgeStyle}>{unreadCount > 99 ? "99+" : unreadCount}</span> : null}
+          </>
+        }
+      />
+    </span>
   );
 }
 
 function HelpButton() {
   // «?» opens the help center (tours, task guides, persona guides, articles).
   return (
-    <button
-      type="button"
-      aria-label="Centro de ayuda"
-      title="Centro de ayuda"
-      data-tour="help"
-      onClick={() => openHelpCenter()}
-      style={toolbarIconButtonStyle}
-    >
-      <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden>
-        <circle cx="9" cy="9" r="6.75" stroke="currentColor" strokeWidth="1.5" />
-        <path d="M7.1 7a1.9 1.9 0 0 1 3.7.6c0 1.3-1.8 1.6-1.8 2.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        <circle cx="9" cy="12.6" r="0.85" fill="currentColor" />
-      </svg>
-    </button>
+    <span data-tour="help" style={{ display: "inline-flex", flexShrink: 0 }}>
+      <ToolbarIconButton
+        aria-label="Centro de ayuda"
+        title="Centro de ayuda"
+        onClick={() => openHelpCenter()}
+        icon={
+          <svg width="16" height="16" viewBox="0 0 18 18" fill="none" aria-hidden>
+            <circle cx="9" cy="9" r="6.75" stroke="currentColor" strokeWidth="1.5" />
+            <path d="M7.1 7a1.9 1.9 0 0 1 3.7.6c0 1.3-1.8 1.6-1.8 2.7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+            <circle cx="9" cy="12.6" r="0.85" fill="currentColor" />
+          </svg>
+        }
+      />
+    </span>
   );
 }
 
@@ -686,21 +640,6 @@ export function logoutFromShell(): void {
   if (window.location.pathname !== LOGIN_PATH) window.history.replaceState(null, "", LOGIN_PATH);
   clearSession();
 }
-
-const menuItemStyle = {
-  display: "flex",
-  alignItems: "center",
-  gap: 8,
-  width: "100%",
-  textAlign: "left",
-  padding: "6px 8px",
-  background: "transparent",
-  border: "none",
-  borderRadius: "var(--cocoa-radius-sm)",
-  color: "inherit",
-  font: "inherit",
-  cursor: "pointer"
-} as const;
 
 /** `compact`: initials only, and the theme + help entries move into the menu (the phone toolbar has no room for their buttons). */
 function UserAvatar({ compact = false }: { compact?: boolean }) {
@@ -732,73 +671,35 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
 
   return (
     <div ref={wrapRef} style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}>
-      <button
-        type="button"
+      <CocoaButton
+        variant="bordered"
+        tone="neutral"
+        size="large"
         aria-label="Menú de usuario"
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 6,
-          padding: compact ? 2 : "2px 8px 2px 2px",
-          background: "transparent",
-          border: "1px solid var(--cocoa-separator)",
-          borderRadius: "var(--cocoa-radius-full)",
-          color: "var(--cocoa-label)",
-          font: "inherit",
-          fontSize: "var(--cocoa-fs-body)",
-          cursor: "pointer"
-        }}
+        style={{ borderRadius: "var(--cocoa-radius-full)", paddingInline: 3, paddingRight: compact ? 3 : 10, fontSize: "var(--cocoa-fs-body)" }}
       >
-        <span
-          aria-hidden
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 24,
-            height: 24,
-            borderRadius: "50%",
-            background: "var(--cocoa-accent)",
-            color: "var(--cocoa-accent-contrast)",
-            fontSize: 11,
-            fontWeight: 600
-          }}
-        >
-          {displayInitials}
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+          <span aria-hidden style={avatarInitialsStyle}>
+            {displayInitials}
+          </span>
+          {compact ? null : <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</span>}
         </span>
-        {compact ? null : <span style={{ maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{displayName}</span>}
-      </button>
+      </CocoaButton>
       {open ? (
-        <div
-          role="menu"
-          aria-label="Menú de usuario"
-          style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            right: 0,
-            minWidth: 220,
-            padding: 6,
-            background: "var(--cocoa-background-content)",
-            border: "1px solid var(--cocoa-separator)",
-            borderRadius: "var(--cocoa-radius-md)",
-            boxShadow: "var(--cocoa-shadow-modal)",
-            zIndex: 100
-          }}
-        >
+        <div role="menu" aria-label="Menú de usuario" style={{ ...dropdownSurfaceStyle, right: 0, minWidth: 220, padding: 6 }}>
           {user ? (
             <div
               style={{
                 padding: "6px 8px",
                 borderBottom: "1px solid var(--cocoa-separator)",
-                marginBottom: 4,
-                fontSize: 13
+                marginBottom: 4
               }}
             >
               <div style={{ fontWeight: 600 }}>{user.fullName}</div>
-              {user.email ? <div style={{ opacity: 0.8 }}>{user.email}</div> : null}
+              {user.email ? <div style={{ color: "var(--cocoa-label-secondary)" }}>{user.email}</div> : null}
             </div>
           ) : null}
           {compact ? (
@@ -807,16 +708,18 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
                 type="button"
                 role="menuitem"
                 data-tour="theme-toggle"
+                className="cocoa-menu-item cocoa-focus-ring"
                 onClick={() => setTheme(cycleThemePreference())}
                 style={menuItemStyle}
               >
                 Tema: {THEME_SHORT_LABELS[theme]}
-                <span style={{ marginLeft: "auto", fontSize: 12, opacity: 0.7 }}>Cambiar</span>
+                <span style={{ marginLeft: "auto", fontSize: "var(--cocoa-fs-callout)", color: "var(--cocoa-label-secondary)" }}>Cambiar</span>
               </button>
               <button
                 type="button"
                 role="menuitem"
                 data-tour="help"
+                className="cocoa-menu-item cocoa-focus-ring"
                 onClick={() => {
                   setOpen(false);
                   openHelpCenter();
@@ -830,6 +733,7 @@ function UserAvatar({ compact = false }: { compact?: boolean }) {
           <button
             type="button"
             role="menuitem"
+            className="cocoa-menu-item cocoa-focus-ring"
             onClick={() => {
               setOpen(false);
               logoutFromShell();
@@ -860,32 +764,26 @@ function useCanCreateReservation(): boolean {
  */
 function NewReservationButton(props: { onOpen: () => void; iconOnly?: boolean }) {
   const label = "Nueva reserva";
+  const coarse = useCoarsePointer();
   return (
-    <button
-      type="button"
-      aria-label={label}
-      title={`${label} (Recepción › Nueva reserva)`}
-      data-tour="new-reservation"
-      onClick={props.onOpen}
-      style={{
-        ...toolbarIconButtonStyle,
-        width: props.iconOnly ? 32 : "auto",
-        gap: 6,
-        padding: props.iconOnly ? 0 : "0 10px",
-        background: "var(--cocoa-accent)",
-        border: "1px solid transparent",
-        color: "var(--cocoa-accent-contrast)",
-        font: "inherit",
-        fontSize: 12,
-        fontWeight: 600,
-        whiteSpace: "nowrap"
-      }}
-    >
-      <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
-        <path d="M7 2.5v9M2.5 7h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      </svg>
-      {props.iconOnly ? null : <span>{label}</span>}
-    </button>
+    <span data-tour="new-reservation" style={{ display: "inline-flex", flexShrink: 0 }}>
+      <CocoaButton
+        variant="filled"
+        tone="accent"
+        size="large"
+        aria-label={label}
+        title={`${label} (Recepción › Nueva reserva)`}
+        onClick={props.onOpen}
+        icon={
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden>
+            <path d="M7 2.5v9M2.5 7h9" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+          </svg>
+        }
+        style={props.iconOnly ? { paddingInline: 0, minWidth: coarse ? TAP_TARGET_PX : TOOLBAR_ICON_PX } : { ...toolbarTextButtonStyle, fontWeight: 600 }}
+      >
+        {props.iconOnly ? null : label}
+      </CocoaButton>
+    </span>
   );
 }
 
@@ -894,13 +792,16 @@ function NewReservationButton(props: { onOpen: () => void; iconOnly?: boolean })
 // truncates) · new reservation · search · notifications · user. Theme and
 // help live inside the user menu here; the desktop keeps CocoaToolbar.
 
-const compactToolbarStyle = {
+// Same material, height, hairline and layer as CocoaToolbar (window variant);
+// content-box so the safe-area top padding does not eat the 48 px row.
+const compactToolbarStyle: CSSProperties = {
   position: "sticky",
   top: 0,
-  zIndex: 10,
-  height: 48,
-  minHeight: 48,
+  zIndex: "var(--cocoa-z-toolbar)" as CSSProperties["zIndex"],
+  height: "var(--cocoa-toolbar-height)",
+  minHeight: "var(--cocoa-toolbar-height)",
   padding: "0 12px",
+  paddingTop: "env(safe-area-inset-top)",
   display: "flex",
   alignItems: "center",
   gap: 8,
@@ -909,8 +810,8 @@ const compactToolbarStyle = {
   WebkitBackdropFilter: "var(--cocoa-material-toolbar-blur)",
   borderBottom: "1px solid var(--cocoa-separator)",
   fontFamily: "var(--cocoa-font)",
-  boxSizing: "border-box"
-} as const;
+  boxSizing: "content-box"
+};
 
 function CompactToolbar(props: {
   navOpen: boolean;
@@ -920,34 +821,33 @@ function CompactToolbar(props: {
   onCreateReservation: () => void;
 }) {
   return (
-    <div role="toolbar" aria-label="Barra superior" style={compactToolbarStyle}>
-      <button
-        type="button"
+    <div role="toolbar" aria-label="Barra superior" className="cocoa-toolbar" data-cocoa="toolbar" data-variant="window" style={compactToolbarStyle}>
+      <ToolbarIconButton
         aria-label="Abrir el menú"
         aria-expanded={props.navOpen}
         aria-controls={SIDEBAR_ELEMENT_ID}
         onClick={props.onOpenNav}
-        style={toolbarIconButtonStyle}
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
-          <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      </button>
+        icon={
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+            <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+          </svg>
+        }
+      />
       <PropertySwitcher compact />
       {props.canCreateReservation ? <NewReservationButton onOpen={props.onCreateReservation} iconOnly /> : null}
-      <button
-        type="button"
-        aria-label="Abrir la búsqueda (⌘K)"
-        title="Buscar en toda la aplicación (⌘K)"
-        data-tour="search"
-        onClick={props.onOpenSearch}
-        style={toolbarIconButtonStyle}
-      >
-        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
-          <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.6" />
-          <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
-        </svg>
-      </button>
+      <span data-tour="search" style={{ display: "inline-flex", flexShrink: 0 }}>
+        <ToolbarIconButton
+          aria-label="Abrir la búsqueda (⌘K)"
+          title="Buscar en toda la aplicación (⌘K)"
+          onClick={props.onOpenSearch}
+          icon={
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+              <circle cx="7" cy="7" r="4.5" stroke="currentColor" strokeWidth="1.6" />
+              <path d="M10.5 10.5L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+            </svg>
+          }
+        />
+      </span>
       <NotificationsBell />
       <UserAvatar compact />
     </div>
@@ -1137,36 +1037,17 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
                 expandOnFocus
               />
             </div>
-            <button
-              type="button"
+            <CocoaButton
+              variant="plain"
+              tone="neutral"
+              size="large"
               aria-label="Abrir la búsqueda (⌘K)"
               title="Buscar en toda la aplicación (⌘K)"
               onClick={() => openPaletteWith("")}
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 28,
-                height: 28,
-                background: "transparent",
-                border: "none",
-                borderRadius: "var(--cocoa-radius-sm)",
-                color: "var(--cocoa-label)",
-                cursor: "pointer"
-              }}
+              style={{ paddingInline: 4 }}
             >
-              <kbd
-                style={{
-                  font: "inherit",
-                  fontSize: 11,
-                  padding: "1px 4px",
-                  border: "1px solid var(--cocoa-separator)",
-                  borderRadius: 4
-                }}
-              >
-                ⌘K
-              </kbd>
-            </button>
+              <kbd style={kbdStyle}>⌘K</kbd>
+            </CocoaButton>
             <ThemeToggle />
             <NotificationsBell />
             <HelpButton />

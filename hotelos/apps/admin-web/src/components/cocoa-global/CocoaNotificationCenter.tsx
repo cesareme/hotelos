@@ -24,6 +24,7 @@
 import { useEffect, useId, useMemo, type CSSProperties, type ReactNode } from "react";
 
 import { date as formatDate, time as formatTime } from "../../lib/format";
+import { CocoaButton } from "../cocoa/CocoaButton";
 import {
   CheckCircleIcon,
   ExclamationCircleIcon,
@@ -89,10 +90,9 @@ const BUCKET_ORDER: ReadonlyArray<NotificationBucket> = [
 const TOOLBAR_HEIGHT = 48;
 const PANEL_WIDTH = 380;
 
-// Local accent tint for unread cards. We avoid var(--cocoa-accent) here so the
-// tint stays subtle in both light and dark mode (the raw accent would dominate
-// the card). A 6% alpha matches the macOS Notification Center treatment.
-const UNREAD_BG = "rgba(10, 132, 255, 0.06)";
+// Subtle accent wash for unread cards (6 % of the single Esmeralda accent, so
+// it follows the theme; the old literal was the blue Apple accent).
+const UNREAD_BG = "color-mix(in srgb, var(--cocoa-accent) 6%, transparent)";
 
 function startOfDay(value: Date): Date {
   const copy = new Date(value);
@@ -137,11 +137,11 @@ interface TypeStyle {
 function styleFor(type: CocoaNotificationType | undefined): TypeStyle {
   switch (type) {
     case "success":
-      return { icon: <CheckCircleIcon size={18} />, color: "var(--cocoa-success, #34C759)" };
+      return { icon: <CheckCircleIcon size={18} />, color: "var(--cocoa-success)" };
     case "warning":
-      return { icon: <ExclamationCircleIcon size={18} />, color: "var(--cocoa-warning, #FF9F0A)" };
+      return { icon: <ExclamationCircleIcon size={18} />, color: "var(--cocoa-warning)" };
     case "critical":
-      return { icon: <XCircleIcon size={18} />, color: "var(--cocoa-danger, #FF3B30)" };
+      return { icon: <XCircleIcon size={18} />, color: "var(--cocoa-danger)" };
     case "info":
     default:
       return { icon: <InfoCircleIcon size={18} />, color: "var(--cocoa-accent)" };
@@ -203,7 +203,8 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
     inset: 0,
     background: "transparent",
     pointerEvents: open ? "auto" : "none",
-    zIndex: 80
+    // Sheet layer minus one: the panel sits on --cocoa-z-sheet.
+    zIndex: "calc(var(--cocoa-z-sheet) - 1)" as CSSProperties["zIndex"]
   };
 
   const panelStyle: CSSProperties = {
@@ -214,17 +215,16 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
     width: PANEL_WIDTH,
     maxWidth: "94vw",
     background: "var(--cocoa-background-sidebar)",
-    backdropFilter: "blur(20px) saturate(180%)",
-    WebkitBackdropFilter: "blur(20px) saturate(180%)",
     borderLeft: "1px solid var(--cocoa-separator)",
-    boxShadow: "-12px 0 36px rgba(0, 0, 0, 0.18)",
+    boxShadow: "var(--cocoa-shadow-modal)",
     color: "var(--cocoa-label)",
     display: "flex",
     flexDirection: "column",
+    paddingBottom: "env(safe-area-inset-bottom)",
     transform: open ? "translateX(0)" : "translateX(100%)",
     transition: "transform var(--cocoa-duration-slow) var(--cocoa-ease-out)",
     willChange: "transform",
-    zIndex: 81,
+    zIndex: "var(--cocoa-z-sheet)" as CSSProperties["zIndex"],
     pointerEvents: open ? "auto" : "none"
   };
 
@@ -251,32 +251,9 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
     gap: "var(--cocoa-space-1)"
   };
 
-  // Reusable "plain" header button — mirrors CocoaButton variant="plain"
-  // without importing it, since the bell/close affordance only needs minimal
-  // styling and avoids a circular dependency with the global components.
-  const headerButtonStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    height: 24,
-    padding: "0 var(--cocoa-space-2)",
-    background: "transparent",
-    border: "none",
-    color: "var(--cocoa-accent)",
-    cursor: "pointer",
-    fontSize: "var(--cocoa-fs-subheadline)",
-    borderRadius: "var(--cocoa-radius-sm)",
-    fontFamily: "inherit"
-  };
-
-  const closeButtonStyle: CSSProperties = {
-    ...headerButtonStyle,
-    width: 24,
-    color: "var(--cocoa-label-secondary)",
-    padding: 0,
-    fontSize: 14
-  };
-
+  // Header buttons are CocoaButton plain/small: 22 px on a mouse and a 44 × 44
+  // tap target on a coarse pointer (the raw close button measured 24 × 44 at
+  // 390 px), with the shared focus ring and the AA text ink.
   const listStyle: CSSProperties = {
     overflowY: "auto",
     flex: 1,
@@ -313,25 +290,20 @@ export function CocoaNotificationCenter(props: CocoaNotificationCenterProps) {
           </h2>
           <div style={headerActionsStyle}>
             {onMarkAllAsRead && hasUnread ? (
-              <button
-                type="button"
-                style={headerButtonStyle}
-                onClick={onMarkAllAsRead}
-                data-testid="cocoa-notification-mark-all"
-              >
+              <CocoaButton variant="plain" tone="accent" size="small" onClick={onMarkAllAsRead} data-testid="cocoa-notification-mark-all">
                 Marcar todas como leídas
-              </button>
+              </CocoaButton>
             ) : null}
-            <button
-              type="button"
-              style={closeButtonStyle}
+            <CocoaButton
+              variant="plain"
+              tone="neutral"
+              size="small"
               onClick={onClose}
               aria-label="Cerrar notificaciones"
               title="Cerrar (Esc)"
               data-testid="cocoa-notification-close"
-            >
-              {"✕"}
-            </button>
+              icon={<span style={{ fontSize: 12, lineHeight: 1 }}>{"✕"}</span>}
+            />
           </div>
         </header>
 
@@ -474,22 +446,6 @@ function NotificationCard({ notification, now, onMarkAsRead }: NotificationCardP
     flexWrap: "wrap"
   };
 
-  // Same "plain" button language as the header — kept inline so the file is
-  // self-contained and Storybook-friendly without a CocoaButton import.
-  const actionButtonStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    height: 22,
-    padding: "0 var(--cocoa-space-2)",
-    background: "transparent",
-    border: "none",
-    color: "var(--cocoa-accent)",
-    cursor: "pointer",
-    fontSize: "var(--cocoa-fs-subheadline)",
-    borderRadius: "var(--cocoa-radius-sm)",
-    fontFamily: "inherit"
-  };
-
   return (
     <article role="listitem" style={cardStyle} data-testid="cocoa-notification-card" data-unread={isUnread || undefined}>
       {isUnread ? <span aria-label="Sin leer" style={unreadIndicatorStyle} /> : null}
@@ -509,14 +465,9 @@ function NotificationCard({ notification, now, onMarkAsRead }: NotificationCardP
         {actions && actions.length > 0 ? (
           <div style={actionsRowStyle}>
             {actions.map((action, idx) => (
-              <button
-                key={`${action.label}-${idx}`}
-                type="button"
-                style={actionButtonStyle}
-                onClick={action.onClick}
-              >
+              <CocoaButton key={`${action.label}-${idx}`} variant="plain" tone="accent" size="small" onClick={action.onClick}>
                 {action.label}
-              </button>
+              </CocoaButton>
             ))}
           </div>
         ) : null}
@@ -548,7 +499,7 @@ function EmptyState() {
   };
   return (
     <div role="status" aria-live="polite" style={wrapStyle} data-testid="cocoa-notification-empty">
-      <span style={{ color: "var(--cocoa-success, #34C759)" }} aria-hidden="true">
+      <span style={{ color: "var(--cocoa-success)" }} aria-hidden="true">
         <CheckCircleIcon size={48} />
       </span>
       <div style={messageStyle}>Estás al día</div>

@@ -126,6 +126,10 @@ const FileUploadAndClassificationScreen = lazyNamed(() => import("./screens/onbo
 const AIExtractionReviewScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "AIExtractionReviewScreen");
 const MigrationBatchScreen = lazyNamed(() => import("./screens/onboarding/OnboardingScreens"), "MigrationBatchScreen");
 
+// Dev-only Cocoa 22 style guide (/desarrollo/guia-estilo): every primitive in
+// every state and tone, with copyable samples and the migration checklist.
+const StyleGuideScreen = lazyNamed(() => import("./screens/dev/StyleGuideScreen"), "StyleGuideScreen");
+
 // Not-found page (unknown URL): a real screen with a way back, never a silent fallback.
 const CocoaNotFoundScreen = lazyNamed(() => import("./screens/errors/CocoaNotFoundScreen"), "CocoaNotFoundScreen");
 
@@ -154,7 +158,7 @@ const ForecastSettingsModule = makeModulePlaceholder({ moduleName: "Ajustes de f
 const ComplianceInboxWired = () => <ComplianceInbox onNavigate={(s) => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: s }))} />;
 
 // Screen registry (Tanda 5 · L1b). One entry per screen key of
-// navigation/nav-tree.generated.json — 64 items, 80 tabs, 20 dev-only and 2
+// navigation/nav-tree.generated.json — 64 items, 80 tabs, 21 dev-only and 2
 // public — plus the 24 aliases (LEGACY_SCREEN_KEYS). A tab key maps to the
 // container of its item; the 72 retired keys are gone (an orphan `hotelos-nav`
 // to one of them is redirected by `resolveScreenTarget`). Every key has a URL
@@ -338,6 +342,7 @@ const SCREEN_COMPONENTS = {
   EnergySettings: EnergySettingsModule,
   SafetySettings: SafetySettingsModule,
   ScheduledReports: ScheduledReportsModule,
+  StyleGuideScreen,
   // ---------------------------------------------------------------------------
   // LEGACY_SCREEN_KEYS · the 24 aliases of NAV_TREE.aliases: old keys that deep
   // links, first-run chips and guide tours still emit, resolved to the SAME

@@ -1,7 +1,19 @@
+// LoginScreen — public sign-in (Cocoa 22, COCOA-22.md §3.5/§3.8: elevated
+// card on the canvas, CocoaPageHeader, CocoaField + CocoaInput, filled
+// accent action; every colour comes from the tokens, style={} is layout only).
+// The auth logic (fetch, lockout copy, remembered email) is untouched.
+
 import { useState, type FormEvent } from "react";
 import { setSession, type AuthUser } from "../../services/auth-storage";
 import { apiBase } from "../../services/api-client";
 import { logBreadcrumb } from "../../lib/breadcrumb";
+import { CocoaButton } from "../../components/cocoa/CocoaButton";
+import { CocoaCard } from "../../components/cocoa/CocoaCard";
+import { CocoaField } from "../../components/cocoa/CocoaField";
+import { CocoaInput } from "../../components/cocoa/CocoaInput";
+import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { CocoaState } from "../../components/cocoa/CocoaState";
+import { CocoaSwitch } from "../../components/cocoa/CocoaSwitch";
 
 type LoginResponse = {
   token: string;
@@ -119,113 +131,79 @@ export function LoginScreen(props: LoginScreenProps) {
 
   const canForgot = typeof props.onNavigate === "function";
 
+  // The body already paints the canvas (--cocoa-background-window) in Inter:
+  // the page only centres the card; safe-area on phones.
   return (
     <div
       style={{
-        minHeight: "100vh",
+        minHeight: "100dvh",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "var(--space-6)",
-        background: "var(--canvas, var(--surface-1))"
+        padding: "var(--cocoa-space-5)",
+        paddingBottom: "max(var(--cocoa-space-5), env(safe-area-inset-bottom))",
+        boxSizing: "border-box"
       }}
     >
-      <div
-        className="bo-card"
-        style={{
-          width: "100%",
-          maxWidth: 420,
-          padding: "var(--space-8)",
-          display: "flex",
-          flexDirection: "column",
-          gap: "var(--space-5)",
-          background: "var(--surface-1)",
-          borderRadius: "var(--radius-md)"
-        }}
+      <CocoaCard
+        variant="elevated"
+        padding="lg"
+        role="region"
+        aria-label="Inicio de sesión"
+        style={{ width: "100%", maxWidth: 420, display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-2)" }}>
-          <h1 style={{ margin: 0, color: "var(--ink)", fontSize: 22 }}>Anfitorio</h1>
-          <p style={{ margin: 0, color: "var(--ink-soft)" }}>Inicia sesión para continuar</p>
-        </div>
+        <CocoaPageHeader eyebrow="Anfitorio · Back Office" title="Inicia sesión" subtitle="Introduce tu correo y tu contraseña para continuar." />
 
-        <form
-          onSubmit={handleSubmit}
-          style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}
-          noValidate
-        >
-          <label className="bo-form-field">
-            <span>Correo electrónico</span>
-            <input
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }} noValidate>
+          <CocoaField label="Correo electrónico" htmlFor="login-email" required>
+            <CocoaInput
+              id="login-email"
               type="email"
+              inputMode="email"
               autoComplete="username"
-              required
+              size="large"
               autoFocus={!email}
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={setEmail}
               disabled={submitting}
+              placeholder="tu@hotel.com"
             />
-          </label>
+          </CocoaField>
 
-          <label className="bo-form-field">
-            <span>Contraseña</span>
-            <input
+          <CocoaField label="Contraseña" htmlFor="login-password" required>
+            <CocoaInput
+              id="login-password"
               type="password"
               autoComplete="current-password"
-              required
+              size="large"
               autoFocus={Boolean(email)}
               value={password}
-              onChange={(event) => setPassword(event.target.value)}
+              onChange={setPassword}
               disabled={submitting}
             />
-          </label>
+          </CocoaField>
 
-          <label
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "var(--space-2)",
-              color: "var(--ink-soft)",
-              fontSize: 14
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={remember}
-              onChange={(event) => setRemember(event.target.checked)}
-              disabled={submitting}
-            />
-            <span>Recordarme</span>
-          </label>
+          <CocoaSwitch size="small" checked={remember} onChange={setRemember} disabled={submitting} label="Recordarme" />
 
-          {error ? (
-            <div
-              role="alert"
-              style={{
-                padding: "var(--space-3) var(--space-4)",
-                borderRadius: "var(--radius-sm)",
-                background: "var(--danger-soft, #fdecec)",
-                color: "var(--danger-strong, #8a1f1f)",
-                fontSize: 14
-              }}
-            >
-              {error}
-            </div>
-          ) : null}
+          {error ? <CocoaState kind="error" inline role="alert" title="No se pudo iniciar sesión" message={error} /> : null}
 
-          <button
+          <CocoaButton
             type="submit"
-            className="primary"
-            disabled={submitting || !email.trim() || !password}
-            style={{ marginTop: "var(--space-2)" }}
+            variant="filled"
+            tone="accent"
+            size="large"
+            loading={submitting}
+            disabled={!email.trim() || !password}
+            style={{ width: "100%", marginTop: "var(--cocoa-space-1)" }}
           >
             {submitting ? "Iniciando sesión…" : "Iniciar sesión"}
-          </button>
+          </CocoaButton>
         </form>
 
         <div style={{ display: "flex", justifyContent: "center" }}>
-          <button
-            type="button"
-            className="bo-button-link"
+          <CocoaButton
+            variant="plain"
+            tone="accent"
             disabled={!canForgot || submitting}
             onClick={() => {
               if (canForgot) props.onNavigate?.("ForgotPasswordScreen");
@@ -233,9 +211,9 @@ export function LoginScreen(props: LoginScreenProps) {
             title={canForgot ? "Recuperar contraseña" : "Recuperación no disponible"}
           >
             ¿Olvidaste tu contraseña?
-          </button>
+          </CocoaButton>
         </div>
-      </div>
+      </CocoaCard>
     </div>
   );
 }

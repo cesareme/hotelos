@@ -199,9 +199,9 @@ export function CocoaThemeToggle({
     border: "1px solid var(--cocoa-separator)",
     borderRadius: radius,
     background: pressed
-      ? "var(--cocoa-fill-secondary, rgba(0, 0, 0, 0.08))"
+      ? "var(--cocoa-fill-secondary)"
       : hovered
-        ? "var(--cocoa-fill-tertiary, rgba(0, 0, 0, 0.04))"
+        ? "var(--cocoa-fill-tertiary)"
         : "var(--cocoa-background-control)",
     color: "var(--cocoa-label)",
     boxShadow: "var(--cocoa-shadow-control)",
@@ -299,7 +299,7 @@ function ThemeOption({
     background: hovered
       ? "var(--cocoa-accent)"
       : selected
-        ? "var(--cocoa-fill-tertiary, rgba(0, 0, 0, 0.04))"
+        ? "var(--cocoa-fill-tertiary)"
         : "transparent",
     color: hovered ? "var(--cocoa-accent-contrast)" : "var(--cocoa-label)",
     fontFamily: "var(--cocoa-font)",

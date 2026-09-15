@@ -27,13 +27,7 @@
 //   - When `onClick` is provided, the tile renders as a button-role container
 //     with keyboard support (Enter / Space).
 
-import {
-  useCallback,
-  useMemo,
-  type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode
-} from "react";
+import { useMemo, type CSSProperties, type ReactNode } from "react";
 
 import { CocoaCard } from "../cocoa/CocoaCard";
 
@@ -266,17 +260,6 @@ export function DirectorKpiTile({
     fontFeatureSettings: '"tnum"'
   };
 
-  const handleKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (!isInteractive) return;
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        onClick?.();
-      }
-    },
-    [isInteractive, onClick]
-  );
-
   const hasDelta = typeof delta === "number";
   const hasBottomRow =
     hasDelta || Boolean(deltaLabel) || (sparkline && sparkline.length > 0);
@@ -309,15 +292,11 @@ export function DirectorKpiTile({
       variant="plain"
       padding="sm"
       onClick={onClick}
-      className={isInteractive ? "cocoa-focus-ring" : undefined}
+      aria-label={isInteractive ? ariaLabel : undefined}
     >
-      <div
-        style={containerStyle}
-        role={isInteractive ? "button" : "group"}
-        tabIndex={isInteractive ? 0 : undefined}
-        onKeyDown={isInteractive ? handleKeyDown : undefined}
-        aria-label={isInteractive ? ariaLabel : undefined}
-      >
+      {/* One tab stop per tile: CocoaCard is the button (role, tabIndex,
+          Enter/Space, focus ring); the inner div is plain content. */}
+      <div style={containerStyle} role={isInteractive ? undefined : "group"}>
         <div style={topRowStyle}>
           {icon ? (
             <span style={iconStyle} aria-hidden="true">

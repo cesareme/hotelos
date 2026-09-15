@@ -1,21 +1,41 @@
-// Shift Manager Screen — vista del Jefe de Recepción.
+// Shift Manager Screen — vista del Jefe de Recepción («Turno», /hoy/turno).
 //
 // Directriz Anfitorio (Nov 2026):
 //   "Jefe de recepción: turno, productividad, incidencias críticas, caja,
 //    no-shows, upgrades, conflictos."
+//
+// Cocoa 22 pilot of the «Hoy» dashboards (docs/design/COCOA-22.md §4):
+// CocoaPage → «Productividad del turno» and «Caja del día» sections with
+// CocoaKpi strips → operational flags as CocoaCallout cards → the shift
+// timeline as a section list with CocoaBadge dots (no emoji, §6).
+// Data: GET /dashboards/shift-manager?propertyId= (30 s poll); `degraded[]`
+// labels paint «—» through the Degraded* helpers (QC-06).
 
+import type { CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { toArray } from "../../utils/toArray";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { navigateTo } from "../../lib/navigate";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
-import { money, time } from "../../lib/format";
+import { money, plural, time } from "../../lib/format";
+import { CheckCircleIcon, ExclamationCircleIcon, XCircleIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaState,
   DegradedBanner,
   DegradedNote,
   DegradedValue,
-  isDegraded
-} from "../../components/cocoa-extras/DegradedValue";
+  isDegraded,
+  toneInk,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type Kpis = {
   checkInsToday: number;
@@ -62,15 +82,30 @@ const DEGRADED_LABEL = {
   events: "events.workOrders"
 } as const;
 
-const EVENT_ICON: Record<string, string> = {
-  check_in: "🔑",
-  check_out: "👋",
-  no_show: "⛔",
-  cancellation: "❌",
-  incident: "🛎",
-  payment: "💳",
-  guest_request: "💬"
+// Event type → short Spanish label of the timeline badge (replaces the emoji icons).
+const EVENT_LABEL: Record<string, string> = {
+  check_in: "Check-in",
+  check_out: "Check-out",
+  no_show: "No-show",
+  cancellation: "Cancelación",
+  incident: "Incidencia",
+  payment: "Cobro",
+  guest_request: "Petición"
 };
+
+const IMPORTANCE_TONE: Record<ShiftEvent["importance"], CocoaTone> = {
+  alert: "danger",
+  highlight: "ai",
+  info: "neutral"
+};
+
+const FLAG_TONE: Record<Flag["status"], CocoaTone> = {
+  critical: "danger",
+  warning: "warning",
+  ok: "success"
+};
+
+const MAX_EVENTS = 30;
 
 function fmtEur(value: number): string {
   return money(value);
@@ -80,197 +115,194 @@ function fmtTime(iso: string): string {
   return time(iso);
 }
 
-function navigateTo(screen: string) {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-  }
+/** Percentage of movements already done (0 when nothing is planned). */
+function completionRatio(done: number, pending: number): number {
+  const total = done + pending;
+  return total > 0 ? Math.round((done / total) * 100) : 0;
+}
+
+// Text styles the timeline repeats (layout comes from the stylesheet lists).
+const detailStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-callout)",
+  color: "var(--cocoa-label-secondary)"
+};
+
+const growStyle: CSSProperties = { flex: "1 1 auto" };
+
+/** Amounts: refunds (negative) in the danger ink, the rest in the label colour. */
+function amountStyle(amount: number): CSSProperties {
+  return { color: amount < 0 ? toneInk("danger") : "var(--cocoa-label)" };
+}
+
+function timeStyle(tone: CocoaTone): CSSProperties {
+  return {
+    fontSize: "var(--cocoa-fs-footnote)",
+    fontVariantNumeric: "tabular-nums",
+    whiteSpace: "nowrap",
+    color: tone === "neutral" ? "var(--cocoa-label-secondary)" : toneInk(tone)
+  };
+}
+
+function FlagIcon({ status }: { status: Flag["status"] }) {
+  if (status === "critical") return <XCircleIcon size={16} />;
+  if (status === "warning") return <ExclamationCircleIcon size={16} />;
+  return <CheckCircleIcon size={16} />;
 }
 
 export function ShiftManagerScreen() {
   const propertyId = getActivePropertyId();
   const propertyName = getActiveProperty().propertyName;
-  const { data, loading, error, refresh } = useApiData<Data>(
-    `/dashboards/shift-manager?propertyId=${propertyId}`,
-    { pollIntervalMs: 30000 }
-  );
+  const { data, loading, error, refresh } = useApiData<Data>(`/dashboards/shift-manager?propertyId=${propertyId}`, { pollIntervalMs: 30000 });
 
   const k = data?.kpis;
   const events = toArray<ShiftEvent>(data?.events);
   const flags = toArray<Flag>(data?.flags);
   const degraded = toArray<string>(data?.degraded);
-  const completedRatio = k && (k.checkInsToday + k.pendingArrivals) > 0
-    ? Math.round((k.checkInsToday / (k.checkInsToday + k.pendingArrivals)) * 100)
-    : 0;
-  const checkOutRatio = k && (k.checkOutsToday + k.pendingDepartures) > 0
-    ? Math.round((k.checkOutsToday / (k.checkOutsToday + k.pendingDepartures)) * 100)
-    : 0;
+  const completedRatio = k ? completionRatio(k.checkInsToday, k.pendingArrivals) : 0;
+  const checkOutRatio = k ? completionRatio(k.checkOutsToday, k.pendingDepartures) : 0;
   const cashNet = k ? k.cashCapturedEur - k.cashRefundedEur : 0;
+  const state = loading && !data ? "loading" : error && !data ? "error" : "ready";
 
   return (
-    <>
-      <CocoaPageHeader
-        eyebrow={`Hoy · ${propertyName}`}
-        title="Turno"
-        subtitle="Productividad del equipo de recepción, caja del día y bloqueos críticos."
-        actions={
-          <>
-            <DegradedBanner degraded={degraded} />
-            {loading ? <span className="bo-status info">{STATUS_LABELS.loading}</span> : null}
-            {error ? <span className="bo-status error">{error}</span> : null}
-            <button type="button" className="ghost" onClick={refresh} aria-label={ACTIONS.refresh} title={ACTIONS.refresh}>↻ {ACTIONS.refresh}</button>
-          </>
-        }
-      />
-
-      {/* Productividad / KPIs principales */}
+    <CocoaPage
+      eyebrow={`Hoy · ${propertyName}`}
+      title="Turno"
+      subtitle="Productividad del equipo de recepción, caja del día y bloqueos críticos."
+      actions={
+        <>
+          <DegradedBanner degraded={degraded} />
+          {loading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          {error ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} aria-label={ACTIONS.refresh} title={ACTIONS.refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={state}
+      skeleton={<ShiftSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "shift-refresh", label: "Actualizar el turno", run: refresh }]}
+    >
       {k ? (
         <>
-          <article className="bo-card" style={{ background: "var(--surface)" }}>
-            <div className="bo-card-head">
-              <h3 style={{ color: "var(--ink)" }}>Productividad del turno</h3>
-            </div>
-            <div className="rev-kpi-grid">
-              <article className="rev-kpi rev-kpi-ok">
-                <div className="rev-kpi-head">
-                  <span className="rev-kpi-label">Check-ins hechos</span>
-                  <span className="bo-chip">{completedRatio}%</span>
-                </div>
-                <div className="rev-kpi-value">{k.checkInsToday}</div>
-                <div className="bo-muted" style={{ fontSize: 11, marginTop: 2 }}>
-                  {k.pendingArrivals} pendiente{k.pendingArrivals === 1 ? "" : "s"}
-                </div>
-              </article>
-              <article className="rev-kpi rev-kpi-ok">
-                <div className="rev-kpi-head">
-                  <span className="rev-kpi-label">Check-outs hechos</span>
-                  <span className="bo-chip">{checkOutRatio}%</span>
-                </div>
-                <div className="rev-kpi-value">{k.checkOutsToday}</div>
-                <div className="bo-muted" style={{ fontSize: 11, marginTop: 2 }}>
-                  {k.pendingDepartures} pendiente{k.pendingDepartures === 1 ? "" : "s"}
-                </div>
-              </article>
-              <article className={`rev-kpi ${k.noShowsToday > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-                <div className="rev-kpi-head">
-                  <span className="rev-kpi-label">No-shows</span>
-                </div>
-                <div className="rev-kpi-value">{k.noShowsToday}</div>
-              </article>
-              <article className={`rev-kpi ${k.cancellationsToday > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-                <div className="rev-kpi-head">
-                  <span className="rev-kpi-label">Cancelaciones</span>
-                </div>
-                <div className="rev-kpi-value">{k.cancellationsToday}</div>
-              </article>
-            </div>
-          </article>
+          <CocoaSection title="Productividad del turno" meta={plural(k.pendingArrivals + k.pendingDepartures, "movimiento pendiente", "movimientos pendientes")}>
+            <CocoaKpiStrip min={200} aria-label="Productividad del turno">
+              <CocoaKpi
+                label="Check-ins hechos"
+                value={k.checkInsToday}
+                unit={`de ${k.checkInsToday + k.pendingArrivals}`}
+                deltaLabel={`${completedRatio} % · ${plural(k.pendingArrivals, "pendiente", "pendientes")}`}
+                polarity="neutral"
+                status="ok"
+              />
+              <CocoaKpi
+                label="Check-outs hechos"
+                value={k.checkOutsToday}
+                unit={`de ${k.checkOutsToday + k.pendingDepartures}`}
+                deltaLabel={`${checkOutRatio} % · ${plural(k.pendingDepartures, "pendiente", "pendientes")}`}
+                polarity="neutral"
+                status="ok"
+              />
+              <CocoaKpi label="No-shows" value={k.noShowsToday} deltaLabel="hoy" polarity="neutral" status={k.noShowsToday > 0 ? "warning" : "ok"} />
+              <CocoaKpi label="Cancelaciones" value={k.cancellationsToday} deltaLabel="hoy" polarity="neutral" status={k.cancellationsToday > 0 ? "warning" : "ok"} />
+            </CocoaKpiStrip>
+          </CocoaSection>
 
-          {/* Caja */}
-          <article className="bo-card" style={{ background: "var(--surface)" }}>
-            <div className="bo-card-head">
-              <h3 style={{ color: "var(--ink)" }}>Caja del día</h3>
-              <button type="button" className="ghost" onClick={() => navigateTo("FinancePositionDashboard")}>
-                Ver detalle →
-              </button>
-            </div>
-            <div className="rev-kpi-grid">
-              <article className="rev-kpi rev-kpi-ok">
-                <div className="rev-kpi-head"><span className="rev-kpi-label">Cobrado hoy</span></div>
-                <div className="rev-kpi-value">{fmtEur(k.cashCapturedEur)}</div>
-              </article>
-              <article className={`rev-kpi ${k.cashRefundedEur > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-                <div className="rev-kpi-head"><span className="rev-kpi-label">Reembolsado</span></div>
-                <div className="rev-kpi-value">{fmtEur(k.cashRefundedEur)}</div>
-              </article>
-              <article className="rev-kpi rev-kpi-ok">
-                <div className="rev-kpi-head"><span className="rev-kpi-label">Neto</span></div>
-                <div className="rev-kpi-value">{fmtEur(cashNet)}</div>
-              </article>
-              <article className={`rev-kpi ${k.unpaidBalanceEur > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-                <div className="rev-kpi-head"><span className="rev-kpi-label">Saldo abierto</span></div>
-                <div className="rev-kpi-value">{fmtEur(k.unpaidBalanceEur)}</div>
-              </article>
-            </div>
-          </article>
+          <CocoaSection
+            title="Caja del día"
+            action={
+              <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("FinancePositionDashboard")}>
+                {ACTIONS.viewDetail}
+              </CocoaButton>
+            }
+          >
+            <CocoaKpiStrip min={200} aria-label="Caja del día">
+              <CocoaKpi label="Cobrado hoy" value={fmtEur(k.cashCapturedEur)} status="ok" />
+              <CocoaKpi label="Reembolsado" value={fmtEur(k.cashRefundedEur)} status={k.cashRefundedEur > 0 ? "warning" : "ok"} />
+              <CocoaKpi label="Neto" value={fmtEur(cashNet)} status="ok" />
+              <CocoaKpi label="Saldo abierto" value={fmtEur(k.unpaidBalanceEur)} status={k.unpaidBalanceEur > 0 ? "warning" : "ok"} />
+            </CocoaKpiStrip>
+          </CocoaSection>
         </>
       ) : null}
 
-      {/* Flags / Conflictos */}
       {flags.length > 0 ? (
-        <article className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Estado operativo</h3>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
+        <CocoaSection title="Estado operativo" meta={plural(flags.length, "comprobación", "comprobaciones")}>
+          <CocoaKpiStrip min={240} aria-label="Estado operativo">
             {flags.map((f) => {
               // The "emergency" flag is computed from a safe()-wrapped counter:
               // when its query failed the API still says "ok · Sin emergencias",
               // so neutralise the tone and show "—" instead of a green tick.
               const flagDegraded = f.id === "emergency" && isDegraded(DEGRADED_LABEL.emergencyFlag, degraded);
-              const tone = flagDegraded
-                ? "var(--cocoa-label-tertiary)"
-                : f.status === "critical" ? "#d23b3b" : f.status === "warning" ? "#d29b00" : "#1f8a4c";
-              const bg = flagDegraded
-                ? "transparent"
-                : f.status === "critical" ? "rgba(210, 59, 59, 0.08)" : f.status === "warning" ? "rgba(210, 155, 0, 0.08)" : "rgba(31, 138, 76, 0.08)";
-              const icon = flagDegraded ? "—" : f.status === "critical" ? "✕" : f.status === "warning" ? "!" : "✓";
               return (
-                <div key={f.id} style={{ border: `1px solid ${tone}`, borderLeftWidth: 4, borderRadius: 8, padding: 12, background: bg }}>
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <span style={{ width: 24, height: 24, borderRadius: "50%", background: tone, color: "white", fontSize: 13, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>
-                      {icon}
-                    </span>
-                    <strong style={{ fontSize: 13 }}>{f.title}</strong>
-                  </div>
-                  <div className="bo-muted" style={{ fontSize: 12, marginTop: 6 }}>
-                    {flagDegraded ? (
-                      <DegradedValue label={DEGRADED_LABEL.emergencyFlag} degraded={degraded}>{f.detail}</DegradedValue>
-                    ) : f.detail}
-                  </div>
-                </div>
+                <CocoaCallout key={f.id} tone={flagDegraded ? "neutral" : FLAG_TONE[f.status]} title={f.title} icon={flagDegraded ? undefined : <FlagIcon status={f.status} />}>
+                  {flagDegraded ? (
+                    <DegradedValue label={DEGRADED_LABEL.emergencyFlag} degraded={degraded}>
+                      {f.detail}
+                    </DegradedValue>
+                  ) : (
+                    f.detail
+                  )}
+                </CocoaCallout>
               );
             })}
-          </div>
-        </article>
+          </CocoaKpiStrip>
+        </CocoaSection>
       ) : null}
 
-      {/* Timeline del turno */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Eventos del turno</h3>
-          <span className="bo-muted" style={{ fontSize: 12 }}>
-            <DegradedValue label={DEGRADED_LABEL.events} degraded={degraded}>{events.length}</DegradedValue> eventos
-          </span>
-        </div>
+      <CocoaSection
+        title="Eventos del turno"
+        meta={
+          <>
+            <DegradedValue label={DEGRADED_LABEL.events} degraded={degraded}>
+              {events.length}
+            </DegradedValue>{" "}
+            eventos
+          </>
+        }
+      >
         {events.length === 0 ? (
           <DegradedNote label={DEGRADED_LABEL.events} degraded={degraded}>
-            <p className="bo-muted">Sin actividad registrada hoy.</p>
+            <CocoaState kind="empty" inline title="Sin actividad registrada hoy." />
           </DegradedNote>
         ) : (
-          <ol style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-            {events.slice(0, 30).map((ev) => {
-              const tone = ev.importance === "alert" ? "#d23b3b" : ev.importance === "highlight" ? "#6f3ad2" : "#888";
+          <ol className="c22-section__list" aria-label="Eventos del turno">
+            {events.slice(0, MAX_EVENTS).map((ev) => {
+              const tone = IMPORTANCE_TONE[ev.importance] ?? "neutral";
               return (
-                <li key={ev.id} style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
-                  <div style={{ width: 28, fontSize: 18, textAlign: "center" }}>{EVENT_ICON[ev.type] ?? "•"}</div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", gap: 6, alignItems: "baseline", flexWrap: "wrap" }}>
-                      <strong style={{ fontSize: 13 }}>{ev.title}</strong>
-                      {ev.amount !== undefined ? (
-                        <span style={{ fontWeight: 600, color: ev.amount < 0 ? "var(--danger, #d23b3b)" : "var(--ink)" }}>
-                          {fmtEur(ev.amount)}
-                        </span>
-                      ) : null}
+                <li key={ev.id}>
+                  <CocoaBadge tone={tone} variant="dot" size="small">
+                    {EVENT_LABEL[ev.type] ?? ev.type}
+                  </CocoaBadge>
+                  <div className="cocoa-stack" data-gap="1" style={growStyle}>
+                    <div className="cocoa-row" data-gap="2" data-align="baseline">
+                      <strong>{ev.title}</strong>
+                      {ev.amount !== undefined ? <strong style={amountStyle(ev.amount)}>{fmtEur(ev.amount)}</strong> : null}
                     </div>
-                    {ev.detail ? <div className="bo-muted" style={{ fontSize: 12 }}>{ev.detail}</div> : null}
+                    {ev.detail ? <span style={detailStyle}>{ev.detail}</span> : null}
                   </div>
-                  <div className="bo-muted" style={{ fontSize: 11, whiteSpace: "nowrap", color: tone }}>{fmtTime(ev.timestamp)}</div>
+                  <time dateTime={ev.timestamp} style={timeStyle(tone)}>
+                    {fmtTime(ev.timestamp)}
+                  </time>
                 </li>
               );
             })}
           </ol>
         )}
-      </article>
-    </>
+      </CocoaSection>
+    </CocoaPage>
   );
 }
+
+// Mirror skeleton: two KPI sections and the timeline card.
+function ShiftSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="card" height={176} />
+      <CocoaSkeleton variant="card" height={176} />
+      <CocoaSkeleton variant="card" />
+    </div>
+  );
+}
+
+export default ShiftManagerScreen;

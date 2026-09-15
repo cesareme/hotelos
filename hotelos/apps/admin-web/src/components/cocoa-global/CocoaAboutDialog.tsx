@@ -208,14 +208,14 @@ export function CocoaAboutDialog({ open, onClose, onOpenHelp, onOpenShortcuts }:
     () => ({
       position: "fixed",
       inset: 0,
-      zIndex: 1100,
+      zIndex: "var(--cocoa-z-modal)" as CSSProperties["zIndex"],
       display: "flex",
       alignItems: "center",
       justifyContent: "center",
       padding: 16,
-      background: "rgba(0, 0, 0, 0.32)",
-      backdropFilter: "blur(8px) saturate(180%)",
-      WebkitBackdropFilter: "blur(8px) saturate(180%)",
+      background: "var(--cocoa-scrim)",
+      backdropFilter: "var(--cocoa-scrim-blur)",
+      WebkitBackdropFilter: "var(--cocoa-scrim-blur)",
       opacity: isVisible ? 1 : 0,
       transition: "opacity var(--cocoa-duration-base) var(--cocoa-ease-out)",
       pointerEvents: isVisible ? "auto" : "none"
@@ -253,10 +253,10 @@ export function CocoaAboutDialog({ open, onClose, onOpenHelp, onOpenShortcuts }:
     () => ({
       width: 64,
       height: 64,
-      borderRadius: 16,
-      background:
-        "linear-gradient(135deg, var(--cocoa-accent) 0%, var(--cocoa-success) 100%)",
-      boxShadow: "var(--cocoa-shadow-control)",
+      borderRadius: "var(--cocoa-radius-xl)",
+      // Flat Esmeralda: no gradient, no second hue (COCOA-22.md §6).
+      background: "var(--cocoa-accent)",
+      boxShadow: "var(--cocoa-shadow-card)",
       marginBottom: 6,
       flexShrink: 0
     }),

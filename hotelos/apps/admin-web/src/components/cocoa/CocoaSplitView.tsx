@@ -33,6 +33,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode
 } from "react";
+import { COCOA_SCRIM } from "./cocoa-overlay";
 
 export interface CocoaSplitViewProps {
   sidebar: ReactNode;
@@ -276,7 +277,10 @@ export function CocoaSplitView({
     minHeight: 0,
     overflowY: "auto",
     overflowX: "hidden",
-    padding: "var(--cocoa-space-4)"
+    // Cocoa 22 (COCOA-22.md §3.1): the content column no longer pads. The
+    // scroller inside it (`main.cocoa-content`) owns the single gutter
+    // (24 px, 16 px under 600) — the two paddings summed to 40 px on phones.
+    padding: 0
   };
 
   const inspectorColumnStyle: CSSProperties = {
@@ -320,9 +324,10 @@ export function CocoaSplitView({
     position: "absolute",
     top: 12,
     left: 12,
-    zIndex: 5,
-    width: 32,
-    height: 32,
+    zIndex: "var(--cocoa-z-sticky)" as CSSProperties["zIndex"],
+    // 44 px tap target (COCOA-22.md §5.1 touch).
+    width: 44,
+    height: 44,
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
@@ -338,13 +343,13 @@ export function CocoaSplitView({
   const drawerBackdropStyle: CSSProperties = {
     position: "fixed",
     inset: 0,
-    background: "rgba(0, 0, 0, 0.32)",
-    backdropFilter: "blur(6px)",
-    WebkitBackdropFilter: "blur(6px)",
+    // Scrim token (black-based, .45 light / .55 dark; same as cocoa-overlay):
+    // deriving it from --cocoa-label turned into a white fog in dark mode.
+    background: COCOA_SCRIM,
     opacity: isDrawerOpen ? 1 : 0,
     pointerEvents: isDrawerOpen ? "auto" : "none",
     transition: "opacity var(--cocoa-duration-base) var(--cocoa-ease-out)",
-    zIndex: 999
+    zIndex: "var(--cocoa-z-sidebar)" as CSSProperties["zIndex"]
   };
 
   const drawerStyle: CSSProperties = {
@@ -360,10 +365,11 @@ export function CocoaSplitView({
     transform: isDrawerOpen ? "translateX(0)" : "translateX(-100%)",
     transition:
       "transform var(--cocoa-duration-base) var(--cocoa-ease-out)",
-    zIndex: 1000,
+    zIndex: "var(--cocoa-z-sidebar)" as CSSProperties["zIndex"],
     overflow: "hidden",
     display: "flex",
-    flexDirection: "column"
+    flexDirection: "column",
+    paddingBottom: "env(safe-area-inset-bottom)"
   };
 
   const showHamburger = isMobile && collapsibleSidebar;
@@ -391,7 +397,7 @@ export function CocoaSplitView({
       {showHamburger ? (
         <button
           type="button"
-          aria-label="Open navigation"
+          aria-label="Abrir navegación"
           aria-expanded={isDrawerOpen}
           onClick={() => setIsDrawerOpen(true)}
           style={hamburgerStyle}
@@ -420,7 +426,7 @@ export function CocoaSplitView({
           <div
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize sidebar"
+            aria-label="Redimensionar barra lateral"
             onPointerDown={(event) => startDrag("sidebar", event)}
             style={sidebarResizeHandleStyle}
           />
@@ -434,7 +440,7 @@ export function CocoaSplitView({
           <div
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize inspector"
+            aria-label="Redimensionar inspector"
             onPointerDown={(event) => startDrag("inspector", event)}
             style={inspectorResizeHandleStyle}
           />
@@ -452,7 +458,7 @@ export function CocoaSplitView({
           <aside
             style={drawerStyle}
             aria-hidden={!isDrawerOpen}
-            aria-label="Navigation"
+            aria-label="Navegación"
           >
             {sidebar}
           </aside>

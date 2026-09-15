@@ -81,13 +81,13 @@ function getFocusableElements(root: HTMLElement | null): HTMLElement[] {
 const backdropStyle: CSSProperties = {
   position: "fixed",
   inset: 0,
-  zIndex: 1000,
+  zIndex: "var(--cocoa-z-modal)" as CSSProperties["zIndex"],
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
-  background: "rgba(0, 0, 0, 0.32)",
-  backdropFilter: "blur(8px)",
-  WebkitBackdropFilter: "blur(8px)",
+  background: "var(--cocoa-scrim)",
+  backdropFilter: "var(--cocoa-scrim-blur)",
+  WebkitBackdropFilter: "var(--cocoa-scrim-blur)",
   padding: "var(--cocoa-space-4)",
   boxSizing: "border-box"
 };
@@ -101,7 +101,7 @@ const containerStyle: CSSProperties = {
   flexDirection: "column",
   background: "var(--cocoa-background-content)",
   boxShadow: "var(--cocoa-shadow-modal)",
-  borderRadius: "var(--cocoa-radius-xl)",
+  borderRadius: "var(--cocoa-radius-lg)",
   outline: "none",
   fontFamily: "var(--cocoa-font)",
   color: "var(--cocoa-label)",

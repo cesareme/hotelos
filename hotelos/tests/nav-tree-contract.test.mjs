@@ -245,7 +245,9 @@ describe("Router · registro de L1b (App.tsx + routes/backoffice.routes.tsx)", (
 
   it("only the dev-only screens keep a makeModulePlaceholder (presupuesto 20)", () => {
     const calls = (appSource.match(/makeModulePlaceholder\(/g) ?? []).length;
-    const devPlaceholders = tree.devOnly.filter((screen) => !/^(OnboardingProjects|FileUploadAndClassification|AIExtractionReview|MigrationBatches)$/.test(screen.screenKey)).length;
+    // Dev-only screens that are real screens, not placeholders: the 4 migration
+    // screens and the Cocoa 22 style guide (screens/dev/StyleGuideScreen.tsx).
+    const devPlaceholders = tree.devOnly.filter((screen) => !/^(OnboardingProjects|FileUploadAndClassification|AIExtractionReview|MigrationBatches|StyleGuideScreen)$/.test(screen.screenKey)).length;
     assert.equal(calls, devPlaceholders, `${calls} placeholder calls for ${devPlaceholders} dev-only placeholders`);
     assert.ok(calls <= 20);
   });

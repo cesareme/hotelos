@@ -1,37 +1,58 @@
-// General Manager Screen — Director Dashboard v2.0.
+// General Manager Screen — Director Dashboard v2.0 · the Cocoa 22 canon.
 //
-// Layout following docs/director-dashboard/DESIGN-PROPOSAL.md (7 rows on a
-// 12-column responsive grid):
-//   1. Today snapshot strip — 11 DirectorKpiTile
-//   2. Forward pace + Pickup + Cancellation risk
-//   3. Segments + RevPAR-vs-compset + Channel mix donut + BAR recommendations
+// Layout following docs/director-dashboard/DESIGN-PROPOSAL.md (7 rows on the
+// 12-column grid of docs/design/COCOA-22.md §3.4), painted ONLY with the
+// Cocoa 22 primitives (§8). This screen is the visual reference the rest of
+// the back office copies (§1): tokens, radii, shadows, spacing and motion
+// come from the primitives, never from local styles.
+//   1. Today snapshot strip — 11 CocoaKpi tiles (CocoaKpiStrip, stagger)
+//   2. Forward pace (CocoaChart.Line) + Pickup 7d (Bars) + Cancellation risk (Gauge)
+//   3. Segments + RevPAR-vs-compset + Channel mix (Donut) + BAR recommendations
 //   4. Operations health mini-cards (HK / Maintenance / Workforce / Safety / POS)
-//   5. NPS sparkline · Reviews score · Service requests · VIPs in-house
-//   6. Compliance widgets (VeriFactu · SES · TBAI · GDPR alerts)
+//   5. NPS · Reviews score · Service requests · VIPs in-house
+//   6. Compliance widgets (VeriFactu · SES · TBAI · GDPR)
 //   7. AI insights — anomalies list + top 3 recommended actions + demand spikes
 //
 // Data sources:
 //   GET /dashboards/general-manager?propertyId=  — enriched director dashboard
 //   GET /general-manager/pace?propertyId=&days=  — OTB / forecast / LY pace
 //
-// Loading state renders a skeleton of each row. Empty state shows
-// "Sin datos del director hoy" message.
+// States (§3.10): loading → mirror skeleton with the same spans (no layout
+// shift); no payload → empty state; `degraded[]` labels → DegradedValue /
+// DegradedCard / DegradedBanner («—» with a hint, never a fake green 0).
 
-import { type CSSProperties, type ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { navigateTo } from "../../lib/navigate";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { HOSTED_ACTIONS_ROW, useTabHost } from "../tabs/TabHost";
 import {
-  DirectorKpiTile,
-  DirectorForwardPaceChart,
-  DirectorPickupBar,
-  DirectorCancellationRiskGauge,
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  DegradedBanner,
+  DegradedCard,
+  DegradedNote,
+  DegradedValue,
+  gaugeToneLabel,
+  isDegraded,
+  thresholdTone,
+  toneColor,
+  toneInk,
+  type CocoaBarsDatum,
+  type CocoaDonutSlice,
+  type CocoaLineSeries,
+  type CocoaTone
+} from "../../components/cocoa";
+import {
   DirectorSegmentBars,
-  DirectorChannelMixDonut,
   DirectorBarRecommendations,
   DirectorOpsHealthMini,
   DirectorVipList,
@@ -41,19 +62,8 @@ import {
   type DirectorAiInsightType,
   type DirectorAiInsightSeverity
 } from "../../components/cocoa-director";
-import {
-  toneToColorToken,
-  type ManagementTone
-} from "./managementBadges";
-import {
-  DegradedBanner,
-  DegradedCard,
-  DegradedNote,
-  DegradedValue,
-  isDegraded
-} from "../../components/cocoa-extras/DegradedValue";
 import { toArray } from "../../utils/toArray";
-import { dateTime, money, number, percent } from "../../lib/format";
+import { dateTime, money, number, percent, plural } from "../../lib/format";
 
 // ---------------------------------------------------------------------------
 // Types — wire-shape of the dashboard endpoint. Kept aligned with
@@ -149,6 +159,11 @@ const DEGRADED_LABEL = {
   paceLastYear: "pace.lastYearSnapshots"
 } as const;
 
+const PACE_DAYS = 30;
+
+// Cancellation risk thresholds (0–30 low · 30–60 moderate · 60–100 high).
+const RISK_THRESHOLDS: [number, number] = [30, 60];
+
 // ---------------------------------------------------------------------------
 // Formatting helpers.
 // ---------------------------------------------------------------------------
@@ -180,83 +195,57 @@ function fmtCompactDateTime(iso?: string): string | undefined {
   return dateTime(iso, { style: "dayMonth" });
 }
 
-// ---------------------------------------------------------------------------
-// Layout — 12-column responsive grid.
-// ---------------------------------------------------------------------------
-
-const sectionStackStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "var(--cocoa-space-4)"
-};
-
-const gridRowStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(12, minmax(0, 1fr))",
-  gap: "var(--cocoa-space-3)"
-};
-
-function spanStyle(cols: number, minPx = 220): CSSProperties {
-  return {
-    gridColumn: `span ${cols} / span ${cols}`,
-    minWidth: 0,
-    // On narrow viewports collapse to two/one columns. We use container
-    // queries via media inside the parent grid auto-fill is not enough
-    // because we want named row positions — rely on `minmax` and let CSS
-    // do its job; for sm screens children can wrap naturally.
-    ["--bo-min-px" as string]: `${minPx}px`
-  };
+/** "DD-MM" axis label of an ISO date; the input when it is not a date. */
+function formatDayMonth(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  const dd = String(parsed.getUTCDate()).padStart(2, "0");
+  const mm = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+  return `${dd}-${mm}`;
 }
 
-// Row 1: 11 KPI tiles, each ~ 1.09 cols. We pin to 2 cols per tile on lg+
-// and let them wrap into 4-col chunks on md / 6-col on sm.
-const kpiStripStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(min(180px, 100%), 1fr))",
-  gap: "var(--cocoa-space-3)"
-};
+/** "DD-MM-YYYY" tooltip title of an ISO date. */
+function formatFullDate(iso: string): string {
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  return `${formatDayMonth(iso)}-${parsed.getUTCFullYear()}`;
+}
 
-const opsHealthStripStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))",
-  gap: "var(--cocoa-space-3)"
-};
+// ---------------------------------------------------------------------------
+// Local text styles — the two secondary text styles the canon repeats inside
+// its cards (caption secondary · callout label). Layout comes from the
+// stylesheet classes (`cocoa-stack`, `cocoa-row`, `c22-section__list`).
+// ---------------------------------------------------------------------------
 
-const cardHeadStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  gap: "var(--cocoa-space-2)",
-  marginBottom: "var(--cocoa-space-3)"
-};
-
-const cardTitleStyle: CSSProperties = {
+const mutedStyle: CSSProperties = {
   margin: 0,
-  fontSize: "var(--cocoa-fs-title-3)",
-  fontWeight: 600,
-  color: "var(--cocoa-label)"
-};
-
-const cardMutedStyle: CSSProperties = {
   fontSize: "var(--cocoa-fs-caption)",
   color: "var(--cocoa-label-secondary)"
 };
 
-function badgeStyle(tone: ManagementTone): CSSProperties {
+const calloutStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-callout)",
+  color: "var(--cocoa-label)"
+};
+
+const growStyle: CSSProperties = { flex: "1 1 auto" };
+
+const centerRowStyle: CSSProperties = { display: "flex", justifyContent: "center" };
+
+/** Large figure (26 px, 700, tabular): the tone HUE is allowed at this size (§2.1 rule c). */
+function figureStyle(tone: CocoaTone): CSSProperties {
   return {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px var(--cocoa-space-2)",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    letterSpacing: "var(--cocoa-tracking-wide)",
-    textTransform: "uppercase",
-    color: toneToColorToken(tone),
-    background: "transparent",
-    border: `1px solid ${toneToColorToken(tone)}`,
-    borderRadius: "var(--cocoa-radius-sm)",
-    lineHeight: 1.4
+    fontSize: "var(--cocoa-fs-large-title)",
+    fontWeight: "var(--cocoa-fw-bold)" as CSSProperties["fontWeight"],
+    color: tone === "neutral" ? "var(--cocoa-label)" : toneColor(tone),
+    fontVariantNumeric: "tabular-nums",
+    lineHeight: "var(--cocoa-leading-title)"
   };
+}
+
+/** Small text (≤ 13 px) in a tone: the AA-safe ink, plain label for neutral (§2.1 rule c). */
+function inkStyle(tone: CocoaTone): CSSProperties {
+  return { color: tone === "neutral" ? "var(--cocoa-label)" : toneInk(tone) };
 }
 
 // ---------------------------------------------------------------------------
@@ -298,26 +287,39 @@ function anomalySeverity(s: "low" | "medium" | "high"): DirectorAiInsightSeverit
   return s;
 }
 
+function anomalyTone(severity: Anomaly["severity"]): CocoaTone {
+  return severity === "high" ? "danger" : severity === "medium" ? "warning" : "info";
+}
+
 // Derive a 7-day pickup series from the first 7 entries of the pace data:
 // pickupNet = OTB - LY for that stay date. Without historical OTB-by-day we
 // approximate this as the daily delta vs LY which is what the row exposes.
-function buildPickup7d(pace: PaceData | null): Array<{ day: string; net: number; pctVsLY?: number }> {
-  const rows = toArray<PaceRow>(pace?.rows);
+// Bar tone follows the sign of the delta vs LY (success / danger / neutral).
+function buildPickup7d(rows: PaceRow[]): CocoaBarsDatum[] {
   if (rows.length === 0) return [];
-  const slice = rows.slice(0, 7);
   const days = ["L", "M", "X", "J", "V", "S", "D"];
-  return slice.map((r, i) => {
+  return rows.slice(0, 7).map((r, i) => {
     const ly = r.lastYear || 0;
     const otb = r.otb || 0;
     const net = Math.round(otb - ly);
     const pctVsLY = ly > 0 ? Math.round(((otb - ly) / ly) * 1000) / 10 : undefined;
-    // Use D-M label if Date parses, fallback to L/M/X.
+    // Weekday initial when the date parses, else L/M/X by position.
     const parsed = new Date(r.date);
-    const label = Number.isNaN(parsed.getTime())
-      ? (days[i] ?? "?")
-      : days[(parsed.getUTCDay() + 6) % 7] ?? "?";
-    return { day: label, net, pctVsLY };
+    const label = Number.isNaN(parsed.getTime()) ? (days[i] ?? "?") : days[(parsed.getUTCDay() + 6) % 7] ?? "?";
+    const tone: CocoaTone = pctVsLY === undefined || pctVsLY === 0 ? "neutral" : pctVsLY > 0 ? "success" : "danger";
+    const hint = pctVsLY === undefined ? "vs LY: —" : `vs LY: ${percent(pctVsLY, { signDisplay: "always", minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+    return { label, value: net, tone, hint };
   });
+}
+
+// OTB (accent, 2 px) · Forecast (warning, dashed) · Last year (tertiary, 1 px).
+function buildPaceSeries(rows: PaceRow[]): CocoaLineSeries[] {
+  const points = (pick: (row: PaceRow) => number) => rows.map((row) => ({ x: formatDayMonth(row.date), y: pick(row) }));
+  return [
+    { id: "otb", label: "OTB", tone: "accent", width: 2, points: points((row) => row.otb) },
+    { id: "forecast", label: "Forecast", tone: "warning", dashed: true, width: 2, points: points((row) => row.forecast) },
+    { id: "last-year", label: "Año anterior", tone: "tertiary", width: 1, points: points((row) => row.lastYear) }
+  ];
 }
 
 // Build segment bars from segmentMix entries.
@@ -330,15 +332,11 @@ function buildSegmentBars(k: Data) {
   }));
 }
 
-// Map channelMix to the donut's expected shape. costPct unknown per channel
-// today, so we fall back to the global channelCostPct.
-function buildChannelDonut(k: Data) {
-  return toArray<Data["channelMix"][number]>(k.channelMix).slice(0, 6).map((c) => ({
-    name: c.channel,
-    revenue: c.revenue,
-    roomNights: c.reservations,
-    costPct: k.channelCostPct
-  }));
+// Donut slices by channel revenue (the global channel cost is not per channel).
+function buildChannelSlices(k: Data): CocoaDonutSlice[] {
+  return toArray<Data["channelMix"][number]>(k.channelMix)
+    .slice(0, 6)
+    .map((c) => ({ label: c.channel, value: c.revenue }));
 }
 
 // BAR recommendations: project absolute BAR levels into the visual shape the
@@ -364,94 +362,63 @@ function buildBarRecs(k: Data, asOf: string) {
   });
 }
 
-// Build pace points for the chart from raw pace rows.
-function buildPacePoints(pace: PaceData | null) {
-  return toArray<PaceRow>(pace?.rows).map((r) => ({
-    date: r.date,
-    otb: r.otb,
-    forecast: r.forecast,
-    lastYear: r.lastYear
-  }));
-}
-
 // ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
 export function GeneralManagerScreen() {
-  const hosted = useTabHost() !== null;
+  // Hosted in Mi día the container paints the eyebrow and the H1 and CocoaPage
+  // keeps the subtitle («datos a HH:MM») and the actions row (HostedHead).
   const propertyId = getActivePropertyId();
   const propertyName = getActiveProperty().propertyName;
-  const { data, loading, error, refresh } = useApiData<Data>(
-    `/dashboards/general-manager?propertyId=${propertyId}`,
-    { pollIntervalMs: 60000 }
-  );
-  const { data: pace, loading: paceLoading } = useApiData<PaceData>(
-    `/general-manager/pace?propertyId=${propertyId}&days=30`,
-    { pollIntervalMs: 120000 }
-  );
+  const { data, loading, error, refresh } = useApiData<Data>(`/dashboards/general-manager?propertyId=${propertyId}`, {
+    pollIntervalMs: 60000
+  });
+  const { data: pace, loading: paceLoading } = useApiData<PaceData>(`/general-manager/pace?propertyId=${propertyId}&days=${PACE_DAYS}`, {
+    pollIntervalMs: 120000
+  });
 
   const k = data;
   const isLoading = loading && !k;
   const degraded = toArray<string>(data?.degraded);
   const paceDegraded = toArray<string>(pace?.degraded);
-  const paceRows = toArray<PaceRow>(pace?.rows);
+  const paceRows = toArray<PaceRow>(pace?.rows).slice(0, PACE_DAYS);
 
   const headerActions: ReactNode = (
     <>
       <DegradedBanner degraded={[...degraded, ...paceDegraded]} />
-      {loading || paceLoading ? <span style={badgeStyle("info")}>cargando</span> : null}
-      {error ? <span style={badgeStyle("danger")}>{error}</span> : null}
-      <CocoaButton
-        variant="bordered"
-        tone="neutral"
-        size="small"
-        onClick={refresh}
-        aria-label="Refrescar"
-      >
+      {loading || paceLoading ? <CocoaBadge tone="info">cargando</CocoaBadge> : null}
+      {error ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} aria-label="Refrescar">
         Actualizar
       </CocoaButton>
     </>
   );
 
-  if (isLoading) {
-    return (
-      <div style={sectionStackStyle}>
-        {hosted ? (
-          <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
-        ) : (
-          <CocoaPageHeader
-            eyebrow={`Gerencia · ${propertyName}`}
-            title="Dashboard del director"
-            subtitle="Vista estratégica del día y del mes en curso"
-            actions={headerActions}
-          />
-        )}
-        <DashboardSkeleton />
-      </div>
-    );
-  }
+  return (
+    <CocoaPage
+      eyebrow={`Gerencia · ${k?.propertyName ?? propertyName}`}
+      title="Dashboard del director"
+      subtitle={k ? `Vista estratégica del día y del mes en curso · datos a ${asoFLabel(k.asOf)}` : "Vista estratégica del día y del mes en curso"}
+      actions={headerActions}
+      state={isLoading ? "loading" : !k ? "empty" : "ready"}
+      skeleton={<DashboardSkeleton />}
+      empty={{ title: "Sin datos del director hoy", message: "El cuadro de mando se rellena con la actividad de la propiedad a lo largo del día." }}
+      commands={[{ id: "general-manager-refresh", label: "Actualizar dashboard del director", run: refresh }]}
+    >
+      {k ? <DirectorDashboard k={k} degraded={degraded} paceRows={paceRows} paceDegraded={paceDegraded} /> : null}
+    </CocoaPage>
+  );
+}
 
-  if (!k) {
-    return (
-      <div style={sectionStackStyle}>
-        {hosted ? (
-          <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
-        ) : (
-          <CocoaPageHeader
-            eyebrow={`Gerencia · ${propertyName}`}
-            title="Dashboard del director"
-            subtitle="Vista estratégica del día y del mes en curso"
-            actions={headerActions}
-          />
-        )}
-        <CocoaCard variant="bordered" padding="lg">
-          <p style={cardMutedStyle}>Sin datos del director hoy</p>
-        </CocoaCard>
-      </div>
-    );
-  }
+interface DirectorDashboardProps {
+  k: Data;
+  degraded: string[];
+  paceRows: PaceRow[];
+  paceDegraded: string[];
+}
 
+function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDashboardProps) {
   // ---------------------------------------------------------------------------
   // Row 1 — Today snapshot strip: 11 KPI tiles.
   // ---------------------------------------------------------------------------
@@ -462,6 +429,22 @@ export function GeneralManagerScreen() {
   const arrivals = k.productivity.checkInsPlanned;
   const departures = k.productivity.checkOutsPlanned;
   const occupancySpark = paceRows.slice(0, 7).map((r) => r.otb);
+
+  // ---------------------------------------------------------------------------
+  // Row 2 — pace series, pickup bars, cancellation risk.
+  // ---------------------------------------------------------------------------
+  const paceSeries = buildPaceSeries(paceRows);
+  const paceDates = new Map(paceRows.map((r) => [formatDayMonth(r.date), formatFullDate(r.date)]));
+  const pickup = buildPickup7d(paceRows);
+  const risk = Math.max(0, Math.min(100, k.cancellationRiskScore));
+  const riskTone = thresholdTone(risk, RISK_THRESHOLDS, false);
+  const reservationsAtRisk = Math.round((risk / 100) * 20);
+
+  // ---------------------------------------------------------------------------
+  // Row 3 — channel mix.
+  // ---------------------------------------------------------------------------
+  const channelSlices = buildChannelSlices(k);
+  const channelTotal = channelSlices.reduce((sum, slice) => sum + Math.max(0, slice.value), 0);
 
   // ---------------------------------------------------------------------------
   // Row 7 — AI insights (anomalies, top 3 actions, demand spikes).
@@ -485,175 +468,106 @@ export function GeneralManagerScreen() {
 
   // VIPs in-house — backend exposes count only; we surface a single synthetic
   // entry showing the count for now until a per-guest list endpoint exists.
-  const vipsList: DirectorVipListItem[] = k.vipsInHouse > 0
-    ? [
-        {
-          guestId: "summary",
-          name: `${k.vipsInHouse} VIPs in-house`,
-          vipTier: "VIP",
-          status: "in-house"
-        }
-      ]
-    : [];
+  const vipsList: DirectorVipListItem[] =
+    k.vipsInHouse > 0
+      ? [
+          {
+            guestId: "summary",
+            name: `${k.vipsInHouse} VIPs in-house`,
+            vipTier: "VIP",
+            status: "in-house"
+          }
+        ]
+      : [];
 
   return (
-    <div style={sectionStackStyle}>
-      {hosted ? (
-        <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
-      ) : (
-        <CocoaPageHeader
-          eyebrow={`Gerencia · ${k.propertyName ?? propertyName}`}
-          title="Dashboard del director"
-          subtitle={`Vista estratégica del día y del mes en curso · datos a ${asoFLabel(k.asOf)}`}
-          actions={headerActions}
-        />
-      )}
-
+    <>
       {/* Row 1 — Today snapshot strip */}
-      <div className="cocoa-stagger" style={kpiStripStyle}>
-        <DirectorKpiTile
+      <CocoaKpiStrip stagger aria-label="Indicadores de hoy">
+        <CocoaKpi
           label="Ocupación"
           value={fmtPct(k.occupancy.today.value)}
           delta={occVsLyPct}
           deltaUnit="%"
           deltaLabel="vs LY"
-          deltaPolarity="positive-good"
+          polarity="positive-good"
           sparkline={occupancySpark}
           status={statusFromAnomalies(k, "occupancy")}
         />
-        <DirectorKpiTile
-          label="ADR"
-          value={fmtEur(k.adr.today.value)}
-          delta={adrVsLyPct}
-          deltaUnit="%"
-          deltaLabel="vs LY"
-          deltaPolarity="positive-good"
-          status={statusFromAnomalies(k, "adr")}
-        />
-        <DirectorKpiTile
-          label="RevPAR"
-          value={fmtEur(k.revpar.today.value)}
-          delta={revparVsLyPct}
-          deltaUnit="%"
-          deltaLabel="vs LY"
-          deltaPolarity="positive-good"
-          status={statusFromAnomalies(k, "revpar")}
-        />
+        <CocoaKpi label="ADR" value={fmtEur(k.adr.today.value)} delta={adrVsLyPct} deltaUnit="%" deltaLabel="vs LY" polarity="positive-good" status={statusFromAnomalies(k, "adr")} />
+        <CocoaKpi label="RevPAR" value={fmtEur(k.revpar.today.value)} delta={revparVsLyPct} deltaUnit="%" deltaLabel="vs LY" polarity="positive-good" status={statusFromAnomalies(k, "revpar")} />
         <DegradedCard label={DEGRADED_LABEL.channelCost} degraded={degraded} title="GOPPAR">
-          <DirectorKpiTile
-            label="GOPPAR"
-            value={fmtEur(k.goppar)}
-            deltaLabel="proxy"
-            deltaPolarity="positive-good"
-          />
+          <CocoaKpi label="GOPPAR" value={fmtEur(k.goppar)} deltaLabel="proxy" polarity="positive-good" />
         </DegradedCard>
-        <DirectorKpiTile
-          label="En casa"
-          value={fmtNumber(k.productivity.checkInsDone)}
-          deltaLabel={`/${k.productivity.checkInsPlanned} planificados`}
-          deltaPolarity="neutral"
-        />
-        <DirectorKpiTile
-          label="Arrivals"
-          value={fmtNumber(arrivals)}
-          deltaLabel="planificadas hoy"
-          deltaPolarity="neutral"
-        />
-        <DirectorKpiTile
-          label="Departures"
-          value={fmtNumber(departures)}
-          deltaLabel="planificadas hoy"
-          deltaPolarity="neutral"
-        />
-        <DirectorKpiTile
-          label="OOO rooms"
-          value={fmtNumber(k.alerts.blockedRooms)}
-          deltaLabel="bloqueadas"
-          deltaPolarity="negative-good"
-          status={statusFromCount(k.alerts.blockedRooms, 1, 5)}
-        />
-        <DirectorKpiTile
-          label="Ingresos hoy"
-          value={fmtEurCompact(k.revenue.today.value)}
-          delta={revVsLyPct}
-          deltaUnit="%"
-          deltaLabel="vs LY"
-          deltaPolarity="positive-good"
-        />
-        <DirectorKpiTile
-          label="Coste laboral"
-          value={fmtEurCompact(k.totalLaborCostToday)}
-          deltaLabel="hoy"
-          deltaPolarity="negative-good"
-        />
+        <CocoaKpi label="En casa" value={fmtNumber(k.productivity.checkInsDone)} deltaLabel={`/${k.productivity.checkInsPlanned} planificados`} polarity="neutral" />
+        <CocoaKpi label="Arrivals" value={fmtNumber(arrivals)} deltaLabel="planificadas hoy" polarity="neutral" />
+        <CocoaKpi label="Departures" value={fmtNumber(departures)} deltaLabel="planificadas hoy" polarity="neutral" />
+        <CocoaKpi label="OOO rooms" value={fmtNumber(k.alerts.blockedRooms)} deltaLabel="bloqueadas" polarity="negative-good" status={statusFromCount(k.alerts.blockedRooms, 1, 5)} />
+        <CocoaKpi label="Ingresos hoy" value={fmtEurCompact(k.revenue.today.value)} delta={revVsLyPct} deltaUnit="%" deltaLabel="vs LY" polarity="positive-good" />
+        <CocoaKpi label="Coste laboral" value={fmtEurCompact(k.totalLaborCostToday)} deltaLabel="hoy" polarity="negative-good" />
         <DegradedCard label={DEGRADED_LABEL.channelCost} degraded={degraded} title="Net contribution">
-          <DirectorKpiTile
-            label="Net contribution"
-            value={fmtEurCompact(k.netContributionToday)}
-            deltaLabel="hoy"
-            deltaPolarity="positive-good"
-            status={k.netContributionToday < 0 ? "critical" : "ok"}
-          />
+          <CocoaKpi label="Net contribution" value={fmtEurCompact(k.netContributionToday)} deltaLabel="hoy" polarity="positive-good" status={k.netContributionToday < 0 ? "critical" : "ok"} />
         </DegradedCard>
-      </div>
+      </CocoaKpiStrip>
 
       {/* Row 2 — Forward pace + Pickup + Cancellation risk (8/2/2) */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(8, 480)}>
+      <CocoaGrid aria-label="Pace, pickup y riesgo">
+        <CocoaSpan cols={8} min={480}>
           <DegradedCard label={DEGRADED_LABEL.pace} degraded={paceDegraded} title="Pace próximos 30 días">
-            <DirectorForwardPaceChart
-              data={buildPacePoints(pace)}
-              days={30}
-              valueLabel="Revenue €"
-              title="Pace próximos 30 días"
-            />
+            <CocoaSection title="Pace próximos 30 días">
+              {paceRows.length === 0 ? (
+                <CocoaState kind="empty" inline title="Sin datos de pickup todavía" />
+              ) : (
+                <CocoaChart.Line series={paceSeries} yLabel="Revenue €" tooltipTitle={(x) => paceDates.get(x) ?? x} aria-label="Pace próximos 30 días — Revenue €" />
+              )}
+            </CocoaSection>
           </DegradedCard>
-        </div>
-        <div style={spanStyle(2, 200)}>
+        </CocoaSpan>
+        <CocoaSpan cols={2} min={200}>
           <DegradedCard label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded} title="Pickup 7d">
-            <DirectorPickupBar
-              data={buildPickup7d(pace)}
-              valueLabel="Pickup 7d"
-            />
+            <CocoaSection title="Pickup 7d" meta="neto vs LY">
+              <CocoaChart.Bars data={pickup} aria-label="Pickup neto últimos 7 días" />
+            </CocoaSection>
           </DegradedCard>
-        </div>
-        <div style={spanStyle(2, 200)}>
-          <DirectorCancellationRiskGauge
-            score={k.cancellationRiskScore}
-            reservationsAtRisk={Math.round((k.cancellationRiskScore / 100) * 20)}
-            onReview={() => navigateTo("ReservationsListScreen")}
-          />
-        </div>
-      </div>
+        </CocoaSpan>
+        <CocoaSpan cols={2} min={200}>
+          <CocoaSection title="Riesgo cancelación">
+            <CocoaChart.Gauge
+              value={risk}
+              thresholds={RISK_THRESHOLDS}
+              label={`riesgo ${gaugeToneLabel(riskTone)}`}
+              caption={plural(reservationsAtRisk, "reserva en riesgo", "reservas en riesgo")}
+              aria-label={`Riesgo de cancelación ${Math.round(risk)}% (${gaugeToneLabel(riskTone)})`}
+            />
+            <div style={centerRowStyle}>
+              <CocoaButton variant="tinted" size="small" onClick={() => navigateTo("ReservationsListScreen")}>
+                Revisar →
+              </CocoaButton>
+            </div>
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
       {/* Row 3 — Segments + Comp-set + Channel mix + BAR recs (4/4/2/2) */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(4, 320)}>
-          <DirectorSegmentBars
-            segments={buildSegmentBars(k)}
-            valueLabel="ADR / Mix"
-          />
-        </div>
-        <div style={spanStyle(4, 320)}>
+      <CocoaGrid aria-label="Segmentos, comp-set, canales y BAR">
+        <CocoaSpan cols={4} min={320}>
+          <DirectorSegmentBars segments={buildSegmentBars(k)} valueLabel="ADR / Mix" />
+        </CocoaSpan>
+        <CocoaSpan cols={4} min={320}>
           <CompsetPlaceholder />
-        </div>
-        <div style={spanStyle(2, 240)}>
-          <DirectorChannelMixDonut
-            channels={buildChannelDonut(k)}
-            centerLabel="Mix de canales"
-          />
-        </div>
-        <div style={spanStyle(2, 240)}>
-          <DirectorBarRecommendations
-            recommendations={buildBarRecs(k, k.asOf)}
-            onApply={() => navigateTo("RevenueHomeDashboard")}
-            onViewAll={() => navigateTo("RevenueHomeDashboard")}
-          />
-        </div>
-      </div>
+        </CocoaSpan>
+        <CocoaSpan cols={2} min={240}>
+          <CocoaSection title="Mix de canales" meta={plural(channelSlices.length, "canal", "canales")}>
+            <CocoaChart.Donut slices={channelSlices} centerValue={fmtEurCompact(channelTotal)} centerLabel="revenue" aria-label="Mix de canales por revenue" />
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={2} min={240}>
+          <DirectorBarRecommendations recommendations={buildBarRecs(k, k.asOf)} onApply={() => navigateTo("RevenueHomeDashboard")} onViewAll={() => navigateTo("RevenueHomeDashboard")} />
+        </CocoaSpan>
+      </CocoaGrid>
 
       {/* Row 4 — Operations health mini-cards */}
-      <div style={opsHealthStripStyle}>
+      <CocoaKpiStrip min={200} aria-label="Salud operativa">
         <DirectorOpsHealthMini
           module="housekeeping"
           title="HK"
@@ -669,11 +583,7 @@ export function GeneralManagerScreen() {
             primaryCount={k.alerts.openIncidents}
             primaryLabel="abiertas"
             status={statusFromCount(k.alerts.openIncidents, 5, 10)}
-            breakdown={
-              k.alerts.emergencyIncidents > 0
-                ? [{ label: "críticas", count: k.alerts.emergencyIncidents, color: "var(--cocoa-danger)" }]
-                : undefined
-            }
+            breakdown={k.alerts.emergencyIncidents > 0 ? [{ label: "críticas", count: k.alerts.emergencyIncidents, color: toneColor("danger") }] : undefined}
             onDrillDown={() => navigateTo("MaintenanceDashboard")}
           />
         </DegradedCard>
@@ -695,68 +605,41 @@ export function GeneralManagerScreen() {
             onDrillDown={() => navigateTo("SafetyDashboard")}
           />
         </DegradedCard>
-        <DirectorOpsHealthMini
-          module="pos"
-          title="POS"
-          primaryCount={Math.round(k.revenue.today.value)}
-          primaryLabel="ingresos hoy €"
-          status="ok"
-          onDrillDown={() => navigateTo("PosDashboard")}
-        />
-      </div>
+        <DirectorOpsHealthMini module="pos" title="POS" primaryCount={Math.round(k.revenue.today.value)} primaryLabel="ingresos hoy €" status="ok" onDrillDown={() => navigateTo("PosDashboard")} />
+      </CocoaKpiStrip>
 
       {/* Row 5 — Guest experience: NPS, Reviews, Service requests, VIPs */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(3, 240)}>
-          <CocoaCard variant="bordered" padding="md">
-            <div style={cardHeadStyle}>
-              <h3 style={cardTitleStyle}>NPS 30d</h3>
-              <span style={cardMutedStyle}>{reviewsLast30} reviews</span>
-            </div>
-            <NpsSparkline value={nps} />
-          </CocoaCard>
-        </div>
-        <div style={spanStyle(3, 240)}>
-          <CocoaCard variant="bordered" padding="md">
-            <div style={cardHeadStyle}>
-              <h3 style={cardTitleStyle}>Reviews score</h3>
-              <span style={cardMutedStyle}>30 días</span>
-            </div>
+      <CocoaGrid aria-label="Experiencia del huésped">
+        <CocoaSpan cols={3} min={240}>
+          <CocoaSection title="NPS 30d" meta={`${reviewsLast30} reviews`}>
+            <NpsFigure value={nps} />
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={3} min={240}>
+          <CocoaSection title="Reviews score" meta="30 días">
             <ReviewsScore avgScore={avgScore} count={reviewsLast30} />
-          </CocoaCard>
-        </div>
-        <div style={spanStyle(3, 240)}>
-          <CocoaCard variant="bordered" padding="md">
-            <div style={cardHeadStyle}>
-              <h3 style={cardTitleStyle}>Service requests</h3>
-              <CocoaButton
-                variant="plain"
-                tone="accent"
-                size="small"
-                onClick={() => navigateTo("HousekeepingDashboard")}
-              >
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={3} min={240}>
+          <CocoaSection
+            title="Service requests"
+            action={
+              <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("HousekeepingDashboard")}>
                 Ver detalle
               </CocoaButton>
-            </div>
-            <ServiceRequestsList
-              openIncidents={k.alerts.openIncidents}
-              emergencyIncidents={k.alerts.emergencyIncidents}
-              degraded={degraded}
-            />
-          </CocoaCard>
-        </div>
-        <div style={spanStyle(3, 240)}>
-          <DirectorVipList
-            vips={vipsList}
-            max={5}
-            onSelectGuest={() => navigateTo("ReservationsListScreen")}
-          />
-        </div>
-      </div>
+            }
+          >
+            <ServiceRequestsList openIncidents={k.alerts.openIncidents} emergencyIncidents={k.alerts.emergencyIncidents} degraded={degraded} />
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={3} min={240}>
+          <DirectorVipList vips={vipsList} max={5} onSelectGuest={() => navigateTo("ReservationsListScreen")} />
+        </CocoaSpan>
+      </CocoaGrid>
 
       {/* Row 6 — Compliance widgets (VeriFactu · SES · TBAI · GDPR) */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(3, 240)}>
+      <CocoaGrid aria-label="Cumplimiento">
+        <CocoaSpan cols={3} min={240}>
           <DegradedCard label={DEGRADED_LABEL.verifactu} degraded={degraded} title="VeriFactu">
             <DirectorComplianceWidget
               authority="verifactu"
@@ -765,25 +648,18 @@ export function GeneralManagerScreen() {
               lastSubmission={
                 // The last-ack lookup is its own safe() query: omit the date
                 // rather than show "never acknowledged" when it failed.
-                isDegraded(DEGRADED_LABEL.verifactuLastAck, degraded)
-                  ? undefined
-                  : fmtCompactDateTime(k.complianceSummary.verifactu.last)
+                isDegraded(DEGRADED_LABEL.verifactuLastAck, degraded) ? undefined : fmtCompactDateTime(k.complianceSummary.verifactu.last)
               }
               onDrillDown={() => navigateTo("FiscalDashboard")}
             />
           </DegradedCard>
-        </div>
-        <div style={spanStyle(3, 240)}>
+        </CocoaSpan>
+        <CocoaSpan cols={3} min={240}>
           <DegradedCard label={DEGRADED_LABEL.ses} degraded={degraded} title="SES">
-            <DirectorComplianceWidget
-              authority="ses"
-              pendingCount={k.complianceSummary.ses.pending}
-              status={complianceStatusFor(k.complianceSummary.ses)}
-              onDrillDown={() => navigateTo("SesHospedajesSettings")}
-            />
+            <DirectorComplianceWidget authority="ses" pendingCount={k.complianceSummary.ses.pending} status={complianceStatusFor(k.complianceSummary.ses)} onDrillDown={() => navigateTo("SesHospedajesSettings")} />
           </DegradedCard>
-        </div>
-        <div style={spanStyle(3, 240)}>
+        </CocoaSpan>
+        <CocoaSpan cols={3} min={240}>
           <DegradedCard label={DEGRADED_LABEL.tbai} degraded={degraded} title="TBAI">
             <DirectorComplianceWidget
               authority="tbai"
@@ -793,42 +669,35 @@ export function GeneralManagerScreen() {
               onDrillDown={() => navigateTo("TbaiForal")}
             />
           </DegradedCard>
-        </div>
-        <div style={spanStyle(3, 240)}>
-          <DirectorComplianceWidget
-            authority="gdpr"
-            pendingCount={k.alerts.complianceFailing}
-            status={statusFromCount(k.alerts.complianceFailing, 1, 5)}
-            onDrillDown={() => navigateTo("ComplianceCenter")}
-          />
-        </div>
-      </div>
+        </CocoaSpan>
+        <CocoaSpan cols={3} min={240}>
+          <DirectorComplianceWidget authority="gdpr" pendingCount={k.alerts.complianceFailing} status={statusFromCount(k.alerts.complianceFailing, 1, 5)} onDrillDown={() => navigateTo("ComplianceCenter")} />
+        </CocoaSpan>
+      </CocoaGrid>
 
       {/* Row 7 — AI insights: anomalies, top 3 actions, demand spikes (5/4/3) */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(5, 320)}>
-          <CocoaCard variant="bordered" padding="md">
-            <div style={cardHeadStyle}>
-              <h3 style={cardTitleStyle}>Anomalías hoy</h3>
-              <span style={cardMutedStyle}>
-                <DegradedValue label={DEGRADED_LABEL.anomalies} degraded={degraded}>{topAnomalies.length}</DegradedValue> detectadas
-              </span>
-            </div>
-            <AnomaliesList anomalies={topAnomalies} />
-          </CocoaCard>
-        </div>
-        <div style={spanStyle(4, 320)}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "var(--cocoa-space-3)"
-            }}
+      <CocoaGrid aria-label="Insights de IA">
+        <CocoaSpan cols={5} min={320}>
+          <CocoaSection
+            title="Anomalías hoy"
+            meta={
+              <>
+                <DegradedValue label={DEGRADED_LABEL.anomalies} degraded={degraded}>
+                  {topAnomalies.length}
+                </DegradedValue>{" "}
+                detectadas
+              </>
+            }
           >
+            <AnomaliesList anomalies={topAnomalies} />
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={4} min={320}>
+          <div className="cocoa-stack" data-gap="3">
             {top3Actions.length === 0 ? (
-              <CocoaCard variant="bordered" padding="md">
-                <p style={cardMutedStyle}>Sin acciones recomendadas.</p>
-              </CocoaCard>
+              <CocoaSection>
+                <CocoaState kind="empty" inline title="Sin acciones recomendadas." />
+              </CocoaSection>
             ) : (
               top3Actions.map((a, i) => (
                 <DirectorAiInsightCard
@@ -846,22 +715,23 @@ export function GeneralManagerScreen() {
               ))
             )}
           </div>
-        </div>
-        <div style={spanStyle(3, 240)}>
-          <CocoaCard variant="bordered" padding="md">
-            <div style={cardHeadStyle}>
-              <h3 style={cardTitleStyle}>Demand spikes 14d</h3>
-              <span style={cardMutedStyle}>
-                <DegradedValue label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded}>{demandSpikes.length}</DegradedValue>
-              </span>
-            </div>
+        </CocoaSpan>
+        <CocoaSpan cols={3} min={240}>
+          <CocoaSection
+            title="Demand spikes 14d"
+            meta={
+              <DegradedValue label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded}>
+                {demandSpikes.length}
+              </DegradedValue>
+            }
+          >
             <DegradedNote label={DEGRADED_LABEL.paceLastYear} degraded={paceDegraded}>
               <DemandSpikeList rows={demandSpikes} />
             </DegradedNote>
-          </CocoaCard>
-        </div>
-      </div>
-    </div>
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+    </>
   );
 }
 
@@ -871,71 +741,25 @@ export function GeneralManagerScreen() {
 
 function CompsetPlaceholder() {
   return (
-    <CocoaCard variant="bordered" padding="md">
-      <div style={cardHeadStyle}>
-        <h3 style={cardTitleStyle}>RevPAR vs comp-set</h3>
-        <span style={cardMutedStyle}>RGI · ARI · MPI</span>
-      </div>
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "var(--cocoa-space-2)",
-          padding: "var(--cocoa-space-4)",
-          alignItems: "center",
-          justifyContent: "center",
-          textAlign: "center",
-          minHeight: 180,
-          border: "1px dashed var(--cocoa-separator)",
-          borderRadius: "var(--cocoa-radius-md)"
-        }}
-      >
-        <span style={{ ...cardMutedStyle, fontWeight: 600 }}>Conectar STR / CoStar</span>
-        <span style={cardMutedStyle}>
-          Sin feed externo. Activa la integración para ver el índice
-          competitivo.
-        </span>
-      </div>
-    </CocoaCard>
+    <CocoaSection title="RevPAR vs comp-set" meta="RGI · ARI · MPI">
+      <CocoaState kind="empty" dashed title="Conectar STR / CoStar" message="Sin feed externo. Activa la integración para ver el índice competitivo." />
+    </CocoaSection>
   );
 }
 
-interface NpsSparklineProps {
+interface NpsFigureProps {
   value?: number;
 }
 
-function NpsSparkline({ value }: NpsSparklineProps) {
+// Backend does not expose a per-day NPS series yet: a single figure in the
+// polarity tone (≥ 50 good · ≥ 0 warning · < 0 danger).
+function NpsFigure({ value }: NpsFigureProps) {
   const display = value !== undefined && Number.isFinite(value) ? value : undefined;
-  // Synthetic sparkline — we render a flat baseline + the current point as a
-  // simple SVG. Backend does not expose a per-day NPS series yet.
-  const tone: ManagementTone =
-    display === undefined
-      ? "neutral"
-      : display >= 50
-        ? "success"
-        : display >= 0
-          ? "warning"
-          : "danger";
+  const tone: CocoaTone = display === undefined ? "neutral" : display >= 50 ? "success" : display >= 0 ? "warning" : "danger";
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "baseline",
-        gap: "var(--cocoa-space-2)"
-      }}
-    >
-      <span
-        style={{
-          fontSize: "var(--cocoa-fs-large-title)",
-          fontWeight: 700,
-          color: toneToColorToken(tone),
-          fontVariantNumeric: "tabular-nums",
-          lineHeight: 1.1
-        }}
-      >
-        {display !== undefined ? Math.round(display) : "—"}
-      </span>
-      <span style={cardMutedStyle}>NPS</span>
+    <div className="cocoa-row" data-gap="2" data-align="baseline">
+      <span style={figureStyle(tone)}>{display !== undefined ? Math.round(display) : "—"}</span>
+      <span style={mutedStyle}>NPS</span>
     </div>
   );
 }
@@ -946,36 +770,11 @@ interface ReviewsScoreProps {
 }
 
 function ReviewsScore({ avgScore, count }: ReviewsScoreProps) {
-  const tone: ManagementTone =
-    avgScore === undefined
-      ? "neutral"
-      : avgScore >= 8.5
-        ? "success"
-        : avgScore >= 7
-          ? "warning"
-          : "danger";
+  const tone: CocoaTone = avgScore === undefined ? "neutral" : avgScore >= 8.5 ? "success" : avgScore >= 7 ? "warning" : "danger";
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--cocoa-space-1)"
-      }}
-    >
-      <span
-        style={{
-          fontSize: "var(--cocoa-fs-large-title)",
-          fontWeight: 700,
-          color: toneToColorToken(tone),
-          fontVariantNumeric: "tabular-nums",
-          lineHeight: 1.1
-        }}
-      >
-        {avgScore !== undefined ? avgScore.toFixed(2) : "—"}
-      </span>
-      <span style={cardMutedStyle}>
-        {count} review{count === 1 ? "" : "s"} agregadas
-      </span>
+    <div className="cocoa-stack" data-gap="1">
+      <span style={figureStyle(tone)}>{avgScore !== undefined ? avgScore.toFixed(2) : "—"}</span>
+      <span style={mutedStyle}>{plural(count, "review agregada", "reviews agregadas")}</span>
     </div>
   );
 }
@@ -989,7 +788,7 @@ interface ServiceRequestsListProps {
 function ServiceRequestsList({ openIncidents, emergencyIncidents, degraded }: ServiceRequestsListProps) {
   const openDegraded = isDegraded(DEGRADED_LABEL.openIncidents, degraded);
   const emergencyDegraded = isDegraded(DEGRADED_LABEL.emergencyIncidents, degraded);
-  const rows: Array<{ label: string; count: number; tone: ManagementTone; degradedLabel: string }> = [
+  const rows: Array<{ label: string; count: number; tone: CocoaTone; degradedLabel: string }> = [
     {
       label: "Abiertas",
       count: openIncidents,
@@ -1004,30 +803,14 @@ function ServiceRequestsList({ openIncidents, emergencyIncidents, degraded }: Se
     }
   ];
   return (
-    <ul
-      style={{
-        listStyle: "none",
-        margin: 0,
-        padding: 0,
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--cocoa-space-2)"
-      }}
-    >
+    <ul className="c22-section__list">
       {rows.map((r) => (
-        <li
-          key={r.label}
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            padding: "var(--cocoa-space-2) 0",
-            borderBottom: "1px solid var(--cocoa-separator)"
-          }}
-        >
-          <span style={cardMutedStyle}>{r.label}</span>
-          <strong style={{ color: toneToColorToken(r.tone), fontVariantNumeric: "tabular-nums" }}>
-            <DegradedValue label={r.degradedLabel} degraded={degraded}>{fmtNumber(r.count)}</DegradedValue>
+        <li key={r.label}>
+          <span style={mutedStyle}>{r.label}</span>
+          <strong style={inkStyle(r.tone)}>
+            <DegradedValue label={r.degradedLabel} degraded={degraded}>
+              {fmtNumber(r.count)}
+            </DegradedValue>
           </strong>
         </li>
       ))}
@@ -1041,43 +824,21 @@ interface AnomaliesListProps {
 
 function AnomaliesList({ anomalies }: AnomaliesListProps) {
   if (anomalies.length === 0) {
-    return <p style={cardMutedStyle}>Sin anomalías detectadas.</p>;
+    return <CocoaState kind="empty" inline title="Sin anomalías detectadas." />;
   }
   return (
-    <ul
-      style={{
-        listStyle: "none",
-        margin: 0,
-        padding: 0,
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--cocoa-space-2)"
-      }}
-    >
-      {anomalies.map((a, i) => {
-        const tone: ManagementTone =
-          a.severity === "high" ? "danger" : a.severity === "medium" ? "warning" : "info";
-        return (
-          <li
-            key={`${a.kind}-${i}`}
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 2,
-              padding: "var(--cocoa-space-2) 0",
-              borderBottom: "1px solid var(--cocoa-separator)"
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-              <strong style={{ fontSize: "var(--cocoa-fs-callout)", color: "var(--cocoa-label)" }}>
-                {a.kind.replace(/_/g, " ")}
-              </strong>
-              <span style={badgeStyle(tone)}>{a.severity}</span>
+    <ul className="c22-section__list">
+      {anomalies.map((a, i) => (
+        <li key={`${a.kind}-${i}`}>
+          <div className="cocoa-stack" data-gap="1" style={growStyle}>
+            <div className="cocoa-row" data-gap="2" data-justify="between">
+              <strong style={calloutStyle}>{a.kind.replace(/_/g, " ")}</strong>
+              <CocoaBadge tone={anomalyTone(a.severity)}>{a.severity}</CocoaBadge>
             </div>
-            <span style={cardMutedStyle}>{a.message}</span>
-          </li>
-        );
-      })}
+            <span style={mutedStyle}>{a.message}</span>
+          </div>
+        </li>
+      ))}
     </ul>
   );
 }
@@ -1088,40 +849,16 @@ interface DemandSpikeListProps {
 
 function DemandSpikeList({ rows }: DemandSpikeListProps) {
   if (rows.length === 0) {
-    return <p style={cardMutedStyle}>Sin demanda anómala próxima.</p>;
+    return <CocoaState kind="empty" inline title="Sin demanda anómala próxima." />;
   }
   return (
-    <ul
-      style={{
-        listStyle: "none",
-        margin: 0,
-        padding: 0,
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--cocoa-space-1)"
-      }}
-    >
+    <ul className="c22-section__list">
       {rows.map((r) => {
         const pct = r.lastYear > 0 ? ((r.otb - r.lastYear) / r.lastYear) * 100 : 0;
         return (
-          <li
-            key={r.date}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              padding: "var(--cocoa-space-1) 0"
-            }}
-          >
-            <span style={cardMutedStyle}>{r.date}</span>
-            <strong
-              style={{
-                color: toneToColorToken("success"),
-                fontVariantNumeric: "tabular-nums"
-              }}
-            >
-              {percent(pct, { signDisplay: "always", maximumFractionDigits: 0 })} frente al año anterior
-            </strong>
+          <li key={r.date}>
+            <span style={mutedStyle}>{r.date}</span>
+            <strong style={inkStyle("success")}>{percent(pct, { signDisplay: "always", maximumFractionDigits: 0 })} frente al año anterior</strong>
           </li>
         );
       })}
@@ -1130,75 +867,18 @@ function DemandSpikeList({ rows }: DemandSpikeListProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Skeleton loading state — mimics the 7-row layout above.
+// Skeleton loading state — mirrors the 7-row layout above (same spans, so
+// the content lands without a layout shift).
 // ---------------------------------------------------------------------------
 
 function DashboardSkeleton() {
-  const cardSkeletonStyle: CSSProperties = {
-    height: 110,
-    borderRadius: "var(--cocoa-radius-md)",
-    background:
-      "linear-gradient(90deg, var(--cocoa-background-control) 0%, var(--cocoa-separator) 50%, var(--cocoa-background-control) 100%)",
-    backgroundSize: "200% 100%",
-    animation: "cocoa-skeleton-shimmer 1.4s ease-in-out infinite"
-  };
-  const tallSkeletonStyle: CSSProperties = { ...cardSkeletonStyle, height: 240 };
-  const tile = <div style={cardSkeletonStyle} aria-hidden="true" />;
-  const tall = <div style={tallSkeletonStyle} aria-hidden="true" />;
-
   return (
-    <div style={sectionStackStyle} aria-busy="true" aria-label="Cargando dashboard del director">
-      <style>{`
-        @keyframes cocoa-skeleton-shimmer {
-          0%   { background-position: 200% 0; }
-          100% { background-position: -200% 0; }
-        }
-      `}</style>
-      {/* Row 1: 11 KPI tiles */}
-      <div style={kpiStripStyle}>
-        {Array.from({ length: 11 }, (_, i) => (
-          <div key={`r1-${i}`}>{tile}</div>
-        ))}
-      </div>
-      {/* Row 2: 8/2/2 */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(8, 480)}>{tall}</div>
-        <div style={spanStyle(2, 200)}>{tall}</div>
-        <div style={spanStyle(2, 200)}>{tall}</div>
-      </div>
-      {/* Row 3: 4/4/2/2 */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(4, 320)}>{tall}</div>
-        <div style={spanStyle(4, 320)}>{tall}</div>
-        <div style={spanStyle(2, 240)}>{tall}</div>
-        <div style={spanStyle(2, 240)}>{tall}</div>
-      </div>
-      {/* Row 4: ops health */}
-      <div style={opsHealthStripStyle}>
-        {Array.from({ length: 5 }, (_, i) => (
-          <div key={`r4-${i}`}>{tile}</div>
-        ))}
-      </div>
-      {/* Row 5: 4 cards */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(3, 240)}>{tile}</div>
-        <div style={spanStyle(3, 240)}>{tile}</div>
-        <div style={spanStyle(3, 240)}>{tile}</div>
-        <div style={spanStyle(3, 240)}>{tile}</div>
-      </div>
-      {/* Row 6: 4 compliance */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(3, 240)}>{tile}</div>
-        <div style={spanStyle(3, 240)}>{tile}</div>
-        <div style={spanStyle(3, 240)}>{tile}</div>
-        <div style={spanStyle(3, 240)}>{tile}</div>
-      </div>
-      {/* Row 7: 5/4/3 */}
-      <div className="gm-grid" style={gridRowStyle}>
-        <div style={spanStyle(5, 320)}>{tall}</div>
-        <div style={spanStyle(4, 320)}>{tall}</div>
-        <div style={spanStyle(3, 240)}>{tall}</div>
-      </div>
+    <div className="cocoa-stack" data-gap="4" aria-busy="true" aria-label="Cargando dashboard del director">
+      <CocoaSkeleton.Strip count={11} label="Cargando indicadores de hoy…" />
+      <CocoaSkeleton.Grid rows={[[8, 2, 2], [4, 4, 2, 2]]} label="Cargando pace y mix…" />
+      <CocoaSkeleton.Strip count={5} min={200} label="Cargando salud operativa…" />
+      <CocoaSkeleton.Grid rows={[[3, 3, 3, 3], [3, 3, 3, 3]]} height={110} label="Cargando experiencia y cumplimiento…" />
+      <CocoaSkeleton.Grid rows={[[5, 4, 3]]} label="Cargando insights…" />
     </div>
   );
 }

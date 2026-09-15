@@ -5,7 +5,7 @@
 // typed twice.
 //
 //   - BACKOFFICE_ROUTES  = allUrls() of the tree: 64 items + 80 tabs/sub-URLs +
-//                          20 dev-only + 2 public = 166 URLs. The base URL of a
+//                          21 dev-only + 2 public = 167 URLs. The base URL of a
 //                          tab container always precedes its tabs, so
 //                          `pathForScreen` returns the first static route.
 //   - LEGACY_ROUTES      = the 205 old /backoffice/* paths (NAV_TREE.legacyRoutes),
@@ -17,7 +17,7 @@
 //   - LEGACY_SCREEN_KEYS = the 24 key aliases (NAV_TREE.aliases): still valid
 //                          SCREEN_COMPONENTS keys, resolved to their canonical
 //                          screen URL.
-//   - /desarrollo/*      = the 20 dev-only screens behind ONE guard
+//   - /desarrollo/*      = the 21 dev-only screens behind ONE guard
 //                          (`isDevRouteAllowed`: dev mode AND platform admin).
 //
 // Pure module: no `window`, no React; App.tsx owns the history writes.
@@ -78,7 +78,7 @@ function buildRoutes(): BackofficeRoute[] {
   return routes;
 }
 
-/** The 166 URLs the shell serves, in tree order (base URL before its tabs). */
+/** The 167 URLs the shell serves, in tree order (base URL before its tabs). */
 export const BACKOFFICE_ROUTES: readonly BackofficeRoute[] = buildRoutes();
 
 /** The 205 old /backoffice/* paths and the tree URL each one lands on (§5 of the plan). */
@@ -373,7 +373,7 @@ export type DevGuardInput = {
   isPlatformAdmin?: boolean | null;
 };
 
-/** ONE guard for the 20 /desarrollo/* screens: dev mode (`?dev=1` or storage) AND the platform admin. */
+/** ONE guard for the 21 /desarrollo/* screens: dev mode (`?dev=1` or storage) AND the platform admin. */
 export function isDevRouteAllowed(input: DevGuardInput): boolean {
   return isDevModeEnabled({ search: input.search, storageValue: input.storageValue }) && input.isPlatformAdmin === true;
 }

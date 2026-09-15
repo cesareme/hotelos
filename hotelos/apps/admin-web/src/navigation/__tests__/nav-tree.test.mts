@@ -46,7 +46,7 @@ describe("nav-tree · generated tree shape", () => {
     );
     assert.equal(NAV_TREE.meta.counts.items, 64);
     assert.equal(NAV_TREE.meta.counts.tabs, 80);
-    assert.equal(NAV_TREE.devOnly.length, 20);
+    assert.equal(NAV_TREE.devOnly.length, 21);
     assert.equal(NAV_TREE.publicScreens.length, 2);
   });
 
@@ -128,7 +128,7 @@ describe("nav-tree · lookups", () => {
 
   it("lists every URL the router must register, unique and without /backoffice", () => {
     const urls = allUrls();
-    assert.equal(urls.length, 64 + 80 + 20 + 2);
+    assert.equal(urls.length, 64 + 80 + 21 + 2);
     assert.equal(new Set(urls).size, urls.length);
     assert.ok(urls.every((url) => !url.startsWith("/backoffice")));
   });

@@ -1,8 +1,15 @@
 /* ============================================================
-   Anfitorio — Mobile / touch / iOS Safari layer
-   Imported LAST from styles.css so it wins the cascade. Everything
-   here is additive and scoped to touch or small viewports; the
-   desktop experience is untouched.
+   Anfitorio Cocoa 22 — Mobile / touch / iOS Safari layer (§5.1)
+   Imported LAST and UNLAYERED so it wins over the legacy sheet and over
+   the Cocoa 22 sheets. Additive: scoped to touch (pointer: coarse) or to
+   the phone/tablet breakpoints; the desktop experience is untouched.
+
+   What generalises the canon rules to the whole app:
+     · 100dvh shells, safe-area on toolbar / drawers / bars
+     · 44 px targets for every control on touch, 16 px inputs (no iOS zoom)
+     · < 600: every rigid multi-column grid (legacy classes AND inline
+       repeat(2|3|4|12, 1fr) styles) stacks to one column
+     · < 600: wide tables scroll inside themselves, never the page
    ============================================================ */
 
 /* ---- iOS: remove the grey tap-flash on every interactive element ---- */
@@ -10,72 +17,263 @@
   -webkit-tap-highlight-color: transparent;
 }
 
-/* ---- Dynamic viewport height ----
-   The Safari address bar shrinks 100vh, so the shell and the sidebar
-   overflow / get cut off. dvh excludes the chrome. Browsers without dvh
-   simply ignore these and keep the base 100vh rule. */
+/* ---- Dynamic viewport height (Safari address bar) ---- */
 .bo-shell { min-height: 100dvh; }
 .bo-sidebar { height: 100dvh; -webkit-overflow-scrolling: touch; }
 
-/* ---- Safe-area (notch / home indicator) ----
-   viewport-fit=cover (in index.html) makes env() non-zero. Let the sticky
-   top bar clear the notch and the sidebar/workspace clear the home bar. */
+/* ---- Safe-area (notch / home indicator); viewport-fit=cover in index.html ---- */
 .bo-topbar {
   padding-top: env(safe-area-inset-top);
   height: calc(var(--topbar-h) + env(safe-area-inset-top));
 }
 .bo-sidebar { padding-bottom: env(safe-area-inset-bottom); }
-.bo-workspace { padding-bottom: max(var(--space-6), env(safe-area-inset-bottom)); }
+.bo-workspace { padding-bottom: max(var(--cocoa-space-5), env(safe-area-inset-bottom)); }
 
 /* ============================================================
    COARSE POINTER (finger) — phones & tablets, any width.
    ============================================================ */
 @media (pointer: coarse) {
-  /* iOS auto-zooms when a focused control has font-size < 16px. Force 16px
-     on every form control (!important beats the 13px inline Cocoa tokens). */
-  input,
+  /* iOS auto-zooms when a focused control has font-size < 16px. */
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
   select,
   textarea {
     font-size: 16px !important;
   }
 
-  /* Momentum scrolling inside scrollable regions. */
+  /* Momentum scrolling inside every scroll region. */
   .bo-table-wrap,
   .bo-sidebar,
-  .bo-workspace {
+  .bo-workspace,
+  .cocoa-content,
+  .cocoa-scroll-x,
+  .c22-scroll-area,
+  .c22-table-wrap,
+  .c22-drawer__body,
+  .c22-tablist {
     -webkit-overflow-scrolling: touch;
   }
 
-  /* Switch track is only 32×20 / 52×32. Expand the TAP area with an invisible
-     ::before (the track stays its visual size — no distortion). */
-  .cocoa-switch {
-    position: relative;
-  }
+  /* Switch track is only 32×20 / 52×32: expand the TAP area invisibly. */
+  .cocoa-switch { position: relative; }
   .cocoa-switch::before {
     content: "";
     position: absolute;
     inset: -12px;
   }
 
-  /* Icon buttons ship at 36px → bump to a 44px target on touch. */
+  /* 44 px targets (measured: toolbar icons were 32 wide). Height only —
+     widths stay natural so rows of buttons still fit. */
   .bo-icon-button,
-  .bo-nav-toggle {
-    min-width: 44px;
-    min-height: 44px;
+  .bo-nav-toggle,
+  .bo-sidebar-close,
+  .bo-nav-item,
+  .bo-nav-subgroup-head,
+  .bo-row-button,
+  .bo-button,
+  .bo-button-link,
+  button.primary,
+  button.ghost,
+  button.danger,
+  button.bo-pill,
+  :is(.cocoa-content, .bo-workspace) button:not([class]):not([data-cocoa] *),
+  :is(.cocoa-content, .bo-workspace) [role="tab"],
+  :is(.cocoa-content, .bo-workspace) [role="menuitem"],
+  .c22-kpi[role="button"],
+  .cocoa-kpi[role="button"],
+  .c22-table tbody tr[data-interactive="true"] > td,
+  .cocoa-table tbody tr[tabindex] > td {
+    min-height: var(--cocoa-touch-target);
+  }
+  .bo-icon-button,
+  .bo-nav-toggle,
+  .bo-sidebar-close,
+  .cocoa-shell > [data-cocoa="toolbar"] button,
+  .cocoa-shell > .cocoa-toolbar button {
+    min-width: var(--cocoa-touch-target);
+    min-height: var(--cocoa-touch-target);
+  }
+  /* The sidebar skin injected by navigation/Sidebar.tsx (a <style> in the
+     body, unlayered, `.bo-sidebar .bo-nav-item` = 0,2,0 with min-height 38)
+     beats the list above by source order: `:root` lifts the sidebar targets
+     to 0,3,0 (measured: 38 px items in the phone drawer). */
+  :root .bo-sidebar :is(.bo-nav-item, .bo-nav-group-head, .bo-nav-subgroup-head, .bo-brand-home, .bo-sidebar-close) {
+    min-height: var(--cocoa-touch-target);
+  }
+  /* Form controls reach 44 px on touch (dense 28 px on desktop). CocoaSelect
+     and CocoaDatePicker grow in JS (useCoarsePointer); CocoaInput relies on
+     this rule for the height and on the 16 px rule above for the zoom — the
+     base in cocoa-22.css is `.c22-field :where(…)` (0,1,0) on purpose, so
+     the 0,3,1 / 0,1,1 selectors below win (they lost to 0,6,1 before). */
+  .fp-field :is(input, select),
+  .bo-form-field > :is(input, select),
+  .c22-field :is(input:not([type="checkbox"]):not([type="radio"]), select),
+  .cocoa-input > :is(input, textarea),
+  [data-cocoa="search"] input,
+  :is(.cocoa-content, .bo-workspace) :is(input:not([class]):not([data-cocoa] *):not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]):not([type="hidden"]), select:not([class]):not([data-cocoa] *)) {
+    min-height: var(--cocoa-touch-target);
+  }
+  /* Table rows tall enough to tap. */
+  .c22-table tbody td,
+  :is(.cocoa-content, .bo-workspace) table:not(.cocoa-table) tbody td {
+    padding-top: var(--cocoa-space-3);
+    padding-bottom: var(--cocoa-space-3);
   }
 }
 
 /* ============================================================
-   NARROW (phone, < 600px) — stack rigid multi-column grids.
+   TABLET & PHONE (< 900px) — header actions wrap, split views stack.
+   ============================================================ */
+@media (max-width: 899px) {
+  .bo-page-head-actions,
+  .c22-page__actions,
+  .c22-actions-row {
+    flex-wrap: wrap;
+  }
+  .bo-split { grid-template-columns: minmax(0, 1fr); }
+  /* Hosted actions row: never overflow the toolbar strip. */
+  .cocoa-content [data-cocoa="toolbar"][data-variant="content"] { flex-wrap: wrap; }
+}
+
+/* ============================================================
+   PHONE (< 600px) — one column everywhere, no page-level x-scroll.
    ============================================================ */
 @media (max-width: 599px) {
-  /* The director dashboard's 12-column rows squish to ~28px columns on a
-     phone. Collapse to a single column and let every span-N child take the
-     full width (overrides the inline grid-column: span N). */
-  .gm-grid {
-    grid-template-columns: 1fr !important;
+  /* Legacy multi-column grids → one column (generalises .gm-grid). */
+  .bo-grid,
+  .bo-grid.two,
+  .bo-grid.three,
+  .bo-split,
+  .rev-kpi-grid,
+  .cm-stat-grid,
+  .rev-home-grid,
+  .fp-grid,
+  .bo-import-preview {
+    grid-template-columns: minmax(0, 1fr);
   }
-  .gm-grid > * {
+  /* Inline equal-column grids written in screens (style={{ gridTemplateColumns }}).
+     Only equal-fraction patterns are matched so calendars (repeat(7…)) and
+     icon+text layouts (auto 1fr) keep their shape. */
+  .cocoa-content :is([style*="repeat(12,"], [style*="repeat(2, 1fr)"], [style*="repeat(3, 1fr)"], [style*="repeat(4, 1fr)"], [style*="repeat(2,1fr)"], [style*="repeat(3,1fr)"], [style*="repeat(4,1fr)"], [style*="1fr 1fr"]) {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .cocoa-content :is([style*="repeat(12,"], [style*="repeat(2, 1fr)"], [style*="repeat(3, 1fr)"], [style*="repeat(4, 1fr)"], [style*="repeat(2,1fr)"], [style*="repeat(3,1fr)"], [style*="repeat(4,1fr)"], [style*="1fr 1fr"]) > * {
     grid-column: 1 / -1 !important;
   }
+
+  /* Page header stacks; actions fill the width. */
+  .bo-page-head {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--cocoa-space-3);
+  }
+  .bo-page-title,
+  .cocoa-content h1 { font-size: var(--cocoa-fs-title-1); white-space: normal; }
+  .bo-page-head-actions { width: 100%; }
+  .bo-page-head-actions > * { flex: 1 1 auto; justify-content: center; }
+
+  /* Cards tighten to 16 px on phones. */
+  .bo-card,
+  .bo-section,
+  .bo-hero,
+  .fp-page,
+  .c22-section,
+  .c22-form-section { padding: var(--cocoa-space-4); }
+
+  /* KPI figures: 32 px still fits 358 px; secondary tiles go compact. */
+  .bo-metric { font-size: var(--cocoa-fs-kpi-compact); }
+
+  /* Wide tables scroll inside themselves (never the page). Only the tables a
+     Cocoa primitive already scrolls are excluded (CocoaTable's wrapper,
+     CocoaScrollArea): a raw <table> inside a CocoaCard/CocoaSection is a
+     legacy table and must scroll too (measured on /hoy/operaciones: the HK
+     table stayed `display: table` at 506 px because `[data-cocoa] *`
+     excluded everything inside the card). */
+  .cocoa-content table:not(.c22-table):not(.cocoa-table):not([data-cocoa="table-wrap"] *):not([data-cocoa="scroll-area"] *):not(.c22-table-wrap *):not(.cocoa-table-wrap *):not(.c22-scroll-area *),
+  .bo-workspace table:not(.c22-table):not(.cocoa-table) {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .cocoa-content pre,
+  .cocoa-content code:not(:where(pre code)) {
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  /* Legacy sticky form actions behave like the Cocoa action bar. */
+  .fp-sticky-actions {
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    margin: 0;
+    padding: var(--cocoa-space-2) var(--cocoa-space-4);
+    padding-bottom: calc(var(--cocoa-space-2) + env(safe-area-inset-bottom));
+    background: var(--cocoa-background-content);
+    box-shadow: var(--cocoa-shadow-popover);
+    border-top: 0;
+    z-index: var(--cocoa-z-toolbar);
+  }
+  .fp-sticky-actions > button { flex: 1 1 0; min-height: var(--cocoa-touch-target); }
+  .cocoa-content:has(.fp-sticky-actions) {
+    padding-bottom: calc(var(--cocoa-action-bar-height) + var(--cocoa-space-4) + env(safe-area-inset-bottom));
+  }
+
+  /* Rigid row layouts wrap instead of overflowing. */
+  .bo-row,
+  .bo-actions,
+  .rev-toolbar,
+  .cm-actions { flex-wrap: wrap; }
+  .rev-toolbar-group { min-width: 0; width: 100%; }
+  .bo-topbar-search-kbd { display: none; }
+
+  /* Legacy bridge, measured at 390 (review#13): content clipped by the
+     `overflow-x: hidden` of .cocoa-content in 4 of 8 non-migrated screens.
+     1. Inline `display: flex` rows of legacy screens wrap (rows that opt out
+        with `nowrap` or stack as `column` keep their layout; primitives
+        manage their own rows). /recepcion/reservas/lista: 694 px wide. */
+  .cocoa-content [style*="display: flex"]:not([style*="wrap"]):not([style*="column"]):not([data-cocoa]):not([data-cocoa] *) {
+    flex-wrap: wrap;
+  }
+  /* 2. Legacy tablists (components/v2/SegmentedControl: inline-flex + nowrap
+        pills) scroll like .c22-tablist instead of pushing the page («Canceladas»
+        at x = 690). */
+  .cocoa-content [role="tablist"]:not([data-cocoa]):not([data-cocoa] *):not(.c22-tablist) {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  .cocoa-content [role="tablist"]:not([data-cocoa]):not([data-cocoa] *):not(.c22-tablist)::-webkit-scrollbar { display: none; }
+  .cocoa-content [role="tablist"]:not([data-cocoa]):not([data-cocoa] *):not(.c22-tablist) > * { flex: 0 0 auto; scroll-snap-align: start; }
+  /* 3. Classless form controls never exceed the viewport (a <select> is sized
+        by its longest <option>: 488 px on /comercial/canales); a <label> that
+        is a flex item shrinks with it. */
+  .cocoa-content :is(select, input:not([type="checkbox"]):not([type="radio"]), textarea, label):not([data-cocoa] *) {
+    max-width: 100%;
+    min-width: 0;
+  }
+  /* 4. Rate grid status bar (components/cocoa-rate-grid/rate-grid.css, loaded
+        after this sheet → .cocoa-content lifts the specificity): the actions
+        block is flex-shrink: 0 and pushed «Revisar y publicar» to x = 548. */
+  .cocoa-content .crg-status { padding-inline: var(--cocoa-space-3); }
+  .cocoa-content .crg-status__actions { flex: 1 1 100%; justify-content: flex-start; }
+  .cocoa-content .crg-status__actions > * { flex: 1 1 auto; }
+  .cocoa-content .crg-status__text,
+  .cocoa-content .crg-status__meta { white-space: normal; }
+
+  /* Long words (emails, codes) never force horizontal scroll. */
+  .cocoa-content { overflow-wrap: anywhere; }
+}
+
+/* ============================================================
+   Landscape phones: keep the toolbar compact, drop safe-area top.
+   ============================================================ */
+@media (max-height: 480px) and (orientation: landscape) {
+  .c22-drawer[data-side="bottom"] { max-height: 100dvh; border-radius: 0; }
 }

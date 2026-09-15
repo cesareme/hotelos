@@ -38,7 +38,8 @@ export type HostedHeadProps = Pick<CocoaPageHeaderProps, "title" | "subtitle" | 
   eyebrow?: string;
 };
 
-const subtitleStyle = { color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)", margin: 0, flex: "1 1 320px", minWidth: 0 } as const;
+// The subtitle sits in a COLUMN flex (leadStyle): a flex-basis here would become its height.
+const subtitleStyle = { color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)", margin: 0, flex: "0 0 auto", minWidth: 0 } as const;
 const leadStyle = { display: "flex", flexDirection: "column", gap: "var(--cocoa-space-3)", flex: "1 1 320px", minWidth: 0 } as const;
 const actionsStyle = { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "var(--cocoa-space-2)" } as const;
 

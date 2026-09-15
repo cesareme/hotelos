@@ -22,13 +22,7 @@
 //     screen owns the navigation target per module — this component only
 //     forwards the click.
 
-import {
-  useCallback,
-  useMemo,
-  type CSSProperties,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type ReactNode
-} from "react";
+import { useMemo, type CSSProperties, type ReactNode } from "react";
 
 import { CocoaCard } from "../cocoa/CocoaCard";
 import { WrenchIcon } from "../cocoa-icons/NavigationIcons";
@@ -378,17 +372,6 @@ export function DirectorOpsHealthMini({
     fontFeatureSettings: '"tnum"'
   };
 
-  const handleKeyDown = useCallback(
-    (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      if (!isInteractive) return;
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        onDrillDown?.();
-      }
-    },
-    [isInteractive, onDrillDown]
-  );
-
   const hasBreakdown = Boolean(breakdown && breakdown.length > 0);
   const hasDelta = typeof deltaVsYesterday === "number";
 
@@ -438,15 +421,11 @@ export function DirectorOpsHealthMini({
       variant="plain"
       padding="sm"
       onClick={onDrillDown}
-      className={isInteractive ? "cocoa-focus-ring" : undefined}
+      aria-label={isInteractive ? ariaLabel : undefined}
     >
-      <div
-        style={containerStyle}
-        role={isInteractive ? "button" : "group"}
-        tabIndex={isInteractive ? 0 : undefined}
-        onKeyDown={isInteractive ? handleKeyDown : undefined}
-        aria-label={isInteractive ? ariaLabel : undefined}
-      >
+      {/* One tab stop per tile: CocoaCard is the button (role, tabIndex,
+          Enter/Space, focus ring); the inner div is plain content. */}
+      <div style={containerStyle} role={isInteractive ? undefined : "group"}>
         <div style={headerRowStyle}>
           <span style={iconStyle} aria-hidden="true">
             <ModuleIcon size={14} />

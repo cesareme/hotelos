@@ -1,4 +1,9 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+// CocoaSearchInput — pill search field (COCOA-22.md §3.1 «búsqueda»,
+// §4 list toolbar): control bg, separator border, radius full, leading
+// magnifier, clear button when there is text, optional debounce, focus ring
+// via :focus state on the container.
+
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 export type CocoaSearchInputProps = {
   value: string;
@@ -6,19 +11,19 @@ export type CocoaSearchInputProps = {
   placeholder?: string;
   debounceMs?: number;
   onClear?: () => void;
+  /** Enter with the current (undebounced) text. */
+  onSubmit?: (value: string) => void;
   autoFocus?: boolean;
+  id?: string;
+  name?: string;
+  /** Accessible name (default «Buscar»). */
+  "aria-label"?: string;
+  className?: string;
+  style?: CSSProperties;
 };
 
-const containerStyle: CSSProperties = {
-  position: "relative",
-  display: "inline-flex",
-  alignItems: "center",
-  width: "100%"
-};
+const containerStyle: CSSProperties = { position: "relative", display: "inline-flex", alignItems: "center", width: "100%", minWidth: 0 };
 
-// audit 2026-06 R2 · #11 a11y: outline:none with no focus-visible replacement
-// was WCAG 2.4.7 fail. inputStyle no longer suppresses outline; the container
-// picks up :focus-within and applies the shared focus-ring token instead.
 const inputStyleBase: CSSProperties = {
   width: "100%",
   boxSizing: "border-box",
@@ -30,21 +35,11 @@ const inputStyleBase: CSSProperties = {
   color: "inherit",
   outline: "none",
   appearance: "none",
-  WebkitAppearance: "none"
+  WebkitAppearance: "none",
+  transition: "border-color var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out)"
 };
 
-const iconStyle: CSSProperties = {
-  position: "absolute",
-  left: 10,
-  top: "50%",
-  transform: "translateY(-50%)",
-  pointerEvents: "none",
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  color: "currentColor",
-  opacity: 0.55
-};
+const iconStyle: CSSProperties = { position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", display: "inline-flex", alignItems: "center", justifyContent: "center", color: "var(--cocoa-label-secondary)" };
 
 const clearBtnStyle: CSSProperties = {
   position: "absolute",
@@ -60,29 +55,26 @@ const clearBtnStyle: CSSProperties = {
   border: "none",
   borderRadius: "var(--cocoa-radius-full)",
   cursor: "pointer",
-  color: "currentColor",
-  opacity: 0.55,
+  color: "var(--cocoa-label-secondary)",
   padding: 0
 };
 
 export function CocoaSearchInput(props: CocoaSearchInputProps) {
-  const { value, onChange, placeholder, debounceMs, onClear, autoFocus } = props;
+  const { value, onChange, placeholder, debounceMs, onClear, onSubmit, autoFocus, id, name, "aria-label": ariaLabel = "Buscar", className, style } = props;
   const inputRef = useRef<HTMLInputElement | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [focused, setFocused] = useState(false);
   const inputStyle: CSSProperties = {
     ...inputStyleBase,
+    borderColor: focused ? "var(--cocoa-accent)" : "var(--cocoa-separator)",
     boxShadow: focused ? "0 0 0 3px var(--cocoa-focus-ring)" : undefined
   };
-  // Local mirror of the input text so typing feels instant while we debounce the
-  // call up to the parent. Sync from `value` only when it changes externally.
+  // Local mirror so typing feels instant while the parent gets the debounced value.
   const [local, setLocal] = useState<string>(value);
   const lastEmittedRef = useRef<string>(value);
 
   useEffect(() => {
-    if (autoFocus) {
-      inputRef.current?.focus();
-    }
+    if (autoFocus) inputRef.current?.focus();
   }, [autoFocus]);
 
   useEffect(() => {
@@ -133,8 +125,23 @@ export function CocoaSearchInput(props: CocoaSearchInputProps) {
     inputRef.current?.focus();
   };
 
+  const handleKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter" && onSubmit) {
+      event.preventDefault();
+      if (timerRef.current !== null) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+        emit(local);
+      }
+      onSubmit(local);
+    } else if (event.key === "Escape" && local !== "") {
+      event.preventDefault();
+      handleClear();
+    }
+  };
+
   return (
-    <div style={containerStyle}>
+    <div className={["cocoa-search", className].filter(Boolean).join(" ")} style={{ ...containerStyle, ...style }} data-cocoa="search">
       <span style={iconStyle} aria-hidden="true">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.5" />
@@ -143,23 +150,22 @@ export function CocoaSearchInput(props: CocoaSearchInputProps) {
       </span>
       <input
         ref={inputRef}
+        id={id}
+        name={name}
         type="search"
         role="searchbox"
+        aria-label={ariaLabel}
         value={local}
         placeholder={placeholder}
         style={inputStyle}
         onChange={(e) => handleChange(e.target.value)}
+        onKeyDown={handleKeyDown}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         autoFocus={autoFocus}
       />
       {local !== "" ? (
-        <button
-          type="button"
-          onClick={handleClear}
-          aria-label="Limpiar búsqueda"
-          style={clearBtnStyle}
-        >
+        <button type="button" onClick={handleClear} aria-label="Limpiar búsqueda" className="cocoa-focus-ring" style={clearBtnStyle}>
           <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M3 3L9 9M9 3L3 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
           </svg>

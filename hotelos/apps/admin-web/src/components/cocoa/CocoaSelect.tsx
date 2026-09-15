@@ -1,20 +1,16 @@
-// CocoaSelect — Cocoa-styled native <select> with custom chevron.
-//
-// Wraps a native <select> so users get the platform's native menu UX
-// (keyboard nav, type-ahead, accessibility) but with macOS Cocoa visuals
-// matching the rest of the design system. Uses CSS custom properties from
-// styles/cocoa-tokens.css so it stays consistent in light/dark mode.
-//
-// Focus ring intentionally mirrors CocoaInput (3px halo using
-// --cocoa-focus-ring) so form rows align visually when mixing inputs and
-// selects.
+// CocoaSelect — Cocoa-styled native <select> with a custom chevron
+// (COCOA-22.md §3.8). Native menu UX (keyboard, type-ahead, AT) with the
+// control skin of CocoaInput: control bg, separator border (accent on focus,
+// danger on error), radius 8, focus halo, 44 px on a coarse pointer.
 
-import { useState, type CSSProperties } from "react";
+import { useId, useState, type CSSProperties } from "react";
 import { useCoarsePointer, TAP_TARGET_PX } from "../../lib/useCoarsePointer";
+import { CONTROL_HEIGHT_BY_SIZE, controlChrome } from "./CocoaInput";
 
 export interface CocoaSelectOption {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 export interface CocoaSelectProps {
@@ -24,35 +20,30 @@ export interface CocoaSelectProps {
   placeholder?: string;
   size?: "small" | "regular" | "large";
   disabled?: boolean;
+  error?: boolean;
+  required?: boolean;
+  id?: string;
+  name?: string;
+  "aria-label"?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean;
+  className?: string;
+  /** Layout escape hatch for the wrapper (width). */
+  style?: CSSProperties;
 }
 
-// Per-size metrics tuned to match CocoaInput proportions.
-const SIZE_METRICS: Record<
-  NonNullable<CocoaSelectProps["size"]>,
-  { fontSize: string; lineHeight: string; padY: number; padL: number; height: number }
-> = {
-  small: {
-    fontSize: "var(--cocoa-fs-subheadline)",
-    lineHeight: "var(--cocoa-lh-subheadline)",
-    padY: 4,
-    padL: 8,
-    height: 22,
-  },
-  regular: {
-    fontSize: "var(--cocoa-fs-body)",
-    lineHeight: "var(--cocoa-lh-body)",
-    padY: 6,
-    padL: 10,
-    height: 28,
-  },
-  large: {
-    fontSize: "var(--cocoa-fs-title-3)",
-    lineHeight: "var(--cocoa-lh-title-3)",
-    padY: 8,
-    padL: 12,
-    height: 34,
-  },
+// Heights come from CocoaInput's CONTROL_HEIGHT_BY_SIZE (22 / 28 / 34) so a
+// select and an input on the same CocoaFormRow align.
+const SIZE_METRICS: Record<NonNullable<CocoaSelectProps["size"]>, { fontSize: string; lineHeight: string; padY: number; padL: number; height: number }> = {
+  small: { fontSize: "var(--cocoa-fs-subheadline)", lineHeight: "var(--cocoa-lh-subheadline)", padY: 4, padL: 8, height: CONTROL_HEIGHT_BY_SIZE.small },
+  regular: { fontSize: "var(--cocoa-fs-body)", lineHeight: "var(--cocoa-lh-body)", padY: 6, padL: 10, height: CONTROL_HEIGHT_BY_SIZE.regular },
+  large: { fontSize: "var(--cocoa-fs-title-3)", lineHeight: "var(--cocoa-lh-title-3)", padY: 8, padL: 12, height: CONTROL_HEIGHT_BY_SIZE.large }
 };
+
+/** Outer height of a select by size (pure; equals CocoaInput's). */
+export function selectControlHeight(size: NonNullable<CocoaSelectProps["size"]>): number {
+  return SIZE_METRICS[size].height;
+}
 
 export function CocoaSelect({
   value,
@@ -61,21 +52,26 @@ export function CocoaSelect({
   placeholder,
   size = "regular",
   disabled = false,
+  error = false,
+  required = false,
+  id,
+  name,
+  "aria-label": ariaLabel,
+  "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
+  className,
+  style
 }: CocoaSelectProps) {
   const [focused, setFocused] = useState(false);
   const coarse = useCoarsePointer();
+  const generatedId = useId();
   const metrics = SIZE_METRICS[size];
+  const chrome = controlChrome({ focused, error });
 
-  const wrapperStyle: CSSProperties = {
-    position: "relative",
-    display: "inline-flex",
-    alignItems: "center",
-    width: "100%",
-  };
+  const wrapperStyle: CSSProperties = { position: "relative", display: "inline-flex", alignItems: "center", width: "100%", minWidth: 0, ...style };
 
   const selectStyle: CSSProperties = {
     width: "100%",
-    // Touch: a real 44px control (desktop keeps the dense 22–34px height).
     height: coarse ? TAP_TARGET_PX : metrics.height,
     padding: `${metrics.padY}px 28px ${metrics.padY}px ${metrics.padL}px`,
     fontFamily: "var(--cocoa-font)",
@@ -83,7 +79,7 @@ export function CocoaSelect({
     lineHeight: metrics.lineHeight,
     color: "var(--cocoa-label)",
     background: "var(--cocoa-background-control)",
-    border: "1px solid var(--cocoa-separator)",
+    border: `1px solid ${chrome.borderColor}`,
     borderRadius: "var(--cocoa-radius-md)",
     outline: "none",
     appearance: "none",
@@ -91,26 +87,24 @@ export function CocoaSelect({
     MozAppearance: "none",
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.5 : 1,
-    boxShadow: focused ? "0 0 0 3px var(--cocoa-focus-ring)" : "none",
-    transition:
-      "border-color var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out)",
-  };
-
-  const chevronStyle: CSSProperties = {
-    position: "absolute",
-    right: 8,
-    pointerEvents: "none",
-    display: "inline-flex",
-    alignItems: "center",
-    color: "var(--cocoa-label-secondary)",
+    boxShadow: chrome.boxShadow,
+    boxSizing: "border-box",
+    transition: "border-color var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out)"
   };
 
   return (
-    <span style={wrapperStyle}>
+    <span className={["cocoa-select", className].filter(Boolean).join(" ")} style={wrapperStyle} data-cocoa="select" data-size={size}>
       <select
+        id={id ?? generatedId}
+        name={name}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         disabled={disabled}
+        required={required}
+        aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid ?? (error || undefined)}
+        aria-required={required || undefined}
         style={selectStyle}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
@@ -121,20 +115,14 @@ export function CocoaSelect({
           </option>
         ) : null}
         {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
+          <option key={opt.value} value={opt.value} disabled={opt.disabled}>
             {opt.label}
           </option>
         ))}
       </select>
-      <span style={chevronStyle} aria-hidden="true">
+      <span style={{ position: "absolute", right: 8, pointerEvents: "none", display: "inline-flex", alignItems: "center", color: "var(--cocoa-label-secondary)" }} aria-hidden="true">
         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
-          <path
-            d="M2 4l3 3 3-3"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
+          <path d="M2 4l3 3 3-3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
       </span>
     </span>

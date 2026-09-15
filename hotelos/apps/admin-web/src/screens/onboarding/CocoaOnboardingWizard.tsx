@@ -1,16 +1,18 @@
 // CocoaOnboardingWizard — macOS Setup Assistant inspired 5-step wizard.
 //
 // Welcomes a new admin into Anfitorio, captures the property profile, lets the
-// operator pick a theme + accent (applied live), seeds the first user, and
-// shows a confirmation card at the end. Layout mirrors NSAssistant: a top
-// progress bar ("Paso N de 5"), a centered card body (max-width 560px), and a
-// fixed footer with Previous / Next (Finalizar on the last step).
+// operator pick a theme (applied live), seeds the first user, and shows a
+// confirmation card at the end. Layout mirrors NSAssistant: a top progress
+// bar ("Paso N de 5"), a centered card body (max-width 560px), and a fixed
+// footer with Previous / Next (Finalizar on the last step).
 //
 // Composition leans on existing Cocoa primitives: CocoaCard, CocoaButton,
-// CocoaInput, CocoaSelect, CocoaSwitch, CocoaColorWell, CocoaFormFieldset,
-// CocoaSegmentedControl, and CocoaAlert. Theme + accent changes are applied
-// live on <html> via data-theme + the --cocoa-accent custom property so the
-// preview reflects the choice immediately.
+// CocoaInput, CocoaSelect, CocoaSwitch, CocoaFormFieldset,
+// CocoaSegmentedControl, and CocoaAlert. Theme changes are applied live on
+// <html> via data-theme so the preview reflects the choice immediately.
+// Cocoa 22 (COCOA-22.md §6): there is no accent preference — the single
+// accent is Esmeralda (`--cocoa-accent`), so the wizard never writes
+// `--cocoa-accent` on <html> (it removes a stale inline override instead).
 //
 // Props:
 //   onComplete(data) — async finalization hook called when the user clicks
@@ -26,8 +28,8 @@ import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedCont
 import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
 import { CocoaSwitch } from "../../components/cocoa/CocoaSwitch";
 import { CocoaAlert } from "../../components/cocoa-extras/CocoaAlert";
-import { CocoaColorWell } from "../../components/cocoa-extras/CocoaColorWell";
 import { CocoaFormFieldset } from "../../components/cocoa-extras/CocoaFormFieldset";
+import { LEGACY_ACCENT_INLINE_PROPERTIES } from "../../components/cocoa-global/cocoa-preferences";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -45,7 +47,6 @@ export interface WizardPropertyProfile {
 
 export interface WizardAppearance {
   theme: WizardTheme;
-  accent: string;
   reducedMotion: boolean;
   highContrast: boolean;
 }
@@ -110,26 +111,12 @@ const THEME_SEGMENTS = [
   { value: "auto", label: "Auto" }
 ];
 
-const ACCENT_PRESETS = [
-  "#0064E1",
-  "#0A84FF",
-  "#34c759",
-  "#ff9500",
-  "#ff3b30",
-  "#5856d6",
-  "#af52de",
-  "#ff2d55",
-  "#a2845e",
-  "#8e8e93"
-];
-
 const TOTAL_STEPS = 5;
 
 const INITIAL_DATA: WizardData = {
   property: { name: "", address: "", country: "ES", currency: "EUR" },
   appearance: {
     theme: "auto",
-    accent: "#0064E1",
     reducedMotion: false,
     highContrast: false
   },
@@ -171,9 +158,9 @@ function isStepValid(step: number, data: WizardData): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Live appearance preview — flip data-theme + --cocoa-accent on <html>.
-// We snapshot the previous values on mount and restore them when the wizard
-// finishes so we don't leak preview state if the caller bails out.
+// Live appearance preview — flip data-theme (+ the a11y data-* attributes) on
+// <html>. The accent is fixed (Esmeralda): any inline `--cocoa-accent` left by
+// an older bundle is removed so the preview shows the real tokens.
 // ---------------------------------------------------------------------------
 
 function applyAppearancePreview(appearance: WizardAppearance): void {
@@ -184,11 +171,7 @@ function applyAppearancePreview(appearance: WizardAppearance): void {
   } else {
     root.setAttribute("data-theme", appearance.theme);
   }
-  root.style.setProperty("--cocoa-accent", appearance.accent);
-  root.style.setProperty(
-    "--cocoa-background-selection",
-    appearance.accent
-  );
+  for (const name of LEGACY_ACCENT_INLINE_PROPERTIES) root.style.removeProperty(name);
   if (appearance.reducedMotion) {
     root.setAttribute("data-reduced-motion", "true");
   } else {
@@ -265,16 +248,17 @@ function ProgressHeader({ step }: { step: number }) {
   );
 }
 
-function BrandMark({ accent }: { accent: string }) {
+function BrandMark() {
+  // Flat Esmeralda (no gradient, no user accent): Cocoa 22 §6.
   const wrapStyle: CSSProperties = {
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
     width: 88,
     height: 88,
-    borderRadius: 22,
-    background: `linear-gradient(135deg, ${accent}, color-mix(in srgb, ${accent} 60%, #ffffff))`,
-    boxShadow: "var(--cocoa-shadow-modal)",
+    borderRadius: "var(--cocoa-radius-xl)",
+    background: "var(--cocoa-accent)",
+    boxShadow: "var(--cocoa-shadow-card)",
     marginBottom: "var(--cocoa-space-4)"
   };
   return (
@@ -282,7 +266,7 @@ function BrandMark({ accent }: { accent: string }) {
       <svg width="44" height="44" viewBox="0 0 44 44" fill="none">
         <path
           d="M10 32V12h4v8h16v-8h4v20h-4v-8H14v8z"
-          fill="#FFFFFF"
+          fill="var(--cocoa-accent-contrast)"
         />
       </svg>
     </span>
@@ -330,7 +314,7 @@ function StepWelcome({
   };
   return (
     <div style={wrapStyle}>
-      <BrandMark accent={data.appearance.accent} />
+      <BrandMark />
       <h1 style={heroTitleStyle}>Te damos la bienvenida a Anfitorio</h1>
       <p style={heroSubtitleStyle}>
         5 pasos para empezar. Configura tu propiedad, elige cómo se ve la
@@ -443,21 +427,11 @@ function StepAppearance({ data, setData }: StepProps) {
     color: "var(--cocoa-label)",
     margin: 0
   };
-  const inlineRow: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "var(--cocoa-space-3)"
-  };
   const switchRow: CSSProperties = {
     display: "flex",
     alignItems: "center",
     justifyContent: "space-between",
     gap: "var(--cocoa-space-3)"
-  };
-  const accentValueStyle: CSSProperties = {
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-body)",
-    color: "var(--cocoa-label-secondary)"
   };
 
   return (
@@ -476,18 +450,6 @@ function StepAppearance({ data, setData }: StepProps) {
             options={THEME_SEGMENTS}
             aria-label="Tema de la aplicación"
           />
-        </div>
-        <div style={blockStyle}>
-          <label style={labelStyle}>Color de acento</label>
-          <div style={inlineRow}>
-            <CocoaColorWell
-              value={data.appearance.accent}
-              onChange={(c) => setAppearance({ accent: c })}
-              presets={ACCENT_PRESETS}
-              size="large"
-            />
-            <span style={accentValueStyle}>{data.appearance.accent}</span>
-          </div>
         </div>
         <div style={switchRow}>
           <span style={labelStyle}>Reducir movimiento</span>

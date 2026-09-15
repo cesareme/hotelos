@@ -1,14 +1,18 @@
-// CocoaInput — Cocoa Edition text field.
+// CocoaInput — text field of Cocoa 22 (COCOA-22.md §3.8; replaces raw
+// <input>/<textarea>, `.fp-field`, `FormField`, `FormTextarea`).
 //
-// macOS HIG inspired single-line input. Theme-aware via --cocoa-* tokens
-// (light/dark) and supports optional left icon + right slot (e.g. clear button).
+//   control bg · border separator (accent on focus, danger on error) · radius 8
+//   focus halo 3 px --cocoa-focus-ring (danger 45 % on error) · sizes small /
+//   regular / large = 22 / 28 / 34 px (`CONTROL_HEIGHT_BY_SIZE`, the SAME
+//   heights as CocoaSelect and CocoaDatePicker so a form row aligns; §3.8
+//   control 28) · optional left icon and right slot · 16 px on a coarse
+//   pointer (mobile.css, avoids the iOS zoom) · `multiline` renders a
+//   <textarea> with the same skin (vertical resize, `rows`).
 //
-// Usage:
-//   <CocoaInput value={q} onChange={setQ} placeholder="Search…" icon={<SearchIcon />} />
-//   <CocoaInput value={v} onChange={setV} size="large" error={!!err} required />
+// Placeholder colour (`.cocoa-input input::placeholder` → label-tertiary) is a
+// global rule of the css lot, not an inline <style> per instance.
 
-import { useId, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import { useId, useState, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
 export type CocoaInputSize = "small" | "regular" | "large";
 
@@ -21,66 +25,74 @@ export type CocoaInputProps = {
   icon?: ReactNode;
   rightSlot?: ReactNode;
   disabled?: boolean;
+  readOnly?: boolean;
   error?: boolean;
-  inputMode?:
-    | "none"
-    | "text"
-    | "tel"
-    | "url"
-    | "email"
-    | "numeric"
-    | "decimal"
-    | "search";
+  inputMode?: "none" | "text" | "tel" | "url" | "email" | "numeric" | "decimal" | "search";
   required?: boolean;
-  /** Accessible name when there is no visible <label> (cierre 2026-09-15). */
+  /** Render a <textarea> (vertical resize). */
+  multiline?: boolean;
+  rows?: number;
+  name?: string;
+  autoComplete?: string;
+  autoFocus?: boolean;
+  maxLength?: number;
+  min?: number | string;
+  max?: number | string;
+  step?: number | string;
+  pattern?: string;
+  onBlur?: (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+  onFocus?: (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+  onKeyDown?: (event: ReactKeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+  /** Accessible name when there is no visible <label>. */
   "aria-label"?: string;
+  "aria-describedby"?: string;
+  "aria-invalid"?: boolean;
   /** Explicit id so an external <label htmlFor> can point at the input; defaults to a generated one. */
   id?: string;
+  className?: string;
+  /** Layout escape hatch for the wrapper (width). */
+  style?: CSSProperties;
 };
 
+/** Outer height of every text-like control by size (§3.8): shared with CocoaSelect / CocoaDatePicker. */
+export const CONTROL_HEIGHT_BY_SIZE: Record<CocoaInputSize, number> = { small: 22, regular: 28, large: 34 };
+
+/** Border of every control (1 px each side). */
+export const CONTROL_BORDER_PX = 1;
+
 type SizeMetrics = {
-  padY: number;
   padX: number;
   fontSize: string;
   lineHeight: string;
-  iconPad: number; // extra left padding when icon present
-  rightPad: number; // extra right padding when rightSlot present
-  iconBox: number; // icon container width
-  slotBox: number; // right slot container width
+  /** Numeric mirror of `lineHeight` (cocoa-tokens.css `--cocoa-lh-*`) used to derive the vertical padding. */
+  lineHeightPx: number;
+  iconPad: number;
+  rightPad: number;
+  iconBox: number;
+  slotBox: number;
 };
 
 const SIZE_METRICS: Record<CocoaInputSize, SizeMetrics> = {
-  small: {
-    padY: 6,
-    padX: 10,
-    fontSize: "var(--cocoa-fs-callout)",
-    lineHeight: "var(--cocoa-lh-callout)",
-    iconPad: 26,
-    rightPad: 26,
-    iconBox: 26,
-    slotBox: 26,
-  },
-  regular: {
-    padY: 8,
-    padX: 12,
-    fontSize: "var(--cocoa-fs-body)",
-    lineHeight: "var(--cocoa-lh-body)",
-    iconPad: 30,
-    rightPad: 30,
-    iconBox: 30,
-    slotBox: 30,
-  },
-  large: {
-    padY: 10,
-    padX: 14,
-    fontSize: "var(--cocoa-fs-title-3)",
-    lineHeight: "var(--cocoa-lh-title-3)",
-    iconPad: 34,
-    rightPad: 34,
-    iconBox: 34,
-    slotBox: 34,
-  },
+  small: { padX: 10, fontSize: "var(--cocoa-fs-subheadline)", lineHeight: "var(--cocoa-lh-subheadline)", lineHeightPx: 14, iconPad: 26, rightPad: 26, iconBox: 26, slotBox: 26 },
+  regular: { padX: 12, fontSize: "var(--cocoa-fs-body)", lineHeight: "var(--cocoa-lh-body)", lineHeightPx: 16, iconPad: 30, rightPad: 30, iconBox: 30, slotBox: 30 },
+  large: { padX: 14, fontSize: "var(--cocoa-fs-title-3)", lineHeight: "var(--cocoa-lh-title-3)", lineHeightPx: 20, iconPad: 34, rightPad: 34, iconBox: 34, slotBox: 34 }
 };
+
+/** Vertical padding that makes the control exactly `CONTROL_HEIGHT_BY_SIZE[size]` tall (pure): (height − 2 × border − line-height) / 2. */
+export function inputPaddingY(size: CocoaInputSize): number {
+  return (CONTROL_HEIGHT_BY_SIZE[size] - 2 * CONTROL_BORDER_PX - SIZE_METRICS[size].lineHeightPx) / 2;
+}
+
+/** Border and halo of a control by state (pure; shared with select/date picker). */
+export function controlChrome(input: { focused: boolean; error: boolean }): { borderColor: string; boxShadow: string } {
+  const borderColor = input.error ? "var(--cocoa-danger)" : input.focused ? "var(--cocoa-accent)" : "var(--cocoa-separator)";
+  const boxShadow = input.focused
+    ? input.error
+      ? "0 0 0 3px color-mix(in srgb, var(--cocoa-danger) 45%, transparent)"
+      : "0 0 0 3px var(--cocoa-focus-ring)"
+    : "none";
+  return { borderColor, boxShadow };
+}
 
 export function CocoaInput(props: CocoaInputProps) {
   const {
@@ -92,43 +104,49 @@ export function CocoaInput(props: CocoaInputProps) {
     icon,
     rightSlot,
     disabled = false,
+    readOnly = false,
     error = false,
     inputMode,
     required = false,
+    multiline = false,
+    rows = 3,
+    name,
+    autoComplete,
+    autoFocus,
+    maxLength,
+    min,
+    max,
+    step,
+    pattern,
+    onBlur,
+    onFocus,
+    onKeyDown,
     "aria-label": ariaLabel,
+    "aria-describedby": ariaDescribedBy,
+    "aria-invalid": ariaInvalid,
     id,
+    className,
+    style
   } = props;
 
   const [focused, setFocused] = useState(false);
   const generatedId = useId();
   const inputId = id ?? generatedId;
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
   const metrics = SIZE_METRICS[size];
-
-  // Borders + focus ring tokens
-  const borderColor = error
-    ? "var(--cocoa-danger)"
-    : focused
-      ? "var(--cocoa-accent)"
-      : "var(--cocoa-separator)";
-
-  // Focus ring — consume the shared tokens (audit 2026-06 · #4), never literals.
-  // Danger variant derives from --cocoa-danger so it themes with the palette.
-  const focusRing = focused
-    ? error
-      ? "0 0 0 3px color-mix(in srgb, var(--cocoa-danger) 45%, transparent)"
-      : "0 0 0 3px var(--cocoa-focus-ring)"
-    : "none";
+  // Single-line controls are exactly 22 / 28 / 34 px; a textarea keeps 8 px of air.
+  const padY = multiline ? "var(--cocoa-space-2)" : inputPaddingY(size);
+  const chrome = controlChrome({ focused, error });
 
   const wrapperStyle: CSSProperties = {
     position: "relative",
     display: "inline-flex",
     width: "100%",
     alignItems: "stretch",
+    minWidth: 0,
+    ...style
   };
 
-  const inputStyle: CSSProperties = {
+  const controlStyle: CSSProperties = {
     width: "100%",
     boxSizing: "border-box",
     margin: 0,
@@ -136,10 +154,10 @@ export function CocoaInput(props: CocoaInputProps) {
     WebkitAppearance: "none",
     background: "var(--cocoa-background-control)",
     color: "var(--cocoa-label)",
-    border: `1px solid ${borderColor}`,
+    border: `${CONTROL_BORDER_PX}px solid ${chrome.borderColor}`,
     borderRadius: "var(--cocoa-radius-md)",
-    paddingTop: metrics.padY,
-    paddingBottom: metrics.padY,
+    paddingTop: padY,
+    paddingBottom: padY,
     paddingLeft: icon ? metrics.iconPad : metrics.padX,
     paddingRight: rightSlot ? metrics.rightPad : metrics.padX,
     fontFamily: "var(--cocoa-font)",
@@ -148,11 +166,12 @@ export function CocoaInput(props: CocoaInputProps) {
     fontWeight: "var(--cocoa-fw-regular)" as CSSProperties["fontWeight"],
     letterSpacing: "var(--cocoa-tracking-normal)",
     outline: 0,
-    boxShadow: focusRing,
-    transition:
-      "border-color var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out)",
+    boxShadow: chrome.boxShadow,
+    transition: "border-color var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out)",
     opacity: disabled ? 0.5 : 1,
     cursor: disabled ? "not-allowed" : "text",
+    resize: multiline ? "vertical" : undefined,
+    minHeight: multiline ? undefined : undefined
   };
 
   const iconStyle: CSSProperties = {
@@ -165,7 +184,7 @@ export function CocoaInput(props: CocoaInputProps) {
     alignItems: "center",
     justifyContent: "center",
     color: "var(--cocoa-label-secondary)",
-    pointerEvents: "none",
+    pointerEvents: "none"
   };
 
   const slotStyle: CSSProperties = {
@@ -177,44 +196,49 @@ export function CocoaInput(props: CocoaInputProps) {
     display: "flex",
     alignItems: "center",
     justifyContent: "center",
-    color: "var(--cocoa-label-secondary)",
+    color: "var(--cocoa-label-secondary)"
+  };
+
+  const shared = {
+    id: inputId,
+    value,
+    placeholder,
+    disabled,
+    readOnly,
+    required,
+    name,
+    autoComplete,
+    autoFocus,
+    maxLength,
+    "aria-invalid": ariaInvalid ?? (error || undefined),
+    "aria-required": required || undefined,
+    "aria-label": ariaLabel,
+    "aria-describedby": ariaDescribedBy,
+    style: controlStyle,
+    onFocus: (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      setFocused(true);
+      onFocus?.(event);
+    },
+    onBlur: (event: FocusEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+      setFocused(false);
+      onBlur?.(event);
+    },
+    onKeyDown
   };
 
   return (
-    <span className="cocoa-input" data-size={size} style={wrapperStyle}>
+    <span className={["cocoa-input", className].filter(Boolean).join(" ")} data-size={size} data-cocoa="input" data-multiline={multiline ? "true" : undefined} style={wrapperStyle}>
       {icon ? (
         <span aria-hidden="true" style={iconStyle}>
           {icon}
         </span>
       ) : null}
-      <input
-        id={inputId}
-        ref={inputRef}
-        type={type}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        placeholder={placeholder}
-        disabled={disabled}
-        required={required}
-        inputMode={inputMode}
-        aria-invalid={error || undefined}
-        aria-required={required || undefined}
-        aria-label={ariaLabel}
-        style={inputStyle}
-      />
+      {multiline ? (
+        <textarea {...shared} rows={rows} onChange={(e) => onChange(e.target.value)} />
+      ) : (
+        <input {...shared} type={type} inputMode={inputMode} min={min} max={max} step={step} pattern={pattern} onChange={(e) => onChange(e.target.value)} />
+      )}
       {rightSlot ? <span style={slotStyle}>{rightSlot}</span> : null}
-      <style>{`
-        .cocoa-input input::placeholder {
-          color: var(--cocoa-label-tertiary);
-          opacity: 1;
-        }
-        .cocoa-input input::-webkit-input-placeholder {
-          color: var(--cocoa-label-tertiary);
-          opacity: 1;
-        }
-      `}</style>
     </span>
   );
 }

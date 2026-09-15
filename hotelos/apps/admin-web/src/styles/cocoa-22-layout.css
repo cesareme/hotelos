@@ -1,0 +1,692 @@
+/* ============================================================
+   Cocoa 22 — page grammar & layout (COCOA-22.md §3.1–3.5, §5.1)
+   Classes (coordinated with the `primitives` lot through §8; every
+   primitive also carries data-cocoa="<name>" so both hooks work):
+
+     .c22-page            CocoaPage stack (gap 16; data-gap 3|4|5; --full-bleed)
+     .c22-page__header    wrapper of CocoaPageHeader / HostedHead
+     .c22-page__body      section stack
+     .c22-grid            12-column grid (data-columns 12|6|4, data-gap 2|3|4)
+     .c22-span-N          grid-column span N (1…12) — replaces spanStyle()
+     .c22-min-{200,240,320,480}  minimum useful width of a span: when the span
+                          cannot honour it the cell is PROMOTED to 6 or 12
+                          columns (discrete steps per breakpoint, see below);
+                          row packing: once a sibling is promoted to 6, the
+                          spans of 7–11 columns take the full row (8/2/2 →
+                          12/6/6, never 8 + a hole + 6/6)
+     .c22-rowspan-N       grid-row span (2|3)
+     .c22-kpi-strip       auto-fit KPI strip minmax(180px) — data-min="200"
+     .c22-section         card with header (title-3 + meta/action), body, footer
+                          (body = block: inline content flows; block children
+                          get an 8 px rhythm; data-gap="1…4" = explicit stack)
+     .c22-action-bar      sticky bottom action bar; fixed with safe-area < 600
+     .c22-toolbar         content toolbar (CocoaToolbar variant="content")
+     .c22-scroll-area     wide grids/calendars: x-scroll + sticky first column
+     .gm-grid             LEGACY alias of the canon (inline gridRowStyle):
+                          stacks like .c22-grid until GeneralManagerScreen
+                          moves to CocoaGrid/CocoaSpan (wave 2)
+
+   Breakpoints (§5.1): phone < 600 · tablet 600–899 · laptop 900–1199 ·
+   desktop ≥ 1200. Layout only: no colours here (tokens carry them).
+
+   Primitives contract (components/cocoa/*, lot «primitives»): the components
+   render class `cocoa-<name>` + data-cocoa="<name>" and paint their own
+   geometry INLINE (JS tiers from cocoa-viewport.ts). Rules keyed on
+   [data-cocoa] / .cocoa-* therefore only (a) fill what the component does not
+   set inline, (b) cover the first frame before a ResizeObserver fires, and
+   (c) apply media-query behaviour inline styles cannot express. The `c22-*`
+   classes are the opt-in hooks for class-only markup.
+   ============================================================ */
+
+/* ------------------------------------------------------------
+   Shell content area — a single gutter (24 ≥ 600, 16 < 600).
+   ------------------------------------------------------------ */
+.cocoa-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  background: var(--cocoa-background-window);
+  color: var(--cocoa-label);
+  font-family: var(--cocoa-font);
+}
+.cocoa-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: var(--cocoa-content-padding);
+  padding-bottom: max(var(--cocoa-content-padding), env(safe-area-inset-bottom));
+}
+
+/* ------------------------------------------------------------
+   Page
+   ------------------------------------------------------------ */
+.c22-page,
+[data-cocoa="page"] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cocoa-page-gap);
+  min-width: 0;
+  width: 100%;
+  font-family: var(--cocoa-font);
+  color: var(--cocoa-label);
+}
+.c22-page[data-gap="3"] { gap: var(--cocoa-space-3); }
+.c22-page[data-gap="4"] { gap: var(--cocoa-space-4); }
+.c22-page[data-gap="5"] { gap: var(--cocoa-space-5); }
+
+/* Full bleed (rate grids, calendars, timelines): cancel the content gutter
+   horizontally; the header keeps it so the title stays aligned. */
+.c22-page--full-bleed,
+.c22-page[data-full-bleed="true"] {
+  margin-inline: calc(var(--cocoa-content-padding) * -1);
+  width: auto;
+}
+.c22-page--full-bleed > .c22-page__header,
+.c22-page[data-full-bleed="true"] > .c22-page__header {
+  padding-inline: var(--cocoa-content-padding);
+}
+
+.c22-page__header {
+  min-width: 0;
+}
+.c22-page__body {
+  display: flex;
+  flex-direction: column;
+  gap: inherit;
+  min-width: 0;
+}
+
+/* Header actions row (hosted screens paint only this: HOSTED_ACTIONS_ROW). */
+.c22-page__actions,
+.c22-actions-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+/* ------------------------------------------------------------
+   12-column grid (measured: 12 × 82.3 px, gap 12 at 1120 px)
+   ------------------------------------------------------------ */
+.c22-grid,
+.cocoa-grid,
+[data-cocoa="grid"] {
+  display: grid;
+  grid-template-columns: repeat(var(--c22-columns, var(--cocoa-grid-columns)), minmax(0, 1fr));
+  gap: var(--c22-grid-gap, var(--cocoa-grid-gap));
+  min-width: 0;
+  align-items: stretch;
+}
+.c22-grid[data-columns="6"] { --c22-columns: 6; }
+.c22-grid[data-columns="4"] { --c22-columns: 4; }
+.c22-grid[data-gap="2"] { --c22-grid-gap: var(--cocoa-space-2); }
+.c22-grid[data-gap="3"] { --c22-grid-gap: var(--cocoa-space-3); }
+.c22-grid[data-gap="4"] { --c22-grid-gap: var(--cocoa-space-4); }
+.c22-grid[data-align="start"] { align-items: start; }
+
+/* Every cell: never overflow its column. */
+.c22-grid > *,
+[data-cocoa="grid"] > * {
+  min-width: 0;
+}
+
+/* Spans — replaces spanStyle(cols). `--c22-span` inline is also honoured. */
+.c22-span    { grid-column: span var(--c22-span, 12) / span var(--c22-span, 12); }
+/* CocoaSpan (primitives) emits `c22-span-N` (+ `c22-min-B`, `c22-rowspan-R`)
+   from `spanClassNames()`; the breakpoint behaviour below is the single source
+   of truth (§8: class-based, never inline). */
+[data-cocoa="span"] { min-width: 0; }
+.c22-span-1  { grid-column: span 1 / span 1; }
+.c22-span-2  { grid-column: span 2 / span 2; }
+.c22-span-3  { grid-column: span 3 / span 3; }
+.c22-span-4  { grid-column: span 4 / span 4; }
+.c22-span-5  { grid-column: span 5 / span 5; }
+.c22-span-6  { grid-column: span 6 / span 6; }
+.c22-span-7  { grid-column: span 7 / span 7; }
+.c22-span-8  { grid-column: span 8 / span 8; }
+.c22-span-9  { grid-column: span 9 / span 9; }
+.c22-span-10 { grid-column: span 10 / span 10; }
+.c22-span-11 { grid-column: span 11 / span 11; }
+.c22-span-12 { grid-column: 1 / -1; }
+.c22-rowspan-2 { grid-row: span 2 / span 2; }
+.c22-rowspan-3 { grid-row: span 3 / span 3; }
+
+/* Cells stretch their single child (a CocoaSection) so rows align. */
+.c22-grid > [class*="c22-span"] > .c22-section,
+.c22-grid > [class*="c22-span"] > [data-cocoa="section"] {
+  height: 100%;
+}
+/* CocoaSpan is a flex column: its section fills the cell height. */
+.cocoa-span > .cocoa-section,
+[data-cocoa="span"] > [data-cocoa="section"] {
+  flex: 1 1 auto;
+}
+
+/* ---- laptop 900–1199: `min` promotion ------------------------------------
+   The 12-col cell width is (W − 132)/12 with W ≈ viewport − 288 (sidebar 240 +
+   gutters 48). A span that cannot reach its minimum is promoted to 6 columns
+   (half) when half fits, otherwise to 12. Thresholds below are that
+   arithmetic solved per (span, min) pair; pairs that always fit have no rule. */
+@media (min-width: 900px) and (max-width: 1199px) {
+  /* min 200 */
+  .c22-min-200:is(.c22-span-1, .c22-span-2, .c22-span-3) { grid-column: span 6 / span 6; }
+  /* min 240 */
+  .c22-min-240:is(.c22-span-1, .c22-span-2, .c22-span-3) { grid-column: span 6 / span 6; }
+  /* min 320: half fits from 940 px */
+  .c22-min-320:is(.c22-span-1, .c22-span-2, .c22-span-3, .c22-span-4) { grid-column: span 6 / span 6; }
+  /* min 480: half never fits below 1260 px → full row */
+  .c22-min-480:is(.c22-span-1, .c22-span-2, .c22-span-3, .c22-span-4, .c22-span-5, .c22-span-6) { grid-column: 1 / -1; }
+}
+@media (min-width: 900px) and (max-width: 911px) {
+  .c22-min-200.c22-span-4 { grid-column: span 6 / span 6; }
+}
+@media (min-width: 900px) and (max-width: 1031px) {
+  .c22-min-240.c22-span-4 { grid-column: span 6 / span 6; }
+}
+@media (min-width: 900px) and (max-width: 939px) {
+  .c22-min-320:is(.c22-span-1, .c22-span-2, .c22-span-3, .c22-span-4, .c22-span-5, .c22-span-6) { grid-column: 1 / -1; }
+}
+@media (min-width: 940px) and (max-width: 1072px) {
+  .c22-min-320.c22-span-5 { grid-column: span 6 / span 6; }
+}
+@media (min-width: 900px) and (max-width: 1118px) {
+  .c22-min-480.c22-span-7 { grid-column: 1 / -1; }
+}
+@media (min-width: 900px) and (max-width: 1013px) {
+  .c22-min-480.c22-span-8 { grid-column: 1 / -1; }
+}
+@media (min-width: 900px) and (max-width: 931px) {
+  .c22-min-480.c22-span-9 { grid-column: 1 / -1; }
+}
+
+/* ---- row packing --------------------------------------------------------
+   Promotion is decided per cell, so a row can stop summing 12: measured on
+   the canon at 1024 × 768 (grid 736 px) the 8/2/2 row painted the pace at 8
+   columns (487 px, its 480 minimum fits) while both 2-column tiles were
+   promoted to 6 → they wrapped and left a 249 px hole beside the pace.
+   Whenever a sibling was promoted to half — by the grid measurement
+   (CocoaSpan emits data-span 6 or 12 with the authored data-cols smaller,
+   any width) or by the laptop rules above (class pairs, 900–1199) — a 6 (or
+   a 12) can no longer share the row with a 7…11, so those spans take the
+   full row: 8/2/2 → 12/6/6, 9/3 → 12/6, 4(min 480)/8 → 12/12. Spans ≤ 6 are
+   untouched (6/6 still pairs). */
+.c22-grid:has(> [data-cocoa="span"][data-span="6"]:is([data-cols="1"], [data-cols="2"], [data-cols="3"], [data-cols="4"], [data-cols="5"]), > [data-cocoa="span"][data-span="12"]:is([data-cols="1"], [data-cols="2"], [data-cols="3"], [data-cols="4"], [data-cols="5"], [data-cols="6"], [data-cols="7"], [data-cols="8"], [data-cols="9"], [data-cols="10"], [data-cols="11"])) > :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11) {
+  grid-column: 1 / -1;
+}
+@media (min-width: 900px) and (max-width: 1199px) {
+  .c22-grid:has(> :is(.c22-min-200, .c22-min-240):is(.c22-span-1, .c22-span-2, .c22-span-3), > .c22-min-320:is(.c22-span-1, .c22-span-2, .c22-span-3, .c22-span-4), > .c22-min-480:is(.c22-span-1, .c22-span-2, .c22-span-3, .c22-span-4, .c22-span-5, .c22-span-6)) > :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11) {
+    grid-column: 1 / -1;
+  }
+}
+@media (min-width: 900px) and (max-width: 911px) {
+  .c22-grid:has(> .c22-min-200.c22-span-4) > :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11) { grid-column: 1 / -1; }
+}
+@media (min-width: 900px) and (max-width: 1031px) {
+  .c22-grid:has(> .c22-min-240.c22-span-4) > :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11) { grid-column: 1 / -1; }
+}
+@media (min-width: 940px) and (max-width: 1072px) {
+  .c22-grid:has(> .c22-min-320.c22-span-5) > :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11) { grid-column: 1 / -1; }
+}
+
+/* ---- tablet 600–899: two columns (spans < 6 → 6, spans ≥ 6 → 12) ---------- */
+@media (min-width: 600px) and (max-width: 899px) {
+  .c22-grid > :is(.c22-span-1, .c22-span-2, .c22-span-3, .c22-span-4, .c22-span-5),
+  .c22-grid > .c22-span {
+    grid-column: span 6 / span 6;
+  }
+  .c22-grid > :is(.c22-span-6, .c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12) {
+    grid-column: 1 / -1;
+  }
+  /* Half of a 552–851 px content area is 270–420 px: 480 never fits, 320 only from 700 px. */
+  .c22-grid > .c22-min-480 { grid-column: 1 / -1; }
+  .c22-grid[data-columns="4"] { --c22-columns: 2; }
+  .c22-grid[data-columns="4"] > * { grid-column: auto; }
+  .c22-grid[data-columns="6"] > :is(.c22-span-1, .c22-span-2) { grid-column: span 3 / span 3; }
+  .c22-grid[data-columns="6"] > :is(.c22-span-3, .c22-span-4, .c22-span-5, .c22-span-6) { grid-column: 1 / -1; }
+
+  /* Legacy canon alias (inline `grid-column: span N`): two columns, wide spans full. */
+  .gm-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .gm-grid > * {
+    grid-column: auto !important;
+  }
+  .gm-grid > :is([style*="span 6"], [style*="span 7"], [style*="span 8"], [style*="span 9"], [style*="span 10"], [style*="span 11"], [style*="span 12"]) {
+    grid-column: 1 / -1 !important;
+  }
+}
+@media (min-width: 600px) and (max-width: 699px) {
+  .c22-grid > .c22-min-320 { grid-column: 1 / -1; }
+}
+
+/* ---- phone < 600: one column ------------------------------------------- */
+@media (max-width: 599px) {
+  .c22-grid,
+  .cocoa-grid,
+  [data-cocoa="grid"],
+  .gm-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  .c22-grid > *,
+  .cocoa-grid > *,
+  [data-cocoa="grid"] > *,
+  .gm-grid > * {
+    grid-column: 1 / -1 !important;
+    grid-row: auto !important;
+  }
+}
+
+/* ------------------------------------------------------------
+   KPI strips — auto-fit minmax(180px, 1fr), gap 12 (5 × 214 at 1120).
+   data-min="200" for the ops strip. Stagger via .cocoa-stagger.
+   ------------------------------------------------------------ */
+.c22-kpi-strip,
+.cocoa-kpi-strip,
+[data-cocoa="kpi-strip"] {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(var(--c22-kpi-min, var(--cocoa-kpi-min)), 100%), 1fr));
+  gap: var(--cocoa-grid-gap);
+  min-width: 0;
+  align-items: stretch;
+}
+.c22-kpi-strip[data-min="200"] { --c22-kpi-min: var(--cocoa-kpi-min-wide); }
+.c22-kpi-strip[data-min="240"] { --c22-kpi-min: 240px; }
+.c22-kpi-strip > * { min-width: 0; }
+@media (max-width: 599px) {
+  .c22-kpi-strip,
+  [data-cocoa="kpi-strip"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ------------------------------------------------------------
+   Section — the card with a header (§3.5). Visual = CocoaCard bordered:
+   content bg · 1 px separator · control shadow · radius 12 · padding 16.
+   The primitive may render CocoaCard itself; these rules cover both.
+   ------------------------------------------------------------ */
+.c22-section,
+.cocoa-section,
+[data-cocoa="section"] {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  box-sizing: border-box;
+  background: var(--cocoa-background-content);
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-lg);
+  box-shadow: var(--cocoa-shadow-control);
+  padding: var(--cocoa-density-card-padding);
+  color: var(--cocoa-label);
+  font-family: var(--cocoa-font);
+}
+.c22-section[data-variant="elevated"] {
+  border-color: transparent;
+  box-shadow: var(--cocoa-shadow-card);
+}
+.c22-section[data-variant="plain"] {
+  border-color: transparent;
+  box-shadow: none;
+}
+.c22-section[data-padding="none"] { padding: 0; }
+.c22-section[data-padding="sm"]   { padding: var(--cocoa-space-3); }
+.c22-section[data-padding="md"]   { padding: var(--cocoa-space-4); }
+.c22-section[data-padding="lg"]   { padding: var(--cocoa-space-5); }
+.c22-section[data-padding="none"] > .c22-section__head {
+  padding: var(--cocoa-space-4) var(--cocoa-space-4) 0;
+}
+
+.c22-section__head,
+.cocoa-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--cocoa-space-3);
+  margin-bottom: var(--cocoa-space-3);
+  min-width: 0;
+}
+.c22-section__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.c22-section__title {
+  margin: 0;
+  font-family: var(--cocoa-font);
+  font-size: var(--cocoa-fs-title-3);
+  line-height: var(--cocoa-leading-title);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-tight);
+  color: var(--cocoa-label);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Measured on the canon («RGI · ARI · MPI», «30 días»): 10 px / 15 px / 400. */
+.c22-section__meta {
+  margin: 0;
+  font-size: var(--cocoa-fs-caption);
+  line-height: var(--cocoa-leading-body);
+  font-weight: var(--cocoa-fw-regular);
+  color: var(--cocoa-label-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.c22-section__action {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+  flex-shrink: 0;
+}
+/* The body is a plain block (it stays a flex ITEM of the section so the
+   footer sits at the bottom): inline content flows on one line — as a flex
+   column every text node and <strong> became its own row (measured: «Hola
+   <strong>mundo</strong> y adiós» painted on three lines). */
+.c22-section__body,
+.cocoa-section-body {
+  display: block;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+/* Rhythm: 8 px between block-level children (cards, lists, charts, states,
+   paragraphs) — the spacing the flex column used to give them. Inline and
+   inline-block children (badges, buttons, text) are not touched. Explicit
+   stacking with another gap: wrap the children in `.cocoa-stack[data-gap]`
+   or pass the section's `data-gap` hook below. */
+.c22-section__body > :is(div, p, ul, ol, dl, table, figure, form, fieldset, section, article, nav, pre, blockquote, hr, h2, h3, h4, h5, h6)
+  + :is(div, p, ul, ol, dl, table, figure, form, fieldset, section, article, nav, pre, blockquote, hr, h2, h3, h4, h5, h6) {
+  margin-block-start: var(--cocoa-space-2);
+}
+.c22-section__body[data-gap] {
+  display: flex;
+  flex-direction: column;
+}
+.c22-section__body[data-gap="1"] { gap: var(--cocoa-space-1); }
+.c22-section__body[data-gap="2"] { gap: var(--cocoa-space-2); }
+.c22-section__body[data-gap="3"] { gap: var(--cocoa-space-3); }
+.c22-section__body[data-gap="4"] { gap: var(--cocoa-space-4); }
+.c22-section__body[data-gap] > * + * { margin-block-start: 0; }
+.c22-section__body[data-scroll="x"] {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.c22-section__body[data-scroll="y"] {
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.c22-section__footer,
+.cocoa-section-foot {
+  margin-top: var(--cocoa-space-3);
+  padding-top: var(--cocoa-space-3);
+  border-top: 1px solid var(--cocoa-separator);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cocoa-space-2);
+  flex-wrap: wrap;
+  font-size: var(--cocoa-fs-callout);
+  color: var(--cocoa-label-secondary);
+}
+/* Lists inside a section: rows of 8 px with hairline separators, value right. */
+.c22-section__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.c22-section__list > li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cocoa-space-2);
+  padding: var(--cocoa-space-2) 0;
+  border-bottom: 1px solid var(--cocoa-separator);
+  font-size: var(--cocoa-fs-body);
+  min-width: 0;
+}
+.c22-section__list > li:last-child { border-bottom: 0; }
+.c22-section__list > li > strong {
+  font-weight: var(--cocoa-fw-semibold);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: var(--cocoa-font-numeric-tabular);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------
+   Content toolbar (CocoaToolbar variant="content"): no material, no fixed
+   height, 8 px gap, wraps on phones. Search left, filters right.
+   ------------------------------------------------------------ */
+.c22-toolbar,
+[data-cocoa="toolbar"][data-variant="content"] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--cocoa-space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.c22-toolbar__left,
+.c22-toolbar__right {
+  display: flex;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.c22-toolbar__left { flex: 1 1 240px; }
+.c22-toolbar__right { flex: 0 1 auto; justify-content: flex-end; }
+.c22-toolbar[data-sticky="true"] {
+  position: sticky;
+  top: 0;
+  z-index: var(--cocoa-z-sticky);
+  background: var(--cocoa-background-window);
+  padding-block: var(--cocoa-space-2);
+}
+
+/* ------------------------------------------------------------
+   Action bar — sticky bottom on desktop, fixed with safe-area on phones.
+   Cancel (bordered neutral) + Save (filled accent); Ctrl-Enter = primary.
+   Publishes --hotelos-toast-offset so toasts sit above it.
+   ------------------------------------------------------------ */
+/* CocoaActionBar (primitives) positions itself inline (data-placement =
+   fixed | sticky | static); CSS only guarantees the height floor and, on
+   phones, the clearance below the fixed bar (rule at the end of this block). */
+[data-cocoa="action-bar"] {
+  min-height: var(--cocoa-action-bar-height);
+}
+.c22-action-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--cocoa-z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--cocoa-space-2);
+  flex-wrap: wrap;
+  min-height: var(--cocoa-action-bar-height);
+  padding: var(--cocoa-space-3) 0;
+  margin-top: var(--cocoa-space-2);
+  background: var(--cocoa-background-window);
+  border-top: 1px solid var(--cocoa-separator);
+  font-family: var(--cocoa-font);
+}
+.c22-action-bar__status {
+  margin-right: auto;
+  font-size: var(--cocoa-fs-callout);
+  color: var(--cocoa-label-secondary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.c22-action-bar__extra {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+}
+.c22-action-bar[data-sticky="false"] {
+  position: static;
+}
+.c22-action-bar[data-mobile-only="true"] {
+  display: none;
+}
+@media (max-width: 599px) {
+  .c22-action-bar {
+    position: fixed;
+    inset-inline: 0;
+    bottom: 0;
+    margin: 0;
+    padding: var(--cocoa-space-2) var(--cocoa-space-4);
+    padding-bottom: calc(var(--cocoa-space-2) + env(safe-area-inset-bottom));
+    background: var(--cocoa-background-content);
+    box-shadow: var(--cocoa-shadow-popover);
+    border-top: 0;
+    flex-wrap: nowrap;
+    z-index: var(--cocoa-z-toolbar);
+  }
+  .c22-action-bar[data-mobile-only="true"] {
+    display: flex;
+  }
+  .c22-action-bar > button,
+  .c22-action-bar > .c22-action-bar__extra > button {
+    flex: 1 1 0;
+    min-height: var(--cocoa-touch-target);
+  }
+  /* The status line («Guardado a las…») would squeeze the buttons to 44 px
+     (measured with status + 2 buttons); the save state also lives in the
+     screen's callout, so the phone bar shows the actions only. */
+  .c22-action-bar__status {
+    display: none;
+  }
+  /* Keep the last content above the fixed bar. */
+  .cocoa-content:has(.c22-action-bar),
+  .cocoa-content:has([data-cocoa="action-bar"][data-placement="fixed"]) {
+    padding-bottom: calc(var(--cocoa-action-bar-height) + var(--cocoa-space-4) + env(safe-area-inset-bottom));
+  }
+}
+
+/* ------------------------------------------------------------
+   Scroll area for wide grids / calendars (§4 calendario): horizontal scroll
+   wrapped in the page, sticky date header WITHOUT blur, sticky first column,
+   edge fade so the overflow is visible. Wrap the <table>/grid inside.
+   ------------------------------------------------------------ */
+.c22-scroll-area,
+[data-cocoa="scroll-area"] {
+  position: relative;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid var(--cocoa-separator);
+  border-radius: var(--cocoa-radius-lg);
+  background: var(--cocoa-background-content);
+  scrollbar-width: thin;
+}
+.c22-scroll-area[data-axis="x"] { overflow-y: hidden; }
+.c22-scroll-area[data-axis="y"] { overflow-x: hidden; }
+.c22-scroll-area > table {
+  min-width: max-content;
+}
+.c22-scroll-area thead th,
+.c22-scroll-area [data-sticky-head] {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--cocoa-background-sidebar);
+  box-shadow: var(--cocoa-shadow-sticky);
+}
+.c22-scroll-area[data-sticky-first-column="true"] th:first-child,
+.c22-scroll-area[data-sticky-first-column="true"] td:first-child,
+.c22-scroll-area [data-sticky-column] {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: var(--cocoa-background-content);
+  box-shadow: 1px 0 0 var(--cocoa-separator);
+}
+.c22-scroll-area[data-sticky-first-column="true"] thead th:first-child {
+  z-index: 3;
+  background: var(--cocoa-background-sidebar);
+}
+/* Right-edge fade signals hidden columns (mask keeps the sticky column crisp). */
+.c22-scroll-area[data-fade="true"] {
+  mask-image: linear-gradient(to right, var(--cocoa-mask-solid) calc(100% - 32px), var(--cocoa-mask-clear));
+  -webkit-mask-image: linear-gradient(to right, var(--cocoa-mask-solid) calc(100% - 32px), var(--cocoa-mask-clear));
+}
+
+/* ------------------------------------------------------------
+   Route tabs strip (CocoaRouteTabs / segmented): horizontal scroll with
+   snap + right-edge fade on phones (measured: 4th tab off-screen at 390).
+   ------------------------------------------------------------ */
+.c22-tablist,
+[data-cocoa="tablist"] {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: var(--cocoa-space-2);
+}
+.c22-tablist::-webkit-scrollbar { display: none; }
+.c22-tablist > * { scroll-snap-align: start; flex: 0 0 auto; }
+@media (max-width: 899px) {
+  .c22-tablist,
+  [data-cocoa="tablist"] {
+    padding-inline-end: var(--cocoa-space-6);
+    mask-image: linear-gradient(to right, var(--cocoa-mask-solid) calc(100% - 32px), var(--cocoa-mask-clear));
+    -webkit-mask-image: linear-gradient(to right, var(--cocoa-mask-solid) calc(100% - 32px), var(--cocoa-mask-clear));
+  }
+}
+
+/* ------------------------------------------------------------
+   Detail archetype: body 8 + aside 4 → stacks < 900.
+   ------------------------------------------------------------ */
+.c22-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 8fr) minmax(280px, 4fr);
+  gap: var(--cocoa-grid-gap);
+  align-items: start;
+  min-width: 0;
+}
+@media (max-width: 899px) {
+  .c22-detail { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* ------------------------------------------------------------
+   Safe areas (viewport-fit=cover is active): toolbar clears the notch,
+   drawers and bars clear the home indicator.
+   ------------------------------------------------------------ */
+.cocoa-shell > [data-cocoa="toolbar"],
+.cocoa-shell > .cocoa-toolbar,
+.c22-safe-top {
+  padding-top: env(safe-area-inset-top);
+}
+.c22-safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ------------------------------------------------------------
+   Print: no chrome, cards flat, grids single column.
+   ------------------------------------------------------------ */
+@media print {
+  .cocoa-content { overflow: visible; padding: 0; }
+  .c22-action-bar, .cocoa-action-bar, .c22-toolbar, .cocoa-toolbar[data-variant="content"], .c22-tablist { display: none !important; }
+  .c22-section, .cocoa-section { box-shadow: none; break-inside: avoid; }
+  .c22-grid, .cocoa-grid { display: block; }
+}

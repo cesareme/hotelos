@@ -1,4 +1,17 @@
-/* Cocoa motion keyframes - referenced by src/lib/cocoa-motion.ts */
+/* Cocoa motion keyframes — referenced by src/lib/cocoa-motion.ts and by the
+   Cocoa 22 sheets (cocoa-22.css / cocoa-22-layout.css).
+   Rules (COCOA-22.md §2.3 / §6): compositor-only (opacity + transform),
+   100–400 ms, the ONLY infinite animations are the skeleton shimmer and the
+   button spinner. No pulses, no glows, no tinted shimmer.
+
+   Entrances END in `transform: none`, never translate(0) / scale(1): a
+   transform held after the animation (fill-mode forwards/both) makes the
+   element the containing block of every `position: fixed` descendant
+   (measured on /hoy/direccion: a fixed box inside a staggered KPI tile was
+   painted at the tile's top, y = 332, not at the viewport's — CocoaPopover
+   is not portalled). With `none` the element is a plain box again the moment
+   the animation ends, whatever fill mode the consumer passes, and hover lifts
+   (`translateY(-2px)`) are no longer overridden by a pinned keyframe. */
 
 @keyframes cocoa-fade-in {
   from {
@@ -16,7 +29,7 @@
   }
   to {
     opacity: 1;
-    transform: scale(1);
+    transform: none;
   }
 }
 
@@ -27,7 +40,7 @@
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
@@ -38,7 +51,7 @@
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: none;
   }
 }
 
@@ -49,7 +62,7 @@
   }
   to {
     opacity: 1;
-    transform: translateY(0);
+    transform: none;
   }
 }
 
@@ -60,8 +73,45 @@
   }
   to {
     opacity: 1;
-    transform: translateX(0);
+    transform: none;
   }
+}
+
+/* Skeleton shimmer band (neutral gradient lives in --cocoa-skeleton-shimmer). */
+@keyframes cocoa-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+/* Same band under the name CocoaSkeleton (components/cocoa/CocoaState.tsx) animates. */
+@keyframes cocoa-skeleton-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* Overlay entrances (CocoaDrawer / CocoaDialog / Toast) — 200–400 ms. */
+@keyframes cocoa-drawer-in-right {
+  from { transform: translateX(100%); }
+  to   { transform: none; }
+}
+@keyframes cocoa-drawer-in-left {
+  from { transform: translateX(-100%); }
+  to   { transform: none; }
+}
+@keyframes cocoa-drawer-in-bottom {
+  from { transform: translateY(100%); }
+  to   { transform: none; }
+}
+@keyframes cocoa-scrim-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* Respect explicit opt-in via attribute or system preference. */
@@ -86,33 +136,55 @@
 /* ============================================================
    Entrance utilities — opt-in, compositor-only (opacity + transform).
    .cocoa-enter      → element fades + rises in once on mount.
-   .cocoa-stagger>*  → direct children cascade in with a small offset
-                        (the signature dashboard "KPIs settle in" feel).
+   .cocoa-stagger>*  → direct children cascade in with a 40 ms offset
+                        (the "KPIs settle in" feel of the canon).
+   Cocoa 22: the cascade covers 12 children (the canon's 9th tile used to
+   enter with no delay) and any child can pin its own index with `--i`
+   (style={{ "--i": n }}) for virtualised or reordered lists.
+   Fill mode is `backwards` (not `both`): the `from` frame (invisible, +8 px)
+   covers the stagger delay, and once the animation ends the element returns
+   to its OWN styles — no pinned opacity/transform, so a `position: fixed`
+   child is viewport-relative again and hover lifts keep working.
    ============================================================ */
 .cocoa-enter {
-  animation: cocoa-slide-in-up 200ms cubic-bezier(0.2, 0, 0, 1) both;
+  animation: cocoa-slide-in-up var(--cocoa-duration-base) var(--cocoa-ease-out) backwards;
 }
 
 .cocoa-stagger > * {
-  animation: cocoa-slide-in-up 220ms cubic-bezier(0.2, 0, 0, 1) both;
+  animation: cocoa-slide-in-up var(--cocoa-duration-enter) var(--cocoa-ease-out) backwards;
+  animation-delay: calc(var(--i, 0) * var(--cocoa-stagger-step));
 }
-.cocoa-stagger > *:nth-child(2) { animation-delay: 40ms; }
-.cocoa-stagger > *:nth-child(3) { animation-delay: 80ms; }
-.cocoa-stagger > *:nth-child(4) { animation-delay: 120ms; }
-.cocoa-stagger > *:nth-child(5) { animation-delay: 160ms; }
-.cocoa-stagger > *:nth-child(6) { animation-delay: 200ms; }
-.cocoa-stagger > *:nth-child(7) { animation-delay: 240ms; }
-.cocoa-stagger > *:nth-child(8) { animation-delay: 280ms; }
+.cocoa-stagger > *:first-child   { --i: 0; }
+.cocoa-stagger > *:nth-child(2)  { --i: 1; }
+.cocoa-stagger > *:nth-child(3)  { --i: 2; }
+.cocoa-stagger > *:nth-child(4)  { --i: 3; }
+.cocoa-stagger > *:nth-child(5)  { --i: 4; }
+.cocoa-stagger > *:nth-child(6)  { --i: 5; }
+.cocoa-stagger > *:nth-child(7)  { --i: 6; }
+.cocoa-stagger > *:nth-child(8)  { --i: 7; }
+.cocoa-stagger > *:nth-child(9)  { --i: 8; }
+.cocoa-stagger > *:nth-child(10) { --i: 9; }
+.cocoa-stagger > *:nth-child(11) { --i: 10; }
+.cocoa-stagger > *:nth-child(12) { --i: 11; }
+/* Beyond 12 the cascade would exceed 0.5 s; later children enter together. */
+.cocoa-stagger > *:nth-child(n + 13) { --i: 11; }
+
+/* Skeleton → content swap: fade the real content in (200 ms). */
+.cocoa-fade-in {
+  animation: cocoa-fade-in var(--cocoa-duration-base) var(--cocoa-ease-out) backwards;
+}
 
 /* Reduced motion: kill the animation entirely (not just duration) so the
    stagger DELAY can't leave content invisible/`both`-held for a beat. */
 @media (prefers-reduced-motion: reduce) {
   .cocoa-enter,
+  .cocoa-fade-in,
   .cocoa-stagger > * {
     animation: none !important;
   }
 }
 :root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .cocoa-enter,
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .cocoa-fade-in,
 :root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) .cocoa-stagger > * {
   animation: none !important;
 }

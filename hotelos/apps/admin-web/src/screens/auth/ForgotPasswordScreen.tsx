@@ -7,10 +7,19 @@
 // response carries `_testToken` and we show the /reset-password link so the
 // flow can be exercised without a mailbox. Never shown otherwise.
 
+//
+// Cocoa 22: the form controls are CocoaField + CocoaInput and the actions
+// CocoaButton (style={} is layout only). The frame (AuthShell / AuthAlert /
+// CopyLinkRow of auth/AuthShell.tsx) is shared with the other public screens
+// and migrates with them.
+
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../../services/api-client";
 import { copyText, requestPasswordReset } from "../../services/authApi";
 import { AuthAlert, AuthShell, CopyLinkRow, RESET_PASSWORD_PATH_FOR_LINKS } from "../../auth/AuthShell";
+import { CocoaButton } from "../../components/cocoa/CocoaButton";
+import { CocoaField } from "../../components/cocoa/CocoaField";
+import { CocoaInput } from "../../components/cocoa/CocoaInput";
 
 type ForgotPasswordScreenProps = {
   onNavigate?: (screen: string) => void;
@@ -72,16 +81,16 @@ export function ForgotPasswordScreen(props: ForgotPasswordScreenProps) {
       title="Recuperar contraseña"
       subtitle="Indica el email de tu cuenta y te enviaremos un enlace para elegir una contraseña nueva."
       footer={
-        <button type="button" className="bo-button-link" onClick={() => props.onNavigate?.("LoginScreen")}>
+        <CocoaButton variant="plain" tone="accent" onClick={() => props.onNavigate?.("LoginScreen")}>
           Volver a iniciar sesión
-        </button>
+        </CocoaButton>
       }
     >
       {submitted ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }}>
           <AuthAlert tone="info">{NEUTRAL_MESSAGE}</AuthAlert>
           {testLink ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: "var(--space-3)" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-3)" }}>
               <AuthAlert tone="warn">
                 Modo pruebas (AUTH_EXPOSE_RESET_TOKEN): el servidor ha devuelto el enlace en vez de enviarlo por email.
               </AuthAlert>
@@ -90,23 +99,25 @@ export function ForgotPasswordScreen(props: ForgotPasswordScreenProps) {
           ) : null}
         </div>
       ) : (
-        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }} noValidate>
-          <label className="bo-form-field">
-            <span>Correo electrónico</span>
-            <input
+        <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }} noValidate>
+          <CocoaField label="Correo electrónico" htmlFor="forgot-email" required>
+            <CocoaInput
+              id="forgot-email"
               type="email"
+              inputMode="email"
               autoComplete="username"
-              required
+              size="large"
               autoFocus
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={setEmail}
               disabled={submitting}
+              placeholder="tu@hotel.com"
             />
-          </label>
+          </CocoaField>
           {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
-          <button type="submit" className="primary" disabled={submitting || !email.trim()}>
+          <CocoaButton type="submit" variant="filled" tone="accent" size="large" loading={submitting} disabled={!email.trim()} style={{ width: "100%" }}>
             {submitting ? "Enviando…" : "Enviar enlace de recuperación"}
-          </button>
+          </CocoaButton>
         </form>
       )}
     </AuthShell>

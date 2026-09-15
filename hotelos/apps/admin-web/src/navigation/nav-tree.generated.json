@@ -5,11 +5,11 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 262,
+      "csvRows": 263,
       "categories": 9,
       "items": 64,
       "tabs": 80,
-      "devOnly": 20,
+      "devOnly": 21,
       "retired": 72,
       "aliases": 24,
       "publicScreens": 2,
@@ -2978,6 +2978,16 @@
         "hotel_intelligence_platform"
       ],
       "parent": "ReportingCenter"
+    },
+    {
+      "screenKey": "StyleGuideScreen",
+      "label": "Guía de estilo Cocoa 22",
+      "url": "/desarrollo/guia-estilo",
+      "roles": [
+        "admin"
+      ],
+      "modulesAny": [],
+      "parent": "AuditLogViewer"
     }
   ],
   "retired": [

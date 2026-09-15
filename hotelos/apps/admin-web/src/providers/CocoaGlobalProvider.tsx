@@ -20,9 +20,12 @@
 //   Cmd/Ctrl+,  -> open preferences sheet
 //
 // On mount the provider GETs /users/me/preferences and applies the response to
-// <html> via data-theme + the same CSS custom properties used by
-// CocoaPreferencesSheet, so the active window matches the user's stored prefs
-// even before they open the sheet for the first time.
+// <html> (data-theme, data-reduced-motion, data-high-contrast) through the
+// same pure helpers CocoaPreferencesSheet uses (components/cocoa-global/
+// cocoa-preferences.ts), so the active window matches the user's stored prefs
+// even before they open the sheet for the first time. Cocoa 22: the accent is
+// no longer a preference — the legacy `accentColor` of the API is ignored and
+// the inline `--cocoa-accent` older bundles wrote on <html> is removed.
 
 import {
   createContext,
@@ -44,6 +47,16 @@ import {
   type CocoaCommandPaletteItem,
   type CocoaNotification,
 } from "../components/cocoa-global";
+import {
+  DEFAULT_COCOA_PREFERENCES,
+  applyPreferencesToRoot,
+  clearLegacyAccentOverride,
+  documentRoot,
+  normalizePreferences,
+  sanitizePreferencePatch,
+  type CocoaPreferences,
+  type CocoaThemePreference,
+} from "../components/cocoa-global/cocoa-preferences";
 import { apiRequest } from "../services/api-client";
 import { getToken, onAuthChange } from "../services/auth-storage";
 import { listNotifications, markNotificationRead, type NotificationRecord } from "../services/notificationsApi";
@@ -51,24 +64,13 @@ import { navigateTo } from "../lib/navigate";
 import { openHelpCenter } from "../components/guide/guideStore";
 
 // ---------------------------------------------------------------------------
-// Preference shape — mirrors the CocoaPreferencesSheet contract so consumers
-// can read & update from anywhere without importing the sheet itself.
+// Preference shape — shared with CocoaPreferencesSheet through
+// cocoa-preferences.ts so consumers can read & update from anywhere without
+// importing the sheet itself. No `accentColor` (Cocoa 22).
 // ---------------------------------------------------------------------------
-export type CocoaThemePreference = "light" | "dark" | "auto";
+export type { CocoaPreferences, CocoaThemePreference };
 
-export interface CocoaPreferences {
-  themePreference: CocoaThemePreference;
-  accentColor: string;
-  reducedMotion: boolean;
-  highContrast: boolean;
-}
-
-const DEFAULT_PREFERENCES: CocoaPreferences = {
-  themePreference: "auto",
-  accentColor: "#007aff",
-  reducedMotion: false,
-  highContrast: false,
-};
+const DEFAULT_PREFERENCES: CocoaPreferences = { ...DEFAULT_COCOA_PREFERENCES };
 
 // ---------------------------------------------------------------------------
 // Notification input type — slimmer than CocoaNotification so callers don't
@@ -150,44 +152,13 @@ const ShortcutsContext = createContext<ShortcutsContextValue | null>(null);
 const AboutContext = createContext<AboutContextValue | null>(null);
 
 // ---------------------------------------------------------------------------
-// Document-level helpers — duplicated (intentionally) from
-// CocoaPreferencesSheet so the provider can apply prefs at mount without
-// depending on the sheet being rendered. Both call sites converge on the same
-// CSS custom properties and data-* attributes, so the effect is identical.
+// Document-level application — the pure helpers of cocoa-preferences.ts
+// (shared with CocoaPreferencesSheet) so both call sites converge on the same
+// data-* attributes; every apply also clears the legacy inline accent.
 // ---------------------------------------------------------------------------
-function applyThemePreference(value: CocoaThemePreference): void {
-  if (typeof document === "undefined") return;
-  document.documentElement.setAttribute("data-theme", value);
-}
-
-function applyAccentColor(color: string): void {
-  if (typeof document === "undefined") return;
-  document.documentElement.style.setProperty("--cocoa-accent", color);
-}
-
-function applyReducedMotion(enabled: boolean): void {
-  if (typeof document === "undefined") return;
-  if (enabled) {
-    document.documentElement.setAttribute("data-reduced-motion", "true");
-  } else {
-    document.documentElement.removeAttribute("data-reduced-motion");
-  }
-}
-
-function applyHighContrast(enabled: boolean): void {
-  if (typeof document === "undefined") return;
-  if (enabled) {
-    document.documentElement.setAttribute("data-high-contrast", "true");
-  } else {
-    document.documentElement.removeAttribute("data-high-contrast");
-  }
-}
-
 function applyAllPreferences(prefs: CocoaPreferences): void {
-  applyThemePreference(prefs.themePreference);
-  applyAccentColor(prefs.accentColor);
-  applyReducedMotion(prefs.reducedMotion);
-  applyHighContrast(prefs.highContrast);
+  const root = documentRoot();
+  if (root) applyPreferencesToRoot(root, prefs);
 }
 
 // ---------------------------------------------------------------------------
@@ -414,17 +385,21 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
   const [preferences, setPreferences] = useState<CocoaPreferences>(DEFAULT_PREFERENCES);
   const updatePreferences = useCallback(
     async (partial: Partial<CocoaPreferences>): Promise<void> => {
+      // Only the known keys with valid values reach the state and the wire
+      // (a stale caller passing `accentColor` changes nothing).
+      const patch = sanitizePreferencePatch(partial);
+      if (Object.keys(patch).length === 0) return;
       let previous: CocoaPreferences = DEFAULT_PREFERENCES;
       setPreferences((prev) => {
         previous = prev;
-        const next: CocoaPreferences = { ...prev, ...partial };
+        const next: CocoaPreferences = { ...prev, ...patch };
         applyAllPreferences(next);
         return next;
       });
       try {
         await apiRequest<Partial<CocoaPreferences>>("/users/me/preferences", {
           method: "PATCH",
-          body: partial,
+          body: patch,
         });
       } catch (error) {
         // Roll back local state + applied document attributes so the UI stays
@@ -440,22 +415,21 @@ export function CocoaGlobalProvider({ children, commandPaletteHotkey = true }: C
   // Initial preference load — fetch once at mount and apply to <html>. Errors
   // are swallowed so a failing endpoint doesn't block the app from rendering;
   // the user can still open the sheet and retry, and the document falls back
-  // to the default tokens.
+  // to the default tokens. The migration (drop of the inline accent) runs at
+  // mount regardless of the request outcome.
   useEffect(() => {
+    const root = documentRoot();
+    if (root) clearLegacyAccentOverride(root);
     const controller = new AbortController();
     let cancelled = false;
-    apiRequest<Partial<CocoaPreferences>>("/users/me/preferences", {
+    apiRequest<unknown>("/users/me/preferences", {
       method: "GET",
       signal: controller.signal,
     })
       .then((data) => {
         if (cancelled) return;
-        const merged: CocoaPreferences = {
-          themePreference: data.themePreference ?? DEFAULT_PREFERENCES.themePreference,
-          accentColor: data.accentColor ?? DEFAULT_PREFERENCES.accentColor,
-          reducedMotion: data.reducedMotion ?? DEFAULT_PREFERENCES.reducedMotion,
-          highContrast: data.highContrast ?? DEFAULT_PREFERENCES.highContrast,
-        };
+        // `accentColor` (still returned by the API) is dropped here.
+        const merged = normalizePreferences(data, DEFAULT_PREFERENCES);
         setPreferences(merged);
         applyAllPreferences(merged);
       })

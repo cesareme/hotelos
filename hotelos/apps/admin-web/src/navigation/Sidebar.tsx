@@ -58,21 +58,53 @@ export const VIEW_AS_TOKENS: readonly RoleToken[] = ROLE_TOKEN_PRIORITY.filter((
 /** DOM id of the <aside>: `aria-controls` of the drawer button of the layout. */
 export const SIDEBAR_ELEMENT_ID = "bo-sidebar";
 
+// Cocoa 22 skin of the sidebar (COCOA-22.md §2 tokens, §3.1 shell): every
+// colour, radius, shadow and type size below is a --cocoa-* token and the
+// rules are UNLAYERED, so they win over the legacy `.bo-sidebar` skin of
+// styles.css (@layer cocoa-legacy) without touching that sheet. Only the
+// look lives here: positioning (drawer under 900 px), the class names and the
+// menu logic are unchanged. Focus: one 3 px Esmeralda ring everywhere.
 const SIDEBAR_CSS = `
-.bo-sidebar .bo-nav-item.locked { opacity: 0.6; cursor: default; justify-content: space-between; gap: 8px; }
-.bo-sidebar .bo-nav-item.locked:hover { background: transparent; color: var(--ink-soft); }
+.bo-sidebar { background: var(--cocoa-background-sidebar); border-right: 1px solid var(--cocoa-separator); color: var(--cocoa-label); font-family: var(--cocoa-font); padding: var(--cocoa-space-5) var(--cocoa-space-3); scrollbar-color: var(--cocoa-separator) transparent; }
+.bo-sidebar::-webkit-scrollbar-thumb { background: var(--cocoa-separator); border-radius: var(--cocoa-radius-full); }
+.bo-sidebar .bo-brand { gap: var(--cocoa-space-3); margin-bottom: var(--cocoa-space-5); padding: 0 var(--cocoa-space-3); }
+.bo-sidebar .bo-brand span { width: 36px; height: 36px; border-radius: var(--cocoa-radius-md); background: var(--cocoa-accent); color: var(--cocoa-accent-contrast); font-weight: var(--cocoa-fw-bold); font-size: var(--cocoa-fs-title-2); box-shadow: var(--cocoa-shadow-control); }
+.bo-sidebar .bo-brand strong { font-size: var(--cocoa-fs-title-3); font-weight: var(--cocoa-fw-bold); color: var(--cocoa-label); letter-spacing: var(--cocoa-tracking-tight); }
+.bo-sidebar .bo-brand small { font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-medium); color: var(--cocoa-label-secondary); }
+.bo-sidebar .bo-brand-home { display: flex; width: 100%; text-align: left; background: transparent; border: none; padding: 0; color: inherit; font: inherit; cursor: pointer; border-radius: var(--cocoa-radius-md); }
+.bo-sidebar .bo-sidebar-search { gap: var(--cocoa-space-2); padding: 6px 10px; border-radius: var(--cocoa-radius-md); background: var(--cocoa-background-control); border: 1px solid var(--cocoa-separator); margin-bottom: var(--cocoa-space-4); transition: border-color var(--cocoa-duration-fast) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.bo-sidebar .bo-sidebar-search:focus-within { border-color: var(--cocoa-accent); box-shadow: 0 0 0 3px var(--cocoa-focus-ring); }
+.bo-sidebar .bo-sidebar-search input { font-size: var(--cocoa-fs-body); color: var(--cocoa-label); font-family: var(--cocoa-font); }
+.bo-sidebar .bo-sidebar-search input::placeholder { color: var(--cocoa-label-secondary); }
+.bo-sidebar .bo-role-switcher label { font-size: var(--cocoa-fs-caption); font-weight: var(--cocoa-fw-semibold); letter-spacing: var(--cocoa-tracking-wide); color: var(--cocoa-label-secondary); }
+.bo-sidebar .bo-role-select-wrap select { min-height: 32px; border-radius: var(--cocoa-radius-md); border: 1px solid var(--cocoa-accent-border); background: var(--cocoa-accent-bg); color: var(--cocoa-label); font-family: var(--cocoa-font); font-size: var(--cocoa-fs-body); font-weight: var(--cocoa-fw-semibold); }
+.bo-sidebar .bo-role-select-wrap select:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--cocoa-focus-ring); }
+.bo-sidebar .bo-role-select-wrap svg { color: var(--cocoa-tone-accent-text); }
+.bo-sidebar .bo-nav-group-head { padding: var(--cocoa-space-2) var(--cocoa-space-3); border-radius: var(--cocoa-radius-md); color: var(--cocoa-label-secondary); font-family: var(--cocoa-font); font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-bold); letter-spacing: 0.06em; transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out), color var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.bo-sidebar .bo-nav-group-head:hover { background: var(--cocoa-fill-tertiary); color: var(--cocoa-label); }
+.bo-sidebar .bo-nav-group-badge { font-size: var(--cocoa-fs-caption); font-weight: var(--cocoa-fw-semibold); color: var(--cocoa-tone-accent-text); background: var(--cocoa-accent-bg); border-radius: var(--cocoa-radius-sm); letter-spacing: var(--cocoa-tracking-wide); }
+.bo-sidebar .bo-nav-chevron { color: var(--cocoa-label-tertiary); font-size: var(--cocoa-fs-caption); }
+.bo-sidebar .bo-nav-count { font-size: var(--cocoa-fs-caption); font-weight: var(--cocoa-fw-semibold); color: var(--cocoa-label-secondary); background: var(--cocoa-background-control); border: 1px solid var(--cocoa-separator); border-radius: var(--cocoa-radius-full); font-variant-numeric: tabular-nums; }
+.bo-sidebar .bo-nav-section.nested { border-left-color: var(--cocoa-separator); }
+.bo-sidebar .bo-nav-item { color: var(--cocoa-label); padding: 9px var(--cocoa-space-3); min-height: 38px; border-radius: var(--cocoa-radius-md); font-family: var(--cocoa-font); font-size: var(--cocoa-fs-body); font-weight: var(--cocoa-fw-medium); transition: background-color var(--cocoa-duration-fast) var(--cocoa-ease-out), color var(--cocoa-duration-fast) var(--cocoa-ease-out); }
+.bo-sidebar .bo-nav-item:hover { background: var(--cocoa-fill-tertiary); color: var(--cocoa-label); }
+.bo-sidebar .bo-nav-item.active { background: var(--cocoa-accent-bg); color: var(--cocoa-tone-accent-text); font-weight: var(--cocoa-fw-semibold); }
+.bo-sidebar .bo-nav-item.active::before { background: var(--cocoa-accent); border-radius: var(--cocoa-radius-full); }
+.bo-sidebar .bo-nav-item.locked { opacity: 0.6; cursor: default; justify-content: space-between; gap: var(--cocoa-space-2); }
+.bo-sidebar .bo-nav-item.locked:hover { background: transparent; color: var(--cocoa-label); }
 .bo-sidebar .bo-nav-item-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bo-sidebar .bo-nav-unlock { flex: none; font: inherit; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); border: 1px solid var(--line); background: var(--surface-elevated, var(--surface)); color: var(--accent-strong); cursor: pointer; }
-.bo-sidebar .bo-nav-unlock:hover { background: var(--accent-soft); }
-.bo-sidebar .bo-nav-notice { margin: 0 4px var(--space-3); padding: 10px 12px; border-radius: var(--radius-sm); background: var(--surface-soft); color: var(--ink-soft); font-size: 12px; line-height: 1.4; }
-.bo-sidebar .bo-nav-notice strong { display: block; color: var(--ink); margin-bottom: 2px; }
-.bo-sidebar .bo-nav-notice button { margin-top: 6px; font: inherit; font-size: 12px; font-weight: 600; background: transparent; border: none; color: var(--accent-strong); cursor: pointer; padding: 0; }
+.bo-sidebar .bo-nav-unlock { flex: none; font: inherit; font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-semibold); padding: 2px 8px; border-radius: var(--cocoa-radius-full); border: 1px solid var(--cocoa-separator); background: var(--cocoa-background-control); color: var(--cocoa-tone-accent-text); cursor: pointer; }
+.bo-sidebar .bo-nav-unlock:hover { background: var(--cocoa-accent-bg); }
+.bo-sidebar .bo-nav-notice { margin: 0 4px var(--cocoa-space-3); padding: 10px 12px; border-radius: var(--cocoa-radius-md); background: var(--cocoa-fill-quaternary); color: var(--cocoa-label-secondary); font-size: var(--cocoa-fs-callout); line-height: 1.4; }
+.bo-sidebar .bo-nav-notice strong { display: block; color: var(--cocoa-label); margin-bottom: 2px; }
+.bo-sidebar .bo-nav-notice button { margin-top: 6px; font: inherit; font-size: var(--cocoa-fs-callout); font-weight: var(--cocoa-fw-semibold); background: transparent; border: none; color: var(--cocoa-tone-accent-text); cursor: pointer; padding: 0; border-radius: var(--cocoa-radius-sm); }
 .bo-sidebar .bo-nav-skeleton { display: flex; flex-direction: column; gap: 10px; padding: 4px 12px; }
-.bo-sidebar .bo-nav-skeleton .bo-skeleton { height: 14px; }
-.bo-sidebar .bo-nav-viewas-badge { display: inline-flex; align-items: center; gap: 6px; margin: 0 4px var(--space-3); padding: 4px 8px; border-radius: var(--radius-full); background: var(--accent-soft); color: var(--accent-strong); font-size: 11px; font-weight: 600; }
-.bo-sidebar .bo-nav-viewas-badge button { font: inherit; font-size: 11px; background: transparent; border: none; color: inherit; cursor: pointer; text-decoration: underline; padding: 0; }
-.bo-sidebar .bo-brand-home { display: flex; width: 100%; text-align: left; background: transparent; border: none; padding: 0; color: inherit; font: inherit; cursor: pointer; border-radius: var(--radius-sm); }
-.bo-sidebar .bo-brand-home:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+.bo-sidebar .bo-nav-skeleton .bo-skeleton { height: 14px; border-radius: var(--cocoa-radius-md); }
+.bo-sidebar .bo-nav-viewas-badge { display: inline-flex; align-items: center; gap: 6px; margin: 0 4px var(--cocoa-space-3); padding: 4px 8px; border-radius: var(--cocoa-radius-full); background: var(--cocoa-accent-bg); color: var(--cocoa-tone-accent-text); font-size: var(--cocoa-fs-subheadline); font-weight: var(--cocoa-fw-semibold); }
+.bo-sidebar .bo-nav-viewas-badge button { font: inherit; font-size: var(--cocoa-fs-subheadline); background: transparent; border: none; color: inherit; cursor: pointer; text-decoration: underline; padding: 0; border-radius: var(--cocoa-radius-sm); }
+.bo-sidebar .bo-nav-counts { margin: var(--cocoa-space-3) var(--cocoa-space-3) 0; font-size: var(--cocoa-fs-subheadline); color: var(--cocoa-label-secondary); font-variant-numeric: tabular-nums; }
+.bo-sidebar .bo-sidebar-close { border-radius: var(--cocoa-radius-md); border: 1px solid var(--cocoa-separator); background: var(--cocoa-background-control); color: var(--cocoa-label); }
+.bo-sidebar .bo-brand-home:focus-visible, .bo-sidebar .bo-nav-group-head:focus-visible, .bo-sidebar .bo-nav-item:focus-visible, .bo-sidebar .bo-nav-unlock:focus-visible, .bo-sidebar .bo-nav-notice button:focus-visible, .bo-sidebar .bo-nav-viewas-badge button:focus-visible, .bo-sidebar .bo-sidebar-close:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--cocoa-focus-ring); }
 `;
 
 // ----------------------------------------------------------------- component
@@ -292,7 +324,7 @@ export function Sidebar(props: SidebarProps) {
         : null}
 
       {!gate.loading && !q && counts.items > 0 ? (
-        <p className="bo-muted" style={{ fontSize: 11, margin: "var(--space-3) 12px 0" }} data-nav-counts={`${counts.categories}/${counts.items}/${counts.locked}`}>
+        <p className="bo-nav-counts" data-nav-counts={`${counts.categories}/${counts.items}/${counts.locked}`}>
           {counts.categories} {counts.categories === 1 ? "categoría" : "categorías"} · {counts.items} {counts.items === 1 ? "entrada" : "entradas"}
           {counts.locked > 0 ? ` · ${counts.locked} por activar` : ""}
         </p>

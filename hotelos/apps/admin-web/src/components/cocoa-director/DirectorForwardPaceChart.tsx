@@ -1,50 +1,61 @@
-// Director Forward Pace Chart — gráfico multi-línea de pickup (OTB vs Forecast
-// vs Last Year) para la vista del Director Comercial.
+// Director Forward Pace Chart — multi-line pickup chart (OTB vs Forecast vs
+// Last Year) for the commercial director's view. Base of `CocoaChart.Line`
+// (COCOA-22.md §3.12); the geometry helpers now come from
+// `cocoa/cocoa-chart-math` so both render the same shapes.
 //
-// Implementación SVG inline (sin dependencias externas). Tres series:
-//   - OTB:       línea sólida, color accent (--cocoa-accent), 2px.
-//   - Forecast:  línea dashed, color warning (--cocoa-warning), 2px.
-//   - Last Year: línea sólida, color terciario, 1px.
+// Inline SVG (no external dependencies). Three series:
+//   - OTB:       solid line, accent (--cocoa-accent), 2 px.
+//   - Forecast:  dashed line, warning (--cocoa-warning), 2 px.
+//   - Last Year: solid line, tertiary, 1 px.
 //
-// Comportamiento:
-//   - Eje X con fechas formateadas DD-MM, omitidas cada N para evitar overlap.
-//   - Eje Y con valor (ocupación % o rooms). Etiqueta configurable.
-//   - Hover: vertical guide line + tooltip card con fecha y valores.
-//   - Legend arriba derecha; título opcional arriba izquierda.
-//   - Empty state cuando `data` está vacío: ilustración + mensaje.
+// Behaviour:
+//   - X axis with DD-MM dates, thinned to ≤ ~8 labels.
+//   - Y axis with the value (occupancy % or rooms); configurable label.
+//   - Hover: vertical guide + tooltip card with the date and the values.
+//   - Legend top-right; optional title top-left.
+//   - Empty state when `data` is empty: illustration + message.
 //
-// Wrap en CocoaCard padding="md" para alinear con el resto de la UI Cocoa.
+// Sizing (Cocoa 22 fix, measured 276×200 stretched at 390 px with the old
+// `preserveAspectRatio="none"`): the chart measures its container and uses
+// that width as the viewBox width (min 240; the canon 640 until measured),
+// with `preserveAspectRatio="xMidYMid meet"` and an explicit `aspect-ratio`
+// equal to the viewBox — so the glyphs are never deformed and the plot keeps
+// its `height` at every width.
+//
+// Wrapped in CocoaCard padding="md" to align with the rest of the Cocoa UI.
 
-import { useMemo, useState, type CSSProperties, type PointerEvent } from "react";
+import { useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { CocoaCard } from "../cocoa/CocoaCard";
 import { CocoaEmptyState } from "../cocoa-empty-state/CocoaEmptyState";
 import { EmptyStateBox } from "../cocoa-illustrations";
+import { buildPathD, formatChartValue, formatYTick, niceCeil, pickXStep } from "../cocoa/cocoa-chart-math";
+import { useElementWidth } from "../cocoa/cocoa-viewport";
 
 export interface DirectorForwardPacePoint {
-  /** Fecha en formato ISO (YYYY-MM-DD) o cualquier formato parseable por Date. */
+  /** ISO date (YYYY-MM-DD) or any Date-parseable string. */
   date: string;
-  /** Pickup confirmado (On The Books). */
+  /** Confirmed pickup (On The Books). */
   otb: number;
-  /** Pronóstico para esa fecha. */
+  /** Forecast for that date. */
   forecast: number;
-  /** Valor del mismo día el año anterior. */
+  /** Same day, previous year. */
   lastYear: number;
 }
 
 export interface DirectorForwardPaceChartProps {
   data: Array<DirectorForwardPacePoint>;
-  /** Cantidad máxima de días a mostrar (slice desde el inicio). Default 30. */
+  /** Maximum number of days to show (slice from the start). Default 30. */
   days?: number;
-  /** Etiqueta del eje Y (ej: "Ocupación %", "Rooms"). */
+  /** Y axis label (e.g. "Ocupación %", "Rooms"). */
   valueLabel?: string;
-  /** Alto del área del gráfico (no del card completo). Default 200. */
+  /** Height of the plot area (not of the whole card). Default 200. */
   height?: number;
-  /** Título opcional mostrado arriba a la izquierda. */
+  /** Optional title, top-left. */
   title?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Constantes de layout SVG. Padding interno del área de plotting.
+// SVG layout constants: inner padding of the plot area.
 // ---------------------------------------------------------------------------
 
 const CHART_PADDING = {
@@ -54,12 +65,20 @@ const CHART_PADDING = {
   left: 44
 } as const;
 
-const VIEWBOX_WIDTH = 640;
+/** Canon viewBox width (used until the container is measured). */
+export const VIEWBOX_WIDTH = 640;
+/** Narrowest viewBox: below this the axis labels would collide. */
+export const MIN_VIEWBOX_WIDTH = 240;
 const Y_TICKS = 4;
 
+/** ViewBox width for a measured container width (pure): canon 640 until measured, never below 240. */
+export function paceViewBoxWidth(measured: number | null): number {
+  return measured === null ? VIEWBOX_WIDTH : Math.max(MIN_VIEWBOX_WIDTH, Math.round(measured));
+}
+
 // ---------------------------------------------------------------------------
-// Estilos del wrapper interno (título + legend + svg). El padding del card
-// proviene de CocoaCard padding="md".
+// Inner wrapper styles (title + legend + svg). The card padding comes from
+// CocoaCard padding="md".
 // ---------------------------------------------------------------------------
 
 const headerRowStyle: CSSProperties = {
@@ -75,7 +94,7 @@ const headerRowStyle: CSSProperties = {
 const titleStyle: CSSProperties = {
   margin: 0,
   fontSize: "var(--cocoa-fs-title-3)",
-  fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
   color: "var(--cocoa-label)",
   letterSpacing: "var(--cocoa-tracking-tight)"
 };
@@ -127,7 +146,7 @@ const tooltipStyle: CSSProperties = {
 };
 
 const tooltipDateStyle: CSSProperties = {
-  fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
   marginBottom: "var(--cocoa-space-1)",
   color: "var(--cocoa-label)"
 };
@@ -143,7 +162,7 @@ const tooltipRowStyle: CSSProperties = {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-/** Formatea una fecha ISO a "DD-MM". Devuelve la cadena original si es inválida. */
+/** Formats an ISO date as "DD-MM"; returns the input when it is not a date. */
 function formatDayMonth(iso: string): string {
   const parsed = new Date(iso);
   if (Number.isNaN(parsed.getTime())) return iso;
@@ -152,36 +171,8 @@ function formatDayMonth(iso: string): string {
   return `${dd}-${mm}`;
 }
 
-/** Calcula el "step" de ticks del eje X para que no haya más de ~8 etiquetas. */
-function pickXStep(count: number): number {
-  if (count <= 8) return 1;
-  return Math.ceil(count / 8);
-}
-
-/** Redondea hacia arriba al múltiplo más cercano "agradable" para el eje Y. */
-function niceCeil(value: number): number {
-  if (value <= 0) return 1;
-  const exp = Math.floor(Math.log10(value));
-  const base = Math.pow(10, exp);
-  const norm = value / base;
-  let nice: number;
-  if (norm <= 1) nice = 1;
-  else if (norm <= 2) nice = 2;
-  else if (norm <= 5) nice = 5;
-  else nice = 10;
-  return nice * base;
-}
-
-/** Construye un atributo "d" de path SVG a partir de puntos (x, y). */
-function buildPathD(points: Array<{ x: number; y: number }>): string {
-  if (points.length === 0) return "";
-  return points
-    .map((p, i) => `${i === 0 ? "M" : "L"}${p.x.toFixed(2)},${p.y.toFixed(2)}`)
-    .join(" ");
-}
-
 // ---------------------------------------------------------------------------
-// Componente principal.
+// Main component.
 // ---------------------------------------------------------------------------
 
 export function DirectorForwardPaceChart({
@@ -192,18 +183,21 @@ export function DirectorForwardPaceChart({
   title
 }: DirectorForwardPaceChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const measured = useElementWidth(wrapperRef);
+  const viewBoxWidth = paceViewBoxWidth(measured);
 
-  // Slice de los primeros `days` puntos.
+  // First `days` points.
   const slice = useMemo(() => data.slice(0, Math.max(0, days)), [data, days]);
 
-  // Cálculo de escalas y coordenadas. Memoizado por estabilidad en hover.
+  // Scales and coordinates. Memoised so hover does not recompute them.
   const geometry = useMemo(() => {
     if (slice.length === 0) return null;
 
-    const innerWidth = VIEWBOX_WIDTH - CHART_PADDING.left - CHART_PADDING.right;
+    const innerWidth = viewBoxWidth - CHART_PADDING.left - CHART_PADDING.right;
     const innerHeight = height - CHART_PADDING.top - CHART_PADDING.bottom;
 
-    // Rango del eje Y a partir del máximo entre las tres series. Mínimo 0.
+    // Y range from the maximum of the three series. Minimum 0.
     let rawMax = 0;
     for (const p of slice) {
       if (p.otb > rawMax) rawMax = p.otb;
@@ -212,48 +206,32 @@ export function DirectorForwardPaceChart({
     }
     const yMax = niceCeil(rawMax || 1);
 
-    // Si hay un solo punto, lo posicionamos en el centro horizontal.
+    // A single point sits at the horizontal centre.
     const xOf = (i: number) => {
       if (slice.length === 1) {
         return CHART_PADDING.left + innerWidth / 2;
       }
-      return (
-        CHART_PADDING.left + (innerWidth * i) / (slice.length - 1)
-      );
+      return CHART_PADDING.left + (innerWidth * i) / (slice.length - 1);
     };
-    const yOf = (v: number) =>
-      CHART_PADDING.top + innerHeight * (1 - v / yMax);
+    const yOf = (v: number) => CHART_PADDING.top + innerHeight * (1 - v / yMax);
 
     const otbPoints = slice.map((p, i) => ({ x: xOf(i), y: yOf(p.otb) }));
-    const forecastPoints = slice.map((p, i) => ({
-      x: xOf(i),
-      y: yOf(p.forecast)
-    }));
-    const lastYearPoints = slice.map((p, i) => ({
-      x: xOf(i),
-      y: yOf(p.lastYear)
-    }));
+    const forecastPoints = slice.map((p, i) => ({ x: xOf(i), y: yOf(p.forecast) }));
+    const lastYearPoints = slice.map((p, i) => ({ x: xOf(i), y: yOf(p.lastYear) }));
 
-    // Ticks del eje X.
+    // X ticks.
     const xStep = pickXStep(slice.length);
     const xTicks: Array<{ i: number; x: number; label: string }> = [];
     for (let i = 0; i < slice.length; i += xStep) {
       xTicks.push({ i, x: xOf(i), label: formatDayMonth(slice[i].date) });
     }
-    // Garantizamos que el último tick aparezca aunque no caiga en el step.
-    if (
-      xTicks.length > 0 &&
-      xTicks[xTicks.length - 1].i !== slice.length - 1
-    ) {
+    // Always show the last tick even when it does not fall on the step.
+    if (xTicks.length > 0 && xTicks[xTicks.length - 1].i !== slice.length - 1) {
       const lastIdx = slice.length - 1;
-      xTicks.push({
-        i: lastIdx,
-        x: xOf(lastIdx),
-        label: formatDayMonth(slice[lastIdx].date)
-      });
+      xTicks.push({ i: lastIdx, x: xOf(lastIdx), label: formatDayMonth(slice[lastIdx].date) });
     }
 
-    // Ticks del eje Y (Y_TICKS + 1 valores incluyendo 0 y yMax).
+    // Y ticks (Y_TICKS + 1 values including 0 and yMax).
     const yTicks: Array<{ value: number; y: number }> = [];
     for (let i = 0; i <= Y_TICKS; i += 1) {
       const value = (yMax * i) / Y_TICKS;
@@ -272,9 +250,9 @@ export function DirectorForwardPaceChart({
       xTicks,
       yTicks
     };
-  }, [slice, height]);
+  }, [slice, height, viewBoxWidth]);
 
-  // Empty state. Lo envolvemos en CocoaCard padding="md" igual que el chart.
+  // Empty state, wrapped in the same CocoaCard padding="md" as the chart.
   if (slice.length === 0 || !geometry) {
     return (
       <CocoaCard variant="bordered" padding="md">
@@ -286,31 +264,21 @@ export function DirectorForwardPaceChart({
     );
   }
 
-  const {
-    innerWidth,
-    yMax,
-    otbPoints,
-    forecastPoints,
-    lastYearPoints,
-    xTicks,
-    yTicks
-  } = geometry;
+  const { innerWidth, yMax, otbPoints, forecastPoints, lastYearPoints, xTicks, yTicks } = geometry;
 
-  // Convierte un evento de puntero del SVG en el índice más cercano. Como el
-  // SVG usa preserveAspectRatio por defecto y un viewBox, mapeamos la posición
-  // del puntero relativa al bounding rect al espacio del viewBox.
+  // Maps a pointer event on the SVG to the nearest index: the pointer position
+  // relative to the bounding rect is projected into viewBox space (the SVG
+  // keeps the viewBox aspect ratio, so the mapping is linear).
   function handlePointerMove(event: PointerEvent<SVGSVGElement>) {
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width === 0) return;
-    const relativeX = ((event.clientX - rect.left) / rect.width) * VIEWBOX_WIDTH;
+    const relativeX = ((event.clientX - rect.left) / rect.width) * viewBoxWidth;
 
     if (slice.length === 1) {
       setHoverIndex(0);
       return;
     }
-    const ratio =
-      (relativeX - CHART_PADDING.left) /
-      (innerWidth === 0 ? 1 : innerWidth);
+    const ratio = (relativeX - CHART_PADDING.left) / (innerWidth === 0 ? 1 : innerWidth);
     const idx = Math.round(ratio * (slice.length - 1));
     const clamped = Math.max(0, Math.min(slice.length - 1, idx));
     setHoverIndex(clamped);
@@ -323,11 +291,10 @@ export function DirectorForwardPaceChart({
   const hoverPoint = hoverIndex !== null ? slice[hoverIndex] : null;
   const hoverX = hoverIndex !== null ? otbPoints[hoverIndex].x : 0;
 
-  // Posición del tooltip (HTML overlay). Lo alineamos respecto al área del SVG
-  // usando porcentajes del viewBox, igual que para `relativeX`.
-  const tooltipLeftPct = (hoverX / VIEWBOX_WIDTH) * 100;
-  // Si el hover cae en la mitad derecha del chart, ancla el tooltip a la
-  // derecha del punto para evitar que se corte.
+  // Tooltip position (HTML overlay), as a percentage of the viewBox width —
+  // the same mapping as `relativeX`.
+  const tooltipLeftPct = (hoverX / viewBoxWidth) * 100;
+  // Past the right third, anchor the tooltip to the right of the point so it is not cut.
   const tooltipAlignRight = tooltipLeftPct > 65;
 
   return (
@@ -341,25 +308,23 @@ export function DirectorForwardPaceChart({
         </div>
       </div>
 
-      <div style={chartWrapperStyle}>
+      <div ref={wrapperRef} style={chartWrapperStyle}>
         <svg
           role="img"
-          aria-label={
-            title ? `${title} — ${valueLabel}` : `Pace chart — ${valueLabel}`
-          }
-          viewBox={`0 0 ${VIEWBOX_WIDTH} ${height}`}
-          preserveAspectRatio="none"
-          style={{ ...svgStyle, height }}
+          aria-label={title ? `${title} — ${valueLabel}` : `Pace chart — ${valueLabel}`}
+          viewBox={`0 0 ${viewBoxWidth} ${height}`}
+          preserveAspectRatio="xMidYMid meet"
+          style={{ ...svgStyle, aspectRatio: `${viewBoxWidth} / ${height}` }}
           onPointerMove={handlePointerMove}
           onPointerLeave={handlePointerLeave}
         >
-          {/* Grid horizontal + ticks Y */}
+          {/* Horizontal grid + Y ticks */}
           <g>
             {yTicks.map((tick) => (
               <g key={`y-${tick.value}`}>
                 <line
                   x1={CHART_PADDING.left}
-                  x2={VIEWBOX_WIDTH - CHART_PADDING.right}
+                  x2={viewBoxWidth - CHART_PADDING.right}
                   y1={tick.y}
                   y2={tick.y}
                   stroke="var(--cocoa-separator)"
@@ -381,7 +346,7 @@ export function DirectorForwardPaceChart({
             ))}
           </g>
 
-          {/* Etiquetas eje X */}
+          {/* X axis labels */}
           <g>
             {xTicks.map((tick) => (
               <text
@@ -398,7 +363,7 @@ export function DirectorForwardPaceChart({
             ))}
           </g>
 
-          {/* Etiqueta del eje Y (valueLabel) */}
+          {/* Y axis label (valueLabel) */}
           <text
             x={CHART_PADDING.left - 36}
             y={CHART_PADDING.top - 4}
@@ -410,7 +375,7 @@ export function DirectorForwardPaceChart({
             {valueLabel}
           </text>
 
-          {/* Línea Last Year (gris, 1px, sólida) */}
+          {/* Last Year (grey, 1 px, solid) */}
           <path
             d={buildPathD(lastYearPoints)}
             fill="none"
@@ -421,7 +386,7 @@ export function DirectorForwardPaceChart({
             vectorEffect="non-scaling-stroke"
           />
 
-          {/* Línea Forecast (warning, dashed, 2px) */}
+          {/* Forecast (warning, dashed, 2 px) */}
           <path
             d={buildPathD(forecastPoints)}
             fill="none"
@@ -433,7 +398,7 @@ export function DirectorForwardPaceChart({
             vectorEffect="non-scaling-stroke"
           />
 
-          {/* Línea OTB (accent, sólida, 2px) */}
+          {/* OTB (accent, solid, 2 px) */}
           <path
             d={buildPathD(otbPoints)}
             fill="none"
@@ -444,7 +409,7 @@ export function DirectorForwardPaceChart({
             vectorEffect="non-scaling-stroke"
           />
 
-          {/* Hover: guía vertical + puntos */}
+          {/* Hover: vertical guide + points */}
           {hoverIndex !== null ? (
             <g pointerEvents="none">
               <line
@@ -491,35 +456,25 @@ export function DirectorForwardPaceChart({
             style={{
               ...tooltipStyle,
               left: tooltipAlignRight ? undefined : `calc(${tooltipLeftPct}% + 12px)`,
-              right: tooltipAlignRight
-                ? `calc(${100 - tooltipLeftPct}% + 12px)`
-                : undefined,
+              right: tooltipAlignRight ? `calc(${100 - tooltipLeftPct}% + 12px)` : undefined,
               top: 8
             }}
           >
-            <div style={tooltipDateStyle}>
-              {formatTooltipDate(hoverPoint.date)}
-            </div>
+            <div style={tooltipDateStyle}>{formatTooltipDate(hoverPoint.date)}</div>
             <div style={tooltipRowStyle}>
               <Dot color="var(--cocoa-accent)" />
               <span>OTB:&nbsp;</span>
-              <strong style={{ color: "var(--cocoa-label)" }}>
-                {formatValue(hoverPoint.otb)}
-              </strong>
+              <strong style={{ color: "var(--cocoa-label)" }}>{formatChartValue(hoverPoint.otb)}</strong>
             </div>
             <div style={tooltipRowStyle}>
               <Dot color="var(--cocoa-warning)" dashed />
               <span>Forecast:&nbsp;</span>
-              <strong style={{ color: "var(--cocoa-label)" }}>
-                {formatValue(hoverPoint.forecast)}
-              </strong>
+              <strong style={{ color: "var(--cocoa-label)" }}>{formatChartValue(hoverPoint.forecast)}</strong>
             </div>
             <div style={tooltipRowStyle}>
               <Dot color="var(--cocoa-label-tertiary)" />
               <span>Año anterior:&nbsp;</span>
-              <strong style={{ color: "var(--cocoa-label)" }}>
-                {formatValue(hoverPoint.lastYear)}
-              </strong>
+              <strong style={{ color: "var(--cocoa-label)" }}>{formatChartValue(hoverPoint.lastYear)}</strong>
             </div>
           </div>
         ) : null}
@@ -529,7 +484,7 @@ export function DirectorForwardPaceChart({
 }
 
 // ---------------------------------------------------------------------------
-// Subcomponentes presentacionales.
+// Presentational subcomponents.
 // ---------------------------------------------------------------------------
 
 interface LegendSwatchProps {
@@ -547,13 +502,7 @@ function LegendSwatch({ tone, label, dashed = false }: LegendSwatchProps) {
         : "var(--cocoa-label-tertiary)";
   return (
     <span style={legendItemStyle}>
-      <svg
-        width={20}
-        height={8}
-        viewBox="0 0 20 8"
-        aria-hidden="true"
-        style={{ display: "block" }}
-      >
+      <svg width={20} height={8} viewBox="0 0 20 8" aria-hidden="true" style={{ display: "block" }}>
         <line
           x1={0}
           x2={20}
@@ -583,7 +532,7 @@ function Dot({ color, dashed = false }: DotProps) {
         display: "inline-block",
         width: 8,
         height: 8,
-        borderRadius: dashed ? 0 : "50%",
+        borderRadius: dashed ? 0 : "var(--cocoa-radius-full)",
         background: dashed ? "transparent" : color,
         border: dashed ? `2px dashed ${color}` : undefined,
         flexShrink: 0
@@ -593,21 +542,8 @@ function Dot({ color, dashed = false }: DotProps) {
 }
 
 // ---------------------------------------------------------------------------
-// Formateadores auxiliares.
+// Formatters.
 // ---------------------------------------------------------------------------
-
-function formatYTick(value: number, max: number): string {
-  // Si el rango es chico (<=10) mostramos decimales; si no, redondeamos.
-  if (max <= 10) return value.toFixed(1).replace(/\.0$/, "");
-  return Math.round(value).toString();
-}
-
-function formatValue(value: number): string {
-  if (Number.isNaN(value)) return "—";
-  if (Math.abs(value) >= 100) return Math.round(value).toString();
-  if (Math.abs(value) >= 10) return value.toFixed(1).replace(/\.0$/, "");
-  return value.toFixed(2).replace(/\.?0+$/, "");
-}
 
 function formatTooltipDate(iso: string): string {
   const parsed = new Date(iso);

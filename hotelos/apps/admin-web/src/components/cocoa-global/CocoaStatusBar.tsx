@@ -17,9 +17,9 @@ function DefaultLeftSlot() {
     display: "inline-block",
     width: 6,
     height: 6,
-    borderRadius: "50%",
-    background: "#28c840",
-    boxShadow: "0 0 4px rgb(40 200 64 / 0.6)",
+    borderRadius: "var(--cocoa-radius-full)",
+    // Status dot in the success hue — no glow (COCOA-22.md §6: no halos).
+    background: "var(--cocoa-success)",
     flexShrink: 0
   };
 
@@ -47,7 +47,7 @@ export function CocoaStatusBar({
     width: "100%",
     height: 24,
     minHeight: 24,
-    zIndex: 100,
+    zIndex: "var(--cocoa-z-sticky)" as CSSProperties["zIndex"],
     display: "flex",
     alignItems: "center",
     padding: "0 12px",

@@ -44,6 +44,8 @@ import {
 } from "react";
 import { devQueryFrom, matchPath, normalizePathname } from "../../navigation/nav-tree";
 import { MOBILE_BREAKPOINT_PX } from "../../navigation/role-tokens";
+import { TAB_ITEM_RADIUS, tabSurfaceStyle } from "./CocoaSegmentedControl";
+import { CocoaSkeleton } from "./CocoaState";
 
 /** Cancelable event dispatched BEFORE a tab switch; guards veto with preventDefault. */
 export const TAB_NAV_EVENT = "hotelos-tab-nav";
@@ -378,7 +380,7 @@ const visuallyHidden: CSSProperties = {
   border: 0
 };
 
-/** Cocoa-spaced shimmer lines announced as «Cargando sección…»; the default Suspense fallback. */
+/** Cocoa-spaced shimmer lines announced as «Cargando sección…»; the default Suspense fallback (CocoaSkeleton, no `.bo-*`). */
 export function CocoaTabSkeleton(props: { lines?: number; label?: string }) {
   const lines = props.lines ?? 4;
   return (
@@ -388,14 +390,8 @@ export function CocoaTabSkeleton(props: { lines?: number; label?: string }) {
       aria-busy="true"
       style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-3)", padding: "var(--cocoa-space-4) 0" }}
     >
-      <span className="bo-skeleton bo-skeleton-title" aria-hidden="true" />
-      {Array.from({ length: lines }).map((_, index) => (
-        <span
-          key={index}
-          className={`bo-skeleton bo-skeleton-text${index === lines - 1 ? " short" : index % 2 ? " medium" : ""}`}
-          aria-hidden="true"
-        />
-      ))}
+      <CocoaSkeleton variant="title" />
+      <CocoaSkeleton variant="text" lines={lines} />
       <span style={visuallyHidden}>{props.label ?? "Cargando sección…"}</span>
     </div>
   );
@@ -407,14 +403,23 @@ const ITEM_PADDING: Record<"small" | "regular", string> = { small: "4px 12px", r
 const FONT_SIZE: Record<"small" | "regular", string> = { small: "var(--cocoa-fs-subheadline)", regular: "var(--cocoa-fs-body)" };
 const ICON_SIZE: Record<"small" | "regular", number> = { small: 12, regular: 14 };
 
-function tablistStyle(isMobile: boolean): CSSProperties {
+/**
+ * Strip geometry (COCOA-22.md §3.3). On phones the strip scrolls; the lateral
+ * fade, the scroll-snap and the hidden scrollbar are owned by the css lot
+ * (`.c22-tablist`, styles/cocoa-22-layout.css), which also pads the end of
+ * the strip so the last tab clears the fade — hence no inline
+ * `padding-inline-end` below 900 px.
+ */
+export function tablistStyle(isMobile: boolean): CSSProperties {
   return {
     display: "flex",
     alignItems: "stretch",
     alignSelf: isMobile ? "stretch" : "flex-start",
     maxWidth: "100%",
     overflowX: isMobile ? "auto" : "visible",
-    padding: 2,
+    paddingBlock: 2,
+    paddingInlineStart: 2,
+    paddingInlineEnd: isMobile ? undefined : 2,
     background: "var(--cocoa-background-control)",
     borderRadius: "var(--cocoa-radius-md)",
     fontFamily: "var(--cocoa-font)",
@@ -422,17 +427,24 @@ function tablistStyle(isMobile: boolean): CSSProperties {
   };
 }
 
-function tabStyle(isActive: boolean, size: "small" | "regular"): CSSProperties {
+/**
+ * Tab button style (pure). NO `boxShadow` inline: the active surface (content
+ * bg + inset control shadow) is the decorative `tabSurfaceStyle` child, so the
+ * stylesheet's `.cocoa-focus-ring:focus-visible` ring can paint on the active
+ * tab — the only tab stop of the strip under roving tabindex.
+ */
+export function routeTabStyle(isActive: boolean, size: "small" | "regular"): CSSProperties {
   return {
+    position: "relative",
+    isolation: "isolate",
     display: "inline-flex",
     alignItems: "center",
     justifyContent: "center",
     gap: size === "small" ? 4 : 6,
     padding: ITEM_PADDING[size],
-    borderRadius: "calc(var(--cocoa-radius-md) - 2px)",
+    borderRadius: TAB_ITEM_RADIUS,
     border: "1px solid transparent",
-    background: isActive ? "var(--cocoa-background-content)" : "transparent",
-    boxShadow: isActive ? "inset var(--cocoa-shadow-control)" : "none",
+    background: "transparent",
     color: isActive ? "var(--cocoa-label)" : "var(--cocoa-label-secondary)",
     fontFamily: "inherit",
     fontSize: FONT_SIZE[size],
@@ -445,10 +457,12 @@ function tabStyle(isActive: boolean, size: "small" | "regular"): CSSProperties {
     flexShrink: 0,
     WebkitAppearance: "none",
     appearance: "none",
-    transition:
-      "background var(--cocoa-duration-base) var(--cocoa-ease-out), color var(--cocoa-duration-base) var(--cocoa-ease-out), box-shadow var(--cocoa-duration-base) var(--cocoa-ease-out)"
+    transition: "color var(--cocoa-duration-base) var(--cocoa-ease-out)"
   };
 }
+
+/** Tab panel: reachable by Tab (APG), with the single Esmeralda ring instead of the browser/Aurora outline. */
+const panelBaseStyle: CSSProperties = { minWidth: 0, borderRadius: "var(--cocoa-radius-md)" };
 
 const emptyStyle: CSSProperties = {
   margin: 0,
@@ -491,7 +505,7 @@ export function CocoaRouteTabs(props: CocoaRouteTabsProps) {
       data-cocoa-route-tabs={basePath}
     >
       {paintedTabs.length > 0 ? (
-        <div role="tablist" aria-label={ariaLabel ?? "Secciones"} aria-orientation="horizontal" style={tablistStyle(isMobile)} onKeyDown={onKeyDown}>
+        <div role="tablist" aria-label={ariaLabel ?? "Secciones"} aria-orientation="horizontal" className="c22-tablist" style={tablistStyle(isMobile)} onKeyDown={onKeyDown} data-cocoa="tablist">
           {paintedTabs.map((tab) => {
             const isActive = tab.key === activeKey;
             return (
@@ -509,9 +523,10 @@ export function CocoaRouteTabs(props: CocoaRouteTabsProps) {
                   else tabRefs.current.delete(tab.key);
                 }}
                 className="cocoa-focus-ring"
-                style={tabStyle(isActive, size)}
+                style={routeTabStyle(isActive, size)}
                 onClick={() => select(tab.key)}
               >
+                <span aria-hidden="true" className="c22-tab__surface" style={tabSurfaceStyle(isActive)} />
                 {tab.icon ? (
                   <span
                     aria-hidden="true"
@@ -527,7 +542,7 @@ export function CocoaRouteTabs(props: CocoaRouteTabsProps) {
         </div>
       ) : null}
       {activeTab ? (
-        <div role="tabpanel" id={panelId} aria-labelledby={activeKey ? tabId(activeKey) : undefined} tabIndex={0} style={{ minWidth: 0, ...panelStyle }}>
+        <div role="tabpanel" id={panelId} aria-labelledby={activeKey ? tabId(activeKey) : undefined} tabIndex={0} className="cocoa-focus-ring" style={{ ...panelBaseStyle, ...panelStyle }}>
           <Suspense fallback={fallback ?? <CocoaTabSkeleton />}>{content}</Suspense>
         </div>
       ) : (

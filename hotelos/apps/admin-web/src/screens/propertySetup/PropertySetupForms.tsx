@@ -1,21 +1,39 @@
+// Property setup forms — the 14 configuration forms of Configuración ›
+// Propiedad / Habitaciones y espacios / Contabilidad y fiscal / Inteligencia
+// artificial and Operaciones › Pisos / Mantenimiento (Tanda 5 · L1c: each
+// one is a tab of its container).
+//
+// Cocoa 22 pilot of the «formulario / ajustes» archetype (docs/design/
+// COCOA-22.md §4): CocoaPage (hosted: the container paints eyebrow and
+// title, the page its description and status) → two CocoaSection panels
+// (about · current state) on the 12-column grid → CocoaFormSection with the
+// dynamic CocoaField controls (input / select / switch / date / textarea /
+// option chips; «Guardar y añadir otro» + «Historial» in its footer) →
+// validation lists → read-only DataPreview → CocoaActionBar (Cancelar · Guardar; ⌘/Ctrl+Enter saves).
+// Definitions, pre-fill and save logic are untouched: only the rendering
+// moved from the legacy FormComponents to the primitives.
+
 import { getActivePropertyId } from "../../services/activeProperty";
-import { useEffect, useMemo, useState } from "react";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { DataPreview } from "../../components/forms/FormComponents";
 import {
-  DataPreview,
-  FormDateInput,
-  FormField,
-  FormMoneyInput,
-  FormMultiSelect,
-  FormNumberInput,
-  FormPage,
-  FormPreviewPanel,
-  FormSection,
-  FormSelect,
-  FormSwitch,
-  FormTextarea,
-  FormValidationSummary
-} from "../../components/forms/FormComponents";
+  CocoaActionBar,
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaFormSection,
+  CocoaGrid,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSpan,
+  CocoaSwitch,
+  openTabPath,
+  type CocoaTone
+} from "../../components/cocoa";
 import {
   backOfficeEndpoints,
   fetchPropertySetupForm,
@@ -25,17 +43,12 @@ import {
 } from "../../services/backofficeApi";
 import { FISCAL_TERRITORY_OPTIONS, TAX_REGION_OPTIONS, TOURISM_TAX_REGION_OPTIONS, normalizeTaxRegionClient } from "../../services/taxesApi";
 import { urlForScreen } from "../../navigation/nav-tree";
-import { useTabHost } from "../tabs/TabHost";
-import { HostedHead } from "../tabs/tab-helpers";
+import { navigateTo } from "../../lib/navigate";
+import { ACTIONS } from "../../content/actions";
+import { plural } from "../../lib/format";
 
-// Tanda 5 · L1c: the 14 forms are tabs of their containers (Configuración ›
-// Propiedad / Habitaciones y espacios / Contabilidad y fiscal / Inteligencia
-// artificial, Operaciones › Pisos / Mantenimiento). Inside a container the
-// screen reads `useTabHost()` and paints `HostedHead` (subtitle only): the
-// container already carries eyebrow and title. «Cancelar» returns to the
-// single configuration hub without a full reload.
+// «Cancelar» returns to the single configuration hub without a full reload.
 const SETUP_CENTER_PATH = urlForScreen("SetupCenterScreen") ?? "/configuracion/puesta-en-marcha";
-const hostedStackStyle = { display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)", minWidth: 0 } as const;
 
 // Tanda 3: select options are canonical {value, label} pairs (the API
 // definition serves them for taxRegion / tourismTaxRegion / fiscalTerritory;
@@ -512,86 +525,106 @@ const TEXT_FIELD_CONSTRAINTS: Record<
   }
 };
 
-function fieldControl(
-  field: SetupField,
-  value: unknown,
-  setValue: (key: string, value: unknown) => void
-) {
+/** Keyboard/type of a free-text field by its label (phones and emails get the right keyboard). */
+function textInputKind(label: string): { type: string; inputMode?: "tel" | "email" } {
+  if (/tel[eé]fono|phone|\btel\b/i.test(label)) return { type: "tel", inputMode: "tel" };
+  if (/email|correo/i.test(label)) return { type: "email", inputMode: "email" };
+  return { type: "text" };
+}
+
+function textValue(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function listValue(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String);
+  if (typeof value === "string" && value) return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
+}
+
+function fieldControl(field: SetupField, value: unknown, setValue: (key: string, value: unknown) => void): ReactNode {
   if (field.inputType === "select") {
     const options = optionsOf(field);
     const current = typeof value === "string" ? value : "";
-    const hasObjects = (field.options ?? []).some((option) => typeof option === "object");
-    if (!hasObjects) {
-      return (
-        <FormSelect
-          key={field.key}
-          label={field.label}
-          options={options.map((option) => option.value)}
-          required={field.required}
-          value={current}
-          onChange={(nextValue) => setValue(field.key, nextValue)}
-        />
-      );
-    }
-    // Canonical value/label select: the stored value is the code, the user
-    // sees the label. An unrecognised stored value is kept as an extra option
-    // so the form never silently blanks it.
+    // An unrecognised stored value is kept as an extra option so the form
+    // never silently blanks it (canonical value/label selects: the stored
+    // value is the code, the user sees the label).
     const known = options.some((option) => option.value === current);
+    const selectOptions = current && !known ? [...options, { value: current, label: `Valor actual: ${current}` }] : options;
     return (
-      <FormField key={field.key} label={field.label} required={field.required}>
-        <select aria-label={field.label} value={current} onChange={(event) => setValue(field.key, event.currentTarget.value)}>
-          <option value="">Seleccionar...</option>
-          {options.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-          {current && !known ? <option value={current}>Valor actual: {current}</option> : null}
-        </select>
-      </FormField>
+      <CocoaField key={field.key} label={field.label} required={field.required}>
+        <CocoaSelect value={current} onChange={(nextValue) => setValue(field.key, nextValue)} options={selectOptions} placeholder="Seleccionar..." aria-label={field.label} />
+      </CocoaField>
     );
   }
   if (field.inputType === "multi_select") {
+    const options = optionsOf(field);
+    const selected = listValue(value);
+    const toggle = (option: string) => setValue(field.key, selected.includes(option) ? selected.filter((item) => item !== option) : [...selected, option]);
     return (
-      <FormMultiSelect
-        key={field.key}
-        label={field.label}
-        options={optionsOf(field).map((option) => option.value)}
-        value={Array.isArray(value) ? value.map(String) : typeof value === "string" && value ? value.split(",").map((item) => item.trim()).filter(Boolean) : []}
-        onChange={(nextValue) => setValue(field.key, nextValue)}
-      />
+      <CocoaField key={field.key} label={field.label} help="Pulsa una opción para activarla o desactivarla." fullWidth>
+        <div role="group" aria-label={field.label} className="cocoa-cluster">
+          {options.map((option) => {
+            const active = selected.includes(option.value);
+            return (
+              <CocoaButton key={option.value} size="small" variant={active ? "tinted" : "bordered"} tone={active ? "accent" : "neutral"} aria-pressed={active} onClick={() => toggle(option.value)}>
+                {option.label}
+              </CocoaButton>
+            );
+          })}
+        </div>
+      </CocoaField>
     );
   }
   if (field.inputType === "boolean") {
-    return <FormSwitch key={field.key} label={field.label} value={Boolean(value)} onChange={(nextValue) => setValue(field.key, nextValue)} />;
+    return (
+      <CocoaField key={field.key} label={field.label} inline>
+        <CocoaSwitch checked={Boolean(value)} onChange={(nextValue) => setValue(field.key, nextValue)} size="small" aria-label={field.label} />
+      </CocoaField>
+    );
   }
   if (field.inputType === "number") {
-    return <FormNumberInput key={field.key} label={field.label} value={typeof value === "string" || typeof value === "number" ? value : ""} onChange={(nextValue) => setValue(field.key, nextValue)} />;
+    return (
+      <CocoaField key={field.key} label={field.label} required={field.required}>
+        <CocoaInput type="number" inputMode="decimal" value={textValue(value)} onChange={(nextValue) => setValue(field.key, nextValue)} aria-label={field.label} />
+      </CocoaField>
+    );
   }
   if (field.inputType === "money") {
-    return <FormMoneyInput key={field.key} label={field.label} value={typeof value === "string" || typeof value === "number" ? value : ""} onChange={(nextValue) => setValue(field.key, nextValue)} />;
+    return (
+      <CocoaField key={field.key} label={field.label} required={field.required}>
+        <CocoaInput inputMode="decimal" value={textValue(value)} onChange={(nextValue) => setValue(field.key, nextValue)} placeholder="0,00" rightSlot={<span aria-hidden="true">€</span>} aria-label={field.label} />
+      </CocoaField>
+    );
   }
   if (field.inputType === "date") {
-    return <FormDateInput key={field.key} label={field.label} value={typeof value === "string" ? value : ""} onChange={(nextValue) => setValue(field.key, nextValue)} />;
+    return (
+      <CocoaField key={field.key} label={field.label} required={field.required}>
+        <CocoaDatePicker value={typeof value === "string" ? value : ""} onChange={(nextValue) => setValue(field.key, nextValue)} aria-label={field.label} />
+      </CocoaField>
+    );
   }
   if (field.inputType === "textarea" || field.inputType === "json") {
-    return <FormTextarea key={field.key} label={field.label} value={typeof value === "string" ? value : ""} onChange={(nextValue) => setValue(field.key, nextValue)} />;
+    return (
+      <CocoaField key={field.key} label={field.label} required={field.required} fullWidth>
+        <CocoaInput multiline rows={3} value={typeof value === "string" ? value : ""} onChange={(nextValue) => setValue(field.key, nextValue)} aria-label={field.label} />
+      </CocoaField>
+    );
   }
   const constraints = TEXT_FIELD_CONSTRAINTS[field.key];
+  const kind = textInputKind(field.label);
   return (
-    <FormField key={field.key} label={field.label} required={field.required} hint={constraints?.hint}>
-      <input
-        aria-label={field.label}
-        value={typeof value === "string" || typeof value === "number" ? String(value) : ""}
-        onChange={(event) => {
-          const raw = event.currentTarget.value;
-          setValue(field.key, constraints?.normalize ? constraints.normalize(raw) : raw);
-        }}
+    <CocoaField key={field.key} label={field.label} required={field.required} help={constraints?.hint}>
+      <CocoaInput
+        type={kind.type}
+        inputMode={kind.inputMode}
+        value={textValue(value)}
+        onChange={(raw) => setValue(field.key, constraints?.normalize ? constraints.normalize(raw) : raw)}
         placeholder={constraints?.placeholder ?? field.label}
         pattern={constraints?.pattern}
-        title={constraints?.hint}
+        aria-label={field.label}
       />
-    </FormField>
+    </CocoaField>
   );
 }
 
@@ -602,8 +635,37 @@ function humanizeKey(value: string): string {
     .replace(/^./, (c) => c.toUpperCase());
 }
 
+// Turn snake_case / kebab-case check codes into readable text; leave real
+// sentences untouched (just ensure the first letter is capitalised).
+function humanizeIssue(value: string): string {
+  const trimmed = value.trim();
+  const looksLikeCode = /^[a-z0-9]+([_-][a-z0-9]+)+$/.test(trimmed);
+  const text = looksLikeCode ? trimmed.replace(/[_-]/g, " ") : trimmed;
+  return text ? text.charAt(0).toUpperCase() + text.slice(1) : text;
+}
+
+const mutedStyle: CSSProperties = { margin: 0, fontSize: "var(--cocoa-fs-callout)", color: "var(--cocoa-label-secondary)" };
+
+/** Validation checks / data-quality issues as a section list with a «revisar» badge per row. */
+function ValidationSummary({ title, issues }: { title: string; issues: string[] }) {
+  if (issues.length === 0) return null;
+  return (
+    <CocoaSection title={title} meta={plural(issues.length, "comprobación", "comprobaciones")}>
+      <ul className="c22-section__list">
+        {issues.map((issue) => (
+          <li key={issue}>
+            <span>{humanizeIssue(issue)}</span>
+            <CocoaBadge tone="warning">revisar</CocoaBadge>
+          </li>
+        ))}
+      </ul>
+    </CocoaSection>
+  );
+}
+
 function PropertySetupFormScreen({ formCode }: { formCode: string }) {
-  const host = useTabHost();
+  // Hosted in its container CocoaPage drops the eyebrow and the H1 and keeps
+  // the description as subtitle plus the status badge (HostedHead).
   const fallbackForm = useMemo(() => formDefinitionToView(forms.find((candidate) => candidate.code === formCode) ?? forms[0]), [formCode]);
   const [form, setForm] = useState<PropertySetupFormView>(fallbackForm);
   const [values, setValues] = useState<Record<string, unknown>>({});
@@ -675,85 +737,96 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
     }
   }
 
-  const statusLabel = form.status === "saved" || form.status === "completed" ? "Guardado" : form.status === "in_progress" ? "En progreso" : "Sin iniciar";
-  const statusClass = form.status === "saved" || form.status === "completed" ? "ok" : form.status === "in_progress" ? "warn" : "info";
-  const saveStateLabel = saveState === "saved" ? "Guardado" : saveState === "error" ? "Error" : saveState === "saving" ? "Guardando" : "Pendiente";
+  const saved = form.status === "saved" || form.status === "completed";
+  const statusLabel = saved ? "Guardado" : form.status === "in_progress" ? "En progreso" : "Sin iniciar";
+  const statusTone: CocoaTone = saved ? "success" : form.status === "in_progress" ? "warning" : "info";
+  const saving = saveState === "saving";
+  const saveStateLabel = saveState === "saved" ? "Guardado" : saveState === "error" ? "Error" : saving ? "Guardando" : "Pendiente";
+  const saveTone: CocoaTone = saveState === "saved" ? "success" : saveState === "error" ? "danger" : saveState === "saving" ? "info" : "neutral";
+  const requiredCount = form.fields.filter((field) => field.required).length;
+  const submissions = form.submissions?.length ?? 0;
+  const existingEntries = form.existingData && typeof form.existingData === "object" ? Object.keys(form.existingData as Record<string, unknown>).length : 0;
 
-  const body = (
-    <>
-      <section className="bo-grid two">
-        <FormPreviewPanel>
-          <h3>Sobre este formulario</h3>
-          <p style={{ color: "var(--ink-soft)", marginBottom: 12 }}>
-            Los cambios se guardan en los registros de configuración de la propiedad a través de la API.
-          </p>
-          <p style={{ marginBottom: 8, fontSize: 13, color: "var(--ink-muted)" }}>Este formulario cubre:</p>
-          <div className="bo-pill-row">
-            {form.inputCategories.map((category) => <span className="bo-chip" key={category}>{humanizeKey(category)}</span>)}
-          </div>
-        </FormPreviewPanel>
-        <FormPreviewPanel>
-          <h3>Estado actual</h3>
-          <div className="bo-pill-row" style={{ marginBottom: 12 }}>
-            <span className={`bo-status ${statusClass}`}>{statusLabel}</span>
-            <span className="bo-chip">{form.submissions?.length ?? 0} envíos anteriores</span>
-          </div>
-          {form.checks.length > 0 ? (
-            <p style={{ fontSize: 13, color: "var(--ink-muted)" }}>{form.checks.length} comprobación{form.checks.length === 1 ? "" : "es"} de validación más abajo.</p>
-          ) : (
-            <p style={{ fontSize: 13, color: "var(--ink-muted)" }}>No hay incidencias de validación pendientes.</p>
-          )}
-          {saveMessage ? (
-            <p style={{ marginTop: 10, fontSize: 13 }}>
-              <span className={`bo-status ${saveState === "saved" ? "ok" : saveState === "error" ? "error" : "warn"}`}>{saveStateLabel}</span>{" "}
-              <span style={{ color: "var(--ink-soft)" }}>{saveMessage}</span>
+  return (
+    <CocoaPage
+      eyebrow="Configuración de la propiedad"
+      title={form.title}
+      subtitle={form.description}
+      actions={<CocoaBadge tone={statusTone}>{statusLabel}</CocoaBadge>}
+      commands={[{ id: `setup-save-${form.code}`, label: `${ACTIONS.save}: ${form.title}`, run: () => { void handleSave(false); }, shortcut: "⌘ Enter" }]}
+      id={`setup-form-${form.code}`}
+    >
+      <CocoaGrid aria-label="Sobre este formulario y su estado">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Sobre este formulario">
+            <p style={mutedStyle}>Los cambios se guardan en los registros de configuración de la propiedad a través de la API.</p>
+            <p style={mutedStyle}>Este formulario cubre:</p>
+            <div className="cocoa-cluster">
+              {form.inputCategories.map((category) => (
+                <CocoaBadge key={category} tone="neutral" uppercase={false}>
+                  {humanizeKey(category)}
+                </CocoaBadge>
+              ))}
+            </div>
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Estado actual">
+            <div className="cocoa-cluster">
+              <CocoaBadge tone={statusTone}>{statusLabel}</CocoaBadge>
+              <CocoaBadge tone="neutral">{plural(submissions, "envío anterior", "envíos anteriores")}</CocoaBadge>
+            </div>
+            <p style={mutedStyle}>
+              {form.checks.length > 0 ? `${plural(form.checks.length, "comprobación de validación", "comprobaciones de validación")} más abajo.` : "No hay incidencias de validación pendientes."}
             </p>
-          ) : null}
-        </FormPreviewPanel>
-      </section>
-      <FormSection title="Datos de configuración requeridos">
-        {form.fields.map((field) => fieldControl(field, values[field.key], setFieldValue))}
-      </FormSection>
-      <FormValidationSummary issues={form.checks} />
-      {form.dataQuality?.length ? (
-        <FormValidationSummary issues={form.dataQuality.map((issue) => `${issue.severity}: ${issue.message}`)} />
-      ) : null}
-      {form.existingData && Object.keys(form.existingData).length > 0 ? (
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <h3>Valores actuales</h3>
-            <span className="bo-chip">Solo lectura · guardado en la base de datos</span>
+            <CocoaCallout tone={saveTone} title={saveStateLabel} role="status">
+              {saveMessage}
+            </CocoaCallout>
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+
+      <CocoaFormSection
+        title="Datos de configuración requeridos"
+        description={`${plural(form.fields.length, "campo", "campos")} · ${plural(requiredCount, "obligatorio", "obligatorios")}`}
+        columns={2}
+        actions={
+          <div className="cocoa-row" data-gap="2" data-justify="end">
+            <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("AuditLogViewer")}>
+              Historial de auditoría
+            </CocoaButton>
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={saving} onClick={() => { void handleSave(true); }}>
+              Guardar y añadir otro
+            </CocoaButton>
           </div>
+        }
+      >
+        {form.fields.map((field) => fieldControl(field, values[field.key], setFieldValue))}
+      </CocoaFormSection>
+
+      <ValidationSummary title="Resumen de validación" issues={form.checks} />
+      {form.dataQuality?.length ? <ValidationSummary title="Calidad de los datos" issues={form.dataQuality.map((issue) => `${issue.severity}: ${issue.message}`)} /> : null}
+
+      {existingEntries > 0 ? (
+        <CocoaSection title="Valores actuales" meta="Solo lectura · guardado en la base de datos">
           <DataPreview
             data={form.existingData as Record<string, unknown> | unknown[] | undefined}
             labels={Object.fromEntries(form.fields.map((field) => [field.key, field.label]))}
             emptyMessage="Aún no hay datos guardados."
           />
-        </section>
+        </CocoaSection>
       ) : null}
-      <div className="bo-actions">
-        <button className="primary" disabled={saveState === "saving"} onClick={() => handleSave(false)} type="button">
-          {saveState === "saving" ? "Guardando..." : "Guardar"}
-        </button>
-        <button disabled={saveState === "saving"} onClick={() => handleSave(true)} type="button">Guardar y añadir otro</button>
-        <button type="button" onClick={() => openTabPath(SETUP_CENTER_PATH)}>Cancelar</button>
-        <button type="button" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "AuditLogViewer" }))}>Historial de auditoría</button>
-      </div>
-    </>
-  );
 
-  if (host) {
-    return (
-      <div style={hostedStackStyle} data-setup-form={form.code}>
-        <HostedHead title={form.title} subtitle={form.description} />
-        {body}
-      </div>
-    );
-  }
-  return (
-    <FormPage eyebrow="Configuración de la propiedad" title={form.title} summary={form.description}>
-      {body}
-    </FormPage>
+      {/* Two buttons only: on a 390 px phone the fixed bar squeezes anything
+          more to 44 px. The save state lives in the «Estado actual» callout and
+          the secondary actions in the form section footer. */}
+      <CocoaActionBar
+        aria-label={`Acciones de ${form.title}`}
+        secondary={{ label: ACTIONS.cancel, onClick: () => openTabPath(SETUP_CENTER_PATH) }}
+        primary={{ label: saving ? "Guardando..." : ACTIONS.save, loading: saving, disabled: saving, onClick: () => { void handleSave(false); } }}
+        publishToastOffset
+      />
+    </CocoaPage>
   );
 }
 

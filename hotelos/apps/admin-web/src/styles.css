@@ -3,10 +3,28 @@
    Modern hospitality OS. Inspired by Mews / Linear / Notion clarity.
    ============================================================ */
 
+/* Cocoa 22 cascade (docs/design/COCOA-22.md):
+     1. cocoa-tokens.css          tokens; declares the layer order
+                                  `@layer cocoa-legacy, cocoa-bridge;`
+     2. cocoa-base.css            element defaults + layout utilities (§8)
+     3. cocoa-motion.css          keyframes, stagger, reduced motion
+     4. cocoa-22-layout.css       page · 12-col grid · KPI strip · section · action bar
+     5. cocoa-22.css              KPI · badge · state · skeleton · table · forms · overlays · charts
+     6. cocoa-22-legacy-bridge.css  @layer cocoa-bridge — re-skins the legacy classes
+                                  of this file until the migration ends (wave 11)
+     7. mobile.css                touch / phone layer, unlayered, always last
+   Everything below the imports is the LEGACY Aurora sheet wrapped in
+   @layer cocoa-legacy: layered rules lose to every unlayered Cocoa 22 rule
+   and to the bridge, whatever their specificity. */
 @import './styles/cocoa-tokens.css';
 @import './styles/cocoa-base.css';
-@import './styles/cocoa-motion.css'; /* keyframes were defined but never bundled → motion was dead */
-@import './styles/mobile.css'; /* touch / iOS Safari layer — must come last to win the cascade */
+@import './styles/cocoa-motion.css';
+@import './styles/cocoa-22-layout.css';
+@import './styles/cocoa-22.css';
+@import './styles/cocoa-22-legacy-bridge.css';
+@import './styles/mobile.css';
+
+@layer cocoa-legacy, cocoa-bridge;
 
 :root {
   /* === Spacing scale (4px base) === */
@@ -263,6 +281,16 @@
     color-scheme: dark;
   }
 }
+
+/* ============================================================
+   LEGACY — Aurora v2 rules (.bo-* ×276, rev-*, cm-*, fp-*, dp-*, guide-*,
+   res-*, raw button/table/h1 defaults). Kept verbatim inside
+   @layer cocoa-legacy so the Cocoa 22 sheets and the bridge
+   (styles/cocoa-22-legacy-bridge.css) win the cascade without specificity
+   games. Do NOT add rules here: new UI is built on components/cocoa/* and
+   styles/cocoa-22*.css. Wave 11 of COCOA-22.md §10 deletes this block.
+   ============================================================ */
+@layer cocoa-legacy {
 
 /* === Reset === */
 * {
@@ -2809,3 +2837,5 @@ table tbody tr:hover td { background: var(--surface-soft); }
   overflow-y: auto;
   padding: var(--cocoa-space-5);
 }
+
+} /* @layer cocoa-legacy */

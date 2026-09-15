@@ -1,57 +1,79 @@
 /* ============================================================
-   Anfitorio Cocoa Edition — Design Tokens
-   Generated from docs/cocoa-design/SPEC-tokens.md
+   Anfitorio Cocoa 22 — Design Tokens
+   Source: docs/design/COCOA-22.md §2 (values MEASURED on the canon
+   /hoy/direccion with getComputedStyle on 2026-09-15, light + dark).
    Namespace: --cocoa-*
-   Two appearance scopes:
+   Appearance scopes:
      :root                          → light defaults
-     :root[data-theme='dark']       → dark overrides (forced)
-     @media (prefers-color-scheme)  → dark when OS prefers it and user has not forced light
+     :root[data-theme='dark']       → dark (forced by the user)
+     @media (prefers-color-scheme)  → dark when the OS prefers it and the
+                                       user has not forced light
+   RULE: this is the ONLY stylesheet allowed to contain literal colours.
+   Every other sheet (cocoa-22*.css, mobile.css, components, screens)
+   consumes var(--cocoa-*) — scripts/c22-css-check.mjs enforces it.
+   Aurora tokens (--canvas, --surface, --accent*, --ok-ink…) live in
+   styles.css :root and are consumed here by reference.
    ============================================================ */
+
+/* Cascade architecture (see styles.css): the legacy Aurora sheet is wrapped
+   in @layer cocoa-legacy and the migration bridge in @layer cocoa-bridge, so
+   unlayered Cocoa 22 rules always win. Declaring the order here (first
+   imported sheet) pins it regardless of how the bundler inlines @import. */
+@layer cocoa-legacy, cocoa-bridge;
 
 :root {
   color-scheme: light;
 
   /* ============================================================
-     1. COLORS — Light defaults
+     1. COLOURS — light (measured)
      ============================================================ */
 
-  /* Labels — AppKit label opacities on black */
+  /* Labels — AppKit opacities on black. Secondary raised .50 → .62 so
+     10–13 px secondary text passes AA on white/canvas (measured 3.98:1 at
+     .50; ≈ 6:1 at .62). Tertiary is DECORATIVE ONLY (axes, placeholders). */
   --cocoa-label:                rgb(0 0 0 / 0.85);
-  --cocoa-label-secondary:      rgb(0 0 0 / 0.50);
+  --cocoa-label-secondary:      rgb(0 0 0 / 0.62);
   --cocoa-label-tertiary:       rgb(0 0 0 / 0.26);
   --cocoa-label-quaternary:     rgb(0 0 0 / 0.10);
 
-  /* Backgrounds */
-  --cocoa-background-window:    #ECECEC;
+  /* Backgrounds. Window = Aurora canvas (#f6f5f1 / #14130e) — the body was
+     already painting --canvas; the old #ECECEC double token is gone.
+     Sidebar = Aurora surface (#fff / #1d1b15), as measured on #bo-sidebar. */
+  --cocoa-background-window:    var(--canvas);
   --cocoa-background-content:   #FFFFFF;
-  --cocoa-background-sidebar:   #E8E8E8;
+  --cocoa-background-sidebar:   var(--surface);
   --cocoa-background-toolbar:   rgb(246 246 246 / 0.72);
   --cocoa-background-control:   #FFFFFF;
   --cocoa-background-selection: var(--accent);
+  /* Subtle control hover (bordered/plain buttons, list rows). */
+  --cocoa-background-control-hover: color-mix(in srgb, var(--cocoa-label) 5%, var(--cocoa-background-control));
+
+  /* Fills — translucent neutral washes (AppKit fill hierarchy). */
+  --cocoa-fill:                 color-mix(in srgb, var(--cocoa-label) 12%, transparent);
+  --cocoa-fill-secondary:       color-mix(in srgb, var(--cocoa-label) 8%, transparent);
+  --cocoa-fill-tertiary:        color-mix(in srgb, var(--cocoa-label) 5%, transparent);
+  --cocoa-fill-quaternary:      color-mix(in srgb, var(--cocoa-label) 3%, transparent);
 
   /* Separators */
   --cocoa-separator:            rgb(0 0 0 / 0.10);
   --cocoa-separator-opaque:     #C6C6C8;
 
-  /* Accent — Anfitorio (Fase 2): TOKEN ÚNICO. Cocoa deriva del --accent de Aurora
-     (Esmeralda #0d8a5f) en vez de su antiguo azul Apple, así toda la app usa un
-     solo acento. --accent-ink mantiene el contraste correcto por tema. */
+  /* Accent — SINGLE chromatic accent: Aurora Esmeralda (#0d8a5f / #2bb37f).
+     --cocoa-accent-contrast is the ink ON the accent; for the accent AS small
+     text use --cocoa-tone-accent-text (= --accent-strong, 6.55:1). */
   --cocoa-accent:               var(--accent);
   --cocoa-accent-hover:         var(--accent-strong);
   --cocoa-accent-pressed:       var(--accent-strong);
   --cocoa-accent-contrast:      var(--accent-ink);
 
-  /* Status — Sequoia system tints */
+  /* Status hues — bars of 3 px, deltas, dots, strokes, figures ≥ 24 px.
+     As text ≤ 13 px in light they fail AA → use the *-text tokens below. */
   --cocoa-success:              #28A745;
   --cocoa-warning:              #FF9500;
   --cocoa-danger:               #FF3B30;
   --cocoa-info:                 #007AFF;
 
-  /* Status surfaces — soft fill + border for badges, banners, callouts.
-     Derived with color-mix from the themeable status hues above, so a single
-     definition here auto-adapts to dark (the inner var() resolves in context).
-     Audit 2026-06 · #3: Cocoa had zero state surfaces, forcing per-component
-     hardcodes. Use these instead of literal rgba() tints. */
+  /* Status surfaces — soft wash + outline for tinted badges, banners, callouts. */
   --cocoa-success-bg:           color-mix(in srgb, var(--cocoa-success) 12%, transparent);
   --cocoa-success-border:       color-mix(in srgb, var(--cocoa-success) 32%, transparent);
   --cocoa-warning-bg:           color-mix(in srgb, var(--cocoa-warning) 14%, transparent);
@@ -62,24 +84,92 @@
   --cocoa-info-border:          color-mix(in srgb, var(--cocoa-info) 32%, transparent);
   --cocoa-accent-bg:            color-mix(in srgb, var(--cocoa-accent) 12%, transparent);
   --cocoa-accent-border:        color-mix(in srgb, var(--cocoa-accent) 32%, transparent);
+  --cocoa-neutral-bg:           color-mix(in srgb, var(--cocoa-label) 8%, transparent);
+  --cocoa-neutral-border:       var(--cocoa-separator);
+  --cocoa-ai:                   var(--ai);
+  --cocoa-ai-bg:                var(--ai-soft);
+  --cocoa-ai-border:            var(--ai-line);
 
-  /* Focus ring — keyboardFocusIndicatorColor. SINGLE source of truth: every
-     focusable surface must consume var(--cocoa-focus-ring), never a literal.
-     Audit 2026-06 (look&feel #1): derive from the single brand accent (Esmeralda)
-     so every CocoaButton/Input/Switch/Segmented focus matches Aurora — one
-     interaction colour across the whole app, no leftover Apple blue. */
+  /* AA-safe text colour of each status (Aurora *-ink). */
+  --cocoa-success-ink:          var(--ok-ink);
+  --cocoa-warning-ink:          var(--warn-ink);
+  --cocoa-danger-ink:           var(--danger-ink);
+  --cocoa-info-ink:             var(--info-ink);
+  --cocoa-neutral-ink:          var(--cocoa-label-secondary);
+  --cocoa-ai-ink:               var(--ai);
+
+  /* Semantic tone set (§3.11) — one quadruple per tone: hue (bar/stroke/dot),
+     bg (wash), border (outline), text (AA-safe). CocoaBadge/Kpi/Stat/State
+     consume these through data-tone; components/cocoa/cocoa-tones.ts mirrors
+     the same mapping in TypeScript. */
+  --cocoa-tone-success:         var(--cocoa-success);
+  --cocoa-tone-success-bg:      var(--cocoa-success-bg);
+  --cocoa-tone-success-border:  var(--cocoa-success-border);
+  --cocoa-tone-success-text:    var(--cocoa-success-ink);
+  --cocoa-tone-warning:         var(--cocoa-warning);
+  --cocoa-tone-warning-bg:      var(--cocoa-warning-bg);
+  --cocoa-tone-warning-border:  var(--cocoa-warning-border);
+  --cocoa-tone-warning-text:    var(--cocoa-warning-ink);
+  --cocoa-tone-danger:          var(--cocoa-danger);
+  --cocoa-tone-danger-bg:       var(--cocoa-danger-bg);
+  --cocoa-tone-danger-border:   var(--cocoa-danger-border);
+  --cocoa-tone-danger-text:     var(--cocoa-danger-ink);
+  --cocoa-tone-info:            var(--cocoa-info);
+  --cocoa-tone-info-bg:         var(--cocoa-info-bg);
+  --cocoa-tone-info-border:     var(--cocoa-info-border);
+  --cocoa-tone-info-text:       var(--cocoa-info-ink);
+  --cocoa-tone-neutral:         var(--cocoa-label-secondary);
+  --cocoa-tone-neutral-bg:      var(--cocoa-neutral-bg);
+  --cocoa-tone-neutral-border:  var(--cocoa-neutral-border);
+  --cocoa-tone-neutral-text:    var(--cocoa-neutral-ink);
+  --cocoa-tone-accent:          var(--cocoa-accent);
+  --cocoa-tone-accent-bg:       var(--cocoa-accent-bg);
+  --cocoa-tone-accent-border:   var(--cocoa-accent-border);
+  --cocoa-tone-accent-text:     var(--accent-strong);
+  --cocoa-tone-ai:              var(--cocoa-ai);
+  --cocoa-tone-ai-bg:           var(--cocoa-ai-bg);
+  --cocoa-tone-ai-border:       var(--cocoa-ai-border);
+  --cocoa-tone-ai-text:         var(--cocoa-ai-ink);
+
+  /* Focus ring — the ONE interaction colour (Esmeralda), 3 px halo. */
   --cocoa-focus-ring:           color-mix(in srgb, var(--accent) 50%, transparent);
+  --cocoa-focus-ring-danger:    color-mix(in srgb, var(--cocoa-danger) 45%, transparent);
+
+  /* Scrim behind drawers / dialogs (measured today: rgba(20,19,14,.45)).
+     Always black-based — a label-derived scrim turns into white fog in dark. */
+  --cocoa-scrim:                rgb(20 19 14 / 0.45);
+  --cocoa-scrim-blur:           blur(2px);
+
+  /* Mask helpers (scroll fades): only the alpha channel matters. */
+  --cocoa-mask-solid:           #000000;
+  --cocoa-mask-clear:           transparent;
 
   /* Find highlight */
   --cocoa-find-highlight:       #FFFF00;
 
-  /* ============================================================
-     2. TYPOGRAPHY
-     ============================================================ */
+  /* Switch thumb (CocoaSwitch): white in light, light grey in dark. */
+  --cocoa-switch-thumb:         #FFFFFF;
 
-  /* Family stacks */
-  /* Inter Variable leads (loaded webfont, consistent on Windows reception PCs);
-     SF Pro stays as the Apple fallback if the webfont ever fails to load. */
+  /* Chart palette (§3.12) — SVG strokes inherit the theme through these. */
+  --cocoa-chart-grid:           var(--cocoa-separator);
+  --cocoa-chart-axis:           var(--cocoa-label-tertiary);
+  --cocoa-chart-axis-size:      10px;
+  --cocoa-chart-primary:        var(--cocoa-accent);      /* OTB / main series */
+  --cocoa-chart-forecast:       var(--cocoa-warning);     /* dashed 6 4 */
+  --cocoa-chart-reference:      var(--cocoa-label-tertiary); /* LY / baseline 1 px */
+  --cocoa-chart-series-2:       var(--cocoa-label);       /* donut greys 85 / 62 / 26 % */
+  --cocoa-chart-series-3:       var(--cocoa-label-secondary);
+  --cocoa-chart-series-4:       var(--cocoa-label-tertiary);
+  --cocoa-chart-track:          var(--cocoa-separator);   /* gauge / progress track */
+  --cocoa-chart-stroke:         2px;
+  --cocoa-chart-stroke-thin:    1px;
+  --cocoa-chart-stroke-spark:   1.5px;
+  --cocoa-chart-stroke-gauge:   16px;
+  --cocoa-chart-donut-gap:      1.5px;
+
+  /* ============================================================
+     2. TYPOGRAPHY — Inter Variable (loaded webfont), measured scale
+     ============================================================ */
   --cocoa-font:
     "Inter Variable", "Inter", system-ui, -apple-system, BlinkMacSystemFont,
     "SF Pro Text", "Helvetica Neue", "Segoe UI", Roboto, sans-serif;
@@ -99,8 +189,10 @@
   --cocoa-font-rounded:
     "SF Pro Rounded", system-ui, -apple-system, "Nunito", sans-serif;
 
-  /* Sizes — macOS HIG defaults */
+  /* Sizes (§2.2). --cocoa-fs-kpi promotes the 32 px literal of the canon tile. */
   --cocoa-fs-large-title: 26px;
+  --cocoa-fs-kpi:         32px;
+  --cocoa-fs-kpi-compact: 24px;
   --cocoa-fs-title-1:     22px;
   --cocoa-fs-title-2:     17px;
   --cocoa-fs-title-3:     15px;
@@ -111,8 +203,9 @@
   --cocoa-fs-footnote:    11px;
   --cocoa-fs-caption:     10px;
 
-  /* Line heights */
-  --cocoa-lh-large-title: 32px;
+  /* Line heights (px, HIG) */
+  --cocoa-lh-large-title: 30px;   /* measured 29.9 (1.15) */
+  --cocoa-lh-kpi:         34px;   /* measured 33.6 (1.05) */
   --cocoa-lh-title-1:     26px;
   --cocoa-lh-title-2:     22px;
   --cocoa-lh-title-3:     20px;
@@ -123,13 +216,20 @@
   --cocoa-lh-footnote:    13px;
   --cocoa-lh-caption:     13px;
 
+  /* Leading ratios measured on the canon (use when the size is fluid) */
+  --cocoa-leading-kpi:    1.05;
+  --cocoa-leading-title:  1.15;
+  --cocoa-leading-label:  1.2;
+  --cocoa-leading-text:   1.35;
+  --cocoa-leading-body:   1.5;
+
   /* Weights */
   --cocoa-fw-regular:   400;
   --cocoa-fw-medium:    500;
   --cocoa-fw-semibold:  600;
   --cocoa-fw-bold:      700;
 
-  /* Tracking */
+  /* Tracking — tight for display/body, wide for uppercase captions */
   --cocoa-tracking-tight:  -0.011em;
   --cocoa-tracking-normal:  0;
   --cocoa-tracking-wide:    0.012em;
@@ -139,9 +239,10 @@
   --cocoa-font-numeric-old:     "onum" 1;
   --cocoa-font-confirmation:    "tnum" 1, "ss01" 1;
   --cocoa-font-smallcaps:       "smcp" 1, "c2sc" 1;
+  --cocoa-font-features-body:   "calt" 1, "kern" 1, "liga" 1, "ss01" 1;
 
   /* ============================================================
-     3. SPACING — 4pt grid
+     3. SPACING — 4 pt grid
      ============================================================ */
   --cocoa-space-1: 4px;
   --cocoa-space-2: 8px;
@@ -153,7 +254,8 @@
   --cocoa-space-8: 64px;
 
   /* ============================================================
-     4. RADII
+     4. RADII — two working radii (8 control / 12 card) + 4 badge + full avatar.
+        Aurora 16/20/28 are NOT allowed in content.
      ============================================================ */
   --cocoa-radius-sm:   4px;
   --cocoa-radius-md:   8px;
@@ -162,7 +264,7 @@
   --cocoa-radius-full: 9999px;
 
   /* ============================================================
-     5. SHADOWS — Cocoa depth model (ambient + edge ring)
+     5. SHADOWS — ring + ambient + soft cast (measured)
      ============================================================ */
   --cocoa-shadow-control:
     0 1px 0 rgb(0 0 0 / 0.05),
@@ -183,64 +285,71 @@
     0 48px 96px rgb(0 0 0 / 0.28),
     0 8px 16px rgb(0 0 0 / 0.14);
 
-  /* Card — the canvas→card lift (look&feel audit: depth scored 4/10 because
-     CocoaCard variant="elevated" used --cocoa-shadow-control, imperceptible on
-     a full-size card). Ambient + soft cast, never heavy. */
+  /* THE canonical card shadow of Cocoa 22 (elevated cards, KPI tiles). */
   --cocoa-shadow-card:
     0 0 0 1px rgb(0 0 0 / 0.06),
     0 1px 2px rgb(0 0 0 / 0.04),
     0 4px 12px rgb(0 0 0 / 0.06);
 
-  /* Floating — FABs / overlay buttons. Was referenced by CocoaHelpButton but
-     never defined (dead var → FAB rendered flat). NEUTRAL ring on purpose:
-     reviewers rejected an accent halo as gaudy. */
+  /* Floating (FAB / overlay buttons) — NEUTRAL ring, never an accent halo. */
   --cocoa-shadow-floating:
     0 0 0 1px rgb(0 0 0 / 0.08),
     0 8px 24px rgb(0 0 0 / 0.14),
     0 2px 6px rgb(0 0 0 / 0.08);
 
+  /* Sticky table head / grid header — hairline + soft cast, NO blur. */
+  --cocoa-shadow-sticky:
+    0 1px 0 var(--cocoa-separator),
+    0 2px 6px rgb(0 0 0 / 0.04);
+
   /* ============================================================
-     6. MOTION
+     6. MOTION — 100 / 200 / 400 ms, compositor-only
      ============================================================ */
   --cocoa-duration-fast:  100ms;
   --cocoa-duration-base:  200ms;
   --cocoa-duration-slow:  400ms;
+  --cocoa-duration-enter: 220ms;   /* stagger entrance */
+  --cocoa-stagger-step:   40ms;
 
   --cocoa-ease-out:     cubic-bezier(0.2, 0, 0, 1);
   --cocoa-ease-in-out:  cubic-bezier(0.4, 0, 0.2, 1);
+  --cocoa-ease-standard: var(--cocoa-ease-in-out);
   --cocoa-ease-spring:  cubic-bezier(0.5, 1.5, 0.5, 1);
   --cocoa-ease-bouncy:  cubic-bezier(0.34, 1.56, 0.64, 1.0);
   --cocoa-ease-default: cubic-bezier(0.25, 0.1, 0.25, 1.0);
 
-  /* ============================================================
-     7. MATERIALS — backdrop-filter recipes (NSVisualEffectView)
-     ============================================================ */
+  /* Skeleton shimmer — the only permitted infinite animation, NEUTRAL. */
+  --cocoa-skeleton-shimmer: linear-gradient(
+    90deg,
+    var(--cocoa-background-control) 0%,
+    var(--cocoa-separator) 50%,
+    var(--cocoa-background-control) 100%
+  );
+  --cocoa-skeleton-duration: 1.2s;
 
-  /* Toolbar / titlebar */
+  /* ============================================================
+     7. MATERIALS — backdrop-filter recipes. Only the TOOLBAR may blur.
+     ============================================================ */
   --cocoa-material-toolbar-bg:    rgb(246 246 246 / 0.72);
   --cocoa-material-toolbar-blur:  saturate(180%) blur(20px);
 
-  /* Sidebar */
   --cocoa-material-sidebar-bg:    rgb(232 232 232 / 0.78);
   --cocoa-material-sidebar-blur:  saturate(180%) blur(30px);
 
-  /* Popover / menu / combobox */
   --cocoa-material-popover-bg:    rgb(255 255 255 / 0.78);
   --cocoa-material-popover-blur:  saturate(180%) blur(24px);
 
-  /* HUD */
   --cocoa-material-hud-bg:        rgb(40 40 40 / 0.78);
   --cocoa-material-hud-blur:      saturate(180%) blur(30px);
   --cocoa-material-hud-color:     rgb(255 255 255 / 0.95);
 
-  /* Convenience combined */
   --cocoa-material-toolbar: var(--cocoa-material-toolbar-blur);
   --cocoa-material-sidebar: var(--cocoa-material-sidebar-blur);
   --cocoa-material-popover: var(--cocoa-material-popover-blur);
   --cocoa-material-hud:     var(--cocoa-material-hud-blur);
 
   /* ============================================================
-     8. Z-INDEX SCALE
+     8. Z-INDEX SCALE — the only allowed z values (§2.3)
      ============================================================ */
   --cocoa-z-base:     0;
   --cocoa-z-sticky:   100;
@@ -252,53 +361,156 @@
   --cocoa-z-modal:    700;
   --cocoa-z-toast:    800;
   --cocoa-z-tooltip:  900;
+
+  /* ============================================================
+     9. LAYOUT — shell metrics (measured §3.1) + grid + touch
+     ============================================================ */
+  --cocoa-toolbar-height:      48px;
+  --cocoa-sidebar-width:       240px;
+  --cocoa-sidebar-width-min:   180px;
+  --cocoa-sidebar-width-max:   420px;
+  --cocoa-drawer-width:        260px;   /* phone navigation drawer */
+  --cocoa-content-padding:     var(--cocoa-space-5);  /* 24 ≥ 600 · 16 < 600 (media below) */
+  --cocoa-page-gap:            var(--cocoa-space-4);  /* stack of sections */
+  --cocoa-grid-columns:        12;
+  --cocoa-grid-gap:            var(--cocoa-space-3);
+  --cocoa-kpi-min:             180px;
+  --cocoa-kpi-min-wide:        200px;
+  --cocoa-touch-target:        44px;
+  --cocoa-action-bar-height:   56px;
+  --cocoa-header-gap:          var(--cocoa-space-3);
+  /* CocoaPage fullBleed cancels exactly this inset (negative margin +
+     header padding), so it always equals the content gutter. */
+  --cocoa-content-inset:       var(--cocoa-content-padding);
+
+  /* Breakpoints (informational — media queries cannot read custom
+     properties; components/cocoa/cocoa-viewport.ts holds the same numbers). */
+  --cocoa-bp-phone:   600px;
+  --cocoa-bp-tablet:  900px;
+  --cocoa-bp-desktop: 1200px;
+
+  /* ============================================================
+     10. DENSITY — comfortable (default) / compact via
+         [data-cocoa-density="compact"] on CocoaPage or any ancestor.
+         Only paddings and row heights change, never type sizes.
+     ============================================================ */
+  --cocoa-density:                comfortable;
+  --cocoa-density-card-padding:   var(--cocoa-space-4);
+  --cocoa-density-row-height:     36px;
+  --cocoa-density-cell-padding-y: var(--cocoa-space-2);
+  --cocoa-density-cell-padding-x: var(--cocoa-space-3);
+  --cocoa-density-control-height: 28px;
+  --cocoa-density-gap:            var(--cocoa-space-3);
+  /* Shorthands read by CocoaTable / CocoaPage: cell padding «y x» and card pad. */
+  --cocoa-density-row-pad:        var(--cocoa-density-cell-padding-y) var(--cocoa-density-cell-padding-x);
+  --cocoa-density-pad:            var(--cocoa-density-card-padding);
+
+  /* ============================================================
+     11. COMPAT ALIASES — names still referenced by older Cocoa components
+         (previously undefined → their inline fallbacks painted Apple blue /
+         random greys). All resolve to canonical tokens above.
+     ============================================================ */
+  --cocoa-accent-soft:          var(--cocoa-accent-bg);
+  --cocoa-success-soft:         var(--cocoa-success-bg);
+  --cocoa-warning-soft:         var(--cocoa-warning-bg);
+  --cocoa-danger-soft:          var(--cocoa-danger-bg);
+  --cocoa-info-soft:            var(--cocoa-info-bg);
+  --cocoa-secondary-label:      var(--cocoa-label-secondary);
+  --cocoa-tertiary-label:       var(--cocoa-label-tertiary);
+  --cocoa-text-primary:         var(--cocoa-label);
+  --cocoa-text-secondary:       var(--cocoa-label-secondary);
+  --cocoa-text-tertiary:        var(--cocoa-label-tertiary);
+  --cocoa-tint:                 var(--cocoa-accent);
+  --cocoa-systemRed:            var(--cocoa-danger);
+  --cocoa-systemGreen:          var(--cocoa-success);
+  --cocoa-systemOrange:         var(--cocoa-warning);
+  --cocoa-systemBlue:           var(--cocoa-info);
+  --cocoa-background-elevated:  var(--cocoa-background-content);
+  --cocoa-background-grouped:   var(--cocoa-background-window);
+  --cocoa-background:           var(--cocoa-background-window);
+  --cocoa-font-family-text:     var(--cocoa-font);
+  --cocoa-fs-caption-1:         var(--cocoa-fs-subheadline);
+  --cocoa-fs-caption-2:         var(--cocoa-fs-caption);
+  /* `font:` shorthand recipes (CocoaInfoPopover / PersonaSwitcher use them). */
+  --cocoa-text-headline:        var(--cocoa-fw-semibold) var(--cocoa-fs-headline) / var(--cocoa-lh-headline) var(--cocoa-font);
+  --cocoa-text-body:            var(--cocoa-fw-regular) var(--cocoa-fs-body) / var(--cocoa-lh-body) var(--cocoa-font);
+  --cocoa-text-subheadline:     var(--cocoa-fw-regular) var(--cocoa-fs-subheadline) / var(--cocoa-lh-subheadline) var(--cocoa-font);
+  --cocoa-text-caption:         var(--cocoa-fw-medium) var(--cocoa-fs-caption) / var(--cocoa-lh-caption) var(--cocoa-font);
+  /* CocoaTooltip sets this per placement; a neutral default keeps it defined. */
+  --cocoa-tooltip-entry-translate: translateY(4px);
+}
+
+/* Phone: single content gutter of 16 px (was 24 + 16 from the split view). */
+@media (max-width: 599px) {
+  :root {
+    --cocoa-content-padding: var(--cocoa-space-4);
+  }
+}
+
+/* Compact density scope (reception, rate grids, lists > 50 rows). */
+[data-cocoa-density="compact"] {
+  --cocoa-density:                compact;
+  --cocoa-density-card-padding:   var(--cocoa-space-3);
+  --cocoa-density-row-height:     28px;
+  --cocoa-density-cell-padding-y: var(--cocoa-space-1);
+  --cocoa-density-cell-padding-x: var(--cocoa-space-2);
+  --cocoa-density-control-height: 22px;
+  --cocoa-density-gap:            var(--cocoa-space-2);
+  --cocoa-density-row-pad:        var(--cocoa-density-cell-padding-y) var(--cocoa-density-cell-padding-x);
+  --cocoa-density-pad:            var(--cocoa-density-card-padding);
+}
+[data-cocoa-density="comfortable"] {
+  --cocoa-density:                comfortable;
+  --cocoa-density-card-padding:   var(--cocoa-space-4);
+  --cocoa-density-row-height:     36px;
+  --cocoa-density-cell-padding-y: var(--cocoa-space-2);
+  --cocoa-density-cell-padding-x: var(--cocoa-space-3);
+  --cocoa-density-control-height: 28px;
+  --cocoa-density-gap:            var(--cocoa-space-3);
+  --cocoa-density-row-pad:        var(--cocoa-density-cell-padding-y) var(--cocoa-density-cell-padding-x);
+  --cocoa-density-pad:            var(--cocoa-density-card-padding);
 }
 
 /* ============================================================
-   DARK — explicit override via data-theme="dark"
+   DARK — explicit override via data-theme="dark" (measured)
    ============================================================ */
 :root[data-theme="dark"] {
   color-scheme: dark;
 
-  /* Labels — AppKit label opacities on white */
   --cocoa-label:                rgb(255 255 255 / 0.85);
   --cocoa-label-secondary:      rgb(255 255 255 / 0.55);
   --cocoa-label-tertiary:       rgb(255 255 255 / 0.25);
   --cocoa-label-quaternary:     rgb(255 255 255 / 0.10);
 
-  /* Backgrounds */
-  --cocoa-background-window:    #323232;
+  --cocoa-background-window:    var(--canvas);
   --cocoa-background-content:   #1E1E1E;
-  --cocoa-background-sidebar:   #2A2A2A;
+  --cocoa-background-sidebar:   var(--surface);
   --cocoa-background-toolbar:   rgb(40 40 40 / 0.72);
   --cocoa-background-control:   #3A3A3C;
   --cocoa-background-selection: var(--accent);
+  --cocoa-background-control-hover: color-mix(in srgb, var(--cocoa-label) 8%, var(--cocoa-background-control));
 
-  /* Separators */
   --cocoa-separator:            rgb(255 255 255 / 0.10);
   --cocoa-separator-opaque:     #38383A;
 
-  /* Accent — Anfitorio (Fase 2): deriva del --accent de Aurora (dark: #2bb37f). */
   --cocoa-accent:               var(--accent);
   --cocoa-accent-hover:         var(--accent-strong);
   --cocoa-accent-pressed:       var(--accent-strong);
   --cocoa-accent-contrast:      var(--accent-ink);
 
-  /* Status — dark variants */
   --cocoa-success:              #30D158;
   --cocoa-warning:              #FF9F0A;
   --cocoa-danger:               #FF453A;
   --cocoa-info:                 #0A84FF;
 
-  /* Focus — Esmeralda (look&feel audit #1), slightly higher alpha for dark. */
   --cocoa-focus-ring:           color-mix(in srgb, var(--accent) 60%, transparent);
-
-  /* Find highlight */
+  --cocoa-focus-ring-danger:    color-mix(in srgb, var(--cocoa-danger) 55%, transparent);
+  --cocoa-scrim:                rgb(0 0 0 / 0.55);
   --cocoa-find-highlight:       #FFCC00;
+  --cocoa-switch-thumb:         #E5E5EA;
 
-  /* Shadows — dark mode. Edge ring is a translucent WHITE highlight (reflected
-     light), not black: a black 1px ring on a dark card over dark canvas reads as
-     a clip error, not elevation (look&feel audit). Casts stay dark + softened. */
+  /* Dark shadows: the edge ring is a translucent WHITE highlight (reflected
+     light); casts stay dark and softer. */
   --cocoa-shadow-control:
     0 1px 0 rgb(0 0 0 / 0.40),
     0 1px 2px rgb(0 0 0 / 0.50);
@@ -328,7 +540,10 @@
     0 8px 24px rgb(0 0 0 / 0.50),
     0 2px 6px rgb(0 0 0 / 0.35);
 
-  /* Materials — dark tints */
+  --cocoa-shadow-sticky:
+    0 1px 0 var(--cocoa-separator),
+    0 2px 6px rgb(0 0 0 / 0.30);
+
   --cocoa-material-toolbar-bg:  rgb(40 40 40 / 0.72);
   --cocoa-material-sidebar-bg:  rgb(42 42 42 / 0.78);
   --cocoa-material-popover-bg:  rgb(48 48 48 / 0.85);
@@ -337,8 +552,8 @@
 }
 
 /* ============================================================
-   DARK — OS preference (only when user hasn't forced light)
-   Mirrors :root[data-theme="dark"] block.
+   DARK — OS preference (only when the user hasn't forced light).
+   Mirrors :root[data-theme="dark"] exactly.
    ============================================================ */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -349,17 +564,17 @@
     --cocoa-label-tertiary:       rgb(255 255 255 / 0.25);
     --cocoa-label-quaternary:     rgb(255 255 255 / 0.10);
 
-    --cocoa-background-window:    #323232;
+    --cocoa-background-window:    var(--canvas);
     --cocoa-background-content:   #1E1E1E;
-    --cocoa-background-sidebar:   #2A2A2A;
+    --cocoa-background-sidebar:   var(--surface);
     --cocoa-background-toolbar:   rgb(40 40 40 / 0.72);
     --cocoa-background-control:   #3A3A3C;
     --cocoa-background-selection: var(--accent);
+    --cocoa-background-control-hover: color-mix(in srgb, var(--cocoa-label) 8%, var(--cocoa-background-control));
 
     --cocoa-separator:            rgb(255 255 255 / 0.10);
     --cocoa-separator-opaque:     #38383A;
 
-    /* Accent — Anfitorio (Fase 2): deriva del --accent de Aurora (prefers-dark). */
     --cocoa-accent:               var(--accent);
     --cocoa-accent-hover:         var(--accent-strong);
     --cocoa-accent-pressed:       var(--accent-strong);
@@ -371,7 +586,10 @@
     --cocoa-info:                 #0A84FF;
 
     --cocoa-focus-ring:           color-mix(in srgb, var(--accent) 60%, transparent);
+    --cocoa-focus-ring-danger:    color-mix(in srgb, var(--cocoa-danger) 55%, transparent);
+    --cocoa-scrim:                rgb(0 0 0 / 0.55);
     --cocoa-find-highlight:       #FFCC00;
+    --cocoa-switch-thumb:         #E5E5EA;
 
     --cocoa-shadow-control:
       0 1px 0 rgb(0 0 0 / 0.40),
@@ -402,6 +620,10 @@
       0 8px 24px rgb(0 0 0 / 0.50),
       0 2px 6px rgb(0 0 0 / 0.35);
 
+    --cocoa-shadow-sticky:
+      0 1px 0 var(--cocoa-separator),
+      0 2px 6px rgb(0 0 0 / 0.30);
+
     --cocoa-material-toolbar-bg:  rgb(40 40 40 / 0.72);
     --cocoa-material-sidebar-bg:  rgb(42 42 42 / 0.78);
     --cocoa-material-popover-bg:  rgb(48 48 48 / 0.85);
@@ -411,17 +633,26 @@
 }
 
 /* ============================================================
-   REDUCED MOTION — collapse durations, linearize easings
+   REDUCED MOTION — collapse durations, linearise easings
    ============================================================ */
 @media (prefers-reduced-motion: reduce) {
   :root {
-    --cocoa-duration-fast: 0ms;
-    --cocoa-duration-base: 0ms;
-    --cocoa-duration-slow: 0ms;
-    --cocoa-ease-spring:   linear;
-    --cocoa-ease-out:      linear;
-    --cocoa-ease-in-out:   linear;
+    --cocoa-duration-fast:  0ms;
+    --cocoa-duration-base:  0ms;
+    --cocoa-duration-slow:  0ms;
+    --cocoa-duration-enter: 0ms;
+    --cocoa-stagger-step:   0ms;
+    --cocoa-ease-spring:    linear;
+    --cocoa-ease-out:       linear;
+    --cocoa-ease-in-out:    linear;
   }
+}
+:root[data-cocoa-reduced-motion]:not([data-cocoa-reduced-motion='false']) {
+  --cocoa-duration-fast:  0ms;
+  --cocoa-duration-base:  0ms;
+  --cocoa-duration-slow:  0ms;
+  --cocoa-duration-enter: 0ms;
+  --cocoa-stagger-step:   0ms;
 }
 
 /* ============================================================

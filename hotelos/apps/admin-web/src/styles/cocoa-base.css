@@ -1,4 +1,5 @@
-/* Cocoa base styles - aplican global */
+/* Cocoa base styles — global element defaults + layout utilities (§8).
+   Unlayered on purpose: wins over the legacy Aurora sheet (@layer cocoa-legacy). */
 * {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -7,6 +8,7 @@
 body {
   font-family: var(--cocoa-font);
   font-size: var(--cocoa-fs-body);
+  line-height: var(--cocoa-leading-body);
   color: var(--cocoa-label);
   background: var(--cocoa-background-window);
   font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1, 'ss01' 1;
@@ -14,7 +16,8 @@ body {
 }
 
 .cocoa-tabular {
-  font-feature-settings: 'tnum' 1, 'kern' 1;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1, 'lnum' 1, 'kern' 1;
 }
 
 .cocoa-mono {
@@ -28,11 +31,22 @@ body {
   -webkit-backdrop-filter: var(--cocoa-material-toolbar-blur);
 }
 
+/* Single focus ring for the whole app (audit 2026-06 · #4): consume the
+   token, never a literal. Composes with the surface's resting shadow
+   (`--c22-own-shadow`, cocoa-22.css) and is !important so it beats the
+   inline `box-shadow` of CocoaKpi / CocoaCard (review#24). */
 .cocoa-focus-ring:focus-visible {
   outline: none;
-  /* Single source of truth (audit 2026-06 · #4): consume the token, never a
-     literal. The token tracks light/dark in cocoa-tokens.css. */
-  box-shadow: 0 0 0 3px var(--cocoa-focus-ring);
+  box-shadow: 0 0 0 3px var(--cocoa-focus-ring), var(--c22-own-shadow, 0 0 0 0 transparent) !important;
+}
+
+/* CocoaSearchInput renders type="search": Chrome/Safari add their own «×»
+   next to the component's «Limpiar búsqueda» button (measured on
+   /recepcion/huespedes: two icons on the right edge). */
+input[type="search"]::-webkit-search-cancel-button,
+input[type="search"]::-webkit-search-decoration {
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 /* CocoaButton `loading` spinner (moved here from an inline <style> per button). */
@@ -42,6 +56,93 @@ body {
   }
 }
 
+/* ============================================================
+   Layout utilities (COCOA-22.md §8) — layout only, never colour.
+   .cocoa-stack[data-gap]  vertical stack (gap 1–6 → 4…32 px, default 3)
+   .cocoa-row              horizontal row, centred, wraps
+   .cocoa-cluster          inline cluster (chips, badges), 8 px gap
+   .cocoa-sr-only          visually hidden, available to AT
+   .cocoa-scroll-x         horizontal scroller with momentum + edge fade
+   ============================================================ */
+.cocoa-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cocoa-space-3);
+  min-width: 0;
+}
+.cocoa-stack[data-gap="1"] { gap: var(--cocoa-space-1); }
+.cocoa-stack[data-gap="2"] { gap: var(--cocoa-space-2); }
+.cocoa-stack[data-gap="3"] { gap: var(--cocoa-space-3); }
+.cocoa-stack[data-gap="4"] { gap: var(--cocoa-space-4); }
+.cocoa-stack[data-gap="5"] { gap: var(--cocoa-space-5); }
+.cocoa-stack[data-gap="6"] { gap: var(--cocoa-space-6); }
+
+.cocoa-row {
+  display: flex;
+  align-items: center;
+  gap: var(--cocoa-space-3);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.cocoa-row[data-gap="1"] { gap: var(--cocoa-space-1); }
+.cocoa-row[data-gap="2"] { gap: var(--cocoa-space-2); }
+.cocoa-row[data-gap="4"] { gap: var(--cocoa-space-4); }
+.cocoa-row[data-align="start"] { align-items: flex-start; }
+.cocoa-row[data-align="end"] { align-items: flex-end; }
+.cocoa-row[data-align="baseline"] { align-items: baseline; }
+.cocoa-row[data-justify="between"] { justify-content: space-between; }
+.cocoa-row[data-justify="end"] { justify-content: flex-end; }
+.cocoa-row[data-wrap="nowrap"] { flex-wrap: nowrap; }
+
+.cocoa-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cocoa-space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.cocoa-sr-only {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.cocoa-scroll-x {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  max-width: 100%;
+  min-width: 0;
+}
+.cocoa-scroll-x > * {
+  min-width: max-content;
+}
+
+/* Truncation helpers */
+.cocoa-truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.cocoa-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Reduced motion (system) */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
