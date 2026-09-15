@@ -6,20 +6,18 @@
 // provider; when it runs with AUTH_EXPOSE_RESET_TOKEN=true (tests / demo) the
 // response carries `_testToken` and we show the /reset-password link so the
 // flow can be exercised without a mailbox. Never shown otherwise.
-
 //
-// Cocoa 22: the form controls are CocoaField + CocoaInput and the actions
-// CocoaButton (style={} is layout only). The frame (AuthShell / AuthAlert /
-// CopyLinkRow of auth/AuthShell.tsx) is shared with the other public screens
-// and migrates with them.
+// Cocoa 22 (COCOA-22.md §4 «otro», PlantillaBase over the AuthShell frame):
+// CocoaPageHeader inside the elevated card, CocoaField + CocoaInput, the
+// alerts as CocoaCallout (AuthAlert) and every action a CocoaButton;
+// style={} is layout only. Logic untouched.
 
 import { useState, type FormEvent } from "react";
 import { ApiError } from "../../services/api-client";
 import { copyText, requestPasswordReset } from "../../services/authApi";
-import { AuthAlert, AuthShell, CopyLinkRow, RESET_PASSWORD_PATH_FOR_LINKS } from "../../auth/AuthShell";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaField } from "../../components/cocoa/CocoaField";
-import { CocoaInput } from "../../components/cocoa/CocoaInput";
+import { AUTH_EYEBROW, AuthAlert, AuthShell, CopyLinkRow, RESET_PASSWORD_PATH_FOR_LINKS } from "../../auth/AuthShell";
+import { CocoaButton, CocoaField, CocoaInput, CocoaPageHeader } from "../../components/cocoa";
+import { FIELD_LABELS } from "../../content/actions";
 
 type ForgotPasswordScreenProps = {
   onNavigate?: (screen: string) => void;
@@ -78,14 +76,18 @@ export function ForgotPasswordScreen(props: ForgotPasswordScreenProps) {
 
   return (
     <AuthShell
-      title="Recuperar contraseña"
-      subtitle="Indica el email de tu cuenta y te enviaremos un enlace para elegir una contraseña nueva."
+      label="Recuperar contraseña"
       footer={
         <CocoaButton variant="plain" tone="accent" onClick={() => props.onNavigate?.("LoginScreen")}>
           Volver a iniciar sesión
         </CocoaButton>
       }
     >
+      <CocoaPageHeader
+        eyebrow={AUTH_EYEBROW}
+        title="Recuperar contraseña"
+        subtitle="Indica el email de tu cuenta y te enviaremos un enlace para elegir una contraseña nueva."
+      />
       {submitted ? (
         <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }}>
           <AuthAlert tone="info">{NEUTRAL_MESSAGE}</AuthAlert>
@@ -94,13 +96,13 @@ export function ForgotPasswordScreen(props: ForgotPasswordScreenProps) {
               <AuthAlert tone="warn">
                 Modo pruebas (AUTH_EXPOSE_RESET_TOKEN): el servidor ha devuelto el enlace en vez de enviarlo por email.
               </AuthAlert>
-              <CopyLinkRow label="Enlace de restablecimiento" value={testLink} copied={copied} onCopy={() => void handleCopy()} />
+              <CopyLinkRow id="forgot-reset-link" label="Enlace de restablecimiento" value={testLink} copied={copied} onCopy={() => void handleCopy()} />
             </div>
           ) : null}
         </div>
       ) : (
         <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }} noValidate>
-          <CocoaField label="Correo electrónico" htmlFor="forgot-email" required>
+          <CocoaField label={FIELD_LABELS.email} htmlFor="forgot-email" required>
             <CocoaInput
               id="forgot-email"
               type="email"

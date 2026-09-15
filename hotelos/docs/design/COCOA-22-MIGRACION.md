@@ -1,25 +1,28 @@
 # Cocoa 22 · Plan de migración por olas
 
-> Complemento operativo de `docs/design/COCOA-22.md` (la especificación). Aquí está **qué fichero migra quién, en qué ola, con qué receta, cuándo está «hecho» y cómo se verifica en pantalla**. Los recuentos salen del inventario regenerado en la integración del 2026-09-15 (`docs/design/cocoa-22-inventory.json`, 202 pantallas · 77.564 líneas · 5.729 puntos) y de la allowlist del contrato (`tests/cocoa-22-contract.test.mjs`, `NOT_MIGRATED` = 197 = `ALLOWLIST_CEILING`). Las tablas de §6 las escribe `node scripts/cocoa-22-waves.mjs --write` (y `--check` falla cuando el inventario o la allowlist cambian sin regenerarlas): al cerrar cada lote se regeneran, nunca se editan a mano.
+> Complemento operativo de `docs/design/COCOA-22.md` (la especificación). Aquí está **qué fichero migra quién, en qué ola, con qué receta, cuándo está «hecho» y cómo se verifica en pantalla**. Los recuentos salen del inventario regenerado al cerrar la tanda A el 2026-09-15 (`docs/design/cocoa-22-inventory.json`, 200 pantallas · 77.083 líneas · 4.600 puntos; en la fundación eran 202 · 77.564 · 5.729) y de la allowlist del contrato (`tests/cocoa-22-contract.test.mjs`, `NOT_MIGRATED` = 153 = `ALLOWLIST_CEILING`). Las tablas de §6 las escribe `node scripts/cocoa-22-waves.mjs --write` (y `--check` falla cuando el inventario o la allowlist cambian sin regenerarlas): al cerrar cada lote se regeneran, nunca se editan a mano.
 
 Encargo (César, 2026-09): «Ya he revisado y es el Dashboard del director. Por favor revisa los colores, font, sombreados. Eso es lo que quiero para toda la app. La UI tiene que ser así. Cambia toda la app. Desarrollemos la UI más intuitiva, responsive, moderna, funcional, básicamente COCOA 22nd century». Canon: `/hoy/direccion` (`screens/operations/GeneralManagerScreen.tsx`). Principio heredado del pase premium de junio: **premium = restricción** (§6 de la spec: nada de blur en cabeceras, halos, shimmer teñido ni pulsos infinitos, un solo acento Esmeralda).
 
 ---
 
-## §0 · Estado de partida (integración 2026-09-15)
+## §0 · Estado de partida (cierre de la tanda A · 2026-09-15)
+
+Tanda A = olas 1 · 2 · 4 · 9 y sus correcciones `fix:*`; informe de cierre en `docs/design/olas/COCOA-22-TANDA-A-2026-09-15.md` (pantallas por ola con puntos antes → después, hallazgos de QA, handoffs pendientes y lo no verificado). Las cifras de la fundación (ola 0) se conservan entre paréntesis.
 
 | Qué | Valor |
 |---|---|
-| Base | `d2eef88` (navegación por dominios) + working tree de los lotes spec · css · primitives · shell · guide · pilot y sus correcciones (`fix:*`), **sin commit**: 53 ficheros modificados y 51 nuevos en `hotelos/` (este plan y `scripts/cocoa-22-waves.mjs` incluidos) |
-| Primitivas | 41 ficheros en `apps/admin-web/src/components/cocoa/` (barrel `index.ts`; API generada en `COCOA-22.md` §8.2, `node docs/design/cocoa-22-api.mjs --check` al día) |
-| Hojas | `styles/cocoa-tokens.css` (único fichero con colores literales) · `cocoa-motion.css` · `cocoa-base.css` · `cocoa-22.css` · `cocoa-22-layout.css` · `cocoa-22-legacy-bridge.css` (temporal) · `mobile.css` · `styles.css` (Aurora + `@layer cocoa-legacy` con 114 clases `.bo-*` en 265 reglas, se borra en la ola 11) |
-| Inventario | 202 pantallas · 77.564 líneas · **5.729 puntos** · `bo-card` 928 · `bo-*` 3.505 · `<button>` 634 (CocoaButton 324) · `<table>` 158 (CocoaTable 35) · inputs crudos 546 (Cocoa 251) · `style={` 4.513 · colores literales 514 (269 fallbacks) · con cabecera Cocoa 91 · `useTabHost` 59 · tamaños S 62 · M 109 · L 27 · XL 4 |
-| Migradas (5) | `operations/GeneralManagerScreen.tsx` (`/hoy/direccion`, canon) · `operations/ShiftManagerScreen.tsx` (`/hoy/turno`) · `guests/GuestsListScreen.tsx` (`/recepcion/huespedes`) · `propertySetup/PropertySetupForms.tsx` (`/configuracion/propiedad` y 13 hermanos) · `auth/LoginScreen.tsx` (`/acceso`) — 8 puntos entre las cinco |
-| Pendientes | **197 ficheros · 5.721 puntos** (§6): 77 dashboards · 11 listas · 4 detalles · 15 formularios · 8 asistentes · 10 workspaces · 5 calendarios · 1 chat · 14 diálogos/drawers · 39 contenedores de pestañas · 13 «otro»; de ellos **8 ficheros muertos** (0 importadores, 5.260 líneas, 188 puntos: se retiran, no se migran) y **39 contenedores** de los que 37 solo tienen que salir de la allowlist (`tabs/TabHost.tsx` y `tabs/tab-helpers.tsx` pintan el `<h1>` alojado y esperan una exención de la regla 8) |
-| Techos del contrato (§9 regla 13) | `boCard ≤ 941` · `rawButtons ≤ 647` · `rawTables ≤ 159` · `rawInputs ≤ 553` · `colourLiterals ≤ 539` · `inlineStyles ≤ 4607`, y además nunca por encima del JSON commiteado |
-| Puertas en verde | `typecheck-all --parallel 3` 15 PASS · 0 FAIL · 1 SKIP (guest-web) · `corepack pnpm test` 385/385 · `@hotelos/api test` 874 pass · 1 skip · unitarios front 518/518 · `check-discoverability` OK (16/20) · `build-nav-tree --check` al día (64 ítems · 80 pestañas · 205 redirecciones) · `.husky/pre-commit` OK · `cocoa-22-api.mjs --check` al día · `--typecheck-examples` 11 plantillas · 0 errores |
+| Base | `3a232dc` (Cocoa 22 · ola 0 — fundación) + working tree de la tanda A, **sin commit**: 73 ficheros modificados · 2 retirados (`auth/CocoaLoginScreen.tsx`, `errors/CocoaServerErrorScreen.tsx`, git `D`) · 16 nuevos en `hotelos/` |
+| Primitivas | 40 ficheros en `apps/admin-web/src/components/cocoa/` (barrel `index.ts`; API generada en `COCOA-22.md` §8.2, `node docs/design/cocoa-22-api.mjs --check` al día). Props nuevas en la tanda: `CocoaPageHeader/CocoaPage wrap` · `CocoaButton wrap` · `CocoaInput suggestions` · `CocoaDatePicker withTime` · `CocoaTable rowTone/rowTitle` · `CocoaDrawer focusKey` · `CocoaDialog initialFocus` · `CocoaChart.Progress max/valueLabel` · `segmentedOverflows()` · `CocoaSection maxHeight` = máximo real |
+| Hojas | `styles/cocoa-tokens.css` (único fichero con colores literales) · `cocoa-motion.css` · `cocoa-base.css` (+ `.cocoa-link`, `.cocoa-caption`) · `cocoa-22.css` (+ tono por fila, `.c22-field__hint` en label-secondary, callout envuelve < 600) · `cocoa-22-layout.css` (+ cabecera de sección envuelve < 600, segmented con fade) · `cocoa-22-legacy-bridge.css` (temporal) · `mobile.css` · `styles.css` (Aurora + `@layer cocoa-legacy` con 114 clases `.bo-*` en 265 reglas, se borra en la ola 11) |
+| Inventario | 200 pantallas · 77.083 líneas · **4.600 puntos** (ola 0: 202 · 77.564 · 5.729) · `bo-card` 762 (928) · `bo-*` 2.820 (3.505) · `<button>` 488 (CocoaButton 457) · `<table>` 121 (CocoaTable 76) · inputs crudos 491 (Cocoa 310) · `style={` 3.788 (4.513) · colores literales 419 (237 fallbacks) · con cabecera Cocoa 112 · `useTabHost` 52 · tamaños S 70 · M 103 · L 23 · XL 4 |
+| Migradas (40 + 7 contenedores · 62 puntos) | Pilotos: `operations/GeneralManagerScreen.tsx` (canon) · `operations/ShiftManagerScreen.tsx` · `guests/GuestsListScreen.tsx` · `propertySetup/PropertySetupForms.tsx` · `auth/LoginScreen.tsx`. Ola 1: `auth/AcceptInviteScreen` · `auth/ChangePasswordScreen` · `auth/ResetPasswordScreen` · `auth/ForgotPasswordScreen` · `errors/CocoaNotFoundScreen` (2 muertas retiradas). Ola 2: `operations/QuickCheckInDrawer` · `QuickCheckOutDrawer` · `OperationsDirectorScreen` · `owner/OwnerHomeScreen` · `operations/FrontDeskActionQueue` · `FrontDeskDashboard` · `NightAuditScreen` · `aiOperations/AiHumanReviewQueueScreen` · `AiOwnerSummaryScreen` · `assistant/AssistantChatScreen`. Ola 4: `operations/MaintenanceMobileScreen` · `HousekeepingMobileScreen` · `MaintenanceDashboard` · `HousekeepingDashboard` · `PosDashboard` · `admin/FnbMenuScreen` · `operations/InventoryDashboard` · `admin/FnbInventoryScreen` · `operations/ProcurementDashboard` · `WorkforceDashboard` · `SafetyDashboard` · `AssetsDashboard` · `EnergyDashboard`. Ola 9: `operations/PropertyDetailScreen` · `revenue/RevenueExportCenter` · `operations/ChannelPerformanceDashboard` · `RoomProfitabilityDashboard` · `reports/ReportingCenterScreen` · `operations/PortfolioDashboard` · `AnalyticsCenterDashboard`. Contenedores: `tabs/hoy/MiDiaTabs` · `tabs/informes/CarteraTabs` · `CentroInformesTabs` · `tabs/operaciones/ComprasInventarioTabs` · `MantenimientoTabs` · `PisosTabs` · `PuntoVentaTabs` |
+| Pendientes | **153 ficheros · 61.541 líneas · 4.538 puntos** (§6, olas 3 · 5 · 6 · 7 · 8 · 10 · 11): 57 dashboards · 9 listas · 4 detalles · 15 formularios · 8 asistentes · 6 workspaces · 5 calendarios · 12 diálogos/drawers · 32 contenedores · 5 «otro»; de ellos **6 ficheros muertos** (se retiran, no se migran) y 32 contenedores que solo tienen que salir de la allowlist · S 47 · M 81 · L 21 · XL 4 · 20 lotes |
+| Techos del contrato (§9 regla 13) | `boCard ≤ 762` · `rawButtons ≤ 488` · `rawTables ≤ 121` · `rawInputs ≤ 491` · `colourLiterals ≤ 419` · `inlineStyles ≤ 3788` (ola 0: 941 · 647 · 159 · 553 · 539 · 4607), y además nunca por encima del JSON commiteado · `NOT_MIGRATED` = 153 = `ALLOWLIST_CEILING` · `STYLE_BUDGET` 12 entradas (7 nuevas) · `HEADER_EXEMPT` incluye `operations/FrontDeskActionQueue.tsx` (sub-vista de `/hoy`; espejo en `scripts/cocoa-22-inventory.mjs`) |
+| Puertas en verde (cierre tanda A) | `typecheck-all --parallel 3` 15 PASS · 0 FAIL · 1 SKIP (guest-web) · `corepack pnpm test` 385/385 · `@hotelos/api test` 874 pass · 1 skip · unitarios front 559/559 · `check-discoverability` OK (16/20) · `build-nav-tree --check` al día (64 ítems · 80 pestañas · 205 redirecciones) · `.husky/pre-commit` OK · `cocoa-22-api.mjs --check` al día · `--typecheck-examples` 11 plantillas · 0 errores · `cocoa-22-waves.mjs --check` §6 al día |
+| Verificación visual | §5 pendiente para las 35 pantallas y 2 drawers de la tanda (lotes sin navegador); detalle en el informe de cierre §7 |
 
-Referencia de esfuerzo (§10 de la spec): S ≈ ½ día · M ≈ 1 día · L ≈ 2–3 días · XL ≈ 4–5 días por persona con las primitivas ya disponibles. Suma de §6: **≈ 204–233 días·persona** para las 197 pantallas (los contenedores y las muertas cuentan ½ día por el trámite; en la práctica son minutos).
+Referencia de esfuerzo (§10 de la spec): S ≈ ½ día · M ≈ 1 día · L ≈ 2–3 días · XL ≈ 4–5 días por persona con las primitivas ya disponibles. Suma de §6: **≈ 162,5–187,5 días·persona** para los 153 ficheros pendientes (en la fundación: ≈ 204–233 para 197) (los contenedores y las muertas cuentan ½ día por el trámite; en la práctica son minutos).
 
 ---
 
@@ -267,67 +270,34 @@ Para pantallas donde la paridad visual importa (canon, listas con muchos datos),
 Orden dentro de cada lote: más puntos primero; diálogos/drawers antes que la pantalla que los abre; contenedores al final. Columnas: **Deuda a cero** = recuentos del inventario que deben quedar en 0 (`card` = `.bo-card`, `bo` = otras `.bo-*`, `btn`/`tbl`/`inp` = elementos crudos, `col` = colores literales, `st` = `style={` que debe bajar al presupuesto, `emj` = emoji, `h1` = `<h1>` crudos); **`STYLE_BUDGET`** = entrada a añadir en el contrato al sacar la pantalla de `NOT_MIGRATED` (25 es el valor por defecto y no necesita entrada). Regenerar con `node scripts/cocoa-22-waves.mjs --write`.
 
 <!-- cocoa-22-waves:start -->
-_Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 pantallas · 77.564 líneas · 5729 puntos · allowlist `NOT_MIGRATED` = 197 (techo 197) · pendientes: **197 ficheros · 5721 puntos** · migradas: `auth/LoginScreen.tsx`, `guests/GuestsListScreen.tsx`, `operations/GeneralManagerScreen.tsx`, `operations/ShiftManagerScreen.tsx`, `propertySetup/PropertySetupForms.tsx`._
+_Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 200 pantallas · 77.083 líneas · 4600 puntos · allowlist `NOT_MIGRATED` = 153 (techo 153) · pendientes: **153 ficheros · 4538 puntos** · migradas: `admin/FnbInventoryScreen.tsx`, `admin/FnbMenuScreen.tsx`, `aiOperations/AiHumanReviewQueueScreen.tsx`, `aiOperations/AiOwnerSummaryScreen.tsx`, `assistant/AssistantChatScreen.tsx`, `auth/AcceptInviteScreen.tsx`, `auth/ChangePasswordScreen.tsx`, `auth/ForgotPasswordScreen.tsx`, `auth/LoginScreen.tsx`, `auth/ResetPasswordScreen.tsx`, `errors/CocoaNotFoundScreen.tsx`, `guests/GuestsListScreen.tsx`, `operations/AnalyticsCenterDashboard.tsx`, `operations/AssetsDashboard.tsx`, `operations/ChannelPerformanceDashboard.tsx`, `operations/EnergyDashboard.tsx`, `operations/FrontDeskActionQueue.tsx`, `operations/FrontDeskDashboard.tsx`, `operations/GeneralManagerScreen.tsx`, `operations/HousekeepingDashboard.tsx`, `operations/HousekeepingMobileScreen.tsx`, `operations/InventoryDashboard.tsx`, `operations/MaintenanceDashboard.tsx`, `operations/MaintenanceMobileScreen.tsx`, `operations/NightAuditScreen.tsx`, `operations/OperationsDirectorScreen.tsx`, `operations/PortfolioDashboard.tsx`, `operations/PosDashboard.tsx`, `operations/ProcurementDashboard.tsx`, `operations/PropertyDetailScreen.tsx`, `operations/QuickCheckInDrawer.tsx`, `operations/QuickCheckOutDrawer.tsx`, `operations/RoomProfitabilityDashboard.tsx`, `operations/SafetyDashboard.tsx`, `operations/ShiftManagerScreen.tsx`, `operations/WorkforceDashboard.tsx`, `owner/OwnerHomeScreen.tsx`, `propertySetup/PropertySetupForms.tsx`, `reports/ReportingCenterScreen.tsx`, `revenue/RevenueExportCenter.tsx`, `tabs/hoy/MiDiaTabs.tsx`, `tabs/informes/CarteraTabs.tsx`, `tabs/informes/CentroInformesTabs.tsx`, `tabs/operaciones/ComprasInventarioTabs.tsx`, `tabs/operaciones/MantenimientoTabs.tsx`, `tabs/operaciones/PisosTabs.tsx`, `tabs/operaciones/PuntoVentaTabs.tsx`._
 
 | Ola | Alcance | Ficheros | Líneas | Puntos | S · M · L · XL | Esfuerzo | Lotes | Contenedores | Muertas |
 |---|---|---|---|---|---|---|---|---|---|
-| 1 | Público (acceso y errores) | 7 | 1486 | **76** | 6 · 1 · 0 · 0 | ≈ 4 días·persona | 1 | 0 | 2 |
-| 2 | Hoy | 11 | 5697 | **336** | 1 · 7 · 3 · 0 | ≈ 13,5–16,5 días·persona | 2 | 1 | 0 |
-| 3 | Recepción | 24 | 15.062 | **1033** | 4 · 12 · 8 · 0 | ≈ 30–38 días·persona | 3 | 4 | 1 |
-| 4 | Operaciones | 17 | 3914 | **499** | 5 · 11 · 1 · 0 | ≈ 15,5–16,5 días·persona | 3 | 4 | 0 |
+| 1 | Público (acceso y errores) | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
+| 2 | Hoy | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
+| 3 | Recepción | 24 | 15.062 | **1008** | 4 · 12 · 8 · 0 | ≈ 30–38 días·persona | 3 | 4 | 1 |
+| 4 | Operaciones | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
 | 5 | Revenue | 15 | 6365 | **380** | 3 · 11 · 0 · 1 | ≈ 16,5–17,5 días·persona | 3 | 2 | 0 |
-| 6 | Finanzas | 21 | 8584 | **628** | 4 · 13 · 3 · 1 | ≈ 25–29 días·persona | 3 | 4 | 2 |
+| 6 | Finanzas | 21 | 8584 | **618** | 4 · 13 · 3 · 1 | ≈ 25–29 días·persona | 3 | 4 | 2 |
 | 7 | Comercial | 18 | 5997 | **591** | 4 · 13 · 0 · 1 | ≈ 19–20 días·persona | 3 | 4 | 0 |
 | 8 | Cumplimiento | 25 | 6975 | **787** | 9 · 11 · 5 · 0 | ≈ 25,5–30,5 días·persona | 3 | 5 | 0 |
-| 9 | Informes | 9 | 2548 | **208** | 2 · 7 · 0 · 0 | ≈ 8 días·persona | 1 | 2 | 0 |
-| 10 | Configuración | 40 | 12.881 | **1045** | 17 · 20 · 3 · 0 | ≈ 34,5–37,5 días·persona | 4 | 10 | 1 |
-| 11 | Compartido, desarrollo y limpieza | 10 | 5564 | **138** | 5 · 2 · 2 · 1 | ≈ 12,5–15,5 días·persona | 1 | 3 | 2 |
-| **Total** | | **197** | **75.073** | **5721** | 60 · 108 · 25 · 4 | ≈ 204–233 días·persona | 27 | 39 | 8 |
+| 9 | Informes | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
+| 10 | Configuración | 40 | 12.881 | **1025** | 17 · 20 · 3 · 0 | ≈ 34,5–37,5 días·persona | 4 | 10 | 1 |
+| 11 | Compartido, desarrollo y limpieza | 10 | 5677 | **129** | 6 · 1 · 2 · 1 | ≈ 12–15 días·persona | 1 | 3 | 2 |
+| **Total** | | **153** | **61.541** | **4538** | 47 · 81 · 21 · 4 | ≈ 162,5–187,5 días·persona | 20 | 32 | 6 |
 
 ### Ola 1 · Público (acceso y errores)
 
-**7 ficheros** · 1486 líneas · **76 puntos** · S 6 · M 1 · L 0 · XL 0 · ≈ 4 días·persona · 2 muertas (retirar, no migrar) · ya migradas: `auth/LoginScreen.tsx`
-
-#### Lote 1-A · Acceso y errores — 7 ficheros · 76 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `auth/AcceptInviteScreen.tsx` | — · pública | `/accept-invite` | otro · PlantillaBase | S · 193 · **12** | bo 2 · btn 3 · inp 1 · st 8 | 25 (defecto) | auth/PublicAuthRoutes.tsx — marco `auth/AuthShell.tsx` (ola 1) |
-| 2 | `auth/ChangePasswordScreen.tsx` | — · pública | — | otro · PlantillaBase | S · 152 · **11** | bo 1 · btn 3 · inp 1 · st 4 | 25 (defecto) | sin ruta propia: se monta cuando la sesión debe rotar la contraseña (auth/PublicAuthRoutes.tsx:91) — marco `auth/AuthShell.tsx` |
-| 3 | `auth/ResetPasswordScreen.tsx` | — · pública | `/reset-password` | otro · PlantillaBase | S · 136 · **11** | bo 2 · btn 4 · st 2 | 25 (defecto) | auth/PublicAuthRoutes.tsx — marco `auth/AuthShell.tsx` (ola 1) |
-| 4 | `auth/ForgotPasswordScreen.tsx` | `ForgotPasswordScreen` · pública · standalone | `/acceso/recuperar-contrasena` | otro · PlantillaBase | S · 128 · **6** | st 5 | 25 (defecto) |  |
-| 5 | `errors/CocoaNotFoundScreen.tsx` | — · shell | — | otro · PlantillaBase | S · 112 · **6** | st 5 · h1 1 | 25 (defecto) | 404 del shell (App.tsx:766): `CocoaState kind="error"` a página completa, sin `<h1>` crudo |
-| 6 | `auth/CocoaLoginScreen.tsx` | — · sin ruta | — | lista · ListaTabla | M · 548 · **21** | btn 2 · inp 2 · col 4 · st 30 · h1 1 | 15 | **MUERTA** — 0 importadores (el login real es auth/LoginScreen.tsx, ya migrado) |
-| 7 | `errors/CocoaServerErrorScreen.tsx` | — · sin ruta | — | otro · PlantillaBase | S · 217 · **9** | btn 1 · st 11 · h1 1 | 25 (defecto) | **MUERTA** — 0 importadores |
+**0 ficheros** · 0 líneas · **0 puntos** · S 0 · M 0 · L 0 · XL 0 · ≈ 0 días·persona · ya migradas: `auth/AcceptInviteScreen.tsx`, `auth/ChangePasswordScreen.tsx`, `auth/ForgotPasswordScreen.tsx`, `auth/LoginScreen.tsx`, `auth/ResetPasswordScreen.tsx`, `errors/CocoaNotFoundScreen.tsx`
 
 ### Ola 2 · Hoy
 
-**11 ficheros** · 5697 líneas · **336 puntos** · S 1 · M 7 · L 3 · XL 0 · ≈ 13,5–16,5 días·persona · 1 contenedor (0 código) · ya migradas: `operations/GeneralManagerScreen.tsx`, `operations/ShiftManagerScreen.tsx`
-
-#### Lote 2-A · Mi día (contenedor, recepción, operaciones, propietario) + cocoa-director — 7 ficheros · 205 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `operations/QuickCheckInDrawer.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | L · 818 · **50** | bo 23 · btn 12 · inp 2 · col 11 · st 48 · emj 6 | 15 | drawer de FrontDeskDashboard (`/hoy`); también lo abren FrontDeskActionQueue y RoomRackScreen (ola 3) |
-| 2 | `operations/QuickCheckOutDrawer.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 572 · **48** | bo 19 · btn 10 · tbl 1 · inp 4 · col 5 · st 48 · emj 3 | 15 | drawer de FrontDeskDashboard (`/hoy`); también lo abren FrontDeskActionQueue y RoomRackScreen (ola 3) |
-| 3 | `operations/OperationsDirectorScreen.tsx` | `OperationsDirectorScreen` · alojada en FrontDeskDashboard | `/hoy/operaciones` | dashboard · DashboardAlojado / DashboardStandalone | L · 1360 · **47** | btn 4 · tbl 4 · st 125 | 25 (defecto) |  |
-| 4 | `owner/OwnerHomeScreen.tsx` | `OwnerHome` · alojada en FrontDeskDashboard | `/hoy/propietario` | dashboard · DashboardAlojado / DashboardStandalone | M · 173 · **24** | card 4 · bo 20 · btn 4 · tbl 1 · st 11 · h1 1 | 25 (defecto) |  |
-| 5 | `operations/FrontDeskActionQueue.tsx` | — · sub-vista | — | lista · ListaTabla | M · 431 · **23** | card 2 · bo 8 · btn 7 · col 6 · st 12 · emj 1 | 15 | sub-vista de FrontDeskDashboard (`/hoy`) |
-| 6 | `operations/FrontDeskDashboard.tsx` | `FrontDeskDashboard` · standalone | `/hoy` | dashboard · DashboardAlojado / DashboardStandalone | L · 1040 · **13** | col 1 · st 46 · emj 1 | 25 (defecto) |  |
-| 7 | `tabs/hoy/MiDiaTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 38 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-
-#### Lote 2-B · Cierre del día, IA y asistente — 4 ficheros · 131 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `operations/NightAuditScreen.tsx` | `NightAuditScreen` · standalone | `/hoy/cierre-del-dia` | dashboard · DashboardAlojado / DashboardStandalone | M · 355 · **42** | card 5 · bo 11 · btn 4 · tbl 1 · col 15 · st 28 · emj 4 | 25 (defecto) |  |
-| 2 | `aiOperations/AiHumanReviewQueueScreen.tsx` | `AiHumanReviewQueueScreen` · standalone | `/hoy/pendientes-ia` | dashboard · DashboardAlojado / DashboardStandalone | M · 499 · **40** | card 6 · bo 19 · btn 10 · tbl 1 · inp 6 · st 21 | 25 (defecto) |  |
-| 3 | `aiOperations/AiOwnerSummaryScreen.tsx` | `AiOwnerSummaryScreen` · standalone | `/hoy/informe-ia` | dashboard · DashboardAlojado / DashboardStandalone | M · 215 · **27** | card 10 · bo 30 · btn 1 · st 3 · emj 1 | 25 (defecto) |  |
-| 4 | `assistant/AssistantChatScreen.tsx` | `AssistantChat` · standalone | `/asistente` | chat · Chat | M · 196 · **22** | card 6 · bo 10 · btn 2 · inp 1 · col 1 · st 30 | 25 (defecto) |  |
+**0 ficheros** · 0 líneas · **0 puntos** · S 0 · M 0 · L 0 · XL 0 · ≈ 0 días·persona · ya migradas: `aiOperations/AiHumanReviewQueueScreen.tsx`, `aiOperations/AiOwnerSummaryScreen.tsx`, `assistant/AssistantChatScreen.tsx`, `operations/FrontDeskActionQueue.tsx`, `operations/FrontDeskDashboard.tsx`, `operations/GeneralManagerScreen.tsx`, `operations/NightAuditScreen.tsx`, `operations/OperationsDirectorScreen.tsx`, `operations/QuickCheckInDrawer.tsx`, `operations/QuickCheckOutDrawer.tsx`, `operations/ShiftManagerScreen.tsx`, `owner/OwnerHomeScreen.tsx`, `tabs/hoy/MiDiaTabs.tsx`
 
 ### Ola 3 · Recepción
 
-**24 ficheros** · 15.062 líneas · **1033 puntos** · S 4 · M 12 · L 8 · XL 0 · ≈ 30–38 días·persona · 4 contenedores (0 código) · 1 muerta (retirar, no migrar) · ya migradas: `guests/GuestsListScreen.tsx`
+**24 ficheros** · 15.062 líneas · **1008 puntos** · S 4 · M 12 · L 8 · XL 0 · ≈ 30–38 días·persona · 4 contenedores (0 código) · 1 muerta (retirar, no migrar) · ya migradas: `guests/GuestsListScreen.tsx`
 
 #### Lote 3-A · Reservas (workspace, lista, nueva, agente, tablero, cronograma) — 8 ficheros · 273 pts
 
@@ -342,16 +312,16 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 panta
 | 7 | `tabs/recepcion/NuevaReservaTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 28 · **0** | — | — | solo salir de `NOT_MIGRATED` |
 | 8 | `tabs/recepcion/ReservasTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 47 · **0** | — | — | solo salir de `NOT_MIGRATED` |
 
-#### Lote 3-B · Grupos y eventos — 9 ficheros · 422 pts
+#### Lote 3-B · Grupos y eventos — 9 ficheros · 397 pts
 
 | # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
 |---|---|---|---|---|---|---|---|---|
-| 1 | `operations/GroupDetailDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | L · 1427 · **92** | card 2 · bo 21 · btn 9 · inp 17 · col 43 · st 113 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) y GroupsCalendarScreen |
-| 2 | `operations/NewGroupDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | L · 865 · **79** | card 2 · bo 9 · btn 3 · inp 37 · col 5 · st 88 · emj 7 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) |
-| 3 | `operations/RoomingListImportDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 759 · **57** | card 2 · bo 16 · btn 6 · tbl 1 · inp 1 · col 35 · st 59 · emj 1 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) |
-| 4 | `operations/GroupsCalendarScreen.tsx` | `GroupsCalendarScreen` · alojada en GroupsEventsDashboard | `/recepcion/grupos/calendario` | calendario · Calendario | M · 711 · **56** | card 4 · bo 15 · btn 5 · inp 2 · col 37 · st 56 · h1 1 | 40 |  |
-| 5 | `operations/RoomBlockGridDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 582 · **46** | card 2 · bo 8 · btn 5 · tbl 1 · inp 7 · col 20 · st 56 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) |
-| 6 | `operations/NewEventDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 472 · **40** | card 2 · bo 8 · btn 3 · inp 9 · col 5 · st 36 · emj 11 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) |
+| 1 | `operations/GroupDetailDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | L · 1427 · **87** | card 2 · bo 21 · btn 9 · inp 17 · col 43 · st 113 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) y GroupsCalendarScreen |
+| 2 | `operations/NewGroupDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | L · 865 · **74** | card 2 · bo 9 · btn 3 · inp 37 · col 5 · st 88 · emj 7 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) |
+| 3 | `operations/GroupsCalendarScreen.tsx` | `GroupsCalendarScreen` · alojada en GroupsEventsDashboard | `/recepcion/grupos/calendario` | calendario · Calendario | M · 711 · **56** | card 4 · bo 15 · btn 5 · inp 2 · col 37 · st 56 · h1 1 | 40 |  |
+| 4 | `operations/RoomingListImportDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 759 · **52** | card 2 · bo 16 · btn 6 · tbl 1 · inp 1 · col 35 · st 59 · emj 1 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) |
+| 5 | `operations/RoomBlockGridDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 582 · **41** | card 2 · bo 8 · btn 5 · tbl 1 · inp 7 · col 20 · st 56 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) |
+| 6 | `operations/NewEventDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 472 · **35** | card 2 · bo 8 · btn 3 · inp 9 · col 5 · st 36 · emj 11 | 15 | diálogo de GroupsEventsDashboard (`/recepcion/grupos`) |
 | 7 | `operations/GroupsPickupCard.tsx` | — · componente (tarjeta) | — | otro · PlantillaBase | M · 295 · **33** | card 4 · bo 12 · col 11 · st 32 · emj 12 | 25 (defecto) | tarjeta de GroupsEventsDashboard (`/recepcion/grupos`) |
 | 8 | `operations/GroupsEventsDashboard.tsx` | `GroupsEventsDashboard` · standalone | `/recepcion/grupos` | dashboard · DashboardAlojado / DashboardStandalone | L · 947 · **19** | card 1 · bo 2 · btn 3 · col 6 · st 30 | 25 (defecto) |  |
 | 9 | `tabs/recepcion/GruposEventosTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 30 · **0** | — | — | solo salir de `NOT_MIGRATED` |
@@ -370,39 +340,7 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 panta
 
 ### Ola 4 · Operaciones
 
-**17 ficheros** · 3914 líneas · **499 puntos** · S 5 · M 11 · L 1 · XL 0 · ≈ 15,5–16,5 días·persona · 4 contenedores (0 código)
-
-#### Lote 4-A · Pisos y mantenimiento — 6 ficheros · 157 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `operations/MaintenanceMobileScreen.tsx` | `MaintenanceMobileScreen` · alojada en MaintenanceDashboard | `/operaciones/mantenimiento/mis-averias` | otro · PlantillaBase | M · 302 · **43** | bo 11 · btn 5 · col 22 · st 35 · emj 7 · h1 1 | 25 (defecto) |  |
-| 2 | `operations/MaintenanceDashboard.tsx` | `MaintenanceDashboard` · standalone | `/operaciones/mantenimiento` | workspace · Workspace | M · 264 · **42** | card 5 · bo 29 · btn 9 · inp 7 · st 27 | 40 |  |
-| 3 | `operations/HousekeepingMobileScreen.tsx` | `HousekeepingMobileScreen` · alojada en HousekeepingDashboard | `/operaciones/pisos/mi-turno` | otro · PlantillaBase | M · 425 · **40** | bo 9 · btn 6 · col 19 · st 34 · emj 7 · h1 1 | 25 (defecto) |  |
-| 4 | `operations/HousekeepingDashboard.tsx` | `HousekeepingDashboard` · standalone | `/operaciones/pisos` | dashboard · DashboardAlojado / DashboardStandalone | M · 277 · **32** | card 4 · bo 21 · btn 7 · inp 2 · col 4 · st 31 | 25 (defecto) |  |
-| 5 | `tabs/operaciones/MantenimientoTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 29 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-| 6 | `tabs/operaciones/PisosTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 29 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-
-#### Lote 4-B · Punto de venta, compras e inventario — 7 ficheros · 199 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `operations/PosDashboard.tsx` | `PosDashboard` · standalone | `/operaciones/tpv` | workspace · Workspace | L · 354 · **66** | card 10 · bo 31 · btn 8 · tbl 4 · inp 8 · st 50 | 40 |  |
-| 2 | `admin/FnbMenuScreen.tsx` | `FnbMenu` · alojada en PosDashboard | `/operaciones/tpv/cartas` | dashboard · DashboardAlojado / DashboardStandalone | M · 352 · **42** | card 4 · bo 25 · btn 7 · tbl 1 · inp 7 · st 21 · emj 6 | 25 (defecto) |  |
-| 3 | `operations/InventoryDashboard.tsx` | `InventoryDashboard` · alojada en ProcurementDashboard | `/operaciones/compras/inventario` | dashboard · DashboardAlojado / DashboardStandalone | M · 344 · **36** | card 9 · bo 16 · btn 1 · tbl 4 · col 2 · st 16 · h1 1 | 25 (defecto) |  |
-| 4 | `admin/FnbInventoryScreen.tsx` | `FnbInventory` · alojada en PosDashboard | `/operaciones/tpv/existencias` | dashboard · DashboardAlojado / DashboardStandalone | M · 176 · **30** | card 4 · bo 20 · btn 3 · tbl 2 · col 1 · st 26 | 25 (defecto) |  |
-| 5 | `operations/ProcurementDashboard.tsx` | `ProcurementDashboard` · standalone | `/operaciones/compras` | dashboard · DashboardAlojado / DashboardStandalone | M · 234 · **25** | card 7 · bo 15 · btn 1 · tbl 2 · st 12 · h1 1 | 25 (defecto) |  |
-| 6 | `tabs/operaciones/ComprasInventarioTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 28 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-| 7 | `tabs/operaciones/PuntoVentaTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 30 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-
-#### Lote 4-C · Personal, seguridad, energía y activos — 4 ficheros · 143 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `operations/WorkforceDashboard.tsx` | `WorkforceDashboard` · standalone | `/operaciones/personal` | workspace · Workspace | M · 265 · **49** | card 10 · bo 27 · btn 7 · inp 5 · st 34 | 40 |  |
-| 2 | `operations/SafetyDashboard.tsx` | `SafetyDashboard` · standalone | `/operaciones/seguridad` | workspace · Workspace | M · 226 · **44** | card 8 · bo 30 · btn 5 · inp 4 · st 29 | 40 |  |
-| 3 | `operations/AssetsDashboard.tsx` | `AssetsDashboard` · standalone | `/operaciones/activos` | dashboard · DashboardAlojado / DashboardStandalone | M · 313 · **32** | card 9 · bo 15 · btn 1 · tbl 3 · col 2 · st 19 | 25 (defecto) |  |
-| 4 | `operations/EnergyDashboard.tsx` | `EnergyDashboard` · standalone | `/operaciones/energia` | dashboard · DashboardAlojado / DashboardStandalone | S · 266 · **18** | card 6 · bo 10 · btn 1 · tbl 1 · st 10 | 25 (defecto) |  |
+**0 ficheros** · 0 líneas · **0 puntos** · S 0 · M 0 · L 0 · XL 0 · ≈ 0 días·persona · ya migradas: `admin/FnbInventoryScreen.tsx`, `admin/FnbMenuScreen.tsx`, `operations/AssetsDashboard.tsx`, `operations/EnergyDashboard.tsx`, `operations/HousekeepingDashboard.tsx`, `operations/HousekeepingMobileScreen.tsx`, `operations/InventoryDashboard.tsx`, `operations/MaintenanceDashboard.tsx`, `operations/MaintenanceMobileScreen.tsx`, `operations/PosDashboard.tsx`, `operations/ProcurementDashboard.tsx`, `operations/SafetyDashboard.tsx`, `operations/WorkforceDashboard.tsx`, `tabs/operaciones/ComprasInventarioTabs.tsx`, `tabs/operaciones/MantenimientoTabs.tsx`, `tabs/operaciones/PisosTabs.tsx`, `tabs/operaciones/PuntoVentaTabs.tsx`
 
 ### Ola 5 · Revenue
 
@@ -440,19 +378,19 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 panta
 
 ### Ola 6 · Finanzas
 
-**21 ficheros** · 8584 líneas · **628 puntos** · S 4 · M 13 · L 3 · XL 1 · ≈ 25–29 días·persona · 4 contenedores (0 código) · 2 muertas (retirar, no migrar)
+**21 ficheros** · 8584 líneas · **618 puntos** · S 4 · M 13 · L 3 · XL 1 · ≈ 25–29 días·persona · 4 contenedores (0 código) · 2 muertas (retirar, no migrar)
 
-#### Lote 6-A · Facturación (centro, folios, rectificativas, enrutado) — 8 ficheros · 261 pts
+#### Lote 6-A · Facturación (centro, folios, rectificativas, enrutado) — 8 ficheros · 251 pts
 
 | # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `billing/BillingCenterScreen.tsx` | `BillingCenter` · standalone | `/finanzas/facturacion` | dashboard · DashboardAlojado / DashboardStandalone | XL · 1560 · **71** | card 14 · bo 61 · tbl 1 · inp 2 · st 84 · emj 1 | 25 (defecto) |  |
 | 2 | `admin/FolioRoutingScreen.tsx` | `FolioRouting` · alojada en BillingCenter | `/finanzas/facturacion/enrutamiento` | formulario · Formulario | L · 452 · **60** | card 12 · bo 24 · btn 9 · tbl 3 · inp 8 · st 40 | 15 |  |
-| 3 | `invoicing/InvoiceRectifyDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 301 · **31** | card 6 · bo 19 · btn 3 · inp 5 · st 10 | 15 | diálogo de InvoiceRectificationsScreen (`/finanzas/facturacion/rectificativas`) |
+| 3 | `invoicing/InvoiceRectifyDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 301 · **26** | card 6 · bo 19 · btn 3 · inp 5 · st 10 | 15 | diálogo de InvoiceRectificationsScreen (`/finanzas/facturacion/rectificativas`) |
 | 4 | `billing/FolioDetailScreen.tsx` | `FolioDetail` · alojada en BillingCenter | `/finanzas/facturacion/folios/:id` | detalle · Detalle | L · 948 · **21** | card 2 · bo 9 · inp 1 · col 2 · st 44 | 15 |  |
 | 5 | `invoicing/InvoiceRectificationsScreen.tsx` | `InvoiceRectificationsScreen` · alojada en BillingCenter | `/finanzas/facturacion/rectificativas` | otro · PlantillaBase | M · 198 · **21** | card 9 · bo 20 · inp 1 · st 3 · h1 1 | 25 (defecto) |  |
-| 6 | `billing/SplitFolioDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 343 · **31** | card 2 · bo 11 · btn 3 · inp 4 · col 8 · st 31 | 15 | **MUERTA** — 0 importadores |
-| 7 | `billing/InvoiceDetailScreen.tsx` | — · sin ruta | — | detalle · Detalle | L · 836 · **26** | card 6 · bo 18 · inp 1 · st 38 | 15 | **MUERTA** — 0 importadores (solo un comentario en billing/invoiceStatus.ts:2); sin clave ni URL |
+| 6 | `billing/InvoiceDetailScreen.tsx` | — · sin ruta | — | detalle · Detalle | L · 836 · **26** | card 6 · bo 18 · inp 1 · st 38 | 15 | **MUERTA** — 0 importadores (solo un comentario en billing/invoiceStatus.ts:2); sin clave ni URL |
+| 7 | `billing/SplitFolioDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 343 · **26** | card 2 · bo 11 · btn 3 · inp 4 · col 8 · st 31 | 15 | **MUERTA** — 0 importadores |
 | 8 | `tabs/finanzas/FacturacionTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 40 · **0** | — | — | solo salir de `NOT_MIGRATED` |
 
 #### Lote 6-B · Tesorería, conciliación, nóminas y comisiones — 8 ficheros · 251 pts
@@ -561,27 +499,13 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 panta
 
 ### Ola 9 · Informes
 
-**9 ficheros** · 2548 líneas · **208 puntos** · S 2 · M 7 · L 0 · XL 0 · ≈ 8 días·persona · 2 contenedores (0 código)
-
-#### Lote 9-A · Informes — 9 ficheros · 208 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `operations/PropertyDetailScreen.tsx` | `PropertyDetailScreen` · alojada en PortfolioDashboard | `/informes/cartera/:propiedad` | dashboard · DashboardAlojado / DashboardStandalone | M · 353 · **36** | card 10 · bo 11 · btn 9 · tbl 1 · st 33 · emj 1 | 25 (defecto) |  |
-| 2 | `revenue/RevenueExportCenter.tsx` | `RevenueExportCenter` · alojada en ReportingCenter | `/informes/exportaciones-revenue` | dashboard · DashboardAlojado / DashboardStandalone | M · 528 · **35** | card 5 · bo 28 · btn 3 · tbl 1 · inp 3 · st 29 | 25 (defecto) |  |
-| 3 | `operations/ChannelPerformanceDashboard.tsx` | `ChannelPerformanceDashboard` · standalone | `/informes/canales` | dashboard · DashboardAlojado / DashboardStandalone | M · 337 · **30** | card 9 · bo 13 · btn 1 · tbl 3 · col 2 · st 15 | 25 (defecto) |  |
-| 4 | `operations/RoomProfitabilityDashboard.tsx` | `RoomProfitabilityDashboard` · standalone | `/informes/rentabilidad-habitacion` | dashboard · DashboardAlojado / DashboardStandalone | M · 265 · **28** | card 7 · bo 10 · btn 1 · tbl 3 · st 23 | 25 (defecto) |  |
-| 5 | `reports/ReportingCenterScreen.tsx` | `ReportingCenter` · standalone | `/informes` | dashboard · DashboardAlojado / DashboardStandalone | M · 249 · **28** | card 11 · bo 24 · btn 2 · inp 2 · st 2 | 25 (defecto) |  |
-| 6 | `operations/PortfolioDashboard.tsx` | `PortfolioDashboard` · standalone | `/informes/cartera` | dashboard · DashboardAlojado / DashboardStandalone | M · 452 · **26** | card 8 · bo 16 · btn 1 · tbl 1 · st 24 | 25 (defecto) |  |
-| 7 | `operations/AnalyticsCenterDashboard.tsx` | `AnalyticsCenterDashboard` · standalone | `/informes/analitica` | dashboard · DashboardAlojado / DashboardStandalone | M · 301 · **25** | card 7 · bo 13 · btn 1 · tbl 3 · st 7 | 25 (defecto) |  |
-| 8 | `tabs/informes/CarteraTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 39 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-| 9 | `tabs/informes/CentroInformesTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 24 · **0** | — | — | solo salir de `NOT_MIGRATED` |
+**0 ficheros** · 0 líneas · **0 puntos** · S 0 · M 0 · L 0 · XL 0 · ≈ 0 días·persona · ya migradas: `operations/AnalyticsCenterDashboard.tsx`, `operations/ChannelPerformanceDashboard.tsx`, `operations/PortfolioDashboard.tsx`, `operations/PropertyDetailScreen.tsx`, `operations/RoomProfitabilityDashboard.tsx`, `reports/ReportingCenterScreen.tsx`, `revenue/RevenueExportCenter.tsx`, `tabs/informes/CarteraTabs.tsx`, `tabs/informes/CentroInformesTabs.tsx`
 
 ### Ola 10 · Configuración
 
-**40 ficheros** · 12.881 líneas · **1045 puntos** · S 17 · M 20 · L 3 · XL 0 · ≈ 34,5–37,5 días·persona · 10 contenedores (0 código) · 1 muerta (retirar, no migrar) · ya migradas: `propertySetup/PropertySetupForms.tsx`
+**40 ficheros** · 12.881 líneas · **1025 puntos** · S 17 · M 20 · L 3 · XL 0 · ≈ 34,5–37,5 días·persona · 10 contenedores (0 código) · 1 muerta (retirar, no migrar) · ya migradas: `propertySetup/PropertySetupForms.tsx`
 
-#### Lote 10-A · Sistema, organizaciones, usuarios y desarrolladores — 11 ficheros · 303 pts
+#### Lote 10-A · Sistema, organizaciones, usuarios y desarrolladores — 11 ficheros · 288 pts
 
 | # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
 |---|---|---|---|---|---|---|---|---|
@@ -590,11 +514,11 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 panta
 | 3 | `developer/WebhooksAdminScreen.tsx` | `WebhooksAdmin` · alojada en AuditLogViewer | `/configuracion/sistema/webhooks` | lista · ListaTabla | M · 316 · **47** | card 10 · bo 12 · btn 9 · tbl 2 · inp 2 · col 2 · st 34 | 15 |  |
 | 4 | `developer/ApiReferenceScreen.tsx` | `ApiReferenceScreen` · alojada en AuditLogViewer | `/configuracion/sistema/api` | dashboard · DashboardAlojado / DashboardStandalone | M · 237 · **39** | card 3 · bo 15 · btn 1 · inp 3 · col 13 · st 23 · emj 1 · h1 1 | 25 (defecto) |  |
 | 5 | `developer/DeveloperAppsScreen.tsx` | `DeveloperApps` · alojada en AuditLogViewer | `/configuracion/sistema/aplicaciones` | lista · ListaTabla | M · 205 · **36** | card 8 · bo 11 · btn 4 · tbl 1 · inp 3 · col 1 · st 27 | 15 |  |
-| 6 | `admin/NewTenantWizardDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 571 · **26** | inp 1 · col 8 · st 47 | 15 | diálogo de TenantAdminConsoleScreen (`/configuracion/sistema/organizaciones`) |
+| 6 | `admin/NewTenantWizardDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 571 · **21** | inp 1 · col 8 · st 47 | 15 | diálogo de TenantAdminConsoleScreen (`/configuracion/sistema/organizaciones`) |
 | 7 | `admin/TenantDetailScreen.tsx` | `TenantDetailScreen` · alojada en AuditLogViewer | `/configuracion/sistema/organizaciones/:id` | detalle · Detalle | M · 773 · **21** | bo 5 · st 74 | 15 |  |
-| 8 | `admin/InviteUserDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 419 · **13** | col 5 · st 19 | 15 | diálogo (barrel `admin/index.ts`) de UserRoleManager (`/configuracion/usuarios`) |
-| 9 | `admin/TenantAdminConsoleScreen.tsx` | `TenantAdminConsoleScreen` · alojada en AuditLogViewer | `/configuracion/sistema/organizaciones` | lista · ListaTabla | L · 911 · **12** | btn 3 · st 34 | 15 |  |
-| 10 | `admin/ResetPasswordConfirmDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | S · 297 · **9** | st 14 | 15 | diálogo (barrel `admin/index.ts`) de UserRoleManager (`/configuracion/usuarios`) |
+| 8 | `admin/TenantAdminConsoleScreen.tsx` | `TenantAdminConsoleScreen` · alojada en AuditLogViewer | `/configuracion/sistema/organizaciones` | lista · ListaTabla | L · 911 · **12** | btn 3 · st 34 | 15 |  |
+| 9 | `admin/InviteUserDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 419 · **8** | col 5 · st 19 | 15 | diálogo (barrel `admin/index.ts`) de UserRoleManager (`/configuracion/usuarios`) |
+| 10 | `admin/ResetPasswordConfirmDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | S · 297 · **4** | st 14 | 15 | diálogo (barrel `admin/index.ts`) de UserRoleManager (`/configuracion/usuarios`) |
 | 11 | `tabs/configuracion/SistemaTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 64 · **0** | — | — | solo salir de `NOT_MIGRATED` |
 
 #### Lote 10-B · Inteligencia artificial y comunicaciones — 8 ficheros · 388 pts
@@ -610,7 +534,7 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 panta
 | 7 | `tabs/configuracion/ComunicacionesTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 30 · **0** | — | — | solo salir de `NOT_MIGRATED` |
 | 8 | `tabs/configuracion/InteligenciaArtificialTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 36 · **0** | — | — | solo salir de `NOT_MIGRATED` |
 
-#### Lote 10-C · Puesta en marcha, propiedad, categorías y módulos — 15 ficheros · 276 pts
+#### Lote 10-C · Puesta en marcha, propiedad, categorías y módulos — 15 ficheros · 271 pts
 
 | # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
 |---|---|---|---|---|---|---|---|---|
@@ -624,11 +548,11 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 panta
 | 8 | `backoffice/categories/CategoryDetailScreen.tsx` | `CategoryDetailScreen` · alojada en PropertyProfileSetupForm | `/configuracion/propiedad/categorias/:codigo` | detalle · Detalle | S · 107 · **12** | card 3 · bo 6 · btn 1 | 15 |  |
 | 9 | `GoLiveChecklist.tsx` | `GoLiveChecklist` · alojada en SetupCenterScreen | `/configuracion/puesta-en-marcha/salida-en-vivo` | asistente · Asistente | S · 188 · **8** | card 3 · bo 6 · st 8 | 25 (defecto) |  |
 | 10 | `onboarding/CocoaOnboardingWizard.tsx` | — · sin ruta | — | asistente · Asistente | M · 763 · **15** | st 41 · h1 1 | 25 (defecto) | **MUERTA** — 0 importadores; lo lee layouts/__tests__/shell-cocoa22-contract.test.mts:16 (ajustar el test al retirarlo) |
-| 11 | `tabs/configuracion/tab-helpers.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 13 · **5** | — | — | helper de 13 líneas; solo salir de `NOT_MIGRATED` |
-| 12 | `tabs/configuracion/HabitacionesTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 30 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-| 13 | `tabs/configuracion/ModulosTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 35 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-| 14 | `tabs/configuracion/PropiedadTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 58 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-| 15 | `tabs/configuracion/PuestaEnMarchaTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 63 · **0** | — | — | solo salir de `NOT_MIGRATED` |
+| 11 | `tabs/configuracion/HabitacionesTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 30 · **0** | — | — | solo salir de `NOT_MIGRATED` |
+| 12 | `tabs/configuracion/ModulosTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 35 · **0** | — | — | solo salir de `NOT_MIGRATED` |
+| 13 | `tabs/configuracion/PropiedadTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 58 · **0** | — | — | solo salir de `NOT_MIGRATED` |
+| 14 | `tabs/configuracion/PuestaEnMarchaTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 63 · **0** | — | — | solo salir de `NOT_MIGRATED` |
+| 15 | `tabs/configuracion/tab-helpers.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 13 · **0** | — | — | helper de 13 líneas; solo salir de `NOT_MIGRATED` |
 
 #### Lote 10-D · Contabilidad, facturación y pagos — 6 ficheros · 78 pts
 
@@ -643,16 +567,16 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 202 panta
 
 ### Ola 11 · Compartido, desarrollo y limpieza
 
-**10 ficheros** · 5564 líneas · **138 puntos** · S 5 · M 2 · L 2 · XL 1 · ≈ 12,5–15,5 días·persona · 3 contenedores (0 código) · 2 muertas (retirar, no migrar)
+**10 ficheros** · 5677 líneas · **129 puntos** · S 6 · M 1 · L 2 · XL 1 · ≈ 12–15 días·persona · 3 contenedores (0 código) · 2 muertas (retirar, no migrar)
 
-#### Lote 11-A · Compartido y desarrollo — 10 ficheros · 138 pts
+#### Lote 11-A · Compartido y desarrollo — 10 ficheros · 129 pts
 
 | # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `onboarding/OnboardingInteractive.tsx` | — · sub-vista | — | asistente · Asistente | L · 677 · **60** | card 19 · bo 36 · btn 8 · tbl 1 · inp 3 · st 17 · h1 2 | 25 (defecto) | solo lo monta OnboardingScreens (dev-only, `/desarrollo/migracion`) |
-| 2 | `ModuleSettingsPlaceholder.tsx` | — · fábrica | — | formulario · Formulario | M · 179 · **21** | card 3 · bo 10 · btn 3 · st 18 · h1 1 | 15 | `makeModulePlaceholder` (App.tsx; 16 placeholders, presupuesto 20 de check-discoverability) |
-| 3 | `ScreenScaffold.tsx` | — · sub-vista | — | otro · PlantillaBase | S · 132 · **14** | card 4 · bo 6 · btn 1 · st 2 | 25 (defecto) | solo lo usa OnboardingScreens |
-| 4 | `dev/StyleGuideScreen.tsx` | `StyleGuideScreen` · dev-only · alojada en AuditLogViewer | `/desarrollo/guia-estilo` | asistente · Asistente | XL · 2354 · **9** | st 37 | 25 (defecto) | ya en `CocoaPage` (37 `style={` de muestras): `STYLE_BUDGET` 40 y salir de `NOT_MIGRATED` en cuanto el integrador lo decida (puede ir con la ola 1) |
+| 2 | `ModuleSettingsPlaceholder.tsx` | — · fábrica | — | formulario · Formulario | S · 179 · **16** | card 3 · bo 10 · btn 3 · st 18 · h1 1 | 15 | `makeModulePlaceholder` (App.tsx; 16 placeholders, presupuesto 20 de check-discoverability) |
+| 3 | `dev/StyleGuideScreen.tsx` | `StyleGuideScreen` · dev-only · alojada en AuditLogViewer | `/desarrollo/guia-estilo` | asistente · Asistente | XL · 2467 · **10** | st 39 | 25 (defecto) | ya en `CocoaPage` (37 `style={` de muestras): `STYLE_BUDGET` 40 y salir de `NOT_MIGRATED` en cuanto el integrador lo decida (puede ir con la ola 1) |
+| 4 | `ScreenScaffold.tsx` | — · sub-vista | — | otro · PlantillaBase | S · 132 · **9** | card 4 · bo 6 · btn 1 · st 2 | 25 (defecto) | solo lo usa OnboardingScreens |
 | 5 | `onboarding/OnboardingScreens.tsx` | `AIExtractionReview`, `FileUploadAndClassification`, `ImportReview`, `MigrationBatches`, `OnboardingProjects` · dev-only · alojada en OnboardingProjects (+3 rutas) | `/desarrollo/migracion/revision` · `/desarrollo/migracion/ficheros` · `/desarrollo/migracion/lotes` · `/desarrollo/migracion` | asistente · Asistente | S · 112 · **5** | — | 25 (defecto) |  |
 | 6 | `developer/CocoaShowcaseScreen.tsx` | — · sin ruta | — | asistente · Asistente | L · 1076 · **16** | inp 1 · col 1 · st 56 | 25 (defecto) | **MUERTA** — 0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:36 (borrar la línea) |
 | 7 | `preview/CocoaGalleryScreen.tsx` | — · sin ruta | — | asistente · Asistente | M · 748 · **12** | col 1 · st 22 · h1 1 | 25 (defecto) | **MUERTA** — 0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:37 (borrar la línea) |
@@ -704,7 +628,7 @@ node docs/design/cocoa-22-api.mjs --check && node docs/design/cocoa-22-api.mjs -
 bash .husky/pre-commit
 ```
 
-Después: rebajar `GLOBAL_CEILING` en `tests/cocoa-22-contract.test.mjs:265` a los totales del inventario recién regenerado (los techos solo bajan), comprobar que `ALLOWLIST_CEILING` = `NOT_MIGRATED.length`, y un commit por ola (mensaje `feat(cocoa-22/ola-N): …` con los puntos antes/después). El inventario, §6 de este documento y las allowlists van en el mismo commit que las pantallas.
+Después: rebajar `GLOBAL_CEILING` en `tests/cocoa-22-contract.test.mjs:231` a los totales del inventario recién regenerado (los techos solo bajan), comprobar que `ALLOWLIST_CEILING` = `NOT_MIGRATED.length`, y un commit por ola (mensaje `feat(cocoa-22/ola-N): …` con los puntos antes/después). El inventario, §6 de este documento y las allowlists van en el mismo commit que las pantallas.
 
 ### 7.4 Cierre de la migración (ola 11)
 

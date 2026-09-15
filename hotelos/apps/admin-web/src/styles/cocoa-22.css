@@ -386,6 +386,12 @@
   align-items: center;
   font-size: var(--cocoa-fs-body);
 }
+/* Phone: the actions slot drops under the text, right-aligned (icon + body +
+   «Cerrar día» on one 390 px row squeezed the copy). */
+@media (max-width: 599px) {
+  .c22-callout { flex-wrap: wrap; }
+  .c22-callout__actions { flex-basis: 100%; justify-content: flex-end; }
+}
 
 /* Keyboard hint (⌘K) */
 .c22-kbd,
@@ -650,9 +656,19 @@ table.cocoa-table {
   font-feature-settings: var(--cocoa-font-numeric-tabular);
 }
 .c22-table :is(th, td)[data-align="center"] { text-align: center; }
-.c22-table[data-zebra="true"] tbody tr:nth-child(even) td {
+/* Zebra is the weakest wash: `:where` keeps it at (0,2,3) so the row tone,
+   hover and selection below (same specificity, later) win on even rows too. */
+.c22-table:where([data-zebra="true"]) tbody tr:nth-child(even) td {
   background: color-mix(in srgb, var(--cocoa-label) 3%, transparent);
 }
+/* Row tone (CocoaTable `rowTone`): a tone wash under hover and selection. */
+.c22-table tbody tr[data-tone="success"] td { background: var(--cocoa-tone-success-bg); }
+.c22-table tbody tr[data-tone="warning"] td { background: var(--cocoa-tone-warning-bg); }
+.c22-table tbody tr[data-tone="danger"] td  { background: var(--cocoa-tone-danger-bg); }
+.c22-table tbody tr[data-tone="info"] td    { background: var(--cocoa-tone-info-bg); }
+.c22-table tbody tr[data-tone="accent"] td  { background: var(--cocoa-tone-accent-bg); }
+.c22-table tbody tr[data-tone="ai"] td      { background: var(--cocoa-tone-ai-bg); }
+.c22-table tbody tr[data-tone="neutral"] td { background: var(--cocoa-tone-neutral-bg); }
 .c22-table tbody tr[data-interactive="true"] { cursor: pointer; }
 .c22-table tbody tr:hover td {
   background: color-mix(in srgb, var(--cocoa-accent) 8%, transparent);
@@ -860,9 +876,13 @@ table.cocoa-table {
   color: var(--cocoa-danger-ink);
   margin-left: 2px;
 }
+/* The hint («opcional», «por noche») is informative text, so it reads in
+   secondary (6,2:1 light · 5,9:1 dark): tertiary measured 1,88:1 on
+   /operaciones/tpv → «Abrir comanda» → Habitación (qa#13; spec §2.1 keeps
+   tertiary for decoration only). */
 .c22-field__hint {
   font-size: var(--cocoa-fs-caption);
-  color: var(--cocoa-label-tertiary);
+  color: var(--cocoa-label-secondary);
   white-space: nowrap;
 }
 .c22-field__control { min-width: 0; }

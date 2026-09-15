@@ -1,21 +1,50 @@
+// Front Desk Dashboard — Recepción, the base tab of Mi día (/hoy).
+//
+// Today's arrivals, departures, in-house stays and unassigned arrivals with
+// the 90/60-second check-in / check-out drawers opened in place, the
+// prioritised action queue and the first-run welcome card for a property
+// without reservations yet.
+//
+// Cocoa 22 (ola 2 · lote 2-A): `CocoaPage` (hosted the container paints the
+// H1; standalone eyebrow + H1 + subtitle), `CocoaKpiStrip` of `CocoaKpi`
+// (three headline tiles + three risk tiles behind a toggle), the four tables
+// as internal views of one `CocoaSection` (`CocoaSegmentedControl` + CSV
+// export in a content toolbar, `CocoaTable` per view), `CocoaBadge` for the
+// reservation / balance status, `CocoaState` for the empty tables and the
+// shared toast (`useToast`) instead of a fixed local pill. Same endpoint,
+// polling, actions and drawers.
+
 import { useEffect, useState, type CSSProperties } from "react";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { fetchRoomTypes, fetchRooms } from "../../services/pmsCommerceApi";
 import { fetchRatePlans } from "../../services/ratePlansApi";
 import { useApiData } from "../../hooks/useApiData";
 import { exportToCsv, type CsvColumn } from "../../lib/csv";
-import { EmptyState } from "../../components/States";
+import { useToast } from "../../components/Toast";
+import { navigateTo } from "../../lib/navigate";
+import { date, money, number, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { CheckIcon } from "../../components/cocoa-icons/ActionIcons";
+import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
+import { FRONTDESK_COCKPIT_INSTRUCTIONS } from "../../content/screen-instructions/frontdesk-cockpit";
 import { FrontDeskActionQueue } from "./FrontDeskActionQueue";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { HOSTED_ACTIONS_ROW, useTabHost } from "../tabs/TabHost";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
-import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
-import { FRONTDESK_COCKPIT_INSTRUCTIONS } from "../../content/screen-instructions/frontdesk-cockpit";
-import { date, money, number } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaTable,
+  CocoaToolbar,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -75,8 +104,6 @@ type FrontDeskDashboardData = {
   unassigned: UnassignedRow[];
 };
 
-type StatusKind = "ok" | "warn" | "error" | "info";
-
 const RESERVATION_STATUS_LABELS: Record<string, string> = {
   draft: "Borrador",
   confirmed: "Confirmada",
@@ -86,13 +113,13 @@ const RESERVATION_STATUS_LABELS: Record<string, string> = {
   no_show: "No-show"
 };
 
-const RESERVATION_STATUS_KIND: Record<string, StatusKind> = {
+const RESERVATION_STATUS_TONE: Record<string, CocoaTone> = {
   draft: "info",
   confirmed: "info",
-  checked_in: "ok",
-  checked_out: "ok",
-  cancelled: "error",
-  no_show: "error"
+  checked_in: "success",
+  checked_out: "success",
+  cancelled: "danger",
+  no_show: "danger"
 };
 
 function fmtNumber(value: number | null | undefined): string {
@@ -119,52 +146,22 @@ function todayLabel(): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-// Status pill (Cocoa-styled badge). CocoaBadge no existe aún en el sistema,
-// por eso usamos un span con tokens `--cocoa-*` para conservar la apariencia
-// de pill semántica (success / warning / danger / info).
-const STATUS_COLOR_BY_KIND: Record<StatusKind, { bg: string; fg: string }> = {
-  ok: { bg: "var(--cocoa-success-bg)", fg: "var(--cocoa-success)" },
-  warn: { bg: "var(--cocoa-warning-bg)", fg: "var(--cocoa-warning)" },
-  error: { bg: "var(--cocoa-danger-bg)", fg: "var(--cocoa-danger)" },
-  // info was a literal Apple-blue rgba; use the Esmeralda accent surface so the
-  // pill matches the brand and adapts to dark automatically.
-  info: { bg: "var(--cocoa-accent-bg)", fg: "var(--cocoa-accent)" }
-};
-
-function pill(kind: StatusKind, label: string) {
-  const colors = STATUS_COLOR_BY_KIND[kind];
-  const style: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px 8px",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    letterSpacing: "var(--cocoa-tracking-wide)",
-    textTransform: "uppercase",
-    borderRadius: "var(--cocoa-radius-full)",
-    background: colors.bg,
-    color: colors.fg,
-    lineHeight: 1.4
-  };
-  return <span style={style}>{label}</span>;
+function elapsedText(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
-function statusPill(status: string) {
-  const kind = RESERVATION_STATUS_KIND[status] ?? "info";
-  const label = RESERVATION_STATUS_LABELS[status] ?? status;
-  return pill(kind, label);
+function statusBadge(status: string) {
+  return (
+    <CocoaBadge tone={RESERVATION_STATUS_TONE[status] ?? "info"} size="small">
+      {RESERVATION_STATUS_LABELS[status] ?? status}
+    </CocoaBadge>
+  );
 }
 
-function balancePill(value: number) {
-  if (!Number.isFinite(value) || value === 0) return pill("ok", "saldado");
-  if (value > 0) return pill("warn", "pendiente");
-  return pill("info", "a favor");
-}
-
-function navigateTo(screen: string) {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-  }
+function balanceBadge(value: number) {
+  if (!Number.isFinite(value) || value === 0) return <CocoaBadge tone="success" size="small">saldado</CocoaBadge>;
+  if (value > 0) return <CocoaBadge tone="warning" size="small">pendiente</CocoaBadge>;
+  return <CocoaBadge tone="info" size="small">a favor</CocoaBadge>;
 }
 
 function openSearch() {
@@ -172,6 +169,17 @@ function openSearch() {
     window.dispatchEvent(new CustomEvent("hotelos-open-search"));
   }
 }
+
+// Secondary cell text (caption, secondary ink); layout from the utilities.
+const mutedStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--cocoa-fs-caption)",
+  color: "var(--cocoa-label-secondary)"
+};
+
+const mutedCellStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
+
+const bodyTextStyle: CSSProperties = { margin: 0, fontSize: "var(--cocoa-fs-body)", color: "var(--cocoa-label-secondary)" };
 
 // Bienvenida de primera ejecución — se muestra cuando aún no hay ninguna
 // reserva en el sistema. Los chips guían al recepcionista hacia los cuatro
@@ -183,7 +191,7 @@ function openSearch() {
 // use decide it; a failed probe leaves the step as "unknown" rather than
 // pretending it is pending.
 type FirstRunStepKey = "rooms" | "roomTypes" | "ratePlans" | "reservation";
-type FirstRunStep = { key: FirstRunStepKey; label: string; screen: string };
+type FirstRunStep = { key: FirstRunStepKey; label: string; screen: "RoomInventoryManager" | "RoomTypeManager" | "RevenueSettings" | "ReservationCreate" };
 type FirstRunProgress = Record<Exclude<FirstRunStepKey, "reservation">, boolean | null>;
 
 const FIRST_RUN_STEPS: FirstRunStep[] = [
@@ -224,55 +232,20 @@ function FirstRunWelcomeCard({ propertyId }: { propertyId: string }) {
   const stepDone = (step: FirstRunStep): boolean => step.key !== "reservation" && progress[step.key] === true;
 
   return (
-    <CocoaCard variant="elevated" padding="lg">
-      <div
-        style={{
-          borderLeft: "4px solid var(--cocoa-accent)",
-          paddingLeft: "var(--cocoa-space-4)"
-        }}
-      >
-        <div
-          style={{
-            color: "var(--cocoa-label-tertiary)",
-            fontSize: "var(--cocoa-fs-caption)",
-            fontWeight: 600,
-            letterSpacing: "var(--cocoa-tracking-wide)",
-            textTransform: "uppercase"
-          }}
-        >
-          Bienvenido a Anfitorio
-        </div>
-        <h2
-          style={{
-            color: "var(--cocoa-label)",
-            fontSize: "var(--cocoa-fs-large-title)",
-            fontWeight: 700,
-            margin: 0,
-            marginTop: "var(--cocoa-space-2)"
-          }}
-        >
-          {setupDone ? "Todo listo: registra la primera reserva" : "Configura tu hotel en 4 pasos"}
-        </h2>
-        <p
-          style={{
-            color: "var(--cocoa-label-secondary)",
-            fontSize: "var(--cocoa-fs-body)",
-            margin: 0,
-            marginTop: "var(--cocoa-space-2)",
-            marginBottom: "var(--cocoa-space-4)"
-          }}
-        >
+    <CocoaSection
+      variant="elevated"
+      padding="lg"
+      headingLevel={2}
+      title={setupDone ? "Todo listo: registra la primera reserva" : "Configura tu hotel en 4 pasos"}
+      meta="Bienvenido a Anfitorio"
+    >
+      <div className="cocoa-stack" data-gap="3">
+        <p style={bodyTextStyle}>
           {setupDone
             ? "Habitaciones, tipos de habitación y plan tarifario ya están configurados. Solo falta la primera reserva para que recepción empiece a operar."
             : "Empieza por dar de alta tu inventario y crea la primera reserva. Estos cuatro pasos cubren lo mínimo para que recepción pueda operar."}
         </p>
-        <div
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "var(--cocoa-space-2)"
-          }}
-        >
+        <div className="cocoa-row" data-gap="2">
           {FIRST_RUN_STEPS.map((step) => {
             const done = stepDone(step);
             // The only pending step gets the accent so the eye lands on it.
@@ -283,62 +256,35 @@ function FirstRunWelcomeCard({ propertyId }: { propertyId: string }) {
                 variant={isNext ? "filled" : "bordered"}
                 tone={isNext ? "accent" : "neutral"}
                 size="regular"
+                icon={done ? <CheckIcon size={14} /> : undefined}
                 onClick={() => navigateTo(step.screen)}
                 aria-label={done ? `${step.label} (hecho) · revisar` : `Ir a ${step.label}`}
               >
-                {done ? `✓ ${step.label}` : step.label}
+                {step.label}
               </CocoaButton>
             );
           })}
         </div>
       </div>
-    </CocoaCard>
+    </CocoaSection>
   );
 }
 
 type FrontDeskTab = "arrivals" | "departures" | "inhouse" | "unassigned";
 
-// Styles for KPI cards' inner content (used inside CocoaCard wrappers).
-const kpiHeadStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "space-between",
-  gap: "var(--cocoa-space-2)"
-};
-
-const kpiLabelStyle: CSSProperties = {
-  color: "var(--cocoa-label-secondary)",
-  fontSize: "var(--cocoa-fs-subheadline)",
-  fontWeight: 600,
-  letterSpacing: "var(--cocoa-tracking-wide)",
-  textTransform: "uppercase"
-};
-
-const kpiValueStyle: CSSProperties = {
-  color: "var(--cocoa-label)",
-  fontSize: "var(--cocoa-fs-large-title)",
-  fontWeight: 700,
-  marginTop: "var(--cocoa-space-2)",
-  lineHeight: 1.1,
-  // Fintech soul: tabular + lining figures so digits keep a fixed width and
-  // KPIs don't jitter on the 30s refresh; tighter tracking at large size.
-  fontVariantNumeric: "tabular-nums lining-nums",
-  fontFeatureSettings: '"tnum" 1, "lnum" 1',
-  letterSpacing: "-0.022em"
-};
-
-const kpiGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-  gap: "var(--cocoa-space-3)"
-};
-
-const mutedTextStyle: CSSProperties = {
-  color: "var(--cocoa-label-secondary)"
-};
+// Mirror skeleton: KPI strip, the queue card and the tables card.
+function FrontDeskSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="card" height={200} />
+      <CocoaSkeleton.Strip count={3} label="Cargando indicadores de hoy…" />
+      <CocoaSkeleton variant="card" height={320} />
+    </div>
+  );
+}
 
 export function FrontDeskDashboard() {
-  const hosted = useTabHost() !== null;
+  const { showToast } = useToast();
   const { data, loading, error, refresh } = useApiData<FrontDeskDashboardData>(
     `/dashboards/front-desk?propertyId=${PROPERTY_ID}`,
     { pollIntervalMs: 30000 }
@@ -349,7 +295,6 @@ export function FrontDeskDashboard() {
   // los drawers cargan la reserva completa desde la API.
   const [checkInTarget, setCheckInTarget] = useState<string | null>(null);
   const [checkOutTarget, setCheckOutTarget] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ kind: "ok" | "warn" | "error"; text: string } | null>(null);
   // DEV #5 layout declutter — tabs y toggle "riesgos" para reducir scroll.
   // Mantenemos las 4 tablas pero solo una visible a la vez; los 3 KPIs
   // secundarios (sin habitación / salidas con retraso / saldo pendiente)
@@ -357,9 +302,8 @@ export function FrontDeskDashboard() {
   const [activeTab, setActiveTab] = useState<FrontDeskTab>("arrivals");
   const [showRiskKpis, setShowRiskKpis] = useState(false);
 
-  function showToast(kind: "ok" | "warn" | "error", text: string) {
-    setToast({ kind, text });
-    window.setTimeout(() => setToast(null), 5000);
+  function notify(kind: "ok" | "warn" | "error", text: string) {
+    showToast(text, { variant: kind === "ok" ? "success" : kind === "warn" ? "warning" : "error", duration: 5000 });
   }
 
   const kpis: Kpis = data?.kpis ?? {
@@ -427,24 +371,25 @@ export function FrontDeskDashboard() {
     { key: "preferences", label: "Preferencias" }
   ];
 
-  function handleExport<T extends object>(
-    rows: readonly T[],
-    columns: CsvColumn<T>[],
-    filename: string,
-    label: string
-  ) {
+  function handleExport<T extends object>(rows: readonly T[], columns: CsvColumn<T>[], filename: string, label: string) {
     if (rows.length === 0) {
-      showToast("warn", `${label}: no hay datos para exportar`);
+      notify("warn", `${label}: no hay datos para exportar`);
       return;
     }
     exportToCsv(rows, `${filename}-${todayStamp}`, columns);
-    showToast("ok", `${label} exportadas (${rows.length})`);
+    notify("ok", `${label} exportadas (${rows.length})`);
   }
 
-  const unassignedKind: StatusKind = kpis.unassignedRooms > 0 ? "warn" : "ok";
-  const overdueKind: StatusKind = kpis.overdueDepartures > 0 ? "error" : "ok";
-  const balanceKind: StatusKind = kpis.pendingBalanceEur > 0 ? "warn" : "ok";
+  const exportActive: Record<FrontDeskTab, () => void> = {
+    arrivals: () => handleExport(arrivals, arrivalsColumns, "llegadas", "Llegadas"),
+    departures: () => handleExport(departures, departuresColumns, "salidas", "Salidas"),
+    inhouse: () => handleExport(inHouse, inHouseColumns, "en-el-hotel", "Estancias"),
+    unassigned: () => handleExport(unassigned, unassignedColumns, "sin-habitacion", "Sin habitación")
+  };
+
   const propertyName = getActiveProperty().propertyName;
+  const riskCount = kpis.unassignedRooms + kpis.overdueDepartures;
+  const hasRisks = riskCount > 0 || kpis.pendingBalanceEur > 0;
 
   // Caso "DB vacía" — las 4 colecciones vacías Y no hay error de carga. Cuando
   // se cumple, mostramos la bienvenida de primera ejecución (clean-slate) para
@@ -459,10 +404,7 @@ export function FrontDeskDashboard() {
     unassigned.length === 0;
 
   // One-line human summary of the day.
-  const summaryParts = [
-    `${fmtNumber(kpis.arrivalsToday)} ${kpis.arrivalsToday === 1 ? "llegada" : "llegadas"}`,
-    `${fmtNumber(kpis.departuresToday)} ${kpis.departuresToday === 1 ? "salida" : "salidas"}`
-  ];
+  const summaryParts = [plural(kpis.arrivalsToday, "llegada", "llegadas"), plural(kpis.departuresToday, "salida", "salidas")];
   if (kpis.unassignedRooms > 0) {
     summaryParts.push(`${fmtNumber(kpis.unassignedRooms)} sin habitación`);
   }
@@ -475,55 +417,44 @@ export function FrontDeskDashboard() {
       key: "guestName",
       label: "Huésped",
       render: (row) => (
-        <>
+        <div className="cocoa-stack" data-gap="1">
           <strong>{row.guestName}</strong>
-          {row.specialRequests ? (
-            <div
-              style={{
-                color: "var(--cocoa-label-secondary)",
-                fontSize: "var(--cocoa-fs-caption)",
-                marginTop: 2
-              }}
-            >
-              {row.specialRequests}
-            </div>
-          ) : null}
-        </>
+          {row.specialRequests ? <span style={mutedStyle}>{row.specialRequests}</span> : null}
+        </div>
       )
     },
     {
       key: "roomNumber",
       label: "Habitación",
-      render: (row) =>
-        row.roomNumber ? (
-          <strong>{row.roomNumber}</strong>
-        ) : (
-          <span style={mutedTextStyle}>sin asignar</span>
-        )
+      render: (row) => (row.roomNumber ? <strong>{row.roomNumber}</strong> : <span style={mutedCellStyle}>sin asignar</span>)
     },
     {
       key: "roomTypeName",
       label: "Tipo",
-      render: (row) => row.roomTypeName ?? <span style={mutedTextStyle}>—</span>
+      render: (row) => row.roomTypeName ?? <span style={mutedCellStyle}>—</span>,
+      hideOnNarrow: true
     },
     {
       key: "nights",
       label: "Noches",
-      render: (row) => fmtNumber(row.nights)
+      align: "right",
+      render: (row) => fmtNumber(row.nights),
+      hideOnNarrow: true
     },
     {
       key: "status",
       label: "Estado",
-      render: (row) => statusPill(row.status)
+      render: (row) => statusBadge(row.status)
     },
     {
       key: "balance",
       label: "Saldo",
+      align: "right",
       render: (row) => (
-        <>
+        <div className="cocoa-stack" data-gap="1">
           <strong>{fmtEur(row.balanceEur)}</strong>
-          <div style={{ marginTop: 2 }}>{balancePill(row.balanceEur)}</div>
-        </>
+          <span>{balanceBadge(row.balanceEur)}</span>
+        </div>
       )
     },
     {
@@ -541,30 +472,11 @@ export function FrontDeskDashboard() {
                 ? "Reserva cerrada"
                 : "Check-in disponible";
         return (
-          <div
-            style={{
-              display: "flex",
-              gap: "var(--cocoa-space-1)",
-              flexWrap: "wrap"
-            }}
-          >
-            <span title={checkInTooltip}>
-              <CocoaButton
-                variant="filled"
-                tone="accent"
-                size="small"
-                disabled={!canCheckIn}
-                onClick={() => setCheckInTarget(row.reservationId)}
-              >
-                Hacer check-in
-              </CocoaButton>
-            </span>
-            <CocoaButton
-              variant="plain"
-              tone="neutral"
-              size="small"
-              onClick={() => navigateTo("ReservationDetailWorkspace")}
-            >
+          <div className="cocoa-row" data-gap="1">
+            <CocoaButton variant="filled" tone="accent" size="small" disabled={!canCheckIn} title={checkInTooltip} onClick={() => setCheckInTarget(row.reservationId)}>
+              Hacer check-in
+            </CocoaButton>
+            <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("ReservationDetailWorkspace")}>
               Ver folio
             </CocoaButton>
           </div>
@@ -578,18 +490,18 @@ export function FrontDeskDashboard() {
     {
       key: "roomNumber",
       label: "Habitación",
-      render: (row) =>
-        row.roomNumber ? <strong>{row.roomNumber}</strong> : <span style={mutedTextStyle}>—</span>
+      render: (row) => (row.roomNumber ? <strong>{row.roomNumber}</strong> : <span style={mutedCellStyle}>—</span>)
     },
-    { key: "status", label: "Estado", render: (row) => statusPill(row.status) },
+    { key: "status", label: "Estado", render: (row) => statusBadge(row.status) },
     {
       key: "balance",
       label: "Saldo",
+      align: "right",
       render: (row) => (
-        <>
+        <div className="cocoa-stack" data-gap="1">
           <strong>{fmtEur(row.balanceEur)}</strong>
-          <div style={{ marginTop: 2 }}>{balancePill(row.balanceEur)}</div>
-        </>
+          <span>{balanceBadge(row.balanceEur)}</span>
+        </div>
       )
     },
     {
@@ -597,36 +509,13 @@ export function FrontDeskDashboard() {
       label: "Acciones",
       render: (row) => {
         const canCheckOut = row.status === "checked_in";
-        const checkOutTooltip = !canCheckOut
-          ? row.status === "checked_out"
-            ? "Ya hizo el check-out"
-            : "El huésped no está alojado"
-          : "Check-out disponible";
+        const checkOutTooltip = !canCheckOut ? (row.status === "checked_out" ? "Ya hizo el check-out" : "El huésped no está alojado") : "Check-out disponible";
         return (
-          <div
-            style={{
-              display: "flex",
-              gap: "var(--cocoa-space-1)",
-              flexWrap: "wrap"
-            }}
-          >
-            <span title={checkOutTooltip}>
-              <CocoaButton
-                variant="filled"
-                tone="accent"
-                size="small"
-                disabled={!canCheckOut}
-                onClick={() => setCheckOutTarget(row.reservationId)}
-              >
-                Hacer check-out
-              </CocoaButton>
-            </span>
-            <CocoaButton
-              variant="plain"
-              tone="neutral"
-              size="small"
-              onClick={() => navigateTo("ReservationDetailWorkspace")}
-            >
+          <div className="cocoa-row" data-gap="1">
+            <CocoaButton variant="filled" tone="accent" size="small" disabled={!canCheckOut} title={checkOutTooltip} onClick={() => setCheckOutTarget(row.reservationId)}>
+              Hacer check-out
+            </CocoaButton>
+            <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("ReservationDetailWorkspace")}>
               Ver folio
             </CocoaButton>
           </div>
@@ -640,39 +529,26 @@ export function FrontDeskDashboard() {
     {
       key: "roomNumber",
       label: "Habitación",
-      render: (row) =>
-        row.roomNumber ? <strong>{row.roomNumber}</strong> : <span style={mutedTextStyle}>—</span>
+      render: (row) => (row.roomNumber ? <strong>{row.roomNumber}</strong> : <span style={mutedCellStyle}>—</span>)
     },
-    {
-      key: "departureDate",
-      label: "Sale",
-      render: (row) => fmtDay(row.departureDate)
-    },
-    {
-      key: "nightsRemaining",
-      label: "Noches restantes",
-      render: (row) => fmtNumber(row.nightsRemaining)
-    },
+    { key: "departureDate", label: "Sale", render: (row) => fmtDay(row.departureDate) },
+    { key: "nightsRemaining", label: "Noches restantes", align: "right", render: (row) => fmtNumber(row.nightsRemaining), hideOnNarrow: true },
     {
       key: "balance",
       label: "Saldo",
+      align: "right",
       render: (row) => (
-        <>
+        <div className="cocoa-stack" data-gap="1">
           <strong>{fmtEur(row.balanceEur)}</strong>
-          <div style={{ marginTop: 2 }}>{balancePill(row.balanceEur)}</div>
-        </>
+          <span>{balanceBadge(row.balanceEur)}</span>
+        </div>
       )
     },
     {
       key: "actions",
       label: "Acciones",
       render: () => (
-        <CocoaButton
-          variant="plain"
-          tone="neutral"
-          size="small"
-          onClick={() => navigateTo("ReservationDetailWorkspace")}
-        >
+        <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("ReservationDetailWorkspace")}>
           Ver folio
         </CocoaButton>
       )
@@ -682,70 +558,60 @@ export function FrontDeskDashboard() {
   const unassignedTableColumns: CocoaTableColumn<UnassignedRow>[] = [
     { key: "guestName", label: "Huésped", render: (row) => <strong>{row.guestName}</strong> },
     { key: "arrivalDate", label: "Llegada", render: (row) => fmtDay(row.arrivalDate) },
-    {
-      key: "roomTypeName",
-      label: "Tipo",
-      render: (row) => row.roomTypeName ?? <span style={mutedTextStyle}>—</span>
-    },
-    {
-      key: "preferences",
-      label: "Preferencias",
-      render: (row) =>
-        row.preferences ? row.preferences : <span style={mutedTextStyle}>—</span>
-    },
+    { key: "roomTypeName", label: "Tipo", render: (row) => row.roomTypeName ?? <span style={mutedCellStyle}>—</span>, hideOnNarrow: true },
+    { key: "preferences", label: "Preferencias", render: (row) => (row.preferences ? row.preferences : <span style={mutedCellStyle}>—</span>), hideOnNarrow: true },
     {
       key: "actions",
       label: "Acciones",
-      render: (row) => (
-        <span title="Abrir la reserva para asignar habitación">
-          <CocoaButton
-            variant="filled"
-            tone="accent"
-            size="small"
-            onClick={() => navigateTo("ReservationDetailWorkspace")}
-          >
-            Asignar habitación
-          </CocoaButton>
-        </span>
+      render: () => (
+        <CocoaButton variant="filled" tone="accent" size="small" title="Abrir la reserva para asignar habitación" onClick={() => navigateTo("ReservationDetailWorkspace")}>
+          Asignar habitación
+        </CocoaButton>
       )
     }
   ];
 
   const pageActions = (
     <>
-      {loading ? pill("info", "cargando") : null}
-      {error ? pill("error", error) : null}
-      <CocoaButton variant="plain" tone="neutral" onClick={refresh}>
-        ↻ Actualizar
+      {loading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+      {error ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
+        {ACTIONS.refresh}
       </CocoaButton>
-      <CocoaButton variant="plain" tone="neutral" onClick={openSearch}>
+      <CocoaButton variant="plain" tone="neutral" size="small" onClick={openSearch}>
         Buscar (⌘K)
       </CocoaButton>
-      <CocoaButton
-        variant="plain"
-        tone="neutral"
-        onClick={() => navigateTo("LiveTimelineWorkspace")}
-      >
+      <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("LiveTimelineWorkspace")}>
         Cronograma
       </CocoaButton>
-      <CocoaButton
-        variant="filled"
-        tone="accent"
-        onClick={() => navigateTo("ReservationCreate")}
-      >
+      <CocoaButton variant="filled" tone="accent" size="small" onClick={() => navigateTo("ReservationCreate")}>
         Crear reserva
       </CocoaButton>
     </>
   );
 
-  return (
-    <>
-      {hosted ? (
-        <div style={HOSTED_ACTIONS_ROW}>{pageActions}</div>
-      ) : (
-        <CocoaPageHeader eyebrow={`Recepción · ${todayLabel()}`} title="Recepción" subtitle={subtitle} actions={pageActions} />
-      )}
+  const tabOptions = [
+    { value: "arrivals", label: `Llegadas (${fmtNumber(arrivals.length)})` },
+    { value: "departures", label: `Salidas (${fmtNumber(departures.length)})` },
+    { value: "inhouse", label: `En el hotel (${fmtNumber(inHouse.length)})` },
+    { value: "unassigned", label: `Sin habitación (${fmtNumber(unassigned.length)})` }
+  ];
 
+  return (
+    <CocoaPage
+      eyebrow={`Recepción · ${todayLabel()}`}
+      title="Recepción"
+      subtitle={subtitle}
+      actions={pageActions}
+      state={loading && !data ? "loading" : error && !data ? "error" : "ready"}
+      skeleton={<FrontDeskSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[
+        { id: "front-desk-refresh", label: "Actualizar recepción", run: refresh },
+        { id: "front-desk-new-reservation", label: "Crear reserva", run: () => navigateTo("ReservationCreate") },
+        { id: "front-desk-timeline", label: "Abrir cronograma", run: () => navigateTo("LiveTimelineWorkspace") }
+      ]}
+    >
       <CocoaScreenInstructionsCard {...FRONTDESK_COCKPIT_INSTRUCTIONS} dismissible persistKey="frontdesk-cockpit" />
 
       {/* Clean-slate — bienvenida de primera ejecución cuando aún no hay reservas. */}
@@ -754,245 +620,111 @@ export function FrontDeskDashboard() {
       {/* Cola de acciones priorizada — la vista que dice qué hacer ahora. */}
       <FrontDeskActionQueue />
 
-      <div className="cocoa-stagger" style={kpiGridStyle}>
-        <CocoaCard variant="elevated" padding="md">
-          <div style={kpiHeadStyle}>
-            <span style={kpiLabelStyle}>Llegadas hoy</span>
-            {pill("info", "hoy")}
-          </div>
-          <div style={kpiValueStyle}>{fmtNumber(kpis.arrivalsToday)}</div>
-        </CocoaCard>
-        <CocoaCard variant="elevated" padding="md">
-          <div style={kpiHeadStyle}>
-            <span style={kpiLabelStyle}>Salidas hoy</span>
-            {pill("info", "hoy")}
-          </div>
-          <div style={kpiValueStyle}>{fmtNumber(kpis.departuresToday)}</div>
-        </CocoaCard>
-        <CocoaCard variant="elevated" padding="md">
-          <div style={kpiHeadStyle}>
-            <span style={kpiLabelStyle}>En el hotel</span>
-            {pill("ok", "ocupadas")}
-          </div>
-          <div style={kpiValueStyle}>{fmtNumber(kpis.inHouseNow)}</div>
-        </CocoaCard>
-      </div>
+      <CocoaKpiStrip stagger aria-label="Indicadores de hoy">
+        <CocoaKpi label="Llegadas hoy" value={fmtNumber(kpis.arrivalsToday)} deltaLabel="hoy" polarity="neutral" status="ok" />
+        <CocoaKpi label="Salidas hoy" value={fmtNumber(kpis.departuresToday)} deltaLabel="hoy" polarity="neutral" status="ok" />
+        <CocoaKpi label="En el hotel" value={fmtNumber(kpis.inHouseNow)} deltaLabel="ocupadas" polarity="neutral" status="ok" />
+      </CocoaKpiStrip>
 
       {/* DEV #5 — bloque "Riesgos" colapsable: los 3 KPIs operativos
           (sin habitación, retrasos, saldo) se muestran bajo demanda. */}
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "flex-end",
-          marginTop: "calc(var(--cocoa-space-1) * -1)"
-        }}
-      >
+      <div className="cocoa-row" data-gap="2" data-justify="end">
+        {!showRiskKpis && hasRisks ? (
+          <CocoaBadge tone="warning" variant="tinted" size="small">
+            {plural(riskCount, "alerta", "alertas")}
+          </CocoaBadge>
+        ) : null}
         <CocoaButton
           variant="plain"
           tone="neutral"
           size="small"
           onClick={() => setShowRiskKpis((v) => !v)}
+          aria-expanded={showRiskKpis}
           aria-label={showRiskKpis ? "Ocultar KPIs de riesgo" : "Mostrar KPIs de riesgo"}
         >
-          {showRiskKpis ? "▾ Ocultar riesgos" : "▸ Mostrar riesgos"}
-          {!showRiskKpis &&
-          (kpis.unassignedRooms + kpis.overdueDepartures > 0 || kpis.pendingBalanceEur > 0) ? (
-            <span
-              style={{
-                marginLeft: "var(--cocoa-space-2)",
-                padding: "2px 6px",
-                borderRadius: "var(--cocoa-radius-full)",
-                background: "rgba(255, 149, 0, 0.14)",
-                color: "var(--cocoa-warning)",
-                fontSize: "var(--cocoa-fs-caption)",
-                fontWeight: 600
-              }}
-            >
-              {kpis.unassignedRooms + kpis.overdueDepartures} alertas
-            </span>
-          ) : null}
+          {showRiskKpis ? "Ocultar riesgos" : "Mostrar riesgos"}
         </CocoaButton>
       </div>
 
       {showRiskKpis ? (
-        <div className="cocoa-stagger" style={kpiGridStyle}>
-          <CocoaCard variant="elevated" padding="md">
-            <div style={kpiHeadStyle}>
-              <span style={kpiLabelStyle}>Sin habitación</span>
-              {pill(unassignedKind, unassignedKind === "ok" ? "al día" : "pendiente")}
-            </div>
-            <div style={kpiValueStyle}>{fmtNumber(kpis.unassignedRooms)}</div>
-          </CocoaCard>
-          <CocoaCard variant="elevated" padding="md">
-            <div style={kpiHeadStyle}>
-              <span style={kpiLabelStyle}>Salidas con retraso</span>
-              {pill(overdueKind, overdueKind === "ok" ? "a tiempo" : "con retraso")}
-            </div>
-            <div style={kpiValueStyle}>{fmtNumber(kpis.overdueDepartures)}</div>
-          </CocoaCard>
-          <CocoaCard variant="elevated" padding="md">
-            <div style={kpiHeadStyle}>
-              <span style={kpiLabelStyle}>Saldo pendiente</span>
-              {pill(balanceKind, balanceKind === "ok" ? "saldado" : "por cobrar")}
-            </div>
-            <div style={kpiValueStyle}>{fmtEur(kpis.pendingBalanceEur)}</div>
-          </CocoaCard>
-        </div>
+        <CocoaKpiStrip stagger aria-label="Riesgos de hoy">
+          <CocoaKpi
+            label="Sin habitación"
+            value={fmtNumber(kpis.unassignedRooms)}
+            deltaLabel={kpis.unassignedRooms > 0 ? "pendiente" : "al día"}
+            polarity="neutral"
+            status={kpis.unassignedRooms > 0 ? "warning" : "ok"}
+          />
+          <CocoaKpi
+            label="Salidas con retraso"
+            value={fmtNumber(kpis.overdueDepartures)}
+            deltaLabel={kpis.overdueDepartures > 0 ? "con retraso" : "a tiempo"}
+            polarity="neutral"
+            status={kpis.overdueDepartures > 0 ? "critical" : "ok"}
+          />
+          <CocoaKpi
+            label="Saldo pendiente"
+            value={fmtEur(kpis.pendingBalanceEur)}
+            deltaLabel={kpis.pendingBalanceEur > 0 ? "por cobrar" : "saldado"}
+            polarity="neutral"
+            status={kpis.pendingBalanceEur > 0 ? "warning" : "ok"}
+          />
+        </CocoaKpiStrip>
       ) : null}
 
-      {/* DEV #5 — las 4 tablas pasan a tabs internos en una sola CocoaCard.
+      {/* DEV #5 — las 4 tablas pasan a vistas internas en una sola sección.
           Solo una tabla visible a la vez → recorta ~60% el scroll. */}
-      <CocoaCard variant="elevated" padding="md">
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            flexWrap: "wrap",
-            gap: "var(--cocoa-space-3)",
-            marginBottom: "var(--cocoa-space-3)"
-          }}
-        >
-          <div
-            role="tablist"
+      <CocoaSection title="Movimientos de hoy">
+        <div className="cocoa-stack" data-gap="3">
+          <CocoaToolbar
+            variant="content"
             aria-label="Vista de recepción"
-            style={{ display: "flex", flexWrap: "wrap", gap: "var(--cocoa-space-1)" }}
-          >
-            {(
-              [
-                { id: "arrivals", label: "Llegadas", count: arrivals.length },
-                { id: "departures", label: "Salidas", count: departures.length },
-                { id: "inhouse", label: "En el hotel", count: inHouse.length },
-                { id: "unassigned", label: "Sin habitación", count: unassigned.length }
-              ] as Array<{ id: FrontDeskTab; label: string; count: number }>
-            ).map((tab) => {
-              const isActive = activeTab === tab.id;
-              return (
-                <CocoaButton
-                  key={tab.id}
-                  variant={isActive ? "filled" : "plain"}
-                  tone={isActive ? "accent" : "neutral"}
-                  size="small"
-                  onClick={() => setActiveTab(tab.id)}
-                >
-                  {tab.label} ({fmtNumber(tab.count)})
-                </CocoaButton>
-              );
-            })}
-          </div>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "var(--cocoa-space-2)"
-            }}
-          >
-            {activeTab === "arrivals" ? (
-              <CocoaButton
-                variant="plain"
-                tone="neutral"
-                size="small"
-                onClick={() => handleExport(arrivals, arrivalsColumns, "llegadas", "Llegadas")}
-                aria-label="Descargar la tabla en formato CSV"
-              >
+            leftSlot={<CocoaSegmentedControl size="small" aria-label="Vista de recepción" value={activeTab} onChange={(value) => setActiveTab(value as FrontDeskTab)} options={tabOptions} />}
+            rightSlot={
+              <CocoaButton variant="plain" tone="neutral" size="small" onClick={exportActive[activeTab]} aria-label="Descargar la tabla en formato CSV">
                 Exportar CSV
               </CocoaButton>
-            ) : null}
-            {activeTab === "departures" ? (
-              <CocoaButton
-                variant="plain"
-                tone="neutral"
-                size="small"
-                onClick={() => handleExport(departures, departuresColumns, "salidas", "Salidas")}
-                aria-label="Descargar la tabla en formato CSV"
-              >
-                Exportar CSV
-              </CocoaButton>
-            ) : null}
-            {activeTab === "inhouse" ? (
-              <CocoaButton
-                variant="plain"
-                tone="neutral"
-                size="small"
-                onClick={() => handleExport(inHouse, inHouseColumns, "en-el-hotel", "Estancias")}
-                aria-label="Descargar la tabla en formato CSV"
-              >
-                Exportar CSV
-              </CocoaButton>
-            ) : null}
-            {activeTab === "unassigned" ? (
-              <CocoaButton
-                variant="plain"
-                tone="neutral"
-                size="small"
-                onClick={() =>
-                  handleExport(unassigned, unassignedColumns, "sin-habitacion", "Sin habitación")
-                }
-                aria-label="Descargar la tabla en formato CSV"
-              >
-                Exportar CSV
-              </CocoaButton>
-            ) : null}
-          </div>
+            }
+          />
+
+          {activeTab === "arrivals" ? (
+            arrivals.length === 0 ? (
+              <CocoaState
+                kind="empty"
+                title="No hay llegadas previstas para hoy"
+                message="Cuando se confirmen reservas con entrada hoy aparecerán aquí, listas para asignar habitación y hacer check-in."
+                primaryAction={{ label: "Crear reserva", onClick: () => navigateTo("ReservationCreate") }}
+              />
+            ) : (
+              <CocoaTable columns={arrivalsTableColumns} rows={arrivals} rowKey="reservationId" caption="Llegadas de hoy" />
+            )
+          ) : null}
+
+          {activeTab === "departures" ? (
+            departures.length === 0 ? (
+              <CocoaState kind="empty" title="No hay salidas previstas para hoy" message="Cuando los huéspedes tengan fecha de salida hoy aparecerán aquí para gestionar el check-out." />
+            ) : (
+              <CocoaTable columns={departuresTableColumns} rows={departures} rowKey="reservationId" caption="Salidas de hoy" />
+            )
+          ) : null}
+
+          {activeTab === "inhouse" ? (
+            inHouse.length === 0 ? (
+              <CocoaState kind="empty" title="No hay estancias activas ahora mismo" message="Cuando haya huéspedes alojados en el hotel aparecerán aquí." />
+            ) : (
+              <CocoaTable columns={inHouseTableColumns} rows={inHouse} rowKey="reservationId" caption="Huéspedes alojados" />
+            )
+          ) : null}
+
+          {activeTab === "unassigned" ? (
+            unassigned.length === 0 ? (
+              <CocoaState kind="empty" inline title="Todas las llegadas tienen habitación asignada." />
+            ) : (
+              <CocoaTable columns={unassignedTableColumns} rows={unassigned} rowKey="reservationId" caption="Llegadas sin habitación asignada" />
+            )
+          ) : null}
         </div>
-
-        {activeTab === "arrivals" ? (
-          arrivals.length === 0 ? (
-            <EmptyState
-              title="No hay llegadas previstas para hoy"
-              message="Cuando se confirmen reservas con entrada hoy aparecerán aquí, listas para asignar habitación y hacer check-in."
-            />
-          ) : (
-            <CocoaTable
-              columns={arrivalsTableColumns}
-              rows={arrivals}
-              rowKey="reservationId"
-            />
-          )
-        ) : null}
-
-        {activeTab === "departures" ? (
-          departures.length === 0 ? (
-            <EmptyState
-              title="No hay salidas previstas para hoy"
-              message="Cuando los huéspedes tengan fecha de salida hoy aparecerán aquí para gestionar el check-out."
-            />
-          ) : (
-            <CocoaTable
-              columns={departuresTableColumns}
-              rows={departures}
-              rowKey="reservationId"
-            />
-          )
-        ) : null}
-
-        {activeTab === "inhouse" ? (
-          inHouse.length === 0 ? (
-            <EmptyState
-              title="No hay estancias activas ahora mismo"
-              message="Cuando haya huéspedes alojados en el hotel aparecerán aquí."
-            />
-          ) : (
-            <CocoaTable
-              columns={inHouseTableColumns}
-              rows={inHouse}
-              rowKey="reservationId"
-            />
-          )
-        ) : null}
-
-        {activeTab === "unassigned" ? (
-          unassigned.length === 0 ? (
-            <p style={mutedTextStyle}>Todas las llegadas tienen habitación asignada.</p>
-          ) : (
-            <CocoaTable
-              columns={unassignedTableColumns}
-              rows={unassigned}
-              rowKey="reservationId"
-            />
-          )
-        ) : null}
-      </CocoaCard>
+      </CocoaSection>
 
       {/* Drawers in-place — abren slide-over sin perder contexto del dashboard. */}
       {checkInTarget ? (
@@ -1000,10 +732,7 @@ export function FrontDeskDashboard() {
           reservationId={checkInTarget}
           onClose={() => setCheckInTarget(null)}
           onCompleted={({ elapsedSeconds }) => {
-            showToast(
-              "ok",
-              `Check-in completado en ${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`
-            );
+            notify("ok", `Check-in completado en ${elapsedText(elapsedSeconds)}`);
             refresh();
           }}
         />
@@ -1013,27 +742,11 @@ export function FrontDeskDashboard() {
           reservationId={checkOutTarget}
           onClose={() => setCheckOutTarget(null)}
           onCompleted={({ elapsedSeconds }) => {
-            showToast(
-              "ok",
-              `Check-out completado en ${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`
-            );
+            notify("ok", `Check-out completado en ${elapsedText(elapsedSeconds)}`);
             refresh();
           }}
         />
       ) : null}
-
-      {toast ? (
-        <div
-          style={{
-            position: "fixed",
-            bottom: "var(--cocoa-space-4)",
-            right: "var(--cocoa-space-4)",
-            zIndex: 70
-          }}
-        >
-          {pill(toast.kind, toast.text)}
-        </div>
-      ) : null}
-    </>
+    </CocoaPage>
   );
 }

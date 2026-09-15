@@ -1,4 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+// Maintenance Dashboard — «Tablero de mantenimiento» (/operaciones/mantenimiento;
+// base tab of MantenimientoTabs, standalone the page paints eyebrow + H1).
+//
+// Cocoa 22 (ola 4 · lote 4-A, archetype «workspace»): CocoaPage → CocoaKpiStrip
+// (emergencias · abiertas · en curso · esperando proveedor · bloquean
+// habitación) → filter chips (CocoaButton aria-pressed with counts) →
+// CocoaGrid 4/8: the work-order list (CocoaSection scroll="y", a row is a
+// CocoaButton plus CocoaBadge states) and the selected order's record (state,
+// room, dates, description, CocoaSelect for the status, «Bloquear
+// habitación» / «Resolver»). Below 900 px the list is the page and the record
+// opens in a CocoaDrawer (bottom sheet on phones). «Nueva orden» opens a
+// CocoaDrawer form (CocoaField + CocoaInput / CocoaSelect / CocoaSwitch).
+// Results and errors go to the toast; same API calls as before
+// (services/maintenanceApi, 30 s poll).
+
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { useTabHost } from "../tabs/TabHost";
@@ -12,22 +27,44 @@ import {
   type WoPriority,
   type WoStatus
 } from "../../services/maintenanceApi";
-import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
-import { SidePanel, DetailRow } from "../../components/SidePanel";
+import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
-import { date, number } from "../../lib/format";
+import { date, number, plural } from "../../lib/format";
+import { ACTIONS, FIELD_LABELS, STATUS_LABELS, newLabel } from "../../content/actions";
+import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaSwitch,
+  useViewportTier,
+  type CocoaSelectOption,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
-type Kind = "ok" | "warn" | "error" | "info";
-
 const PRIORITY_LABEL: Record<string, string> = { emergency: "emergencia", urgent: "urgente", normal: "normal", preventive: "preventivo" };
-const PRIORITY_KIND: Record<string, Kind> = { emergency: "error", urgent: "warn", normal: "info", preventive: "ok" };
+const PRIORITY_TONE: Record<string, CocoaTone> = { emergency: "danger", urgent: "warning", normal: "info", preventive: "success" };
 const STATUS_LABEL: Record<string, string> = { open: "Abierta", assigned: "Asignada", in_progress: "En curso", waiting_vendor: "Esperando proveedor", resolved: "Resuelta", closed: "Cerrada" };
-const STATUS_KIND: Record<string, Kind> = { open: "warn", assigned: "info", in_progress: "info", waiting_vendor: "warn", resolved: "ok", closed: "ok" };
+const STATUS_TONE: Record<string, CocoaTone> = { open: "warning", assigned: "info", in_progress: "info", waiting_vendor: "warning", resolved: "success", closed: "success" };
 
 const STATUS_OPTIONS: WoStatus[] = ["open", "assigned", "in_progress", "waiting_vendor"];
 const PRIORITIES: WoPriority[] = ["emergency", "urgent", "normal", "preventive"];
+const STATUS_SELECT_OPTIONS: CocoaSelectOption[] = STATUS_OPTIONS.map((s) => ({ value: s, label: STATUS_LABEL[s] }));
+const PRIORITY_SELECT_OPTIONS: CocoaSelectOption[] = PRIORITIES.map((p) => ({ value: p, label: PRIORITY_LABEL[p] }));
 
 const FILTERS: { id: string; label: string; match: (w: WorkOrder) => boolean }[] = [
   { id: "active", label: "Activas", match: (w) => w.status !== "resolved" && w.status !== "closed" },
@@ -39,15 +76,35 @@ const FILTERS: { id: string; label: string; match: (w: WorkOrder) => boolean }[]
   { id: "resolved", label: "Resueltas", match: (w) => w.status === "resolved" || w.status === "closed" }
 ];
 
-function fmtNum(n: number): string {
-  return number(n);
+const PRIORITY_ORDER: Record<string, number> = { emergency: 0, urgent: 1, normal: 2, preventive: 3 };
+
+const LIST_MAX_HEIGHT = 560;
+
+function isClosed(w: WorkOrder): boolean {
+  return w.status === "resolved" || w.status === "closed";
 }
-function fmtDate(iso: string): string {
-  return date(iso, "dayMonth");
+
+// Named style objects (rule 6): layout and text flow only.
+const listInsetStyle: CSSProperties = { padding: "0 var(--cocoa-space-4)" };
+const rowButtonStyle: CSSProperties = { flex: "1 1 auto", minWidth: 0, height: "auto", justifyContent: "flex-start", textAlign: "left", whiteSpace: "normal" };
+const captionStyle: CSSProperties = { fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" };
+const descriptionStyle: CSSProperties = { margin: 0, whiteSpace: "pre-line" };
+
+function MaintenanceSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} min={200} />
+      <CocoaSkeleton variant="row" />
+      <CocoaSkeleton.Grid rows={[[4, 8]]} height={420} />
+    </div>
+  );
 }
 
 export function MaintenanceDashboard() {
   const hosted = useTabHost() !== null;
+  const tier = useViewportTier();
+  const compact = tier === "phone" || tier === "tablet";
+  const { showToast } = useToast();
   const { data, loading, error, refresh } = useApiData<WorkOrder[]>(
     `/properties/${PROPERTY_ID}/work-orders`,
     { pollIntervalMs: 30000 }
@@ -65,7 +122,6 @@ export function MaintenanceDashboard() {
 
   const [filter, setFilter] = useState("active");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const selected = useMemo(() => orders.find((o) => o.id === selectedId) ?? null, [orders, selectedId]);
   const [showForm, setShowForm] = useState(false);
@@ -81,27 +137,25 @@ export function MaintenanceDashboard() {
       if (w.status === "open") k.open += 1;
       if (w.status === "in_progress" || w.status === "assigned") k.inProgress += 1;
       if (w.status === "waiting_vendor") k.waiting += 1;
-      if (w.blocksRoom && w.status !== "resolved" && w.status !== "closed") k.blocking += 1;
-      if (w.priority === "emergency" && w.status !== "resolved" && w.status !== "closed") k.emergency += 1;
+      if (w.blocksRoom && !isClosed(w)) k.blocking += 1;
+      if (w.priority === "emergency" && !isClosed(w)) k.emergency += 1;
     }
     return k;
   }, [orders]);
 
   const visible = useMemo(() => {
     const f = FILTERS.find((x) => x.id === filter) ?? FILTERS[0];
-    const order = { emergency: 0, urgent: 1, normal: 2, preventive: 3 } as Record<string, number>;
-    return orders.filter(f.match).sort((a, b) => (order[a.priority] ?? 9) - (order[b.priority] ?? 9) || b.createdAt.localeCompare(a.createdAt));
+    return orders.filter(f.match).sort((a, b) => (PRIORITY_ORDER[a.priority] ?? 9) - (PRIORITY_ORDER[b.priority] ?? 9) || b.createdAt.localeCompare(a.createdAt));
   }, [orders, filter]);
 
   async function run(fn: () => Promise<unknown>, ok: string) {
     setBusy(true);
-    setMsg(null);
     try {
       await fn();
-      setMsg(ok);
+      showToast(ok, { variant: "success" });
       refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : "No se pudo completar la acción.");
+      showToast(e instanceof Error ? e.message : "No se pudo completar la acción.", { variant: "error" });
     } finally {
       setBusy(false);
     }
@@ -112,152 +166,295 @@ export function MaintenanceDashboard() {
     return rooms[w.roomId] ? `Hab. ${rooms[w.roomId]}` : "Hab.";
   }
 
-  return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <header className="bo-card-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
-        {hosted ? null : (
-          <div>
-            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · Mantenimiento</p>
-            <h2 style={{ color: "var(--ink)" }}>Tablero de mantenimiento</h2>
-            <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-              Órdenes de trabajo en vivo. Crea averías, cambia su estado, asígnalas, bloquea habitaciones y resuélvelas.
-            </p>
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {busy ? <Spinner size="sm" /> : null}
-          <button type="button" onClick={refresh} disabled={loading}>↻ Actualizar</button>
-          <button type="button" className="primary" onClick={() => { setShowForm((v) => !v); setMsg(null); }}>{showForm ? "Cancelar" : "+ Nueva orden"}</button>
+  function openForm() {
+    setShowForm(true);
+  }
+
+  function closeForm() {
+    setShowForm(false);
+  }
+
+  function submitForm() {
+    void run(async () => {
+      await createWorkOrder({ title: fTitle, roomNumber: fRoom || undefined, description: fDesc || undefined, priority: fPriority, blocksRoom: fBlocks });
+      setFTitle("");
+      setFRoom("");
+      setFDesc("");
+      setFPriority("normal");
+      setFBlocks(false);
+      setShowForm(false);
+    }, "Orden creada.");
+  }
+
+  function detailMeta(w: WorkOrder): string {
+    return `${roomLabel(w)} · ${PRIORITY_LABEL[w.priority] ?? w.priority}`;
+  }
+
+  // Record body shared by the desktop pane and the phone/tablet drawer.
+  function renderDetail(w: WorkOrder) {
+    return (
+      <div className="cocoa-stack" data-gap="4">
+        <ul className="c22-section__list" aria-label="Datos de la orden">
+          <li>
+            <span>{FIELD_LABELS.status}</span>
+            <CocoaBadge tone={STATUS_TONE[w.status] ?? "info"}>{STATUS_LABEL[w.status] ?? w.status}</CocoaBadge>
+          </li>
+          <li>
+            <span>Prioridad</span>
+            <CocoaBadge tone={PRIORITY_TONE[w.priority] ?? "info"}>{PRIORITY_LABEL[w.priority] ?? w.priority}</CocoaBadge>
+          </li>
+          <li>
+            <span>{FIELD_LABELS.room}</span>
+            <strong>{roomLabel(w)}</strong>
+          </li>
+          <li>
+            <span>Bloquea habitación</span>
+            <strong>{w.blocksRoom ? "Sí (fuera de servicio)" : STATUS_LABELS.no}</strong>
+          </li>
+          <li>
+            <span>Asignada a</span>
+            <strong>{w.assignedTo ?? "Sin asignar"}</strong>
+          </li>
+          <li>
+            <span>Creada</span>
+            <strong>{date(w.createdAt, "dayMonth")}</strong>
+          </li>
+          {w.resolvedAt ? (
+            <li>
+              <span>Resuelta</span>
+              <strong>{date(w.resolvedAt, "dayMonth")}</strong>
+            </li>
+          ) : null}
+        </ul>
+        <div className="cocoa-stack" data-gap="1">
+          <span style={captionStyle}>{FIELD_LABELS.description}</span>
+          <p style={descriptionStyle}>{w.description || "Sin descripción."}</p>
         </div>
-      </header>
+        {!isClosed(w) ? (
+          <CocoaFormRow columns={2}>
+            <CocoaField label={FIELD_LABELS.status} help="El cambio se guarda al elegirlo.">
+              <CocoaSelect
+                value={w.status}
+                onChange={(v) => void run(() => updateWorkOrder(w.id, { status: v as WoStatus }), "Estado actualizado.")}
+                options={STATUS_SELECT_OPTIONS}
+                disabled={busy}
+              />
+            </CocoaField>
+          </CocoaFormRow>
+        ) : null}
+      </div>
+    );
+  }
 
-      {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
+  // «Bloquear habitación» / «Resolver» (two buttons at most: section footer or drawer footer).
+  function renderDetailActions(w: WorkOrder) {
+    if (isClosed(w)) return null;
+    return (
+      <>
+        {!w.blocksRoom && w.roomId ? (
+          <CocoaButton variant="bordered" tone="neutral" disabled={busy} onClick={() => void run(() => blockRoomForWorkOrder(w.id), "Habitación bloqueada.")}>
+            Bloquear habitación
+          </CocoaButton>
+        ) : null}
+        <CocoaButton
+          loading={busy}
+          onClick={() =>
+            void run(async () => {
+              await resolveWorkOrder(w.id, { releaseRoom: w.blocksRoom });
+              if (compact) setSelectedId(null);
+            }, "Orden resuelta.")
+          }
+        >
+          Resolver
+        </CocoaButton>
+      </>
+    );
+  }
 
-      {showForm ? (
-        <article className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head"><h3>Nueva orden de trabajo</h3></div>
-          <div className="bo-grid two">
-            <label className="bo-form-field"><span>Título *</span><input value={fTitle} onChange={(e) => setFTitle(e.target.value)} placeholder="Ej.: Fuga en el baño" disabled={busy} /></label>
-            <label className="bo-form-field"><span>Habitación (nº, opcional)</span><input value={fRoom} onChange={(e) => setFRoom(e.target.value)} placeholder="Ej.: 108" disabled={busy} /></label>
-          </div>
-          <label className="bo-form-field"><span>Descripción</span><textarea rows={2} value={fDesc} onChange={(e) => setFDesc(e.target.value)} disabled={busy} /></label>
-          <div className="bo-row" style={{ gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-            <label className="bo-form-field" style={{ margin: 0 }}><span>Prioridad</span>
-              <select value={fPriority} onChange={(e) => setFPriority(e.target.value as WoPriority)} disabled={busy}>
-                {PRIORITIES.map((p) => <option key={p} value={p}>{PRIORITY_LABEL[p]}</option>)}
-              </select>
-            </label>
-            <label className="bo-row" style={{ gap: 6, alignItems: "center", marginTop: 18 }}>
-              <input type="checkbox" checked={fBlocks} onChange={(e) => setFBlocks(e.target.checked)} disabled={busy} /> <span>Bloquea la habitación (fuera de servicio)</span>
-            </label>
-          </div>
-          <div className="bo-actions" style={{ marginTop: 8 }}>
-            <button type="button" className="primary" disabled={busy || !fTitle.trim()} onClick={() => run(async () => {
-              await createWorkOrder({ title: fTitle, roomNumber: fRoom || undefined, description: fDesc || undefined, priority: fPriority, blocksRoom: fBlocks });
-              setFTitle(""); setFRoom(""); setFDesc(""); setFPriority("normal"); setFBlocks(false); setShowForm(false);
-            }, "Orden creada.")}>Crear orden</button>
-          </div>
-        </article>
-      ) : null}
-
-      {loading && orders.length === 0 ? (
-        <LoadingBlock label="Cargando órdenes de trabajo…" />
-      ) : error ? (
-        <ErrorState title="No se pudo cargar" message={error} onRetry={refresh} />
+  const list = (
+    <CocoaSection
+      title="Órdenes"
+      meta={plural(visible.length, "orden", "órdenes")}
+      scroll={compact ? undefined : "y"}
+      maxHeight={compact ? undefined : LIST_MAX_HEIGHT}
+      padding="none"
+    >
+      {visible.length === 0 ? (
+        <CocoaState kind="empty" inline title="No hay órdenes de trabajo que coincidan con este filtro." style={listInsetStyle} />
       ) : (
+        <ul className="c22-section__list" style={listInsetStyle} aria-label="Órdenes de trabajo">
+          {visible.map((w) => {
+            const isSelected = w.id === selectedId;
+            return (
+              <li key={w.id}>
+                <CocoaButton
+                  variant="plain"
+                  tone={isSelected ? "accent" : "neutral"}
+                  size="small"
+                  onClick={() => setSelectedId(w.id)}
+                  aria-current={isSelected ? true : undefined}
+                  style={rowButtonStyle}
+                >
+                  {w.title}
+                </CocoaButton>
+                <span className="cocoa-cluster">
+                  <CocoaBadge tone={PRIORITY_TONE[w.priority] ?? "info"} variant="dot" size="small">
+                    {PRIORITY_LABEL[w.priority] ?? w.priority}
+                  </CocoaBadge>
+                  <CocoaBadge tone={STATUS_TONE[w.status] ?? "info"} size="small">
+                    {STATUS_LABEL[w.status] ?? w.status}
+                  </CocoaBadge>
+                  {w.blocksRoom && !isClosed(w) ? (
+                    <CocoaBadge tone="danger" variant="tinted" size="small">
+                      bloquea
+                    </CocoaBadge>
+                  ) : null}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </CocoaSection>
+  );
+
+  const detailActions = selected ? renderDetailActions(selected) : null;
+
+  const detail = selected ? (
+    <CocoaSection
+      title={selected.title}
+      meta={detailMeta(selected)}
+      footer={
+        detailActions ? (
+          <div className="cocoa-row" data-gap="2" data-justify="end">
+            {detailActions}
+          </div>
+        ) : undefined
+      }
+    >
+      {renderDetail(selected)}
+    </CocoaSection>
+  ) : (
+    <CocoaSection aria-label="Sin selección">
+      <CocoaState kind="empty" title="Elige una orden" message="La ficha aparece aquí: estado, habitación, descripción y acciones." illustration="box" />
+    </CocoaSection>
+  );
+
+  return (
+    <CocoaPage
+      eyebrow="Operaciones · Mantenimiento"
+      title="Tablero de mantenimiento"
+      subtitle={hosted ? undefined : "Órdenes de trabajo en vivo. Crea averías, cambia su estado, asígnalas, bloquea habitaciones y resuélvelas."}
+      actions={
         <>
-          <div className="rev-kpi-grid">
-            <article className={`rev-kpi rev-kpi-${kpis.emergency > 0 ? "error" : "ok"}`}><div className="rev-kpi-head"><span className="rev-kpi-label">Emergencias</span><span className={`bo-status ${kpis.emergency > 0 ? "error" : "ok"}`}>{kpis.emergency > 0 ? "urgente" : "ninguna"}</span></div><div className="rev-kpi-value">{fmtNum(kpis.emergency)}</div></article>
-            <article className={`rev-kpi rev-kpi-${kpis.open > 0 ? "warn" : "ok"}`}><div className="rev-kpi-head"><span className="rev-kpi-label">Abiertas</span><span className={`bo-status ${kpis.open > 0 ? "warn" : "ok"}`}>{kpis.open > 0 ? "sin asignar" : "al día"}</span></div><div className="rev-kpi-value">{fmtNum(kpis.open)}</div></article>
-            <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">En curso</span><span className="bo-status info">trabajando</span></div><div className="rev-kpi-value">{fmtNum(kpis.inProgress)}</div></article>
-            <article className={`rev-kpi rev-kpi-${kpis.waiting > 0 ? "warn" : "ok"}`}><div className="rev-kpi-head"><span className="rev-kpi-label">Esperando proveedor</span><span className={`bo-status ${kpis.waiting > 0 ? "warn" : "ok"}`}>{kpis.waiting > 0 ? "externo" : "ninguna"}</span></div><div className="rev-kpi-value">{fmtNum(kpis.waiting)}</div></article>
-            <article className={`rev-kpi rev-kpi-${kpis.blocking > 0 ? "error" : "ok"}`}><div className="rev-kpi-head"><span className="rev-kpi-label">Bloquean habitación</span><span className={`bo-status ${kpis.blocking > 0 ? "error" : "ok"}`}>{kpis.blocking > 0 ? "fuera de servicio" : "ninguna"}</span></div><div className="rev-kpi-value">{fmtNum(kpis.blocking)}</div></article>
-          </div>
-
-          <div className="bo-pill-row">
-            {FILTERS.map((f) => {
-              const count = orders.filter(f.match).length;
-              return <button key={f.id} type="button" className={`bo-pill${filter === f.id ? " is-active" : ""}`} style={{ cursor: "pointer" }} onClick={() => setFilter(f.id)}>{f.label} ({count})</button>;
-            })}
-          </div>
-
-          {visible.length === 0 ? (
-            <EmptyState title="Sin órdenes" message="No hay órdenes de trabajo que coincidan con este filtro." />
-          ) : (
-            <div className="bo-stack" style={{ gap: 10 }}>
-              {visible.map((w) => {
-                const closed = w.status === "resolved" || w.status === "closed";
-                return (
-                  <article key={w.id} className="bo-card" style={{ background: "var(--surface)" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-                      <div style={{ minWidth: 0, cursor: "pointer", flex: 1 }} onClick={() => setSelectedId(w.id)} title="Ver ficha">
-                        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                          <span className={`bo-status ${PRIORITY_KIND[w.priority] ?? "info"}`}>{PRIORITY_LABEL[w.priority] ?? w.priority}</span>
-                          <strong style={{ color: "var(--ink)" }}>{w.title}</strong>
-                          <span className={`bo-status ${STATUS_KIND[w.status] ?? "info"}`}>{STATUS_LABEL[w.status] ?? w.status}</span>
-                          {w.blocksRoom && !closed ? <span className="bo-status error">habitación bloqueada</span> : null}
-                        </div>
-                        <div className="bo-muted" style={{ fontSize: 12, marginTop: 2, textTransform: "none" }}>
-                          {roomLabel(w)} · creada {fmtDate(w.createdAt)}{w.assignedTo ? ` · asignada a ${w.assignedTo}` : ""}
-                        </div>
-                        {w.description ? <div style={{ fontSize: 13, marginTop: 4 }}>{w.description}</div> : null}
-                      </div>
-                      <button type="button" className="bo-link" style={{ alignSelf: "flex-start" }} onClick={() => setSelectedId(w.id)}>Ver ficha →</button>
-                    </div>
-                    {!closed ? (
-                      <div className="bo-row" style={{ gap: 6, marginTop: 10, flexWrap: "wrap", alignItems: "center" }}>
-                        <select value={w.status} disabled={busy} onChange={(e) => run(() => updateWorkOrder(w.id, { status: e.target.value as WoStatus }), "Estado actualizado.")}>
-                          {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-                        </select>
-                        {!w.blocksRoom && w.roomId ? (
-                          <button type="button" disabled={busy} onClick={() => run(() => blockRoomForWorkOrder(w.id), "Habitación bloqueada.")}>Bloquear habitación</button>
-                        ) : null}
-                        <button type="button" className="primary" disabled={busy} onClick={() => run(() => resolveWorkOrder(w.id, { releaseRoom: w.blocksRoom }), "Orden resuelta.")}>Resolver</button>
-                      </div>
-                    ) : (
-                      <div className="bo-muted" style={{ fontSize: 12, marginTop: 8 }}>{w.resolvedAt ? `Resuelta el ${fmtDate(w.resolvedAt)}` : "Cerrada"}</div>
-                    )}
-                  </article>
-                );
-              })}
-            </div>
-          )}
+          {busy ? <CocoaBadge tone="info">{STATUS_LABELS.saving}</CocoaBadge> : null}
+          {error && orders.length > 0 ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} loading={loading && orders.length > 0}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+          <CocoaButton size="small" icon={<PlusIcon size={12} aria-hidden="true" />} onClick={openForm}>
+            {newLabel("f", "orden")}
+          </CocoaButton>
         </>
+      }
+      state={loading && orders.length === 0 ? "loading" : error && orders.length === 0 ? "error" : "ready"}
+      skeleton={<MaintenanceSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[
+        { id: "maintenance-refresh", label: "Actualizar el tablero de mantenimiento", run: refresh },
+        { id: "maintenance-new-order", label: "Nueva orden de trabajo", run: openForm }
+      ]}
+    >
+      <CocoaKpiStrip min={200} stagger aria-label="Órdenes de trabajo por estado">
+        <CocoaKpi label="Emergencias" value={number(kpis.emergency)} polarity="negative-good" status={kpis.emergency > 0 ? "critical" : "ok"} />
+        <CocoaKpi label="Abiertas" value={number(kpis.open)} polarity="negative-good" status={kpis.open > 0 ? "warning" : "ok"} />
+        <CocoaKpi label="En curso" value={number(kpis.inProgress)} polarity="neutral" status="ok" />
+        <CocoaKpi label="Esperando proveedor" value={number(kpis.waiting)} polarity="negative-good" status={kpis.waiting > 0 ? "warning" : "ok"} />
+        <CocoaKpi label="Bloquean habitación" value={number(kpis.blocking)} polarity="negative-good" status={kpis.blocking > 0 ? "critical" : "ok"} />
+      </CocoaKpiStrip>
+
+      <div className="cocoa-cluster" role="group" aria-label="Filtrar órdenes">
+        {FILTERS.map((f) => {
+          const count = orders.filter(f.match).length;
+          const active = filter === f.id;
+          return (
+            <CocoaButton
+              key={f.id}
+              size="small"
+              variant={active ? "tinted" : "bordered"}
+              tone={active ? "accent" : "neutral"}
+              aria-pressed={active}
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label} · {number(count)}
+            </CocoaButton>
+          );
+        })}
+      </div>
+
+      {compact ? (
+        <>
+          {list}
+          <CocoaDrawer
+            open={selected !== null}
+            onClose={() => setSelectedId(null)}
+            title={selected?.title ?? "Orden de trabajo"}
+            subtitle={selected ? detailMeta(selected) : undefined}
+            side="right"
+            size="md"
+            footer={detailActions ?? undefined}
+          >
+            {selected ? renderDetail(selected) : null}
+          </CocoaDrawer>
+        </>
+      ) : (
+        <CocoaGrid align="start" aria-label="Órdenes y ficha">
+          <CocoaSpan cols={4} min={320}>
+            {list}
+          </CocoaSpan>
+          <CocoaSpan cols={8} min={480}>
+            {detail}
+          </CocoaSpan>
+        </CocoaGrid>
       )}
 
-      <SidePanel
-        open={!!selected}
-        title={selected?.title ?? ""}
-        subtitle={selected ? `${roomLabel(selected)} · ${PRIORITY_LABEL[selected.priority] ?? selected.priority}` : undefined}
-        onClose={() => setSelectedId(null)}
-        footer={selected && selected.status !== "resolved" && selected.status !== "closed" ? (
+      <CocoaDrawer
+        open={showForm}
+        onClose={closeForm}
+        title="Nueva orden de trabajo"
+        subtitle="Se crea abierta; asígnala o bloquea la habitación desde su ficha."
+        side="right"
+        size="md"
+        initialFocus={() => document.getElementById("wo-title")}
+        footer={
           <>
-            <select value={selected.status} disabled={busy} onChange={(e) => run(() => updateWorkOrder(selected.id, { status: e.target.value as WoStatus }), "Estado actualizado.")}>
-              {STATUS_OPTIONS.map((s) => <option key={s} value={s}>{STATUS_LABEL[s]}</option>)}
-            </select>
-            {!selected.blocksRoom && selected.roomId ? (
-              <button type="button" disabled={busy} onClick={() => run(() => blockRoomForWorkOrder(selected.id), "Habitación bloqueada.")}>Bloquear habitación</button>
-            ) : null}
-            <button type="button" className="primary" disabled={busy} onClick={() => run(async () => { await resolveWorkOrder(selected.id, { releaseRoom: selected.blocksRoom }); setSelectedId(null); }, "Orden resuelta.")}>Resolver</button>
+            <CocoaButton variant="bordered" tone="neutral" onClick={closeForm} disabled={busy}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton loading={busy} disabled={!fTitle.trim()} onClick={submitForm}>
+              Crear orden
+            </CocoaButton>
           </>
-        ) : undefined}
+        }
       >
-        {selected ? (
-          <>
-            <DetailRow label="Estado"><span className={`bo-status ${STATUS_KIND[selected.status] ?? "info"}`}>{STATUS_LABEL[selected.status] ?? selected.status}</span></DetailRow>
-            <DetailRow label="Prioridad"><span className={`bo-status ${PRIORITY_KIND[selected.priority] ?? "info"}`}>{PRIORITY_LABEL[selected.priority] ?? selected.priority}</span></DetailRow>
-            <DetailRow label="Habitación">{roomLabel(selected)}</DetailRow>
-            <DetailRow label="Bloquea habitación">{selected.blocksRoom ? "Sí (fuera de servicio)" : "No"}</DetailRow>
-            <DetailRow label="Asignada a">{selected.assignedTo ?? "Sin asignar"}</DetailRow>
-            <DetailRow label="Creada">{fmtDate(selected.createdAt)}</DetailRow>
-            {selected.resolvedAt ? <DetailRow label="Resuelta">{fmtDate(selected.resolvedAt)}</DetailRow> : null}
-            <div style={{ marginTop: 6 }}>
-              <p className="bo-muted" style={{ fontSize: 12, textTransform: "none", marginBottom: 4 }}>Descripción</p>
-              <p style={{ margin: 0, color: "var(--ink)", fontSize: 13.5, lineHeight: 1.5 }}>{selected.description || "Sin descripción."}</p>
-            </div>
-          </>
-        ) : null}
-      </SidePanel>
-    </section>
+        <CocoaFormRow columns={2}>
+          <CocoaField label="Título" required fullWidth>
+            <CocoaInput id="wo-title" value={fTitle} onChange={setFTitle} placeholder="Ej.: Fuga en el baño" disabled={busy} />
+          </CocoaField>
+          <CocoaField label={FIELD_LABELS.room} hint={STATUS_LABELS.optional} help="Número de habitación">
+            <CocoaInput value={fRoom} onChange={setFRoom} placeholder="Ej.: 108" disabled={busy} />
+          </CocoaField>
+          <CocoaField label="Prioridad">
+            <CocoaSelect value={fPriority} onChange={(v) => setFPriority(v as WoPriority)} options={PRIORITY_SELECT_OPTIONS} disabled={busy} />
+          </CocoaField>
+          <CocoaField label={FIELD_LABELS.description} fullWidth>
+            <CocoaInput value={fDesc} onChange={setFDesc} multiline rows={3} disabled={busy} />
+          </CocoaField>
+          <CocoaField label="Bloquea la habitación (fuera de servicio)" inline fullWidth>
+            <CocoaSwitch checked={fBlocks} onChange={setFBlocks} disabled={busy} />
+          </CocoaField>
+        </CocoaFormRow>
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }

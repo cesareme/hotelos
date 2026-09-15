@@ -20,10 +20,15 @@
 //     (details.missing) o entradas en failed[] se muestran con los campos que
 //     faltan y un enlace a Ajustes fiscales. Nunca «enviado» en falso.
 // Mostramos cronómetro: la directriz exige < 90 s.
+//
+// Cocoa 22 (ola 2 · lote 2-A): the panel is a `CocoaDrawer` (portal, scrim,
+// focus trap, Esc, bottom sheet on phones); each step is a `CocoaSection`
+// with a `CocoaBadge` as meta; controls are `CocoaField` + `CocoaSelect` /
+// `CocoaSegmentedControl`; notices are `CocoaCallout`; the finished state is a
+// `CocoaState` with the success illustration. Same endpoints, same props.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useToast } from "../../components/Toast";
-import { LoadingBlock } from "../../components/States";
 import { apiRequest } from "../../services/api-client";
 import {
   queueSesSubmissions,
@@ -35,7 +40,22 @@ import {
 } from "../../services/complianceApi";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 import { navigateTo } from "../../lib/navigate";
-import { DEFAULT_CURRENCY, money } from "../../lib/format";
+import { housekeepingStatusLabel, reservationStatusLabel, roomOptionLabel } from "./frontdesk-labels";
+import { DEFAULT_CURRENCY, money, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { ChatBubbleIcon, ClockIcon, InfoCircleIcon, StarIcon } from "../../components/cocoa-icons/StatusIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDrawer,
+  CocoaField,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSelect,
+  CocoaState,
+  type CocoaTone
+} from "../../components/cocoa";
 
 // =============================================================== shapes
 
@@ -86,6 +106,9 @@ type Room = {
 
 type RoomType = { id: string; name: string };
 
+// Only what the check-in reads from GET /guests/:id/timeline (guest 360).
+type GuestTimelineLite = { metrics?: { totalStays?: number } };
+
 type FolioBalance = {
   folio: { id: string; status: string; currency: string };
   lines: Array<{ id: string; type: string; description: string; total: number }>;
@@ -100,6 +123,16 @@ export type QuickCheckInProps = {
   onClose: () => void;
   onCompleted?: (info: { reservationId: string; elapsedSeconds: number }) => void;
 };
+
+type PaymentMode = "none" | "preauth" | "capture";
+// Values match the API PaymentRecord.method union.
+type PaymentMethod = "card" | "cash" | "bank_transfer";
+
+const PAYMENT_METHOD_OPTIONS = [
+  { value: "card", label: "Tarjeta" },
+  { value: "cash", label: "Efectivo" },
+  { value: "bank_transfer", label: "Transferencia" }
+];
 
 // =============================================================== utils
 
@@ -122,6 +155,10 @@ function missingLabels(missing: string[]): string {
   return missing.map(sesEstablishmentIssueLabel).join(", ");
 }
 
+function elapsedText(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
 /** Toast copy for a non-queued SES outcome (the queued case has its own success toast). */
 function sesOutcomeToast(outcome: SesQueueOutcome): string {
   switch (outcome.kind) {
@@ -138,10 +175,27 @@ function sesOutcomeToast(outcome: SesQueueOutcome): string {
   }
 }
 
+// Secondary text inside the steps (caption, secondary ink); layout comes from
+// the `cocoa-stack` / `cocoa-row` utilities and `c22-section__list`.
+const mutedStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--cocoa-fs-caption)",
+  color: "var(--cocoa-label-secondary)"
+};
+
+const nameStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-headline)",
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label)"
+};
+
+const bulletListStyle: CSSProperties = { margin: 0, paddingLeft: "var(--cocoa-space-5)" };
+
 // =============================================================== component
 
 export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: QuickCheckInProps) {
   const { showToast } = useToast();
+  const roomSelectId = useId();
   const [reservation, setReservation] = useState<Reservation | null>(null);
   const [guest, setGuest] = useState<Guest | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -155,9 +209,8 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   const [priorStays, setPriorStays] = useState<number>(0);
 
   const [selectedRoomId, setSelectedRoomId] = useState<string | undefined>(undefined);
-  const [paymentMode, setPaymentMode] = useState<"none" | "preauth" | "capture">("preauth");
-  // Values match the API PaymentRecord.method union.
-  const [paymentMethod, setPaymentMethod] = useState<"card" | "cash" | "bank_transfer">("card");
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>("preauth");
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("card");
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -180,8 +233,10 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     const t = window.setInterval(() => setTick((x) => x + 1), 1000);
     return () => window.clearInterval(t);
   }, [completed]);
+  void tick;
   const elapsedSeconds = completed ? completed.elapsedSeconds : Math.floor((Date.now() - startedAt) / 1000);
-  const elapsedLabel = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
+  const elapsedLabel = elapsedText(elapsedSeconds);
+  const timerTone: CocoaTone = elapsedSeconds < 90 ? "success" : elapsedSeconds < 120 ? "warning" : "danger";
 
   // ------------------------------------------------------------- data load
   const loadFolio = useCallback(async () => {
@@ -205,31 +260,31 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
       setReservation(res);
       setSelectedRoomId(res.assignedRoomId);
 
-      // Parallel fetches — the folio failure is tracked separately (folioError)
-      // instead of being swallowed into a fake "0 € pending".
-      const [, roomsData, roomTypesData] = await Promise.all([
-        loadFolio(),
-        apiRequest<Room[]>(`/properties/${res.propertyId}/rooms`),
-        apiRequest<RoomType[]>(`/properties/${res.propertyId}/room-types`)
-      ]);
-      setAvailableRooms(roomsData);
-      const rt = roomTypesData.find((t) => t.id === res.roomTypeId) ?? null;
-      setRoomType(rt);
-      const r = res.assignedRoomId ? roomsData.find((x) => x.id === res.assignedRoomId) ?? null : null;
-      setRoom(r);
-
       // Guest — el endpoint /reservations/:id ya devuelve `primaryGuest`
       // enriquecido (id + name + dni + vip). Evitamos /guests/:id porque tiene
       // scope por org y la cadena demo usa varias orgs.
       const primaryGuest = (res as unknown as { primaryGuest?: Guest | null }).primaryGuest;
       if (primaryGuest) setGuest(primaryGuest);
 
-      // Stays anteriores (cliente recurrente) — best-effort: only feeds the
-      // "Recurrente" badge, so a failure degrades to "no badge" (not money-path).
-      const reservationGuestsList = await apiRequest<Array<{ guestId: string; reservation: { propertyId: string; status: string; departureDate: string } }>>(
-        `/reservations/${reservationId}/guest-history`
-      ).catch(() => []);
-      setPriorStays(reservationGuestsList.length);
+      // Parallel fetches — the folio failure is tracked separately (folioError)
+      // instead of being swallowed into a fake "0 € pending". Prior stays
+      // («Recurrente» badge) come from the guest timeline, the history route
+      // the API does expose (`/reservations/:id/guest-history` never existed:
+      // 404 on every opening, fix:2-A qa#6); best-effort — a failure degrades
+      // to "no badge" (not money-path).
+      const [, roomsData, roomTypesData, timeline] = await Promise.all([
+        loadFolio(),
+        apiRequest<Room[]>(`/properties/${res.propertyId}/rooms`),
+        apiRequest<RoomType[]>(`/properties/${res.propertyId}/room-types`),
+        primaryGuest?.id ? apiRequest<GuestTimelineLite>(`/guests/${primaryGuest.id}/timeline`).catch(() => null) : Promise.resolve<GuestTimelineLite | null>(null)
+      ]);
+      setAvailableRooms(roomsData);
+      const rt = roomTypesData.find((t) => t.id === res.roomTypeId) ?? null;
+      setRoomType(rt);
+      const r = res.assignedRoomId ? roomsData.find((x) => x.id === res.assignedRoomId) ?? null : null;
+      setRoom(r);
+      // `metrics.totalStays` counts the guest's checked-out reservations.
+      setPriorStays(Math.max(0, Math.floor(timeline?.metrics?.totalStays ?? 0)));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Error cargando reserva");
     } finally {
@@ -247,6 +302,7 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     () => (selectedRoomId ? availableRooms.find((r) => r.id === selectedRoomId) : undefined),
     [selectedRoomId, availableRooms]
   );
+  void room;
 
   const roomIsClean = useMemo(() => {
     if (!selectedRoom) return false;
@@ -266,6 +322,18 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
     });
   }, [availableRooms, reservation]);
 
+  // Options of the room select: "Sin asignar" is a real choice (the legacy
+  // select offered it), then the clean rooms of the same type, then the room
+  // currently selected when it is not clean (so the control never loses it).
+  const roomOptions = useMemo(() => {
+    const options = [{ value: "", label: "Sin asignar" }];
+    for (const r of candidateRooms) options.push({ value: r.id, label: roomOptionLabel(r, "limpia") });
+    if (selectedRoom && !candidateRooms.some((c) => c.id === selectedRoom.id)) {
+      options.push({ value: selectedRoom.id, label: roomOptionLabel(selectedRoom, housekeepingStatusLabel(selectedRoom.housekeepingStatus)) });
+    }
+    return options;
+  }, [candidateRooms, selectedRoom]);
+
   // null = unknown (folio not loaded). The reservation total is NOT a balance:
   // it ignores deposits already captured, so it is never used as a fallback.
   const balanceDue: number | null = folio ? folio.balanceDue : null;
@@ -279,7 +347,7 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   const blockingReason = !reservation
     ? ""
     : reservation.status !== "confirmed"
-    ? `Reserva en estado "${reservation.status}". No procede check-in.`
+    ? `Reserva en estado «${reservationStatusLabel(reservation.status)}»: el check-in solo procede con la reserva confirmada.`
     : !selectedRoomId
     ? "Asigna una habitación primero."
     : !guest
@@ -354,15 +422,14 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
       logBreadcrumb("checkin.ses", "mutation", { reservationId: reservation.id, outcome: ses.kind });
 
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
-      const elapsedText = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
       setCompleted({ elapsedSeconds: elapsed });
       onCompleted?.({ reservationId: reservation.id, elapsedSeconds: elapsed });
       if (ses.kind === "queued") {
-        showToast(`Check-in completado en ${elapsedText} · parte de viajeros encolado en SES (${ses.queued}).`, { variant: "success" });
+        showToast(`Check-in completado en ${elapsedText(elapsed)} · parte de viajeros encolado en SES (${ses.queued}).`, { variant: "success" });
         window.setTimeout(() => onClose(), 2500);
       } else {
         // The drawer stays open: the operator must see what SES is missing.
-        showToast(`Check-in completado en ${elapsedText}.`, { variant: "success" });
+        showToast(`Check-in completado en ${elapsedText(elapsed)}.`, { variant: "success" });
         showToast(sesOutcomeToast(ses), { variant: ses.kind === "no_records" ? "info" : "error", duration: 9000 });
       }
     } catch (err) {
@@ -375,352 +442,243 @@ export function QuickCheckInDrawer({ reservationId, onClose, onCompleted }: Quic
   }
 
   // =============================================================== render
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        justifyContent: "flex-end",
-        zIndex: 60
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        style={{
-          width: "min(560px, 100vw)",
-          height: "100%",
-          background: "var(--surface)",
-          color: "var(--ink)",
-          boxShadow: "-8px 0 24px rgba(0,0,0,0.2)",
-          display: "flex",
-          flexDirection: "column"
-        }}
-      >
-        {/* Header con cronómetro */}
-        <div
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid var(--border)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 8
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <strong style={{ fontSize: 16 }}>Check-in</strong>
-            <span
-              className={`bo-status ${elapsedSeconds < 90 ? "ok" : elapsedSeconds < 120 ? "warn" : "error"}`}
-              title="Objetivo: < 90 segundos"
-            >
-              ⏱ {elapsedLabel}
-            </span>
-            {completed ? <span className="bo-status ok">✓ Completado</span> : null}
+  const nights = reservation ? nightsBetween(reservation.arrivalDate, reservation.departureDate) : 0;
+
+  let body: ReactNode;
+  if (loading) {
+    body = <CocoaState kind="loading" title="Cargando reserva…" />;
+  } else if (error && !reservation) {
+    body = <CocoaState kind="error" title={STATUS_LABELS.loadError} message={error} onRetry={() => void loadAll()} />;
+  } else if (!reservation) {
+    body = <CocoaState kind="error" title="No se encontró la reserva." onRetry={() => void loadAll()} />;
+  } else if (completed) {
+    body = <CompletedView elapsed={elapsedLabel} guest={fmtName(guest)} roomNumber={selectedRoom?.number} ses={sesOutcome} />;
+  } else {
+    body = (
+      <>
+        {error ? <CocoaCallout tone="danger" role="alert">{error}</CocoaCallout> : null}
+
+        {/* STEP 1: huésped + alertas */}
+        <Step title="1 · Huésped" badge={guest?.vipCode ? "VIP" : priorStays > 0 ? "Recurrente" : undefined} badgeTone={guest?.vipCode ? "accent" : "info"}>
+          <div className="cocoa-stack" data-gap="2">
+            <strong style={nameStyle}>{fmtName(guest)}</strong>
+            <p style={mutedStyle}>
+              {guest?.documentType ?? "Documento"} {guest?.documentNumber ?? "—"} · {guest?.nationality ?? "?"}
+              {guest?.email ? ` · ${guest.email}` : ""}
+            </p>
+            {guest?.vipCode ? (
+              <div className="cocoa-row" data-gap="2">
+                <CocoaBadge tone="accent" variant="tinted" uppercase={false} icon={<StarIcon size={12} />}>
+                  VIP {guest.vipCode}
+                  {guest.loyaltyTier ? ` · ${guest.loyaltyTier}` : ""}
+                </CocoaBadge>
+              </div>
+            ) : null}
+            {priorStays > 0 ? (
+              <div className="cocoa-row" data-gap="2">
+                <CocoaBadge tone="info" variant="tinted" uppercase={false}>
+                  Cliente recurrente · {plural(priorStays, "estancia previa", "estancias previas")}
+                </CocoaBadge>
+              </div>
+            ) : null}
+            {reservation.specialRequests || reservation.notes ? (
+              <CocoaCallout tone="neutral" icon={<ChatBubbleIcon size={16} />}>
+                {reservation.specialRequests ?? reservation.notes}
+              </CocoaCallout>
+            ) : null}
           </div>
-          <button type="button" className="ghost" onClick={onClose}>✕</button>
-        </div>
+        </Step>
 
-        <div style={{ padding: 16, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>
-          {loading ? (
-            <LoadingBlock label="Cargando reserva…" />
-          ) : error ? (
-            <p className="bo-status error">{error}</p>
-          ) : !reservation ? (
-            <p className="bo-status error">No se encontró la reserva.</p>
-          ) : completed ? (
-            <CompletedView elapsed={elapsedLabel} guest={fmtName(guest)} roomNumber={selectedRoom?.number} ses={sesOutcome} />
-          ) : (
-            <>
-              {/* STEP 1: huésped + alertas */}
-              <Section
-                title="1 · Huésped"
-                badge={guest?.vipCode ? "VIP" : priorStays > 0 ? "Recurrente" : undefined}
-                badgeTone={guest?.vipCode ? "accent" : "info"}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  <strong style={{ fontSize: 15 }}>{fmtName(guest)}</strong>
-                  <div className="bo-muted" style={{ fontSize: 12 }}>
-                    {guest?.documentType ?? "Documento"} {guest?.documentNumber ?? "—"} · {guest?.nationality ?? "?"}
-                    {guest?.email ? ` · ${guest.email}` : ""}
-                  </div>
-                  {guest?.vipCode ? (
-                    <div className="bo-status accent" style={{ marginTop: 4 }}>
-                      ⭐ VIP {guest.vipCode}{guest.loyaltyTier ? ` · ${guest.loyaltyTier}` : ""}
-                    </div>
-                  ) : null}
-                  {priorStays > 0 ? (
-                    <div className="bo-status info" style={{ marginTop: 4 }}>
-                      🔁 Cliente recurrente · {priorStays} estancias previas
-                    </div>
-                  ) : null}
-                  {reservation.specialRequests || reservation.notes ? (
-                    <div
-                      style={{
-                        marginTop: 6,
-                        padding: "6px 8px",
-                        background: "var(--surface-elevated, rgba(0,0,0,0.04))",
-                        borderRadius: 6,
-                        fontSize: 13
-                      }}
-                    >
-                      💬 {reservation.specialRequests ?? reservation.notes}
-                    </div>
-                  ) : null}
-                </div>
-              </Section>
-
-              {/* STEP 2: habitación */}
-              <Section
-                title="2 · Habitación"
-                badge={roomIsClean ? "Limpia" : "No lista"}
-                badgeTone={roomIsClean ? "ok" : "warning"}
-              >
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  <div>
-                    <strong>{selectedRoom ? `Hab. ${selectedRoom.number}` : "Sin asignar"}</strong>
-                    {selectedRoom?.floor ? <span className="bo-muted" style={{ marginLeft: 6 }}>Planta {selectedRoom.floor}</span> : null}
-                    {roomType ? <span className="bo-muted" style={{ marginLeft: 6 }}>· {roomType.name}</span> : null}
-                  </div>
-                  {!roomIsClean && candidateRooms.length > 0 ? (
-                    <div
-                      style={{
-                        padding: "6px 8px",
-                        borderLeft: "3px solid var(--warn, #d29b00)",
-                        background: "var(--surface-elevated, rgba(0,0,0,0.03))",
-                        fontSize: 13
-                      }}
-                    >
-                      💡 Sugerencia: la {candidateRooms[0].number} está limpia y es del mismo tipo.{" "}
-                      <button type="button" className="ghost" onClick={() => setSelectedRoomId(candidateRooms[0].id)}>
-                        Cambiar a {candidateRooms[0].number}
-                      </button>
-                    </div>
-                  ) : null}
-                  <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13 }}>
-                    <span className="bo-muted">Cambiar habitación:</span>
-                    <select
-                      value={selectedRoomId ?? ""}
-                      onChange={(e) => setSelectedRoomId(e.target.value || undefined)}
-                      style={{ padding: 6 }}
-                    >
-                      <option value="">— Sin asignar —</option>
-                      {candidateRooms.map((r) => (
-                        <option key={r.id} value={r.id}>
-                          Hab. {r.number} · planta {r.floor ?? "?"} · limpia
-                        </option>
-                      ))}
-                      {selectedRoom && !candidateRooms.find((c) => c.id === selectedRoom.id) ? (
-                        <option value={selectedRoom.id}>
-                          Hab. {selectedRoom.number} · {(selectedRoom.housekeepingStatus ?? "desconocido")}
-                        </option>
-                      ) : null}
-                    </select>
-                  </label>
-                </div>
-              </Section>
-
-              {/* STEP 3: pago */}
-              <Section
-                title="3 · Pago"
-                badge={
-                  folioLoading
-                    ? "Cargando folio…"
-                    : balanceDue === null
-                    ? "Folio no disponible"
-                    : balanceDue > 0
-                    ? `${fmtEur(balanceDue)} pendiente`
-                    : "Saldado"
+        {/* STEP 2: habitación */}
+        <Step title="2 · Habitación" badge={roomIsClean ? "Limpia" : "No lista"} badgeTone={roomIsClean ? "success" : "warning"}>
+          <div className="cocoa-stack" data-gap="2">
+            <div className="cocoa-row" data-gap="2" data-align="baseline">
+              <strong>{selectedRoom ? `Hab. ${selectedRoom.number}` : "Sin asignar"}</strong>
+              {selectedRoom?.floor ? <span style={mutedStyle}>Planta {selectedRoom.floor}</span> : null}
+              {roomType ? <span style={mutedStyle}>· {roomType.name}</span> : null}
+            </div>
+            {!roomIsClean && candidateRooms.length > 0 ? (
+              <CocoaCallout
+                tone="info"
+                title="Sugerencia"
+                icon={<InfoCircleIcon size={16} />}
+                actions={
+                  <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => setSelectedRoomId(candidateRooms[0].id)}>
+                    Cambiar a {candidateRooms[0].number}
+                  </CocoaButton>
                 }
-                badgeTone={folioLoading ? "info" : balanceDue === null ? "danger" : balanceDue > 0 ? "warning" : "ok"}
               >
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
-                  {!folio && !folioLoading ? (
-                    <div
-                      style={{
-                        padding: "6px 8px",
-                        borderLeft: "3px solid var(--danger, #d23b3b)",
-                        background: "var(--surface-elevated, rgba(0,0,0,0.03))"
-                      }}
-                    >
-                      <div>No se pudo cargar el folio{folioError ? `: ${folioError}` : "."}</div>
-                      <div className="bo-muted" style={{ fontSize: 12, marginTop: 2 }}>
-                        Sin folio no se puede cobrar ni preautorizar. Reintenta o elige «Sin cobro» de forma explícita.
-                      </div>
-                      <div style={{ marginTop: 6 }}>
-                        <button type="button" onClick={() => void loadFolio()} disabled={busy}>Reintentar</button>
-                      </div>
-                    </div>
-                  ) : null}
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span>Total estancia ({nightsBetween(reservation.arrivalDate, reservation.departureDate)} noches)</span>
-                    <strong>{fmtEur(reservation.totalAmount)}</strong>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span>Pagos hasta ahora</span>
-                    <span>{folio ? fmtEur(folio.paymentsTotal) : "No disponible"}</span>
-                  </div>
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <span>Saldo pendiente</span>
-                    <strong>{balanceDue === null ? "No disponible (folio no cargado)" : fmtEur(balanceDue)}</strong>
-                  </div>
-                  <div style={{ display: "flex", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      className={paymentMode === "preauth" ? "primary" : "ghost"}
-                      onClick={() => setPaymentMode("preauth")}
-                      disabled={!folio}
-                      title={!folio ? "Requiere el folio cargado" : ""}
-                    >
-                      Preautorizar
-                    </button>
-                    <button
-                      type="button"
-                      className={paymentMode === "capture" ? "primary" : "ghost"}
-                      onClick={() => setPaymentMode("capture")}
-                      disabled={!folio}
-                      title={!folio ? "Requiere el folio cargado" : ""}
-                    >
-                      Cobrar ahora
-                    </button>
-                    <button
-                      type="button"
-                      className={paymentMode === "none" ? "primary" : "ghost"}
-                      onClick={() => setPaymentMode("none")}
-                    >
-                      Sin cobro
-                    </button>
-                  </div>
-                  {paymentMode !== "none" ? (
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-                      <span className="bo-muted">Método:</span>
-                      <select
-                        value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value as "card" | "cash" | "bank_transfer")}
-                        style={{ padding: 6 }}
-                      >
-                        <option value="card">Tarjeta</option>
-                        <option value="cash">Efectivo</option>
-                        <option value="bank_transfer">Transferencia</option>
-                      </select>
-                    </label>
-                  ) : null}
-                </div>
-              </Section>
+                La {candidateRooms[0].number} está limpia y es del mismo tipo.
+              </CocoaCallout>
+            ) : null}
+            <CocoaField label="Cambiar habitación">
+              <CocoaSelect id={roomSelectId} value={selectedRoomId ?? ""} onChange={(value) => setSelectedRoomId(value || undefined)} options={roomOptions} />
+            </CocoaField>
+          </div>
+        </Step>
 
-              {/* STEP 4: compliance */}
-              <Section title="4 · Cumplimiento" badge="Al confirmar" badgeTone="info">
-                <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "var(--ink)" }}>
-                  <li>Al confirmar se encola el parte de viajeros (SES.HOSPEDAJES); aquí verás el resultado real del encolado.</li>
-                  <li>Firma digital aplicada con sello "sig_drawer_checkin".</li>
-                  <li>Política de cancelación: {reservation.cancellationPolicyCode ?? "estándar"}.</li>
-                </ul>
-              </Section>
-
-              {blockingReason ? (
-                <p className="bo-status warn">{blockingReason}</p>
-              ) : null}
-            </>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div
-          style={{
-            padding: 12,
-            borderTop: "1px solid var(--border)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 8
-          }}
+        {/* STEP 3: pago */}
+        <Step
+          title="3 · Pago"
+          badge={
+            folioLoading
+              ? "Cargando folio…"
+              : balanceDue === null
+              ? "Folio no disponible"
+              : balanceDue > 0
+              ? `${fmtEur(balanceDue)} pendiente`
+              : "Saldado"
+          }
+          badgeTone={folioLoading ? "info" : balanceDue === null ? "danger" : balanceDue > 0 ? "warning" : "success"}
         >
-          <button type="button" className="ghost" onClick={onClose} disabled={busy}>
-            Cancelar
-          </button>
-          {!completed ? (
-            <button
-              type="button"
-              className="primary"
+          <div className="cocoa-stack" data-gap="2">
+            {!folio && !folioLoading ? (
+              <CocoaCallout
+                tone="danger"
+                title={`No se pudo cargar el folio${folioError ? `: ${folioError}` : "."}`}
+                actions={
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void loadFolio()} disabled={busy}>
+                    {ACTIONS.retry}
+                  </CocoaButton>
+                }
+              >
+                Sin folio no se puede cobrar ni preautorizar. Reintenta o elige «Sin cobro» de forma explícita.
+              </CocoaCallout>
+            ) : null}
+            <ul className="c22-section__list">
+              <li>
+                <span>Total estancia ({plural(nights, "noche", "noches")})</span>
+                <strong>{fmtEur(reservation.totalAmount)}</strong>
+              </li>
+              <li>
+                <span>Pagos hasta ahora</span>
+                <strong>{folio ? fmtEur(folio.paymentsTotal) : "No disponible"}</strong>
+              </li>
+              <li>
+                <span>Saldo pendiente</span>
+                <strong>{balanceDue === null ? "No disponible (folio no cargado)" : fmtEur(balanceDue)}</strong>
+              </li>
+            </ul>
+            <CocoaSegmentedControl
+              size="small"
+              aria-label="Modo de cobro"
+              value={paymentMode}
+              onChange={(value) => setPaymentMode(value as PaymentMode)}
+              options={[
+                { value: "preauth", label: "Preautorizar", disabled: !folio },
+                { value: "capture", label: "Cobrar ahora", disabled: !folio },
+                { value: "none", label: "Sin cobro" }
+              ]}
+            />
+            {!folio ? <p style={mutedStyle}>Preautorizar y cobrar requieren el folio cargado.</p> : null}
+            {paymentMode !== "none" ? (
+              <CocoaField label="Método">
+                <CocoaSelect value={paymentMethod} onChange={(value) => setPaymentMethod(value as PaymentMethod)} options={PAYMENT_METHOD_OPTIONS} />
+              </CocoaField>
+            ) : null}
+          </div>
+        </Step>
+
+        {/* STEP 4: compliance */}
+        <Step title="4 · Cumplimiento" badge="Al confirmar" badgeTone="info">
+          <ul style={bulletListStyle}>
+            <li>Al confirmar se encola el parte de viajeros (SES.HOSPEDAJES); aquí verás el resultado real del encolado.</li>
+            <li>Firma digital aplicada con sello "sig_drawer_checkin".</li>
+            <li>Política de cancelación: {reservation.cancellationPolicyCode ?? "estándar"}.</li>
+          </ul>
+        </Step>
+
+        {blockingReason ? (
+          <CocoaCallout tone="warning" role="status">
+            {blockingReason}
+          </CocoaCallout>
+        ) : null}
+      </>
+    );
+  }
+
+  return (
+    <CocoaDrawer
+      open
+      onClose={onClose}
+      title="Check-in"
+      subtitle={reservation ? `${fmtName(guest)} · ${reservation.code}` : undefined}
+      side="right"
+      size="md"
+      initialFocus={() => document.getElementById(roomSelectId)}
+      footer={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" onClick={onClose} disabled={busy}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          {completed ? (
+            <CocoaButton variant="filled" tone="accent" onClick={onClose}>
+              {ACTIONS.close}
+            </CocoaButton>
+          ) : (
+            <CocoaButton
+              variant="filled"
+              tone="accent"
               disabled={!canSubmit || busy || !roomIsClean}
-              onClick={executeCheckIn}
+              loading={busy}
+              onClick={() => void executeCheckIn()}
               title={blockingReason || "Pulsa para completar el check-in"}
             >
-              {busy ? "Procesando…" : "Hacer check-in →"}
-            </button>
-          ) : (
-            <button type="button" className="primary" onClick={onClose}>
-              Cerrar
-            </button>
+              Hacer check-in
+            </CocoaButton>
           )}
+        </>
+      }
+    >
+      <div className="cocoa-stack" data-gap="3">
+        <div className="cocoa-row" data-gap="2">
+          <CocoaBadge tone={timerTone} icon={<ClockIcon size={12} />} title="Objetivo: < 90 segundos" aria-label={`Cronómetro ${elapsedLabel}`}>
+            {elapsedLabel}
+          </CocoaBadge>
+          {completed ? (
+            <CocoaBadge tone="success" variant="tinted">
+              {STATUS_LABELS.completed}
+            </CocoaBadge>
+          ) : null}
         </div>
+        {body}
       </div>
-    </div>
+    </CocoaDrawer>
   );
 }
 
 // =============================================================== sub-components
 
-function Section({
-  title,
-  badge,
-  badgeTone,
-  children
-}: {
-  title: string;
-  badge?: string;
-  badgeTone?: "ok" | "warning" | "danger" | "info" | "accent";
-  children: React.ReactNode;
-}) {
-  const toneClass =
-    badgeTone === "ok" ? "ok" :
-    badgeTone === "warning" ? "warn" :
-    badgeTone === "danger" ? "error" :
-    badgeTone === "accent" ? "info" :
-    "info";
+function Step({ title, badge, badgeTone = "neutral", children }: { title: string; badge?: string; badgeTone?: CocoaTone; children: ReactNode }) {
   return (
-    <section
-      style={{
-        border: "1px solid var(--border)",
-        borderRadius: 8,
-        padding: 12,
-        display: "flex",
-        flexDirection: "column",
-        gap: 8
-      }}
+    <CocoaSection
+      title={title}
+      meta={
+        badge ? (
+          <CocoaBadge tone={badgeTone} size="small">
+            {badge}
+          </CocoaBadge>
+        ) : undefined
+      }
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <strong style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--muted, #888)" }}>{title}</strong>
-        {badge ? <span className={`bo-status ${toneClass}`}>{badge}</span> : null}
-      </div>
       {children}
-    </section>
+    </CocoaSection>
   );
 }
 
 /** Real SES queue outcome after the check-in: never claims "enviado" unless every record was queued. */
 function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
   if (!outcome) {
-    return (
-      <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-        Sin resultado del parte de viajeros todavía.
-      </p>
-    );
+    return <p style={mutedStyle}>Sin resultado del parte de viajeros todavía.</p>;
   }
   if (outcome.kind === "queued") {
     return (
-      <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "center" }}>
-        <span className="bo-status ok">Parte de viajeros encolado en SES.HOSPEDAJES ({outcome.queued})</span>
-        <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-          Encolado no es aceptado: el envío real al MIR se ve en el Centro de envíos. Esta ventana se cierra automáticamente.
-        </p>
-      </div>
+      <CocoaCallout tone="success" title={`Parte de viajeros encolado en SES.HOSPEDAJES (${outcome.queued})`} role="status">
+        Encolado no es aceptado: el envío real al MIR se ve en el Centro de envíos. Esta ventana se cierra automáticamente.
+      </CocoaCallout>
     );
   }
-  const tone = outcome.kind === "no_records" ? "warn" : "error";
+  const tone: CocoaTone = outcome.kind === "no_records" ? "warning" : "danger";
   const title =
     outcome.kind === "no_records"
       ? "No se ha encolado ningún parte de viajeros"
@@ -744,73 +702,56 @@ function SesOutcomeBlock({ outcome }: { outcome: SesQueueOutcome | null }) {
   const failureMessages = sesFailureMessages(failed).filter((message) => message !== headlineMessage);
   const failedCount = failed.length;
   return (
-    <div
-      style={{
-        width: "100%",
-        textAlign: "left",
-        padding: "8px 10px",
-        borderLeft: `3px solid ${tone === "error" ? "var(--danger, #d23b3b)" : "var(--warn, #d29b00)"}`,
-        background: "var(--surface-elevated, rgba(0,0,0,0.03))",
-        borderRadius: 6,
-        fontSize: 13,
-        display: "flex",
-        flexDirection: "column",
-        gap: 6
-      }}
-    >
-      <span className={`bo-status ${tone}`} style={{ alignSelf: "flex-start" }}>{title}</span>
-      {missing.length > 0 ? (
-        <ul style={{ margin: 0, paddingLeft: 18 }}>
-          {missing.map((issue) => (
-            <li key={issue}>{sesEstablishmentIssueLabel(issue)}</li>
-          ))}
-        </ul>
-      ) : null}
-      {detail ? <div className="bo-muted" style={{ fontSize: 12 }}>{detail}</div> : null}
-      {failureMessages.length > 0 ? (
-        <div className="bo-muted" style={{ fontSize: 12 }}>
-          Motivo{failedCount === 1 ? "" : "s"} del servidor ({failedCount} parte{failedCount === 1 ? "" : "s"} sin encolar):
-          <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
-            {failureMessages.map((message) => (
-              <li key={message}>{message}</li>
+    <CocoaCallout tone={tone} variant="banner" title={title} role="alert">
+      <div className="cocoa-stack" data-gap="2">
+        {missing.length > 0 ? (
+          <ul style={bulletListStyle}>
+            {missing.map((issue) => (
+              <li key={issue}>{sesEstablishmentIssueLabel(issue)}</li>
             ))}
           </ul>
+        ) : null}
+        {detail ? <p style={mutedStyle}>{detail}</p> : null}
+        {failureMessages.length > 0 ? (
+          <div style={mutedStyle}>
+            Motivo{failedCount === 1 ? "" : "s"} del servidor ({plural(failedCount, "parte", "partes")} sin encolar):
+            <ul style={bulletListStyle}>
+              {failureMessages.map((message) => (
+                <li key={message}>{message}</li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        <div className="cocoa-row" data-gap="2">
+          {outcome.kind === "incomplete" || outcome.kind === "partial" ? (
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("TaxComplianceSettings")}>
+              Ajustes fiscales
+            </CocoaButton>
+          ) : null}
+          {outcome.kind === "no_records" ? (
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("GuestRegisterSettings")}>
+              Registro de huéspedes
+            </CocoaButton>
+          ) : null}
+          <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("ComplianceInbox")}>
+            Bandeja de cumplimiento
+          </CocoaButton>
         </div>
-      ) : null}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        {outcome.kind === "incomplete" || outcome.kind === "partial" ? (
-          <button type="button" onClick={() => navigateTo("TaxComplianceSettings")}>Ajustes fiscales</button>
-        ) : null}
-        {outcome.kind === "no_records" ? (
-          <button type="button" onClick={() => navigateTo("GuestRegisterSettings")}>Registro de huéspedes</button>
-        ) : null}
-        <button type="button" className="ghost" onClick={() => navigateTo("ComplianceInbox")}>Bandeja de cumplimiento</button>
+        <p style={mutedStyle}>El check-in sí se ha realizado. Esta ventana no se cierra sola para que puedas revisar el parte.</p>
       </div>
-      <div className="bo-muted" style={{ fontSize: 12 }}>
-        El check-in sí se ha realizado. Esta ventana no se cierra sola para que puedas revisar el parte.
-      </div>
-    </div>
+    </CocoaCallout>
   );
 }
 
 function CompletedView({ elapsed, guest, roomNumber, ses }: { elapsed: string; guest: string; roomNumber?: string; ses: SesQueueOutcome | null }) {
   return (
-    <div
-      style={{
-        textAlign: "center",
-        padding: "32px 16px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-        alignItems: "center"
-      }}
-    >
-      <div style={{ fontSize: 48 }}>✓</div>
-      <h3 style={{ margin: 0 }}>Check-in completado</h3>
-      <p className="bo-muted" style={{ margin: 0 }}>
-        {guest} alojado en {roomNumber ? `Hab. ${roomNumber}` : "su habitación"}.
-      </p>
-      <div className="bo-status ok">⏱ {elapsed} · objetivo &lt; 1:30</div>
+    <div className="cocoa-stack" data-gap="3">
+      <CocoaState kind="empty" illustration="success" title="Check-in completado" message={`${guest} alojado en ${roomNumber ? `Hab. ${roomNumber}` : "su habitación"}.`} role="status" />
+      <div className="cocoa-row" data-gap="2" data-justify="center">
+        <CocoaBadge tone="success" icon={<ClockIcon size={12} />}>
+          {elapsed} · objetivo &lt; 1:30
+        </CocoaBadge>
+      </div>
       <SesOutcomeBlock outcome={ses} />
     </div>
   );

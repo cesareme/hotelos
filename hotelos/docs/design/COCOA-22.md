@@ -1938,11 +1938,13 @@ export interface CocoaButtonProps {
   "data-testid"?: string;
   role?: "menuitem" | "option" | "tab" | "switch" | "link";
   "aria-selected"?: boolean;
+  /** Multi-line label (selectable list rows, long titles in a 320 px column): the text wraps, the height follows it, left-aligned. Default: one line, fixed height. */
+  wrap?: boolean;
 }
 
 /** Text colour of a variant/tone pair (exported for the action bar's status text and tests): filled → ink on the hue; ghosts → AA tone ink. */
 export function buttonForeground(variant: CocoaButtonVariant, tone: CocoaButtonTone): string
-export function CocoaButton({ variant = "filled", size = "regular", tone = "accent", icon, iconPosition = "left", loading = false, disabled = false, onClick, onFocus, onBlur, onKeyDown, children, type = "button", className, style, id, name, form, tabIndex, autoFocus, ref, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-expanded": ariaExpanded, "aria-pressed": ariaPressed, "aria-controls": ariaControls, "aria-haspopup": ariaHasPopup, "aria-current": ariaCurrent, title, "data-cocoa": dataCocoa = "button", "data-tour": dataTour, "data-testid": dataTestId, role, "aria-selected": ariaSelected }: CocoaButtonProps)
+export function CocoaButton({ variant = "filled", size = "regular", tone = "accent", icon, iconPosition = "left", loading = false, disabled = false, onClick, onFocus, onBlur, onKeyDown, children, type = "button", className, style, id, name, form, tabIndex, autoFocus, ref, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-expanded": ariaExpanded, "aria-pressed": ariaPressed, "aria-controls": ariaControls, "aria-haspopup": ariaHasPopup, "aria-current": ariaCurrent, title, "data-cocoa": dataCocoa = "button", "data-tour": dataTour, "data-testid": dataTestId, role, "aria-selected": ariaSelected, wrap = false }: CocoaButtonProps)
 ```
 
 #### `CocoaCard.tsx`
@@ -1992,13 +1994,15 @@ export interface CocoaPageHeaderProps {
   tabs?: Array<CocoaPageHeaderTab>;
   activeTab?: string;
   onTabChange?: (value: string) => void;
+  /** Let the title wrap on desktop too (narrow containers such as the 440 px auth card); default: one line with ellipsis. */
+  wrap?: boolean;
   className?: string;
   style?: CSSProperties;
 }
 
-/** Title metrics by tier (pure): 26 px nowrap on desktop, 22 px wrapping on phones. */
-export function headerTitleStyle(isNarrow: boolean): CSSProperties
-export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs, activeTab, onTabChange, className, style }: CocoaPageHeaderProps)
+/** Title metrics by tier (pure): 26 px nowrap on desktop, 22 px wrapping on phones; `wrap` keeps the 26 px and lets it wrap. */
+export function headerTitleStyle(isNarrow: boolean, wrap = false): CSSProperties
+export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs, activeTab, onTabChange, wrap = false, className, style }: CocoaPageHeaderProps)
 ```
 
 #### `CocoaPage.tsx`
@@ -2008,7 +2012,7 @@ export { commandsKey };
 export type CocoaPageDensity = "comfortable" | "compact";
 export type CocoaPageGap = 3 | 4 | 5;
 
-export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange"> {
+export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange" | "wrap"> {
   /** Actions row (standalone → header; hosted → HOSTED_ACTIONS_ROW). */
   actions?: ReactNode;
   state?: CocoaPageState;
@@ -2029,7 +2033,7 @@ export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "
   "aria-label"?: string;
 }
 
-export function CocoaPage({ eyebrow, title, subtitle, icon, tabs, activeTab, onTabChange, actions, state, skeleton, empty, error, density, fullBleed = false, gap = 4, commands, children, id, className, style, "aria-label": ariaLabel }: CocoaPageProps)
+export function CocoaPage({ eyebrow, title, subtitle, icon, tabs, activeTab, onTabChange, wrap, actions, state, skeleton, empty, error, density, fullBleed = false, gap = 4, commands, children, id, className, style, "aria-label": ariaLabel }: CocoaPageProps)
 ```
 
 #### `CocoaGrid.tsx`
@@ -2182,7 +2186,7 @@ export interface CocoaSectionProps extends Pick<CocoaCardProps, "variant" | "pad
   footer?: ReactNode;
   /** Scroll axis of the body (tables → "x"). */
   scroll?: "x" | "y";
-  /** Fixed body height when `scroll="y"`. */
+  /** Upper bound (px) of the body when `scroll="y"`: the body grows with its content up to it, then scrolls (an empty thread stays short). */
   maxHeight?: number;
   children: ReactNode;
   id?: string;
@@ -2478,6 +2482,8 @@ export type CocoaInputProps = {
   /** Render a <textarea> (vertical resize). */
   multiline?: boolean;
   rows?: number;
+  /** Native <datalist> suggestions (single-line only): offered while typing, free text stays allowed (a category field with the usual values). */
+  suggestions?: readonly string[];
   name?: string;
   autoComplete?: string;
   autoFocus?: boolean;
@@ -2527,6 +2533,7 @@ export interface CocoaSelectProps {
   value: string;
   onChange: (value: string) => void;
   options: Array<CocoaSelectOption>;
+  /** Disabled, hidden first option shown while `value` is "" («Selecciona un canal»); a REAL «none» choice («Sin asignar») must be an explicit `{ value: "", label }` option instead. */
   placeholder?: string;
   size?: "small" | "regular" | "large";
   disabled?: boolean;
@@ -2581,6 +2588,8 @@ export interface CocoaDatePickerProps {
   disabled?: boolean;
   error?: boolean;
   required?: boolean;
+  /** Date AND time (`datetime-local`; `value`/`min`/`max` as «YYYY-MM-DDTHH:mm»); default a date only. */
+  withTime?: boolean;
   id?: string;
   name?: string;
   "aria-label"?: string;
@@ -2590,7 +2599,7 @@ export interface CocoaDatePickerProps {
   style?: CSSProperties;
 }
 
-export function CocoaDatePicker({ value, onChange, min, max, size = "regular", disabled = false, error = false, required = false, id, name, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-invalid": ariaInvalid, className, style }: CocoaDatePickerProps)
+export function CocoaDatePicker({ value, onChange, min, max, size = "regular", disabled = false, error = false, required = false, withTime = false, id, name, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-invalid": ariaInvalid, className, style }: CocoaDatePickerProps)
 ```
 
 #### `CocoaStepper.tsx`
@@ -2669,6 +2678,9 @@ export interface CocoaSegmentedControlProps {
 /** Next enabled value for a navigation key (pure): wraps; null for other keys. */
 export function nextSegmentValue(current: string, values: readonly string[], key: string): string | null
 
+/** True when the strip's content is wider than its box (pure; 1 px tolerance for subpixel rounding). */
+export function segmentedOverflows(scrollWidth: number, clientWidth: number): boolean
+
 /** Radius of a tab inside the 2 px-padded strip (radius 8 − 2). */
 export const TAB_ITEM_RADIUS = "calc(var(--cocoa-radius-md) - 2px)"
 
@@ -2719,6 +2731,10 @@ export interface CocoaTableProps<Row> {
   stickyFirstColumn?: boolean;
   /** Trailing actions cell per row (CocoaButton plain/small). */
   rowActions?: (row: Row) => ReactNode;
+  /** Tone wash of a row (`data-tone` on the <tr>, tone-bg on the phone card; hover and selection still win): low stock, overdue… */
+  rowTone?: (row: Row) => CocoaTone | undefined;
+  /** Native tooltip of a row («Abrir el detalle de la propiedad»). */
+  rowTitle?: (row: Row) => string | undefined;
   /** Totals row: `true` uses each column's `footer`; an object maps column key → cell. */
   footer?: boolean | Record<string, ReactNode>;
   /** Progressive rendering for long lists (chunks of 100 once past 200 rows). */
@@ -2751,7 +2767,7 @@ export function isTableOverflowing(tableWidth: number, wrapWidth: number): boole
 export function densityRowPadding(density: CocoaTableDensity | undefined): string
 export function resolveRowKey<Row>(row: Row, rowKey: string | ((row: Row) => string) | undefined, idx: number): string
 export function defaultRender<Row>(row: Row, key: string): ReactNode
-export function CocoaTable<Row>({ columns, rows, sortBy, onSort, rowKey, selectedKey, onSelect, emptyState, loading = false, density, stickyFirstColumn = false, rowActions, footer, virtualize = false, caption, "aria-label": ariaLabel, maxHeight, className, style }: CocoaTableProps<Row>)
+export function CocoaTable<Row>({ columns, rows, sortBy, onSort, rowKey, selectedKey, onSelect, emptyState, loading = false, density, stickyFirstColumn = false, rowActions, rowTone, rowTitle, footer, virtualize = false, caption, "aria-label": ariaLabel, maxHeight, className, style }: CocoaTableProps<Row>)
 ```
 
 #### `CocoaScrollArea.tsx`
@@ -2867,6 +2883,8 @@ export interface CocoaDrawerProps {
   dismissible?: boolean;
   /** Element to focus on open (default: first focusable, then the panel). */
   initialFocus?: () => HTMLElement | null | undefined;
+  /** When it changes while the drawer is open, `initialFocus` is evaluated again (a form that arrives after a fetch: pass the loaded state). */
+  focusKey?: string | number | boolean;
   children: ReactNode;
   className?: string;
   /** Layout escape hatch for the panel. */
@@ -2886,7 +2904,7 @@ export interface DrawerGeometry {
 
 /** Effective side and box of the panel (pure): phones always get a bottom sheet. */
 export function drawerGeometry(input: { side: CocoaDrawerSide; size: CocoaDrawerSize; isNarrow: boolean }): DrawerGeometry
-export function CocoaDrawer({ open, onClose, title, subtitle, side = "right", size = "md", footer, dismissible = true, initialFocus, children, className, style }: CocoaDrawerProps)
+export function CocoaDrawer({ open, onClose, title, subtitle, side = "right", size = "md", footer, dismissible = true, initialFocus, focusKey, children, className, style }: CocoaDrawerProps)
 ```
 
 #### `CocoaDialog.tsx`
@@ -2911,13 +2929,15 @@ export interface CocoaDialogProps {
   size?: CocoaDialogSize;
   /** Single-button dialogs (acknowledgements). */
   hideCancel?: boolean;
+  /** Element to focus on open (a field inside `children`, e.g. a one-line prompt); default: the safe button — Cancel for destructive dialogs, Confirm otherwise. */
+  initialFocus?: () => HTMLElement | null | undefined;
 }
 
 export const DIALOG_WIDTH: Record<CocoaDialogSize, number> = { sm: 440, md: 560 }
 
 /** Which button takes the initial focus (pure): the safe one for destructive dialogs. */
 export function dialogInitialFocus(tone: CocoaDialogTone, hideCancel = false): "confirm" | "cancel"
-export function CocoaDialog({ open, onClose, title, description, tone = "primary", confirmLabel = "Confirmar", cancelLabel = "Cancelar", onConfirm, busy = false, children, size = "sm", hideCancel = false }: CocoaDialogProps)
+export function CocoaDialog({ open, onClose, title, description, tone = "primary", confirmLabel = "Confirmar", cancelLabel = "Cancelar", onConfirm, busy = false, children, size = "sm", hideCancel = false, initialFocus }: CocoaDialogProps)
 ```
 
 #### `CocoaToast.tsx`
@@ -3118,16 +3138,20 @@ export function donutShareLabel(share: number): string
 export function CocoaDonut({ slices, centerLabel, centerValue, size = 160, legend = true, valueFormat, "aria-label": ariaLabel }: CocoaDonutProps)
 
 export interface CocoaProgressProps {
-  /** 0–100. */
+  /** 0–`max` (0–100 by default). */
   value: number;
+  /** Upper bound of `value` (default 100): the bar fills value / max — a share scaled to the largest channel, 12 of 48 rooms. */
+  max?: number;
   tone?: CocoaTone;
   label?: string;
-  /** Show «NN %» at the right of the label. Default true. */
+  /** Show the value at the right of the label (the percentage of `max`, or `valueLabel`). Default true. */
   showValue?: boolean;
+  /** Text at the right of the label instead of the computed percentage («12 de 48», the real share when the bar is scaled). */
+  valueLabel?: string;
   "aria-label"?: string;
 }
 
-export function CocoaProgress({ value, tone = "accent", label, showValue = true, "aria-label": ariaLabel }: CocoaProgressProps)
+export function CocoaProgress({ value, max = 100, tone = "accent", label, showValue = true, valueLabel, "aria-label": ariaLabel }: CocoaProgressProps)
 
 /** `CocoaChart.Line` etc. — one import for screens (COCOA-22.md §8). */
 export const CocoaChart = {

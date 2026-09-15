@@ -7,7 +7,9 @@
 //   - A short body description
 //   - An optional numbered list of steps with accent dots
 //   - An optional tip callout (subtle warning tint)
-//   - An optional dismiss control that persists via localStorage
+//   - An optional dismiss control (the canonical close "X": CocoaButton
+//     plain/neutral/small, same as CocoaDrawer) that persists via
+//     localStorage
 //
 // Props:
 //   - title       (required) Card heading
@@ -26,17 +28,14 @@
 // A11y:
 //   - role="region" + aria-label = title
 //   - Dismiss button has aria-label "Cerrar instrucciones"
+//   - Dismiss button is a CocoaButton: 22 px on a mouse, >= 44 x 44 px tap
+//     target on a coarse pointer (qa#10 measured 24 x 44 with a raw <button>)
 //   - localStorage access is wrapped in try/catch to tolerate disabled
 //     storage (private mode, SSR, etc.)
 
-import {
-  useCallback,
-  useEffect,
-  useState,
-  type CSSProperties,
-  type MouseEvent as ReactMouseEvent
-} from "react";
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 
+import { CocoaButton } from "../cocoa/CocoaButton";
 import { CocoaCard } from "../cocoa/CocoaCard";
 
 export interface CocoaScreenInstructionsCardProps {
@@ -182,27 +181,6 @@ const tipLabelStyle: CSSProperties = {
   color: "var(--cocoa-label)"
 };
 
-const dismissButtonStyle: CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: 24,
-  height: 24,
-  padding: 0,
-  marginTop: -2,
-  marginRight: -4,
-  borderRadius: "var(--cocoa-radius-sm)",
-  background: "transparent",
-  border: "none",
-  color: "var(--cocoa-label-secondary)",
-  cursor: "pointer",
-  flexShrink: 0,
-  WebkitAppearance: "none",
-  appearance: "none",
-  transition:
-    "background-color var(--cocoa-duration-fast) var(--cocoa-ease-out), color var(--cocoa-duration-fast) var(--cocoa-ease-out)"
-};
-
 function LightbulbIcon({ size = 18 }: { size?: number }) {
   return (
     <svg
@@ -303,23 +281,6 @@ export function CocoaScreenInstructionsCard({
     writeDismissed(persistKey);
   }, [persistKey]);
 
-  const handleDismissMouseEnter = useCallback(
-    (event: ReactMouseEvent<HTMLButtonElement>) => {
-      event.currentTarget.style.backgroundColor =
-        "var(--cocoa-background-control)";
-      event.currentTarget.style.color = "var(--cocoa-label)";
-    },
-    []
-  );
-
-  const handleDismissMouseLeave = useCallback(
-    (event: ReactMouseEvent<HTMLButtonElement>) => {
-      event.currentTarget.style.backgroundColor = "transparent";
-      event.currentTarget.style.color = "var(--cocoa-label-secondary)";
-    },
-    []
-  );
-
   if (dismissed) return null;
 
   const hasSteps = Array.isArray(steps) && steps.length > 0;
@@ -365,16 +326,14 @@ export function CocoaScreenInstructionsCard({
           </div>
 
           {dismissible ? (
-            <button
-              type="button"
+            <CocoaButton
+              variant="plain"
+              tone="neutral"
+              size="small"
               aria-label="Cerrar instrucciones"
-              style={dismissButtonStyle}
               onClick={handleDismiss}
-              onMouseEnter={handleDismissMouseEnter}
-              onMouseLeave={handleDismissMouseLeave}
-            >
-              <CloseIcon />
-            </button>
+              icon={<CloseIcon />}
+            />
           ) : null}
         </div>
       </div>

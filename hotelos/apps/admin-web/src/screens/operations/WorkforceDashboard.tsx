@@ -1,12 +1,51 @@
-import { useState } from "react";
-import { getActivePropertyId } from "../../services/activeProperty";
+// Workforce dashboard — Operaciones › Personal y turnos (/operaciones/personal).
+//
+// Cocoa 22 (docs/design/COCOA-22.md §4 · ola 4 · lote 4-C): CocoaPage →
+// CocoaKpiStrip → CocoaGrid 4/8 (time clock · upcoming shifts as a CocoaTable)
+// and 6/6 (pending absences as a CocoaTable with an «Aprobar» row action ·
+// headcount by department as CocoaChart.Bars). A shift or absence row opens
+// its record in a CocoaDrawer, the new-shift form is a CocoaDrawer too, and
+// every outcome is announced through useToast. Data: GET /dashboards/workforce
+// plus the live time-clock store, both polled every 30 s — only once the
+// workforce_labor module is enabled (qa#14): while the module list loads the
+// page keeps its skeleton, and with the module not active it paints «Módulo
+// no activado» (+ «Activar módulo» for users with modules.enable) instead of
+// KPIs at 0 and a 403 on every poll.
+
+import { useState, type CSSProperties, type ReactNode } from "react";
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { approveAbsence, clockIn, clockOut, createShift } from "../../services/workforceApi";
-import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
-import { SidePanel, DetailRow } from "../../components/SidePanel";
-import { date, number, time } from "../../lib/format";
+import { useToast } from "../../components/Toast";
+import { ACTIONS, FIELD_LABELS, STATUS_LABELS, newLabel } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import { date, dateRange, number, plural, time } from "../../lib/format";
+import { moduleDisabledCopy } from "./module-gate";
+import { useScreenModuleGate } from "./useScreenModuleGate";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaBarsDatum,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+// Menu labels of the tree (Operaciones › Personal y turnos), never retyped here.
+const HEADER = treeHeaderFor("WorkforceDashboard", { eyebrow: "Operaciones", title: "Personal y turnos" });
 
 type Kpis = {
   headcount: number;
@@ -16,14 +55,21 @@ type Kpis = {
   absencesApproved: number;
   nextShiftsToday: number;
 };
+type Shift = { id: string; staffName: string; startAt: string; endAt: string; role?: string };
+type Absence = { id: string; staffName: string; type: string; startDate: string; endDate: string; status: string };
+type ClockEntry = { id: string; createdAt?: string; payload?: Record<string, unknown> };
 type WorkforceDashboardData = {
   kpis: Kpis;
   staffByDepartment: Array<{ departmentName: string; count: number }>;
-  upcomingShifts: Array<{ id: string; staffName: string; startAt: string; endAt: string; role?: string }>;
-  pendingAbsences: Array<{ id: string; staffName: string; type: string; startDate: string; endDate: string; status: string }>;
+  upcomingShifts: Shift[];
+  pendingAbsences: Absence[];
 };
 
+const EMPTY_KPIS: Kpis = { headcount: 0, activeStaff: 0, hoursWorkedMtd: 0, absencesPending: 0, absencesApproved: 0, nextShiftsToday: 0 };
 const ABSENCE_TYPE_LABELS: Record<string, string> = { vacation: "vacaciones", sick: "baja médica", personal: "personal", unpaid: "sin sueldo", other: "otro" };
+const MAX_SHIFTS = 12;
+const MAX_CLOCK_ENTRIES = 8;
+const NEW_SHIFT = newLabel("m", "turno");
 
 function fmtNum(v: number | undefined): string {
   return number(v, { maximumFractionDigits: 1 });
@@ -34,25 +80,97 @@ function fmtDate(v: string): string {
 function fmtTime(v: string): string {
   return time(v);
 }
+function absenceTypeLabel(type: string): string {
+  return ABSENCE_TYPE_LABELS[type] ?? type;
+}
+
+/** Calendar days covered by an absence, both ends included. */
+function absenceDays(a: Absence): number {
+  const start = new Date(a.startDate);
+  const end = new Date(a.endDate);
+  return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1);
+}
+
+/** Hours of a shift, one decimal. */
+function shiftHours(s: Shift): number {
+  const start = new Date(s.startAt);
+  const end = new Date(s.endAt);
+  return Math.max(0, Math.round(((end.getTime() - start.getTime()) / 3_600_000) * 10) / 10);
+}
+
+// Text styles the lists repeat (layout comes from the stylesheet lists).
+const growStyle: CSSProperties = { flex: "1 1 auto", minWidth: 0 };
+const captionStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-caption)",
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label-secondary)"
+};
+const secondaryStyle: CSSProperties = { fontSize: "var(--cocoa-fs-footnote)", color: "var(--cocoa-label-secondary)" };
+const valueStyle: CSSProperties = {
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  textAlign: "right",
+  minWidth: 0
+};
+const timeStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-footnote)",
+  fontVariantNumeric: "tabular-nums",
+  whiteSpace: "nowrap",
+  color: "var(--cocoa-label-secondary)"
+};
+
+const SHIFT_COLUMNS: CocoaTableColumn<Shift>[] = [
+  { key: "staffName", label: "Empleado", render: (s) => <strong>{s.staffName}</strong> },
+  { key: "role", label: "Puesto", hideOnNarrow: true, render: (s) => s.role ?? "—" },
+  { key: "date", label: FIELD_LABELS.date, render: (s) => fmtDate(s.startAt) },
+  { key: "hours", label: "Horario", align: "right", render: (s) => `${fmtTime(s.startAt)}–${fmtTime(s.endAt)}` }
+];
+
+const ABSENCE_COLUMNS: CocoaTableColumn<Absence>[] = [
+  { key: "staffName", label: "Empleado", render: (a) => <strong>{a.staffName}</strong> },
+  {
+    key: "type",
+    label: FIELD_LABELS.type,
+    render: (a) => (
+      <CocoaBadge tone="warning" variant="tinted" size="small">
+        {absenceTypeLabel(a.type)}
+      </CocoaBadge>
+    )
+  },
+  { key: "period", label: "Periodo", hideOnNarrow: true, render: (a) => dateRange(a.startDate, a.endDate, { style: "dayMonth" }) }
+];
+
+/** Label · value row of a record drawer (section-list rhythm: hairline, value at the right). */
+function DetailRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <li>
+      <span style={secondaryStyle}>{label}</span>
+      <span style={valueStyle}>{children}</span>
+    </li>
+  );
+}
 
 export function WorkforceDashboard() {
+  const propertyName = getActiveProperty().propertyName;
+  const { showToast } = useToast();
+  // Module gate (qa#14): no request (and no 30 s poll) until workforce_labor
+  // is known to be enabled; `null` paths keep useApiData idle.
+  const moduleGate = useScreenModuleGate("WorkforceDashboard");
   const { data, loading, error, refresh } = useApiData<WorkforceDashboardData>(
-    `/dashboards/workforce?propertyId=${PROPERTY_ID}`,
+    moduleGate.ready ? `/dashboards/workforce?propertyId=${PROPERTY_ID}` : null,
     { pollIntervalMs: 30000 }
   );
   // Live time-clock entries (round-trip via the generic advanced-records store).
-  const timeClock = useApiData<{ items: Array<{ id: string; createdAt?: string; payload?: Record<string, unknown> }> }>(
-    `/workforce/properties/${PROPERTY_ID}/time-clock`,
+  const timeClock = useApiData<{ items: ClockEntry[] }>(
+    moduleGate.ready ? `/workforce/properties/${PROPERTY_ID}/time-clock` : null,
     { pollIntervalMs: 30000 }
   );
   const clockEntries = timeClock.data?.items ?? [];
-  const kpis = data?.kpis ?? { headcount: 0, activeStaff: 0, hoursWorkedMtd: 0, absencesPending: 0, absencesApproved: 0, nextShiftsToday: 0 };
+  const kpis = data?.kpis ?? EMPTY_KPIS;
   const departments = data?.staffByDepartment ?? [];
   const shifts = data?.upcomingShifts ?? [];
   const absences = data?.pendingAbsences ?? [];
 
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
   const [selectedShiftId, setSelectedShiftId] = useState<string | null>(null);
   const selectedShift = shifts.find((s) => s.id === selectedShiftId) ?? null;
   const [selectedAbsenceId, setSelectedAbsenceId] = useState<string | null>(null);
@@ -64,201 +182,349 @@ export function WorkforceDashboard() {
   const [sStart, setSStart] = useState("");
   const [sEnd, setSEnd] = useState("");
 
+  function refreshAll() {
+    refresh();
+    timeClock.refresh();
+  }
+
   async function run(fn: () => Promise<unknown>, ok: string) {
     setBusy(true);
-    setMsg(null);
     try {
       await fn();
-      setMsg(ok);
-      refresh();
-      timeClock.refresh();
+      showToast(ok, { variant: "success" });
+      refreshAll();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : "No se pudo completar la acción.");
+      showToast(e instanceof Error ? e.message : "No se pudo completar la acción.", { variant: "error" });
     } finally {
       setBusy(false);
     }
   }
 
+  const employee = clockName.trim();
+  const canClock = !busy && employee !== "";
+  const canCreateShift = !busy && sStaff.trim() !== "" && sStart !== "" && sEnd !== "";
+
+  function openShiftForm() {
+    setShowShift(true);
+  }
+  function closeShiftForm() {
+    setShowShift(false);
+  }
+
+  function submitShift() {
+    void run(async () => {
+      await createShift({ staffName: sStaff.trim(), role: sRole || undefined, startAt: new Date(sStart).toISOString(), endAt: new Date(sEnd).toISOString() });
+      setSStaff("");
+      setSRole("");
+      setSStart("");
+      setSEnd("");
+      setShowShift(false);
+    }, "Turno creado.");
+  }
+
+  function approve(a: Absence, closeDrawer = false) {
+    void run(async () => {
+      await approveAbsence(a.id);
+      if (closeDrawer) setSelectedAbsenceId(null);
+    }, `Ausencia de ${a.staffName} aprobada.`);
+  }
+
+  const departmentBars: CocoaBarsDatum[] = departments.map((d) => ({
+    label: d.departmentName,
+    value: d.count,
+    tone: "accent",
+    hint: plural(d.count, "empleado", "empleados")
+  }));
+
+  // Module not active → the whole body is the «Módulo no activado» state
+  // (§3.10: `state="empty"` replaces the body; the write actions would 403 too).
+  const moduleDisabled = moduleGate.status === "disabled";
+  const disabledCopy = moduleDisabledCopy(moduleGate.canEnable);
+  const state =
+    moduleGate.status === "loading" ? "loading" : moduleDisabled ? "empty" : loading && !data ? "loading" : error && !data ? "error" : "ready";
+
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · Personal</p>
-          <h2 style={{ color: "var(--ink)" }}>Tablero de personal y turnos</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Plantilla, fichajes y turnos en vivo. Ficha entradas/salidas, crea turnos y aprueba ausencias.
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {busy ? <Spinner size="sm" /> : null}
-          <button type="button" onClick={refresh} disabled={loading}>↻ Actualizar</button>
-        </div>
-      </header>
-
-      {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
-
-      {loading && !data ? (
-        <LoadingBlock label="Cargando personal…" />
-      ) : error ? (
-        <ErrorState title="No se pudo cargar" message={error} onRetry={refresh} />
-      ) : (
-        <>
-          <div className="rev-kpi-grid">
-            <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Plantilla</span><span className="bo-status info">total</span></div><div className="rev-kpi-value">{fmtNum(kpis.headcount)}</div></article>
-            <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Activos hoy</span><span className="bo-status ok">en turno</span></div><div className="rev-kpi-value">{fmtNum(kpis.activeStaff)}</div></article>
-            <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Horas (mes)</span><span className="bo-status info">MTD</span></div><div className="rev-kpi-value">{fmtNum(kpis.hoursWorkedMtd)}</div></article>
-            <article className={`rev-kpi rev-kpi-${kpis.absencesPending > 0 ? "warn" : "ok"}`}><div className="rev-kpi-head"><span className="rev-kpi-label">Ausencias pendientes</span><span className={`bo-status ${kpis.absencesPending > 0 ? "warn" : "ok"}`}>{kpis.absencesPending > 0 ? "aprobar" : "al día"}</span></div><div className="rev-kpi-value">{fmtNum(kpis.absencesPending)}</div></article>
-            <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Turnos hoy</span><span className="bo-status info">próximos</span></div><div className="rev-kpi-value">{fmtNum(kpis.nextShiftsToday)}</div></article>
-          </div>
-
-          {/* Fichaje */}
-          <article className="bo-card" style={{ background: "var(--surface)" }}>
-            <div className="bo-card-head"><h3 style={{ color: "var(--ink)" }}>Fichaje (entrada / salida)</h3></div>
-            <div className="bo-row" style={{ gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-              <input value={clockName} onChange={(e) => setClockName(e.target.value)} placeholder="Nombre del empleado" disabled={busy} style={{ minWidth: 220 }} />
-              <button type="button" className="primary" disabled={busy || !clockName.trim()} onClick={() => run(() => clockIn(clockName.trim()), `Entrada registrada para ${clockName.trim()}.`)}>Fichar entrada</button>
-              <button type="button" disabled={busy || !clockName.trim()} onClick={() => run(() => clockOut(clockName.trim()), `Salida registrada para ${clockName.trim()}.`)}>Fichar salida</button>
-            </div>
-            {clockEntries.length > 0 ? (
-              <div className="bo-stack" style={{ gap: 4, marginTop: 10 }}>
-                <span className="bo-muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>Fichajes recientes</span>
-                {clockEntries.slice(0, 8).map((e) => (
-                  <div key={e.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13 }}>
-                    <span><strong>{String(e.payload?.staffName ?? "—")}</strong> <span className={`bo-status ${e.payload?.action === "out" ? "info" : "ok"}`} style={{ fontSize: 10 }}>{e.payload?.action === "out" ? "salida" : "entrada"}</span></span>
-                    <span className="bo-muted" style={{ fontSize: 12 }}>{time(e.createdAt, { empty: "" })}</span>
-                  </div>
-                ))}
-              </div>
+    <CocoaPage
+      eyebrow={`${HEADER.eyebrow} · ${propertyName}`}
+      title={HEADER.title}
+      subtitle="Plantilla, fichajes y turnos en vivo. Ficha entradas/salidas, crea turnos y aprueba ausencias."
+      actions={
+        moduleGate.ready ? (
+          <>
+            {busy ? <CocoaBadge tone="info">{STATUS_LABELS.saving}</CocoaBadge> : null}
+            {error && data ? (
+              <CocoaBadge tone="danger" title={error}>
+                {STATUS_LABELS.loadError}
+              </CocoaBadge>
             ) : null}
-          </article>
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll} disabled={loading} title={ACTIONS.refresh}>
+              {ACTIONS.refresh}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" size="small" onClick={openShiftForm}>
+              {NEW_SHIFT}
+            </CocoaButton>
+          </>
+        ) : null
+      }
+      state={state}
+      skeleton={<WorkforceSkeleton />}
+      empty={{
+        title: disabledCopy.title,
+        message: disabledCopy.message,
+        primaryAction: disabledCopy.cta ? { label: disabledCopy.cta, onClick: moduleGate.enable } : undefined
+      }}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refreshAll }}
+      commands={
+        moduleGate.ready
+          ? [
+              { id: "workforce-refresh", label: "Actualizar personal y turnos", run: refreshAll },
+              { id: "workforce-new-shift", label: NEW_SHIFT, run: openShiftForm }
+            ]
+          : moduleDisabled && disabledCopy.cta
+            ? [{ id: "workforce-enable-module", label: `${disabledCopy.cta} · ${HEADER.title}`, run: moduleGate.enable }]
+            : []
+      }
+    >
+      <CocoaKpiStrip stagger aria-label="Indicadores de personal">
+        <CocoaKpi label="Plantilla" value={fmtNum(kpis.headcount)} deltaLabel="total" polarity="neutral" status="ok" />
+        <CocoaKpi label="Activos hoy" value={fmtNum(kpis.activeStaff)} deltaLabel="en turno" polarity="neutral" status="ok" />
+        <CocoaKpi label="Horas (mes)" value={fmtNum(kpis.hoursWorkedMtd)} unit="h" deltaLabel="mes en curso" polarity="neutral" status="ok" />
+        <CocoaKpi
+          label="Ausencias pendientes"
+          value={fmtNum(kpis.absencesPending)}
+          deltaLabel={kpis.absencesPending > 0 ? "por aprobar" : "al día"}
+          polarity="neutral"
+          status={kpis.absencesPending > 0 ? "warning" : "ok"}
+        />
+        <CocoaKpi label="Turnos hoy" value={fmtNum(kpis.nextShiftsToday)} deltaLabel="próximos" polarity="neutral" status="ok" />
+      </CocoaKpiStrip>
 
-          <div className="bo-grid two">
-            {/* Turnos */}
-            <article className="bo-card" style={{ background: "var(--surface)" }}>
-              <div className="bo-card-head">
-                <h3 style={{ color: "var(--ink)" }}>Próximos turnos</h3>
-                <button type="button" onClick={() => { setShowShift((v) => !v); setMsg(null); }}>{showShift ? "Cancelar" : "+ Nuevo turno"}</button>
-              </div>
-              {showShift ? (
-                <div className="bo-stack" style={{ gap: 6, marginBottom: 10 }}>
-                  <input value={sStaff} onChange={(e) => setSStaff(e.target.value)} placeholder="Empleado" disabled={busy} />
-                  <input value={sRole} onChange={(e) => setSRole(e.target.value)} placeholder="Puesto (ej.: recepción)" disabled={busy} />
-                  <div className="bo-row" style={{ gap: 6 }}>
-                    <input type="datetime-local" value={sStart} onChange={(e) => setSStart(e.target.value)} disabled={busy} />
-                    <input type="datetime-local" value={sEnd} onChange={(e) => setSEnd(e.target.value)} disabled={busy} />
-                  </div>
-                  <button type="button" className="primary" disabled={busy || !sStaff.trim() || !sStart || !sEnd} onClick={() => run(async () => {
-                    await createShift({ staffName: sStaff.trim(), role: sRole || undefined, startAt: new Date(sStart).toISOString(), endAt: new Date(sEnd).toISOString() });
-                    setSStaff(""); setSRole(""); setSStart(""); setSEnd(""); setShowShift(false);
-                  }, "Turno creado.")}>Crear turno</button>
-                </div>
-              ) : null}
-              {shifts.length === 0 ? (
-                <EmptyState
-                  title="No hay turnos próximos"
-                  message="Crea el primer turno desde el botón superior o programa la planificación semanal."
-                />
-              ) : (
-                <div className="bo-stack" style={{ gap: 6 }}>
-                  {shifts.slice(0, 12).map((s) => (
-                    <div key={s.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, borderBottom: "1px solid var(--line-soft)", paddingBottom: 6, cursor: "pointer" }} onClick={() => setSelectedShiftId(s.id)} title="Ver ficha del turno">
-                      <span><strong>{s.staffName}</strong>{s.role ? <span className="bo-muted" style={{ fontSize: 12 }}> · {s.role}</span> : null}</span>
-                      <span className="bo-muted" style={{ fontSize: 12 }}>{fmtDate(s.startAt)} {fmtTime(s.startAt)}–{fmtTime(s.endAt)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-
-            {/* Ausencias */}
-            <article className="bo-card" style={{ background: "var(--surface)" }}>
-              <div className="bo-card-head">
-                <h3 style={{ color: "var(--ink)" }}>Ausencias pendientes</h3>
-                <span className="bo-chip">{absences.length}</span>
-              </div>
-              {absences.length === 0 ? (
-                <EmptyState
-                  title="No hay ausencias pendientes"
-                  message="Cuando algún empleado solicite una baja o ausencia aparecerá aquí para revisar y aprobar."
-                />
-              ) : (
-                <div className="bo-stack" style={{ gap: 6 }}>
-                  {absences.map((a) => (
-                    <div key={a.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", borderBottom: "1px solid var(--line-soft)", paddingBottom: 6 }}>
-                      <span style={{ cursor: "pointer", flex: 1 }} onClick={() => setSelectedAbsenceId(a.id)} title="Ver ficha de la ausencia">
-                        <strong>{a.staffName}</strong>{" "}
-                        <span className="bo-status warn" style={{ fontSize: 10 }}>{ABSENCE_TYPE_LABELS[a.type] ?? a.type}</span>{" "}
-                        <span className="bo-muted" style={{ fontSize: 12 }}>{fmtDate(a.startDate)} → {fmtDate(a.endDate)}</span>
+      <CocoaGrid align="start">
+        <CocoaSpan cols={4} min={320}>
+          <CocoaSection title="Fichaje" meta="entrada / salida">
+            <CocoaField label="Nombre del empleado">
+              <CocoaInput value={clockName} onChange={setClockName} placeholder="Nombre del empleado" disabled={busy} autoComplete="off" />
+            </CocoaField>
+            <div className="cocoa-row" data-gap="2">
+              <CocoaButton variant="filled" tone="accent" size="small" disabled={!canClock} onClick={() => run(() => clockIn(employee), `Entrada registrada para ${employee}.`)}>
+                Fichar entrada
+              </CocoaButton>
+              <CocoaButton variant="bordered" tone="neutral" size="small" disabled={!canClock} onClick={() => run(() => clockOut(employee), `Salida registrada para ${employee}.`)}>
+                Fichar salida
+              </CocoaButton>
+            </div>
+            <span style={captionStyle}>Fichajes recientes</span>
+            {clockEntries.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin fichajes recientes." />
+            ) : (
+              <ol className="c22-section__list" aria-label="Fichajes recientes">
+                {clockEntries.slice(0, MAX_CLOCK_ENTRIES).map((e) => {
+                  const out = e.payload?.action === "out";
+                  return (
+                    <li key={e.id}>
+                      <CocoaBadge tone={out ? "info" : "success"} variant="dot" size="small">
+                        {out ? "salida" : "entrada"}
+                      </CocoaBadge>
+                      <span style={growStyle}>
+                        <strong>{String(e.payload?.staffName ?? "—")}</strong>
                       </span>
-                      <button type="button" className="primary" disabled={busy} style={{ minHeight: 30, padding: "2px 10px", fontSize: 12 }} onClick={() => run(() => approveAbsence(a.id), `Ausencia de ${a.staffName} aprobada.`)}>Aprobar</button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </article>
-          </div>
+                      <time dateTime={e.createdAt} style={timeStyle}>
+                        {time(e.createdAt, { empty: "" })}
+                      </time>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
 
-          {departments.length > 0 ? (
-            <article className="bo-card" style={{ background: "var(--surface)" }}>
-              <div className="bo-card-head"><h3 style={{ color: "var(--ink)" }}>Plantilla por departamento</h3></div>
-              <div className="bo-pill-row">
-                {departments.map((d) => (
-                  <span key={d.departmentName} className="bo-status info" style={{ textTransform: "none" }}>{d.departmentName}: {fmtNum(d.count)}</span>
-                ))}
-              </div>
-            </article>
-          ) : null}
-        </>
-      )}
+        <CocoaSpan cols={8} min={480}>
+          <CocoaSection
+            title="Próximos turnos"
+            meta={plural(shifts.length, "turno", "turnos")}
+            action={
+              <CocoaButton variant="plain" tone="accent" size="small" onClick={openShiftForm}>
+                {NEW_SHIFT}
+              </CocoaButton>
+            }
+            padding={shifts.length === 0 ? "md" : "none"}
+            style={{ overflow: "clip" }}
+          >
+            {shifts.length === 0 ? (
+              <CocoaState
+                kind="empty"
+                title="No hay turnos próximos"
+                message="Crea el primer turno desde el botón superior o programa la planificación semanal."
+                primaryAction={{ label: NEW_SHIFT, onClick: openShiftForm }}
+              />
+            ) : (
+              <CocoaTable
+                columns={SHIFT_COLUMNS}
+                rows={shifts.slice(0, MAX_SHIFTS)}
+                rowKey="id"
+                selectedKey={selectedShiftId ?? undefined}
+                onSelect={(s) => setSelectedShiftId(s.id)}
+                caption="Próximos turnos"
+                aria-label="Próximos turnos"
+              />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
 
-      <SidePanel
-        open={!!selectedAbsence}
-        title={selectedAbsence ? `Ausencia · ${selectedAbsence.staffName}` : ""}
-        subtitle={selectedAbsence ? ABSENCE_TYPE_LABELS[selectedAbsence.type] ?? selectedAbsence.type : undefined}
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Ausencias pendientes"
+            meta={plural(absences.length, "solicitud", "solicitudes")}
+            padding={absences.length === 0 ? "md" : "none"}
+            style={{ overflow: "clip" }}
+          >
+            {absences.length === 0 ? (
+              <CocoaState
+                kind="empty"
+                title="No hay ausencias pendientes"
+                message="Cuando algún empleado solicite una baja o ausencia aparecerá aquí para revisar y aprobar."
+              />
+            ) : (
+              <CocoaTable
+                columns={ABSENCE_COLUMNS}
+                rows={absences}
+                rowKey="id"
+                selectedKey={selectedAbsenceId ?? undefined}
+                onSelect={(a) => setSelectedAbsenceId(a.id)}
+                rowActions={(a) => (
+                  <CocoaButton variant="tinted" tone="accent" size="small" disabled={busy} onClick={() => approve(a)}>
+                    {ACTIONS.approve}
+                  </CocoaButton>
+                )}
+                caption="Ausencias pendientes"
+                aria-label="Ausencias pendientes"
+              />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Plantilla por departamento" meta={plural(departments.length, "departamento", "departamentos")}>
+            {departments.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin plantilla asignada por departamento." />
+            ) : (
+              <CocoaChart.Bars data={departmentBars} valueFormat={fmtNum} aria-label="Plantilla por departamento" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+
+      <CocoaDrawer
+        open={selectedAbsence !== null}
         onClose={() => setSelectedAbsenceId(null)}
-        footer={selectedAbsence && selectedAbsence.status === "pending" ? (
-          <button type="button" className="primary" disabled={busy} onClick={() => run(async () => { await approveAbsence(selectedAbsence.id); setSelectedAbsenceId(null); }, `Ausencia de ${selectedAbsence.staffName} aprobada.`)}>Aprobar</button>
-        ) : undefined}
+        title={selectedAbsence ? `Ausencia · ${selectedAbsence.staffName}` : "Ausencia"}
+        subtitle={selectedAbsence ? absenceTypeLabel(selectedAbsence.type) : undefined}
+        side="right"
+        size="sm"
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => setSelectedAbsenceId(null)}>
+              {ACTIONS.close}
+            </CocoaButton>
+            {selectedAbsence && selectedAbsence.status === "pending" ? (
+              <CocoaButton variant="filled" tone="accent" loading={busy} disabled={busy} onClick={() => approve(selectedAbsence, true)}>
+                {ACTIONS.approve}
+              </CocoaButton>
+            ) : null}
+          </>
+        }
       >
-        {selectedAbsence ? (() => {
-          const start = new Date(selectedAbsence.startDate);
-          const end = new Date(selectedAbsence.endDate);
-          const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86_400_000) + 1);
-          return (
-            <>
-              <DetailRow label="Empleado">{selectedAbsence.staffName}</DetailRow>
-              <DetailRow label="Tipo">{ABSENCE_TYPE_LABELS[selectedAbsence.type] ?? selectedAbsence.type}</DetailRow>
-              <DetailRow label="Estado">{selectedAbsence.status === "pending" ? <span className="bo-status warn">pendiente</span> : <span className="bo-status ok">{selectedAbsence.status}</span>}</DetailRow>
-              <DetailRow label="Desde">{fmtDate(selectedAbsence.startDate)}</DetailRow>
-              <DetailRow label="Hasta">{fmtDate(selectedAbsence.endDate)}</DetailRow>
-              <DetailRow label="Duración">{fmtNum(days)} día{days === 1 ? "" : "s"}</DetailRow>
-            </>
-          );
-        })() : null}
-      </SidePanel>
+        {selectedAbsence ? (
+          <ul className="c22-section__list" aria-label="Ficha de la ausencia">
+            <DetailRow label="Empleado">{selectedAbsence.staffName}</DetailRow>
+            <DetailRow label={FIELD_LABELS.type}>{absenceTypeLabel(selectedAbsence.type)}</DetailRow>
+            <DetailRow label={FIELD_LABELS.status}>
+              {selectedAbsence.status === "pending" ? (
+                <CocoaBadge tone="warning">pendiente</CocoaBadge>
+              ) : (
+                <CocoaBadge tone="success">{selectedAbsence.status}</CocoaBadge>
+              )}
+            </DetailRow>
+            <DetailRow label={FIELD_LABELS.from}>{fmtDate(selectedAbsence.startDate)}</DetailRow>
+            <DetailRow label={FIELD_LABELS.to}>{fmtDate(selectedAbsence.endDate)}</DetailRow>
+            <DetailRow label="Duración">{plural(absenceDays(selectedAbsence), "día", "días")}</DetailRow>
+          </ul>
+        ) : null}
+      </CocoaDrawer>
 
-      <SidePanel
-        open={!!selectedShift}
-        title={selectedShift ? `Turno · ${selectedShift.staffName}` : ""}
-        subtitle={selectedShift?.role ?? undefined}
+      <CocoaDrawer
+        open={selectedShift !== null}
         onClose={() => setSelectedShiftId(null)}
+        title={selectedShift ? `Turno · ${selectedShift.staffName}` : "Turno"}
+        subtitle={selectedShift?.role}
+        side="right"
+        size="sm"
+        footer={
+          <CocoaButton variant="bordered" tone="neutral" onClick={() => setSelectedShiftId(null)}>
+            {ACTIONS.close}
+          </CocoaButton>
+        }
       >
-        {selectedShift ? (() => {
-          const start = new Date(selectedShift.startAt);
-          const end = new Date(selectedShift.endAt);
-          const hours = Math.max(0, Math.round(((end.getTime() - start.getTime()) / 3_600_000) * 10) / 10);
-          return (
-            <>
-              <DetailRow label="Empleado">{selectedShift.staffName}</DetailRow>
-              {selectedShift.role ? <DetailRow label="Puesto">{selectedShift.role}</DetailRow> : null}
-              <DetailRow label="Fecha">{date(start, "weekday")}</DetailRow>
-              <DetailRow label="Entrada">{fmtTime(selectedShift.startAt)}</DetailRow>
-              <DetailRow label="Salida">{fmtTime(selectedShift.endAt)}</DetailRow>
-              <DetailRow label="Duración">{fmtNum(hours)} h</DetailRow>
-            </>
-          );
-        })() : null}
-      </SidePanel>
-    </section>
+        {selectedShift ? (
+          <ul className="c22-section__list" aria-label="Ficha del turno">
+            <DetailRow label="Empleado">{selectedShift.staffName}</DetailRow>
+            {selectedShift.role ? <DetailRow label="Puesto">{selectedShift.role}</DetailRow> : null}
+            <DetailRow label={FIELD_LABELS.date}>{date(selectedShift.startAt, "weekday")}</DetailRow>
+            <DetailRow label="Entrada">{fmtTime(selectedShift.startAt)}</DetailRow>
+            <DetailRow label="Salida">{fmtTime(selectedShift.endAt)}</DetailRow>
+            <DetailRow label="Duración">{`${fmtNum(shiftHours(selectedShift))} h`}</DetailRow>
+          </ul>
+        ) : null}
+      </CocoaDrawer>
+
+      <CocoaDrawer
+        open={showShift}
+        onClose={closeShiftForm}
+        title={NEW_SHIFT}
+        subtitle="Asigna empleado, puesto y horario."
+        side="right"
+        size="md"
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={closeShiftForm} disabled={busy}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" loading={busy} disabled={!canCreateShift} onClick={submitShift}>
+              Crear turno
+            </CocoaButton>
+          </>
+        }
+      >
+        <div className="cocoa-stack" data-gap="3">
+          <CocoaField label="Empleado" required>
+            <CocoaInput value={sStaff} onChange={setSStaff} placeholder="Empleado" disabled={busy} autoComplete="off" />
+          </CocoaField>
+          <CocoaField label="Puesto" hint={STATUS_LABELS.optional}>
+            <CocoaInput value={sRole} onChange={setSRole} placeholder="Puesto (ej.: recepción)" disabled={busy} />
+          </CocoaField>
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Inicio" required>
+              <CocoaInput type="datetime-local" value={sStart} onChange={setSStart} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Fin" required>
+              <CocoaInput type="datetime-local" value={sEnd} onChange={setSEnd} disabled={busy} />
+            </CocoaField>
+          </CocoaFormRow>
+        </div>
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }
+
+// Mirror skeleton: the KPI strip and the 4/8 + 6/6 grid.
+function WorkforceSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} />
+      <CocoaSkeleton.Grid rows={[[4, 8], [6, 6]]} height={220} />
+    </div>
+  );
+}
+
+export default WorkforceDashboard;

@@ -17,6 +17,7 @@ export interface CocoaSelectProps {
   value: string;
   onChange: (value: string) => void;
   options: Array<CocoaSelectOption>;
+  /** Disabled, hidden first option shown while `value` is "" («Selecciona un canal»); a REAL «none» choice («Sin asignar») must be an explicit `{ value: "", label }` option instead. */
   placeholder?: string;
   size?: "small" | "regular" | "large";
   disabled?: boolean;

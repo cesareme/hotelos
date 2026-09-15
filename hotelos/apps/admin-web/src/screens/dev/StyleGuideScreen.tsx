@@ -16,7 +16,7 @@
 // swatch paints `var(--cocoa-*)` or a value read at runtime from the served
 // stylesheet), Spanish copy, English code. First adopter of `CocoaPage`.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   COCOA_TONES,
   CocoaActionBar,
@@ -810,7 +810,8 @@ const BUTTON_SAMPLE = `<CocoaButton variant="filled" tone="accent" icon={<PlusIc
 <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>Actualizar</CocoaButton>
 <CocoaButton variant="plain" tone="destructive" loading={busy}>Eliminar</CocoaButton>
 <CocoaButton variant="plain" tone="neutral" aria-label="Avisos" icon={<BellIcon size={16} />} />   // icono solo: aria-label obligatorio
-<CocoaButton variant="plain" tone="neutral">Buscar <CocoaKbd>⌘K</CocoaKbd></CocoaButton>`;
+<CocoaButton variant="plain" tone="neutral">Buscar <CocoaKbd>⌘K</CocoaKbd></CocoaButton>
+<CocoaButton variant="plain" tone="neutral" wrap aria-current={selected}>Título largo de una fila seleccionable…</CocoaButton>   // filas de lista 4/8: la altura sigue al texto, alineado a la izquierda`;
 
 function ButtonsSection() {
   const [busy, setBusy] = useState(false);
@@ -865,6 +866,18 @@ function ButtonsSection() {
             Buscar <CocoaKbd>⌘K</CocoaKbd>
           </CocoaButton>
         </div>
+        <div className="cocoa-row" data-gap="2" data-align="start">
+          <Caption minWidth={72}>wrap</Caption>
+          <CocoaButton variant="plain" tone="neutral" wrap aria-current style={{ maxWidth: 260 }}>
+            Orden 4812 · Revisar la caldera de la planta 3 y sustituir la válvula de seguridad
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" wrap style={{ maxWidth: 180 }}>
+            Etiqueta que cabe en dos líneas
+          </CocoaButton>
+          <Note flex="1 1 240px">
+            Filas seleccionables de un workspace (título largo en una columna de 320 px): <Mono>wrap</Mono> deja crecer la altura y alinea a la izquierda; una sola línea sigue midiendo 22 / 28 / 32.
+          </Note>
+        </div>
         <Note>Foco: halo de 3 px Esmeralda vía <Mono>.cocoa-focus-ring:focus-visible</Mono>. En pantallas migradas no queda ningún botón nativo crudo.</Note>
         <CodeSample code={BUTTON_SAMPLE} />
       </div>
@@ -886,7 +899,13 @@ const FIELDS_SAMPLE = `<CocoaField label="Nombre comercial" required help="Como 
   <CocoaSwitch checked={published} onChange={setPublished} />
 </CocoaField>
 <CocoaField label="Llegada"><CocoaDatePicker value={arrival} onChange={setArrival} min={today} /></CocoaField>
-<CocoaField label="Noches mínimas"><CocoaStepper value={minNights} onChange={setMinNights} min={1} max={14} /></CocoaField>`;
+<CocoaField label="Inicio del turno"><CocoaDatePicker value={start} onChange={setStart} withTime /></CocoaField>   // datetime-local («YYYY-MM-DDTHH:mm»)
+<CocoaField label="Noches mínimas"><CocoaStepper value={minNights} onChange={setMinNights} min={1} max={14} /></CocoaField>
+<CocoaField label="Categoría"><CocoaInput value={category} onChange={setCategory} suggestions={CATEGORIES} /></CocoaField>   // datalist nativo, texto libre permitido
+<span className="cocoa-caption">Categorías habituales</span>   // etiqueta de grupo sin control
+<a className="cocoa-link" href={url} download>Descargar el informe</a>   // enlace en línea con tinta AA y anillo de foco`;
+
+const CATEGORY_SUGGESTIONS = ["Entrantes", "Principales", "Postres", "Bebidas", "Cafetería"];
 
 const CHANNEL_OPTIONS = [
   { value: "direct", label: "Directo" },
@@ -902,13 +921,15 @@ function FieldsSection() {
   const [notes, setNotes] = useState("");
   const [channel, setChannel] = useState("");
   const [arrival, setArrival] = useState(TODAY.toISOString().slice(0, 10));
+  const [shiftStart, setShiftStart] = useState(`${TODAY.toISOString().slice(0, 10)}T15:00`);
+  const [category, setCategory] = useState("");
   const [nights, setNights] = useState(2);
   const [enabled, setEnabled] = useState(true);
   const [small, setSmall] = useState(false);
   const [query, setQuery] = useState("");
   const [view, setView] = useState("lista");
   return (
-    <CocoaSection id="guia-campos" headingLevel={2} title="Campos · CocoaField + controles" meta="Input, textarea, select, switch, fecha, stepper, búsqueda y segmented; 16 px en táctil">
+    <CocoaSection id="guia-campos" headingLevel={2} title="Campos · CocoaField + controles" meta="Input, textarea, select, switch, fecha (y hora), stepper, búsqueda, segmented y sugerencias; 16 px en táctil">
       <div className="cocoa-stack" data-gap="4">
         <CocoaFormRow columns={3} min={220}>
           <CocoaField label="Texto" help="Ayuda en callout secondary">
@@ -944,6 +965,12 @@ function FieldsSection() {
           <CocoaField label="Fecha">
             <CocoaDatePicker value={arrival} onChange={setArrival} />
           </CocoaField>
+          <CocoaField label="Fecha y hora" hint="withTime">
+            <CocoaDatePicker value={shiftStart} onChange={setShiftStart} withTime />
+          </CocoaField>
+          <CocoaField label="Con sugerencias" hint="datalist">
+            <CocoaInput value={category} onChange={setCategory} suggestions={CATEGORY_SUGGESTIONS} placeholder="Categoría de la carta" />
+          </CocoaField>
           <CocoaField label="Contador">
             <CocoaStepper value={nights} onChange={setNights} min={1} max={14} />
           </CocoaField>
@@ -973,6 +1000,29 @@ function FieldsSection() {
             aria-label="Vista"
           />
           <CocoaSegmentedControl size="small" value={view} onChange={setView} options={[{ value: "lista", label: "Lista" }, { value: "cronograma", label: "Cronograma" }]} aria-label="Vista pequeña" />
+        </div>
+        <div className="cocoa-row" data-gap="3" data-align="baseline">
+          <span className="cocoa-caption">Categorías habituales</span>
+          <span className="cocoa-cluster" data-gap="1">
+            {CATEGORY_SUGGESTIONS.slice(0, 3).map((item) => (
+              <CocoaButton key={item} variant="tinted" tone="neutral" size="small" aria-pressed={category === item} onClick={() => setCategory(item)}>
+                {item}
+              </CocoaButton>
+            ))}
+          </span>
+          <a
+            className="cocoa-link"
+            href="#guia-tablas"
+            onClick={(event) => {
+              event.preventDefault();
+              scrollToSection("guia-tablas");
+            }}
+          >
+            Enlace en línea (.cocoa-link)
+          </a>
+          <Note as="span">
+            <Mono>.cocoa-caption</Mono> etiqueta un grupo de chips sin control; <Mono>.cocoa-link</Mono> es el único enlace de texto (descargas, «Abrir histórico»).
+          </Note>
         </div>
         <CodeSample code={FIELDS_SAMPLE} />
       </div>
@@ -1237,6 +1287,9 @@ const CARD_SAMPLE = `<CocoaSection title="Pace próximos 30 días" meta="OTB · 
   <CocoaChart.Line series={pace} />
 </CocoaSection>
 <CocoaSection title="Anomalías" scroll="y" maxHeight={200} footer={<CocoaButton variant="plain" size="small">Ver todas</CocoaButton>}>…</CocoaSection>
+<CocoaSection variant="plain" padding="none" headingLevel={2} title="Mensual" meta="día 1 del mes">   // cabecera de grupo a ras de la rejilla (sin tarjeta)
+  <CocoaGrid>…</CocoaGrid>
+</CocoaSection>
 <CocoaCard variant="elevated" padding="md" onClick={open} aria-label="Abrir reserva">…</CocoaCard>   // hover → window shadow, −2 px`;
 
 function CardsSection() {
@@ -1311,6 +1364,20 @@ function CardsSection() {
             </CocoaSection>
           </CocoaSpan>
         </CocoaGrid>
+        <CocoaSection variant="plain" padding="none" title="Grupo sin tarjeta · plain + none" meta="cabecera a ras de la rejilla">
+          <CocoaGrid gap={3} align="start">
+            <CocoaSpan cols={6} min={240}>
+              <CocoaCard variant="bordered" padding="sm">
+                <Note>Tarjeta 1 del grupo: el título del grupo queda alineado con este borde (x = 0), no con el inset de 16 px de una tarjeta.</Note>
+              </CocoaCard>
+            </CocoaSpan>
+            <CocoaSpan cols={6} min={240}>
+              <CocoaCard variant="bordered" padding="sm">
+                <Note>Tarjeta 2 del grupo (rituales de exportación de Informes, ola 9).</Note>
+              </CocoaCard>
+            </CocoaSpan>
+          </CocoaGrid>
+        </CocoaSection>
         <CodeSample code={CARD_SAMPLE} />
       </div>
     </CocoaSection>
@@ -1450,6 +1517,7 @@ const TABLE_SAMPLE = `const columns: CocoaTableColumn<Row>[] = [
 <CocoaSection title="Reservas" padding="none">
   <CocoaTable columns={columns} rows={rows} rowKey="id" sortBy={sort} onSort={setSort}
     selectedKey={selected?.id} onSelect={setSelected} rowActions={(r) => <CocoaButton variant="plain" size="small">Abrir</CocoaButton>}
+    rowTone={(r) => (r.status === "pendiente" ? "warning" : undefined)} rowTitle={(r) => "Abrir la reserva " + r.id}   // lavado de tono por fila (bajo hover y selección) · tooltip nativo
     footer caption="Reservas de la semana" />
 </CocoaSection>
 // < 600 px → tarjetas apiladas etiqueta / valor · parrillas anchas → <CocoaScrollArea axis="x" stickyFirstColumn>
@@ -1505,7 +1573,7 @@ function TablesSection() {
         id="guia-tablas"
         headingLevel={2}
         title="Tablas · CocoaTable"
-        meta={isNarrow ? "Ahora en tarjetas apiladas (< 600 px)" : "Cabecera sticky sin blur, ordenación, numéricos tabulares a la derecha, totales, acciones, selección; < 600 px → tarjetas"}
+        meta={isNarrow ? "Ahora en tarjetas apiladas (< 600 px)" : "Cabecera sticky sin blur, ordenación, numéricos tabulares a la derecha, totales, acciones, selección, tono por fila (pendientes en warning); < 600 px → tarjetas"}
         action={
           <CocoaButton variant="plain" tone="accent" size="small" onClick={() => setLoading((current) => !current)}>
             {loading ? "Mostrar datos" : "Simular carga"}
@@ -1517,6 +1585,8 @@ function TablesSection() {
           columns={columns}
           rows={rows}
           rowKey="id"
+          rowTone={(row) => (row.status === "pendiente" ? "warning" : undefined)}
+          rowTitle={(row) => `Abrir la reserva ${row.id}`}
           sortBy={sort}
           onSort={setSort}
           selectedKey={selected?.id}
@@ -1667,9 +1737,14 @@ function TabsSection() {
 
 const OVERLAY_SAMPLE = `<CocoaDrawer open={open} onClose={close} title="Reserva RA-10412" subtitle="Marta Otero · Confirmada" side="right" size="md"
   dismissible={!dirty} initialFocus={() => checkInRef.current}   // flujo obligatorio: Esc y velo no cierran · foco inicial en la primaria
+  focusKey={loaded}   // el contenido llega tras un fetch: al cambiar la clave se vuelve a pedir initialFocus (el primer control ya existe)
   footer={<><CocoaButton variant="bordered" tone="neutral" onClick={close}>Cerrar</CocoaButton><CocoaButton ref={checkInRef} onClick={checkIn}>Hacer check-in</CocoaButton></>}>…</CocoaDrawer>
 <CocoaDialog open={ask} onClose={cancel} tone="destructive" title="¿Eliminar el plan tarifario?"
   description="Se retirará de los canales conectados. Esta acción no se puede deshacer." confirmLabel="Eliminar" onConfirm={remove} busy={removing} />
+<CocoaDialog open={noteOpen} onClose={closeNote} title="Añadir nota" confirmLabel="Guardar nota" onConfirm={saveNote}
+  initialFocus={() => document.getElementById(noteId)}>   // prompt de un campo: el foco entra en el campo, no en Confirmar
+  <CocoaField label="Nota"><CocoaInput id={noteId} value={note} onChange={setNote} multiline rows={3} /></CocoaField>
+</CocoaDialog>
 <CocoaSheet open={preview} onClose={closePreview} title="Vista previa de la importación" size="lg">…</CocoaSheet>
 <CocoaPopover open={menu} anchorEl={anchor} placement="bottom" onClose={closeMenu} role="menu">…</CocoaPopover>`;
 
@@ -1681,14 +1756,27 @@ function OverlaysSection() {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerLocked, setDrawerLocked] = useState(false);
   const [drawerFocusPrimary, setDrawerFocusPrimary] = useState(false);
+  const [drawerSimulateLoad, setDrawerSimulateLoad] = useState(false);
+  const [drawerLoading, setDrawerLoading] = useState(false);
   const checkInRef = useRef<HTMLButtonElement>(null);
-  const [dialogTone, setDialogTone] = useState<CocoaDialogTone | "ack">("primary");
+  const arrivalInputId = useId();
+  const noteInputId = useId();
+  const [note, setNote] = useState("");
+  const [dialogTone, setDialogTone] = useState<CocoaDialogTone | "ack" | "prompt">("primary");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
   const [popoverOpen, setPopoverOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement>(null);
-  const openDialog = (tone: CocoaDialogTone | "ack") => {
+  // Simulated fetch: the form mounts 700 ms after the drawer opens and `focusKey` re-asks `initialFocus` for it.
+  const openDrawer = () => {
+    setDrawerOpen(true);
+    if (drawerSimulateLoad) {
+      setDrawerLoading(true);
+      window.setTimeout(() => setDrawerLoading(false), 700);
+    }
+  };
+  const openDialog = (tone: CocoaDialogTone | "ack" | "prompt") => {
     setDialogTone(tone);
     setDialogOpen(true);
   };
@@ -1697,7 +1785,7 @@ function OverlaysSection() {
     window.setTimeout(() => {
       setDialogBusy(false);
       setDialogOpen(false);
-      showToast(dialogTone === "destructive" ? "Plan tarifario eliminado" : "Cambios aplicados", { variant: dialogTone === "destructive" ? "warning" : "success" });
+      showToast(dialogTone === "destructive" ? "Plan tarifario eliminado" : dialogTone === "prompt" ? "Nota añadida" : "Cambios aplicados", { variant: dialogTone === "destructive" ? "warning" : "success" });
     }, 700);
   };
   return (
@@ -1707,7 +1795,7 @@ function OverlaysSection() {
           <Caption minWidth={72}>drawer</Caption>
           <CocoaSegmentedControl size="small" value={drawerSide} onChange={(value) => setDrawerSide(value as CocoaDrawerSide)} options={[{ value: "right", label: "Derecha" }, { value: "left", label: "Izquierda" }, { value: "bottom", label: "Abajo" }]} aria-label="Lado del drawer" />
           <CocoaSegmentedControl size="small" value={drawerSize} onChange={(value) => setDrawerSize(value as CocoaDrawerSize)} options={[{ value: "sm", label: "360" }, { value: "md", label: "480" }, { value: "lg", label: "640" }]} aria-label="Tamaño del drawer" />
-          <CocoaButton variant="filled" tone="accent" size="small" onClick={() => setDrawerOpen(true)}>
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={openDrawer}>
             Abrir drawer
           </CocoaButton>
         </div>
@@ -1715,6 +1803,7 @@ function OverlaysSection() {
           <Caption minWidth={72}>opciones</Caption>
           <CocoaSwitch size="small" checked={drawerLocked} onChange={setDrawerLocked} label="No descartable (dismissible=false)" />
           <CocoaSwitch size="small" checked={drawerFocusPrimary} onChange={setDrawerFocusPrimary} label="Foco inicial en «Hacer check-in» (initialFocus)" />
+          <CocoaSwitch size="small" checked={drawerSimulateLoad} onChange={setDrawerSimulateLoad} label="Contenido cargado tras 700 ms (focusKey → foco en «Llegada»)" />
         </div>
         <div className="cocoa-row" data-gap="3">
           <Caption minWidth={72}>diálogo</Caption>
@@ -1726,6 +1815,9 @@ function OverlaysSection() {
           </CocoaButton>
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => openDialog("ack")}>
             Solo aceptar
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => openDialog("prompt")}>
+            Con campo (initialFocus)
           </CocoaButton>
         </div>
         <div className="cocoa-row" data-gap="3">
@@ -1749,7 +1841,8 @@ function OverlaysSection() {
         side={isNarrow ? "bottom" : drawerSide}
         size={drawerSize}
         dismissible={!drawerLocked}
-        initialFocus={drawerFocusPrimary ? () => checkInRef.current : undefined}
+        initialFocus={drawerFocusPrimary ? () => checkInRef.current : drawerSimulateLoad ? () => document.getElementById(arrivalInputId) : undefined}
+        focusKey={drawerLoading ? "loading" : "loaded"}
         footer={
           <>
             <CocoaButton variant="bordered" tone="neutral" onClick={() => setDrawerOpen(false)}>
@@ -1767,37 +1860,54 @@ function OverlaysSection() {
               Esc y el velo no cierran este drawer (dismissible=false): solo los botones del pie o el aspa de la cabecera.
             </CocoaCallout>
           ) : null}
-          <CocoaFormSection title="Estancia" columns={2}>
-            <CocoaField label="Llegada">
-              <CocoaDatePicker value="2026-09-18" onChange={() => undefined} />
-            </CocoaField>
-            <CocoaField label="Noches">
-              <CocoaStepper value={3} onChange={() => undefined} min={1} />
-            </CocoaField>
-          </CocoaFormSection>
+          {drawerLoading ? (
+            <CocoaSkeleton.Strip count={2} />
+          ) : (
+            <CocoaFormSection title="Estancia" columns={2}>
+              <CocoaField label="Llegada">
+                <CocoaDatePicker id={arrivalInputId} value="2026-09-18" onChange={() => undefined} />
+              </CocoaField>
+              <CocoaField label="Noches">
+                <CocoaStepper value={3} onChange={() => undefined} min={1} />
+              </CocoaField>
+            </CocoaFormSection>
+          )}
           <Note>
             En teléfono el drawer siempre sube desde abajo con asa y safe-area.
-            {drawerFocusPrimary ? " El foco inicial ha ido a «Hacer check-in» (initialFocus); por defecto va al primer control." : " El foco inicial va al primer control (aquí, la fecha)."}
+            {drawerFocusPrimary
+              ? " El foco inicial ha ido a «Hacer check-in» (initialFocus); por defecto va al primer control."
+              : drawerSimulateLoad
+                ? " El formulario ha llegado después de abrir: al cambiar focusKey el foco ha entrado en «Llegada» en vez de quedarse en «Cerrar»."
+                : " El foco inicial va al primer control (aquí, la fecha)."}
           </Note>
         </div>
       </CocoaDrawer>
       <CocoaDialog
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
+        initialFocus={dialogTone === "prompt" ? () => document.getElementById(noteInputId) : undefined}
         tone={dialogTone === "destructive" ? "destructive" : "primary"}
         hideCancel={dialogTone === "ack"}
-        title={dialogTone === "destructive" ? "¿Eliminar el plan tarifario?" : dialogTone === "ack" ? "Exportación en cola" : "¿Aplicar los cambios?"}
+        title={dialogTone === "destructive" ? "¿Eliminar el plan tarifario?" : dialogTone === "ack" ? "Exportación en cola" : dialogTone === "prompt" ? "Añadir nota" : "¿Aplicar los cambios?"}
         description={
           dialogTone === "destructive"
             ? "Se retirará de los canales conectados. Esta acción no se puede deshacer."
             : dialogTone === "ack"
               ? "Recibirás un aviso cuando el fichero esté listo."
-              : "Los precios nuevos se publican en todos los canales conectados."
+              : dialogTone === "prompt"
+                ? "La nota se guarda en la orden de trabajo. El foco entra en el campo (initialFocus), no en «Guardar nota»."
+                : "Los precios nuevos se publican en todos los canales conectados."
         }
-        confirmLabel={dialogTone === "destructive" ? "Eliminar" : dialogTone === "ack" ? "Entendido" : "Aplicar"}
+        confirmLabel={dialogTone === "destructive" ? "Eliminar" : dialogTone === "ack" ? "Entendido" : dialogTone === "prompt" ? "Guardar nota" : "Aplicar"}
         onConfirm={confirm}
         busy={dialogBusy}
-      />
+      >
+        {dialogTone === "prompt" ? (
+          <CocoaField label="Nota" required>
+            <CocoaInput id={noteInputId} value={note} onChange={setNote} multiline rows={3} placeholder="Qué has hecho y qué queda pendiente" />
+          </CocoaField>
+        ) : null}
+      </CocoaDialog>
       <CocoaSheet
         open={sheetOpen}
         onClose={() => setSheetOpen(false)}
@@ -2000,7 +2110,8 @@ const CHART_SAMPLE = `<CocoaChart.Line series={[
 <CocoaChart.Gauge value={risk} thresholds={[30, 60]} label="Riesgo de cancelación" caption="12 reservas en riesgo" />
 <CocoaChart.Gauge value={occ} thresholds={[40, 70]} invert label="Ocupación prevista" />   // invert: más alto = mejor
 <CocoaChart.Donut slices={mix} centerValue={percent(42)} centerLabel="Directo" />
-<CocoaChart.Sparkline values={occ} tone="success" />   ·   <CocoaChart.Progress value={68} label="Ocupación" />`;
+<CocoaChart.Sparkline values={occ} tone="success" />   ·   <CocoaChart.Progress value={68} label="Ocupación" />
+<CocoaChart.Progress value={12} max={48} valueLabel="12 de 48" label="Limpias" />   // barra = value / max · texto propio en vez del porcentaje`;
 
 function ChartsSection() {
   const lineSeries = useMemo(
@@ -2059,6 +2170,7 @@ function ChartsSection() {
                 <CocoaChart.Progress value={92} tone="success" label="Checklist de salida en vivo" />
                 <CocoaChart.Progress value={35} tone="warning" label="Registro de viajeros" />
                 <CocoaChart.Progress value={12} tone="danger" label="Cobros pendientes" showValue={false} />
+                <CocoaChart.Progress value={12} max={48} valueLabel={`${number(12)} de ${number(48)} habitaciones`} label="Limpias (max + valueLabel)" />
               </div>
             </CocoaSection>
           </CocoaSpan>
@@ -2182,6 +2294,7 @@ const PAGE_SAMPLE = `<CocoaPage
   empty={{ title: "Sin datos hoy", illustration: "box", primaryAction: { label: "Actualizar", onClick: refresh } }}
   error={{ message: error, onRetry: refresh }}
   fullBleed={false}   // true en parrillas y calendarios: el cuerpo cancela el gutter (24 / 16), la cabecera lo conserva
+  wrap={false}        // true en contenedores estrechos (tarjeta de acceso de 440 px): el h1 se parte en dos líneas en vez de recortarse
   commands={[{ id: "refresh", label: "Actualizar datos", run: refresh, shortcut: "⌘R" }]}   // aparecen en ⌘K
   density="comfortable">
   <CocoaKpiStrip stagger>…</CocoaKpiStrip>

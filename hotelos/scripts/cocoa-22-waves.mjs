@@ -96,8 +96,7 @@ const DEAD = {
   "billing/SplitFolioDialog.tsx": "0 importadores",
   "billing/InvoiceDetailScreen.tsx": "0 importadores (solo un comentario en billing/invoiceStatus.ts:2); sin clave ni URL",
   "onboarding/CocoaOnboardingWizard.tsx": "0 importadores; lo lee layouts/__tests__/shell-cocoa22-contract.test.mts:16 (ajustar el test al retirarlo)",
-  "auth/CocoaLoginScreen.tsx": "0 importadores (el login real es auth/LoginScreen.tsx, ya migrado)",
-  "errors/CocoaServerErrorScreen.tsx": "0 importadores",
+  // auth/CocoaLoginScreen.tsx and errors/CocoaServerErrorScreen.tsx: retired in wave 1 (git D).
   "developer/CocoaShowcaseScreen.tsx": "0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:36 (borrar la línea)",
   "preview/CocoaGalleryScreen.tsx": "0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:37 (borrar la línea)"
 };

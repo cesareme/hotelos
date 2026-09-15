@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { nextSegmentValue, segmentItemStyle, tabSurfaceStyle } from "../CocoaSegmentedControl.tsx";
+import { nextSegmentValue, segmentItemStyle, segmentedOverflows, tabSurfaceStyle } from "../CocoaSegmentedControl.tsx";
 import { routeTabStyle } from "../CocoaRouteTabs.tsx";
 import { computePosition } from "../CocoaPopover.tsx";
 import { switchThumbOffset } from "../CocoaSwitch.tsx";
@@ -30,6 +30,15 @@ describe("CocoaSegmentedControl · keyboard", () => {
   });
   it("starts from the first option when the current value is unknown", () => {
     assert.equal(nextSegmentValue("nope", values, "ArrowRight"), "semana");
+  });
+});
+
+describe("CocoaSegmentedControl · overflow fade (fix:2-A qa#5)", () => {
+  it("fades only when the content is wider than the box (1 px tolerance)", () => {
+    assert.equal(segmentedOverflows(420, 324), true); // /hoy/operaciones «Detalle» at 390
+    assert.equal(segmentedOverflows(324, 324), false);
+    assert.equal(segmentedOverflows(325, 324), false);
+    assert.equal(segmentedOverflows(326, 324), true);
   });
 });
 

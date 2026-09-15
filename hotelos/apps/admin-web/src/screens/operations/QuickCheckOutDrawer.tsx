@@ -19,14 +19,36 @@
 //     nunca como 0,00 € "Saldado").
 //   - Si el API responde 409 BALANCE_DUE, el drawer muestra el saldo y ofrece
 //     "Cobrar" o "Salir con saldo pendiente" (reintento con acknowledgeBalance).
+//
+// Cocoa 22 (ola 2 · lote 2-A): `CocoaDrawer` panel (portal, scrim, focus
+// trap, Esc, bottom sheet on phones); steps as `CocoaSection` with a badge
+// meta; folio lines in a `CocoaTable` + totals list; `CocoaSwitch` for the
+// operator choices; 409 prompt as a `CocoaCallout` banner. Same endpoints.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useToast } from "../../components/Toast";
-import { LoadingBlock } from "../../components/States";
 import { apiRequest } from "../../services/api-client";
 import { balanceDueConflict, type BalanceDueConflict } from "../../services/pmsCommerceApi";
 import { logBreadcrumb } from "../../lib/breadcrumb";
-import { DEFAULT_CURRENCY, money } from "../../lib/format";
+import { reservationStatusLabel } from "./frontdesk-labels";
+import { DEFAULT_CURRENCY, money, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { ClockIcon } from "../../components/cocoa-icons/StatusIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDrawer,
+  CocoaField,
+  CocoaSection,
+  CocoaSelect,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  toneInk,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type Reservation = {
   id: string;
@@ -41,9 +63,11 @@ type Reservation = {
 
 type Guest = { id: string; firstName: string; surname1?: string; surname2?: string };
 
+type FolioLine = { id: string; type: string; description: string; quantity: number; unitPrice: number; total: number };
+
 type FolioBalance = {
   folio: { id: string; status: string; currency: string };
-  lines: Array<{ id: string; type: string; description: string; quantity: number; unitPrice: number; total: number }>;
+  lines: Array<FolioLine>;
   payments: Array<{ id: string; amount: number; method: string; status: string }>;
   chargesTotal: number;
   paymentsTotal: number;
@@ -61,6 +85,12 @@ export type QuickCheckOutProps = {
 // Payment method values match the API PaymentRecord.method union.
 type PaymentMethod = "card" | "cash" | "bank_transfer";
 
+const PAYMENT_METHOD_OPTIONS = [
+  { value: "card", label: "Tarjeta" },
+  { value: "cash", label: "Efectivo" },
+  { value: "bank_transfer", label: "Transferencia" }
+];
+
 function fmtEur(value: number | undefined | null): string {
   return money(value);
 }
@@ -69,6 +99,47 @@ function fmtName(g: Guest | null): string {
   if (!g) return "Huésped";
   return [g.firstName, g.surname1, g.surname2].filter(Boolean).join(" ").trim() || "Huésped";
 }
+
+function elapsedText(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
+
+const mutedStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--cocoa-fs-caption)",
+  color: "var(--cocoa-label-secondary)"
+};
+
+const nameStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-headline)",
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label)"
+};
+
+const bodyTextStyle: CSSProperties = { margin: 0, fontSize: "var(--cocoa-fs-body)", color: "var(--cocoa-label)" };
+
+/** Balance figure (13 px): AA tone ink — danger while something is owed, success when settled. */
+function balanceStyle(hasBalance: boolean): CSSProperties {
+  return { color: hasBalance ? toneInk("danger") : toneInk("success") };
+}
+
+// Columns declared outside the component (rule A5); the type/quantity caption goes under the description.
+const FOLIO_COLUMNS: CocoaTableColumn<FolioLine>[] = [
+  {
+    key: "description",
+    label: "Concepto",
+    render: (line) => (
+      <div className="cocoa-stack" data-gap="1">
+        <span>{line.description}</span>
+        <span style={mutedStyle}>
+          {line.type}
+          {line.quantity > 1 ? ` · ${line.quantity}x` : ""}
+        </span>
+      </div>
+    )
+  },
+  { key: "total", label: "Importe", align: "right", width: "12ch", render: (line) => fmtEur(line.total) }
+];
 
 export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: QuickCheckOutProps) {
   const { showToast } = useToast();
@@ -105,8 +176,10 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
     const t = window.setInterval(() => setTick((x) => x + 1), 1000);
     return () => window.clearInterval(t);
   }, [completed]);
+  void tick;
   const elapsedSeconds = completed ? completed.elapsedSeconds : Math.floor((Date.now() - startedAt) / 1000);
-  const elapsedLabel = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
+  const elapsedLabel = elapsedText(elapsedSeconds);
+  const timerTone: CocoaTone = elapsedSeconds < 60 ? "success" : elapsedSeconds < 90 ? "warning" : "danger";
 
   const loadFolio = useCallback(async () => {
     setFolioLoading(true);
@@ -159,7 +232,7 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
   const blockingReason = !reservation
     ? ""
     : reservation.status !== "checked_in"
-    ? `Reserva en estado "${reservation.status}". No procede check-out.`
+    ? `Reserva en estado «${reservationStatusLabel(reservation.status)}»: el check-out solo procede con la reserva en casa.`
     : !folio && !skipPayment
     ? "No se pudo cargar el folio: reintenta o elige «Sin cobro» de forma explícita."
     : "";
@@ -236,7 +309,7 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
       const elapsed = Math.floor((Date.now() - startedAt) / 1000);
       setCompleted({ elapsedSeconds: elapsed });
       onCompleted?.({ reservationId: reservation.id, elapsedSeconds: elapsed });
-      showToast(`Check-out completado en ${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`, { variant: "success" });
+      showToast(`Check-out completado en ${elapsedText(elapsed)}`, { variant: "success" });
       window.setTimeout(() => onClose(), 2500);
     } catch (err) {
       const conflict = balanceDueConflict(err);
@@ -254,318 +327,249 @@ export function QuickCheckOutDrawer({ reservationId, onClose, onCompleted }: Qui
     }
   }
 
-  const ctaLabel = busy
-    ? "Procesando…"
-    : !folio
-    ? "Salir sin cobro →"
+  const ctaLabel = !folio
+    ? "Salir sin cobro"
     : willCollect
     ? `Cobrar ${fmtEur(balanceDue)} y cerrar`
     : hasBalance
-    ? "Salir sin cobrar →"
-    : "Hacer check-out →";
+    ? "Salir sin cobrar"
+    : "Hacer check-out";
+
+  let body: ReactNode;
+  if (loading) {
+    body = <CocoaState kind="loading" title="Cargando reserva…" />;
+  } else if (!reservation) {
+    body = <CocoaState kind="error" title={STATUS_LABELS.loadError} message={error ?? "No se encontró la reserva."} onRetry={() => void loadAll()} />;
+  } else if (completed) {
+    body = <CompletedView elapsed={elapsedLabel} roomNumber={room?.number} />;
+  } else {
+    body = (
+      <>
+        {error ? <CocoaCallout tone="danger" role="alert">{error}</CocoaCallout> : null}
+
+        {/* Guest + room header */}
+        <div className="cocoa-row" data-gap="2" data-justify="between">
+          <div className="cocoa-stack" data-gap="1">
+            <strong style={nameStyle}>{fmtName(guest)}</strong>
+            <span style={mutedStyle}>{room ? `Hab. ${room.number}${room.floor ? ` · planta ${room.floor}` : ""}` : "Sin habitación asignada"}</span>
+          </div>
+          <CocoaBadge tone="neutral" size="small">
+            {reservation.status}
+          </CocoaBadge>
+        </div>
+
+        {/* STEP 1: folio */}
+        <Step
+          title="1 · Folio"
+          badge={folio ? plural(folio.lines.length, "línea", "líneas") : folioLoading ? STATUS_LABELS.loading : "No disponible"}
+          badgeTone={folio ? "info" : folioLoading ? "info" : "danger"}
+        >
+          {folioLoading ? (
+            <CocoaState kind="loading" title="Cargando folio…" />
+          ) : !folio ? (
+            <CocoaCallout
+              tone="danger"
+              title={`No se pudo cargar el folio${folioError ? `: ${folioError}` : "."}`}
+              actions={
+                <>
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void loadFolio()} disabled={busy}>
+                    {ACTIONS.retry}
+                  </CocoaButton>
+                  <CocoaButton variant={skipPayment ? "filled" : "tinted"} tone="accent" size="small" onClick={() => setSkipPayment(true)} disabled={busy} aria-pressed={skipPayment}>
+                    Sin cobro
+                  </CocoaButton>
+                </>
+              }
+            >
+              Sin folio no es posible cobrar ni saber el saldo real. Reintenta o elige «Sin cobro» para salir sin cobrar.
+            </CocoaCallout>
+          ) : (
+            <div className="cocoa-stack" data-gap="2">
+              {folio.lines.length > 0 ? (
+                <CocoaTable columns={FOLIO_COLUMNS} rows={folio.lines} rowKey="id" density="compact" caption="Líneas del folio" aria-label="Líneas del folio" />
+              ) : (
+                <CocoaState kind="empty" inline title="Sin líneas en el folio." />
+              )}
+              <ul className="c22-section__list" aria-label="Totales del folio">
+                <li>
+                  <span>Total cargos</span>
+                  <strong>{fmtEur(folio.chargesTotal)}</strong>
+                </li>
+                <li>
+                  <span style={mutedStyle}>Pagos previos</span>
+                  <strong>{fmtEur(folio.paymentsTotal)}</strong>
+                </li>
+                <li>
+                  <span>Saldo</span>
+                  <strong style={balanceStyle(hasBalance)}>{fmtEur(balanceDue)}</strong>
+                </li>
+              </ul>
+            </div>
+          )}
+        </Step>
+
+        {/* STEP 2: cobro */}
+        <Step
+          title="2 · Cobro"
+          badge={!folio ? "Saldo no disponible" : hasBalance ? (skipPayment ? "Sin cobro" : "Saldo abierto") : "Saldado"}
+          badgeTone={!folio ? "danger" : hasBalance ? "warning" : "success"}
+        >
+          {!folio ? (
+            <p style={bodyTextStyle}>
+              {skipPayment
+                ? "Has elegido salir sin cobrar. El saldo real se comprobará en el servidor: si queda importe pendiente te lo mostraremos antes de cerrar."
+                : "El saldo no está disponible porque el folio no se ha cargado."}
+            </p>
+          ) : hasBalance ? (
+            <div className="cocoa-stack" data-gap="2">
+              <p style={bodyTextStyle}>
+                Importe a cobrar: <strong>{fmtEur(balanceDue)}</strong>
+              </p>
+              <CocoaField label="Método">
+                <CocoaSelect value={paymentMethod} onChange={(value) => setPaymentMethod(value as PaymentMethod)} options={PAYMENT_METHOD_OPTIONS} disabled={skipPayment} />
+              </CocoaField>
+              <CocoaSwitch checked={skipPayment} onChange={setSkipPayment} label="Sin cobro ahora (el huésped saldrá con saldo pendiente)" />
+            </div>
+          ) : (
+            <p style={bodyTextStyle}>El folio está saldado. No hay nada que cobrar.</p>
+          )}
+        </Step>
+
+        {/* 409 BALANCE_DUE: decide before retrying */}
+        {balancePrompt ? (
+          <CocoaCallout tone="warning" variant="banner" title="Saldo pendiente detectado" role="alert">
+            <div className="cocoa-stack" data-gap="2">
+              <p style={bodyTextStyle}>
+                {balancePrompt.message}
+                {balancePrompt.balanceDue !== null ? ` Saldo: ${fmtEur(balancePrompt.balanceDue)}.` : ""}
+              </p>
+              <div className="cocoa-row" data-gap="2">
+                {folio ? (
+                  <CocoaButton
+                    variant="filled"
+                    tone="accent"
+                    size="small"
+                    disabled={busy}
+                    onClick={() => {
+                      // The API-reported balance is authoritative; the folio one is the fallback.
+                      setSkipPayment(false);
+                      void executeCheckOut({ collectAmount: balancePrompt.balanceDue ?? balanceDue });
+                    }}
+                  >
+                    Cobrar {fmtEur(balancePrompt.balanceDue ?? balanceDue)} y cerrar
+                  </CocoaButton>
+                ) : null}
+                <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => void executeCheckOut({ acknowledgeBalance: true })}>
+                  Salir con saldo pendiente
+                </CocoaButton>
+                <CocoaButton variant="plain" tone="neutral" size="small" disabled={busy} onClick={() => setBalancePrompt(null)}>
+                  {ACTIONS.cancel}
+                </CocoaButton>
+              </div>
+            </div>
+          </CocoaCallout>
+        ) : null}
+
+        {/* STEP 3: salida automática */}
+        <Step title="3 · Salida" badge="Automática" badgeTone="info">
+          <div className="cocoa-stack" data-gap="2">
+            <CocoaSwitch checked={notifyHousekeeping} onChange={setNotifyHousekeeping} label="Avisar a housekeeping (la habitación pasará a «salida sucia»)." />
+            <CocoaSwitch checked={issueInvoice} onChange={setIssueInvoice} label="Emitir factura simplificada al cerrar el folio." />
+            <p style={mutedStyle}>Si la reserva tiene comunidad con tasa turística, se incluirá automáticamente como línea exenta.</p>
+          </div>
+        </Step>
+
+        {blockingReason ? (
+          <CocoaCallout tone="warning" role="status">
+            {blockingReason}
+          </CocoaCallout>
+        ) : null}
+      </>
+    );
+  }
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.45)",
-        display: "flex",
-        justifyContent: "flex-end",
-        zIndex: 60
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        style={{
-          width: "min(560px, 100vw)",
-          height: "100%",
-          background: "var(--surface)",
-          color: "var(--ink)",
-          boxShadow: "-8px 0 24px rgba(0,0,0,0.2)",
-          display: "flex",
-          flexDirection: "column"
-        }}
-      >
-        <div
-          style={{
-            padding: "12px 16px",
-            borderBottom: "1px solid var(--border)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center"
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <strong style={{ fontSize: 16 }}>Check-out</strong>
-            <span
-              className={`bo-status ${elapsedSeconds < 60 ? "ok" : elapsedSeconds < 90 ? "warn" : "error"}`}
-              title="Objetivo: < 60 segundos"
-            >
-              ⏱ {elapsedLabel}
-            </span>
-            {completed ? <span className="bo-status ok">✓ Completado</span> : null}
-          </div>
-          <button type="button" className="ghost" onClick={onClose}>✕</button>
-        </div>
-
-        <div style={{ padding: 16, overflowY: "auto", flex: 1, display: "flex", flexDirection: "column", gap: 16 }}>
-          {loading ? (
-            <LoadingBlock label="Cargando reserva…" />
-          ) : !reservation ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <p className="bo-status error">{error ?? "No se encontró la reserva."}</p>
-              <button type="button" onClick={() => void loadAll()} disabled={busy}>Reintentar</button>
-            </div>
-          ) : completed ? (
-            <CompletedView elapsed={elapsedLabel} roomNumber={room?.number} />
+    <CocoaDrawer
+      open
+      onClose={onClose}
+      title="Check-out"
+      subtitle={reservation ? `${fmtName(guest)}${room ? ` · Hab. ${room.number}` : ""}` : undefined}
+      side="right"
+      size="md"
+      footer={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" onClick={onClose} disabled={busy}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          {completed ? (
+            <CocoaButton variant="filled" tone="accent" onClick={onClose}>
+              {ACTIONS.close}
+            </CocoaButton>
           ) : (
-            <>
-              {error ? <p className="bo-status error">{error}</p> : null}
-
-              {/* Guest + room header */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <strong style={{ fontSize: 15 }}>{fmtName(guest)}</strong>
-                  <div className="bo-muted" style={{ fontSize: 12 }}>
-                    {room ? `Hab. ${room.number}${room.floor ? ` · planta ${room.floor}` : ""}` : "Sin habitación asignada"}
-                  </div>
-                </div>
-                <span className="bo-chip">{reservation.status}</span>
-              </div>
-
-              {/* STEP 1: folio */}
-              <Section
-                title="1 · Folio"
-                badge={folio ? `${folio.lines.length} líneas` : folioLoading ? "Cargando…" : "No disponible"}
-                badgeTone={folio ? "info" : folioLoading ? "info" : "danger"}
-              >
-                {folioLoading ? (
-                  <LoadingBlock label="Cargando folio…" />
-                ) : !folio ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <p className="bo-status error" style={{ margin: 0 }}>
-                      No se pudo cargar el folio{folioError ? `: ${folioError}` : "."}
-                    </p>
-                    <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-                      Sin folio no es posible cobrar ni saber el saldo real. Reintenta o elige «Sin cobro» para salir sin cobrar.
-                    </p>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                      <button type="button" onClick={() => void loadFolio()} disabled={busy}>Reintentar</button>
-                      <button
-                        type="button"
-                        className={skipPayment ? "primary" : "ghost"}
-                        onClick={() => setSkipPayment(true)}
-                        disabled={busy}
-                      >
-                        Sin cobro
-                      </button>
-                    </div>
-                  </div>
-                ) : folio.lines.length > 0 ? (
-                  <table style={{ width: "100%", fontSize: 13 }}>
-                    <tbody>
-                      {folio.lines.map((l) => (
-                        <tr key={l.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                          <td style={{ padding: "4px 0" }}>
-                            <div>{l.description}</div>
-                            <div className="bo-muted" style={{ fontSize: 11 }}>{l.type}{l.quantity > 1 ? ` · ${l.quantity}x` : ""}</div>
-                          </td>
-                          <td style={{ padding: "4px 0", textAlign: "right", whiteSpace: "nowrap" }}>{fmtEur(l.total)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                    <tfoot>
-                      <tr>
-                        <td style={{ padding: "6px 0", fontWeight: 600 }}>Total cargos</td>
-                        <td style={{ padding: "6px 0", textAlign: "right", fontWeight: 600 }}>{fmtEur(folio.chargesTotal)}</td>
-                      </tr>
-                      <tr>
-                        <td style={{ padding: "2px 0" }} className="bo-muted">Pagos previos</td>
-                        <td style={{ padding: "2px 0", textAlign: "right" }} className="bo-muted">{fmtEur(folio.paymentsTotal)}</td>
-                      </tr>
-                      <tr>
-                        <td style={{ padding: "6px 0", fontWeight: 700 }}>Saldo</td>
-                        <td style={{ padding: "6px 0", textAlign: "right", fontWeight: 700, color: hasBalance ? "var(--danger, #d23b3b)" : "var(--ok, #1f8a4c)" }}>
-                          {fmtEur(balanceDue)}
-                        </td>
-                      </tr>
-                    </tfoot>
-                  </table>
-                ) : (
-                  <p className="bo-muted" style={{ fontSize: 13 }}>Sin líneas en el folio.</p>
-                )}
-              </Section>
-
-              {/* STEP 2: cobro */}
-              <Section
-                title="2 · Cobro"
-                badge={!folio ? "Saldo no disponible" : hasBalance ? (skipPayment ? "Sin cobro" : "Saldo abierto") : "Saldado"}
-                badgeTone={!folio ? "danger" : hasBalance ? "warning" : "ok"}
-              >
-                {!folio ? (
-                  <p style={{ fontSize: 13, margin: 0 }}>
-                    {skipPayment
-                      ? "Has elegido salir sin cobrar. El saldo real se comprobará en el servidor: si queda importe pendiente te lo mostraremos antes de cerrar."
-                      : "El saldo no está disponible porque el folio no se ha cargado."}
-                  </p>
-                ) : hasBalance ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div style={{ fontSize: 13 }}>
-                      Importe a cobrar: <strong>{fmtEur(balanceDue)}</strong>
-                    </div>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-                      <span className="bo-muted">Método:</span>
-                      <select
-                        value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-                        style={{ padding: 6 }}
-                        disabled={skipPayment}
-                      >
-                        <option value="card">Tarjeta</option>
-                        <option value="cash">Efectivo</option>
-                        <option value="bank_transfer">Transferencia</option>
-                      </select>
-                    </label>
-                    <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
-                      <input type="checkbox" checked={skipPayment} onChange={(e) => setSkipPayment(e.target.checked)} />
-                      Sin cobro ahora (el huésped saldrá con saldo pendiente)
-                    </label>
-                  </div>
-                ) : (
-                  <p style={{ fontSize: 13, margin: 0 }}>El folio está saldado. No hay nada que cobrar.</p>
-                )}
-              </Section>
-
-              {/* 409 BALANCE_DUE: decide before retrying */}
-              {balancePrompt ? (
-                <Section title="Saldo pendiente detectado" badge="Confirmar" badgeTone="warning">
-                  <p style={{ fontSize: 13, margin: 0 }}>
-                    {balancePrompt.message}
-                    {balancePrompt.balanceDue !== null ? ` Saldo: ${fmtEur(balancePrompt.balanceDue)}.` : ""}
-                  </p>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                    {folio ? (
-                      <button
-                        type="button"
-                        className="primary"
-                        disabled={busy}
-                        onClick={() => {
-                          // The API-reported balance is authoritative; the folio one is the fallback.
-                          setSkipPayment(false);
-                          void executeCheckOut({ collectAmount: balancePrompt.balanceDue ?? balanceDue });
-                        }}
-                      >
-                        Cobrar {fmtEur(balancePrompt.balanceDue ?? balanceDue)} y cerrar
-                      </button>
-                    ) : null}
-                    <button type="button" disabled={busy} onClick={() => void executeCheckOut({ acknowledgeBalance: true })}>
-                      Salir con saldo pendiente
-                    </button>
-                    <button type="button" className="ghost" disabled={busy} onClick={() => setBalancePrompt(null)}>
-                      Cancelar
-                    </button>
-                  </div>
-                </Section>
-              ) : null}
-
-              {/* STEP 3: salida automática */}
-              <Section title="3 · Salida" badge="Auto" badgeTone="info">
-                <div style={{ display: "flex", flexDirection: "column", gap: 6, fontSize: 13 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="checkbox" checked={notifyHousekeeping} onChange={(e) => setNotifyHousekeeping(e.target.checked)} />
-                    Avisar a housekeeping (la habitación pasará a "salida sucia").
-                  </label>
-                  <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <input type="checkbox" checked={issueInvoice} onChange={(e) => setIssueInvoice(e.target.checked)} />
-                    Emitir factura simplificada al cerrar el folio.
-                  </label>
-                  <div className="bo-muted" style={{ fontSize: 12 }}>
-                    Si la reserva tiene comunidad con tasa turística, se incluirá automáticamente como línea exenta.
-                  </div>
-                </div>
-              </Section>
-
-              {blockingReason ? <p className="bo-status warn">{blockingReason}</p> : null}
-            </>
-          )}
-        </div>
-
-        <div
-          style={{
-            padding: 12,
-            borderTop: "1px solid var(--border)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 8
-          }}
-        >
-          <button type="button" className="ghost" onClick={onClose} disabled={busy}>
-            Cancelar
-          </button>
-          {!completed ? (
-            <button
-              type="button"
-              className="primary"
+            <CocoaButton
+              variant="filled"
+              tone="accent"
               disabled={!canSubmit || busy || Boolean(balancePrompt)}
+              loading={busy}
               onClick={() => void executeCheckOut()}
               title={blockingReason || "Pulsa para completar el check-out"}
             >
               {ctaLabel}
-            </button>
-          ) : (
-            <button type="button" className="primary" onClick={onClose}>
-              Cerrar
-            </button>
+            </CocoaButton>
           )}
+        </>
+      }
+    >
+      <div className="cocoa-stack" data-gap="3">
+        <div className="cocoa-row" data-gap="2">
+          <CocoaBadge tone={timerTone} icon={<ClockIcon size={12} />} title="Objetivo: < 60 segundos" aria-label={`Cronómetro ${elapsedLabel}`}>
+            {elapsedLabel}
+          </CocoaBadge>
+          {completed ? (
+            <CocoaBadge tone="success" variant="tinted">
+              {STATUS_LABELS.completed}
+            </CocoaBadge>
+          ) : null}
         </div>
+        {body}
       </div>
-    </div>
+    </CocoaDrawer>
   );
 }
 
-function Section({
-  title,
-  badge,
-  badgeTone,
-  children
-}: {
-  title: string;
-  badge?: string;
-  badgeTone?: "ok" | "warning" | "danger" | "info" | "accent";
-  children: React.ReactNode;
-}) {
-  const toneClass =
-    badgeTone === "ok" ? "ok" :
-    badgeTone === "warning" ? "warn" :
-    badgeTone === "danger" ? "error" :
-    "info";
+function Step({ title, badge, badgeTone = "neutral", children }: { title: string; badge?: string; badgeTone?: CocoaTone; children: ReactNode }) {
   return (
-    <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <strong style={{ fontSize: 13, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--muted, #888)" }}>{title}</strong>
-        {badge ? <span className={`bo-status ${toneClass}`}>{badge}</span> : null}
-      </div>
+    <CocoaSection
+      title={title}
+      meta={
+        badge ? (
+          <CocoaBadge tone={badgeTone} size="small">
+            {badge}
+          </CocoaBadge>
+        ) : undefined
+      }
+    >
       {children}
-    </section>
+    </CocoaSection>
   );
 }
 
 function CompletedView({ elapsed, roomNumber }: { elapsed: string; roomNumber?: string }) {
   return (
-    <div style={{ textAlign: "center", padding: "32px 16px", display: "flex", flexDirection: "column", gap: 10, alignItems: "center" }}>
-      <div style={{ fontSize: 48 }}>✓</div>
-      <h3 style={{ margin: 0 }}>Check-out completado</h3>
-      <p className="bo-muted" style={{ margin: 0 }}>
-        {roomNumber ? `La habitación ${roomNumber} ha pasado a salida sucia.` : "Folio cerrado y huésped despedido."}
-      </p>
-      <div className="bo-status ok">⏱ {elapsed} · objetivo &lt; 1:00</div>
-      <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-        Housekeeping recibirá una tarea de departure cleaning. Esta ventana se cierra automáticamente.
-      </p>
+    <div className="cocoa-stack" data-gap="3">
+      <CocoaState
+        kind="empty"
+        illustration="success"
+        title="Check-out completado"
+        message={roomNumber ? `La habitación ${roomNumber} ha pasado a salida sucia.` : "Folio cerrado y huésped despedido."}
+        role="status"
+      />
+      <div className="cocoa-row" data-gap="2" data-justify="center">
+        <CocoaBadge tone="success" icon={<ClockIcon size={12} />}>
+          {elapsed} · objetivo &lt; 1:00
+        </CocoaBadge>
+      </div>
+      <p style={mutedStyle}>Housekeeping recibirá una tarea de limpieza de salida. Esta ventana se cierra automáticamente.</p>
     </div>
   );
 }

@@ -31,6 +31,8 @@ export interface CocoaPageHeaderProps {
   tabs?: Array<CocoaPageHeaderTab>;
   activeTab?: string;
   onTabChange?: (value: string) => void;
+  /** Let the title wrap on desktop too (narrow containers such as the 440 px auth card); default: one line with ellipsis. */
+  wrap?: boolean;
   className?: string;
   style?: CSSProperties;
 }
@@ -68,8 +70,9 @@ const subtitleStyle: CSSProperties = {
   margin: 0
 };
 
-/** Title metrics by tier (pure): 26 px nowrap on desktop, 22 px wrapping on phones. */
-export function headerTitleStyle(isNarrow: boolean): CSSProperties {
+/** Title metrics by tier (pure): 26 px nowrap on desktop, 22 px wrapping on phones; `wrap` keeps the 26 px and lets it wrap. */
+export function headerTitleStyle(isNarrow: boolean, wrap = false): CSSProperties {
+  const wraps = isNarrow || wrap;
   return {
     color: "var(--cocoa-label)",
     fontSize: isNarrow ? "var(--cocoa-fs-title-1)" : "var(--cocoa-fs-large-title)",
@@ -80,12 +83,12 @@ export function headerTitleStyle(isNarrow: boolean): CSSProperties {
     minWidth: 0,
     overflow: "hidden",
     textOverflow: "ellipsis",
-    whiteSpace: isNarrow ? "normal" : "nowrap",
-    overflowWrap: isNarrow ? "anywhere" : undefined
+    whiteSpace: wraps ? "normal" : "nowrap",
+    overflowWrap: wraps ? "anywhere" : undefined
   };
 }
 
-export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs, activeTab, onTabChange, className, style }: CocoaPageHeaderProps) {
+export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs, activeTab, onTabChange, wrap = false, className, style }: CocoaPageHeaderProps) {
   const isNarrow = useIsNarrow();
   const mergedContainerStyle: CSSProperties = style ? { ...containerStyle, ...style } : containerStyle;
   const hasTabs = Array.isArray(tabs) && tabs.length > 0;
@@ -121,7 +124,7 @@ export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs,
                 {icon}
               </span>
             ) : null}
-            <h1 style={headerTitleStyle(isNarrow)}>{title}</h1>
+            <h1 style={headerTitleStyle(isNarrow, wrap)}>{title}</h1>
           </div>
           {subtitle ? <p style={subtitleStyle}>{subtitle}</p> : null}
         </div>

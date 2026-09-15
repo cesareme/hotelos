@@ -1,23 +1,19 @@
-// CocoaNotFoundScreen
+// CocoaNotFoundScreen — the 404 of the shell (App.tsx renders it inside the
+// layout when no screen matches the pathname).
 //
-// Pantalla 404 con layout centrado verticalmente, max-width 480px. Muestra la
-// ilustración EmptyStateBox (paquete cocoa-illustrations), un título, una
-// descripción y dos acciones: volver al inicio y abrir la command palette.
+// Cocoa 22 (COCOA-22.md §3.10 / §4 «otro»): a CocoaPage with the eyebrow and
+// the H1 of the page and `state="error"`, which paints a full-page CocoaState
+// (illustration, title, message) with the two actions: back to the landing
+// screen and the command palette. No raw heading element, no local styles.
 //
-// La navegación usa el helper tipado `navigateTo` (lib/navigate.ts) sobre el
-// evento global `hotelos-nav`, y la apertura de la command palette se simula
-// despachando el atajo Cmd+K (Meta+K), que es escuchado por
-// useCocoaCommandPaletteHotkey en la capa de layout.
+// Navigation goes through the typed helper `navigateTo` (lib/navigate.ts)
+// over the global `hotelos-nav` event; the command palette opens by
+// dispatching the Cmd/Ctrl+K shortcut that `useCocoaCommandPaletteHotkey`
+// listens for in the layout, so this screen is not coupled to any context.
 
-import type { CSSProperties } from "react";
-
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { EmptyStateBox } from "../../components/cocoa-illustrations";
+import { CocoaPage } from "../../components/cocoa";
 import { navigateTo } from "../../lib/navigate";
 
-// Simula la pulsación de Cmd+K para abrir la command palette global. El hook
-// `useCocoaCommandPaletteHotkey` escucha este atajo en `document` y abre la
-// palette, así no acoplamos esta pantalla a ningún context concreto.
 function openCommandPalette(): void {
   const event = new KeyboardEvent("keydown", {
     key: "k",
@@ -30,81 +26,23 @@ function openCommandPalette(): void {
   document.dispatchEvent(event);
 }
 
-const wrapperStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  justifyContent: "center",
-  minHeight: "100%",
-  width: "100%",
-  padding: "var(--cocoa-space-6)",
-  boxSizing: "border-box"
-};
-
-const contentStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  alignItems: "center",
-  textAlign: "center",
-  gap: "var(--cocoa-space-4)",
-  width: "100%",
-  maxWidth: 480
-};
-
-const titleStyle: CSSProperties = {
-  margin: 0,
-  fontFamily: "var(--cocoa-font)",
-  fontSize: "var(--cocoa-fs-title-1)",
-  fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,
-  letterSpacing: "var(--cocoa-tracking-tight)",
-  color: "var(--cocoa-label)"
-};
-
-const descriptionStyle: CSSProperties = {
-  margin: 0,
-  fontFamily: "var(--cocoa-font)",
-  fontSize: "var(--cocoa-fs-body)",
-  color: "var(--cocoa-label-secondary)",
-  lineHeight: 1.5
-};
-
-const actionsStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "row",
-  alignItems: "center",
-  justifyContent: "center",
-  gap: "var(--cocoa-space-3)",
-  flexWrap: "wrap"
-};
-
 export function CocoaNotFoundScreen() {
   return (
-    <div style={wrapperStyle}>
-      <div style={contentStyle}>
-        <EmptyStateBox size={240} tone="accent" />
-        <h1 style={titleStyle}>404 · Página no encontrada</h1>
-        <p style={descriptionStyle}>
-          Esta pantalla no existe o fue movida. Verifica el enlace o vuelve al
-          inicio.
-        </p>
-        <div style={actionsStyle}>
-          <CocoaButton
-            variant="filled"
-            tone="accent"
-            onClick={() => navigateTo("FrontDeskDashboard")}
-          >
-            Volver al inicio
-          </CocoaButton>
-          <CocoaButton
-            variant="bordered"
-            tone="neutral"
-            onClick={openCommandPalette}
-          >
-            Buscar...
-          </CocoaButton>
-        </div>
-      </div>
-    </div>
+    <CocoaPage
+      eyebrow="Anfitorio · Error 404"
+      title="Página no encontrada"
+      aria-label="Página no encontrada"
+      state="error"
+      error={{
+        title: "Esta pantalla no existe o fue movida",
+        message: "Verifica el enlace o vuelve al inicio.",
+        illustration: "search",
+        primaryAction: { label: "Volver al inicio", onClick: () => navigateTo("FrontDeskDashboard") },
+        secondaryAction: { label: "Buscar…", onClick: openCommandPalette }
+      }}
+    >
+      {null}
+    </CocoaPage>
   );
 }
 

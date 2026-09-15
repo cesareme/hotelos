@@ -37,6 +37,8 @@ export interface CocoaDialogProps {
   size?: CocoaDialogSize;
   /** Single-button dialogs (acknowledgements). */
   hideCancel?: boolean;
+  /** Element to focus on open (a field inside `children`, e.g. a one-line prompt); default: the safe button — Cancel for destructive dialogs, Confirm otherwise. */
+  initialFocus?: () => HTMLElement | null | undefined;
 }
 
 export const DIALOG_WIDTH: Record<CocoaDialogSize, number> = { sm: 440, md: 560 };
@@ -59,7 +61,8 @@ export function CocoaDialog({
   busy = false,
   children,
   size = "sm",
-  hideCancel = false
+  hideCancel = false,
+  initialFocus
 }: CocoaDialogProps) {
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const confirmRef = useRef<HTMLButtonElement | null>(null);
@@ -70,7 +73,7 @@ export function CocoaDialog({
   const isBusy = busy || pending;
   const { mounted, visible } = useMountedTransition(open, EXIT_MS);
 
-  const onKeyDown = useFocusTrap(dialogRef, mounted, () => (dialogInitialFocus(tone, hideCancel) === "cancel" ? cancelRef.current : confirmRef.current));
+  const onKeyDown = useFocusTrap(dialogRef, mounted, () => initialFocus?.() ?? (dialogInitialFocus(tone, hideCancel) === "cancel" ? cancelRef.current : confirmRef.current));
   const close = useCallback(() => {
     if (!isBusy) onClose();
   }, [isBusy, onClose]);

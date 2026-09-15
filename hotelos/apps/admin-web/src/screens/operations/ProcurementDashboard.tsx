@@ -1,11 +1,53 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+// Procurement dashboard — Operaciones › Compras e inventario › Compras
+// (/operaciones/compras). Read-only view of purchase orders, committed value
+// and active suppliers.
+//
+// Cocoa 22 (docs/design/COCOA-22.md §4, dashboard archetype): CocoaPage →
+// KPI strip (5, captions as `deltaLabel`) → grid 6/6 (orders by status as a
+// CocoaTable with totals · top suppliers as a CocoaTable) → latest orders as
+// a section list with a status CocoaBadge. Mirror skeleton with the same
+// spans. Data: GET /dashboards/procurement?propertyId= (120 s poll), unchanged.
+
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
-import { EmptyState } from "../../components/States";
-import { UI_STATES } from "../../content/actions";
+import { ACTIONS, STATUS_LABELS, UI_STATES } from "../../content/actions";
 import { useTabHost } from "../tabs/TabHost";
-import { dateTime, money, percent } from "../../lib/format";
+import { toArray } from "../../utils/toArray";
+import { dateTime, money, number, percent, plural } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+
+type StatusRow = { status: string; count: number; totalValueEur: number };
+type SupplierRow = {
+  id: string;
+  name: string;
+  activePoCount: number;
+  committedEur: number;
+  otdRatePct: number;
+};
+type RecentPo = {
+  id: string;
+  number?: string;
+  supplierName?: string;
+  status: string;
+  totalEur: number;
+  createdAt: string;
+};
 
 type ProcurementDashboardData = {
   kpis: {
@@ -15,219 +57,170 @@ type ProcurementDashboardData = {
     receivedThisMonthEur: number;
     supplierCount: number;
   };
-  posByStatus: Array<{ status: string; count: number; totalValueEur: number }>;
-  topSuppliers: Array<{
-    id: string;
-    name: string;
-    activePoCount: number;
-    committedEur: number;
-    otdRatePct: number;
-  }>;
-  recentPOs: Array<{
-    id: string;
-    number?: string;
-    supplierName?: string;
-    status: string;
-    totalEur: number;
-    createdAt: string;
-  }>;
+  posByStatus: StatusRow[];
+  topSuppliers: SupplierRow[];
+  recentPOs: RecentPo[];
 };
 
-function pct(value: number | null | undefined): string {
-  return percent(value);
-}
+// Purchase-order statuses of the API in Spanish; unknown ones fall back to the raw word.
+const PO_STATUS_LABEL: Record<string, string> = {
+  draft: STATUS_LABELS.draft,
+  submitted: STATUS_LABELS.sent,
+  pending_approval: STATUS_LABELS.pending,
+  approved: STATUS_LABELS.approved,
+  rejected: STATUS_LABELS.rejected,
+  ordered: "Pedido",
+  partially_received: "Recibido parcialmente",
+  received: "Recibido",
+  closed: "Cerrado",
+  cancelled: STATUS_LABELS.cancelled
+};
 
-function formatDateTime(value?: string): string {
-  return dateTime(value);
-}
+const PO_STATUS_TONE: Record<string, CocoaTone> = {
+  draft: "neutral",
+  submitted: "info",
+  pending_approval: "warning",
+  approved: "accent",
+  rejected: "danger",
+  ordered: "info",
+  partially_received: "warning",
+  received: "success",
+  closed: "neutral",
+  cancelled: "danger"
+};
 
-function prettyStatus(status: string): string {
+function statusLabel(status: string): string {
   if (!status) return "—";
-  return status.replace(/_/g, " ");
+  return PO_STATUS_LABEL[status] ?? status.replace(/_/g, " ");
+}
+
+function statusTone(status: string): CocoaTone {
+  return PO_STATUS_TONE[status] ?? "neutral";
+}
+
+const STATUS_COLUMNS: CocoaTableColumn<StatusRow>[] = [
+  { key: "status", label: "Estado", render: (row) => <CocoaBadge tone={statusTone(row.status)}>{statusLabel(row.status)}</CocoaBadge> },
+  { key: "count", label: "Pedidos", align: "right", render: (row) => number(row.count) },
+  { key: "totalValueEur", label: "Valor total", align: "right", render: (row) => money(row.totalValueEur) }
+];
+
+const SUPPLIER_COLUMNS: CocoaTableColumn<SupplierRow>[] = [
+  { key: "name", label: "Proveedor", render: (row) => <strong>{row.name}</strong> },
+  { key: "activePoCount", label: "Pedidos activos", align: "right", render: (row) => number(row.activePoCount) },
+  { key: "committedEur", label: "Comprometido", align: "right", render: (row) => money(row.committedEur) },
+  { key: "otdRatePct", label: "Entrega a tiempo", align: "right", hideOnNarrow: true, render: (row) => percent(row.otdRatePct) }
+];
+
+// Mirror skeleton: strip of five KPI tiles, the 6/6 row and the list card.
+function ProcurementSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} />
+      <CocoaSkeleton.Grid rows={[[6, 6], [12]]} />
+    </div>
+  );
 }
 
 export function ProcurementDashboard() {
   const hosted = useTabHost() !== null;
+  const propertyName = getActiveProperty().propertyName;
   const { data, loading, error, refresh } = useApiData<ProcurementDashboardData>(
     "/dashboards/procurement",
     { pollIntervalMs: 120000, query: { propertyId: PROPERTY_ID } }
   );
 
   const kpis = data?.kpis;
-  const posByStatus = data?.posByStatus ?? [];
-  const topSuppliers = data?.topSuppliers ?? [];
-  const recentPOs = data?.recentPOs ?? [];
+  const posByStatus = toArray<StatusRow>(data?.posByStatus);
+  const topSuppliers = toArray<SupplierRow>(data?.topSuppliers);
+  const recentPOs = toArray<RecentPo>(data?.recentPOs);
 
-  const pendingStatus: "ok" | "warn" | "error" =
-    !kpis ? "warn"
-      : kpis.pendingApproval === 0 ? "ok"
-      : kpis.pendingApproval < 5 ? "warn"
-      : "error";
-
-  const openStatus: "ok" | "warn" | "error" =
-    !kpis ? "warn"
-      : kpis.openPOs === 0 ? "ok"
-      : kpis.openPOs < 25 ? "warn"
-      : "error";
+  const pendingStatus = !kpis ? "warning" : kpis.pendingApproval === 0 ? "ok" : kpis.pendingApproval < 5 ? "warning" : "critical";
+  const openStatus = !kpis ? "warning" : kpis.openPOs === 0 ? "ok" : kpis.openPOs < 25 ? "warning" : "critical";
+  const statusTotals = posByStatus.reduce(
+    (acc, row) => ({ count: acc.count + row.count, value: acc.value + row.totalValueEur }),
+    { count: 0, value: 0 }
+  );
+  const state = loading && !data ? "loading" : error && !data ? "error" : "ready";
 
   return (
-    <>
-      <div className="bo-page-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
-        {hosted ? null : (
-          <div className="bo-page-head-text">
-            <div className="bo-page-eyebrow">Operaciones · Compras</div>
-            <h1 className="bo-page-title">Pedidos de compra · Proveedores</h1>
-            <p className="bo-page-subtitle">
-              Vista de solo lectura del estado de las órdenes de compra, valor comprometido
-              y proveedores activos. Refresca automáticamente cada 120 segundos.
-            </p>
-          </div>
-        )}
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
-        </div>
-      </div>
+    <CocoaPage
+      eyebrow={`Operaciones · ${propertyName}`}
+      title="Pedidos de compra · Proveedores"
+      subtitle={hosted ? undefined : "Vista de solo lectura del estado de las órdenes de compra, valor comprometido y proveedores activos. Refresca automáticamente cada 120 segundos."}
+      actions={
+        <>
+          {loading && data ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          {error && data ? <CocoaBadge tone="danger">{UI_STATES.error.title}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} title={ACTIONS.refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={state}
+      skeleton={<ProcurementSkeleton />}
+      error={{ title: UI_STATES.error.title, message: error ?? UI_STATES.error.message, onRetry: refresh }}
+      commands={[{ id: "procurement-refresh", label: "Actualizar compras", run: refresh }]}
+    >
+      <CocoaKpiStrip stagger aria-label="Indicadores de compras">
+        <CocoaKpi label="Pedidos abiertos" value={number(kpis?.openPOs ?? 0)} deltaLabel="no cerrados ni cancelados" polarity="neutral" status={openStatus} />
+        <CocoaKpi label="Pendientes de aprobación" value={number(kpis?.pendingApproval ?? 0)} deltaLabel="borrador o enviados" polarity="neutral" status={pendingStatus} />
+        <CocoaKpi label="Valor comprometido" value={money(kpis?.committedValueEur)} deltaLabel="aprobados u ordenados, no recibidos" polarity="neutral" status="ok" />
+        <CocoaKpi label="Recibido este mes" value={money(kpis?.receivedThisMonthEur)} deltaLabel="pedidos recibidos en el mes en curso" polarity="neutral" status="ok" />
+        <CocoaKpi label="Proveedores activos" value={number(kpis?.supplierCount ?? 0)} deltaLabel="con pedidos en esta propiedad" polarity="neutral" status="ok" />
+      </CocoaKpiStrip>
 
-      {error ? (
-        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }} role="alert">
-          <strong>{UI_STATES.error.title}.</strong> {UI_STATES.error.message}
-        </section>
-      ) : null}
+      <CocoaGrid align="start" aria-label="Órdenes por estado y proveedores">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Pedidos por estado" meta={plural(posByStatus.length, "estado", "estados")} padding={posByStatus.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {posByStatus.length === 0 ? (
+              <CocoaState kind="empty" inline title="No hay órdenes de compra en el periodo" message="Cuando se generen pedidos aparecerán desglosados por estado para que veas el flujo de compras." />
+            ) : (
+              <CocoaTable
+                columns={STATUS_COLUMNS}
+                rows={posByStatus}
+                rowKey="status"
+                density="compact"
+                caption="Órdenes de compra por estado"
+                aria-label="Órdenes de compra por estado"
+                footer={{ status: "Total", count: number(statusTotals.count), totalValueEur: <strong>{money(statusTotals.value)}</strong> }}
+              />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Principales proveedores" meta={plural(topSuppliers.length, "proveedor", "proveedores")} padding={topSuppliers.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {topSuppliers.length === 0 ? (
+              <CocoaState kind="empty" inline title="No hay proveedores con pedidos activos" message="Aparecerán aquí los principales proveedores cuando haya órdenes de compra en curso." />
+            ) : (
+              <CocoaTable columns={SUPPLIER_COLUMNS} rows={topSuppliers} rowKey="id" density="compact" caption="Principales proveedores" aria-label="Principales proveedores" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
-      <section className="rev-kpi-grid">
-        <article className={`rev-kpi ${openStatus === "error" ? "rev-kpi-error" : openStatus === "warn" ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">POs abiertos</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.openPOs ?? 0)}</div>
-          <div className="rev-kpi-delta">No cerrados ni cancelados</div>
-        </article>
-        <article className={`rev-kpi ${pendingStatus === "error" ? "rev-kpi-error" : pendingStatus === "warn" ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Pendientes de aprobación</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.pendingApproval ?? 0)}</div>
-          <div className="rev-kpi-delta">Borrador / submitted</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Valor comprometido</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.committedValueEur)}</div>
-          <div className="rev-kpi-delta">Aprobados u ordenados, no recibidos</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Recibido este mes</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.receivedThisMonthEur)}</div>
-          <div className="rev-kpi-delta">POs recibidos en mes en curso</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Proveedores activos</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.supplierCount ?? 0)}</div>
-          <div className="rev-kpi-delta">Con POs en esta propiedad</div>
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Breakdown</p>
-            <h3>POs por estado</h3>
-          </div>
-          <span className="bo-chip">{posByStatus.length} estados</span>
-        </div>
-        {posByStatus.length === 0 ? (
-          <EmptyState
-            title="No hay órdenes de compra en el periodo"
-            message="Cuando se generen POs aparecerán desglosadas por estado para que veas el pipeline de compras."
-          />
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Estado</th>
-                  <th style={{ textAlign: "right" }}>POs</th>
-                  <th style={{ textAlign: "right" }}>Valor total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {posByStatus.map((row: ProcurementDashboardData["posByStatus"][number]) => (
-                  <tr key={row.status}>
-                    <td><strong>{prettyStatus(row.status)}</strong></td>
-                    <td style={{ textAlign: "right" }}>{row.count}</td>
-                    <td style={{ textAlign: "right" }}>{money(row.totalValueEur)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Top 10</p>
-            <h3>Principales proveedores</h3>
-          </div>
-          <span className="bo-chip">{topSuppliers.length} filas</span>
-        </div>
-        {topSuppliers.length === 0 ? (
-          <EmptyState
-            title="No hay proveedores con POs activos"
-            message="Aparecerán aquí los principales proveedores cuando haya órdenes de compra en curso."
-          />
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Proveedor</th>
-                  <th style={{ textAlign: "right" }}>POs activos</th>
-                  <th style={{ textAlign: "right" }}>Comprometido</th>
-                  <th style={{ textAlign: "right" }}>OTD</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topSuppliers.map((supplier: ProcurementDashboardData["topSuppliers"][number]) => (
-                  <tr key={supplier.id}>
-                    <td><strong>{supplier.name}</strong></td>
-                    <td style={{ textAlign: "right" }}>{supplier.activePoCount}</td>
-                    <td style={{ textAlign: "right" }}>{money(supplier.committedEur)}</td>
-                    <td style={{ textAlign: "right" }}>{pct(supplier.otdRatePct)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Recientes</p>
-            <h3>Últimas órdenes de compra</h3>
-          </div>
-          <span className="bo-chip">{recentPOs.length} POs</span>
-        </div>
+      <CocoaSection title="Últimas órdenes de compra" meta={plural(recentPOs.length, "pedido", "pedidos")}>
         {recentPOs.length === 0 ? (
-          <EmptyState
-            title="No hay órdenes de compra recientes"
-            message="Las últimas POs aparecerán aquí con su estado, proveedor e importe."
-          />
+          <CocoaState kind="empty" inline title="No hay órdenes de compra recientes" message="Los últimos pedidos aparecerán aquí con su estado, proveedor e importe." />
         ) : (
-          <ul className="bo-list">
-            {recentPOs.map((po: ProcurementDashboardData["recentPOs"][number]) => (
+          <ol className="c22-section__list" aria-label="Últimas órdenes de compra">
+            {recentPOs.map((po) => (
               <li key={po.id}>
-                <strong>{po.number ?? po.id}</strong>
-                {po.supplierName ? <> · {po.supplierName}</> : null}
-                {" · "}
-                <span className="bo-muted">{prettyStatus(po.status)}</span>
-                {" · "}
-                <strong>{money(po.totalEur)}</strong>
-                {" · "}
-                <span className="bo-muted">{formatDateTime(po.createdAt)}</span>
+                <span className="cocoa-cluster">
+                  <CocoaBadge tone={statusTone(po.status)} variant="dot" size="small">
+                    {statusLabel(po.status)}
+                  </CocoaBadge>
+                  <strong>{po.number ?? po.id}</strong>
+                  {po.supplierName ? <span>{po.supplierName}</span> : null}
+                </span>
+                <span className="cocoa-cluster">
+                  <strong>{money(po.totalEur)}</strong>
+                  <time dateTime={po.createdAt}>{dateTime(po.createdAt)}</time>
+                </span>
               </li>
             ))}
-          </ul>
+          </ol>
         )}
-      </section>
-    </>
+      </CocoaSection>
+    </CocoaPage>
   );
 }

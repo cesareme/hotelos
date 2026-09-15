@@ -1,4 +1,18 @@
-import { useMemo, useState } from "react";
+// Housekeeping Dashboard — «Tablero de pisos» (/operaciones/pisos; base tab of
+// PisosTabs, standalone the page paints eyebrow + H1).
+//
+// Cocoa 22 (ola 4 · lote 4-A, archetype «dashboard»): CocoaPage → CocoaKpiStrip
+// (sucias · limpias · inspeccionadas · fuera de servicio · tareas abiertas) →
+// filter chips (CocoaButton aria-pressed with counts) → one CocoaCard per
+// room in a CocoaKpiStrip auto-fit tier (min 240): number in title-1,
+// CocoaBadge states (housekeeping, maintenance, sellable — what the legacy
+// hover card revealed, now always visible and reachable on touch), open tasks
+// as a section list with «Empezar» / «Completar», and the actions «Marcar
+// limpia» / «Inspeccionar» / «Nueva tarea». Creating a task opens a
+// CocoaDrawer (type + priority). Results and errors go to the toast; same API
+// calls as before (services/housekeepingApi, 30 s poll).
+
+import { useMemo, useState, type CSSProperties } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import {
@@ -10,14 +24,30 @@ import {
   type HkPriority,
   type HkTaskType
 } from "../../services/housekeepingApi";
-import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
+import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
 import { useTabHost } from "../tabs/TabHost";
-import { number } from "../../lib/format";
+import { number, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS, newLabel } from "../../content/actions";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCard,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  type CocoaSelectOption,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
-
-type StatusKind = "ok" | "warn" | "error" | "info";
 
 const HK_STATUS_LABEL: Record<string, string> = {
   dirty: "Sucia",
@@ -27,13 +57,13 @@ const HK_STATUS_LABEL: Record<string, string> = {
   out_of_order: "Fuera de servicio",
   out_of_service: "Fuera de servicio"
 };
-const HK_STATUS_KIND: Record<string, StatusKind> = {
-  dirty: "warn",
-  clean: "ok",
-  inspected: "ok",
+const HK_STATUS_TONE: Record<string, CocoaTone> = {
+  dirty: "warning",
+  clean: "success",
+  inspected: "success",
   occupied: "info",
-  out_of_order: "error",
-  out_of_service: "error"
+  out_of_order: "danger",
+  out_of_service: "danger"
 };
 
 const TASK_TYPE_LABEL: Record<string, string> = {
@@ -50,9 +80,15 @@ const TASK_STATUS_LABEL: Record<string, string> = {
   rejected: "rechazada"
 };
 const PRIORITY_LABEL: Record<string, string> = { low: "baja", normal: "normal", high: "alta" };
-const PRIORITY_KIND: Record<string, StatusKind> = { low: "info", normal: "ok", high: "warn" };
+const PRIORITY_TONE: Record<string, CocoaTone> = { low: "info", normal: "success", high: "warning" };
 
 const TASK_TYPES: HkTaskType[] = ["departure_clean", "stayover", "inspection", "deep_clean"];
+const TASK_TYPE_OPTIONS: CocoaSelectOption[] = TASK_TYPES.map((t) => ({ value: t, label: TASK_TYPE_LABEL[t] }));
+const PRIORITY_OPTIONS: CocoaSelectOption[] = [
+  { value: "low", label: "Baja" },
+  { value: "normal", label: "Normal" },
+  { value: "high", label: "Alta" }
+];
 
 function hkStatusOf(item: HkBoardItem): string {
   return item.room.housekeepingStatus ?? item.room.status ?? "dirty";
@@ -68,12 +104,32 @@ const FILTERS: { id: string; label: string; match: (i: HkBoardItem) => boolean }
   { id: "tasks", label: "Con tareas", match: (i) => i.tasks.length > 0 }
 ];
 
-function fmtNum(n: number): string {
-  return number(n);
+// Named style objects (rule 6): colours and type from the tokens.
+const roomCardStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)", height: "100%" };
+const roomNumberStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-title-2)",
+  lineHeight: "var(--cocoa-lh-title-2)",
+  fontWeight: "var(--cocoa-fw-bold)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label)",
+  fontVariantNumeric: "tabular-nums"
+};
+const captionStyle: CSSProperties = { fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" };
+const taskLabelStyle: CSSProperties = { minWidth: 0 };
+const roomActionsStyle: CSSProperties = { marginTop: "auto" };
+
+function HousekeepingSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} min={200} />
+      <CocoaSkeleton variant="row" />
+      <CocoaSkeleton.Grid rows={[[3, 3, 3, 3], [3, 3, 3, 3]]} height={180} />
+    </div>
+  );
 }
 
 export function HousekeepingDashboard() {
   const hosted = useTabHost() !== null;
+  const { showToast } = useToast();
   const { data, loading, error, refresh } = useApiData<HkBoardItem[]>(
     `/properties/${PROPERTY_ID}/housekeeping/board`,
     { pollIntervalMs: 30000 }
@@ -82,10 +138,10 @@ export function HousekeepingDashboard() {
 
   const [filter, setFilter] = useState("all");
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
   const [formRoom, setFormRoom] = useState<string | null>(null);
   const [formType, setFormType] = useState<HkTaskType>("departure_clean");
   const [formPriority, setFormPriority] = useState<HkPriority>("normal");
+  const formItem = useMemo(() => board.find((i) => i.room.id === formRoom) ?? null, [board, formRoom]);
 
   const kpis = useMemo(() => {
     const k = { dirty: 0, clean: 0, inspected: 0, occupied: 0, ooo: 0, tasks: 0 };
@@ -108,169 +164,199 @@ export function HousekeepingDashboard() {
 
   async function run(fn: () => Promise<unknown>, ok: string) {
     setBusy(true);
-    setMsg(null);
     try {
       await fn();
-      setMsg(ok);
+      showToast(ok, { variant: "success" });
       refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : "No se pudo completar la acción.");
+      showToast(e instanceof Error ? e.message : "No se pudo completar la acción.", { variant: "error" });
     } finally {
       setBusy(false);
     }
   }
 
+  function openTaskForm(roomId: string) {
+    setFormType("departure_clean");
+    setFormPriority("normal");
+    setFormRoom(roomId);
+  }
+
+  function closeTaskForm() {
+    setFormRoom(null);
+  }
+
+  function submitTask() {
+    const roomId = formRoom;
+    if (!roomId) return;
+    void run(async () => {
+      await createHousekeepingTask({ roomId, taskType: formType, priority: formPriority });
+      setFormRoom(null);
+    }, "Tarea creada.");
+  }
+
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <style>{`
-        .hk-room { position: relative; transition: box-shadow .15s ease, transform .15s ease; }
-        .hk-room:hover { box-shadow: var(--shadow-md); transform: translateY(-2px); z-index: 6; }
-        .hk-hovercard { position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 20;
-          background: var(--surface, #fff); border: 1px solid var(--line-soft, #e2e8f0); border-radius: 12px;
-          box-shadow: var(--shadow-lg); padding: 10px 12px; opacity: 0; transform: translateY(6px);
-          pointer-events: none; transition: opacity .12s ease, transform .12s ease; }
-        .hk-room:hover .hk-hovercard,
-        .hk-room:focus-within .hk-hovercard,
-        .hk-room:active .hk-hovercard { opacity: 1; transform: translateY(0); }
-        .hk-hovercard::after { content: ""; position: absolute; top: 100%; left: 24px; border: 7px solid transparent; border-top-color: var(--surface, #fff); }
-        .hk-hc-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; padding: 2px 0; }
-        .hk-hc-row span:first-child { color: var(--ink-soft, #64748b); }
-      `}</style>
-      <header className="bo-card-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
-        {hosted ? null : (
-          <div>
-            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Operaciones · Pisos</p>
-            <h2 style={{ color: "var(--ink)" }}>Tablero de pisos</h2>
-            <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-              Estado de cada habitación en vivo. Marca limpiezas, inspecciona y crea tareas para el equipo.
-            </p>
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {busy ? <Spinner size="sm" /> : null}
-          <button type="button" onClick={refresh} disabled={loading}>↻ Actualizar</button>
-        </div>
-      </header>
-
-      {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
-
-      {loading && board.length === 0 ? (
-        <LoadingBlock label="Cargando tablero de pisos…" />
-      ) : error ? (
-        <ErrorState title="No se pudo cargar" message={error} onRetry={refresh} />
-      ) : (
+    <CocoaPage
+      eyebrow="Operaciones · Pisos"
+      title="Tablero de pisos"
+      subtitle={hosted ? undefined : "Estado de cada habitación en vivo. Marca limpiezas, inspecciona y crea tareas para el equipo."}
+      actions={
         <>
-          <div className="rev-kpi-grid">
-            <article className="rev-kpi rev-kpi-warn"><div className="rev-kpi-head"><span className="rev-kpi-label">Sucias</span><span className="bo-status warn">limpiar</span></div><div className="rev-kpi-value">{fmtNum(kpis.dirty)}</div></article>
-            <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Limpias</span><span className="bo-status ok">listas</span></div><div className="rev-kpi-value">{fmtNum(kpis.clean)}</div></article>
-            <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Inspeccionadas</span><span className="bo-status ok">vendibles</span></div><div className="rev-kpi-value">{fmtNum(kpis.inspected)}</div></article>
-            <article className={`rev-kpi rev-kpi-${kpis.ooo > 0 ? "error" : "ok"}`}><div className="rev-kpi-head"><span className="rev-kpi-label">Fuera de servicio</span><span className={`bo-status ${kpis.ooo > 0 ? "error" : "ok"}`}>{kpis.ooo > 0 ? "bloqueadas" : "ninguna"}</span></div><div className="rev-kpi-value">{fmtNum(kpis.ooo)}</div></article>
-            <article className={`rev-kpi rev-kpi-${kpis.tasks > 0 ? "warn" : "ok"}`}><div className="rev-kpi-head"><span className="rev-kpi-label">Tareas abiertas</span><span className={`bo-status ${kpis.tasks > 0 ? "warn" : "ok"}`}>{kpis.tasks > 0 ? "en curso" : "al día"}</span></div><div className="rev-kpi-value">{fmtNum(kpis.tasks)}</div></article>
-          </div>
-
-          <div className="bo-pill-row">
-            {FILTERS.map((f) => {
-              const count = f.id === "all" ? board.length : board.filter(f.match).length;
-              return (
-                <button key={f.id} type="button" className={`bo-pill${filter === f.id ? " is-active" : ""}`} style={{ cursor: "pointer" }} onClick={() => setFilter(f.id)}>
-                  {f.label} ({count})
-                </button>
-              );
-            })}
-          </div>
-
-          {visible.length === 0 ? (
-            <EmptyState title="Sin habitaciones" message="No hay habitaciones que coincidan con este filtro." />
-          ) : (
-            <div className="bo-grid" style={{ gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))" }}>
-              {visible.map((item) => {
-                const s = hkStatusOf(item);
-                const statusKind = HK_STATUS_KIND[s] ?? "info";
-                const isClean = s === "clean";
-                const isInspected = s === "inspected";
-                const formOpen = formRoom === item.room.id;
-                const maint = item.room.maintenanceStatus ?? "ok";
-                const sellable = item.room.sellable;
-                return (
-                  <article key={item.room.id} className="bo-card hk-room" style={{ background: "var(--surface)", display: "flex", flexDirection: "column", gap: 8 }}>
-                    <div className="hk-hovercard">
-                      <div style={{ fontWeight: 700, color: "var(--ink)", marginBottom: 4 }}>Habitación {item.room.number}{item.room.floor ? ` · planta ${item.room.floor}` : ""}</div>
-                      <div className="hk-hc-row"><span>Estado</span><span><span className={`bo-status ${statusKind}`} style={{ fontSize: 10 }}>{HK_STATUS_LABEL[s] ?? s}</span></span></div>
-                      <div className="hk-hc-row"><span>Mantenimiento</span><span><span className={`bo-status ${maint === "ok" ? "ok" : "warn"}`} style={{ fontSize: 10 }}>{maint === "ok" ? "correcto" : maint}</span></span></div>
-                      <div className="hk-hc-row"><span>Vendible</span><span><span className={`bo-status ${sellable ? "ok" : "error"}`} style={{ fontSize: 10 }}>{sellable ? "sí" : "no"}</span></span></div>
-                      <div className="hk-hc-row"><span>Tareas abiertas</span><span><strong>{item.tasks.length}</strong></span></div>
-                      {item.tasks.length > 0 ? (
-                        <div style={{ marginTop: 4, fontSize: 12, color: "var(--ink)" }}>
-                          {item.tasks.map((t) => `${TASK_TYPE_LABEL[t.taskType] ?? t.taskType} (${TASK_STATUS_LABEL[t.status] ?? t.status})`).join(" · ")}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="bo-card-head" style={{ marginBottom: 0 }}>
-                      <div>
-                        <strong style={{ fontSize: 18, color: "var(--ink)" }}>{item.room.number}</strong>
-                        {item.room.floor ? <span className="bo-muted" style={{ fontSize: 12 }}> · planta {item.room.floor}</span> : null}
-                      </div>
-                      <span className={`bo-status ${statusKind}`}>{HK_STATUS_LABEL[s] ?? s}</span>
-                    </div>
-
-                    {item.tasks.length > 0 ? (
-                      <div className="bo-stack" style={{ gap: 6 }}>
-                        {item.tasks.map((t) => {
-                          const next = t.status === "in_progress" ? { status: "done", label: "Completar" } : { status: "in_progress", label: "Empezar" };
-                          return (
-                            <div key={t.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                              <span style={{ fontSize: 12.5 }}>
-                                {TASK_TYPE_LABEL[t.taskType] ?? t.taskType}{" "}
-                                <span className={`bo-status ${PRIORITY_KIND[t.priority] ?? "info"}`} style={{ fontSize: 10 }}>{PRIORITY_LABEL[t.priority] ?? t.priority}</span>{" "}
-                                <span className="bo-muted" style={{ fontSize: 11 }}>{TASK_STATUS_LABEL[t.status] ?? t.status}</span>
-                              </span>
-                              {t.status !== "done" ? (
-                                <button type="button" disabled={busy} style={{ minHeight: 30, padding: "2px 10px", fontSize: 12 }} onClick={() => run(() => updateHousekeepingTask(t.id, { status: next.status }), `Tarea ${next.label.toLowerCase()}.`)}>
-                                  {next.label}
-                                </button>
-                              ) : null}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>Sin tareas abiertas.</p>
-                    )}
-
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: "auto" }}>
-                      {!isClean && !isInspected ? (
-                        <button type="button" className="primary" disabled={busy} style={{ minHeight: 32, padding: "4px 10px", fontSize: 12.5 }} onClick={() => run(() => markRoomClean(item.room.id), `Habitación ${item.room.number} marcada limpia.`)}>Marcar limpia</button>
-                      ) : null}
-                      {isClean ? (
-                        <button type="button" className="primary" disabled={busy} style={{ minHeight: 32, padding: "4px 10px", fontSize: 12.5 }} onClick={() => run(() => markRoomInspected(item.room.id), `Habitación ${item.room.number} inspeccionada.`)}>Inspeccionar</button>
-                      ) : null}
-                      <button type="button" disabled={busy} style={{ minHeight: 32, padding: "4px 10px", fontSize: 12.5 }} onClick={() => { setFormRoom(formOpen ? null : item.room.id); setMsg(null); }}>
-                        {formOpen ? "Cancelar" : "+ Tarea"}
-                      </button>
-                    </div>
-
-                    {formOpen ? (
-                      <div className="bo-stack" style={{ gap: 6, borderTop: "1px solid var(--line-soft)", paddingTop: 8 }}>
-                        <select value={formType} onChange={(e) => setFormType(e.target.value as HkTaskType)} disabled={busy}>
-                          {TASK_TYPES.map((t) => <option key={t} value={t}>{TASK_TYPE_LABEL[t]}</option>)}
-                        </select>
-                        <select value={formPriority} onChange={(e) => setFormPriority(e.target.value as HkPriority)} disabled={busy}>
-                          <option value="low">Prioridad baja</option>
-                          <option value="normal">Prioridad normal</option>
-                          <option value="high">Prioridad alta</option>
-                        </select>
-                        <button type="button" className="primary" disabled={busy} style={{ minHeight: 32 }} onClick={() => run(async () => { await createHousekeepingTask({ roomId: item.room.id, taskType: formType, priority: formPriority }); setFormRoom(null); }, "Tarea creada.")}>
-                          Crear tarea
-                        </button>
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })}
-            </div>
-          )}
+          {busy ? <CocoaBadge tone="info">{STATUS_LABELS.saving}</CocoaBadge> : null}
+          {error && board.length > 0 ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} loading={loading && board.length > 0}>
+            {ACTIONS.refresh}
+          </CocoaButton>
         </>
+      }
+      state={loading && board.length === 0 ? "loading" : error && board.length === 0 ? "error" : "ready"}
+      skeleton={<HousekeepingSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "housekeeping-refresh", label: "Actualizar el tablero de pisos", run: refresh }]}
+    >
+      <CocoaKpiStrip min={200} stagger aria-label="Habitaciones por estado">
+        <CocoaKpi label="Sucias" value={number(kpis.dirty)} polarity="negative-good" status={kpis.dirty > 0 ? "warning" : "ok"} />
+        <CocoaKpi label="Limpias" value={number(kpis.clean)} polarity="positive-good" status="ok" />
+        <CocoaKpi label="Inspeccionadas" value={number(kpis.inspected)} unit="vendibles" polarity="positive-good" status="ok" />
+        <CocoaKpi label="Fuera de servicio" value={number(kpis.ooo)} polarity="negative-good" status={kpis.ooo > 0 ? "critical" : "ok"} />
+        <CocoaKpi label="Tareas abiertas" value={number(kpis.tasks)} polarity="negative-good" status={kpis.tasks > 0 ? "warning" : "ok"} />
+      </CocoaKpiStrip>
+
+      <div className="cocoa-cluster" role="group" aria-label="Filtrar habitaciones">
+        {FILTERS.map((f) => {
+          const count = f.id === "all" ? board.length : board.filter(f.match).length;
+          const active = filter === f.id;
+          return (
+            <CocoaButton
+              key={f.id}
+              size="small"
+              variant={active ? "tinted" : "bordered"}
+              tone={active ? "accent" : "neutral"}
+              aria-pressed={active}
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label} · {number(count)}
+            </CocoaButton>
+          );
+        })}
+      </div>
+
+      {visible.length === 0 ? (
+        <CocoaSection aria-label="Sin habitaciones">
+          <CocoaState kind="empty" title="Sin habitaciones" message="No hay habitaciones que coincidan con este filtro." illustration="search" />
+        </CocoaSection>
+      ) : (
+        <CocoaKpiStrip min={240} aria-label="Habitaciones">
+          {visible.map((item) => {
+            const s = hkStatusOf(item);
+            const isClean = s === "clean";
+            const isInspected = s === "inspected";
+            const maint = item.room.maintenanceStatus ?? "ok";
+            return (
+              <CocoaCard key={item.room.id} variant="bordered" style={roomCardStyle} role="group" aria-label={`Habitación ${item.room.number}`}>
+                <div className="cocoa-row" data-justify="between" data-align="start" data-wrap="nowrap">
+                  <div className="cocoa-row" data-gap="2" data-align="baseline">
+                    <strong style={roomNumberStyle}>{item.room.number}</strong>
+                    {item.room.floor ? <span style={captionStyle}>planta {item.room.floor}</span> : null}
+                  </div>
+                  <CocoaBadge tone={HK_STATUS_TONE[s] ?? "info"}>{HK_STATUS_LABEL[s] ?? s}</CocoaBadge>
+                </div>
+
+                {maint !== "ok" || !item.room.sellable ? (
+                  <div className="cocoa-cluster">
+                    {maint !== "ok" ? (
+                      <CocoaBadge tone="warning" size="small" uppercase={false}>
+                        Mantenimiento: {maint}
+                      </CocoaBadge>
+                    ) : null}
+                    {!item.room.sellable ? (
+                      <CocoaBadge tone="danger" variant="tinted" size="small">
+                        No vendible
+                      </CocoaBadge>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {item.tasks.length > 0 ? (
+                  <ul className="c22-section__list" aria-label={`Tareas de la habitación ${item.room.number}`}>
+                    {item.tasks.map((t) => {
+                      const next = t.status === "in_progress" ? { status: "done", label: ACTIONS.complete } : { status: "in_progress", label: "Empezar" };
+                      return (
+                        <li key={t.id}>
+                          <span className="cocoa-row" data-gap="1" style={taskLabelStyle}>
+                            <span>{TASK_TYPE_LABEL[t.taskType] ?? t.taskType}</span>
+                            <CocoaBadge tone={PRIORITY_TONE[t.priority] ?? "info"} variant="dot" size="small">
+                              {PRIORITY_LABEL[t.priority] ?? t.priority}
+                            </CocoaBadge>
+                            <span style={captionStyle}>{TASK_STATUS_LABEL[t.status] ?? t.status}</span>
+                          </span>
+                          {t.status !== "done" ? (
+                            <CocoaButton
+                              variant="bordered"
+                              tone="neutral"
+                              size="small"
+                              disabled={busy}
+                              onClick={() => void run(() => updateHousekeepingTask(t.id, { status: next.status }), `Tarea ${next.label.toLowerCase()}.`)}
+                            >
+                              {next.label}
+                            </CocoaButton>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                ) : (
+                  <CocoaState kind="empty" inline title="Sin tareas abiertas." />
+                )}
+
+                <div className="cocoa-cluster" style={roomActionsStyle}>
+                  {!isClean && !isInspected ? (
+                    <CocoaButton size="small" disabled={busy} onClick={() => void run(() => markRoomClean(item.room.id), `Habitación ${item.room.number} marcada limpia.`)}>
+                      Marcar limpia
+                    </CocoaButton>
+                  ) : null}
+                  {isClean ? (
+                    <CocoaButton size="small" disabled={busy} onClick={() => void run(() => markRoomInspected(item.room.id), `Habitación ${item.room.number} inspeccionada.`)}>
+                      Inspeccionar
+                    </CocoaButton>
+                  ) : null}
+                  <CocoaButton size="small" variant="bordered" tone="neutral" disabled={busy} onClick={() => openTaskForm(item.room.id)}>
+                    {newLabel("f", "tarea")}
+                  </CocoaButton>
+                </div>
+              </CocoaCard>
+            );
+          })}
+        </CocoaKpiStrip>
       )}
-    </section>
+
+      <CocoaDrawer
+        open={formRoom !== null}
+        onClose={closeTaskForm}
+        title={newLabel("f", "tarea")}
+        subtitle={formItem ? `Habitación ${formItem.room.number}` : undefined}
+        side="right"
+        size="sm"
+        initialFocus={() => document.getElementById("hk-task-type")}
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={closeTaskForm} disabled={busy}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton loading={busy} onClick={submitTask}>
+              Crear tarea
+            </CocoaButton>
+          </>
+        }
+      >
+        <CocoaFormRow columns={1}>
+          <CocoaField label="Tipo de tarea">
+            <CocoaSelect id="hk-task-type" value={formType} onChange={(v) => setFormType(v as HkTaskType)} options={TASK_TYPE_OPTIONS} disabled={busy} />
+          </CocoaField>
+          <CocoaField label="Prioridad">
+            <CocoaSelect value={formPriority} onChange={(v) => setFormPriority(v as HkPriority)} options={PRIORITY_OPTIONS} disabled={busy} />
+          </CocoaField>
+        </CocoaFormRow>
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }

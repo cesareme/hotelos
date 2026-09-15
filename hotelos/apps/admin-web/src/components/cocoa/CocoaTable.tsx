@@ -38,6 +38,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { CocoaButton } from "./CocoaButton";
 import { CocoaSkeleton } from "./CocoaState";
+import { toneBg, type CocoaTone } from "./cocoa-tones";
 import { useIsNarrow } from "./cocoa-viewport";
 
 export type CocoaTableSortDirection = "asc" | "desc";
@@ -76,6 +77,10 @@ export interface CocoaTableProps<Row> {
   stickyFirstColumn?: boolean;
   /** Trailing actions cell per row (CocoaButton plain/small). */
   rowActions?: (row: Row) => ReactNode;
+  /** Tone wash of a row (`data-tone` on the <tr>, tone-bg on the phone card; hover and selection still win): low stock, overdue… */
+  rowTone?: (row: Row) => CocoaTone | undefined;
+  /** Native tooltip of a row («Abrir el detalle de la propiedad»). */
+  rowTitle?: (row: Row) => string | undefined;
   /** Totals row: `true` uses each column's `footer`; an object maps column key → cell. */
   footer?: boolean | Record<string, ReactNode>;
   /** Progressive rendering for long lists (chunks of 100 once past 200 rows). */
@@ -177,6 +182,8 @@ export function CocoaTable<Row>({
   density,
   stickyFirstColumn = false,
   rowActions,
+  rowTone,
+  rowTitle,
   footer,
   virtualize = false,
   caption,
@@ -251,6 +258,7 @@ export function CocoaTable<Row>({
         {shownRows.map((row, idx) => {
           const key = resolveRowKey(row, rowKey, idx);
           const isSelected = hasSelection && selectedKey === key;
+          const tone = rowTone?.(row);
           const cardStyle: CSSProperties = {
             display: "flex",
             flexDirection: "column",
@@ -258,7 +266,7 @@ export function CocoaTable<Row>({
             padding: "var(--cocoa-space-3) 14px",
             borderRadius: "var(--cocoa-radius-lg)",
             border: "1px solid var(--cocoa-separator)",
-            background: isSelected ? "color-mix(in srgb, var(--cocoa-accent) 8%, transparent)" : "var(--cocoa-background-content)",
+            background: isSelected ? "color-mix(in srgb, var(--cocoa-accent) 8%, transparent)" : tone ? toneBg(tone) : "var(--cocoa-background-content)",
             boxShadow: isSelected ? "inset 3px 0 0 var(--cocoa-accent), var(--cocoa-shadow-card)" : "var(--cocoa-shadow-control)",
             cursor: isClickable ? "pointer" : "default"
           };
@@ -282,6 +290,8 @@ export function CocoaTable<Row>({
               role={isClickable ? "button" : undefined}
               tabIndex={isClickable ? 0 : undefined}
               aria-pressed={isClickable ? isSelected : undefined}
+              title={rowTitle?.(row)}
+              data-tone={tone}
             >
               {visibleColumns.map((col) => {
                 const content = col.render ? col.render(row) : defaultRender(row, col.key);
@@ -419,6 +429,8 @@ export function CocoaTable<Row>({
                   tabIndex={isClickable ? 0 : undefined}
                   aria-selected={hasSelection ? isSelected : undefined}
                   data-interactive={isClickable ? "true" : undefined}
+                  data-tone={rowTone?.(row)}
+                  title={rowTitle?.(row)}
                 >
                   {visibleColumns.map((col, index) => {
                     const align = col.align ?? "left";

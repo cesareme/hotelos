@@ -8,11 +8,21 @@
 //
 // Below the gauge: the score label, the "Riesgo cancelacion" caption, the
 // number of reservations at risk, and an optional "Revisar" call to action.
+//
+// Cocoa 22 (ola 2): the geometry (track, progress arc, needle, 220×130 box)
+// comes from `cocoa/cocoa-chart-math` — the same helpers `CocoaChart.Gauge`
+// uses — so the two render identical shapes; the tone comes from
+// `thresholdTone` + `toneColor`. Screens should use `CocoaChart.Gauge`
+// directly; this component stays for the legacy callers until wave 11.
 
 import { useMemo, type CSSProperties } from "react";
 
 import { CocoaCard } from "../cocoa/CocoaCard";
 import { CocoaButton } from "../cocoa/CocoaButton";
+import { gaugeToneLabel } from "../cocoa/CocoaChart";
+import { GAUGE, gaugeGeometry, thresholdTone } from "../cocoa/cocoa-chart-math";
+import { toneColor } from "../cocoa/cocoa-tones";
+import { number, plural } from "../../lib/format";
 
 export interface DirectorCancellationRiskGaugeProps {
   score: number;
@@ -20,54 +30,8 @@ export interface DirectorCancellationRiskGaugeProps {
   onReview?: () => void;
 }
 
-type RiskTone = "success" | "warning" | "error";
-
-function getTone(score: number): RiskTone {
-  if (score < 30) return "success";
-  if (score < 60) return "warning";
-  return "error";
-}
-
-const TONE_COLOR: Record<RiskTone, string> = {
-  success: "var(--cocoa-success)",
-  warning: "var(--cocoa-warning)",
-  error: "var(--cocoa-danger)"
-};
-
-const TONE_LABEL: Record<RiskTone, string> = {
-  success: "Bajo",
-  warning: "Moderado",
-  error: "Alto"
-};
-
-// Gauge geometry. The viewBox is twice the size of the radius so the gauge
-// fits cleanly inside it with stroke caps.
-const VIEW_W = 220;
-const VIEW_H = 130;
-const CX = VIEW_W / 2;
-const CY = 110;
-const RADIUS = 90;
-const STROKE_WIDTH = 16;
-
-// Convert a 0..100 score into an angle in degrees within a semicircle whose
-// left side (180 degrees) maps to 0 and right side (0 degrees) maps to 100.
-function scoreToAngle(score: number): number {
-  const clamped = Math.max(0, Math.min(100, score));
-  return 180 - (clamped / 100) * 180;
-}
-
-function polarToCartesian(
-  cx: number,
-  cy: number,
-  radius: number,
-  angleDeg: number
-): { x: number; y: number } {
-  const rad = (angleDeg * Math.PI) / 180;
-  return {
-    x: cx + radius * Math.cos(rad),
-    y: cy - radius * Math.sin(rad)
-  };
-}
+// Cancellation risk thresholds (0–30 low · 30–60 moderate · 60–100 high).
+const RISK_THRESHOLDS: [number, number] = [30, 60];
 
 const containerStyle: CSSProperties = {
   display: "flex",
@@ -81,7 +45,7 @@ const containerStyle: CSSProperties = {
 const gaugeWrapStyle: CSSProperties = {
   position: "relative",
   width: "100%",
-  maxWidth: VIEW_W,
+  maxWidth: GAUGE.width,
   display: "flex",
   justifyContent: "center"
 };
@@ -99,10 +63,11 @@ const centerLabelWrapStyle: CSSProperties = {
 
 const scoreTextStyle: CSSProperties = {
   fontSize: "var(--cocoa-fs-title-1)",
-  fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
   letterSpacing: "var(--cocoa-tracking-tight)",
   lineHeight: 1,
-  color: "var(--cocoa-label)"
+  color: "var(--cocoa-label)",
+  fontVariantNumeric: "tabular-nums"
 };
 
 const subLabelStyle: CSSProperties = {
@@ -127,88 +92,40 @@ const countStyle: CSSProperties = {
   textAlign: "center"
 };
 
-export function DirectorCancellationRiskGauge({
-  score,
-  reservationsAtRisk,
-  onReview
-}: DirectorCancellationRiskGaugeProps) {
+export function DirectorCancellationRiskGauge({ score, reservationsAtRisk, onReview }: DirectorCancellationRiskGaugeProps) {
   const clampedScore = Math.max(0, Math.min(100, score));
-  const tone = useMemo(() => getTone(clampedScore), [clampedScore]);
-  const color = TONE_COLOR[tone];
-  const toneLabel = TONE_LABEL[tone];
-
-  // Build the background (track) and foreground (progress) arcs.
-  const startPoint = polarToCartesian(CX, CY, RADIUS, 180);
-  const endPoint = polarToCartesian(CX, CY, RADIUS, 0);
-  const trackPath = `M ${startPoint.x} ${startPoint.y} A ${RADIUS} ${RADIUS} 0 0 1 ${endPoint.x} ${endPoint.y}`;
-
-  const progressAngle = scoreToAngle(clampedScore);
-  const progressEnd = polarToCartesian(CX, CY, RADIUS, progressAngle);
-  const largeArcFlag = 180 - progressAngle > 180 ? 1 : 0;
-  const progressPath = `M ${startPoint.x} ${startPoint.y} A ${RADIUS} ${RADIUS} 0 ${largeArcFlag} 1 ${progressEnd.x} ${progressEnd.y}`;
-
-  // Needle geometry — a triangular pointer rotated to the score angle.
-  const needleLength = RADIUS - 6;
-  const needleTip = polarToCartesian(CX, CY, needleLength, progressAngle);
-  const needleBaseLeft = polarToCartesian(
-    CX,
-    CY,
-    8,
-    progressAngle + 90
-  );
-  const needleBaseRight = polarToCartesian(
-    CX,
-    CY,
-    8,
-    progressAngle - 90
-  );
-  const needlePath = `M ${needleTip.x} ${needleTip.y} L ${needleBaseLeft.x} ${needleBaseLeft.y} L ${needleBaseRight.x} ${needleBaseRight.y} Z`;
-
-  const reviewLabel = reservationsAtRisk === 1
-    ? "1 reserva en riesgo"
-    : `${reservationsAtRisk} reservas en riesgo`;
+  const tone = thresholdTone(clampedScore, RISK_THRESHOLDS, false);
+  const color = toneColor(tone);
+  const toneLabel = gaugeToneLabel(tone);
+  const geometry = useMemo(() => gaugeGeometry(clampedScore, 0, 100), [clampedScore]);
+  const scoreText = `${number(Math.round(clampedScore))} %`;
 
   return (
     <CocoaCard padding="md">
       <div style={containerStyle}>
         <div style={gaugeWrapStyle}>
           <svg
-            viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+            viewBox={`0 0 ${GAUGE.width} ${GAUGE.height}`}
             width="100%"
+            preserveAspectRatio="xMidYMid meet"
             role="img"
-            aria-label={`Riesgo de cancelacion ${Math.round(clampedScore)}% (${toneLabel})`}
+            aria-label={`Riesgo de cancelación ${scoreText} (${toneLabel})`}
+            style={{ display: "block", aspectRatio: `${GAUGE.width} / ${GAUGE.height}` }}
           >
-            <path
-              d={trackPath}
-              fill="none"
-              stroke="var(--cocoa-separator)"
-              strokeWidth={STROKE_WIDTH}
-              strokeLinecap="round"
-            />
-            <path
-              d={progressPath}
-              fill="none"
-              stroke={color}
-              strokeWidth={STROKE_WIDTH}
-              strokeLinecap="round"
-            />
-            <path d={needlePath} fill={color} />
-            <circle cx={CX} cy={CY} r={6} fill={color} />
-            <circle
-              cx={CX}
-              cy={CY}
-              r={3}
-              fill="var(--cocoa-background-content)"
-            />
+            <path d={geometry.trackPath} fill="none" stroke="var(--cocoa-chart-track)" strokeWidth={GAUGE.stroke} strokeLinecap="round" />
+            <path d={geometry.progressPath} fill="none" stroke={color} strokeWidth={GAUGE.stroke} strokeLinecap="round" />
+            <path d={geometry.needlePath} fill={color} />
+            <circle cx={GAUGE.cx} cy={GAUGE.cy} r={6} fill={color} />
+            <circle cx={GAUGE.cx} cy={GAUGE.cy} r={3} fill="var(--cocoa-background-content)" />
           </svg>
           <div style={centerLabelWrapStyle}>
-            <span style={scoreTextStyle}>{Math.round(clampedScore)}%</span>
-            <span style={subLabelStyle}>Riesgo cancelacion</span>
+            <span style={scoreTextStyle}>{scoreText}</span>
+            <span style={subLabelStyle}>Riesgo de cancelación</span>
           </div>
         </div>
 
         <div style={footerStyle}>
-          <p style={countStyle}>{reviewLabel}</p>
+          <p style={countStyle}>{plural(reservationsAtRisk, "reserva en riesgo", "reservas en riesgo")}</p>
           {onReview ? (
             <CocoaButton variant="tinted" size="small" onClick={onReview}>
               Revisar →

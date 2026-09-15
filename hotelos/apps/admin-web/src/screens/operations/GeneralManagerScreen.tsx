@@ -583,7 +583,7 @@ function DirectorDashboard({ k, degraded, paceRows, paceDegraded }: DirectorDash
             primaryCount={k.alerts.openIncidents}
             primaryLabel="abiertas"
             status={statusFromCount(k.alerts.openIncidents, 5, 10)}
-            breakdown={k.alerts.emergencyIncidents > 0 ? [{ label: "críticas", count: k.alerts.emergencyIncidents, color: toneColor("danger") }] : undefined}
+            breakdown={k.alerts.emergencyIncidents > 0 ? [{ label: "críticas", count: k.alerts.emergencyIncidents, tone: "danger" }] : undefined}
             onDrillDown={() => navigateTo("MaintenanceDashboard")}
           />
         </DegradedCard>

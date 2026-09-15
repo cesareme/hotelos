@@ -4,44 +4,57 @@
 // recepción/HK/mantenimiento). Muestra el estado de cada departamento en una
 // sola pantalla con drilldown a cada tablero específico.
 //
-// Cocoa migration (07-Management): repaint visual con CocoaPageHeader,
-// CocoaCard wrappers, CocoaSegmentedControl para alternar entre la foto general
-// y el detalle de alertas. Mismos endpoints, polling y navegación.
-//
 // Layout v2 (mayo 2026):
+//   Row 0 — Summary KPIs (departamentos OK / atención / críticos / alertas).
 //   Row 1 — Mini cards (DirectorOpsHealthMini): HK, Maintenance, Workforce,
 //           Safety, POS. Consume miniCards[] del endpoint enriquecido.
 //   Row 2 — Detail tables: tareas HK, work orders, turnos, incidentes safety.
 //   Row 3 — Trends charts (7d): HK cleaned vs scheduled, MTTR mantenimiento,
 //           coverage workforce.
+//
+// Cocoa 22 (ola 2 · lote 2-A): `CocoaPage` with internal views as `tabs`
+// (hosted in Mi día the container paints the H1 and the page keeps subtitle,
+// actions and the segmented views), `CocoaKpiStrip` of `CocoaKpi` for the
+// summary, `DirectorOpsHealthMini` inside a strip, `CocoaTable` per detail
+// list, `CocoaChart.Line` for the 7-day trends, `CocoaBadge` everywhere,
+// `CocoaState` / `Degraded*` for the honest empty and degraded states and a
+// mirror skeleton. Same endpoint, polling and drill-down targets.
 
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedControl";
-import { HOSTED_ACTIONS_ROW, HOSTED_TOOLBAR, useTabHost } from "../tabs/TabHost";
+import { navigateTo } from "../../lib/navigate";
+import { toArray } from "../../utils/toArray";
+import { date, dateTime, number, percent, plural, time } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { SEVERITY_TONE, type ManagementTone } from "./managementBadges";
+import { DirectorOpsHealthMini, type DirectorOpsHealthMiniProps, type DirectorOpsHealthStatus } from "../../components/cocoa-director";
 import {
-  DirectorOpsHealthMini,
-  type DirectorOpsHealthMiniProps,
-  type DirectorOpsHealthStatus
-} from "../../components/cocoa-director/DirectorOpsHealthMini";
-import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaStat,
+  CocoaState,
+  CocoaTable,
   DegradedBanner,
   DegradedCard,
   DegradedNote,
   DegradedValue,
-  isDegraded
-} from "../../components/cocoa-extras/DegradedValue";
-import { toArray } from "../../utils/toArray";
-import {
-  SEVERITY_TONE,
-  toneToColorToken,
-  type ManagementTone
-} from "./managementBadges";
-import { dateTime, time } from "../../lib/format";
+  isDegraded,
+  useViewportTier,
+  type CocoaKpiStatus,
+  type CocoaLineSeries,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type Kpi = { label: string; value: number | string; tone: "ok" | "warn" | "error" | "info"; detail?: string };
 
@@ -212,163 +225,22 @@ const DEGRADED_LABEL = {
   }
 } as const;
 
-function navigateTo(screen: string) {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Local style helpers (token-based; no px/hex literals).
+// Local text styles (tokens only); layout comes from the utilities.
 // ---------------------------------------------------------------------------
 
-const sectionStackStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "var(--cocoa-space-4)"
-};
-
-const summaryGridStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(min(180px, 100%), 1fr))",
-  gap: "var(--cocoa-space-3)"
-};
-
-const miniCardsRowStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(min(200px, 100%), 1fr))",
-  gap: "var(--cocoa-space-3)"
-};
-
-const trendsRowStyle: CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(min(280px, 100%), 1fr))",
-  gap: "var(--cocoa-space-3)"
-};
-
-const cardHeadStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  gap: "var(--cocoa-space-2)",
-  marginBottom: "var(--cocoa-space-3)",
-  flexWrap: "wrap"
-};
-
-const cardTitleStyle: CSSProperties = {
+const mutedStyle: CSSProperties = {
   margin: 0,
-  fontSize: "var(--cocoa-fs-title-3)",
-  fontWeight: 600,
+  fontSize: "var(--cocoa-fs-caption)",
+  color: "var(--cocoa-label-secondary)"
+};
+
+const calloutStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-body)",
   color: "var(--cocoa-label)"
 };
 
-function badgeStyle(tone: ManagementTone): CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px var(--cocoa-space-2)",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    letterSpacing: "var(--cocoa-tracking-wide)",
-    textTransform: "uppercase",
-    color: toneToColorToken(tone),
-    background: "transparent",
-    border: `1px solid ${toneToColorToken(tone)}`,
-    borderRadius: "var(--cocoa-radius-sm)",
-    lineHeight: 1.4
-  };
-}
-
-// "degraded": the tile's counter fell back (QC-06) — attenuated border instead
-// of a confident green/red one.
-function summaryTileStyle(tone: ManagementTone | "degraded"): CSSProperties {
-  return {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--cocoa-space-1)",
-    padding: "var(--cocoa-space-3)",
-    borderLeft: `3px solid ${tone === "degraded" ? "var(--cocoa-label-tertiary)" : toneToColorToken(tone)}`
-  };
-}
-
-const summaryLabelStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-caption)",
-  color: "var(--cocoa-label-secondary)",
-  textTransform: "uppercase",
-  letterSpacing: "var(--cocoa-tracking-wide)",
-  fontWeight: 600
-};
-
-const summaryValueStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-large-title)",
-  fontWeight: 700,
-  color: "var(--cocoa-label)",
-  lineHeight: 1.1
-};
-
-const alertItemStyle = (tone: ManagementTone, clickable: boolean): CSSProperties => ({
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  gap: "var(--cocoa-space-2)",
-  padding: "var(--cocoa-space-3)",
-  borderRadius: "var(--cocoa-radius-md)",
-  border: `1px solid ${toneToColorToken(tone)}`,
-  borderLeftWidth: "4px",
-  background: "var(--cocoa-background-content)",
-  cursor: clickable ? "pointer" : "default"
-});
-
-// Table styles for the row 2 detail tables.
-const tableStyle: CSSProperties = {
-  width: "100%",
-  borderCollapse: "collapse",
-  fontSize: "var(--cocoa-fs-callout)",
-  color: "var(--cocoa-label)"
-};
-
-const theadStyle: CSSProperties = {
-  textAlign: "left",
-  fontSize: "var(--cocoa-fs-caption)",
-  textTransform: "uppercase",
-  letterSpacing: "var(--cocoa-tracking-wide)",
-  color: "var(--cocoa-label-secondary)",
-  borderBottom: "1px solid var(--cocoa-separator)"
-};
-
-const thStyle: CSSProperties = {
-  padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
-  fontWeight: 600
-};
-
-const tdStyle: CSSProperties = {
-  padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
-  borderBottom: "1px solid var(--cocoa-separator)",
-  verticalAlign: "top"
-};
-
-const detailTabsStyle: CSSProperties = {
-  display: "inline-flex",
-  gap: "var(--cocoa-space-1)",
-  marginBottom: "var(--cocoa-space-3)",
-  flexWrap: "wrap"
-};
-
-function detailTabButtonStyle(active: boolean): CSSProperties {
-  return {
-    padding: "var(--cocoa-space-1) var(--cocoa-space-3)",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    letterSpacing: "var(--cocoa-tracking-wide)",
-    textTransform: "uppercase",
-    color: active ? "var(--cocoa-label)" : "var(--cocoa-label-secondary)",
-    background: active ? "var(--cocoa-background-control)" : "transparent",
-    border: `1px solid ${active ? "var(--cocoa-separator)" : "transparent"}`,
-    borderRadius: "var(--cocoa-radius-sm)",
-    cursor: "pointer",
-    lineHeight: 1.4
-  };
-}
+const growStyle: CSSProperties = { flex: "1 1 auto", minWidth: 0 };
 
 // ---------------------------------------------------------------------------
 // Mini-card mappers (data → DirectorOpsHealthMini props)
@@ -414,9 +286,9 @@ function buildHkMiniProps(mc: MiniCards["housekeeping"], deltaDegraded: boolean)
     primaryCount: mc.clean,
     primaryLabel: "limpias",
     breakdown: [
-      { label: "sucias", count: mc.dirty, color: "var(--cocoa-warning)" },
-      { label: "insp.", count: mc.inspected, color: "var(--cocoa-success)" },
-      { label: "OOO", count: mc.ooo, color: "var(--cocoa-danger)" }
+      { label: "sucias", count: mc.dirty, tone: "warning" },
+      { label: "insp.", count: mc.inspected, tone: "success" },
+      { label: "OOO", count: mc.ooo, tone: "danger" }
     ],
     status: hkStatus(mc),
     deltaVsYesterday: deltaDegraded ? undefined : mc.deltaVsYesterday,
@@ -432,8 +304,8 @@ function buildMaintenanceMiniProps(mc: MiniCards["maintenance"], deltaDegraded: 
     primaryLabel: "activas",
     breakdown: [
       { label: "abiertas", count: mc.open },
-      { label: "en curso", count: mc.inProgress, color: "var(--cocoa-info)" },
-      { label: "crítica", count: mc.critical, color: "var(--cocoa-danger)" }
+      { label: "en curso", count: mc.inProgress, tone: "info" },
+      { label: "crítica", count: mc.critical, tone: "danger" }
     ],
     status: maintenanceStatus(mc),
     deltaVsYesterday: deltaDegraded ? undefined : mc.deltaVsYesterday,
@@ -451,12 +323,7 @@ function buildWorkforceMiniProps(mc: MiniCards["workforce"]): DirectorOpsHealthM
       {
         label: "cobertura",
         count: Math.round(mc.coveragePct),
-        color:
-          mc.coveragePct >= 90
-            ? "var(--cocoa-success)"
-            : mc.coveragePct >= 70
-            ? "var(--cocoa-warning)"
-            : "var(--cocoa-danger)"
+        tone: mc.coveragePct >= 90 ? "success" : mc.coveragePct >= 70 ? "warning" : "danger"
       }
     ],
     status: workforceStatus(mc),
@@ -470,9 +337,7 @@ function buildSafetyMiniProps(mc: MiniCards["safety"]): DirectorOpsHealthMiniPro
     title: "Seguridad",
     primaryCount: mc.incidentsOpen,
     primaryLabel: "incidentes",
-    breakdown: [
-      { label: "críticos", count: mc.criticalCount, color: "var(--cocoa-danger)" }
-    ],
+    breakdown: [{ label: "críticos", count: mc.criticalCount, tone: "danger" }],
     status: safetyStatus(mc),
     onDrillDown: () => navigateTo("SafetyDashboard")
   };
@@ -496,11 +361,110 @@ function buildPosMiniProps(mc: MiniCards["posRevenueToday"]): DirectorOpsHealthM
 }
 
 // ---------------------------------------------------------------------------
+// Badges and table columns (outside the component, rule A5).
+// ---------------------------------------------------------------------------
+
+function fmtDate(iso: string | null): string {
+  return dateTime(iso, { style: "dayMonth" });
+}
+
+function priorityTone(priority: string): ManagementTone {
+  return priority === "emergency" || priority === "critical" || priority === "high" ? "danger" : priority === "normal" ? "info" : "neutral";
+}
+
+function severityTone(severity: string): ManagementTone {
+  return severity === "critical" ? "danger" : severity === "warning" || severity === "high" ? "warning" : "info";
+}
+
+function statusTone(status: string): ManagementTone {
+  return status === "done" || status === "resolved" || status === "closed" || status === "completed"
+    ? "success"
+    : status === "in_progress" || status === "investigating"
+    ? "info"
+    : "neutral";
+}
+
+function badge(tone: CocoaTone, text: string): ReactNode {
+  return (
+    <CocoaBadge tone={tone} size="small">
+      {text}
+    </CocoaBadge>
+  );
+}
+
+const HK_COLUMNS: CocoaTableColumn<DetailHkTask>[] = [
+  { key: "roomId", label: "Habitación" },
+  { key: "taskType", label: "Tarea" },
+  { key: "priority", label: "Prioridad", render: (t) => badge(priorityTone(t.priority), t.priority) },
+  { key: "status", label: "Estado", render: (t) => badge(statusTone(t.status), t.status) },
+  { key: "assignedTo", label: "Asignado", render: (t) => t.assignedTo ?? "—", hideOnNarrow: true },
+  { key: "dueAt", label: "Vence", render: (t) => fmtDate(t.dueAt), hideOnNarrow: true }
+];
+
+const WO_COLUMNS: CocoaTableColumn<DetailWorkOrder>[] = [
+  { key: "title", label: "Título" },
+  { key: "priority", label: "Prioridad", render: (wo) => badge(priorityTone(wo.priority), wo.priority) },
+  { key: "status", label: "Estado", render: (wo) => badge(statusTone(wo.status), wo.status) },
+  { key: "roomId", label: "Habitación", render: (wo) => wo.roomId ?? "—", hideOnNarrow: true },
+  { key: "assignedTo", label: "Asignado", render: (wo) => wo.assignedTo ?? "—", hideOnNarrow: true },
+  { key: "dueDate", label: "Vence", render: (wo) => fmtDate(wo.dueDate), hideOnNarrow: true }
+];
+
+const SHIFT_COLUMNS: CocoaTableColumn<DetailShift>[] = [
+  { key: "startAt", label: "Inicio", render: (s) => time(s.startAt) },
+  { key: "endAt", label: "Fin", render: (s) => time(s.endAt) },
+  { key: "roleLabel", label: "Rol", render: (s) => s.roleLabel ?? "—" },
+  { key: "status", label: "Estado", render: (s) => badge(statusTone(s.status), s.status) },
+  { key: "staffProfileId", label: "Asignación", render: (s) => (s.staffProfileId ? s.staffProfileId : badge("warning", "Sin asignar")), hideOnNarrow: true }
+];
+
+const INCIDENT_COLUMNS: CocoaTableColumn<DetailSafetyIncident>[] = [
+  { key: "title", label: "Título" },
+  { key: "incidentType", label: "Tipo", hideOnNarrow: true },
+  { key: "severity", label: "Severidad", render: (i) => badge(severityTone(i.severity), i.severity) },
+  { key: "status", label: "Estado", render: (i) => badge(statusTone(i.status), i.status) },
+  { key: "occurredAt", label: "Ocurrió", render: (i) => fmtDate(i.occurredAt ?? i.createdAt), hideOnNarrow: true }
+];
+
+const DETAIL_CAPTION: Record<DetailTab, string> = {
+  hk: "Tareas de housekeeping de hoy",
+  wo: "Órdenes de trabajo de mantenimiento",
+  shifts: "Turnos de hoy",
+  incidents: "Incidentes de seguridad"
+};
+
+const DETAIL_TABS: readonly DetailTab[] = ["hk", "wo", "shifts", "incidents"];
+
+// Segment labels: full + count from 600 px; short and count-less on phones,
+// where the four labels with counts measured 420 px in a 324 px column at
+// 390 (fix:2-A qa#5) — there the active count moves to the section meta.
+const DETAIL_TAB_LABEL: Record<DetailTab, { full: string; short: string }> = {
+  hk: { full: "Tareas HK", short: "HK" },
+  wo: { full: "Órdenes de trabajo", short: "Órdenes" },
+  shifts: { full: "Turnos", short: "Turnos" },
+  incidents: { full: "Incidentes", short: "Incidentes" }
+};
+
+// ---------------------------------------------------------------------------
+// Skeleton — mirrors the rows above (strip, strip, table card, 3 trend cards).
+// ---------------------------------------------------------------------------
+
+function OpsSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} label="Cargando resumen operativo…" />
+      <CocoaSkeleton.Strip count={5} min={200} label="Cargando salud operativa…" />
+      <CocoaSkeleton variant="card" height={260} />
+      <CocoaSkeleton.Grid rows={[[4, 4, 4]]} height={220} label="Cargando tendencias…" />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
 
 export function OperationsDirectorScreen() {
-  const hosted = useTabHost() !== null;
   const propertyId = getActivePropertyId();
   const propertyName = getActiveProperty().propertyName;
   const { data, loading, error, refresh } = useApiData<Data>(
@@ -510,6 +474,7 @@ export function OperationsDirectorScreen() {
 
   const [activeTab, setActiveTab] = useState<OpsTab>("overview");
   const [activeDetail, setActiveDetail] = useState<DetailTab>("hk");
+  const compactDetailTabs = useViewportTier() === "phone";
 
   const alerts = toArray<Alert>(data?.alerts);
   const degraded = toArray<string>(data?.degraded);
@@ -519,115 +484,72 @@ export function OperationsDirectorScreen() {
   const trends = data?.trends;
 
   const summaryDegraded = isDegraded(DEGRADED_LABEL.summary, degraded);
+  // A degraded roll-up paints «—» without a confident green/red bar.
+  const kpiStatus = (status: CocoaKpiStatus): CocoaKpiStatus | undefined => (summaryDegraded ? undefined : status);
 
   const headerActions: ReactNode = (
     <>
       <DegradedBanner degraded={degraded} />
-      {loading ? <span style={badgeStyle("info")}>cargando</span> : null}
-      {error ? <span style={badgeStyle("danger")}>{error}</span> : null}
-      <CocoaButton
-        variant="bordered"
-        tone="neutral"
-        size="small"
-        onClick={refresh}
-        aria-label="Refrescar"
-      >
-        Actualizar
+      {loading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+      {error ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
+        {ACTIONS.refresh}
       </CocoaButton>
     </>
   );
 
-  return (
-    <div style={sectionStackStyle}>
-      {hosted ? (
-        <div style={HOSTED_TOOLBAR}>
-          <CocoaSegmentedControl
-            size="small"
-            aria-label="Vista"
-            value={activeTab}
-            onChange={(value) => setActiveTab(value as OpsTab)}
-            options={[
-              { value: "overview", label: "Vista general" },
-              { value: "alertas", label: `Alertas (${alerts.length})` }
-            ]}
-          />
-          <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
-        </div>
-      ) : (
-        <CocoaPageHeader
-          eyebrow="Operaciones · Director"
-          title={`Estado operativo · ${data?.propertyName ?? propertyName}`}
-          subtitle="Foto cross-departamento. Cada bloque te lleva al tablero específico."
-          actions={headerActions}
-          tabs={[
-            { value: "overview", label: "Vista general" },
-            { value: "alertas", label: `Alertas (${alerts.length})` }
-          ]}
-          activeTab={activeTab}
-          onTabChange={(value) => setActiveTab(value as OpsTab)}
-        />
-      )}
+  const detailCount = (rows: unknown, label: string): string => (isDegraded(label, degraded) ? "—" : number(toArray(rows).length));
+  const detailCounts: Record<DetailTab, string> = {
+    hk: detailCount(details?.hkTasks, DEGRADED_LABEL.details.hk),
+    wo: detailCount(details?.workOrders, DEGRADED_LABEL.details.wo),
+    shifts: detailCount(details?.shifts, DEGRADED_LABEL.details.shifts),
+    incidents: detailCount(details?.safetyIncidents, DEGRADED_LABEL.details.incidents)
+  };
 
-      {/* Summary tiles (siempre visibles, son el resumen ejecutivo). */}
-      <CocoaCard variant="bordered" padding="md">
-        <div style={cardHeadStyle}>
-          <h3 style={cardTitleStyle}>Resumen operativo</h3>
-        </div>
-        <div style={summaryGridStyle}>
-          {/* The roll-up is computed from safe()-wrapped department counters:
-              a failed query would otherwise surface as "0 críticos" in green. */}
-          <div style={summaryTileStyle(summaryDegraded ? "degraded" : "success")}>
-            <span style={summaryLabelStyle}>Departamentos OK</span>
-            <span style={summaryValueStyle}>
-              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{summary.departmentsOk}</DegradedValue>
-            </span>
-          </div>
-          <div style={summaryTileStyle(summaryDegraded ? "degraded" : "warning")}>
-            <span style={summaryLabelStyle}>Atención</span>
-            <span style={summaryValueStyle}>
-              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{summary.departmentsWarn}</DegradedValue>
-            </span>
-          </div>
-          <div style={summaryTileStyle(summaryDegraded ? "degraded" : summary.departmentsError > 0 ? "danger" : "success")}>
-            <span style={summaryLabelStyle}>Críticos</span>
-            <span style={summaryValueStyle}>
-              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{summary.departmentsError}</DegradedValue>
-            </span>
-          </div>
-          <div style={summaryTileStyle(summaryDegraded ? "degraded" : summary.criticalAlerts > 0 ? "danger" : "success")}>
-            <span style={summaryLabelStyle}>Alertas críticas</span>
-            <span style={summaryValueStyle}>
-              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{summary.criticalAlerts}</DegradedValue>
-            </span>
-          </div>
-        </div>
-      </CocoaCard>
+  return (
+    <CocoaPage
+      eyebrow="Operaciones · Director"
+      title={`Estado operativo · ${data?.propertyName ?? propertyName}`}
+      subtitle={
+        data
+          ? `Foto cross-departamento. Cada bloque te lleva al tablero específico · datos a ${time(data.generatedAt)}`
+          : "Foto cross-departamento. Cada bloque te lleva al tablero específico."
+      }
+      actions={headerActions}
+      tabs={[
+        { value: "overview", label: "Vista general" },
+        { value: "alertas", label: `Alertas (${number(alerts.length)})` }
+      ]}
+      activeTab={activeTab}
+      onTabChange={(value) => setActiveTab(value as OpsTab)}
+      state={loading && !data ? "loading" : error && !data ? "error" : !data ? "empty" : "ready"}
+      skeleton={<OpsSkeleton />}
+      empty={{ title: "Sin datos operativos hoy", message: "El estado operativo se rellena con la actividad de los departamentos a lo largo del día." }}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "operations-director-refresh", label: "Actualizar estado operativo", run: refresh }]}
+    >
+      {/* Summary tiles (siempre visibles, son el resumen ejecutivo). The
+          roll-up is computed from safe()-wrapped department counters: a
+          failed query would otherwise surface as "0 críticos" in green. */}
+      <CocoaSection title="Resumen operativo" meta={plural(summary.departmentsOk + summary.departmentsWarn + summary.departmentsError, "departamento", "departamentos")}>
+        <CocoaKpiStrip aria-label="Resumen operativo">
+          <CocoaKpi label="Departamentos OK" value={number(summary.departmentsOk)} status={kpiStatus("ok")} polarity="neutral" degraded={summaryDegraded} />
+          <CocoaKpi label="Atención" value={number(summary.departmentsWarn)} status={kpiStatus(summary.departmentsWarn > 0 ? "warning" : "ok")} polarity="neutral" degraded={summaryDegraded} />
+          <CocoaKpi label="Críticos" value={number(summary.departmentsError)} status={kpiStatus(summary.departmentsError > 0 ? "critical" : "ok")} polarity="neutral" degraded={summaryDegraded} />
+          <CocoaKpi label="Alertas críticas" value={number(summary.criticalAlerts)} status={kpiStatus(summary.criticalAlerts > 0 ? "critical" : "ok")} polarity="neutral" degraded={summaryDegraded} />
+        </CocoaKpiStrip>
+      </CocoaSection>
 
       {/* Tab: Vista general. */}
       {activeTab === "overview" ? (
         <>
           {/* Row 1 — mini-health cards. */}
-          <CocoaCard variant="bordered" padding="md">
-            <div style={cardHeadStyle}>
-              <h3 style={cardTitleStyle}>Salud operativa</h3>
-              <span
-                style={{
-                  fontSize: "var(--cocoa-fs-caption)",
-                  color: "var(--cocoa-label-secondary)"
-                }}
-              >
-                5 módulos
-              </span>
-            </div>
+          <CocoaSection title="Salud operativa" meta="5 módulos">
             {miniCards ? (
-              <div style={miniCardsRowStyle}>
-                <DirectorOpsHealthMini
-                  {...buildHkMiniProps(miniCards.housekeeping, isDegraded(DEGRADED_LABEL.hkDelta, degraded))}
-                />
+              <CocoaKpiStrip min={200} aria-label="Salud operativa">
+                <DirectorOpsHealthMini {...buildHkMiniProps(miniCards.housekeeping, isDegraded(DEGRADED_LABEL.hkDelta, degraded))} />
                 <DegradedCard label={DEGRADED_LABEL.maintenance} degraded={degraded} title="Mantenimiento">
-                  <DirectorOpsHealthMini
-                    {...buildMaintenanceMiniProps(miniCards.maintenance, isDegraded(DEGRADED_LABEL.maintenanceDelta, degraded))}
-                  />
+                  <DirectorOpsHealthMini {...buildMaintenanceMiniProps(miniCards.maintenance, isDegraded(DEGRADED_LABEL.maintenanceDelta, degraded))} />
                 </DegradedCard>
                 <DegradedCard label={DEGRADED_LABEL.workforce} degraded={degraded} title="Personal">
                   <DirectorOpsHealthMini {...buildWorkforceMiniProps(miniCards.workforce)} />
@@ -638,181 +560,103 @@ export function OperationsDirectorScreen() {
                 <DegradedCard label={DEGRADED_LABEL.pos} degraded={degraded} title="F&B / TPV hoy">
                   <DirectorOpsHealthMini {...buildPosMiniProps(miniCards.posRevenueToday)} />
                 </DegradedCard>
-              </div>
+              </CocoaKpiStrip>
             ) : (
-              <p
-                style={{
-                  fontSize: "var(--cocoa-fs-callout)",
-                  color: "var(--cocoa-label-secondary)"
-                }}
-              >
-                Sin datos para mostrar.
-              </p>
+              <CocoaState kind="empty" inline title="Sin datos para mostrar." />
             )}
-          </CocoaCard>
+          </CocoaSection>
 
           {/* Row 2 — detail tables (HK / WO / shifts / incidents). */}
-          <CocoaCard variant="bordered" padding="md">
-            <div style={cardHeadStyle}>
-              <h3 style={cardTitleStyle}>Detalle operativo</h3>
+          <CocoaSection title="Detalle operativo" meta={compactDetailTabs ? `${DETAIL_TAB_LABEL[activeDetail].full} · ${detailCounts[activeDetail]}` : undefined}>
+            <div className="cocoa-stack" data-gap="3">
+              <CocoaSegmentedControl
+                size="small"
+                aria-label="Detalle"
+                value={activeDetail}
+                onChange={(value) => setActiveDetail(value as DetailTab)}
+                options={DETAIL_TABS.map((tab) => ({
+                  value: tab,
+                  label: compactDetailTabs ? DETAIL_TAB_LABEL[tab].short : `${DETAIL_TAB_LABEL[tab].full} (${detailCounts[tab]})`
+                }))}
+              />
+              <DetailTable detail={activeDetail} details={details} degraded={degraded} />
             </div>
-            <div style={detailTabsStyle} role="tablist" aria-label="Detalle">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeDetail === "hk"}
-                style={detailTabButtonStyle(activeDetail === "hk")}
-                onClick={() => setActiveDetail("hk")}
-              >
-                Tareas HK (<DegradedValue label={DEGRADED_LABEL.details.hk} degraded={degraded}>{toArray(details?.hkTasks).length}</DegradedValue>)
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeDetail === "wo"}
-                style={detailTabButtonStyle(activeDetail === "wo")}
-                onClick={() => setActiveDetail("wo")}
-              >
-                Work orders (<DegradedValue label={DEGRADED_LABEL.details.wo} degraded={degraded}>{toArray(details?.workOrders).length}</DegradedValue>)
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeDetail === "shifts"}
-                style={detailTabButtonStyle(activeDetail === "shifts")}
-                onClick={() => setActiveDetail("shifts")}
-              >
-                Turnos (<DegradedValue label={DEGRADED_LABEL.details.shifts} degraded={degraded}>{toArray(details?.shifts).length}</DegradedValue>)
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={activeDetail === "incidents"}
-                style={detailTabButtonStyle(activeDetail === "incidents")}
-                onClick={() => setActiveDetail("incidents")}
-              >
-                Incidentes (<DegradedValue label={DEGRADED_LABEL.details.incidents} degraded={degraded}>{toArray(details?.safetyIncidents).length}</DegradedValue>)
-              </button>
-            </div>
-            <DetailTable detail={activeDetail} details={details} degraded={degraded} />
-          </CocoaCard>
+          </CocoaSection>
 
           {/* Row 3 — trend charts (7d). */}
-          <div style={trendsRowStyle}>
-            <TrendCard
-              title="HK · habitaciones (7 días)"
-              subtitle="Limpiadas vs programadas"
-            >
-              <DegradedNote label={DEGRADED_LABEL.trends.hk} degraded={degraded}>
-                <PairTrendChart
-                  data={toArray<TrendPair>(trends?.housekeepingCleanedVsScheduled)}
-                  actualLabel="limpiadas"
-                  targetLabel="programadas"
-                />
-              </DegradedNote>
-            </TrendCard>
-            <TrendCard
-              title="Mantenimiento · MTTR (7 días)"
-              subtitle="Horas promedio de resolución"
-            >
-              <DegradedNote label={DEGRADED_LABEL.trends.mttr} degraded={degraded}>
-                <SingleTrendChart
-                  data={toArray<TrendPoint>(trends?.maintenanceMttrHours)}
-                  suffix="h"
-                  color="var(--cocoa-warning)"
-                />
-              </DegradedNote>
-            </TrendCard>
-            <TrendCard
-              title="Personal · cobertura (7 días)"
-              subtitle="% de turnos con asignación"
-            >
-              <DegradedNote label={DEGRADED_LABEL.trends.coverage} degraded={degraded}>
-                <SingleTrendChart
-                  data={toArray<TrendPoint>(trends?.workforceCoveragePct)}
-                  suffix="%"
-                  color="var(--cocoa-info)"
-                />
-              </DegradedNote>
-            </TrendCard>
-          </div>
+          <CocoaGrid aria-label="Tendencias de siete días">
+            <CocoaSpan cols={4} min={240}>
+              <CocoaSection title="HK · habitaciones (7 días)" meta="Limpiadas vs programadas">
+                <DegradedNote label={DEGRADED_LABEL.trends.hk} degraded={degraded}>
+                  <PairTrendChart data={toArray<TrendPair>(trends?.housekeepingCleanedVsScheduled)} actualLabel="limpiadas" targetLabel="programadas" />
+                </DegradedNote>
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={4} min={240}>
+              <CocoaSection title="Mantenimiento · MTTR (7 días)" meta="Horas promedio de resolución">
+                <DegradedNote label={DEGRADED_LABEL.trends.mttr} degraded={degraded}>
+                  <SingleTrendChart
+                    data={toArray<TrendPoint>(trends?.maintenanceMttrHours)}
+                    label="MTTR"
+                    tone="warning"
+                    format={(v) => number(v, { maximumFractionDigits: 1 })}
+                    suffix=" h"
+                  />
+                </DegradedNote>
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={4} min={240}>
+              <CocoaSection title="Personal · cobertura (7 días)" meta="% de turnos con asignación">
+                <DegradedNote label={DEGRADED_LABEL.trends.coverage} degraded={degraded}>
+                  <SingleTrendChart
+                    data={toArray<TrendPoint>(trends?.workforceCoveragePct)}
+                    label="Cobertura"
+                    tone="info"
+                    format={(v) => percent(v, { maximumFractionDigits: 0 })}
+                  />
+                </DegradedNote>
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
         </>
       ) : null}
 
       {/* Tab: Alertas críticas. */}
       {activeTab === "alertas" ? (
-        <CocoaCard variant="bordered" padding="md">
-          <div style={cardHeadStyle}>
-            <h3 style={cardTitleStyle}>Atender ahora</h3>
-            <span style={badgeStyle(summaryDegraded ? "neutral" : alerts.length > 0 ? "danger" : "success")}>
-              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>{alerts.length}</DegradedValue>
-            </span>
-          </div>
+        <CocoaSection
+          title="Atender ahora"
+          meta={
+            <CocoaBadge tone={summaryDegraded ? "neutral" : alerts.length > 0 ? "danger" : "success"} size="small">
+              <DegradedValue label={DEGRADED_LABEL.summary} degraded={degraded}>
+                {number(alerts.length)}
+              </DegradedValue>
+            </CocoaBadge>
+          }
+        >
           {alerts.length === 0 ? (
             <DegradedNote label={DEGRADED_LABEL.summary} degraded={degraded}>
-              <p
-                style={{
-                  fontSize: "var(--cocoa-fs-callout)",
-                  color: "var(--cocoa-label-secondary)"
-                }}
-              >
-                Sin alertas
-              </p>
+              <CocoaState kind="empty" inline title="Sin alertas" />
             </DegradedNote>
           ) : (
-            <ul
-              style={{
-                listStyle: "none",
-                padding: 0,
-                margin: 0,
-                display: "flex",
-                flexDirection: "column",
-                gap: "var(--cocoa-space-2)"
-              }}
-            >
-              {alerts.map((a) => {
-                const tone = SEVERITY_TONE[a.severity];
-                return (
-                  <li key={a.id} style={alertItemStyle(tone, false)}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div
-                        style={{
-                          display: "flex",
-                          gap: "var(--cocoa-space-2)",
-                          alignItems: "center",
-                          flexWrap: "wrap"
-                        }}
-                      >
-                        <strong
-                          style={{
-                            fontSize: "var(--cocoa-fs-body)",
-                            color: "var(--cocoa-label)"
-                          }}
-                        >
-                          {a.title}
-                        </strong>
-                        <span style={badgeStyle(tone)}>{a.department}</span>
-                      </div>
-                      {a.detail ? (
-                        <div
-                          style={{
-                            fontSize: "var(--cocoa-fs-caption)",
-                            color: "var(--cocoa-label-secondary)",
-                            marginTop: "var(--cocoa-space-1)"
-                          }}
-                        >
-                          {a.detail}
-                        </div>
-                      ) : null}
+            <ul className="c22-section__list" aria-label="Alertas críticas">
+              {alerts.map((a) => (
+                <li key={a.id}>
+                  <div className="cocoa-stack" data-gap="1" style={growStyle}>
+                    <div className="cocoa-row" data-gap="2">
+                      <strong style={calloutStyle}>{a.title}</strong>
+                      <CocoaBadge tone={SEVERITY_TONE[a.severity]} size="small">
+                        {a.department}
+                      </CocoaBadge>
                     </div>
-                  </li>
-                );
-              })}
+                    {a.detail ? <span style={mutedStyle}>{a.detail}</span> : null}
+                  </div>
+                </li>
+              ))}
             </ul>
           )}
-        </CocoaCard>
+        </CocoaSection>
       ) : null}
-    </div>
+    </CocoaPage>
   );
 }
 
@@ -820,540 +664,83 @@ export function OperationsDirectorScreen() {
 // Sub-components: detail tables
 // ---------------------------------------------------------------------------
 
-function DetailTable({
-  detail,
-  details,
-  degraded
-}: {
-  detail: DetailTab;
-  details: Details | undefined;
-  degraded: string[];
-}) {
+function DetailTable({ detail, details, degraded }: { detail: DetailTab; details: Details | undefined; degraded: string[] }) {
   if (!details) {
-    return (
-      <p
-        style={{
-          fontSize: "var(--cocoa-fs-callout)",
-          color: "var(--cocoa-label-secondary)"
-        }}
-      >
-        Sin datos para mostrar.
-      </p>
-    );
+    return <CocoaState kind="empty" inline title="Sin datos para mostrar." />;
   }
+
+  const emptyState = <CocoaState kind="empty" inline title="Sin elementos." />;
+  const caption = DETAIL_CAPTION[detail];
 
   // Each detail list is a safe()-wrapped query: when it failed the API sends
   // [] and "Sin elementos." would read as a clean board.
   if (detail === "hk") {
     return (
       <DegradedNote label={DEGRADED_LABEL.details.hk} degraded={degraded}>
-        <HkTasksTable items={toArray<DetailHkTask>(details.hkTasks)} />
+        <CocoaTable columns={HK_COLUMNS} rows={toArray<DetailHkTask>(details.hkTasks)} rowKey="id" density="compact" caption={caption} emptyState={emptyState} />
       </DegradedNote>
     );
   }
   if (detail === "wo") {
     return (
       <DegradedNote label={DEGRADED_LABEL.details.wo} degraded={degraded}>
-        <WorkOrdersTable items={toArray<DetailWorkOrder>(details.workOrders)} />
+        <CocoaTable columns={WO_COLUMNS} rows={toArray<DetailWorkOrder>(details.workOrders)} rowKey="id" density="compact" caption={caption} emptyState={emptyState} />
       </DegradedNote>
     );
   }
   if (detail === "shifts") {
     return (
       <DegradedNote label={DEGRADED_LABEL.details.shifts} degraded={degraded}>
-        <ShiftsTable items={toArray<DetailShift>(details.shifts)} />
+        <CocoaTable columns={SHIFT_COLUMNS} rows={toArray<DetailShift>(details.shifts)} rowKey="id" density="compact" caption={caption} emptyState={emptyState} />
       </DegradedNote>
     );
   }
   return (
     <DegradedNote label={DEGRADED_LABEL.details.incidents} degraded={degraded}>
-      <IncidentsTable items={toArray<DetailSafetyIncident>(details.safetyIncidents)} />
+      <CocoaTable columns={INCIDENT_COLUMNS} rows={toArray<DetailSafetyIncident>(details.safetyIncidents)} rowKey="id" density="compact" caption={caption} emptyState={emptyState} />
     </DegradedNote>
   );
 }
 
-function EmptyRow({ colSpan }: { colSpan: number }) {
-  return (
-    <tr>
-      <td colSpan={colSpan} style={{ ...tdStyle, color: "var(--cocoa-label-secondary)" }}>
-        Sin elementos.
-      </td>
-    </tr>
-  );
-}
-
-function fmtDate(iso: string | null): string {
-  return dateTime(iso, { style: "dayMonth" });
-}
-
-function fmtTime(iso: string | null): string {
-  return time(iso);
-}
-
-function priorityBadge(priority: string): ReactNode {
-  const tone: ManagementTone =
-    priority === "emergency" || priority === "critical" || priority === "high"
-      ? "danger"
-      : priority === "normal"
-      ? "info"
-      : "neutral";
-  return <span style={badgeStyle(tone)}>{priority}</span>;
-}
-
-function severityBadge(severity: string): ReactNode {
-  const tone: ManagementTone =
-    severity === "critical" ? "danger" : severity === "warning" || severity === "high" ? "warning" : "info";
-  return <span style={badgeStyle(tone)}>{severity}</span>;
-}
-
-function statusBadge(status: string): ReactNode {
-  const tone: ManagementTone =
-    status === "done" || status === "resolved" || status === "closed" || status === "completed"
-      ? "success"
-      : status === "in_progress" || status === "investigating"
-      ? "info"
-      : "neutral";
-  return <span style={badgeStyle(tone)}>{status}</span>;
-}
-
-function HkTasksTable({ items }: { items: DetailHkTask[] }) {
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={tableStyle}>
-        <thead style={theadStyle}>
-          <tr>
-            <th style={thStyle}>Habitación</th>
-            <th style={thStyle}>Tarea</th>
-            <th style={thStyle}>Prioridad</th>
-            <th style={thStyle}>Estado</th>
-            <th style={thStyle}>Asignado</th>
-            <th style={thStyle}>Vence</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.length === 0 ? (
-            <EmptyRow colSpan={6} />
-          ) : (
-            items.map((t) => (
-              <tr key={t.id}>
-                <td style={tdStyle}>{t.roomId}</td>
-                <td style={tdStyle}>{t.taskType}</td>
-                <td style={tdStyle}>{priorityBadge(t.priority)}</td>
-                <td style={tdStyle}>{statusBadge(t.status)}</td>
-                <td style={tdStyle}>{t.assignedTo ?? "—"}</td>
-                <td style={tdStyle}>{fmtDate(t.dueAt)}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function WorkOrdersTable({ items }: { items: DetailWorkOrder[] }) {
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={tableStyle}>
-        <thead style={theadStyle}>
-          <tr>
-            <th style={thStyle}>Título</th>
-            <th style={thStyle}>Prioridad</th>
-            <th style={thStyle}>Estado</th>
-            <th style={thStyle}>Habitación</th>
-            <th style={thStyle}>Asignado</th>
-            <th style={thStyle}>Vence</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.length === 0 ? (
-            <EmptyRow colSpan={6} />
-          ) : (
-            items.map((wo) => (
-              <tr key={wo.id}>
-                <td style={tdStyle}>{wo.title}</td>
-                <td style={tdStyle}>{priorityBadge(wo.priority)}</td>
-                <td style={tdStyle}>{statusBadge(wo.status)}</td>
-                <td style={tdStyle}>{wo.roomId ?? "—"}</td>
-                <td style={tdStyle}>{wo.assignedTo ?? "—"}</td>
-                <td style={tdStyle}>{fmtDate(wo.dueDate)}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function ShiftsTable({ items }: { items: DetailShift[] }) {
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={tableStyle}>
-        <thead style={theadStyle}>
-          <tr>
-            <th style={thStyle}>Inicio</th>
-            <th style={thStyle}>Fin</th>
-            <th style={thStyle}>Rol</th>
-            <th style={thStyle}>Estado</th>
-            <th style={thStyle}>Asignación</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.length === 0 ? (
-            <EmptyRow colSpan={5} />
-          ) : (
-            items.map((s) => (
-              <tr key={s.id}>
-                <td style={tdStyle}>{fmtTime(s.startAt)}</td>
-                <td style={tdStyle}>{fmtTime(s.endAt)}</td>
-                <td style={tdStyle}>{s.roleLabel ?? "—"}</td>
-                <td style={tdStyle}>{statusBadge(s.status)}</td>
-                <td style={tdStyle}>
-                  {s.staffProfileId ? (
-                    s.staffProfileId
-                  ) : (
-                    <span style={{ color: "var(--cocoa-warning)" }}>Sin asignar</span>
-                  )}
-                </td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function IncidentsTable({ items }: { items: DetailSafetyIncident[] }) {
-  return (
-    <div style={{ overflowX: "auto" }}>
-      <table style={tableStyle}>
-        <thead style={theadStyle}>
-          <tr>
-            <th style={thStyle}>Título</th>
-            <th style={thStyle}>Tipo</th>
-            <th style={thStyle}>Severidad</th>
-            <th style={thStyle}>Estado</th>
-            <th style={thStyle}>Ocurrió</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.length === 0 ? (
-            <EmptyRow colSpan={5} />
-          ) : (
-            items.map((i) => (
-              <tr key={i.id}>
-                <td style={tdStyle}>{i.title}</td>
-                <td style={tdStyle}>{i.incidentType}</td>
-                <td style={tdStyle}>{severityBadge(i.severity)}</td>
-                <td style={tdStyle}>{statusBadge(i.status)}</td>
-                <td style={tdStyle}>{fmtDate(i.occurredAt ?? i.createdAt)}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
 // ---------------------------------------------------------------------------
-// Sub-components: trend charts (lightweight SVG, no deps)
+// Sub-components: trend charts (CocoaChart.Line, geometry from cocoa-chart-math)
 // ---------------------------------------------------------------------------
 
-function TrendCard({
-  title,
-  subtitle,
-  children
-}: {
-  title: string;
-  subtitle: string;
-  children: ReactNode;
-}) {
-  return (
-    <CocoaCard variant="bordered" padding="md">
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: "var(--cocoa-space-1)",
-          marginBottom: "var(--cocoa-space-3)"
-        }}
-      >
-        <h4
-          style={{
-            margin: 0,
-            fontSize: "var(--cocoa-fs-headline)",
-            fontWeight: 600,
-            color: "var(--cocoa-label)"
-          }}
-        >
-          {title}
-        </h4>
-        <span
-          style={{
-            fontSize: "var(--cocoa-fs-caption)",
-            color: "var(--cocoa-label-secondary)"
-          }}
-        >
-          {subtitle}
-        </span>
-      </div>
-      {children}
-    </CocoaCard>
-  );
-}
+const TREND_HEIGHT = 140;
 
-const CHART_W = 320;
-const CHART_H = 120;
-const CHART_PAD_X = 8;
-const CHART_PAD_Y = 12;
-
-function dayLabel(iso: string): string {
-  // "YYYY-MM-DD" → "DD/MM"
-  const parts = iso.split("-");
-  if (parts.length !== 3) return iso;
-  return `${parts[2]}/${parts[1]}`;
-}
-
-function buildScales(values: number[]): { min: number; max: number } {
-  if (values.length === 0) return { min: 0, max: 1 };
-  const filtered = values.filter((v) => Number.isFinite(v));
-  if (filtered.length === 0) return { min: 0, max: 1 };
-  const max = Math.max(...filtered, 1);
-  return { min: 0, max };
-}
-
-function PairTrendChart({
-  data,
-  actualLabel,
-  targetLabel
-}: {
-  data: TrendPair[];
-  actualLabel: string;
-  targetLabel: string;
-}) {
+function PairTrendChart({ data, actualLabel, targetLabel }: { data: TrendPair[]; actualLabel: string; targetLabel: string }) {
   if (data.length === 0) {
-    return (
-      <p
-        style={{
-          fontSize: "var(--cocoa-fs-callout)",
-          color: "var(--cocoa-label-secondary)"
-        }}
-      >
-        Sin datos de tendencia.
-      </p>
-    );
+    return <CocoaState kind="empty" inline title="Sin datos de tendencia." />;
   }
-  const all = data.flatMap((p) => [p.actual, p.target]);
-  const { max } = buildScales(all);
-  const innerW = CHART_W - CHART_PAD_X * 2;
-  const innerH = CHART_H - CHART_PAD_Y * 2;
-  const step = data.length > 1 ? innerW / (data.length - 1) : 0;
-
-  function pointFor(value: number, index: number): { x: number; y: number } {
-    const x = CHART_PAD_X + step * index;
-    const y = CHART_PAD_Y + innerH - (value / max) * innerH;
-    return { x, y };
-  }
-
-  const actualPath = data
-    .map((p, i) => {
-      const { x, y } = pointFor(p.actual, i);
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-
-  const targetPath = data
-    .map((p, i) => {
-      const { x, y } = pointFor(p.target, i);
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)" }}>
-      <svg
-        viewBox={`0 0 ${CHART_W} ${CHART_H}`}
-        width="100%"
-        height={CHART_H}
-        role="img"
-        aria-label={`${actualLabel} vs ${targetLabel}`}
-        style={{ display: "block" }}
-      >
-        <path
-          d={targetPath}
-          fill="none"
-          stroke="var(--cocoa-label-tertiary)"
-          strokeWidth={1.5}
-          strokeDasharray="4 3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        <path
-          d={actualPath}
-          fill="none"
-          stroke="var(--cocoa-success)"
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        {data.map((p, i) => {
-          const { x, y } = pointFor(p.actual, i);
-          return <circle key={`a-${p.date}`} cx={x} cy={y} r={2.5} fill="var(--cocoa-success)" />;
-        })}
-      </svg>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          fontSize: "var(--cocoa-fs-caption)",
-          color: "var(--cocoa-label-secondary)"
-        }}
-      >
-        {data.map((p) => (
-          <span key={p.date}>{dayLabel(p.date)}</span>
-        ))}
-      </div>
-      <div
-        style={{
-          display: "flex",
-          gap: "var(--cocoa-space-3)",
-          fontSize: "var(--cocoa-fs-caption)",
-          color: "var(--cocoa-label-secondary)"
-        }}
-      >
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--cocoa-space-1)" }}>
-          <span
-            style={{
-              display: "inline-block",
-              width: 10,
-              height: 2,
-              background: "var(--cocoa-success)"
-            }}
-          />
-          {actualLabel}
-        </span>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: "var(--cocoa-space-1)" }}>
-          <span
-            style={{
-              display: "inline-block",
-              width: 10,
-              height: 2,
-              background: "var(--cocoa-label-tertiary)"
-            }}
-          />
-          {targetLabel}
-        </span>
-      </div>
-    </div>
-  );
+  const series: CocoaLineSeries[] = [
+    { id: "target", label: targetLabel, tone: "tertiary", dashed: true, width: 1, points: data.map((p) => ({ x: date(p.date, "dayMonth"), y: p.target })) },
+    { id: "actual", label: actualLabel, tone: "success", width: 2, points: data.map((p) => ({ x: date(p.date, "dayMonth"), y: p.actual })) }
+  ];
+  return <CocoaChart.Line series={series} height={TREND_HEIGHT} ticks={3} aria-label={`${actualLabel} frente a ${targetLabel}, últimos 7 días`} />;
 }
 
 function SingleTrendChart({
   data,
-  suffix,
-  color
+  label,
+  tone,
+  format,
+  suffix
 }: {
   data: TrendPoint[];
-  suffix: string;
-  color: string;
+  label: string;
+  tone: CocoaTone;
+  format: (value: number) => string;
+  suffix?: string;
 }) {
   if (data.length === 0) {
-    return (
-      <p
-        style={{
-          fontSize: "var(--cocoa-fs-callout)",
-          color: "var(--cocoa-label-secondary)"
-        }}
-      >
-        Sin datos de tendencia.
-      </p>
-    );
+    return <CocoaState kind="empty" inline title="Sin datos de tendencia." />;
   }
-  const { max } = buildScales(data.map((p) => p.value));
-  const innerW = CHART_W - CHART_PAD_X * 2;
-  const innerH = CHART_H - CHART_PAD_Y * 2;
-  const step = data.length > 1 ? innerW / (data.length - 1) : 0;
-
-  function pointFor(value: number, index: number): { x: number; y: number } {
-    const x = CHART_PAD_X + step * index;
-    const y = CHART_PAD_Y + innerH - (value / max) * innerH;
-    return { x, y };
-  }
-
-  const linePath = data
-    .map((p, i) => {
-      const { x, y } = pointFor(p.value, i);
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-
   const latest = data[data.length - 1]?.value ?? 0;
-
+  const series: CocoaLineSeries[] = [{ id: "value", label, tone, width: 2, points: data.map((p) => ({ x: date(p.date, "dayMonth"), y: p.value })) }];
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)" }}>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "baseline",
-          gap: "var(--cocoa-space-2)"
-        }}
-      >
-        <strong
-          style={{
-            fontSize: "var(--cocoa-fs-title-1)",
-            fontWeight: 700,
-            color,
-            lineHeight: 1
-          }}
-        >
-          {latest}
-          {suffix}
-        </strong>
-        <span
-          style={{
-            fontSize: "var(--cocoa-fs-caption)",
-            color: "var(--cocoa-label-secondary)"
-          }}
-        >
-          último día
-        </span>
-      </div>
-      <svg
-        viewBox={`0 0 ${CHART_W} ${CHART_H}`}
-        width="100%"
-        height={CHART_H}
-        role="img"
-        aria-label="Tendencia"
-        style={{ display: "block" }}
-      >
-        <path
-          d={linePath}
-          fill="none"
-          stroke={color}
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-        {data.map((p, i) => {
-          const { x, y } = pointFor(p.value, i);
-          return <circle key={p.date} cx={x} cy={y} r={2.5} fill={color} />;
-        })}
-      </svg>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          fontSize: "var(--cocoa-fs-caption)",
-          color: "var(--cocoa-label-secondary)"
-        }}
-      >
-        {data.map((p) => (
-          <span key={p.date}>{dayLabel(p.date)}</span>
-        ))}
-      </div>
+    <div className="cocoa-stack" data-gap="2">
+      <CocoaStat label="último día" value={format(latest)} suffix={suffix} tone={tone} size="large" />
+      <CocoaChart.Line series={series} height={TREND_HEIGHT} ticks={3} legend={false} valueFormat={format} aria-label={`${label}, últimos 7 días`} />
     </div>
   );
 }

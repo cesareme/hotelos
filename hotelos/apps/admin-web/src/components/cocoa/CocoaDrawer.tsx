@@ -15,7 +15,7 @@
 // so it is always emitted), parts `c22-drawer__handle/__head/__heading/
 // __title/__subtitle/__body/__foot`.
 
-import { useId, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { CocoaButton } from "./CocoaButton";
 import { COCOA_SCRIM, useEscapeKey, useFocusTrap, useMountedTransition, useScrollLock } from "./cocoa-overlay";
@@ -36,6 +36,8 @@ export interface CocoaDrawerProps {
   dismissible?: boolean;
   /** Element to focus on open (default: first focusable, then the panel). */
   initialFocus?: () => HTMLElement | null | undefined;
+  /** When it changes while the drawer is open, `initialFocus` is evaluated again (a form that arrives after a fetch: pass the loaded state). */
+  focusKey?: string | number | boolean;
   children: ReactNode;
   className?: string;
   /** Layout escape hatch for the panel. */
@@ -88,7 +90,7 @@ export function drawerGeometry(input: { side: CocoaDrawerSide; size: CocoaDrawer
   };
 }
 
-export function CocoaDrawer({ open, onClose, title, subtitle, side = "right", size = "md", footer, dismissible = true, initialFocus, children, className, style }: CocoaDrawerProps) {
+export function CocoaDrawer({ open, onClose, title, subtitle, side = "right", size = "md", footer, dismissible = true, initialFocus, focusKey, children, className, style }: CocoaDrawerProps) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const headingId = useId();
   const subtitleId = useId();
@@ -99,6 +101,15 @@ export function CocoaDrawer({ open, onClose, title, subtitle, side = "right", si
   const onKeyDown = useFocusTrap(panelRef, mounted, initialFocus);
   useEscapeKey(mounted && dismissible, onClose);
   useScrollLock(mounted);
+
+  // The trap reads `initialFocus` once on open; content that arrives later (a
+  // loaded form) asks again through `focusKey`. `initialFocus` is read when the
+  // key changes, on purpose (not a dependency).
+  useEffect(() => {
+    if (!mounted || focusKey === undefined) return undefined;
+    const raf = window.requestAnimationFrame(() => initialFocus?.()?.focus({ preventScroll: true }));
+    return () => window.cancelAnimationFrame(raf);
+  }, [focusKey, mounted]);
 
   if (!mounted || typeof document === "undefined") return null;
 

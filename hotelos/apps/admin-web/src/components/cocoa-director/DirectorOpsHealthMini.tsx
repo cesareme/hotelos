@@ -21,10 +21,20 @@
 //   - The whole card is clickable when `onDrillDown` is provided. The parent
 //     screen owns the navigation target per module — this component only
 //     forwards the click.
+//
+// Cocoa 22 (ola 2): the delta text, arrow and colours come from `CocoaKpi`
+// (`formatDelta` es-ES, `deltaArrow`, `deltaTone` + `deltaColors`, polarity
+// negative-good: a growing backlog is bad) and the status hue from
+// `toneColor`; the figure uses the KPI type tokens. No local copies.
+// fix:2-A (qa#4): a breakdown pill carries a semantic `tone`, never a raw
+// colour — its 11 px label and count are painted with `toneInk` (AA on both
+// themes, spec §2.1 rule c); `toneColor` stays for the 8 px status dot only.
 
 import { useMemo, type CSSProperties, type ReactNode } from "react";
 
 import { CocoaCard } from "../cocoa/CocoaCard";
+import { deltaArrow as kpiDeltaArrow, deltaColors, deltaTone, formatDelta } from "../cocoa/CocoaKpi";
+import { toneColor, toneInk, type CocoaTone } from "../cocoa/cocoa-tones";
 import { WrenchIcon } from "../cocoa-icons/NavigationIcons";
 
 // ---------------------------------------------------------------------------
@@ -43,7 +53,8 @@ export type DirectorOpsHealthStatus = "ok" | "warning" | "critical";
 export interface DirectorOpsHealthBreakdownItem {
   label: string;
   count: number;
-  color?: string;
+  /** Semantic tone of the pill (text via `toneInk`); omitted = secondary label. */
+  tone?: CocoaTone;
 }
 
 export interface DirectorOpsHealthMiniProps {
@@ -62,9 +73,9 @@ export interface DirectorOpsHealthMiniProps {
 // ---------------------------------------------------------------------------
 
 const STATUS_COLOR: Record<DirectorOpsHealthStatus, string> = {
-  ok: "var(--cocoa-success)",
-  warning: "var(--cocoa-warning)",
-  critical: "var(--cocoa-danger)"
+  ok: toneColor("success"),
+  warning: toneColor("warning"),
+  critical: toneColor("danger")
 };
 
 const STATUS_LABEL: Record<DirectorOpsHealthStatus, string> = {
@@ -187,24 +198,6 @@ const MODULE_ICON: Record<DirectorOpsHealthModule, (p: MiniIconProps) => ReactNo
 };
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatDelta(delta: number): string {
-  const abs = Math.abs(delta);
-  if (Number.isInteger(abs)) return abs.toString();
-  return abs.toFixed(1);
-}
-
-function getDeltaColor(delta: number): string {
-  if (delta === 0) return "var(--cocoa-label-secondary)";
-  // Higher counts day-over-day are typically bad for ops backlog tiles
-  // (more dirty rooms, more incidents, more open tickets). Polarity is
-  // therefore negative-good.
-  return delta > 0 ? "var(--cocoa-danger)" : "var(--cocoa-success)";
-}
-
-// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
@@ -282,7 +275,7 @@ export function DirectorOpsHealthMini({
   };
 
   const primaryCountStyle: CSSProperties = {
-    fontSize: 32,
+    fontSize: "var(--cocoa-fs-kpi)",
     fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,
     letterSpacing: "var(--cocoa-tracking-tight)",
     color: "var(--cocoa-label)",
@@ -316,8 +309,8 @@ export function DirectorOpsHealthMini({
     lineHeight: 1
   };
 
-  function breakdownPillStyle(color?: string): CSSProperties {
-    const tone = color ?? "var(--cocoa-label-secondary)";
+  function breakdownPillStyle(tone?: CocoaTone): CSSProperties {
+    const ink = tone ? toneInk(tone) : "var(--cocoa-label-secondary)";
     return {
       display: "inline-flex",
       alignItems: "baseline",
@@ -327,7 +320,7 @@ export function DirectorOpsHealthMini({
       background: "var(--cocoa-background-control)",
       fontSize: "var(--cocoa-fs-footnote)",
       fontWeight: "var(--cocoa-fw-medium)" as unknown as number,
-      color: tone,
+      color: ink,
       fontVariantNumeric: "tabular-nums",
       fontFeatureSettings: '"tnum"',
       lineHeight: 1.2,
@@ -355,7 +348,7 @@ export function DirectorOpsHealthMini({
       gap: 4,
       fontSize: "var(--cocoa-fs-footnote)",
       fontWeight: "var(--cocoa-fw-medium)" as unknown as number,
-      color: deltaVsYesterday === undefined ? "transparent" : getDeltaColor(deltaVsYesterday),
+      color: deltaVsYesterday === undefined ? "transparent" : deltaColors(deltaTone(deltaVsYesterday, "negative-good")).text,
       fontVariantNumeric: "tabular-nums",
       fontFeatureSettings: '"tnum"',
       lineHeight: 1.2,
@@ -400,13 +393,7 @@ export function DirectorOpsHealthMini({
     deltaVsYesterday
   ]);
 
-  const deltaArrow = hasDelta
-    ? deltaVsYesterday === 0
-      ? "•"
-      : (deltaVsYesterday as number) > 0
-      ? "▲"
-      : "▼"
-    : null;
+  const deltaArrow = hasDelta ? kpiDeltaArrow(deltaVsYesterday as number) : null;
 
   const deltaSign = hasDelta
     ? (deltaVsYesterday as number) > 0
@@ -453,7 +440,7 @@ export function DirectorOpsHealthMini({
                     ·
                   </span>
                 ) : null}
-                <span style={breakdownPillStyle(item.color)}>
+                <span style={breakdownPillStyle(item.tone)}>
                   <span>{item.label}</span>
                   <span style={breakdownPillCountStyle}>{item.count}</span>
                 </span>

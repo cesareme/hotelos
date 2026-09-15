@@ -1,11 +1,34 @@
-import { useTabHost } from "../tabs/TabHost";
+// Portfolio — Informes › Cartera de propiedades (/informes/cartera).
+//
+// Cocoa 22 (ola 9 · lote 9-A): dashboard hosted in CarteraTabs (the container
+// paints eyebrow + H1). Two KPI strips (consolidated figures, then pending
+// work), the sortable per-property CocoaTable (its own scroller, a row opens
+// the property detail) and the critical alerts as CocoaCallouts.
+
+import { useMemo, useState, type CSSProperties } from "react";
 import { getActiveOrganizationId, loadSwitchableProperties } from "../../services/activeProperty";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
 import { urlForScreen } from "../../navigation/nav-tree";
-import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { EmptyState } from "../../components/States";
-import { money, number, percent } from "../../lib/format";
+import { toArray } from "../../utils/toArray";
+import { money, number, percent, plural, time } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { ExclamationCircleIcon, XCircleIcon } from "../../components/cocoa-icons/StatusIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaTable,
+  openTabPath,
+  type CocoaTableColumn,
+  type CocoaTableSort,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const ORGANIZATION_ID = getActiveOrganizationId();
 // Path registered for PropertyDetailScreen in routes/backoffice.routes.tsx.
@@ -77,38 +100,26 @@ type SortKey =
 
 type SortDirection = "asc" | "desc";
 
+const SORT_KEYS: readonly SortKey[] = ["name", "status", "roomsCount", "occupancyPct", "adrEur", "revparEur", "revenueMtdEur", "pendingFiscalSubmissions", "pendingBalanceEur", "health"];
+
 const HEALTH_LABEL: Record<PortfolioHealth, string> = {
-  ok: "healthy",
-  warn: "attention",
-  error: "critical"
+  ok: "saludable",
+  warn: "atención",
+  error: "crítica"
 };
+
+const HEALTH_TONE: Record<PortfolioHealth, CocoaTone> = { ok: "success", warn: "warning", error: "danger" };
 
 const STATUS_LABEL: Record<PortfolioPropertyStatus, string> = {
-  open: "open",
-  closed: "closed",
-  maintenance: "maintenance"
+  open: "abierta",
+  closed: "cerrada",
+  maintenance: "mantenimiento"
 };
 
-function fmtNumber(value: number | null | undefined): string {
-  return number(value);
-}
-
-function fmtEur(value: number | null | undefined): string {
-  return money(value);
-}
+const STATUS_TONE: Record<PortfolioPropertyStatus, CocoaTone> = { open: "success", maintenance: "warning", closed: "info" };
 
 function fmtPct(value: number | null | undefined): string {
   return percent(value, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-}
-
-function healthPill(health: PortfolioHealth) {
-  const kind = health === "ok" ? "ok" : health === "warn" ? "warn" : "error";
-  return <span className={`bo-status ${kind}`}>{HEALTH_LABEL[health]}</span>;
-}
-
-function statusPill(status: PortfolioPropertyStatus) {
-  const kind = status === "open" ? "ok" : status === "maintenance" ? "warn" : "info";
-  return <span className={`bo-status ${kind}`}>{STATUS_LABEL[status]}</span>;
 }
 
 // Drill-down to a property of the portfolio: the row must be one of the user's
@@ -165,25 +176,50 @@ function compareRows(a: PortfolioPropertyRow, b: PortfolioPropertyRow, key: Sort
   return dir === "asc" ? cmp : -cmp;
 }
 
-function SortableHeader(props: {
-  label: string;
-  field: SortKey;
-  sort: { key: SortKey; dir: SortDirection };
-  onSort: (key: SortKey) => void;
-  align?: "left" | "right";
-}) {
-  const active = props.sort.key === props.field;
-  const indicator = active ? (props.sort.dir === "asc" ? " ↑" : " ↓") : "";
-  return (
-    <th
-      style={{ textAlign: props.align ?? "left", cursor: "pointer", userSelect: "none" }}
-      onClick={() => props.onSort(props.field)}
-    >
-      {props.label}
-      <span style={{ color: active ? "var(--ink)" : "var(--ink-muted)" }}>{indicator || "  "}</span>
-    </th>
-  );
-}
+// Secondary line under the property name (city · region): caption secondary.
+const subStyle: CSSProperties = {
+  display: "block",
+  fontSize: "var(--cocoa-fs-caption)",
+  fontWeight: "var(--cocoa-fw-regular)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label-secondary)"
+};
+
+const PROPERTY_COLUMNS: CocoaTableColumn<PortfolioPropertyRow>[] = [
+  {
+    key: "name",
+    label: "Propiedad",
+    sortable: true,
+    render: (row) => (
+      <>
+        <strong>{row.name}</strong>
+        {row.city || row.region ? <span style={subStyle}>{[row.city, row.region].filter(Boolean).join(" · ")}</span> : null}
+      </>
+    )
+  },
+  { key: "status", label: "Estado", sortable: true, render: (row) => <CocoaBadge tone={STATUS_TONE[row.status] ?? "info"}>{STATUS_LABEL[row.status] ?? row.status}</CocoaBadge> },
+  { key: "roomsCount", label: "Habitaciones", sortable: true, align: "right", render: (row) => number(row.roomsCount), hideOnNarrow: true },
+  { key: "occupancyPct", label: "Ocupación", sortable: true, align: "right", render: (row) => fmtPct(row.occupancyPct) },
+  { key: "adrEur", label: "ADR", sortable: true, align: "right", render: (row) => money(row.adrEur), hideOnNarrow: true },
+  { key: "revparEur", label: "RevPAR", sortable: true, align: "right", render: (row) => money(row.revparEur), hideOnNarrow: true },
+  { key: "revenueMtdEur", label: "Ingresos del mes", sortable: true, align: "right", render: (row) => <strong>{money(row.revenueMtdEur)}</strong> },
+  {
+    key: "pendingFiscalSubmissions",
+    label: "Fiscal pendiente",
+    sortable: true,
+    align: "right",
+    render: (row) =>
+      row.pendingFiscalSubmissions > 0 ? (
+        <CocoaBadge tone={row.pendingFiscalSubmissions > 5 ? "danger" : "warning"} size="small">
+          {number(row.pendingFiscalSubmissions)}
+        </CocoaBadge>
+      ) : (
+        "0"
+      ),
+    hideOnNarrow: true
+  },
+  { key: "pendingBalanceEur", label: "Saldo pendiente", sortable: true, align: "right", render: (row) => money(row.pendingBalanceEur), hideOnNarrow: true },
+  { key: "health", label: "Salud", sortable: true, render: (row) => <CocoaBadge tone={HEALTH_TONE[row.health] ?? "info"}>{HEALTH_LABEL[row.health] ?? row.health}</CocoaBadge> }
+];
 
 const EMPTY_TOTALS: PortfolioTotals = {
   propertiesCount: 0,
@@ -201,17 +237,27 @@ const EMPTY_TOTALS: PortfolioTotals = {
   unattended: { reservations: 0, messages: 0, tasks: 0 }
 };
 
-export function PortfolioDashboard() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
-  const { data, loading, error, refresh } = useApiData<PortfolioDashboardData>(
-    `/dashboards/portfolio?organizationId=${ORGANIZATION_ID}`,
-    { pollIntervalMs: 60000 }
+// Skeleton espejo: two strips, the table card and the alerts card.
+function PortfolioSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={10} />
+      <CocoaSkeleton.Strip count={5} />
+      <CocoaSkeleton variant="card" height={320} />
+      <CocoaSkeleton variant="card" height={160} />
+    </div>
   );
+}
+
+export function PortfolioDashboard() {
+  // Hosted inside the Cartera de propiedades container (Tanda 5): CocoaPage reads the host and lets the container paint eyebrow + H1.
+  const { data, loading, error, refresh } = useApiData<PortfolioDashboardData>(`/dashboards/portfolio?organizationId=${ORGANIZATION_ID}`, {
+    pollIntervalMs: 60000
+  });
 
   const totals = data?.totals ?? EMPTY_TOTALS;
-  const properties = data?.perProperty ?? [];
-  const alerts = data?.alerts ?? [];
+  const properties = toArray<PortfolioPropertyRow>(data?.perProperty);
+  const alerts = toArray<PortfolioAlert>(data?.alerts);
 
   const [sort, setSort] = useState<{ key: SortKey; dir: SortDirection }>({ key: "revenueMtdEur", dir: "desc" });
   const [drillDownError, setDrillDownError] = useState<string | null>(null);
@@ -220,10 +266,13 @@ export function PortfolioDashboard() {
     void openPropertyDetail(propertyId).then((problem) => setDrillDownError(problem));
   }
 
-  function onSort(key: SortKey) {
+  // Controlled sort (the table never sorts by itself): toggling the same key
+  // flips the direction; a new key starts text ascending, numbers descending.
+  function onSort(next: CocoaTableSort) {
+    const key = SORT_KEYS.find((candidate) => candidate === next.key);
+    if (!key) return;
     setSort((prev) => {
       if (prev.key === key) return { key, dir: prev.dir === "asc" ? "desc" : "asc" };
-      // Default direction: text fields ascending, numeric descending.
       const dir: SortDirection = key === "name" || key === "status" || key === "health" ? "asc" : "desc";
       return { key, dir };
     });
@@ -237,215 +286,116 @@ export function PortfolioDashboard() {
 
   const noProperties = properties.length === 0 && !loading;
   const singleProperty = properties.length === 1;
+  const fiscalStatus = totals.pendingFiscalSubmissions > 5 ? "critical" : totals.pendingFiscalSubmissions > 0 ? "warning" : "ok";
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <header className="bo-card-head">
-        <div>
-          {embedded ? null : (
-            <>
-              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-                Informes · Cartera de propiedades
-              </p>
-              <h2 style={{ color: "var(--ink)" }}>Cartera de propiedades</h2>
-            </>
-          )}
-          <p className="bo-muted" style={{ marginTop: 4 }}>
-            Vista consolidada del grupo hotelero. KPIs agregados con media ponderada por habitaciones y drill-down por
-            propiedad. Pensado para cadenas con 3–50+ hoteles.
-          </p>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {loading ? <span className="bo-status info">cargando</span> : null}
-          {error ? <span className="bo-status error">{error}</span> : null}
-          {drillDownError ? <span className="bo-status error" role="alert">{drillDownError}</span> : null}
-          {singleProperty ? <span className="bo-chip">organización con una sola propiedad</span> : null}
-          <button type="button" onClick={refresh}>Actualizar</button>
-        </div>
-      </header>
+    <CocoaPage
+      eyebrow="Informes · Cartera de propiedades"
+      title="Cartera de propiedades"
+      subtitle={`Vista consolidada del grupo hotelero: KPIs agregados con media ponderada por habitaciones y detalle por propiedad, para cadenas con 3–50+ hoteles${data ? ` · datos a ${time(data.asOf)}` : ""}.`}
+      actions={
+        <>
+          {loading && data ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          {error && data ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          {drillDownError ? (
+            <CocoaBadge tone="danger" role="alert">
+              {drillDownError}
+            </CocoaBadge>
+          ) : null}
+          {singleProperty ? <CocoaBadge tone="neutral">organización con una sola propiedad</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={loading && !data ? "loading" : error && !data ? "error" : "ready"}
+      skeleton={<PortfolioSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "cartera-refresh", label: "Actualizar la cartera de propiedades", run: refresh }]}
+    >
+      <CocoaKpiStrip stagger aria-label="Cifras consolidadas de la cartera">
+        <CocoaKpi label="Propiedades" value={number(totals.propertiesCount)} deltaLabel="total en la organización" polarity="neutral" status="ok" />
+        <CocoaKpi label="Activas" value={number(totals.activePropertiesCount)} deltaLabel="operando ahora" polarity="neutral" status="ok" />
+        <CocoaKpi label="Habitaciones" value={number(totals.roomsCount)} deltaLabel="en todas las propiedades" polarity="neutral" status="ok" />
+        <CocoaKpi label="Llegadas hoy" value={number(totals.arrivalsToday)} polarity="neutral" status="ok" />
+        <CocoaKpi label="Salidas hoy" value={number(totals.departuresToday)} polarity="neutral" status="ok" />
+        <CocoaKpi label="En casa" value={number(totals.inHouseNow)} deltaLabel="ocupadas actualmente" polarity="neutral" status="ok" />
+        <CocoaKpi label="Ocupación cartera" value={fmtPct(totals.occupancyPct)} deltaLabel="ponderada por habitaciones" status="ok" />
+        <CocoaKpi label="ADR cartera" value={money(totals.adrEur)} deltaLabel="ponderado por habitaciones" status="ok" />
+        <CocoaKpi label="RevPAR cartera" value={money(totals.revparEur)} deltaLabel="ponderado por habitaciones" status="ok" />
+        <CocoaKpi label="Ingresos del mes" value={money(totals.revenueMtdEur)} deltaLabel="suma de todas las propiedades" status="ok" />
+      </CocoaKpiStrip>
 
-      <div className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Propiedades</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.propertiesCount)}</div>
-          <div className="rev-kpi-delta">total en la organización</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Activas</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.activePropertiesCount)}</div>
-          <div className="rev-kpi-delta">operando ahora</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Habitaciones</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.roomsCount)}</div>
-          <div className="rev-kpi-delta">en todas las propiedades</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Llegadas hoy</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.arrivalsToday)}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Salidas hoy</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.departuresToday)}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">En casa</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.inHouseNow)}</div>
-          <div className="rev-kpi-delta">ocupadas actualmente</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Ocupación cartera</span></div>
-          <div className="rev-kpi-value">{fmtPct(totals.occupancyPct)}</div>
-          <div className="rev-kpi-delta">ponderada por habitaciones</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">ADR cartera</span></div>
-          <div className="rev-kpi-value">{fmtEur(totals.adrEur)}</div>
-          <div className="rev-kpi-delta">ponderado por habitaciones</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">RevPAR cartera</span></div>
-          <div className="rev-kpi-value">{fmtEur(totals.revparEur)}</div>
-          <div className="rev-kpi-delta">ponderado por habitaciones</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Ingresos del mes</span></div>
-          <div className="rev-kpi-value">{fmtEur(totals.revenueMtdEur)}</div>
-          <div className="rev-kpi-delta">suma de todas las propiedades</div>
-        </article>
-      </div>
+      <CocoaKpiStrip aria-label="Pendientes de la cartera">
+        <CocoaKpi label="Envíos fiscales pendientes" value={number(totals.pendingFiscalSubmissions)} deltaLabel="VeriFactu · TBAI · IGIC · SES" polarity="negative-good" status={fiscalStatus} />
+        <CocoaKpi label="Saldo pendiente (hoy)" value={money(totals.pendingBalanceEur)} deltaLabel="cuentas abiertas en todas las propiedades" polarity="negative-good" status={totals.pendingBalanceEur > 5000 ? "warning" : "ok"} />
+        <CocoaKpi label="Reservas sin atender" value={number(totals.unattended.reservations)} deltaLabel="borrador o sin confirmar" polarity="negative-good" status={totals.unattended.reservations > 0 ? "warning" : "ok"} />
+        <CocoaKpi label="Mensajes sin atender" value={number(totals.unattended.messages)} deltaLabel="conversaciones abiertas" polarity="negative-good" status={totals.unattended.messages > 0 ? "warning" : "ok"} />
+        <CocoaKpi label="Tareas sin atender" value={number(totals.unattended.tasks)} deltaLabel="limpiezas pendientes" polarity="negative-good" status={totals.unattended.tasks > 0 ? "warning" : "ok"} />
+      </CocoaKpiStrip>
 
-      <div className="rev-kpi-grid">
-        <article className={`rev-kpi ${totals.pendingFiscalSubmissions > 5 ? "rev-kpi-error" : totals.pendingFiscalSubmissions > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Envíos fiscales pendientes</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.pendingFiscalSubmissions)}</div>
-          <div className="rev-kpi-delta">VeriFactu · TBAI · IGIC · SES</div>
-        </article>
-        <article className={`rev-kpi ${totals.pendingBalanceEur > 5000 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Saldo pendiente (hoy)</span></div>
-          <div className="rev-kpi-value">{fmtEur(totals.pendingBalanceEur)}</div>
-          <div className="rev-kpi-delta">open AR across properties</div>
-        </article>
-        <article className={`rev-kpi ${totals.unattended.reservations > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Reservas sin atender</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.unattended.reservations)}</div>
-          <div className="rev-kpi-delta">draft / not confirmed</div>
-        </article>
-        <article className={`rev-kpi ${totals.unattended.messages > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Mensajes sin atender</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.unattended.messages)}</div>
-          <div className="rev-kpi-delta">open conversations</div>
-        </article>
-        <article className={`rev-kpi ${totals.unattended.tasks > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tareas sin atender</span></div>
-          <div className="rev-kpi-value">{fmtNumber(totals.unattended.tasks)}</div>
-          <div className="rev-kpi-delta">housekeeping pending</div>
-        </article>
-      </div>
-
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Propiedades</h3>
-          <span className="bo-chip">{fmtNumber(properties.length)} rows · click a row to drill in</span>
-        </div>
+      <CocoaSection
+        title="Propiedades"
+        meta={noProperties ? undefined : `${plural(properties.length, "propiedad", "propiedades")} · una fila abre el detalle`}
+        padding={noProperties ? "md" : "none"}
+        style={{ overflow: "clip" }}
+      >
         {noProperties ? (
-          <p className="bo-muted">
-            Esta organización no tiene propiedades configuradas todavía. Da de alta una propiedad para empezar a
-            consolidar KPIs aquí.
-          </p>
-        ) : (
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <SortableHeader label="Propiedad" field="name" sort={sort} onSort={onSort} />
-                <SortableHeader label="Estado" field="status" sort={sort} onSort={onSort} />
-                <SortableHeader label="Habitaciones" field="roomsCount" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="Occ %" field="occupancyPct" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="ADR" field="adrEur" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="RevPAR" field="revparEur" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="Revenue MTD" field="revenueMtdEur" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="Fiscal pendiente" field="pendingFiscalSubmissions" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="AR €" field="pendingBalanceEur" sort={sort} onSort={onSort} align="right" />
-                <SortableHeader label="Salud" field="health" sort={sort} onSort={onSort} />
-              </tr>
-            </thead>
-            <tbody>
-              {sortedProperties.map((row) => (
-                <tr
-                  key={row.propertyId}
-                  style={{ cursor: "pointer" }}
-                  onClick={() => navigateToProperty(row.propertyId)}
-                  title="Abrir el tablero de la propiedad"
-                >
-                  <td>
-                    <strong>{row.name}</strong>
-                    {row.city || row.region ? (
-                      <div className="bo-muted" style={{ fontSize: 12, marginTop: 2 }}>
-                        {[row.city, row.region].filter(Boolean).join(" · ")}
-                      </div>
-                    ) : null}
-                  </td>
-                  <td>{statusPill(row.status)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtNumber(row.roomsCount)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtPct(row.occupancyPct)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtEur(row.adrEur)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtEur(row.revparEur)}</td>
-                  <td style={{ textAlign: "right" }}>
-                    <strong>{fmtEur(row.revenueMtdEur)}</strong>
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    {row.pendingFiscalSubmissions > 0 ? (
-                      <span className={`bo-status ${row.pendingFiscalSubmissions > 5 ? "error" : "warn"}`}>
-                        {fmtNumber(row.pendingFiscalSubmissions)}
-                      </span>
-                    ) : (
-                      <span className="bo-muted">0</span>
-                    )}
-                  </td>
-                  <td style={{ textAlign: "right" }}>{fmtEur(row.pendingBalanceEur)}</td>
-                  <td>{healthPill(row.health)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </article>
-
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Alertas críticas</h3>
-          <span className="bo-chip">{fmtNumber(alerts.length)} active</span>
-        </div>
-        {alerts.length === 0 ? (
-          <EmptyState
-            title="No hay alertas críticas"
-            message="Todo el portfolio opera dentro de umbrales. Si alguna propiedad cruza un límite verás aquí la alerta con severidad y enlace directo."
+          <CocoaState
+            kind="empty"
+            title="Esta organización no tiene propiedades configuradas todavía"
+            message="Da de alta una propiedad para empezar a consolidar KPIs aquí."
           />
         ) : (
-          <ol style={{ display: "flex", flexDirection: "column", gap: 8, listStyle: "none", padding: 0, margin: 0 }}>
-            {alerts.map((alert, idx) => (
-              <li
-                key={`${alert.propertyId}-${idx}`}
-                className="bo-card"
-                style={{
-                  background: "var(--surface-elevated)",
-                  borderLeft: `4px solid ${alert.severity === "critical" ? "var(--danger-ink)" : "var(--warn-ink)"}`,
-                  cursor: "pointer"
-                }}
-                onClick={() => navigateToProperty(alert.propertyId)}
-              >
-                <div className="bo-card-head">
-                  <h4 style={{ color: "var(--ink)", margin: 0 }}>{alert.title}</h4>
-                  <span className={`bo-status ${alert.severity === "critical" ? "error" : "warn"}`}>
-                    {alert.severity}
-                  </span>
-                </div>
-                <p className="bo-muted" style={{ marginTop: 6 }}>{alert.description}</p>
-              </li>
-            ))}
-          </ol>
+          <CocoaTable
+            columns={PROPERTY_COLUMNS}
+            rows={sortedProperties}
+            rowKey="propertyId"
+            sortBy={{ key: sort.key, direction: sort.dir }}
+            onSort={onSort}
+            onSelect={(row) => navigateToProperty(row.propertyId)}
+            stickyFirstColumn
+            maxHeight={520}
+            caption="Propiedades de la cartera"
+            aria-label="Propiedades de la cartera"
+          />
         )}
-      </article>
-    </section>
+      </CocoaSection>
+
+      <CocoaSection title="Alertas críticas" meta={`${number(alerts.length)} activas`}>
+        {alerts.length === 0 ? (
+          <CocoaState
+            kind="empty"
+            inline
+            title="No hay alertas críticas."
+            message="Toda la cartera opera dentro de umbrales. Si alguna propiedad cruza un límite verás aquí la alerta con su severidad y el enlace directo."
+          />
+        ) : (
+          <div className="cocoa-stack" data-gap="2" role="list" aria-label="Alertas críticas">
+            {alerts.map((alert, idx) => (
+              <div key={`${alert.propertyId}-${idx}`} role="listitem">
+                <CocoaCallout
+                  tone={alert.severity === "critical" ? "danger" : "warning"}
+                  title={alert.title}
+                  icon={alert.severity === "critical" ? <XCircleIcon size={16} aria-hidden="true" /> : <ExclamationCircleIcon size={16} aria-hidden="true" />}
+                  actions={
+                    <>
+                      <CocoaBadge tone={alert.severity === "critical" ? "danger" : "warning"} size="small">
+                        {alert.severity === "critical" ? "crítica" : "aviso"}
+                      </CocoaBadge>
+                      <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateToProperty(alert.propertyId)}>
+                        Abrir propiedad
+                      </CocoaButton>
+                    </>
+                  }
+                >
+                  {alert.description}
+                </CocoaCallout>
+              </div>
+            ))}
+          </div>
+        )}
+      </CocoaSection>
+    </CocoaPage>
   );
 }

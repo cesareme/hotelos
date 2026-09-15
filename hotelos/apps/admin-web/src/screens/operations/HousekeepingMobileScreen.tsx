@@ -1,27 +1,52 @@
-// Housekeeping Mobile Screen — vista táctil para personal de pisos.
+// Housekeeping Mobile Screen — vista táctil para personal de pisos («Mi
+// turno», /operaciones/pisos/mi-turno; hosted inside PisosTabs, standalone the
+// page paints eyebrow + H1 itself).
 //
 // Directriz Anfitorio (Nov 2026):
 //   "Housekeeping debe ser tiempo real, no módulo secundario. Anfitorio debe
 //    eliminar WhatsApp, llamadas y Excel como herramientas de coordinación.
 //    Mobile-first para operación."
 //
-// Diseño:
-//   - Tap targets ≥ 44px (Apple HIG) — toda acción se ejecuta con un dedo.
-//   - Una sola columna en móvil, dos en tablet. Sin scroll horizontal.
-//   - Cards de habitación grandes con contraste alto y emojis para identificación rápida.
-//   - 3 botones por card: ▶ Iniciar · ✓ Limpia · ✕ Reportar incidencia.
-//   - Filtros por prioridad (chips grandes).
-//   - Auto-refresh cada 20s para reflejar cambios de otros camareros / recepción.
+// Cocoa 22 (ola 4 · lote 4-A, archetype «otro» on PlantillaBase):
+//   - CocoaPage → priority filter chips (CocoaButton aria-pressed with
+//     counts) → one CocoaCard per room in a CocoaKpiStrip auto-fit tier
+//     (min 320: three, two or one per row; never a horizontal scroll).
+//   - Room cards with the number in title-1, CocoaBadge states (no emoji,
+//     §6) and up to four large CocoaButton actions: Iniciar · Limpia ·
+//     Inspeccionada · Reportar (≥ 44 px tap targets on a coarse pointer).
+//   - Reporting an incident opens a CocoaDrawer (bottom sheet on phones;
+//     replaces the native prompt) that POSTs the same work order as before.
+//   - CocoaActionBar (mobileOnly) keeps «Actualizar» and the data age under
+//     the thumb; auto-refresh every 20 s reflects other housekeepers.
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
-import { LoadingBlock, EmptyState, ErrorState } from "../../components/States";
+import { toArray } from "../../utils/toArray";
 import { useToast } from "../../components/Toast";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
 import { HK_INSTRUCTIONS } from "../../content/screen-instructions/housekeeping";
 import { useTabHost } from "../tabs/TabHost";
+import { number, plural, time } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { ChatBubbleIcon, StarIcon } from "../../components/cocoa-icons/StatusIcons";
+import {
+  CocoaActionBar,
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaCard,
+  CocoaDrawer,
+  CocoaField,
+  CocoaInput,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaState,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type Priority = "urgent" | "high" | "normal" | "low";
 
@@ -54,12 +79,10 @@ type HkData = {
   rooms: HkRoom[];
 };
 
-const PRIORITY_STYLE: Record<Priority, { label: string; bg: string; ink: string; border: string }> = {
-  urgent: { label: "URGENTE", bg: "#fee2e2", ink: "#991b1b", border: "#d23b3b" },
-  high: { label: "ALTA", bg: "#fef3c7", ink: "#92400e", border: "#d29b00" },
-  normal: { label: "NORMAL", bg: "#dbeafe", ink: "#1e40af", border: "#2663c4" },
-  low: { label: "BAJA", bg: "#e5e7eb", ink: "#374151", border: "#6b7280" }
-};
+type Filter = Priority | "all";
+
+const PRIORITY_TONE: Record<Priority, CocoaTone> = { urgent: "danger", high: "warning", normal: "info", low: "neutral" };
+const PRIORITY_LABEL: Record<Priority, string> = { urgent: "Urgente", high: "Alta", normal: "Normal", low: "Baja" };
 
 const HK_STATUS_LABEL: Record<string, string> = {
   clean: "Limpia",
@@ -70,11 +93,24 @@ const HK_STATUS_LABEL: Record<string, string> = {
   ready: "Lista"
 };
 
-function HkChip({ status }: { status?: string }) {
-  if (!status) return null;
-  const label = HK_STATUS_LABEL[status.toLowerCase()] ?? status;
-  return <span className="bo-chip">{label}</span>;
-}
+const HK_STATUS_TONE: Record<string, CocoaTone> = {
+  clean: "success",
+  dirty: "warning",
+  inspected: "success",
+  stayover: "info",
+  in_progress: "info",
+  ready: "success"
+};
+
+const FILTERS: Array<{ id: Filter; label: string }> = [
+  { id: "all", label: "Todo" },
+  { id: "urgent", label: "Urgente" },
+  { id: "high", label: "Alta" },
+  { id: "normal", label: "Normal" },
+  { id: "low", label: "Baja" }
+];
+
+const EMPTY_SUMMARY: HkData["summary"] = { urgent: 0, high: 0, normal: 0, low: 0, total: 0 };
 
 // Writes go through apiRequest so they carry the session JWT and are audited
 // as the logged-in housekeeper (Tanda 3 · CF-05). ApiError.message is the
@@ -88,6 +124,30 @@ async function postAction(path: string, body?: unknown): Promise<{ ok: boolean; 
   }
 }
 
+// Named style objects: colours and type come from the tokens (rule 6).
+const cardStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)", height: "100%" };
+const roomNumberStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-title-1)",
+  lineHeight: "var(--cocoa-lh-title-1)",
+  fontWeight: "var(--cocoa-fw-bold)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label)",
+  fontVariantNumeric: "tabular-nums"
+};
+const reasonStyle: CSSProperties = { fontWeight: "var(--cocoa-fw-medium)" as CSSProperties["fontWeight"], color: "var(--cocoa-label)" };
+const captionStyle: CSSProperties = { fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" };
+// Two equal columns (not `repeat(2, 1fr)`: mobile.css stacks that pattern below 600 px and the pairs must stay side by side).
+const actionsStyle: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "var(--cocoa-space-2)", marginTop: "auto" };
+const fullRowStyle: CSSProperties = { gridColumn: "1 / -1" };
+
+function HousekeepingMobileSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="row" />
+      <CocoaSkeleton.Grid rows={[[4, 4, 4]]} height={260} />
+    </div>
+  );
+}
+
 export function HousekeepingMobileScreen() {
   const hosted = useTabHost() !== null;
   const propertyId = getActivePropertyId();
@@ -97,25 +157,22 @@ export function HousekeepingMobileScreen() {
     `/dashboards/housekeeping-mobile?propertyId=${propertyId}`,
     { pollIntervalMs: 20000 }
   );
-  const [filter, setFilter] = useState<Priority | "all">("all");
+  const [filter, setFilter] = useState<Filter>("all");
   const [busy, setBusy] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ kind: "ok" | "warn" | "error"; text: string } | null>(null);
+  const [reportFor, setReportFor] = useState<HkRoom | null>(null);
+  const [report, setReport] = useState("");
 
-  const summary = data?.summary ?? { urgent: 0, high: 0, normal: 0, low: 0, total: 0 };
-  const rooms = data?.rooms ?? [];
+  const summary = data?.summary ?? EMPTY_SUMMARY;
+  const rooms = toArray<HkRoom>(data?.rooms);
   const filtered = filter === "all" ? rooms : rooms.filter((r) => r.priority === filter);
+  const counts: Record<Filter, number> = { all: summary.total, urgent: summary.urgent, high: summary.high, normal: summary.normal, low: summary.low };
+  const dataAt = data?.generatedAt ? time(data.generatedAt) : null;
+  const refreshing = loading && rooms.length > 0;
 
   async function setHkStatus(room: HkRoom, status: string) {
     setBusy(room.roomId);
-    setToast(null);
     const result = await postAction(`/rooms/${encodeURIComponent(room.roomId)}/housekeeping-status`, { status });
     setBusy(null);
-    setToast(
-      result.ok
-        ? { kind: "ok", text: `Hab. ${room.roomNumber} → ${HK_STATUS_LABEL[status] ?? status}` }
-        : { kind: "warn", text: result.message || "Error" }
-    );
-    setTimeout(() => setToast(null), 3000);
     if (result.ok) {
       showToast(`Hab. ${room.roomNumber} → ${HK_STATUS_LABEL[status] ?? status}`, { variant: "success" });
       refresh();
@@ -124,9 +181,15 @@ export function HousekeepingMobileScreen() {
     }
   }
 
-  async function reportIssue(room: HkRoom) {
-    const description = window.prompt(`Hab. ${room.roomNumber} · Describe la incidencia (avería, falta amenity, etc.)`);
-    if (!description?.trim()) return;
+  function openReport(room: HkRoom) {
+    setReport("");
+    setReportFor(room);
+  }
+
+  async function sendReport() {
+    const room = reportFor;
+    const description = report.trim();
+    if (!room || !description) return;
     setBusy(room.roomId);
     const result = await postAction("/work-orders", {
       roomNumber: room.roomNumber,
@@ -136,154 +199,120 @@ export function HousekeepingMobileScreen() {
       propertyId
     });
     setBusy(null);
-    setToast(
-      result.ok
-        ? { kind: "ok", text: "Incidencia reportada a mantenimiento" }
-        : { kind: "warn", text: result.message || "Error" }
-    );
-    setTimeout(() => setToast(null), 3000);
     if (result.ok) {
       showToast("Incidencia reportada a mantenimiento", { variant: "success" });
+      setReportFor(null);
+      setReport("");
       refresh();
     } else {
       showToast(result.message || "No se pudo reportar la incidencia", { variant: "error" });
     }
   }
 
+  const countLabel = plural(filtered.length, "habitación", "habitaciones");
+
   return (
-    <>
-      {/* Page head sticky simplificado */}
-      <div
-        style={{
-          position: "sticky",
-          top: 0,
-          background: "var(--surface)",
-          padding: "12px 16px",
-          borderBottom: "1px solid var(--border)",
-          zIndex: 10
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: hosted ? "flex-end" : "space-between", alignItems: "center", gap: 8 }}>
-          {hosted ? null : (
-            <div>
-              <div className="bo-page-eyebrow" style={{ fontSize: 11 }}>Pisos · {propertyName}</div>
-              <h1 style={{ fontSize: 22, margin: "2px 0 0 0", color: "var(--ink)" }}>Mi turno</h1>
-            </div>
-          )}
-          <button type="button" className="ghost" onClick={refresh} style={{ minHeight: 44, minWidth: 44, fontSize: 18 }} title="Actualizar">
-            ↻
-          </button>
-        </div>
-        {/* Big summary chips */}
-        <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-          <SummaryChip label="Todo" count={summary.total} active={filter === "all"} onClick={() => setFilter("all")} tone="info" />
-          <SummaryChip label="Urgente" count={summary.urgent} active={filter === "urgent"} onClick={() => setFilter("urgent")} tone="danger" />
-          <SummaryChip label="Alta" count={summary.high} active={filter === "high"} onClick={() => setFilter("high")} tone="warn" />
-          <SummaryChip label="Normal" count={summary.normal} active={filter === "normal"} onClick={() => setFilter("normal")} tone="info" />
-          <SummaryChip label="Baja" count={summary.low} active={filter === "low"} onClick={() => setFilter("low")} tone="muted" />
-        </div>
+    <CocoaPage
+      eyebrow={`Pisos · ${propertyName}`}
+      title="Mi turno"
+      subtitle={hosted ? undefined : "Habitaciones del turno por prioridad: inicia, marca limpia, inspecciona y reporta incidencias."}
+      actions={
+        <>
+          {error && data ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} loading={refreshing}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={loading && !data ? "loading" : error && !data ? "error" : "ready"}
+      skeleton={<HousekeepingMobileSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "housekeeping-mobile-refresh", label: "Actualizar mi turno", run: refresh }]}
+    >
+      <CocoaScreenInstructionsCard
+        title="Housekeeping"
+        description={HK_INSTRUCTIONS.whatIsThis}
+        steps={HK_INSTRUCTIONS.howToUse}
+        tip={HK_INSTRUCTIONS.tips?.[0]}
+        dismissible
+        persistKey="housekeeping"
+      />
+
+      <div className="cocoa-cluster" role="group" aria-label="Filtrar por prioridad">
+        {FILTERS.map((f) => {
+          const active = filter === f.id;
+          return (
+            <CocoaButton
+              key={f.id}
+              size="small"
+              variant={active ? "tinted" : "bordered"}
+              tone={active ? "accent" : "neutral"}
+              aria-pressed={active}
+              onClick={() => setFilter(f.id)}
+            >
+              {f.label} · {number(counts[f.id])}
+            </CocoaButton>
+          );
+        })}
       </div>
 
-      <div style={{ padding: "0 16px 100px 16px" }}>
-        <div style={{ marginTop: 12 }}>
-          <CocoaScreenInstructionsCard
-            title="Housekeeping"
-            description={HK_INSTRUCTIONS.whatIsThis}
-            steps={HK_INSTRUCTIONS.howToUse}
-            tip={HK_INSTRUCTIONS.tips?.[0]}
-            dismissible
-            persistKey="housekeeping"
-          />
-        </div>
-        {loading && rooms.length === 0 ? (
-          <LoadingBlock label="Cargando habitaciones…" />
-        ) : error ? (
-          <ErrorState title="Algo no fue bien" message={error} onRetry={refresh} />
-        ) : filtered.length === 0 ? (
-          <EmptyState
+      {filtered.length === 0 ? (
+        <CocoaSection aria-label="Sin pendientes">
+          <CocoaState
+            kind="empty"
             title="Sin pendientes"
             message={filter === "all" ? "Todas las habitaciones están listas." : "No hay habitaciones en esta prioridad."}
+            illustration="success"
           />
-        ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12, marginTop: 12 }}>
-            {filtered.map((room) => (
-              <RoomCard
-                key={room.roomId}
-                room={room}
-                busy={busy === room.roomId}
-                onStart={() => setHkStatus(room, "in_progress")}
-                onComplete={() => setHkStatus(room, "clean")}
-                onInspect={() => setHkStatus(room, "inspected")}
-                onReport={() => reportIssue(room)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+        </CocoaSection>
+      ) : (
+        <CocoaKpiStrip min={320} aria-label="Habitaciones del turno">
+          {filtered.map((room) => (
+            <RoomCard
+              key={room.roomId}
+              room={room}
+              busy={busy === room.roomId}
+              onStart={() => void setHkStatus(room, "in_progress")}
+              onComplete={() => void setHkStatus(room, "clean")}
+              onInspect={() => void setHkStatus(room, "inspected")}
+              onReport={() => openReport(room)}
+            />
+          ))}
+        </CocoaKpiStrip>
+      )}
 
-      {toast ? (
-        <div style={{ position: "fixed", bottom: 20, left: 16, right: 16, zIndex: 70, display: "flex", justifyContent: "center" }}>
-          <span
-            className={`bo-status ${toast.kind === "ok" ? "ok" : toast.kind === "warn" ? "warn" : "error"}`}
-            style={{ padding: "10px 16px", fontSize: 14, fontWeight: 500 }}
-          >
-            {toast.text}
-          </span>
-        </div>
-      ) : null}
-    </>
-  );
-}
+      <CocoaActionBar
+        mobileOnly
+        publishToastOffset
+        aria-label="Acciones de mi turno"
+        status={dataAt ? `${countLabel} · datos a ${dataAt}` : countLabel}
+        primary={{ label: ACTIONS.refresh, onClick: refresh, loading: refreshing }}
+      />
 
-function SummaryChip({
-  label,
-  count,
-  active,
-  onClick,
-  tone
-}: {
-  label: string;
-  count: number;
-  active: boolean;
-  onClick: () => void;
-  tone: "danger" | "warn" | "info" | "muted";
-}) {
-  const bg = active
-    ? tone === "danger" ? "#d23b3b" : tone === "warn" ? "#d29b00" : tone === "info" ? "#2663c4" : "#6b7280"
-    : "var(--surface-elevated, rgba(0,0,0,0.05))";
-  const fg = active ? "white" : "var(--ink)";
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        padding: "10px 14px",
-        minHeight: 44,
-        borderRadius: 22,
-        border: `1px solid ${active ? bg : "var(--border)"}`,
-        background: bg,
-        color: fg,
-        fontSize: 14,
-        fontWeight: 600,
-        cursor: "pointer",
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6
-      }}
-    >
-      <span>{label}</span>
-      <span
-        style={{
-          background: active ? "rgba(255,255,255,0.25)" : "var(--surface)",
-          color: fg,
-          borderRadius: 10,
-          padding: "1px 8px",
-          fontSize: 12
-        }}
+      <CocoaDrawer
+        open={reportFor !== null}
+        onClose={() => setReportFor(null)}
+        title="Reportar incidencia"
+        subtitle={reportFor ? `Habitación ${reportFor.roomNumber}` : undefined}
+        side="right"
+        size="sm"
+        initialFocus={() => document.getElementById("housekeeping-report")}
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => setReportFor(null)}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton onClick={() => void sendReport()} loading={reportFor !== null && busy === reportFor.roomId} disabled={!report.trim()}>
+              Enviar a mantenimiento
+            </CocoaButton>
+          </>
+        }
       >
-        {count}
-      </span>
-    </button>
+        <CocoaField label="Incidencia" help="Avería, falta de amenities, desperfectos… Se crea una orden de trabajo para mantenimiento.">
+          <CocoaInput id="housekeeping-report" value={report} onChange={setReport} multiline rows={4} placeholder="Describe la incidencia" />
+        </CocoaField>
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }
 
@@ -302,123 +331,75 @@ function RoomCard({
   onInspect: () => void;
   onReport: () => void;
 }) {
-  const style = PRIORITY_STYLE[room.priority];
   const hk = (room.housekeepingStatus ?? "").toLowerCase();
   const isInProgress = hk === "in_progress" || room.taskStatus === "in_progress";
   const isClean = hk === "clean" || hk === "ready" || (!hk && room.status === "clean");
   const isInspected = hk === "inspected";
+  const hkLabel = hk ? (HK_STATUS_LABEL[hk] ?? room.housekeepingStatus) : null;
 
   return (
-    <div
-      style={{
-        border: `2px solid ${style.border}`,
-        borderRadius: 12,
-        padding: 14,
-        background: "var(--surface)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 8
-      }}
-    >
-      {/* Header: number + priority + floor */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
-          <strong style={{ fontSize: 28, color: "var(--ink)", lineHeight: 1 }}>{room.roomNumber}</strong>
-          <span className="bo-muted" style={{ fontSize: 12 }}>Pl. {room.floor ?? "—"}</span>
+    <CocoaCard variant="bordered" style={cardStyle} role="group" aria-label={`Habitación ${room.roomNumber}`}>
+      <div className="cocoa-row" data-justify="between" data-align="start" data-wrap="nowrap">
+        <div className="cocoa-row" data-gap="2" data-align="baseline">
+          <strong style={roomNumberStyle}>{room.roomNumber}</strong>
+          <span style={captionStyle}>Planta {room.floor ?? "—"}</span>
         </div>
-        <span
-          style={{
-            padding: "4px 10px",
-            borderRadius: 10,
-            background: style.bg,
-            color: style.ink,
-            fontWeight: 700,
-            fontSize: 11,
-            letterSpacing: 0.5
-          }}
-        >
-          {style.label}
-        </span>
+        <CocoaBadge tone={PRIORITY_TONE[room.priority]} variant="tinted">{PRIORITY_LABEL[room.priority]}</CocoaBadge>
       </div>
 
-      {/* Status + HK chip */}
-      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-        <HkChip status={room.housekeepingStatus} />
-        {room.roomTypeName ? <span className="bo-chip">{room.roomTypeName}</span> : null}
-        {room.openIncidents > 0 ? <span className="bo-status error">🛎 {room.openIncidents} incidencia(s)</span> : null}
-        {isInProgress ? <span className="bo-status info">⏳ En limpieza</span> : null}
+      <div className="cocoa-cluster">
+        {hkLabel ? <CocoaBadge tone={HK_STATUS_TONE[hk] ?? "neutral"} size="small">{hkLabel}</CocoaBadge> : null}
+        {room.roomTypeName ? <CocoaBadge tone="neutral" size="small" uppercase={false}>{room.roomTypeName}</CocoaBadge> : null}
+        {room.openIncidents > 0 ? (
+          <CocoaBadge tone="danger" variant="tinted" size="small" uppercase={false}>
+            {plural(room.openIncidents, "incidencia", "incidencias")}
+          </CocoaBadge>
+        ) : null}
+        {isInProgress && hk !== "in_progress" ? <CocoaBadge tone="info" size="small">En limpieza</CocoaBadge> : null}
       </div>
 
-      {/* Reason / context */}
-      <div style={{ fontSize: 13, color: "var(--ink)" }}>
-        <div style={{ fontWeight: 500, marginBottom: 2 }}>{room.reason}</div>
+      <div className="cocoa-stack" data-gap="1">
+        <span style={reasonStyle}>{room.reason}</span>
         {room.nextArrivalGuest ? (
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 11 }}>→</span>
-            <span>{room.nextArrivalGuest}{room.isVipNext ? " ⭐" : ""}</span>
-            {room.nextArrivalEta ? <span className="bo-muted" style={{ fontSize: 12 }}>· ETA {room.nextArrivalEta}</span> : null}
-          </div>
+          <span className="cocoa-row" data-gap="2">
+            <span>Llega {room.nextArrivalGuest}</span>
+            {room.isVipNext ? (
+              <CocoaBadge tone="accent" size="small" icon={<StarIcon size={10} />}>
+                VIP
+              </CocoaBadge>
+            ) : null}
+            {room.nextArrivalEta ? <span style={captionStyle}>· ETA {room.nextArrivalEta}</span> : null}
+          </span>
         ) : null}
-        {room.currentGuest ? (
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            <span style={{ fontSize: 11 }}>•</span>
-            <span>{room.currentGuest}</span>
-          </div>
-        ) : null}
+        {room.currentGuest ? <span>Alojado: {room.currentGuest}</span> : null}
         {room.specialRequest ? (
-          <div
-            style={{
-              marginTop: 6,
-              fontSize: 12,
-              padding: "6px 8px",
-              background: "var(--surface-elevated, rgba(0,0,0,0.04))",
-              borderRadius: 6,
-              borderLeft: `3px solid ${style.border}`
-            }}
-          >
-            💬 {room.specialRequest}
-          </div>
+          <CocoaCallout tone="info" icon={<ChatBubbleIcon size={14} />}>
+            {room.specialRequest}
+          </CocoaCallout>
         ) : null}
-        {room.lastEventNote ? (
-          <div className="bo-muted" style={{ marginTop: 4, fontSize: 11 }}>
-            Última nota: {room.lastEventNote}
-          </div>
-        ) : null}
+        {room.lastEventNote ? <span style={captionStyle}>Última nota: {room.lastEventNote}</span> : null}
       </div>
 
-      {/* Big action buttons */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: "auto" }}>
+      <div style={actionsStyle}>
         {!isInProgress && !isClean && !isInspected ? (
-          <button type="button" className="primary" disabled={busy} onClick={onStart} style={{ minHeight: 48, fontSize: 14, fontWeight: 600 }}>
-            ▶ Iniciar
-          </button>
+          <CocoaButton size="large" loading={busy} onClick={onStart}>
+            Iniciar
+          </CocoaButton>
         ) : null}
-        {(isInProgress || !isInspected) && !isInspected ? (
-          <button
-            type="button"
-            className={isInProgress ? "primary" : "ghost"}
-            disabled={busy}
-            onClick={onComplete}
-            style={{ minHeight: 48, fontSize: 14, fontWeight: 600 }}
-          >
-            ✓ Limpia
-          </button>
+        {!isInspected ? (
+          <CocoaButton size="large" variant={isInProgress ? "filled" : "bordered"} tone={isInProgress ? "accent" : "neutral"} loading={busy} onClick={onComplete}>
+            Limpia
+          </CocoaButton>
         ) : null}
         {(isClean || isInProgress) && !isInspected ? (
-          <button type="button" className="ghost" disabled={busy} onClick={onInspect} style={{ minHeight: 48, fontSize: 14, fontWeight: 600 }}>
-            🔍 Inspeccionada
-          </button>
+          <CocoaButton size="large" variant="bordered" tone="neutral" loading={busy} onClick={onInspect}>
+            Inspeccionada
+          </CocoaButton>
         ) : null}
-        <button
-          type="button"
-          className="ghost"
-          disabled={busy}
-          onClick={onReport}
-          style={{ minHeight: 48, fontSize: 14, fontWeight: 600, gridColumn: isInspected ? "span 2" : undefined }}
-        >
-          ⚠ Reportar
-        </button>
+        <CocoaButton size="large" variant="bordered" tone="neutral" disabled={busy} onClick={onReport} style={isInspected ? fullRowStyle : undefined}>
+          Reportar
+        </CocoaButton>
       </div>
-    </div>
+    </CocoaCard>
   );
 }

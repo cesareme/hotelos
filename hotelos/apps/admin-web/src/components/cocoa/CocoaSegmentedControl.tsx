@@ -10,8 +10,16 @@
 // tab is the only tab stop of the strip. The active surface (content bg +
 // inset control shadow) is a decorative child (`tabSurfaceStyle`) painted
 // under the label, so the Esmeralda ring shows on whichever tab is focused.
+//
+// Overflow (fix:2-A qa#5): four options with counts measured 420 px in a
+// 324 px column at 390 — the strip scrolled but nothing said so. The control
+// measures `scrollWidth > clientWidth` (after every render, since the labels
+// change with their counts; ResizeObserver for the box) and sets
+// `data-fade="true"` plus an end padding so the last tab clears the fade;
+// styles/cocoa-22-layout.css paints the same right-edge mask + scroll-snap
+// as `.c22-tablist`, only while the strip overflows.
 
-import { useMemo, useRef, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 
 export type CocoaSegmentedControlSize = "small" | "regular";
 
@@ -57,6 +65,11 @@ export function nextSegmentValue(current: string, values: readonly string[], key
     default:
       return null;
   }
+}
+
+/** True when the strip's content is wider than its box (pure; 1 px tolerance for subpixel rounding). */
+export function segmentedOverflows(scrollWidth: number, clientWidth: number): boolean {
+  return scrollWidth - clientWidth > 1;
 }
 
 /** Radius of a tab inside the 2 px-padded strip (radius 8 − 2). */
@@ -119,11 +132,32 @@ export function CocoaSegmentedControl({ value, onChange, options, size = "regula
   const refs = useRef(new Map<string, HTMLButtonElement>());
   const enabledValues = useMemo(() => options.filter((opt) => !opt.disabled).map((opt) => opt.value), [options]);
 
+  // Overflow → `data-fade` (the stylesheet paints the fade + snap). Measured
+  // after every render (labels change) and whenever the box resizes.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [overflows, setOverflows] = useState(false);
+  const measure = useCallback(() => {
+    const element = listRef.current;
+    if (!element) return;
+    setOverflows(segmentedOverflows(element.scrollWidth, element.clientWidth));
+  }, []);
+  useEffect(measure);
+  useEffect(() => {
+    const element = listRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [measure]);
+
   const containerStyle = useMemo<CSSProperties>(
     () => ({
       display: fullWidth ? "flex" : "inline-flex",
       alignItems: "stretch",
       padding: 2,
+      // Inline `padding` would beat the stylesheet: the end padding that keeps
+      // the last tab clear of the 32 px fade is set here, only while faded.
+      paddingInlineEnd: overflows ? "var(--cocoa-space-6)" : undefined,
       background: "var(--cocoa-background-control)",
       borderRadius: "var(--cocoa-radius-md)",
       fontFamily: "var(--cocoa-font)",
@@ -133,7 +167,7 @@ export function CocoaSegmentedControl({ value, onChange, options, size = "regula
       appearance: "none",
       ...style
     }),
-    [fullWidth, style]
+    [fullWidth, overflows, style]
   );
 
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -145,7 +179,17 @@ export function CocoaSegmentedControl({ value, onChange, options, size = "regula
   };
 
   return (
-    <div role="tablist" aria-label={ariaLabel} className={["cocoa-segmented", className].filter(Boolean).join(" ")} style={containerStyle} onKeyDown={onKeyDown} data-cocoa="segmented" data-size={size}>
+    <div
+      ref={listRef}
+      role="tablist"
+      aria-label={ariaLabel}
+      className={["cocoa-segmented", className].filter(Boolean).join(" ")}
+      style={containerStyle}
+      onKeyDown={onKeyDown}
+      data-cocoa="segmented"
+      data-size={size}
+      data-fade={overflows ? "true" : undefined}
+    >
       {options.map((opt) => {
         const isActive = opt.value === value;
         const itemStyle = segmentItemStyle({ isActive, disabled: opt.disabled, size, fullWidth });

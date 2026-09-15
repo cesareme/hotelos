@@ -15,6 +15,8 @@ export interface CocoaDatePickerProps {
   disabled?: boolean;
   error?: boolean;
   required?: boolean;
+  /** Date AND time (`datetime-local`; `value`/`min`/`max` as «YYYY-MM-DDTHH:mm»); default a date only. */
+  withTime?: boolean;
   id?: string;
   name?: string;
   "aria-label"?: string;
@@ -39,6 +41,7 @@ export function CocoaDatePicker({
   disabled = false,
   error = false,
   required = false,
+  withTime = false,
   id,
   name,
   "aria-label": ariaLabel,
@@ -79,7 +82,7 @@ export function CocoaDatePicker({
 
   return (
     <input
-      type="date"
+      type={withTime ? "datetime-local" : "date"}
       id={id ?? generatedId}
       name={name}
       value={value}
@@ -98,6 +101,7 @@ export function CocoaDatePicker({
       style={inputStyle}
       data-cocoa="date-picker"
       data-size={size}
+      data-with-time={withTime ? "true" : undefined}
     />
   );
 }

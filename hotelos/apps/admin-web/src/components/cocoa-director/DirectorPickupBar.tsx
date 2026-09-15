@@ -1,5 +1,16 @@
+// DirectorPickupBar — 7-day net pickup bars (legacy of `CocoaChart.Bars`).
+//
+// Cocoa 22 (ola 2): the bar tone and height come from `cocoa/cocoa-chart-math`
+// (`barTone`, `barHeight`) — the same helpers `CocoaChart.Bars` uses — and the
+// labels go through `lib/format` (es-ES sign and decimal comma). Screens
+// should use `CocoaChart.Bars`; this component stays for legacy callers
+// until wave 11.
+
 import { useMemo, useState, type CSSProperties } from "react";
 import { CocoaCard } from "../cocoa/CocoaCard";
+import { barHeight, barTone } from "../cocoa/cocoa-chart-math";
+import { toneColor } from "../cocoa/cocoa-tones";
+import { number, percent } from "../../lib/format";
 
 export interface DirectorPickupBarDatum {
   day: string;
@@ -15,49 +26,33 @@ export interface DirectorPickupBarProps {
 
 const DEFAULT_HEIGHT = 120;
 
-// Reserved space inside the SVG for the top value label and the axis label
+// Reserved space inside the chart for the top value label and the axis label
 // at the bottom. The remaining vertical space is used for the bar itself.
 const TOP_LABEL_OFFSET = 16;
 const AXIS_LABEL_OFFSET = 16;
 const BAR_GAP = 8;
 const BAR_CORNER_RADIUS = 3;
-const MIN_BAR_HEIGHT = 2;
 
+/** Bar colour by the sign of the delta vs LY (success / danger); unknown or zero → tertiary label. */
 function pickColor(pctVsLY: number | undefined): string {
-  if (typeof pctVsLY !== "number" || Number.isNaN(pctVsLY)) {
-    return "var(--cocoa-label-tertiary)";
-  }
-  if (pctVsLY > 0) {
-    return "var(--cocoa-success)";
-  }
-  if (pctVsLY < 0) {
-    return "var(--cocoa-danger)";
-  }
-  return "var(--cocoa-label-tertiary)";
+  if (typeof pctVsLY !== "number" || Number.isNaN(pctVsLY)) return "var(--cocoa-label-tertiary)";
+  const tone = barTone(pctVsLY, "positive-good");
+  return tone === "neutral" ? "var(--cocoa-label-tertiary)" : toneColor(tone);
 }
 
 function formatNet(value: number): string {
-  const sign = value > 0 ? "+" : "";
-  return `${sign}${value}`;
+  return number(value, { signDisplay: "exceptZero", maximumFractionDigits: 0 });
 }
 
 function formatPct(pct: number): string {
-  const sign = pct > 0 ? "+" : "";
-  return `${sign}${pct.toFixed(1)}%`;
+  return percent(pct, { signDisplay: "exceptZero", minimumFractionDigits: 1, maximumFractionDigits: 1 });
 }
 
-export function DirectorPickupBar({
-  data,
-  height = DEFAULT_HEIGHT,
-  valueLabel
-}: DirectorPickupBarProps) {
+export function DirectorPickupBar({ data, height = DEFAULT_HEIGHT, valueLabel }: DirectorPickupBarProps) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
   const chartHeight = Math.max(height, 60);
-  const plotHeight = Math.max(
-    chartHeight - TOP_LABEL_OFFSET - AXIS_LABEL_OFFSET,
-    1
-  );
+  const plotHeight = Math.max(chartHeight - TOP_LABEL_OFFSET - AXIS_LABEL_OFFSET, 1);
 
   const maxAbs = useMemo(() => {
     if (data.length === 0) return 1;
@@ -114,8 +109,7 @@ export function DirectorPickupBar({
       <div style={containerStyle} role="group" aria-label="Pickup neto últimos 7 días">
         {data.map((d, index) => {
           const color = pickColor(d.pctVsLY);
-          const ratio = Math.abs(d.net) / maxAbs;
-          const barHeight = Math.max(plotHeight * ratio, MIN_BAR_HEIGHT);
+          const h = barHeight(d.net, maxAbs, plotHeight);
           const isHovered = hoveredIndex === index;
 
           const tooltipParts: string[] = [`Pickup neto: ${formatNet(d.net)}`];
@@ -153,8 +147,7 @@ export function DirectorPickupBar({
                   lineHeight: `${TOP_LABEL_OFFSET}px`,
                   height: TOP_LABEL_OFFSET,
                   color: "var(--cocoa-label)",
-                  fontWeight:
-                    "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+                  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
                   fontVariantNumeric: "tabular-nums",
                   textAlign: "center"
                 }}
@@ -174,12 +167,11 @@ export function DirectorPickupBar({
                   style={{
                     width: "100%",
                     maxWidth: 28,
-                    height: barHeight,
+                    height: h,
                     background: color,
                     borderRadius: BAR_CORNER_RADIUS,
                     opacity: isHovered ? 0.85 : 1,
-                    transition:
-                      "opacity var(--cocoa-duration-fast) var(--cocoa-ease-out)"
+                    transition: "opacity var(--cocoa-duration-fast) var(--cocoa-ease-out)"
                   }}
                 />
               </div>

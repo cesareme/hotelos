@@ -1,27 +1,46 @@
-// Night Audit Screen — checklist guiada para el cierre del día.
+// Night Audit Screen — checklist guiada para el cierre del día («Cierre del
+// día», /hoy/cierre-del-dia, standalone).
 //
 // Directriz Anfitorio (Nov 2026):
 //   "La auditoría nocturna debe ser una checklist inteligente. El sistema debe
 //    decir: 'No puedes cerrar todavía porque hay 3 folios con saldo pendiente
 //    y 2 llegadas sin resolver.'"
 //
-// UI:
-//   - Banner con can-close / blocking message
-//   - Resumen ok/warning/blocker
-//   - Lista de checks con icono color (verde/ámbar/rojo)
-//   - Cada check expansible con items afectados + acción de fix
-//   - CTA "Cerrar día" deshabilitado si canClose = false
-//   - Historial de runs previos
+// Cocoa 22 (docs/design/COCOA-22.md §4, plantilla DashboardStandalone):
+//   - CocoaPage with the can-close banner as a CocoaCallout (success/danger)
+//     that carries the «Cerrar día» CocoaButton
+//   - ok / warning / blocker summary as a CocoaKpiStrip
+//   - checks as stacked CocoaCallout cards (status icon, count badge, affected
+//     items expandable, fix action → typed navigateTo)
+//   - previous runs in a CocoaTable (sticky head, stacked cards under 600 px)
+// Data: GET /properties/:id/night-audit/preflight (30 s poll) and
+// GET /properties/:id/night-audit/runs; POST /properties/:id/night-audit/run.
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { LoadingBlock, ErrorState } from "../../components/States";
 import { apiRequest } from "../../services/api-client";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { toArray } from "../../utils/toArray";
+import { navigateTo, type ScreenKey } from "../../lib/navigate";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
-import { date, dateTime } from "../../lib/format";
+import { date, dateTime, number, plural } from "../../lib/format";
+import { CheckCircleIcon, ExclamationCircleIcon, XCircleIcon } from "../../components/cocoa-icons/StatusIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaTable,
+  toneFromStatus,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type Status = "ok" | "warning" | "blocker";
 
@@ -54,35 +73,67 @@ type RunRecord = {
   stepResults?: Array<{ step: string; status: string; detail?: string }>;
 };
 
-const STATUS_TONE: Record<Status, { bg: string; border: string; ink: string; icon: string; label: string }> = {
-  ok: { bg: "rgba(31, 138, 76, 0.10)", border: "#1f8a4c", ink: "#1f8a4c", icon: "✓", label: "OK" },
-  warning: { bg: "rgba(210, 155, 0, 0.10)", border: "#d29b00", ink: "#a47600", icon: "!", label: "ATENCIÓN" },
-  blocker: { bg: "rgba(210, 59, 59, 0.10)", border: "#d23b3b", ink: "#a52828", icon: "✕", label: "BLOQUEA" }
+const STATUS_TONE: Record<Status, CocoaTone> = { ok: "success", warning: "warning", blocker: "danger" };
+const STATUS_LABEL: Record<Status, string> = { ok: "OK", warning: "Atención", blocker: "Bloquea" };
+
+// Run status → Spanish label (the API speaks English).
+const RUN_STATUS_LABEL: Record<string, string> = {
+  completed: STATUS_LABELS.completed,
+  failed: STATUS_LABELS.failed,
+  running: STATUS_LABELS.inProgress,
+  pending: STATUS_LABELS.pending
 };
 
-function navigateTo(screen: string) {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-  }
-}
+const MAX_RUNS = 10;
 
-function fixActionFor(checkId: string): { label: string; onClick: () => void } | null {
+function fixActionFor(checkId: string): { label: string; screen: ScreenKey } | null {
   switch (checkId) {
     case "arrivals_pending":
     case "unresolved_no_shows":
     case "open_folios_with_balance":
     case "departures_not_checked_out":
-      return { label: "Abrir cola operativa", onClick: () => navigateTo("FrontDeskDashboard") };
+      return { label: "Abrir cola operativa", screen: "FrontDeskDashboard" };
     case "dirty_in_house_rooms":
-      return { label: "Abrir Room Rack", onClick: () => navigateTo("RoomRackScreen") };
+      return { label: "Abrir tablero de habitaciones", screen: "RoomRackScreen" };
     case "unposted_room_charges":
-      return { label: "Postear ahora", onClick: () => navigateTo("FrontDeskDashboard") };
+      return { label: "Postear ahora", screen: "FrontDeskDashboard" };
     case "invoices_pending":
-      return { label: "Ver facturas", onClick: () => navigateTo("FiscalSubmissionsCenter") };
+      return { label: "Ver facturas", screen: "FiscalSubmissionsCenter" };
     default:
       return null;
   }
 }
+
+function StatusIcon({ status }: { status: Status }) {
+  if (status === "blocker") return <XCircleIcon size={16} />;
+  if (status === "warning") return <ExclamationCircleIcon size={16} />;
+  return <CheckCircleIcon size={16} />;
+}
+
+// Text styles (colours and sizes from the tokens; layout from the utilities).
+const detailStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-callout)",
+  color: "var(--cocoa-label-secondary)"
+};
+
+const secondaryStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
+
+const growStyle: CSSProperties = { flex: "1 1 auto", minWidth: 0 };
+
+const RUN_COLUMNS: CocoaTableColumn<RunRecord>[] = [
+  { key: "businessDate", label: "Fecha de negocio", render: (r) => <strong>{date(r.businessDate, "short")}</strong> },
+  {
+    key: "status",
+    label: "Estado",
+    render: (r) => (
+      <CocoaBadge tone={toneFromStatus(r.status === "completed" ? "ok" : r.status === "failed" ? "error" : "info")} size="small">
+        {RUN_STATUS_LABEL[r.status] ?? r.status}
+      </CocoaBadge>
+    )
+  },
+  { key: "steps", label: "Pasos", align: "right", hideOnNarrow: true, render: (r) => number(r.stepResults?.length ?? 0) },
+  { key: "completedAt", label: "Completado", render: (r) => <span style={secondaryStyle}>{dateTime(r.completedAt)}</span> }
+];
 
 export function NightAuditScreen() {
   const propertyId = getActivePropertyId();
@@ -92,11 +143,15 @@ export function NightAuditScreen() {
     `/properties/${propertyId}/night-audit/preflight`,
     { pollIntervalMs: 30000 }
   );
-  const { data: runs } = useApiData<RunRecord[]>(`/properties/${propertyId}/night-audit/runs`);
+  const { data: runsData } = useApiData<RunRecord[]>(`/properties/${propertyId}/night-audit/runs`);
 
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ kind: "ok" | "warn" | "error"; text: string } | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const checks = toArray<Check>(preflight?.checks);
+  const runs = toArray<RunRecord>(runsData);
+  const shownRuns = runs.slice(0, MAX_RUNS);
+  const state = !preflight ? (perror ? "error" : "loading") : "ready";
 
   function toggle(id: string) {
     setExpanded((prev) => {
@@ -112,243 +167,145 @@ export function NightAuditScreen() {
     setBusy(true);
     try {
       await apiRequest<unknown>(`/properties/${encodeURIComponent(propertyId)}/night-audit/run`, { method: "POST" });
-      setToast({ kind: "ok", text: "Night audit ejecutado. Día cerrado." });
-      showToast("Night audit ejecutado. Día cerrado.", { variant: "success" });
+      showToast("Cierre del día ejecutado. Día cerrado.", { variant: "success" });
     } catch (err) {
       const message = err instanceof Error ? err.message : "Error";
-      setToast({ kind: "error", text: message });
       showToast(message, { variant: "error" });
     } finally {
       setBusy(false);
       refresh();
-      setTimeout(() => setToast(null), 5000);
     }
   }
 
+  const canClose = Boolean(preflight?.canClose);
+
   return (
-    <>
-      <CocoaPageHeader
-        eyebrow={`Hoy · ${propertyName}`}
-        title="Cierre del día"
-        subtitle={`Comprobaciones guiadas antes de cerrar: si algo bloquea, te dice qué arreglar y dónde.${preflight?.businessDate ? ` Fecha de negocio actual: ${date(preflight.businessDate)}.` : ""}`}
-        actions={
-          <>
-            {ploading ? <span className="bo-status info">{STATUS_LABELS.loading}</span> : null}
-            {perror ? <span className="bo-status error">{perror}</span> : null}
-            <button type="button" className="ghost" onClick={refresh} aria-label={ACTIONS.refresh} title={ACTIONS.refresh}>↻ {ACTIONS.refresh}</button>
-          </>
-        }
-      />
-
-      {/* Banner principal — audit 2026-06 · #10: mientras el primer fetch no
-          tiene datos, mostramos loading/error en vez del banner rojo engañoso
-          ("no puedes cerrar") que aparecía con la API aún cargando. */}
-      {!preflight ? (
-        perror ? (
-          <ErrorState title="No se pudo cargar el cierre del día" message={perror} onRetry={refresh} />
-        ) : (
-          <LoadingBlock label="Cargando el checklist de cierre…" />
-        )
-      ) : (
-      <article
-        className="bo-card"
-        style={{
-          background: preflight?.canClose ? "rgba(31, 138, 76, 0.08)" : "rgba(210, 59, 59, 0.08)",
-          border: `2px solid ${preflight?.canClose ? "#1f8a4c" : "#d23b3b"}`,
-          display: "flex",
-          gap: 12,
-          alignItems: "center"
-        }}
-      >
-        <div
-          style={{
-            width: 56,
-            height: 56,
-            borderRadius: "50%",
-            background: preflight?.canClose ? "#1f8a4c" : "#d23b3b",
-            color: "white",
-            fontSize: 28,
-            fontWeight: 700,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center"
-          }}
-        >
-          {preflight?.canClose ? "✓" : "✕"}
-        </div>
-        <div style={{ flex: 1 }}>
-          <strong style={{ fontSize: 18 }}>
-            {preflight?.canClose
-              ? "Puedes cerrar el día"
-              : "No puedes cerrar todavía"}
-          </strong>
-          <div className="bo-muted" style={{ fontSize: 13, marginTop: 4 }}>
-            {preflight?.blockingMessage ?? "Todas las comprobaciones críticas están en verde. Ejecuta el cierre del día cuando estés listo."}
-          </div>
-        </div>
-        <button
-          type="button"
-          className="primary"
-          disabled={!preflight?.canClose || busy}
-          onClick={runAudit}
-          style={{ minHeight: 48, fontSize: 14, fontWeight: 600, paddingLeft: 18, paddingRight: 18 }}
-          title={preflight?.canClose ? "Ejecuta el cierre del día y avanza la fecha de negocio" : "Resuelve los bloqueos primero"}
-        >
-          {busy ? "Procesando…" : "Cerrar día →"}
-        </button>
-      </article>
-      )}
-
-      {/* Resumen */}
+    <CocoaPage
+      eyebrow={`Hoy · ${propertyName}`}
+      title="Cierre del día"
+      subtitle={`Comprobaciones guiadas antes de cerrar: si algo bloquea, te dice qué arreglar y dónde.${preflight?.businessDate ? ` Fecha de negocio actual: ${date(preflight.businessDate, "short")}.` : ""}`}
+      actions={
+        <>
+          {ploading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          {perror ? <CocoaBadge tone="danger">{perror}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} aria-label={ACTIONS.refresh} title={ACTIONS.refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={state}
+      skeleton={<NightAuditSkeleton />}
+      error={{ title: "No se pudo cargar el cierre del día", message: perror ?? undefined, onRetry: refresh }}
+      commands={[{ id: "night-audit-refresh", label: "Actualizar el cierre del día", run: refresh }]}
+    >
       {preflight ? (
-        <div className="rev-kpi-grid">
-          <article className="rev-kpi rev-kpi-ok">
-            <div className="rev-kpi-head">
-              <span className="rev-kpi-label">Checks OK</span>
-            </div>
-            <div className="rev-kpi-value">{preflight.summary.ok}</div>
-          </article>
-          <article className="rev-kpi rev-kpi-warn">
-            <div className="rev-kpi-head">
-              <span className="rev-kpi-label">Avisos</span>
-            </div>
-            <div className="rev-kpi-value">{preflight.summary.warning}</div>
-          </article>
-          <article className={`rev-kpi ${preflight.summary.blocker > 0 ? "rev-kpi-error" : "rev-kpi-ok"}`}>
-            <div className="rev-kpi-head">
-              <span className="rev-kpi-label">Bloqueos</span>
-            </div>
-            <div className="rev-kpi-value">{preflight.summary.blocker}</div>
-          </article>
-        </div>
-      ) : null}
-
-      {/* Lista de checks */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Checklist pre-cierre</h3>
-          <span className="bo-muted" style={{ fontSize: 12 }}>
-            {preflight ? `${preflight.checks.length} chequeos` : ""}
-          </span>
-        </div>
-        <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 8 }}>
-          {(preflight?.checks ?? []).map((check) => {
-            const tone = STATUS_TONE[check.status];
-            const isExpanded = expanded.has(check.id);
-            const fix = fixActionFor(check.id);
-            return (
-              <li
-                key={check.id}
-                style={{
-                  border: `1px solid ${tone.border}`,
-                  borderLeftWidth: 4,
-                  borderRadius: 8,
-                  padding: 12,
-                  background: tone.bg
-                }}
+        <>
+          {/* Banner principal — audit 2026-06 · #10: while the first fetch has no
+              data the page shows loading/error instead of a misleading red
+              «no puedes cerrar» banner. */}
+          <CocoaCallout
+            tone={canClose ? "success" : "danger"}
+            icon={canClose ? <CheckCircleIcon size={20} /> : <XCircleIcon size={20} />}
+            title={canClose ? "Puedes cerrar el día" : "No puedes cerrar todavía"}
+            actions={
+              <CocoaButton
+                variant="filled"
+                tone="accent"
+                disabled={!canClose || busy}
+                loading={busy}
+                onClick={runAudit}
+                title={canClose ? "Ejecuta el cierre del día y avanza la fecha de negocio" : "Resuelve los bloqueos primero"}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                  <div style={{ display: "flex", gap: 10, alignItems: "center", flex: 1, minWidth: 0 }}>
-                    <span
-                      style={{
-                        width: 28,
-                        height: 28,
-                        borderRadius: "50%",
-                        background: tone.border,
-                        color: "white",
-                        fontSize: 14,
-                        fontWeight: 700,
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        flexShrink: 0
-                      }}
+                Cerrar día
+              </CocoaButton>
+            }
+          >
+            {preflight.blockingMessage ?? "Todas las comprobaciones críticas están en verde. Ejecuta el cierre del día cuando estés listo."}
+          </CocoaCallout>
+
+          <CocoaKpiStrip min={200} stagger aria-label="Resumen de comprobaciones">
+            <CocoaKpi label="Comprobaciones OK" value={preflight.summary.ok} polarity="neutral" status="ok" />
+            <CocoaKpi label="Avisos" value={preflight.summary.warning} polarity="neutral" status={preflight.summary.warning > 0 ? "warning" : "ok"} />
+            <CocoaKpi label="Bloqueos" value={preflight.summary.blocker} polarity="neutral" status={preflight.summary.blocker > 0 ? "critical" : "ok"} />
+          </CocoaKpiStrip>
+
+          <CocoaSection title="Checklist pre-cierre" meta={plural(checks.length, "chequeo", "chequeos")}>
+            {checks.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin comprobaciones para la fecha de negocio actual." />
+            ) : (
+              <div className="cocoa-stack" data-gap="2" role="list" aria-label="Checklist pre-cierre">
+                {checks.map((check) => {
+                  const tone = STATUS_TONE[check.status];
+                  const items = check.items ?? [];
+                  const isExpanded = expanded.has(check.id);
+                  const fix = fixActionFor(check.id);
+                  const itemsId = `night-audit-items-${check.id}`;
+                  return (
+                    <CocoaCallout
+                      key={check.id}
+                      tone={tone}
+                      icon={<StatusIcon status={check.status} />}
+                      title={check.title}
+                      actions={
+                        <CocoaBadge tone={tone} variant="tinted" size="small">
+                          {STATUS_LABEL[check.status]} · {number(check.count)}
+                        </CocoaBadge>
+                      }
                     >
-                      {tone.icon}
-                    </span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                        <strong style={{ fontSize: 14 }}>{check.title}</strong>
-                        <span
-                          className="bo-chip"
-                          style={{ background: tone.border, color: "white", fontSize: 10, fontWeight: 700 }}
-                        >
-                          {tone.label} · {check.count}
-                        </span>
-                      </div>
-                      <div className="bo-muted" style={{ fontSize: 12, marginTop: 2 }}>
-                        {check.detail}
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                    {check.items && check.items.length > 0 ? (
-                      <button type="button" className="ghost" onClick={() => toggle(check.id)} style={{ fontSize: 12 }}>
-                        {isExpanded ? "Ocultar" : `Ver ${check.items.length}`}
-                      </button>
-                    ) : null}
-                    {fix && check.status !== "ok" ? (
-                      <button type="button" className="primary" onClick={fix.onClick} style={{ fontSize: 12 }}>
-                        {fix.label}
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-                {isExpanded && check.items && check.items.length > 0 ? (
-                  <ul style={{ listStyle: "none", padding: "8px 0 0 38px", margin: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-                    {check.items.map((item) => (
-                      <li key={item.ref} style={{ fontSize: 12, color: "var(--ink)" }}>
-                        <strong>{item.label}</strong>
-                        {item.detail ? <span className="bo-muted"> · {item.detail}</span> : null}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-      </article>
+                      <span style={detailStyle}>{check.detail}</span>
+                      {items.length > 0 || (fix && check.status !== "ok") ? (
+                        <div className="cocoa-row" data-gap="2">
+                          {items.length > 0 ? (
+                            <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => toggle(check.id)} aria-expanded={isExpanded} aria-controls={itemsId}>
+                              {isExpanded ? "Ocultar" : `Ver ${plural(items.length, "elemento", "elementos")}`}
+                            </CocoaButton>
+                          ) : null}
+                          {fix && check.status !== "ok" ? (
+                            <CocoaButton variant="tinted" tone="accent" size="small" onClick={() => navigateTo(fix.screen)}>
+                              {fix.label}
+                            </CocoaButton>
+                          ) : null}
+                        </div>
+                      ) : null}
+                      {isExpanded && items.length > 0 ? (
+                        <ul id={itemsId} className="c22-section__list" aria-label={`Elementos afectados · ${check.title}`}>
+                          {items.map((item) => (
+                            <li key={item.ref}>
+                              <div className="cocoa-row" data-gap="2" data-align="baseline" style={growStyle}>
+                                <strong>{item.label}</strong>
+                                {item.detail ? <span style={detailStyle}>{item.detail}</span> : null}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </CocoaCallout>
+                  );
+                })}
+              </div>
+            )}
+          </CocoaSection>
 
-      {/* Historial */}
-      {runs && runs.length > 0 ? (
-        <article className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Historial de cierres</h3>
-            <span className="bo-muted" style={{ fontSize: 12 }}>Últimos {Math.min(runs.length, 30)}</span>
-          </div>
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Fecha negocio</th>
-                <th>Estado</th>
-                <th>Pasos</th>
-                <th>Completado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runs.slice(0, 10).map((r) => (
-                <tr key={r.id}>
-                  <td><strong>{r.businessDate}</strong></td>
-                  <td>
-                    <span className={`bo-status ${r.status === "completed" ? "ok" : r.status === "failed" ? "error" : "info"}`}>
-                      {r.status}
-                    </span>
-                  </td>
-                  <td>{r.stepResults?.length ?? 0}</td>
-                  <td className="bo-muted">{dateTime(r.completedAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </article>
+          {shownRuns.length > 0 ? (
+            <CocoaSection title="Historial de cierres" meta={`Últimos ${number(shownRuns.length)}`} padding="none" style={{ overflow: "clip" }}>
+              <CocoaTable columns={RUN_COLUMNS} rows={shownRuns} rowKey="id" caption="Historial de cierres" aria-label="Historial de cierres" />
+            </CocoaSection>
+          ) : null}
+        </>
       ) : null}
-
-      {toast ? (
-        <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 70 }}>
-          <span className={`bo-status ${toast.kind === "ok" ? "ok" : toast.kind === "warn" ? "warn" : "error"}`}>{toast.text}</span>
-        </div>
-      ) : null}
-    </>
+    </CocoaPage>
   );
 }
+
+// Mirror skeleton: banner, three KPI tiles and the checklist card.
+function NightAuditSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="card" height={72} />
+      <CocoaSkeleton.Strip count={3} min={200} />
+      <CocoaSkeleton variant="card" height={320} />
+    </div>
+  );
+}
+
+export default NightAuditScreen;

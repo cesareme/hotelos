@@ -32,6 +32,8 @@ export type CocoaInputProps = {
   /** Render a <textarea> (vertical resize). */
   multiline?: boolean;
   rows?: number;
+  /** Native <datalist> suggestions (single-line only): offered while typing, free text stays allowed (a category field with the usual values). */
+  suggestions?: readonly string[];
   name?: string;
   autoComplete?: string;
   autoFocus?: boolean;
@@ -110,6 +112,7 @@ export function CocoaInput(props: CocoaInputProps) {
     required = false,
     multiline = false,
     rows = 3,
+    suggestions,
     name,
     autoComplete,
     autoFocus,
@@ -132,6 +135,7 @@ export function CocoaInput(props: CocoaInputProps) {
   const [focused, setFocused] = useState(false);
   const generatedId = useId();
   const inputId = id ?? generatedId;
+  const listId = !multiline && suggestions && suggestions.length > 0 ? `${inputId}-list` : undefined;
   const metrics = SIZE_METRICS[size];
   // Single-line controls are exactly 22 / 28 / 34 px; a textarea keeps 8 px of air.
   const padY = multiline ? "var(--cocoa-space-2)" : inputPaddingY(size);
@@ -236,8 +240,15 @@ export function CocoaInput(props: CocoaInputProps) {
       {multiline ? (
         <textarea {...shared} rows={rows} onChange={(e) => onChange(e.target.value)} />
       ) : (
-        <input {...shared} type={type} inputMode={inputMode} min={min} max={max} step={step} pattern={pattern} onChange={(e) => onChange(e.target.value)} />
+        <input {...shared} type={type} inputMode={inputMode} min={min} max={max} step={step} pattern={pattern} list={listId} onChange={(e) => onChange(e.target.value)} />
       )}
+      {listId ? (
+        <datalist id={listId}>
+          {suggestions!.map((suggestion) => (
+            <option key={suggestion} value={suggestion} />
+          ))}
+        </datalist>
+      ) : null}
       {rightSlot ? <span style={slotStyle}>{rightSlot}</span> : null}
     </span>
   );

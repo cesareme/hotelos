@@ -3,6 +3,11 @@
 // AuthGate. POST /auth/reset-password validates the token (15 min TTL, single
 // use) and the password policy server-side; on success every session of the
 // user is revoked, so we clear local storage and send them to the login.
+//
+// Cocoa 22 (COCOA-22.md §4 «otro», PlantillaBase over the AuthShell frame):
+// CocoaPageHeader inside the elevated card, CocoaField + CocoaInput with the
+// mismatch as the field's error, CocoaCallout alerts, CocoaButton actions.
+// Logic untouched.
 
 import { useEffect, useState, type FormEvent } from "react";
 import { clearSession } from "../../services/auth-storage";
@@ -14,7 +19,9 @@ import {
   resetPassword,
   type PasswordPolicy
 } from "../../services/authApi";
-import { AuthAlert, AuthShell, PasswordChecklist, PasswordField, goToLogin } from "../../auth/AuthShell";
+import { AUTH_EYEBROW, AuthAlert, AuthShell, PasswordChecklist, PasswordField, goToLogin } from "../../auth/AuthShell";
+import { CocoaButton, CocoaPageHeader } from "../../components/cocoa";
+import { ACTIONS } from "../../content/actions";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 
 export type ResetPasswordScreenProps = {
@@ -78,13 +85,14 @@ export function ResetPasswordScreen({ token }: ResetPasswordScreenProps) {
   if (!token) {
     return (
       <AuthShell
-        title="Enlace no válido"
+        label="Enlace no válido"
         footer={
-          <button type="button" className="bo-button-link" onClick={goToLogin}>
+          <CocoaButton variant="plain" tone="accent" onClick={goToLogin}>
             Ir a iniciar sesión
-          </button>
+          </CocoaButton>
         }
       >
+        <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Enlace no válido" />
         <AuthAlert tone="error">{MISSING_TOKEN_COPY}</AuthAlert>
       </AuthShell>
     );
@@ -93,16 +101,17 @@ export function ResetPasswordScreen({ token }: ResetPasswordScreenProps) {
   if (done) {
     return (
       <AuthShell
-        title="Contraseña restablecida"
+        label="Contraseña restablecida"
         footer={
-          <button type="button" className="primary" onClick={goToLogin}>
-            Iniciar sesión
-          </button>
+          <CocoaButton variant="filled" tone="accent" onClick={goToLogin}>
+            {ACTIONS.signIn}
+          </CocoaButton>
         }
       >
+        <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Contraseña restablecida" />
         <AuthAlert tone="success">
-          Tu contraseña se ha actualizado y hemos cerrado las sesiones anteriores por seguridad. Ya puedes iniciar sesión con la
-          nueva contraseña.
+          Tu contraseña se ha actualizado y hemos cerrado las sesiones anteriores por seguridad. Ya puedes iniciar sesión con la nueva
+          contraseña.
         </AuthAlert>
       </AuthShell>
     );
@@ -110,23 +119,42 @@ export function ResetPasswordScreen({ token }: ResetPasswordScreenProps) {
 
   return (
     <AuthShell
-      title="Nueva contraseña"
-      subtitle="Elige una contraseña nueva para tu cuenta. El enlace caduca a los 15 minutos y solo se puede usar una vez."
+      label="Nueva contraseña"
       footer={
-        <button type="button" className="bo-button-link" onClick={goToLogin} disabled={submitting}>
+        <CocoaButton variant="plain" tone="accent" onClick={goToLogin} disabled={submitting}>
           Volver a iniciar sesión
-        </button>
+        </CocoaButton>
       }
     >
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }} noValidate>
-        <PasswordField label="Nueva contraseña" value={password} onChange={setPassword} autoComplete="new-password" disabled={submitting} autoFocus />
+      <CocoaPageHeader
+        eyebrow={AUTH_EYEBROW}
+        title="Nueva contraseña"
+        subtitle="Elige una contraseña nueva para tu cuenta. El enlace caduca a los 15 minutos y solo se puede usar una vez."
+      />
+      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }} noValidate>
+        <PasswordField id="reset-password" label="Nueva contraseña" value={password} onChange={setPassword} autoComplete="new-password" disabled={submitting} autoFocus />
         <PasswordChecklist password={password} policy={policy} />
-        <PasswordField label="Repite la contraseña" value={confirm} onChange={setConfirm} autoComplete="new-password" disabled={submitting} />
-        {confirm && !confirmOk ? <AuthAlert tone="warn">Las contraseñas no coinciden.</AuthAlert> : null}
+        <PasswordField
+          id="reset-confirm"
+          label="Repite la contraseña"
+          value={confirm}
+          onChange={setConfirm}
+          autoComplete="new-password"
+          disabled={submitting}
+          error={confirm && !confirmOk ? "Las contraseñas no coinciden." : undefined}
+        />
         {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
-        <button type="submit" className="primary" disabled={!canSubmit} style={{ marginTop: "var(--space-2)" }}>
+        <CocoaButton
+          type="submit"
+          variant="filled"
+          tone="accent"
+          size="large"
+          loading={submitting}
+          disabled={!canSubmit}
+          style={{ width: "100%", marginTop: "var(--cocoa-space-1)" }}
+        >
           {submitting ? "Guardando…" : "Guardar contraseña"}
-        </button>
+        </CocoaButton>
       </form>
     </AuthShell>
   );

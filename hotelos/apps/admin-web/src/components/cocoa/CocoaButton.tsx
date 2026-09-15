@@ -61,9 +61,17 @@ export interface CocoaButtonProps {
   "data-testid"?: string;
   role?: "menuitem" | "option" | "tab" | "switch" | "link";
   "aria-selected"?: boolean;
+  /** Multi-line label (selectable list rows, long titles in a 320 px column): the text wraps, the height follows it, left-aligned. Default: one line, fixed height. */
+  wrap?: boolean;
 }
 
 const HEIGHT_BY_SIZE: Record<CocoaButtonSize, number> = { small: 22, regular: 28, large: 32 };
+/** Line height of a wrapping label by size (token + its px mirror, cocoa-tokens.css `--cocoa-lh-*`): a one-line `wrap` button keeps the fixed height. */
+const LINE_HEIGHT_BY_SIZE: Record<CocoaButtonSize, { css: string; px: number }> = {
+  small: { css: "var(--cocoa-lh-subheadline)", px: 14 },
+  regular: { css: "var(--cocoa-lh-body)", px: 16 },
+  large: { css: "var(--cocoa-lh-title-3)", px: 20 }
+};
 const PADDING_X_BY_SIZE: Record<CocoaButtonSize, number> = { small: 8, regular: 12, large: 16 };
 const FONT_SIZE_BY_SIZE: Record<CocoaButtonSize, string> = {
   small: "var(--cocoa-fs-subheadline)",
@@ -178,7 +186,8 @@ export function CocoaButton({
   "data-tour": dataTour,
   "data-testid": dataTestId,
   role,
-  "aria-selected": ariaSelected
+  "aria-selected": ariaSelected,
+  wrap = false
 }: CocoaButtonProps) {
   const isDisabled = disabled || loading;
   const coarse = useCoarsePointer();
@@ -243,9 +252,22 @@ export function CocoaButton({
       base.borderColor = "transparent";
     }
 
+    if (wrap) {
+      // Wrapping label: the height follows the text; a single line still measures 22 / 28 / 32.
+      const line = LINE_HEIGHT_BY_SIZE[size];
+      base.height = "auto";
+      base.minHeight = coarse ? TAP_TARGET_PX : height;
+      base.paddingBlock = Math.max(0, (height - 2 - line.px) / 2);
+      base.lineHeight = line.css;
+      base.whiteSpace = "normal";
+      base.overflowWrap = "anywhere";
+      base.textAlign = "left";
+      base.justifyContent = "flex-start";
+    }
+
     if (style) Object.assign(base, style);
     return base;
-  }, [variant, tone, toneVars, height, paddingX, radius, fontSize, gap, isDisabled, coarse, style]);
+  }, [variant, tone, toneVars, size, height, paddingX, radius, fontSize, gap, isDisabled, coarse, wrap, style]);
 
   // Hover: filled brightens (light moves toward the cursor), tinted deepens
   // slightly, ghost variants gain a control fill.
@@ -323,6 +345,7 @@ export function CocoaButton({
       data-variant={variant}
       data-tone={tone}
       data-size={size}
+      data-wrap={wrap ? "true" : undefined}
       onClick={onClick}
       onFocus={onFocus}
       onBlur={onBlur}
@@ -334,7 +357,7 @@ export function CocoaButton({
     >
       {loading ? <Spinner size={iconSize} color={spinnerColor} /> : null}
       {!loading && iconNode && iconPosition === "left" ? iconNode : null}
-      {children != null ? <span>{children}</span> : null}
+      {children != null ? <span style={wrap ? { minWidth: 0 } : undefined}>{children}</span> : null}
       {!loading && iconNode && iconPosition === "right" ? iconNode : null}
     </button>
   );

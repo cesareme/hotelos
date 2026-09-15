@@ -338,7 +338,8 @@
 .c22-section[data-padding="sm"]   { padding: var(--cocoa-space-3); }
 .c22-section[data-padding="md"]   { padding: var(--cocoa-space-4); }
 .c22-section[data-padding="lg"]   { padding: var(--cocoa-space-5); }
-.c22-section[data-padding="none"] > .c22-section__head {
+/* `plain` has no card edge: its head sits flush (group heading over a grid). */
+.c22-section[data-padding="none"]:not([data-variant="plain"]) > .c22-section__head {
   padding: var(--cocoa-space-4) var(--cocoa-space-4) 0;
 }
 
@@ -366,11 +367,14 @@
   font-weight: var(--cocoa-fw-semibold);
   letter-spacing: var(--cocoa-tracking-tight);
   color: var(--cocoa-label);
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Measured on the canon («RGI · ARI · MPI», «30 días»): 10 px / 15 px / 400. */
+/* Measured on the canon («RGI · ARI · MPI», «30 días»): 10 px / 15 px / 400.
+   The primitive paints no inline style on the meta or the action row: the
+   phone block below has to be able to reflow them (qa#19). */
 .c22-section__meta {
   margin: 0;
   font-size: var(--cocoa-fs-caption);
@@ -386,6 +390,27 @@
   align-items: center;
   gap: var(--cocoa-space-2);
   flex-shrink: 0;
+}
+/* Phone: meta + action (a segmented control, two buttons) drop under the
+   title instead of truncating it to a few characters — and the row they form
+   never measures wider than the card: the meta wraps its text and a button
+   cluster wraps under it. Measured at 390 with the old nowrap / shrink-0
+   pair: «Comandas cerradas en el rango, por punto de venta y medio de cobro»
+   + 2 buttons = 453 px and a badge + 3 buttons = 461 px inside a 358 px
+   card, overflowing `main` sideways (qa#19 → qa#1 / qa#2). */
+@media (max-width: 599px) {
+  .c22-section__head,
+  .cocoa-section-head { flex-wrap: wrap; }
+  .c22-section__action {
+    flex-wrap: wrap;
+    min-width: 0;
+    max-width: 100%;
+    margin-left: auto; /* a short row on its own line keeps the right edge */
+  }
+  .c22-section__meta {
+    white-space: normal;
+    min-width: 0;
+  }
 }
 /* The body is a plain block (it stays a flex ITEM of the section so the
    footer sits at the bottom): inline content flows on one line — as a flex
@@ -652,6 +677,27 @@
     mask-image: linear-gradient(to right, var(--cocoa-mask-solid) calc(100% - 32px), var(--cocoa-mask-clear));
     -webkit-mask-image: linear-gradient(to right, var(--cocoa-mask-solid) calc(100% - 32px), var(--cocoa-mask-clear));
   }
+}
+
+/* Segmented control (CocoaSegmentedControl, data-cocoa="segmented"): same
+   scroll + snap as the tablist, and the fade only while the strip actually
+   overflows — the primitive measures scrollWidth > clientWidth and sets
+   data-fade (like .c22-scroll-area) plus the inline end padding, so a strip
+   that fits keeps a crisp right edge at every width (fix:2-A qa#5: four
+   options with counts = 420 px in a 324 px column at 390). */
+[data-cocoa="segmented"] {
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  scroll-snap-type: x proximity;
+  scroll-padding-inline: 2px;
+}
+[data-cocoa="segmented"]::-webkit-scrollbar { display: none; }
+[data-cocoa="segmented"] > [role="tab"] { scroll-snap-align: start; flex-shrink: 0; }
+[data-cocoa="segmented"][data-fade="true"] {
+  mask-image: linear-gradient(to right, var(--cocoa-mask-solid) calc(100% - 32px), var(--cocoa-mask-clear));
+  -webkit-mask-image: linear-gradient(to right, var(--cocoa-mask-solid) calc(100% - 32px), var(--cocoa-mask-clear));
 }
 
 /* ------------------------------------------------------------

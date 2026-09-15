@@ -67,7 +67,8 @@ describe("screens · cabeceras Cocoa con las etiquetas del árbol (browser-roles
     for (const [rel, key] of expectations) {
       const source = read(rel);
       assert.match(source, new RegExp(`treeHeaderFor\\("${key}"`), rel);
-      assert.match(source, /<CocoaPageHeader/, rel);
+      // `CocoaPage` paints the CocoaPageHeader by itself (Cocoa 22 · ola 4): both spellings are a Cocoa header.
+      assert.match(source, /<CocoaPage(?:Header)?\b/, rel);
       assert.doesNotMatch(source, /bo-page-head"|↻ Refresh|Datos de ejemplo|Couldn't load/, rel);
     }
     const sustainability = read("screens/operations/SustainabilityDashboard.tsx");

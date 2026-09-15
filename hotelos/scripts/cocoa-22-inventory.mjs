@@ -158,7 +158,13 @@ function classify(relPath, src, m) {
 
 // ----------------------------------------------------------------- debt
 
-function debtPoints(m) {
+// Files that never paint a page head of their own: dialogs, drawers, the tab
+// containers and the sub-views the contract exempts (mirror of HEADER_EXEMPT
+// in tests/cocoa-22-contract.test.mjs, rule 7) — the «sin cabecera» penalty
+// does not apply to them.
+const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$)/;
+
+function debtPoints(m, headerExempt = false) {
   return Math.round(
     m.boCard * 1 +
       (m.boClasses - m.boCard) * 0.5 +
@@ -168,7 +174,7 @@ function debtPoints(m) {
       (m.colourLiterals - m.colourFallbacks) * 1 +
       m.colourFallbacks * 0.25 +
       m.inlineStyles * 0.25 +
-      (m.hasCocoaPageHeader || m.usesTabHost ? 0 : 5) +
+      (m.hasCocoaPageHeader || m.usesTabHost || headerExempt ? 0 : 5) +
       m.emoji * 0.5
   );
 }
@@ -252,7 +258,8 @@ const screens = walk(screensDir)
     const keys = (fileToKeys.get(rel) ?? []).sort();
     const categories = [...new Set(keys.map((k) => keyToCategory.get(k)).filter(Boolean))];
     const category = categories[0] ?? folderCategory(rel);
-    const points = debtPoints(metrics);
+    const headerExempt = HEADER_EXEMPT.test(rel);
+    const points = debtPoints(metrics, headerExempt);
     return {
       path: `apps/admin-web/src/screens/${rel}`,
       name: rel.split("/").pop().replace(/\.tsx$/, ""),
@@ -262,6 +269,7 @@ const screens = walk(screensDir)
       archetype: classify(rel, src, metrics),
       lines: metrics.lines,
       metrics,
+      headerExempt,
       debtPoints: points,
       size: sizeFor(metrics.lines, points)
     };
@@ -298,7 +306,7 @@ const inventory = {
   root: "apps/admin-web/src/screens",
   generatedBy: "scripts/cocoa-22-inventory.mjs",
   debtFormula:
-    "boCard*1 + otrasBo*0.5 + rawButtons*1 + rawTables*3 + rawInputs*1 + colourLiterals*1 (fallbacks*0.25) + inlineStyles*0.25 + 5 sin cabecera Cocoa + emoji*0.5",
+    "boCard*1 + otrasBo*0.5 + rawButtons*1 + rawTables*3 + rawInputs*1 + colourLiterals*1 (fallbacks*0.25) + inlineStyles*0.25 + 5 sin cabecera Cocoa (salvo diálogos, drawers, contenedores y sub-vistas exentas: headerExempt) + emoji*0.5",
   sizes: { S: "< 20 puntos y < 300 líneas", M: "< 60 y < 800", L: "< 150 y < 1500", XL: "resto" },
   categoryFallback: "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   totals,

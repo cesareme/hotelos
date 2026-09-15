@@ -7,10 +7,21 @@
 //
 // Header: flex space-between center, gap 12, margin-bottom 12. With
 // `padding="none"` (tables, charts that bleed) the header and footer keep
-// their own 16 px inset so the content can touch the card edges.
+// their own 16 px inset so the content can touch the card edges — except on
+// `variant="plain"`, which has no card edge: `plain` + `none` is a group
+// heading flush with the grid it titles (export rituals, wave 9).
 // Hooks for the css lot: root `c22-section` (+ data-variant/data-padding from
 // CocoaCard), parts `c22-section__head/__heading/__title/__meta/__action/
 // __body[data-scroll]/__footer`.
+//
+// The head cluster (head, heading, title, meta, action) carries NO inline
+// style: its layout lives in `styles/cocoa-22-layout.css` (including the
+// `padding="none"` inset via `[data-padding]`/`[data-variant]`) so the phone
+// rules can reflow it. Inline `white-space: nowrap` / `flex-shrink: 0` on the
+// meta and the action row beat every media query and measured a 453 / 461 px
+// row inside a 358 px card at 390 (qa#19, /operaciones/tpv «Arqueo de caja»
+// and /revenue/exportaciones). Only the prop-driven body (`scroll`,
+// `maxHeight`) and footer inset stay inline.
 
 import { useId, type CSSProperties, type ReactNode } from "react";
 import { CocoaCard, type CocoaCardProps } from "./CocoaCard";
@@ -25,7 +36,7 @@ export interface CocoaSectionProps extends Pick<CocoaCardProps, "variant" | "pad
   footer?: ReactNode;
   /** Scroll axis of the body (tables → "x"). */
   scroll?: "x" | "y";
-  /** Fixed body height when `scroll="y"`. */
+  /** Upper bound (px) of the body when `scroll="y"`: the body grows with its content up to it, then scrolls (an empty thread stays short). */
   maxHeight?: number;
   children: ReactNode;
   id?: string;
@@ -54,41 +65,9 @@ export function CocoaSection({
 }: CocoaSectionProps) {
   const headingId = useId();
   const hasHeader = Boolean(title || meta || action);
-  const inset = padding === "none" ? "var(--cocoa-space-4)" : undefined;
+  // `plain` has no card edge to inset from: its head and foot sit flush.
+  const inset = padding === "none" && variant !== "plain" ? "var(--cocoa-space-4)" : undefined;
   const Heading = headingLevel === 2 ? "h2" : "h3";
-
-  const headerStyle: CSSProperties = {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: "var(--cocoa-space-3)",
-    marginBottom: padding === "none" ? 0 : "var(--cocoa-space-3)",
-    padding: inset ? `${inset} ${inset} var(--cocoa-space-3)` : undefined,
-    minWidth: 0
-  };
-
-  const titleStyle: CSSProperties = {
-    margin: 0,
-    fontSize: "var(--cocoa-fs-title-3)",
-    fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
-    letterSpacing: "var(--cocoa-tracking-tight)",
-    lineHeight: "var(--cocoa-leading-title)",
-    color: "var(--cocoa-label)",
-    minWidth: 0,
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap"
-  };
-
-  const metaStyle: CSSProperties = {
-    margin: 0,
-    fontSize: "var(--cocoa-fs-caption)",
-    color: "var(--cocoa-label-secondary)",
-    whiteSpace: "nowrap",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    flexShrink: 0
-  };
 
   const bodyStyle: CSSProperties = {
     minWidth: 0,
@@ -120,21 +99,17 @@ export function CocoaSection({
       data-cocoa="section"
     >
       {hasHeader ? (
-        <header className="c22-section__head cocoa-section-head" style={headerStyle}>
-          <div className="c22-section__heading" style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: "1 1 auto" }}>
+        <header className="c22-section__head cocoa-section-head">
+          <div className="c22-section__heading">
             {title ? (
-              <Heading id={headingId} className="c22-section__title" style={titleStyle}>
+              <Heading id={headingId} className="c22-section__title">
                 {title}
               </Heading>
             ) : null}
           </div>
           {meta || action ? (
-            <div className="c22-section__action" style={{ display: "inline-flex", alignItems: "center", gap: "var(--cocoa-space-2)", flexShrink: 0 }}>
-              {meta ? (
-                <span className="c22-section__meta" style={metaStyle}>
-                  {meta}
-                </span>
-              ) : null}
+            <div className="c22-section__action">
+              {meta ? <span className="c22-section__meta">{meta}</span> : null}
               {action}
             </div>
           ) : null}

@@ -45,7 +45,7 @@ const toPosix = (p) => p.split(sep).join("/");
  * Pilot lot (2026-09-15): GeneralManagerScreen (canon), GuestsListScreen,
  * PropertySetupForms, ShiftManagerScreen and LoginScreen (shell lot) are out.
  */
-export const ALLOWLIST_CEILING = 197;
+export const ALLOWLIST_CEILING = 153;
 
 export const NOT_MIGRATED = [
   "AccountingSettings.tsx",
@@ -66,8 +66,6 @@ export const NOT_MIGRATED = [
   "UserRoleManager.tsx",
   "admin/AllotmentsScreen.tsx",
   "admin/CancellationPoliciesScreen.tsx",
-  "admin/FnbInventoryScreen.tsx",
-  "admin/FnbMenuScreen.tsx",
   "admin/FolioRoutingScreen.tsx",
   "admin/InviteUserDialog.tsx",
   "admin/NewTenantWizardDialog.tsx",
@@ -77,18 +75,10 @@ export const NOT_MIGRATED = [
   "admin/TenantDetailScreen.tsx",
   "admin/TouristTaxScreen.tsx",
   "aiOperations/AiGovernanceScreen.tsx",
-  "aiOperations/AiHumanReviewQueueScreen.tsx",
-  "aiOperations/AiOwnerSummaryScreen.tsx",
   "aiOperations/AiPipelineStatusScreen.tsx",
   "aiOperations/AiToolRegistryScreen.tsx",
   "aiOperations/EmailConnectorsScreen.tsx",
   "aiOperations/PropertyAiScreen.tsx",
-  "assistant/AssistantChatScreen.tsx",
-  "auth/AcceptInviteScreen.tsx",
-  "auth/ChangePasswordScreen.tsx",
-  "auth/CocoaLoginScreen.tsx",
-  "auth/ForgotPasswordScreen.tsx",
-  "auth/ResetPasswordScreen.tsx",
   "backoffice/SetupCenterScreen.tsx",
   "backoffice/categories/CategoryDetailScreen.tsx",
   "backoffice/categories/CategoryManagerScreen.tsx",
@@ -114,8 +104,6 @@ export const NOT_MIGRATED = [
   "developer/CocoaShowcaseScreen.tsx",
   "developer/DeveloperAppsScreen.tsx",
   "developer/WebhooksAdminScreen.tsx",
-  "errors/CocoaNotFoundScreen.tsx",
-  "errors/CocoaServerErrorScreen.tsx",
   "esrs/EsrsReportScreen.tsx",
   "finance/BalanceSheetScreen.tsx",
   "finance/CashFlowScreen.tsx",
@@ -145,51 +133,27 @@ export const NOT_MIGRATED = [
   "onboarding/CocoaOnboardingWizard.tsx",
   "onboarding/OnboardingInteractive.tsx",
   "onboarding/OnboardingScreens.tsx",
-  "operations/AnalyticsCenterDashboard.tsx",
-  "operations/AssetsDashboard.tsx",
-  "operations/ChannelPerformanceDashboard.tsx",
   "operations/ConciergeInboxDashboard.tsx",
   "operations/CrmDashboard.tsx",
-  "operations/EnergyDashboard.tsx",
   "operations/FinancePositionDashboard.tsx",
-  "operations/FrontDeskActionQueue.tsx",
-  "operations/FrontDeskDashboard.tsx",
   "operations/GroupDetailDialog.tsx",
   "operations/GroupsCalendarScreen.tsx",
   "operations/GroupsEventsDashboard.tsx",
   "operations/GroupsPickupCard.tsx",
-  "operations/HousekeepingDashboard.tsx",
-  "operations/HousekeepingMobileScreen.tsx",
-  "operations/InventoryDashboard.tsx",
   "operations/LoyaltyDashboard.tsx",
-  "operations/MaintenanceDashboard.tsx",
-  "operations/MaintenanceMobileScreen.tsx",
   "operations/NewEventDialog.tsx",
   "operations/NewGroupDialog.tsx",
-  "operations/NightAuditScreen.tsx",
-  "operations/OperationsDirectorScreen.tsx",
-  "operations/PortfolioDashboard.tsx",
-  "operations/PosDashboard.tsx",
-  "operations/ProcurementDashboard.tsx",
-  "operations/PropertyDetailScreen.tsx",
   "operations/QualityDashboard.tsx",
-  "operations/QuickCheckInDrawer.tsx",
-  "operations/QuickCheckOutDrawer.tsx",
   "operations/ReputationDashboard.tsx",
   "operations/RoomBlockGridDialog.tsx",
-  "operations/RoomProfitabilityDashboard.tsx",
   "operations/RoomRackScreen.tsx",
   "operations/RoomingListImportDialog.tsx",
-  "operations/SafetyDashboard.tsx",
   "operations/SalesPipelineDashboard.tsx",
   "operations/SurveysDashboard.tsx",
   "operations/SustainabilityDashboard.tsx",
   "operations/UpsellsDashboard.tsx",
-  "operations/WorkforceDashboard.tsx",
-  "owner/OwnerHomeScreen.tsx",
   "payroll/PayrollScreen.tsx",
   "preview/CocoaGalleryScreen.tsx",
-  "reports/ReportingCenterScreen.tsx",
   "reservations/QuickActionsDialogs.tsx",
   "reservations/ReservationAgentScreen.tsx",
   "reservations/ReservationCreateScreen.tsx",
@@ -198,7 +162,6 @@ export const NOT_MIGRATED = [
   "revenue/RateGridEditorScreen.tsx",
   "revenue/RateJournalScreen.tsx",
   "revenue/RevenueComparisonDashboard.tsx",
-  "revenue/RevenueExportCenter.tsx",
   "revenue/RevenueForecastExplorer.tsx",
   "revenue/RevenueHistoryForecastDashboard.tsx",
   "revenue/RevenueHistoryForecastReport.tsx",
@@ -229,13 +192,6 @@ export const NOT_MIGRATED = [
   "tabs/finanzas/EstadosContablesTabs.tsx",
   "tabs/finanzas/FacturacionTabs.tsx",
   "tabs/finanzas/TesoreriaTabs.tsx",
-  "tabs/hoy/MiDiaTabs.tsx",
-  "tabs/informes/CarteraTabs.tsx",
-  "tabs/informes/CentroInformesTabs.tsx",
-  "tabs/operaciones/ComprasInventarioTabs.tsx",
-  "tabs/operaciones/MantenimientoTabs.tsx",
-  "tabs/operaciones/PisosTabs.tsx",
-  "tabs/operaciones/PuntoVentaTabs.tsx",
   "tabs/recepcion/GruposEventosTabs.tsx",
   "tabs/recepcion/HuespedesTabs.tsx",
   "tabs/recepcion/NuevaReservaTabs.tsx",
@@ -253,16 +209,26 @@ export const NOT_MIGRATED = [
  * screen without an entry gets the dashboard budget.
  */
 const STYLE_BUDGET = {
+  "operations/QuickCheckInDrawer.tsx": 15,
+  "operations/QuickCheckOutDrawer.tsx": 15,
+  "operations/FrontDeskActionQueue.tsx": 15,
   "operations/GeneralManagerScreen.tsx": 25,
   "operations/ShiftManagerScreen.tsx": 25,
   "guests/GuestsListScreen.tsx": 15,
   "propertySetup/PropertySetupForms.tsx": 15,
-  "auth/LoginScreen.tsx": 15
+  "auth/LoginScreen.tsx": 15,
+  // Cocoa 22 · ola 4 · lote 4-B (workspace)
+  "operations/PosDashboard.tsx": 40,
+  // Cocoa 22 · ola 4 · lote 4-C (workspace)
+  "operations/WorkforceDashboard.tsx": 40,
+  "operations/SafetyDashboard.tsx": 40,
+  // Cocoa 22 · ola 4 · lote 4-A (workspace)
+  "operations/MaintenanceDashboard.tsx": 40
 };
 const DEFAULT_STYLE_BUDGET = 25;
 
-/** Rule 13 ceilings (§9) — the inventory of 2026-09-15; lowered by every wave. */
-const GLOBAL_CEILING = { boCard: 941, rawButtons: 647, rawTables: 159, rawInputs: 553, colourLiterals: 539, inlineStyles: 4607 };
+/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788). */
+const GLOBAL_CEILING = { boCard: 762, rawButtons: 488, rawTables: 121, rawInputs: 491, colourLiterals: 419, inlineStyles: 3788 };
 
 // ----------------------------------------------------------------- helpers
 
@@ -557,7 +523,8 @@ function definedTokens() {
   return defined;
 }
 
-const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$)/;
+// Sub-views without a head of their own (plan §2.3): FrontDeskActionQueue is painted inside /hoy.
+const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$)/;
 const COLOUR_EXEMPT = /^(auth|preview|developer)\//;
 
 // ----------------------------------------------------------------- data

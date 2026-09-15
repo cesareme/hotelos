@@ -10,14 +10,37 @@
 //
 // La directriz manda que toda acción frecuente esté a máximo 2 clics: aquí
 // están a 1.
+//
+// Cocoa 22 (ola 2 · lote 2-A): sub-view of FrontDeskDashboard (no page
+// header of its own) painted as a `CocoaSection` with a content toolbar
+// (priority `CocoaSegmentedControl` + refresh), a `CocoaGrid` of `CocoaCard`
+// items, `CocoaState` for loading / error / empty and the shared toast
+// (`useToast`) instead of a local status pill. Same endpoint and actions.
 
-import { useState } from "react";
+import { useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
-import { EmptyState, ErrorState } from "../../components/States";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { useToast } from "../../components/Toast";
+import { navigateTo } from "../../lib/navigate";
+import { number } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
 import { urlForScreen } from "../../navigation/nav-tree";
+import { SparkleIcon } from "../../components/cocoa-icons/NavigationIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaCard,
+  CocoaGrid,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSpan,
+  CocoaState,
+  CocoaToolbar,
+  openTabPath,
+  type CocoaTone
+} from "../../components/cocoa";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
 
@@ -94,7 +117,7 @@ const KIND_LABEL: Record<QueueKind, string> = {
   repeat_arriving: "Recurrente"
 };
 
-const KIND_TONE: Record<QueueKind, "danger" | "warning" | "accent" | "ok" | "info"> = {
+const KIND_TONE: Record<QueueKind, CocoaTone> = {
   overbooking: "danger",
   no_show_risk: "danger",
   late_checkout_overdue: "danger",
@@ -104,7 +127,7 @@ const KIND_TONE: Record<QueueKind, "danger" | "warning" | "accent" | "ok" | "inf
   housekeeping_late: "danger",
   open_balance: "warning",
   checkout_pending: "warning",
-  checkin_ready: "ok",
+  checkin_ready: "success",
   vip_arriving: "accent",
   repeat_arriving: "info"
 };
@@ -115,18 +138,18 @@ const PRIORITY_LABEL: Record<Priority, string> = {
   soon: "Próximo"
 };
 
-const PRIORITY_TONE: Record<Priority, "danger" | "warning" | "info"> = {
+const PRIORITY_TONE: Record<Priority, CocoaTone> = {
   urgent: "danger",
   today: "warning",
   soon: "info"
 };
 
+type Filter = Priority | "all";
+
 // ------------------------------------------------------------------ helpers
 
-function navigateTo(screen: string) {
-  if (typeof window !== "undefined") {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-  }
+function elapsedText(seconds: number): string {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
 async function executeAction(
@@ -135,6 +158,7 @@ async function executeAction(
   drawerCtx: { openCheckIn: (id: string) => void; openCheckOut: (id: string) => void }
 ): Promise<{ ok: boolean; message?: string }> {
   const { kind, payload } = action;
+  void propertyId;
   try {
     switch (kind) {
       case "start_checkin": {
@@ -220,17 +244,34 @@ async function executeAction(
   }
 }
 
+// Card body: flex column so the actions row sits at the bottom of equal-height cells.
+const cardStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)", minHeight: 140, height: "100%" };
+const actionsRowStyle: CSSProperties = { marginTop: "auto" };
+
+const titleStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-body)",
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label)"
+};
+
+const mutedStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--cocoa-fs-caption)",
+  color: "var(--cocoa-label-secondary)",
+  lineHeight: "var(--cocoa-lh-caption)"
+};
+
 // ------------------------------------------------------------------ component
 
 export function FrontDeskActionQueue() {
   const propertyId = getActivePropertyId();
+  const { showToast } = useToast();
   const { data, loading, error, refresh } = useApiData<QueueResponse>(
     `/dashboards/front-desk-queue?propertyId=${propertyId}`,
     { pollIntervalMs: 30000 }
   );
   const [busy, setBusy] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ kind: "ok" | "warn" | "error"; text: string } | null>(null);
-  const [filter, setFilter] = useState<Priority | "all">("all");
+  const [filter, setFilter] = useState<Filter>("all");
   const [checkInReservationId, setCheckInReservationId] = useState<string | null>(null);
   const [checkOutReservationId, setCheckOutReservationId] = useState<string | null>(null);
 
@@ -245,87 +286,66 @@ export function FrontDeskActionQueue() {
 
   async function handleAction(item: QueueItem, action: QueueAction) {
     setBusy(item.id);
-    setToast(null);
     const result = await executeAction(action, propertyId, drawerCtx);
     setBusy(null);
     if (result.message) {
-      setToast({ kind: result.ok ? "ok" : "warn", text: result.message });
-      setTimeout(() => setToast(null), 4000);
+      showToast(result.message, { variant: result.ok ? "success" : "warning" });
     }
     if (result.ok && action.kind !== "start_checkin" && action.kind !== "start_checkout") {
       refresh();
     }
   }
 
+  const filterOptions = [
+    { value: "all", label: `Todo · ${number(summary.total)}` },
+    { value: "urgent", label: `${PRIORITY_LABEL.urgent} · ${number(summary.urgent)}` },
+    { value: "today", label: `${PRIORITY_LABEL.today} · ${number(summary.today)}` },
+    { value: "soon", label: `${PRIORITY_LABEL.soon} · ${number(summary.soon)}` }
+  ];
+
   return (
-    <article className="bo-card" style={{ background: "var(--surface)" }}>
-      <div className="bo-card-head">
-        <h3 style={{ color: "var(--ink)" }}>Lo siguiente que hay que hacer</h3>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <button
-            type="button"
-            className={filter === "all" ? "primary" : "ghost"}
-            onClick={() => setFilter("all")}
-          >
-            Todo · {summary.total}
-          </button>
-          <button
-            type="button"
-            className={filter === "urgent" ? "primary" : "ghost"}
-            onClick={() => setFilter("urgent")}
-          >
-            <span className="bo-status error">{summary.urgent}</span> Urgente
-          </button>
-          <button
-            type="button"
-            className={filter === "today" ? "primary" : "ghost"}
-            onClick={() => setFilter("today")}
-          >
-            <span className="bo-status warn">{summary.today}</span> Hoy
-          </button>
-          <button
-            type="button"
-            className={filter === "soon" ? "primary" : "ghost"}
-            onClick={() => setFilter("soon")}
-          >
-            <span className="bo-status info">{summary.soon}</span> Próximo
-          </button>
-          <button type="button" className="ghost" onClick={refresh} title="Recargar">↻</button>
-        </div>
-      </div>
+    <CocoaSection title="Lo siguiente que hay que hacer" aria-label="Cola de acciones de recepción">
+      <CocoaToolbar
+        variant="content"
+        aria-label="Filtro de prioridad"
+        leftSlot={<CocoaSegmentedControl size="small" aria-label="Prioridad" value={filter} onChange={(value) => setFilter(value as Filter)} options={filterOptions} />}
+        rightSlot={
+          <CocoaButton variant="plain" tone="neutral" size="small" onClick={refresh} aria-label="Recargar la cola">
+            {ACTIONS.refresh}
+          </CocoaButton>
+        }
+      />
 
       {loading && items.length === 0 ? (
-        <p className="bo-muted">Calculando cola operativa…</p>
+        <CocoaState kind="loading" title="Calculando cola operativa…" />
       ) : error ? (
-        <ErrorState
-          title="Algo no fue bien"
-          message={error}
-          onRetry={refresh}
-        />
+        <CocoaState kind="error" title="Algo no fue bien" message={error} onRetry={refresh} />
       ) : filtered.length === 0 ? (
-        <EmptyState
-          title={filter === "all" ? "No hay acciones pendientes" : `No hay items con prioridad "${PRIORITY_LABEL[filter as Priority]}"`}
-          message={filter === "all" ? "Todo bajo control. Volveremos a recalcular la cola en segundo plano." : "Cambia el filtro para ver otras prioridades o espera a que se generen nuevas acciones."}
+        <CocoaState
+          kind="empty"
+          illustration={filter === "all" ? "box" : "search"}
+          title={filter === "all" ? "No hay acciones pendientes" : `No hay acciones con prioridad «${PRIORITY_LABEL[filter as Priority]}»`}
+          message={
+            filter === "all"
+              ? "Todo bajo control. Volveremos a recalcular la cola en segundo plano."
+              : "Cambia el filtro para ver otras prioridades o espera a que se generen nuevas acciones."
+          }
+          secondaryAction={filter === "all" ? undefined : { label: ACTIONS.clearFilters, onClick: () => setFilter("all") }}
         />
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(360px, 1fr))", gap: 12 }}>
+        <CocoaGrid aria-label="Acciones pendientes">
           {filtered.map((item) => (
-            <ActionCard
-              key={item.id}
-              item={item}
-              busy={busy === item.id}
-              onPrimary={() => item.primaryAction && handleAction(item, item.primaryAction)}
-              onSecondary={(a) => handleAction(item, a)}
-            />
+            <CocoaSpan key={item.id} cols={4} min={320}>
+              <ActionCard
+                item={item}
+                busy={busy === item.id}
+                onPrimary={() => item.primaryAction && handleAction(item, item.primaryAction)}
+                onSecondary={(a) => handleAction(item, a)}
+              />
+            </CocoaSpan>
           ))}
-        </div>
+        </CocoaGrid>
       )}
-
-      {toast ? (
-        <div style={{ marginTop: 12 }}>
-          <span className={`bo-status ${toast.kind === "ok" ? "ok" : toast.kind === "warn" ? "warn" : "error"}`}>{toast.text}</span>
-        </div>
-      ) : null}
 
       {/* Drawers in-place — abren slide-over sin perder contexto. */}
       {checkInReservationId ? (
@@ -333,8 +353,7 @@ export function FrontDeskActionQueue() {
           reservationId={checkInReservationId}
           onClose={() => setCheckInReservationId(null)}
           onCompleted={({ elapsedSeconds }) => {
-            setToast({ kind: "ok", text: `Check-in completado en ${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}` });
-            setTimeout(() => setToast(null), 5000);
+            showToast(`Check-in completado en ${elapsedText(elapsedSeconds)}`, { variant: "success", duration: 5000 });
             refresh();
           }}
         />
@@ -344,13 +363,12 @@ export function FrontDeskActionQueue() {
           reservationId={checkOutReservationId}
           onClose={() => setCheckOutReservationId(null)}
           onCompleted={({ elapsedSeconds }) => {
-            setToast({ kind: "ok", text: `Check-out completado en ${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}` });
-            setTimeout(() => setToast(null), 5000);
+            showToast(`Check-out completado en ${elapsedText(elapsedSeconds)}`, { variant: "success", duration: 5000 });
             refresh();
           }}
         />
       ) : null}
-    </article>
+    </CocoaSection>
   );
 }
 
@@ -366,65 +384,38 @@ function ActionCard({
   onSecondary: (a: QueueAction) => void;
 }) {
   const tone = KIND_TONE[item.kind];
-  const borderColor =
-    tone === "danger" ? "var(--danger, #d23b3b)" :
-    tone === "warning" ? "var(--warn, #d29b00)" :
-    tone === "accent" ? "var(--accent, #6f3ad2)" :
-    tone === "ok" ? "var(--ok, #1f8a4c)" :
-    "var(--border, #e0e0e0)";
 
   return (
-    <div
-      style={{
-        border: `1px solid ${borderColor}`,
-        borderLeftWidth: 4,
-        borderRadius: 8,
-        padding: 12,
-        background: "var(--surface)",
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        minHeight: 140
-      }}
-    >
-      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-        <span className={`bo-status ${PRIORITY_TONE[item.priority] === "danger" ? "error" : PRIORITY_TONE[item.priority] === "warning" ? "warn" : "info"}`}>
+    <CocoaCard variant="bordered" padding="md" style={cardStyle} role="group" aria-label={item.title}>
+      <div className="cocoa-row" data-gap="1">
+        <CocoaBadge tone={PRIORITY_TONE[item.priority]} variant="tinted" size="small">
           {PRIORITY_LABEL[item.priority]}
-        </span>
-        <span className="bo-chip">{KIND_LABEL[item.kind]}</span>
+        </CocoaBadge>
+        <CocoaBadge tone={tone} size="small">
+          {KIND_LABEL[item.kind]}
+        </CocoaBadge>
       </div>
-      <div>
-        <div style={{ fontWeight: 600, color: "var(--ink)", marginBottom: 4 }}>{item.title}</div>
-        <div className="bo-muted" style={{ fontSize: 13, lineHeight: 1.4 }}>{item.context}</div>
+      <div className="cocoa-stack" data-gap="1">
+        <strong style={titleStyle}>{item.title}</strong>
+        <p style={mutedStyle}>{item.context}</p>
       </div>
       {item.recommendation ? (
-        <div
-          style={{
-            fontSize: 13,
-            color: "var(--ink)",
-            background: "var(--surface-elevated, rgba(0,0,0,0.03))",
-            padding: "6px 8px",
-            borderRadius: 6,
-            borderLeft: `3px solid ${borderColor}`,
-            lineHeight: 1.4
-          }}
-        >
-          <strong style={{ marginRight: 4 }}>💡</strong>
+        <CocoaCallout tone={tone} icon={<SparkleIcon size={16} />}>
           {item.recommendation}
-        </div>
+        </CocoaCallout>
       ) : null}
-      <div style={{ display: "flex", gap: 6, marginTop: "auto", flexWrap: "wrap" }}>
+      <div className="cocoa-row" data-gap="1" style={actionsRowStyle}>
         {item.primaryAction ? (
-          <button type="button" className="primary" disabled={busy} onClick={onPrimary}>
-            {busy ? "…" : item.primaryAction.label}
-          </button>
+          <CocoaButton variant="filled" tone="accent" size="small" disabled={busy} loading={busy} onClick={onPrimary}>
+            {item.primaryAction.label}
+          </CocoaButton>
         ) : null}
         {item.secondaryActions?.map((a, idx) => (
-          <button key={idx} type="button" className="ghost" disabled={busy} onClick={() => onSecondary(a)}>
+          <CocoaButton key={idx} variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onSecondary(a)}>
             {a.label}
-          </button>
+          </CocoaButton>
         ))}
       </div>
-    </div>
+    </CocoaCard>
   );
 }

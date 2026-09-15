@@ -1,7 +1,13 @@
 // Director Forward Pace Chart — multi-line pickup chart (OTB vs Forecast vs
 // Last Year) for the commercial director's view. Base of `CocoaChart.Line`
-// (COCOA-22.md §3.12); the geometry helpers now come from
-// `cocoa/cocoa-chart-math` so both render the same shapes.
+// (COCOA-22.md §3.12).
+//
+// Cocoa 22 (ola 2): the whole geometry (scales, ticks, hover index, viewBox
+// width) now comes from `cocoa/cocoa-chart-math` (`lineGeometry`,
+// `LINE_PADDING`) and `cocoa/CocoaChart` (`lineViewBoxWidth`), the same
+// helpers `CocoaChart.Line` uses, so both render the same shapes. Screens
+// should use `CocoaChart.Line`; this component stays for legacy callers and
+// its exported sizing helpers until wave 11.
 //
 // Inline SVG (no external dependencies). Three series:
 //   - OTB:       solid line, accent (--cocoa-accent), 2 px.
@@ -21,14 +27,13 @@
 // with `preserveAspectRatio="xMidYMid meet"` and an explicit `aspect-ratio`
 // equal to the viewBox — so the glyphs are never deformed and the plot keeps
 // its `height` at every width.
-//
-// Wrapped in CocoaCard padding="md" to align with the rest of the Cocoa UI.
 
 import { useMemo, useRef, useState, type CSSProperties, type PointerEvent } from "react";
 import { CocoaCard } from "../cocoa/CocoaCard";
 import { CocoaEmptyState } from "../cocoa-empty-state/CocoaEmptyState";
 import { EmptyStateBox } from "../cocoa-illustrations";
-import { buildPathD, formatChartValue, formatYTick, niceCeil, pickXStep } from "../cocoa/cocoa-chart-math";
+import { MIN_LINE_WIDTH, lineViewBoxWidth } from "../cocoa/CocoaChart";
+import { LINE_DEFAULT_WIDTH, LINE_PADDING, buildPathD, formatChartValue, formatYTick, lineGeometry } from "../cocoa/cocoa-chart-math";
 import { useElementWidth } from "../cocoa/cocoa-viewport";
 
 export interface DirectorForwardPacePoint {
@@ -54,26 +59,15 @@ export interface DirectorForwardPaceChartProps {
   title?: string;
 }
 
-// ---------------------------------------------------------------------------
-// SVG layout constants: inner padding of the plot area.
-// ---------------------------------------------------------------------------
-
-const CHART_PADDING = {
-  top: 16,
-  right: 16,
-  bottom: 32,
-  left: 44
-} as const;
-
-/** Canon viewBox width (used until the container is measured). */
-export const VIEWBOX_WIDTH = 640;
-/** Narrowest viewBox: below this the axis labels would collide. */
-export const MIN_VIEWBOX_WIDTH = 240;
+/** Canon viewBox width (used until the container is measured) — `LINE_DEFAULT_WIDTH` of cocoa-chart-math. */
+export const VIEWBOX_WIDTH = LINE_DEFAULT_WIDTH;
+/** Narrowest viewBox: below this the axis labels would collide — `MIN_LINE_WIDTH` of CocoaChart. */
+export const MIN_VIEWBOX_WIDTH = MIN_LINE_WIDTH;
 const Y_TICKS = 4;
 
-/** ViewBox width for a measured container width (pure): canon 640 until measured, never below 240. */
+/** ViewBox width for a measured container width (pure): canon 640 until measured, never below 240. Alias of `lineViewBoxWidth`. */
 export function paceViewBoxWidth(measured: number | null): number {
-  return measured === null ? VIEWBOX_WIDTH : Math.max(MIN_VIEWBOX_WIDTH, Math.round(measured));
+  return lineViewBoxWidth(measured);
 }
 
 // ---------------------------------------------------------------------------
@@ -142,7 +136,7 @@ const tooltipStyle: CSSProperties = {
   color: "var(--cocoa-label)",
   whiteSpace: "nowrap",
   fontFeatureSettings: "var(--cocoa-font-numeric-tabular)",
-  zIndex: 2
+  zIndex: "var(--cocoa-z-tooltip)" as CSSProperties["zIndex"]
 };
 
 const tooltipDateStyle: CSSProperties = {
@@ -175,13 +169,7 @@ function formatDayMonth(iso: string): string {
 // Main component.
 // ---------------------------------------------------------------------------
 
-export function DirectorForwardPaceChart({
-  data,
-  days = 30,
-  valueLabel = "Ocupación %",
-  height = 200,
-  title
-}: DirectorForwardPaceChartProps) {
+export function DirectorForwardPaceChart({ data, days = 30, valueLabel = "Ocupación %", height = 200, title }: DirectorForwardPaceChartProps) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const measured = useElementWidth(wrapperRef);
@@ -190,81 +178,33 @@ export function DirectorForwardPaceChart({
   // First `days` points.
   const slice = useMemo(() => data.slice(0, Math.max(0, days)), [data, days]);
 
-  // Scales and coordinates. Memoised so hover does not recompute them.
+  // Scales and coordinates from cocoa-chart-math. Memoised so hover does not recompute them.
   const geometry = useMemo(() => {
     if (slice.length === 0) return null;
-
-    const innerWidth = viewBoxWidth - CHART_PADDING.left - CHART_PADDING.right;
-    const innerHeight = height - CHART_PADDING.top - CHART_PADDING.bottom;
-
-    // Y range from the maximum of the three series. Minimum 0.
-    let rawMax = 0;
-    for (const p of slice) {
-      if (p.otb > rawMax) rawMax = p.otb;
-      if (p.forecast > rawMax) rawMax = p.forecast;
-      if (p.lastYear > rawMax) rawMax = p.lastYear;
-    }
-    const yMax = niceCeil(rawMax || 1);
-
-    // A single point sits at the horizontal centre.
-    const xOf = (i: number) => {
-      if (slice.length === 1) {
-        return CHART_PADDING.left + innerWidth / 2;
-      }
-      return CHART_PADDING.left + (innerWidth * i) / (slice.length - 1);
-    };
-    const yOf = (v: number) => CHART_PADDING.top + innerHeight * (1 - v / yMax);
-
-    const otbPoints = slice.map((p, i) => ({ x: xOf(i), y: yOf(p.otb) }));
-    const forecastPoints = slice.map((p, i) => ({ x: xOf(i), y: yOf(p.forecast) }));
-    const lastYearPoints = slice.map((p, i) => ({ x: xOf(i), y: yOf(p.lastYear) }));
-
-    // X ticks.
-    const xStep = pickXStep(slice.length);
-    const xTicks: Array<{ i: number; x: number; label: string }> = [];
-    for (let i = 0; i < slice.length; i += xStep) {
-      xTicks.push({ i, x: xOf(i), label: formatDayMonth(slice[i].date) });
-    }
-    // Always show the last tick even when it does not fall on the step.
-    if (xTicks.length > 0 && xTicks[xTicks.length - 1].i !== slice.length - 1) {
-      const lastIdx = slice.length - 1;
-      xTicks.push({ i: lastIdx, x: xOf(lastIdx), label: formatDayMonth(slice[lastIdx].date) });
-    }
-
-    // Y ticks (Y_TICKS + 1 values including 0 and yMax).
-    const yTicks: Array<{ value: number; y: number }> = [];
-    for (let i = 0; i <= Y_TICKS; i += 1) {
-      const value = (yMax * i) / Y_TICKS;
-      yTicks.push({ value, y: yOf(value) });
-    }
-
-    return {
-      innerWidth,
-      innerHeight,
-      yMax,
-      xOf,
-      yOf,
-      otbPoints,
-      forecastPoints,
-      lastYearPoints,
-      xTicks,
-      yTicks
-    };
+    const labels = slice.map((p) => formatDayMonth(p.date));
+    return lineGeometry(
+      [
+        { id: "otb", points: slice.map((p, i) => ({ x: labels[i], y: p.otb })) },
+        { id: "forecast", points: slice.map((p, i) => ({ x: labels[i], y: p.forecast })) },
+        { id: "last-year", points: slice.map((p, i) => ({ x: labels[i], y: p.lastYear })) }
+      ],
+      viewBoxWidth,
+      height,
+      Y_TICKS
+    );
   }, [slice, height, viewBoxWidth]);
 
   // Empty state, wrapped in the same CocoaCard padding="md" as the chart.
   if (slice.length === 0 || !geometry) {
     return (
       <CocoaCard variant="bordered" padding="md">
-        <CocoaEmptyState
-          illustration={<EmptyStateBox tone="accent" size={160} />}
-          title="Sin datos de pickup todavía"
-        />
+        <CocoaEmptyState illustration={<EmptyStateBox tone="accent" size={160} />} title="Sin datos de pickup todavía" />
       </CocoaCard>
     );
   }
 
-  const { innerWidth, yMax, otbPoints, forecastPoints, lastYearPoints, xTicks, yTicks } = geometry;
+  const { yMax, xTicks, yTicks, indexAt } = geometry;
+  const [otbPoints, forecastPoints, lastYearPoints] = geometry.series;
 
   // Maps a pointer event on the SVG to the nearest index: the pointer position
   // relative to the bounding rect is projected into viewBox space (the SVG
@@ -273,15 +213,7 @@ export function DirectorForwardPaceChart({
     const rect = event.currentTarget.getBoundingClientRect();
     if (rect.width === 0) return;
     const relativeX = ((event.clientX - rect.left) / rect.width) * viewBoxWidth;
-
-    if (slice.length === 1) {
-      setHoverIndex(0);
-      return;
-    }
-    const ratio = (relativeX - CHART_PADDING.left) / (innerWidth === 0 ? 1 : innerWidth);
-    const idx = Math.round(ratio * (slice.length - 1));
-    const clamped = Math.max(0, Math.min(slice.length - 1, idx));
-    setHoverIndex(clamped);
+    setHoverIndex(indexAt(relativeX));
   }
 
   function handlePointerLeave() {
@@ -322,24 +254,8 @@ export function DirectorForwardPaceChart({
           <g>
             {yTicks.map((tick) => (
               <g key={`y-${tick.value}`}>
-                <line
-                  x1={CHART_PADDING.left}
-                  x2={viewBoxWidth - CHART_PADDING.right}
-                  y1={tick.y}
-                  y2={tick.y}
-                  stroke="var(--cocoa-separator)"
-                  strokeWidth={1}
-                  shapeRendering="crispEdges"
-                />
-                <text
-                  x={CHART_PADDING.left - 8}
-                  y={tick.y}
-                  textAnchor="end"
-                  dominantBaseline="central"
-                  fontSize={10}
-                  fill="var(--cocoa-label-tertiary)"
-                  fontFamily="var(--cocoa-font)"
-                >
+                <line x1={LINE_PADDING.left} x2={viewBoxWidth - LINE_PADDING.right} y1={tick.y} y2={tick.y} stroke="var(--cocoa-separator)" strokeWidth={1} shapeRendering="crispEdges" />
+                <text x={LINE_PADDING.left - 8} y={tick.y} textAnchor="end" dominantBaseline="central" fontSize={10} fill="var(--cocoa-label-tertiary)" fontFamily="var(--cocoa-font)">
                   {formatYTick(tick.value, yMax)}
                 </text>
               </g>
@@ -349,103 +265,33 @@ export function DirectorForwardPaceChart({
           {/* X axis labels */}
           <g>
             {xTicks.map((tick) => (
-              <text
-                key={`x-${tick.i}`}
-                x={tick.x}
-                y={height - CHART_PADDING.bottom + 16}
-                textAnchor="middle"
-                fontSize={10}
-                fill="var(--cocoa-label-tertiary)"
-                fontFamily="var(--cocoa-font)"
-              >
+              <text key={`x-${tick.i}`} x={tick.x} y={height - LINE_PADDING.bottom + 16} textAnchor="middle" fontSize={10} fill="var(--cocoa-label-tertiary)" fontFamily="var(--cocoa-font)">
                 {tick.label}
               </text>
             ))}
           </g>
 
           {/* Y axis label (valueLabel) */}
-          <text
-            x={CHART_PADDING.left - 36}
-            y={CHART_PADDING.top - 4}
-            textAnchor="start"
-            fontSize={10}
-            fill="var(--cocoa-label-tertiary)"
-            fontFamily="var(--cocoa-font)"
-          >
+          <text x={LINE_PADDING.left - 36} y={LINE_PADDING.top - 4} textAnchor="start" fontSize={10} fill="var(--cocoa-label-tertiary)" fontFamily="var(--cocoa-font)">
             {valueLabel}
           </text>
 
           {/* Last Year (grey, 1 px, solid) */}
-          <path
-            d={buildPathD(lastYearPoints)}
-            fill="none"
-            stroke="var(--cocoa-label-tertiary)"
-            strokeWidth={1}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
+          <path d={buildPathD(lastYearPoints)} fill="none" stroke="var(--cocoa-label-tertiary)" strokeWidth={1} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
 
           {/* Forecast (warning, dashed, 2 px) */}
-          <path
-            d={buildPathD(forecastPoints)}
-            fill="none"
-            stroke="var(--cocoa-warning)"
-            strokeWidth={2}
-            strokeDasharray="6 4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
+          <path d={buildPathD(forecastPoints)} fill="none" stroke="var(--cocoa-warning)" strokeWidth={2} strokeDasharray="6 4" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
 
           {/* OTB (accent, solid, 2 px) */}
-          <path
-            d={buildPathD(otbPoints)}
-            fill="none"
-            stroke="var(--cocoa-accent)"
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
+          <path d={buildPathD(otbPoints)} fill="none" stroke="var(--cocoa-accent)" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
 
           {/* Hover: vertical guide + points */}
           {hoverIndex !== null ? (
             <g pointerEvents="none">
-              <line
-                x1={hoverX}
-                x2={hoverX}
-                y1={CHART_PADDING.top}
-                y2={height - CHART_PADDING.bottom}
-                stroke="var(--cocoa-label-tertiary)"
-                strokeWidth={1}
-                strokeDasharray="3 3"
-                vectorEffect="non-scaling-stroke"
-              />
-              <circle
-                cx={otbPoints[hoverIndex].x}
-                cy={otbPoints[hoverIndex].y}
-                r={3.5}
-                fill="var(--cocoa-accent)"
-                stroke="var(--cocoa-background-content)"
-                strokeWidth={1.5}
-              />
-              <circle
-                cx={forecastPoints[hoverIndex].x}
-                cy={forecastPoints[hoverIndex].y}
-                r={3.5}
-                fill="var(--cocoa-warning)"
-                stroke="var(--cocoa-background-content)"
-                strokeWidth={1.5}
-              />
-              <circle
-                cx={lastYearPoints[hoverIndex].x}
-                cy={lastYearPoints[hoverIndex].y}
-                r={3}
-                fill="var(--cocoa-label-tertiary)"
-                stroke="var(--cocoa-background-content)"
-                strokeWidth={1.5}
-              />
+              <line x1={hoverX} x2={hoverX} y1={LINE_PADDING.top} y2={height - LINE_PADDING.bottom} stroke="var(--cocoa-label-tertiary)" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke" />
+              <circle cx={otbPoints[hoverIndex].x} cy={otbPoints[hoverIndex].y} r={3.5} fill="var(--cocoa-accent)" stroke="var(--cocoa-background-content)" strokeWidth={1.5} />
+              <circle cx={forecastPoints[hoverIndex].x} cy={forecastPoints[hoverIndex].y} r={3.5} fill="var(--cocoa-warning)" stroke="var(--cocoa-background-content)" strokeWidth={1.5} />
+              <circle cx={lastYearPoints[hoverIndex].x} cy={lastYearPoints[hoverIndex].y} r={3} fill="var(--cocoa-label-tertiary)" stroke="var(--cocoa-background-content)" strokeWidth={1.5} />
             </g>
           ) : null}
         </svg>
@@ -494,25 +340,11 @@ interface LegendSwatchProps {
 }
 
 function LegendSwatch({ tone, label, dashed = false }: LegendSwatchProps) {
-  const color =
-    tone === "accent"
-      ? "var(--cocoa-accent)"
-      : tone === "warning"
-        ? "var(--cocoa-warning)"
-        : "var(--cocoa-label-tertiary)";
+  const color = tone === "accent" ? "var(--cocoa-accent)" : tone === "warning" ? "var(--cocoa-warning)" : "var(--cocoa-label-tertiary)";
   return (
     <span style={legendItemStyle}>
       <svg width={20} height={8} viewBox="0 0 20 8" aria-hidden="true" style={{ display: "block" }}>
-        <line
-          x1={0}
-          x2={20}
-          y1={4}
-          y2={4}
-          stroke={color}
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeDasharray={dashed ? "5 3" : undefined}
-        />
+        <line x1={0} x2={20} y1={4} y2={4} stroke={color} strokeWidth={2} strokeLinecap="round" strokeDasharray={dashed ? "5 3" : undefined} />
       </svg>
       {label}
     </span>

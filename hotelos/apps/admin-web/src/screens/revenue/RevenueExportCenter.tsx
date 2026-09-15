@@ -1,4 +1,6 @@
-// Revenue Export Center — catalog-driven, on-demand export generation.
+// Revenue Export Center — Informes › Centro de informes › Exportaciones de
+// revenue (/informes/exportaciones-revenue). Catalog-driven, on-demand export
+// generation.
 //
 // Consumes the frozen Export Center contract (2026-07-15):
 //   GET  /revenue/properties/:propertyId/export-center/catalog   → ExportCatalog
@@ -12,8 +14,16 @@
 //   UI labels it "PDF (imprimir)" and explains the print/save flow instead
 //   of pretending a binary PDF is produced.
 // - Generation errors are surfaced verbatim next to the export card.
-import { useTabHost } from "../tabs/TabHost";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+//
+// Cocoa 22 (ola 9 · lote 9-A): dashboard hosted in CentroInformesTabs. One
+// plain CocoaSection per ritual (heading + short caption; the «when» sentence
+// is a lead paragraph in the body so it wraps on phones — the section `meta`
+// is nowrap, see export-center-rituals.ts) holding a 6/6 grid of export
+// cards (CocoaSection with CocoaField/CocoaDatePicker params, a CocoaButton
+// per format and a CocoaCallout note); the files generated in this session
+// go in a CocoaTable with a re-download row action.
+
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   downloadGeneratedExport,
   fetchExportCatalog,
@@ -23,9 +33,28 @@ import {
   type ExportFormat,
   type GenerateExportResponse
 } from "../../services/revenueExportApi";
-import { EmptyState, ErrorState, LoadingBlock, SkeletonLines } from "../../components/States";
+import { getActiveProperty } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
-import { number, time } from "../../lib/format";
+import { number, plural, time } from "../../lib/format";
+import { FIELD_LABELS } from "../../content/actions";
+import { RITUAL_META, RITUAL_ORDER, type Ritual } from "./export-center-rituals";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 const MS_DAY = 86_400_000;
 
@@ -46,7 +75,7 @@ function previousMonthIso(): string {
 }
 function fmtBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes < 0) return "—";
-  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024) return `${number(bytes)} B`;
   const kb = bytes / 1024;
   if (kb < 1024) return `${number(kb, { maximumFractionDigits: 1 })} KB`;
   return `${number(kb / 1024, { maximumFractionDigits: 1 })} MB`;
@@ -80,23 +109,16 @@ const FORMAT_LABEL: Record<ExportFormat, string> = {
 const PDF_HINT =
   "Descarga una página HTML maquetada en A4: ábrela en el navegador e imprímela o guárdala como PDF (Cmd/Ctrl+P).";
 
-type Ritual = ExportDef["ritual"];
+// Hint lines under the parameters: caption secondary (not a live region).
+const hintStyle: CSSProperties = { fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" };
 
-const RITUAL_ORDER: Ritual[] = ["diario", "semanal", "mensual"];
-
-const RITUAL_META: Record<Ritual, { title: string; when: string }> = {
-  diario: {
-    title: "Ritual diario",
-    when: "Cada mañana a las 7:00: repaso de pickup de 15 minutos para decidir acciones sobre la BAR del día."
-  },
-  semanal: {
-    title: "Ritual semanal",
-    when: "Miércoles: reunión semanal de revenue con la vista del mes en curso y los tres siguientes."
-  },
-  mensual: {
-    title: "Cierre mensual",
-    when: "Día 1 de cada mes: cierre del mes anterior, día a día y por segmento/canal."
-  }
+// «When» of a ritual: lead paragraph under the group heading, same metrics as
+// the form-section description (callout 12 · 1.35 · secondary); it wraps.
+const ritualLeadStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--cocoa-fs-callout)",
+  lineHeight: "var(--cocoa-leading-text)",
+  color: "var(--cocoa-label-secondary)"
 };
 
 type ExportParams = { from: string; to: string; month: string };
@@ -113,8 +135,6 @@ function initialParamsFor(code: string): ExportParams {
   return { ...defaultRangeFor(code), month: code === "meeting_pack" ? currentMonthIso() : previousMonthIso() };
 }
 
-const FIELD_LABEL_STYLE = { fontSize: 11 } as const;
-
 function ExportCard(props: {
   def: ExportDef;
   value: ExportParams;
@@ -127,118 +147,86 @@ function ExportCard(props: {
   const anyBusy = busyKey !== null;
 
   return (
-    <article className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      <div className="bo-card-head" style={{ alignItems: "flex-start" }}>
-        <h3 style={{ fontSize: 14 }}>{def.name}</h3>
-        {def.recommendedSchedule ? (
-          <span className="bo-status info" style={{ textTransform: "none", whiteSpace: "nowrap" }}>
-            {def.recommendedSchedule}
-          </span>
-        ) : null}
-      </div>
-      <p className="bo-muted" style={{ margin: 0, textTransform: "none", fontSize: 12.5, letterSpacing: 0 }}>
-        {def.description}
-      </p>
+    <CocoaSection
+      title={def.name}
+      meta={def.recommendedSchedule ? <CocoaBadge tone="info" uppercase={false}>{def.recommendedSchedule}</CocoaBadge> : undefined}
+      footer={
+        <div className="cocoa-row" data-gap="2">
+          {def.formats.map((format) => {
+            const busy = busyKey === `${def.code}:${format}`;
+            return (
+              <CocoaButton
+                key={format}
+                variant={format === "pdf" ? "bordered" : "tinted"}
+                tone="accent"
+                size="small"
+                onClick={() => onGenerate(def, format)}
+                disabled={anyBusy && !busy}
+                loading={busy}
+                title={format === "pdf" ? PDF_HINT : undefined}
+              >
+                {busy ? "Generando…" : (FORMAT_LABEL[format] ?? format)}
+              </CocoaButton>
+            );
+          })}
+        </div>
+      }
+    >
+      <p>{def.description}</p>
 
       {def.params === "dateRange" ? (
-        <div className="bo-row" style={{ gap: 12, alignItems: "flex-end" }}>
-          <div className="bo-stack" style={{ gap: 4 }}>
-            <label className="bo-muted" style={FIELD_LABEL_STYLE} htmlFor={`exp-${def.code}-from`}>
-              Desde
-            </label>
-            <input
-              id={`exp-${def.code}-from`}
-              type="date"
-              value={value.from}
-              max={value.to || undefined}
-              onChange={(e) => onParamChange(def.code, "from", e.target.value)}
-            />
-          </div>
-          <div className="bo-stack" style={{ gap: 4 }}>
-            <label className="bo-muted" style={FIELD_LABEL_STYLE} htmlFor={`exp-${def.code}-to`}>
-              Hasta
-            </label>
-            <input
-              id={`exp-${def.code}-to`}
-              type="date"
-              value={value.to}
-              min={value.from || undefined}
-              onChange={(e) => onParamChange(def.code, "to", e.target.value)}
-            />
-          </div>
-        </div>
+        <CocoaFormRow columns={2} min={160}>
+          <CocoaField label={FIELD_LABELS.from} htmlFor={`exp-${def.code}-from`}>
+            <CocoaDatePicker id={`exp-${def.code}-from`} size="small" value={value.from} max={value.to || undefined} onChange={(v) => onParamChange(def.code, "from", v)} />
+          </CocoaField>
+          <CocoaField label={FIELD_LABELS.to} htmlFor={`exp-${def.code}-to`}>
+            <CocoaDatePicker id={`exp-${def.code}-to`} size="small" value={value.to} min={value.from || undefined} onChange={(v) => onParamChange(def.code, "to", v)} />
+          </CocoaField>
+        </CocoaFormRow>
       ) : def.params === "month" ? (
-        <div className="bo-stack" style={{ gap: 4, alignSelf: "flex-start" }}>
-          <label className="bo-muted" style={FIELD_LABEL_STYLE} htmlFor={`exp-${def.code}-month`}>
-            Mes
-          </label>
-          <input
-            id={`exp-${def.code}-month`}
-            type="month"
-            value={value.month}
-            onChange={(e) => onParamChange(def.code, "month", e.target.value)}
-          />
-        </div>
+        <CocoaFormRow columns={2} min={160}>
+          <CocoaField label="Mes" htmlFor={`exp-${def.code}-month`}>
+            <CocoaInput id={`exp-${def.code}-month`} type="month" size="small" value={value.month} onChange={(v) => onParamChange(def.code, "month", v)} />
+          </CocoaField>
+        </CocoaFormRow>
       ) : (
-        <p className="bo-muted" style={{ margin: 0, textTransform: "none", fontSize: 12, letterSpacing: 0 }}>
-          Sin parámetros: se genera con los datos vigentes en el momento de la descarga.
-        </p>
+        <p style={hintStyle}>Sin parámetros: se genera con los datos vigentes en el momento de la descarga.</p>
       )}
 
-      <div className="bo-row" style={{ gap: 8, marginTop: "auto" }}>
-        {def.formats.map((format) => {
-          const busy = busyKey === `${def.code}:${format}`;
-          return (
-            <button
-              key={format}
-              type="button"
-              onClick={() => onGenerate(def, format)}
-              disabled={anyBusy}
-              aria-busy={busy || undefined}
-              title={format === "pdf" ? PDF_HINT : undefined}
-            >
-              {busy ? (
-                <>
-                  <span className="bo-spinner sm" aria-hidden /> Generando…
-                </>
-              ) : (
-                FORMAT_LABEL[format] ?? format
-              )}
-            </button>
-          );
-        })}
-      </div>
-
       {def.formats.includes("pdf") ? (
-        <p className="bo-muted" style={{ margin: 0, textTransform: "none", fontSize: 11.5, letterSpacing: 0 }}>
-          «PDF (imprimir)» descarga HTML listo para imprimir o guardar como PDF desde el navegador.
-        </p>
+        <p style={hintStyle}>«PDF (imprimir)» descarga HTML listo para imprimir o guardar como PDF desde el navegador.</p>
       ) : null}
 
       {note ? (
-        <p
-          role={note.kind === "error" ? "alert" : "status"}
-          style={{
-            margin: 0,
-            fontSize: 12.5,
-            padding: "6px 10px",
-            borderRadius: "var(--radius-sm)",
-            background: note.kind === "error" ? "var(--danger-bg)" : "var(--ok-bg)",
-            border: `1px solid ${note.kind === "error" ? "var(--danger-line)" : "var(--ok-line)"}`,
-            color: note.kind === "error" ? "var(--danger-ink)" : "var(--ok-ink)",
-            overflowWrap: "anywhere"
-          }}
-        >
+        <CocoaCallout tone={note.kind === "error" ? "danger" : "success"} role={note.kind === "error" ? "alert" : undefined}>
           {note.text}
-        </p>
+        </CocoaCallout>
       ) : null}
-    </article>
+    </CocoaSection>
+  );
+}
+
+const SESSION_COLUMNS: CocoaTableColumn<SessionEntry>[] = [
+  { key: "exportName", label: "Informe" },
+  { key: "filename", label: "Fichero", render: (entry) => <code>{entry.resp.export.filename}</code> },
+  { key: "format", label: "Formato", render: (entry) => entry.resp.export.format.toUpperCase(), hideOnNarrow: true },
+  { key: "generatedAt", label: "Hora", render: (entry) => fmtTime(entry.resp.export.generatedAt) },
+  { key: "sizeBytes", label: "Tamaño", align: "right", render: (entry) => fmtBytes(entry.resp.export.sizeBytes), hideOnNarrow: true }
+];
+
+// Skeleton espejo: conventions card, one ritual with two export cards, the session table.
+function ExportCenterSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="card" height={88} />
+      <CocoaSkeleton.Grid rows={[[6, 6], [6, 6]]} height={220} />
+      <CocoaSkeleton variant="card" height={160} />
+    </div>
   );
 }
 
 export function RevenueExportCenter() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
+  // Hosted inside the Centro de informes container (Tanda 5): CocoaPage reads the host and lets the container paint eyebrow + H1.
   const { showToast } = useToast();
 
   const [catalog, setCatalog] = useState<ExportCatalog | null>(null);
@@ -367,161 +355,105 @@ export function RevenueExportCenter() {
     return { grouped, other };
   }, [catalog]);
 
-  return (
-    <section className="bo-card" style={{ display: "grid", gap: 20 }}>
-      <div className="bo-card-head">
-        <div>
-          {embedded ? null : (
-            <>
-              <p className="bo-muted">Informes · Centro de informes</p>
-              <h2>Exportaciones de revenue</h2>
-            </>
-          )}
-          <p className="bo-muted" style={{ margin: "4px 0 0", textTransform: "none", fontSize: 12, letterSpacing: 0 }}>
-            Los informes del ritual de revenue se generan bajo demanda con los datos de la propiedad y se descargan
-            al momento: CSV y Excel para trabajar, páginas imprimibles para dirección.
-          </p>
-        </div>
-        <div className="bo-pill-row">
-          {catalog ? <span className="bo-chip">{catalog.exports.length} informes</span> : null}
-          <button type="button" onClick={() => void load()} disabled={loading}>
-            ↻ Actualizar catálogo
-          </button>
-        </div>
-      </div>
+  const renderCards = (defs: ExportDef[]) => (
+    <CocoaGrid align="start">
+      {defs.map((def) => (
+        <CocoaSpan key={def.code} cols={6} min={320}>
+          <ExportCard
+            def={def}
+            value={params[def.code] ?? initialParamsFor(def.code)}
+            busyKey={busyKey}
+            note={notes[def.code]}
+            onParamChange={setParam}
+            onGenerate={handleGenerate}
+          />
+        </CocoaSpan>
+      ))}
+    </CocoaGrid>
+  );
 
-      {loadError ? (
-        <ErrorState title="No se pudo cargar el catálogo de exportaciones" message={loadError} onRetry={() => void load()} />
-      ) : loading && !catalog ? (
+  const state = loadError && !catalog ? "error" : loading && !catalog ? "loading" : !catalog || catalog.exports.length === 0 ? "empty" : "ready";
+
+  return (
+    <CocoaPage
+      eyebrow={`Informes · ${getActiveProperty().propertyName}`}
+      title="Exportaciones de revenue"
+      subtitle="Los informes del ritual de revenue se generan bajo demanda con los datos de la propiedad y se descargan al momento: CSV y Excel para trabajar, páginas imprimibles para dirección."
+      actions={
         <>
-          <LoadingBlock label="Cargando catálogo de exportaciones…" />
-          <SkeletonLines lines={6} />
+          {catalog ? <CocoaBadge tone="neutral">{plural(catalog.exports.length, "informe", "informes")}</CocoaBadge> : null}
+          {loadError && catalog ? <CocoaBadge tone="danger">{loadError}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void load()} disabled={loading} loading={loading && Boolean(catalog)}>
+            Actualizar catálogo
+          </CocoaButton>
         </>
-      ) : !catalog || catalog.exports.length === 0 ? (
-        <EmptyState
-          title="Catálogo vacío"
-          message="El servidor no ha devuelto ningún informe exportable para esta propiedad."
-        />
-      ) : (
+      }
+      state={state}
+      skeleton={<ExportCenterSkeleton />}
+      empty={{ title: "Catálogo vacío", message: "El servidor no ha devuelto ningún informe exportable para esta propiedad." }}
+      error={{ title: "No se pudo cargar el catálogo de exportaciones", message: loadError ?? undefined, onRetry: () => void load() }}
+      commands={[{ id: "exportaciones-revenue-refresh", label: "Actualizar el catálogo de exportaciones", run: () => void load() }]}
+    >
+      {catalog ? (
         <>
-          <div
-            style={{
-              border: "1px solid var(--line)",
-              background: "var(--surface-soft)",
-              borderRadius: "var(--radius-md)",
-              padding: "12px 14px",
-              display: "grid",
-              gap: 8
-            }}
-          >
-            <span className="bo-muted">Convenciones de los ficheros</span>
-            <div className="bo-pill-row">
+          <CocoaSection title="Convenciones de los ficheros" aria-label="Convenciones de los ficheros">
+            <div className="cocoa-cluster">
               {catalog.conventions.map((c) => (
-                <span key={c} className="bo-pill" style={{ textTransform: "none" }}>
+                <CocoaBadge key={c} tone="neutral" uppercase={false}>
                   {c}
-                </span>
+                </CocoaBadge>
               ))}
             </div>
-          </div>
+          </CocoaSection>
 
           {sections.grouped.map((s) => (
-            <div key={s.ritual} className="bo-stack" style={{ gap: 10 }}>
-              <div>
-                <h3 style={{ margin: 0, fontSize: 15 }}>{s.meta.title}</h3>
-                <p className="bo-muted" style={{ margin: "2px 0 0", textTransform: "none", fontSize: 12.5, letterSpacing: 0 }}>
-                  {s.meta.when}
-                </p>
-              </div>
-              <div className="bo-grid two">
-                {s.defs.map((def) => (
-                  <ExportCard
-                    key={def.code}
-                    def={def}
-                    value={params[def.code] ?? initialParamsFor(def.code)}
-                    busyKey={busyKey}
-                    note={notes[def.code]}
-                    onParamChange={setParam}
-                    onGenerate={handleGenerate}
-                  />
-                ))}
-              </div>
-            </div>
+            <CocoaSection key={s.ritual} variant="plain" padding="none" title={s.meta.title} meta={s.meta.meta} headingLevel={2}>
+              <p style={ritualLeadStyle}>{s.meta.when}</p>
+              {renderCards(s.defs)}
+            </CocoaSection>
           ))}
 
           {sections.other.length > 0 ? (
-            <div className="bo-stack" style={{ gap: 10 }}>
-              <h3 style={{ margin: 0, fontSize: 15 }}>Otros informes</h3>
-              <div className="bo-grid two">
-                {sections.other.map((def) => (
-                  <ExportCard
-                    key={def.code}
-                    def={def}
-                    value={params[def.code] ?? initialParamsFor(def.code)}
-                    busyKey={busyKey}
-                    note={notes[def.code]}
-                    onParamChange={setParam}
-                    onGenerate={handleGenerate}
-                  />
-                ))}
-              </div>
-            </div>
+            <CocoaSection variant="plain" padding="none" title="Otros informes" headingLevel={2}>
+              {renderCards(sections.other)}
+            </CocoaSection>
           ) : null}
 
-          <div className="bo-stack" style={{ gap: 10 }}>
-            <div className="bo-card-head">
-              <h3 style={{ fontSize: 15 }}>Generados en esta sesión</h3>
-              <span className="bo-chip">
-                {session.length === 1 ? "1 fichero" : `${session.length} ficheros`}
-              </span>
-            </div>
+          <CocoaSection
+            title="Generados en esta sesión"
+            meta={plural(session.length, "fichero", "ficheros")}
+            padding={session.length > 0 ? "none" : "md"}
+            style={{ overflow: "clip" }}
+            footer={
+              session.length > 0
+                ? "Esta lista vive solo en la memoria de la pestaña: al recargar la página se vacía. «Volver a descargar» reutiliza el contenido ya generado, sin llamar de nuevo al servidor."
+                : undefined
+            }
+          >
             {session.length === 0 ? (
-              <EmptyState
-                title="Aún no has generado ningún informe"
+              <CocoaState
+                kind="empty"
+                inline
+                title="Aún no has generado ningún informe."
                 message="Los ficheros que descargues en esta sesión aparecerán aquí para poder volver a descargarlos sin regenerarlos."
               />
             ) : (
-              <>
-                <div className="rev-report-wrap">
-                  <table className="rev-report-table">
-                    <thead>
-                      <tr>
-                        <th>Informe</th>
-                        <th>Fichero</th>
-                        <th>Formato</th>
-                        <th>Hora</th>
-                        <th>Tamaño</th>
-                        <th aria-label="Acciones" />
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {session.map((entry) => (
-                        <tr key={entry.key}>
-                          <td>{entry.exportName}</td>
-                          <td>
-                            <code style={{ fontSize: 12 }}>{entry.resp.export.filename}</code>
-                          </td>
-                          <td>{entry.resp.export.format.toUpperCase()}</td>
-                          <td>{fmtTime(entry.resp.export.generatedAt)}</td>
-                          <td>{fmtBytes(entry.resp.export.sizeBytes)}</td>
-                          <td>
-                            <button type="button" onClick={() => downloadGeneratedExport(entry.resp)}>
-                              Volver a descargar
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <p className="bo-muted" style={{ margin: 0, textTransform: "none", fontSize: 12, letterSpacing: 0 }}>
-                  Esta lista vive solo en la memoria de la pestaña: al recargar la página se vacía. «Volver a descargar»
-                  reutiliza el contenido ya generado, sin llamar de nuevo al servidor.
-                </p>
-              </>
+              <CocoaTable
+                columns={SESSION_COLUMNS}
+                rows={session}
+                rowKey="key"
+                caption="Ficheros generados en esta sesión"
+                aria-label="Ficheros generados en esta sesión"
+                rowActions={(entry) => (
+                  <CocoaButton variant="plain" tone="accent" size="small" onClick={() => downloadGeneratedExport(entry.resp)}>
+                    Volver a descargar
+                  </CocoaButton>
+                )}
+              />
             )}
-          </div>
+          </CocoaSection>
         </>
-      )}
-    </section>
+      ) : null}
+    </CocoaPage>
   );
 }

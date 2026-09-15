@@ -1,10 +1,40 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+// Room profitability — Informes › Rentabilidad por habitación
+// (/informes/rentabilidad-habitacion).
+//
+// Cocoa 22 (ola 9 · lote 9-A): standalone dashboard (DashboardStandalone):
+// KPI strip → 8/4 row (by room type table + revenue bars) → 6/6 row (by
+// channel table + top rooms table). Read only; polls every five minutes.
+
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { ACTIONS, UI_STATES } from "../../content/actions";
-import { money as formatMoney, percent } from "../../lib/format";
+import { toArray } from "../../utils/toArray";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { money, number, percent, plural } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaBarsDatum,
+  type CocoaKpiStatus,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+
+type RoomTypeRow = { roomTypeName: string; roomCount: number; occupancyPct: number; adrEur: number; revparEur: number; revenueEur: number };
+type ChannelRow = { channelName: string; reservations: number; revenueEur: number; netRevenueEur: number; marginPct: number };
+type TopRoomRow = { id: string; number: string; roomTypeName: string; revenue30dEur: number; nightsBooked: number };
 
 type RoomProfitabilityData = {
   kpis: {
@@ -14,37 +44,10 @@ type RoomProfitabilityData = {
     revparEur: number;
     goppar30dEur: number;
   };
-  byRoomType: Array<{
-    roomTypeName: string;
-    roomCount: number;
-    occupancyPct: number;
-    adrEur: number;
-    revparEur: number;
-    revenueEur: number;
-  }>;
-  byChannel: Array<{
-    channelName: string;
-    reservations: number;
-    revenueEur: number;
-    netRevenueEur: number;
-    marginPct: number;
-  }>;
-  topRooms: Array<{
-    id: string;
-    number: string;
-    roomTypeName: string;
-    revenue30dEur: number;
-    nightsBooked: number;
-  }>;
+  byRoomType: RoomTypeRow[];
+  byChannel: ChannelRow[];
+  topRooms: TopRoomRow[];
 };
-
-function money(value: number | null | undefined): string {
-  return formatMoney(value);
-}
-
-function pct(value: number | null | undefined): string {
-  return percent(value);
-}
 
 type Status = "ok" | "warn" | "error";
 
@@ -74,191 +77,142 @@ function marginStatus(value: number): Status {
   return "error";
 }
 
-function marginPill(value: number) {
-  const status = marginStatus(value);
-  const cls = status === "ok" ? "cm-pill-ok" : status === "warn" ? "cm-pill-warn" : "cm-pill-error";
-  return <span className={`cm-pill ${cls}`}>{pct(value)}</span>;
+const STATUS_TONE: Record<Status, CocoaTone> = { ok: "success", warn: "warning", error: "danger" };
+
+function kpiStatus(status: Status): CocoaKpiStatus {
+  return status === "ok" ? "ok" : status === "warn" ? "warning" : "critical";
+}
+
+const ROOM_TYPE_COLUMNS: CocoaTableColumn<RoomTypeRow>[] = [
+  { key: "roomTypeName", label: "Tipo", render: (row) => <strong>{row.roomTypeName}</strong> },
+  { key: "roomCount", label: "Habitaciones", align: "right", render: (row) => number(row.roomCount), hideOnNarrow: true },
+  { key: "occupancyPct", label: "Ocupación", align: "right", render: (row) => percent(row.occupancyPct) },
+  { key: "adrEur", label: "ADR", align: "right", render: (row) => money(row.adrEur), hideOnNarrow: true },
+  { key: "revparEur", label: "RevPAR", align: "right", render: (row) => money(row.revparEur) },
+  { key: "revenueEur", label: "Ingresos", align: "right", render: (row) => money(row.revenueEur) }
+];
+
+const CHANNEL_COLUMNS: CocoaTableColumn<ChannelRow>[] = [
+  { key: "channelName", label: "Canal", render: (row) => <strong>{row.channelName}</strong> },
+  { key: "reservations", label: "Reservas", align: "right", render: (row) => number(row.reservations), hideOnNarrow: true },
+  { key: "revenueEur", label: "Ingresos", align: "right", render: (row) => money(row.revenueEur) },
+  { key: "netRevenueEur", label: "Ingreso neto", align: "right", render: (row) => money(row.netRevenueEur) },
+  { key: "marginPct", label: "Margen", align: "right", render: (row) => <CocoaBadge tone={STATUS_TONE[marginStatus(row.marginPct)]}>{percent(row.marginPct)}</CocoaBadge> }
+];
+
+const TOP_ROOM_COLUMNS: CocoaTableColumn<TopRoomRow>[] = [
+  { key: "number", label: "Habitación", render: (row) => <strong>{row.number}</strong> },
+  { key: "roomTypeName", label: "Tipo" },
+  { key: "nightsBooked", label: "Noches", align: "right", render: (row) => number(row.nightsBooked) },
+  { key: "revenue30dEur", label: "Ingresos · 30 días", align: "right", render: (row) => money(row.revenue30dEur) }
+];
+
+// Skeleton espejo: strip of 5 tiles, then 8/4 · 6/6.
+function RoomProfitabilitySkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} />
+      <CocoaSkeleton.Grid rows={[[8, 4], [6, 6]]} height={220} />
+    </div>
+  );
 }
 
 export function RoomProfitabilityDashboard() {
-  const { data, loading, error, refresh } = useApiData<RoomProfitabilityData>(
-    "/dashboards/room-profitability",
-    { pollIntervalMs: 300000, query: { propertyId: PROPERTY_ID } }
-  );
+  const { data, loading, error, refresh } = useApiData<RoomProfitabilityData>("/dashboards/room-profitability", {
+    pollIntervalMs: 300000,
+    query: { propertyId: PROPERTY_ID }
+  });
 
   const kpis = data?.kpis;
-  const byRoomType = data?.byRoomType ?? [];
-  const byChannel = data?.byChannel ?? [];
-  const topRooms = data?.topRooms ?? [];
+  const byRoomType = toArray<RoomTypeRow>(data?.byRoomType);
+  const byChannel = toArray<ChannelRow>(data?.byChannel);
+  const topRooms = toArray<TopRoomRow>(data?.topRooms);
 
   const occStatus = occupancyStatus(kpis?.occupancyPct);
   const revparKpiStatus = revparStatus(kpis?.revparEur, kpis?.adrEur);
-  const gopparStatus: Status = !kpis
-    ? "warn"
-    : kpis.goppar30dEur > 0
-      ? "ok"
-      : kpis.goppar30dEur === 0
-        ? "warn"
-        : "error";
+  const gopparStatus: Status = !kpis ? "warn" : kpis.goppar30dEur > 0 ? "ok" : kpis.goppar30dEur === 0 ? "warn" : "error";
+
+  const revenueByType: CocoaBarsDatum[] = byRoomType.map((row) => ({
+    label: row.roomTypeName,
+    value: row.revenueEur,
+    hint: `RevPAR ${money(row.revparEur)} · ocupación ${percent(row.occupancyPct)}`
+  }));
+  const header = treeHeaderFor("RoomProfitabilityDashboard", { eyebrow: "Informes", title: "Rentabilidad por habitación" });
 
   return (
-    <>
-      <CocoaPageHeader
-        eyebrow="Informes"
-        title="Rentabilidad por habitación"
-        subtitle="RevPAR, ADR, ocupación y GOPPAR por tipo de habitación y por canal en los últimos 30 días. Solo lectura; se actualiza cada 5 minutos."
-        actions={<button type="button" className="ghost" onClick={refresh}>↻ {ACTIONS.refresh}</button>}
-      />
+    <CocoaPage
+      eyebrow={`${header.eyebrow} · ${getActiveProperty().propertyName}`}
+      title={header.title}
+      subtitle="RevPAR, ADR, ocupación y GOPPAR por tipo de habitación y por canal en los últimos 30 días. Solo lectura; se actualiza cada 5 minutos."
+      actions={
+        <>
+          {loading && data ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          {error && data ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={loading && !data ? "loading" : error && !data ? "error" : !kpis ? "empty" : "ready"}
+      skeleton={<RoomProfitabilitySkeleton />}
+      empty={{ title: "Sin datos de rentabilidad", message: "Las cifras aparecen aquí cuando la propiedad registre noches vendidas en los últimos 30 días." }}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "rentabilidad-habitacion-refresh", label: "Actualizar la rentabilidad por habitación", run: refresh }]}
+    >
+      {kpis ? (
+        <>
+          <CocoaKpiStrip stagger aria-label="Indicadores de rentabilidad">
+            {/* deltaLabel is nowrap in a tile that auto-fits down to 180 px: ≤ 22 characters (qa#9, see __tests__/room-profitability-kpi-foot). */}
+            <CocoaKpi label="Ingresos totales" value={money(kpis.totalRevenueEur)} deltaLabel="últimos 30 días" status="ok" />
+            <CocoaKpi label="Ocupación" value={percent(kpis.occupancyPct)} deltaLabel="vendidas / disponibles" status={kpiStatus(occStatus)} />
+            <CocoaKpi label="ADR" value={money(kpis.adrEur)} deltaLabel="por noche vendida" status="ok" />
+            <CocoaKpi label="RevPAR" value={money(kpis.revparEur)} deltaLabel="por noche disponible" status={kpiStatus(revparKpiStatus)} />
+            <CocoaKpi label="GOPPAR · 30 días" value={money(kpis.goppar30dEur)} deltaLabel="GOP / hab. disponible" status={kpiStatus(gopparStatus)} />
+          </CocoaKpiStrip>
 
-      {error ? (
-        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
-          {UI_STATES.error.title}. {UI_STATES.error.message}
-        </section>
+          <CocoaGrid aria-label="Por tipo de habitación" align="start">
+            <CocoaSpan cols={8} min={480}>
+              <CocoaSection title="Por tipo de habitación" meta={plural(byRoomType.length, "tipo", "tipos")} padding={byRoomType.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+                {byRoomType.length === 0 ? (
+                  <CocoaState kind="empty" inline title="No hay datos por tipo de habitación en el periodo." />
+                ) : (
+                  <CocoaTable columns={ROOM_TYPE_COLUMNS} rows={byRoomType} caption="Rentabilidad por tipo de habitación" aria-label="Rentabilidad por tipo de habitación" />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={4} min={240}>
+              <CocoaSection title="Ingresos por tipo" meta="últimos 30 días">
+                {revenueByType.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Sin ingresos que representar." />
+                ) : (
+                  <CocoaChart.Bars data={revenueByType} height={160} valueFormat={(value) => money(value)} aria-label="Ingresos de los últimos 30 días por tipo de habitación" />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
+
+          <CocoaGrid aria-label="Por canal y habitaciones más rentables" align="start">
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Por canal" meta={plural(byChannel.length, "canal", "canales")} padding={byChannel.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+                {byChannel.length === 0 ? (
+                  <CocoaState kind="empty" inline title="No hay actividad de canales en el periodo." />
+                ) : (
+                  <CocoaTable columns={CHANNEL_COLUMNS} rows={byChannel} caption="Rentabilidad por canal" aria-label="Rentabilidad por canal" />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Habitaciones más rentables" meta={`30 días · ${plural(topRooms.length, "habitación", "habitaciones")}`} padding={topRooms.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+                {topRooms.length === 0 ? (
+                  <CocoaState kind="empty" inline title="No hay reservas asignadas a habitaciones en el periodo." />
+                ) : (
+                  <CocoaTable columns={TOP_ROOM_COLUMNS} rows={topRooms} rowKey="id" caption="Habitaciones más rentables en 30 días" aria-label="Habitaciones más rentables en 30 días" />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
+        </>
       ) : null}
-
-      <section className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Ingresos totales</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.totalRevenueEur)}</div>
-          <div className="rev-kpi-delta">Suma de los últimos 30 días</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${occStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Ocupación</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : pct(kpis?.occupancyPct)}</div>
-          <div className="rev-kpi-delta">Noches vendidas sobre noches disponibles</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">ADR</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.adrEur)}</div>
-          <div className="rev-kpi-delta">Ingreso de habitaciones por noche vendida</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${revparKpiStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">RevPAR</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.revparEur)}</div>
-          <div className="rev-kpi-delta">Ingreso de habitaciones por noche disponible</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${gopparStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">GOPPAR · 30 días</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.goppar30dEur)}</div>
-          <div className="rev-kpi-delta">Beneficio operativo bruto por habitación disponible</div>
-        </article>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Por tipo</p>
-              <h3>Por tipo de habitación</h3>
-            </div>
-            <span className="bo-chip">{byRoomType.length} tipos</span>
-          </div>
-          {byRoomType.length === 0 ? (
-            <p className="bo-muted">No hay datos por tipo de habitación en el periodo.</p>
-          ) : (
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead>
-                  <tr>
-                    <th>Tipo</th>
-                    <th style={{ textAlign: "right" }}>Habitaciones</th>
-                    <th style={{ textAlign: "right" }}>Ocupación</th>
-                    <th style={{ textAlign: "right" }}>ADR</th>
-                    <th style={{ textAlign: "right" }}>RevPAR</th>
-                    <th style={{ textAlign: "right" }}>Ingresos</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {byRoomType.map((row, idx) => (
-                    <tr key={`${row.roomTypeName}-${idx}`}>
-                      <td><strong>{row.roomTypeName}</strong></td>
-                      <td style={{ textAlign: "right" }}>{row.roomCount}</td>
-                      <td style={{ textAlign: "right" }}>{pct(row.occupancyPct)}</td>
-                      <td style={{ textAlign: "right" }}>{money(row.adrEur)}</td>
-                      <td style={{ textAlign: "right" }}>{money(row.revparEur)}</td>
-                      <td style={{ textAlign: "right" }}>{money(row.revenueEur)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Canales</p>
-              <h3>Por canal</h3>
-            </div>
-            <span className="bo-chip">{byChannel.length} canales</span>
-          </div>
-          {byChannel.length === 0 ? (
-            <p className="bo-muted">No hay actividad de canales en el periodo.</p>
-          ) : (
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead>
-                  <tr>
-                    <th>Canal</th>
-                    <th style={{ textAlign: "right" }}>Reservas</th>
-                    <th style={{ textAlign: "right" }}>Ingresos</th>
-                    <th style={{ textAlign: "right" }}>Ingreso neto</th>
-                    <th style={{ textAlign: "right" }}>Margen</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {byChannel.map((row, idx) => (
-                    <tr key={`${row.channelName}-${idx}`}>
-                      <td><strong>{row.channelName}</strong></td>
-                      <td style={{ textAlign: "right" }}>{row.reservations}</td>
-                      <td style={{ textAlign: "right" }}>{money(row.revenueEur)}</td>
-                      <td style={{ textAlign: "right" }}>{money(row.netRevenueEur)}</td>
-                      <td style={{ textAlign: "right" }}>{marginPill(row.marginPct)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Habitaciones</p>
-            <h3>Habitaciones más rentables (30 días)</h3>
-          </div>
-          <span className="bo-chip">{topRooms.length} habitaciones</span>
-        </div>
-        {topRooms.length === 0 ? (
-          <p className="bo-muted">No hay reservas asignadas a habitaciones en el periodo.</p>
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Habitación</th>
-                  <th>Tipo</th>
-                  <th style={{ textAlign: "right" }}>Noches</th>
-                  <th style={{ textAlign: "right" }}>Ingresos · 30 días</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topRooms.map((room) => (
-                  <tr key={room.id}>
-                    <td><strong>{room.number}</strong></td>
-                    <td>{room.roomTypeName}</td>
-                    <td style={{ textAlign: "right" }}>{room.nightsBooked}</td>
-                    <td style={{ textAlign: "right" }}>{money(room.revenue30dEur)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-    </>
+    </CocoaPage>
   );
 }

@@ -1,16 +1,43 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+// Energy dashboard — Operaciones › Energía y agua (/operaciones/energia).
+//
+// Cocoa 22 (docs/design/COCOA-22.md §4 · ola 4 · lote 4-C): CocoaPage →
+// CocoaKpiStrip → CocoaGrid 6/6 (consumption by meter as a CocoaTable · top
+// consumers as a section list) → daily consumption as CocoaChart.Line. Read
+// only; GET /dashboards/energy is consolidated every 5 minutes.
+//
+// Header: CocoaPage paints the page header with the eyebrow and title of
+// treeHeaderFor (the menu labels of the tree, never retyped here).
+
+import type { CSSProperties } from "react";
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
-import { number, plural } from "../../lib/format";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { ErrorState } from "../../components/States";
-import { ACTIONS, errorStateFor } from "../../content/actions";
+import { date, number, percent, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS, errorStateFor } from "../../content/actions";
 import { treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaLineSeries,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
-// Menu labels of the tree (Operaciones › Energía y agua), never retyped here.
 const HEADER = treeHeaderFor("EnergyDashboard", { eyebrow: "Operaciones", title: "Energía y agua" });
 const LOAD_ERROR = errorStateFor("el consumo de energía y agua");
 
+type MeterRow = { meterName: string; meterType: string; kwh30d: number; trendPct: number };
+type ConsumerRow = { meterName: string; locationName?: string; kwh: number };
 type EnergyDashboardData = {
   kpis: {
     totalKwh30d: number;
@@ -19,14 +46,9 @@ type EnergyDashboardData = {
     activeMeters: number;
     abnormalReadingsCount: number;
   };
-  consumptionByMeter: Array<{
-    meterName: string;
-    meterType: string;
-    kwh30d: number;
-    trendPct: number;
-  }>;
+  consumptionByMeter: MeterRow[];
   dailyConsumption: Array<{ date: string; kwh: number }>;
-  topConsumers: Array<{ meterName: string; locationName?: string; kwh: number }>;
+  topConsumers: ConsumerRow[];
 };
 
 const EMPTY: EnergyDashboardData = {
@@ -46,26 +68,57 @@ function formatKwh(n: number): string {
   return `${number(n)} kWh`;
 }
 
-function trendPill(pct: number) {
-  if (pct === 0) return <span className="cm-pill cm-pill-ok">estable</span>;
-  if (pct > 0) {
-    const cls = pct >= 15 ? "cm-pill-error" : pct >= 5 ? "cm-pill-warn" : "cm-pill-ok";
-    return <span className={`cm-pill ${cls}`}>+{pct}%</span>;
-  }
-  const cls = pct <= -15 ? "cm-pill-ok" : "cm-pill-ok";
-  return <span className={`cm-pill ${cls}`}>{pct}%</span>;
+/** Signed percentage of a trend («+12 %», «−3 %»); zero paints «estable». */
+function trendLabel(pct: number): string {
+  return pct === 0 ? "estable" : percent(pct, { signDisplay: "exceptZero" });
 }
 
-function shortDay(iso: string): string {
-  try {
-    const [, m, d] = iso.split("-");
-    return `${d}/${m}`;
-  } catch {
-    return iso;
-  }
+/** Tone of a consumption trend: a rise of 15 % or more is danger, of 5 % or more warning. */
+function trendTone(pct: number): CocoaTone {
+  if (pct >= 15) return "danger";
+  if (pct >= 5) return "warning";
+  return "success";
 }
+
+function tendencyStatus(pct: number): "ok" | "warning" | "critical" {
+  if (pct >= 15) return "critical";
+  if (pct >= 5) return "warning";
+  return "ok";
+}
+
+function abnormalStatus(count: number): "ok" | "warning" | "critical" {
+  if (count === 0) return "ok";
+  if (count >= 5) return "critical";
+  return "warning";
+}
+
+// Secondary line under a list row: caption secondary.
+const subStyle: CSSProperties = {
+  display: "block",
+  fontSize: "var(--cocoa-fs-caption)",
+  fontWeight: "var(--cocoa-fw-regular)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label-secondary)"
+};
+const growStyle: CSSProperties = { flex: "1 1 auto", minWidth: 0 };
+
+const METER_COLUMNS: CocoaTableColumn<MeterRow>[] = [
+  { key: "meterName", label: "Contador", render: (r) => <strong>{r.meterName}</strong> },
+  { key: "meterType", label: "Tipo", hideOnNarrow: true, render: (r) => r.meterType },
+  { key: "kwh30d", label: "kWh (30 d)", align: "right", render: (r) => number(r.kwh30d) },
+  {
+    key: "trendPct",
+    label: "Tendencia",
+    align: "right",
+    render: (r) => (
+      <CocoaBadge tone={trendTone(r.trendPct)} variant="tinted" size="small">
+        {trendLabel(r.trendPct)}
+      </CocoaBadge>
+    )
+  }
+];
 
 export function EnergyDashboard() {
+  const propertyName = getActiveProperty().propertyName;
   const state = useApiData<EnergyDashboardData>(
     `/dashboards/energy?propertyId=${PROPERTY_ID}`,
     { pollIntervalMs: 300000 }
@@ -73,193 +126,132 @@ export function EnergyDashboard() {
 
   const data = state.data ?? EMPTY;
   const { kpis, consumptionByMeter, dailyConsumption, topConsumers } = data;
+  const pageState = state.loading && !state.data ? "loading" : state.error && !state.data ? "error" : "ready";
 
-  const tendencyStatus =
-    kpis.tendencyPct90d >= 15
-      ? "rev-kpi-error"
-      : kpis.tendencyPct90d >= 5
-        ? "rev-kpi-warn"
-        : "rev-kpi-ok";
-  const abnormalStatus =
-    kpis.abnormalReadingsCount === 0
-      ? "rev-kpi-ok"
-      : kpis.abnormalReadingsCount >= 5
-        ? "rev-kpi-error"
-        : "rev-kpi-warn";
-  const activeMetersStatus = kpis.activeMeters > 0 ? "rev-kpi-ok" : "rev-kpi-warn";
-
-  const maxDailyKwh = dailyConsumption.reduce((m, d) => (d.kwh > m ? d.kwh : m), 0);
+  const dailySeries: CocoaLineSeries[] = [
+    {
+      id: "kwh",
+      label: "kWh",
+      tone: "accent",
+      width: 2,
+      points: dailyConsumption.map((d) => ({ x: date(d.date, "dayMonth"), y: d.kwh }))
+    }
+  ];
 
   return (
-    <>
-      <CocoaPageHeader
-        eyebrow={HEADER.eyebrow}
-        title={HEADER.title}
-        subtitle="Consumo de los últimos 30 días: kWh totales, kWh por habitación ocupada, tendencia frente al periodo anterior, contadores activos y lecturas anómalas, por contador y por día. Solo lectura; se actualiza cada 5 minutos."
-        actions={
-          <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ {ACTIONS.refresh}
-          </button>
-        }
-      />
+    <CocoaPage
+      eyebrow={`${HEADER.eyebrow} · ${propertyName}`}
+      title={HEADER.title}
+      subtitle="Consumo de los últimos 30 días: kWh totales, kWh por habitación ocupada, tendencia frente al periodo anterior, contadores activos y lecturas anómalas, por contador y por día. Solo lectura; se actualiza cada 5 minutos."
+      actions={
+        <>
+          {state.error && state.data ? (
+            <CocoaBadge tone="danger" title={state.error}>
+              {STATUS_LABELS.loadError}
+            </CocoaBadge>
+          ) : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => state.refresh()} title={ACTIONS.refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={pageState}
+      skeleton={<EnergySkeleton />}
+      error={{ title: LOAD_ERROR.title, message: LOAD_ERROR.message, onRetry: () => state.refresh() }}
+      commands={[{ id: "energy-refresh", label: "Actualizar energía y agua", run: () => state.refresh() }]}
+    >
+      <CocoaKpiStrip stagger aria-label="Indicadores de energía y agua">
+        <CocoaKpi label="Total kWh (30 d)" value={number(kpis.totalKwh30d)} deltaLabel="consumo en la ventana" polarity="neutral" status="ok" />
+        <CocoaKpi
+          label="kWh por habitación ocupada"
+          value={number(kpis.kwhPerOccupiedRoom)}
+          deltaLabel="kWh totales entre las noches ocupadas"
+          polarity="neutral"
+          status="ok"
+        />
+        <CocoaKpi
+          label="Tendencia (90 días)"
+          value={percent(kpis.tendencyPct90d, { signDisplay: "exceptZero" })}
+          deltaLabel="últimos 30 días frente a los 30 anteriores"
+          polarity="neutral"
+          status={tendencyStatus(kpis.tendencyPct90d)}
+        />
+        <CocoaKpi
+          label="Contadores activos"
+          value={number(kpis.activeMeters)}
+          deltaLabel="con lecturas recientes"
+          polarity="neutral"
+          status={kpis.activeMeters > 0 ? "ok" : "warning"}
+        />
+        <CocoaKpi
+          label="Lecturas anómalas"
+          value={number(kpis.abnormalReadingsCount)}
+          deltaLabel="retrocesos o valores atípicos en la ventana"
+          polarity="neutral"
+          status={abnormalStatus(kpis.abnormalReadingsCount)}
+        />
+      </CocoaKpiStrip>
 
-      {state.error ? <ErrorState title={LOAD_ERROR.title} message={LOAD_ERROR.message} onRetry={() => state.refresh()} /> : null}
-
-      <section className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Total kWh (30d)</span>
-          </div>
-          <div className="rev-kpi-value">{number(kpis.totalKwh30d)}</div>
-          <div className="rev-kpi-delta">consumo en la ventana</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">kWh por habitación ocupada</span>
-          </div>
-          <div className="rev-kpi-value">{number(kpis.kwhPerOccupiedRoom)}</div>
-          <div className="rev-kpi-delta">kWh totales entre las noches ocupadas</div>
-        </article>
-        <article className={`rev-kpi ${tendencyStatus}`}>
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Tendencia (90 días)</span>
-          </div>
-          <div className="rev-kpi-value">
-            {kpis.tendencyPct90d > 0 ? "+" : ""}
-            {kpis.tendencyPct90d}%
-          </div>
-          <div className="rev-kpi-delta">últimos 30 días frente a los 30 anteriores</div>
-        </article>
-        <article className={`rev-kpi ${activeMetersStatus}`}>
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Contadores activos</span>
-          </div>
-          <div className="rev-kpi-value">{kpis.activeMeters}</div>
-          <div className="rev-kpi-delta">con lecturas recientes</div>
-        </article>
-        <article className={`rev-kpi ${abnormalStatus}`}>
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Lecturas anómalas</span>
-          </div>
-          <div className="rev-kpi-value">{kpis.abnormalReadingsCount}</div>
-          <div className="rev-kpi-delta">retrocesos o valores atípicos en la ventana</div>
-        </article>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Consumo por contador</h3>
-            <span className="bo-chip">{plural(consumptionByMeter.length, "contador", "contadores", { withCount: true })}</span>
-          </div>
-          {consumptionByMeter.length === 0 ? (
-            <p className="bo-muted">Sin contadores con lecturas en el periodo seleccionado.</p>
-          ) : (
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Contador</th>
-                  <th>Tipo</th>
-                  <th style={{ textAlign: "right" }}>kWh (30d)</th>
-                  <th style={{ textAlign: "right" }}>Tendencia</th>
-                </tr>
-              </thead>
-              <tbody>
-                {consumptionByMeter.map((row) => (
-                  <tr key={row.meterName}>
-                    <td><strong>{row.meterName}</strong></td>
-                    <td>{row.meterType}</td>
-                    <td style={{ textAlign: "right" }}>{number(row.kwh30d)}</td>
-                    <td style={{ textAlign: "right" }}>{trendPill(row.trendPct)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Mayores consumidores</h3>
-            <span className="bo-chip">{plural(topConsumers.length, "contador", "contadores", { withCount: true })}</span>
-          </div>
-          {topConsumers.length === 0 ? (
-            <p className="bo-muted">Sin consumidores con consumo registrado.</p>
-          ) : (
-            <ul className="bo-list">
-              {topConsumers.map((row) => (
-                <li
-                  key={row.meterName}
-                  style={{ display: "flex", flexDirection: "column", gap: 4, paddingBottom: 8 }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    <strong>{row.meterName}</strong>
-                    <span className="cm-pill cm-pill-ok">{formatKwh(row.kwh)}</span>
-                  </div>
-                  {row.locationName ? (
-                    <small className="bo-muted">{row.locationName}</small>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Consumo diario</h3>
-          <span className="bo-chip">{plural(dailyConsumption.length, "día", "días", { withCount: true })}</span>
-        </div>
-        {dailyConsumption.length === 0 ? (
-          <p className="bo-muted">Sin datos de consumo diario en el periodo.</p>
-        ) : (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "flex-end",
-              gap: 4,
-              height: 140,
-              padding: "8px 0",
-              borderBottom: "1px solid var(--border)",
-              overflowX: "auto"
-            }}
-            aria-label="Consumo diario en kWh de los últimos 30 días"
+      <CocoaGrid align="start">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Consumo por contador"
+            meta={plural(consumptionByMeter.length, "contador", "contadores")}
+            padding={consumptionByMeter.length === 0 ? "md" : "none"}
+            style={{ overflow: "clip" }}
           >
-            {dailyConsumption.map((d) => {
-              const ratio = maxDailyKwh > 0 ? d.kwh / maxDailyKwh : 0;
-              const heightPct = Math.max(2, Math.round(ratio * 100));
-              return (
-                <div
-                  key={d.date}
-                  title={`${d.date}: ${number(d.kwh)} kWh`}
-                  style={{
-                    flex: "1 0 14px",
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    gap: 4,
-                    minWidth: 14
-                  }}
-                >
-                  <div
-                    style={{
-                      width: "100%",
-                      height: `${heightPct}%`,
-                      background: "var(--accent)",
-                      borderRadius: 2,
-                      opacity: d.kwh === 0 ? 0.2 : 1
-                    }}
-                  />
-                  <small className="bo-muted" style={{ fontSize: 10 }}>
-                    {shortDay(d.date)}
-                  </small>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-    </>
+            {consumptionByMeter.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin contadores con lecturas en el periodo seleccionado." />
+            ) : (
+              <CocoaTable columns={METER_COLUMNS} rows={consumptionByMeter} rowKey="meterName" caption="Consumo por contador" aria-label="Consumo por contador" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Mayores consumidores" meta={plural(topConsumers.length, "contador", "contadores")}>
+            {topConsumers.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin consumidores con consumo registrado." />
+            ) : (
+              <ul className="c22-section__list" aria-label="Mayores consumidores">
+                {topConsumers.map((row) => (
+                  <li key={row.meterName}>
+                    <div className="cocoa-stack" data-gap="1" style={growStyle}>
+                      <strong>{row.meterName}</strong>
+                      {row.locationName ? <span style={subStyle}>{row.locationName}</span> : null}
+                    </div>
+                    <CocoaBadge tone="success" variant="tinted" size="small">
+                      {formatKwh(row.kwh)}
+                    </CocoaBadge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+
+        <CocoaSpan cols={12} min={480}>
+          <CocoaSection title="Consumo diario" meta={plural(dailyConsumption.length, "día", "días")}>
+            {dailyConsumption.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin datos de consumo diario en el periodo." />
+            ) : (
+              <CocoaChart.Line series={dailySeries} yLabel="kWh" legend={false} valueFormat={formatKwh} aria-label="Consumo diario en kWh de los últimos 30 días" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+    </CocoaPage>
   );
 }
+
+// Mirror skeleton: the KPI strip, the 6/6 row and the full-width chart.
+function EnergySkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} />
+      <CocoaSkeleton.Grid rows={[[6, 6], [12]]} height={220} />
+    </div>
+  );
+}
+
+export default EnergyDashboard;

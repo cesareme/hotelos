@@ -9,8 +9,13 @@
 // a successful change the API revokes EVERY session of the user, so the screen
 // clears the local session and sends them back to the login — there is no way
 // to "continue" with the old token.
+//
+// Cocoa 22 (COCOA-22.md §4 «otro», PlantillaBase over the AuthShell frame):
+// CocoaPageHeader inside the elevated card, the session in a
+// `c22-section__list`, CocoaField + CocoaInput with the validation messages as
+// field errors, CocoaCallout alerts, CocoaButton actions. Logic untouched.
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import { clearSession, getUser } from "../../services/auth-storage";
 import { ApiError, clearPasswordChangeRequired } from "../../services/api-client";
 import {
@@ -20,7 +25,9 @@ import {
   passwordMeetsPolicy,
   type PasswordPolicy
 } from "../../services/authApi";
-import { AuthAlert, AuthShell, PasswordChecklist, PasswordField, goToLogin } from "../../auth/AuthShell";
+import { AUTH_EYEBROW, AuthAlert, AuthShell, HiddenUsername, PasswordChecklist, PasswordField, goToLogin } from "../../auth/AuthShell";
+import { CocoaButton, CocoaPageHeader } from "../../components/cocoa";
+import { ACTIONS } from "../../content/actions";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 
 export type ChangePasswordScreenProps = {
@@ -29,6 +36,10 @@ export type ChangePasswordScreenProps = {
 };
 
 const REDIRECT_DELAY_MS = 2500;
+
+// A long email must not push the row wider than the card (the list paints
+// values nowrap): clip it and keep the full value in the tooltip.
+const valueStyle: CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" };
 
 export function ChangePasswordScreen({ required = true }: ChangePasswordScreenProps) {
   const user = getUser();
@@ -98,51 +109,86 @@ export function ChangePasswordScreen({ required = true }: ChangePasswordScreenPr
   if (done) {
     return (
       <AuthShell
-        title="Contraseña actualizada"
+        label="Contraseña actualizada"
         footer={
-          <button type="button" className="primary" onClick={goToLogin}>
-            Iniciar sesión
-          </button>
+          <CocoaButton variant="filled" tone="accent" onClick={goToLogin}>
+            {ACTIONS.signIn}
+          </CocoaButton>
         }
       >
-        <AuthAlert tone="success">
-          Por seguridad hemos cerrado todas tus sesiones. Inicia sesión de nuevo con la contraseña nueva.
-        </AuthAlert>
+        <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Contraseña actualizada" />
+        <AuthAlert tone="success">Por seguridad hemos cerrado todas tus sesiones. Inicia sesión de nuevo con la contraseña nueva.</AuthAlert>
       </AuthShell>
     );
   }
 
+  const title = required ? "Cambia tu contraseña temporal" : "Cambiar contraseña";
+  const who = user?.email ?? user?.fullName ?? null;
+
   return (
     <AuthShell
-      title={required ? "Cambia tu contraseña temporal" : "Cambiar contraseña"}
-      subtitle={
-        required
-          ? "Tu cuenta se creó con una contraseña temporal. Debes elegir una definitiva antes de seguir usando Anfitorio."
-          : "Elige una contraseña nueva. Al guardarla se cerrarán todas tus sesiones."
-      }
+      label={title}
       footer={
-        <button type="button" className="bo-button-link" onClick={handleLogout} disabled={submitting}>
-          Cerrar sesión
-        </button>
+        <CocoaButton variant="plain" tone="neutral" onClick={handleLogout} disabled={submitting}>
+          {ACTIONS.signOut}
+        </CocoaButton>
       }
     >
-      {user?.email || user?.fullName ? (
-        <p style={{ margin: 0, fontSize: 13, color: "var(--ink-soft)" }}>
-          Sesión de <strong style={{ color: "var(--ink)" }}>{user.email ?? user.fullName}</strong>
-        </p>
+      <CocoaPageHeader
+        eyebrow={AUTH_EYEBROW}
+        title={title}
+        subtitle={
+          required
+            ? "Tu cuenta se creó con una contraseña temporal. Debes elegir una definitiva antes de seguir usando Anfitorio."
+            : "Elige una contraseña nueva. Al guardarla se cerrarán todas tus sesiones."
+        }
+      />
+
+      {who ? (
+        <ul className="c22-section__list" aria-label="Sesión actual">
+          <li>
+            <span>Sesión de</span>
+            <strong style={valueStyle} title={who}>
+              {who}
+            </strong>
+          </li>
+        </ul>
       ) : null}
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }} noValidate>
-        <input type="email" name="username" autoComplete="username" value={user?.email ?? ""} readOnly hidden />
-        <PasswordField label="Contraseña actual" value={current} onChange={setCurrent} autoComplete="current-password" disabled={submitting} autoFocus />
-        <PasswordField label="Nueva contraseña" value={password} onChange={setPassword} autoComplete="new-password" disabled={submitting} />
+
+      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }} noValidate>
+        <HiddenUsername email={user?.email ?? ""} />
+        <PasswordField id="change-current" label="Contraseña actual" value={current} onChange={setCurrent} autoComplete="current-password" disabled={submitting} autoFocus />
+        <PasswordField
+          id="change-password"
+          label="Nueva contraseña"
+          value={password}
+          onChange={setPassword}
+          autoComplete="new-password"
+          disabled={submitting}
+          error={sameAsCurrent ? "La nueva contraseña debe ser distinta de la actual." : undefined}
+        />
         <PasswordChecklist password={password} policy={policy} />
-        <PasswordField label="Repite la nueva contraseña" value={confirm} onChange={setConfirm} autoComplete="new-password" disabled={submitting} />
-        {sameAsCurrent ? <AuthAlert tone="warn">La nueva contraseña debe ser distinta de la actual.</AuthAlert> : null}
-        {confirm && !confirmOk ? <AuthAlert tone="warn">Las contraseñas no coinciden.</AuthAlert> : null}
+        <PasswordField
+          id="change-confirm"
+          label="Repite la nueva contraseña"
+          value={confirm}
+          onChange={setConfirm}
+          autoComplete="new-password"
+          disabled={submitting}
+          error={confirm && !confirmOk ? "Las contraseñas no coinciden." : undefined}
+        />
         {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
-        <button type="submit" className="primary" disabled={!canSubmit} style={{ marginTop: "var(--space-2)" }}>
+        <CocoaButton
+          type="submit"
+          variant="filled"
+          tone="accent"
+          size="large"
+          loading={submitting}
+          disabled={!canSubmit}
+          style={{ width: "100%", marginTop: "var(--cocoa-space-1)" }}
+        >
           {submitting ? "Guardando…" : "Guardar contraseña"}
-        </button>
+        </CocoaButton>
       </form>
     </AuthShell>
   );

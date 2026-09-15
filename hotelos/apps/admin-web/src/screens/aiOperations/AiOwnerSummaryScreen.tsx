@@ -1,15 +1,37 @@
-import { getActiveOrganizationId, getActivePropertyId } from "../../services/activeProperty";
-import { useApiData } from "../../hooks/useApiData";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { money } from "../../lib/format";
-
-const PROPERTY_ID = getActivePropertyId();
-const ORGANIZATION_ID = getActiveOrganizationId();
-
+// AI owner summary — «Informe IA del día», /hoy/informe-ia (standalone).
+//
 // Owner / director facing summary of the AI posture — plain language, no
 // engineering jargon, no JSON, no latency. It reads the REAL configuration and
 // the REAL human-review decision counts, and is deliberately honest: the AI here
 // works in "assisted" mode with human review, so the copy never overclaims.
+//
+// Cocoa 22 (docs/design/COCOA-22.md §4, plantilla DashboardStandalone):
+// CocoaPage → «Cómo trabaja la IA» section (headline + CocoaCallout) →
+// guarantees as CocoaCallout tiles → decisions and cost as CocoaKpi strips →
+// «Qué hace y qué no hace» in a two-column CocoaGrid of section lists.
+// Data: GET /ai-operations/property/settings, /ai-operations/review/stats and
+// /ai-operations/governance/cost (30 days).
+
+import type { CSSProperties } from "react";
+import { getActiveOrganizationId, getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { useApiData } from "../../hooks/useApiData";
+import { navigateTo } from "../../lib/navigate";
+import { ACTIONS } from "../../content/actions";
+import { money } from "../../lib/format";
+import { CheckCircleIcon, ExclamationCircleIcon } from "../../components/cocoa-icons/StatusIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type AutomationLevel = "off" | "suggest" | "suggest_and_confirm" | "autonomous";
 
@@ -59,19 +81,53 @@ const AUTOMATION_PLAIN: Record<AutomationLevel, { headline: string; detail: stri
   }
 };
 
+const HELPS_WITH = [
+  "Dar de alta el hotel: lee tus ficheros y prepara habitaciones, tarifas y datos.",
+  "Sugerir acciones a tu equipo (siempre revisables).",
+  "Comprobar la calidad de los datos antes de aplicarlos."
+];
+
+const DOES_NOT = [
+  "No cobra ni factura por su cuenta.",
+  "No cancela ni modifica reservas sin aprobación.",
+  "No toma decisiones de alto riesgo sin que una persona las confirme."
+];
+
+type Guarantee = { id: string; label: string; value: string; caption: string; ok: boolean };
+
 function eur(n: number | undefined): string {
   return money(n ?? 0);
 }
 
+// Text styles (tokens only; layout comes from the utilities).
+const headlineStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--cocoa-fs-title-3)",
+  fontWeight: "var(--cocoa-fw-semibold)",
+  color: "var(--cocoa-label)"
+};
+
+const captionStyle: CSSProperties = {
+  margin: 0,
+  fontSize: "var(--cocoa-fs-callout)",
+  color: "var(--cocoa-label-secondary)"
+};
+
+const GUARANTEE_TONE: Record<"true" | "false", CocoaTone> = { true: "success", false: "warning" };
+
 export function AiOwnerSummaryScreen() {
+  const propertyId = getActivePropertyId();
+  const organizationId = getActiveOrganizationId();
+  const propertyName = getActiveProperty().propertyName;
+
   const settings = useApiData<PropertyAiSettings>("/ai-operations/property/settings", {
-    query: { propertyId: PROPERTY_ID }
+    query: { propertyId }
   });
   const stats = useApiData<ReviewStats>("/ai-operations/review/stats", {
-    query: { organizationId: ORGANIZATION_ID }
+    query: { organizationId }
   });
   const cost = useApiData<CostDashboard>("/ai-operations/governance/cost", {
-    query: { organizationId: ORGANIZATION_ID, days: 30 }
+    query: { organizationId, days: 30 }
   });
 
   const level: AutomationLevel = settings.data?.defaultAutomationLevel ?? "suggest_and_confirm";
@@ -79,136 +135,166 @@ export function AiOwnerSummaryScreen() {
   const aiEnabled = settings.data?.aiEnabled ?? false;
   const disclosureSet = Boolean(settings.data?.guestFacingDisclosure && settings.data.guestFacingDisclosure.trim());
   const decisions = stats.data;
+  const partialError = Boolean(settings.error || stats.error || cost.error);
+  const state = settings.loading && !settings.data ? "loading" : settings.error && !settings.data ? "error" : "ready";
+
+  function refreshAll() {
+    settings.refresh();
+    stats.refresh();
+    cost.refresh();
+  }
+
+  const guarantees: Guarantee[] = [
+    {
+      id: "human-review",
+      label: "Revisión humana",
+      value: plain.humanReview ? "Activa" : "Parcial",
+      caption: plain.humanReview ? "Una persona aprueba" : "Algunas acciones automáticas",
+      ok: plain.humanReview
+    },
+    {
+      id: "disclosure",
+      label: "Aviso de IA al huésped",
+      value: disclosureSet ? "Configurado" : "Pendiente",
+      caption: disclosureSet ? "Cumple transparencia" : "Recomendado configurar",
+      ok: disclosureSet
+    },
+    {
+      id: "enabled",
+      label: "Estado de la IA",
+      value: aiEnabled ? "Encendida" : "Apagada",
+      caption: aiEnabled ? "En uso" : "Sin uso",
+      ok: aiEnabled
+    }
+  ];
 
   return (
-    <section className="bo-page">
-      <CocoaPageHeader
-        eyebrow="Hoy"
-        title="Informe IA del día"
-        subtitle="Qué hace la inteligencia artificial en tu hotel, cómo está configurada, cuánto cuesta y con qué controles trabaja. Sin tecnicismos, para dirección y propiedad."
-        actions={
-          <button type="button" className="bo-btn" onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "PropertyAiScreen" }))}>
+    <CocoaPage
+      eyebrow={`Hoy · ${propertyName}`}
+      title="Informe IA del día"
+      subtitle="Qué hace la inteligencia artificial en tu hotel, cómo está configurada, cuánto cuesta y con qué controles trabaja. Sin tecnicismos, para dirección y propiedad."
+      actions={
+        <>
+          <CocoaButton variant="plain" tone="neutral" size="small" onClick={refreshAll} aria-label={ACTIONS.refresh} title={ACTIONS.refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("PropertyAiScreen")}>
             Ajustes de IA
-          </button>
-        }
-      />
+          </CocoaButton>
+        </>
+      }
+      state={state}
+      skeleton={<OwnerSummarySkeleton />}
+      error={{ title: "No se pudo cargar el informe de IA", message: settings.error ?? undefined, onRetry: refreshAll }}
+      commands={[
+        { id: "ai-owner-summary-refresh", label: "Actualizar el informe IA", run: refreshAll },
+        { id: "ai-owner-summary-settings", label: "Abrir los ajustes de IA", run: () => navigateTo("PropertyAiScreen") }
+      ]}
+    >
+      {partialError ? (
+        <CocoaCallout
+          tone="warning"
+          icon={<ExclamationCircleIcon size={16} />}
+          actions={
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
+          No se pudieron cargar todos los datos de IA en este momento.
+        </CocoaCallout>
+      ) : null}
 
-      {/* Cómo trabaja la IA aquí */}
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Cómo trabaja la IA en este hotel</p>
-            <h3 style={{ margin: 0 }}>{aiEnabled ? plain.headline : "La IA está desactivada"}</h3>
-          </div>
-          <span className={`bo-status ${aiEnabled ? "ok" : "warn"}`}>{aiEnabled ? "Activada" : "Desactivada"}</span>
-        </div>
+      <CocoaSection
+        title="Cómo trabaja la IA en este hotel"
+        meta={<CocoaBadge tone={aiEnabled ? "success" : "warning"}>{aiEnabled ? "Activada" : "Desactivada"}</CocoaBadge>}
+      >
+        <p style={headlineStyle}>{aiEnabled ? plain.headline : "La IA está desactivada"}</p>
         <p>{aiEnabled ? plain.detail : "Actívala desde Ajustes de IA cuando quieras empezar a usarla."}</p>
         {aiEnabled && plain.humanReview ? (
-          <p className="bo-muted">✓ Revisión humana activa: ninguna acción importante ocurre sin que una persona la apruebe.</p>
+          <CocoaCallout tone="success" icon={<CheckCircleIcon size={16} />}>
+            Revisión humana activa: ninguna acción importante ocurre sin que una persona la apruebe.
+          </CocoaCallout>
         ) : null}
-      </section>
+      </CocoaSection>
 
-      {/* Seguridad y control */}
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Seguridad y control</h3>
-          <span className="bo-chip">tus garantías</span>
-        </div>
-        <div className="bo-grid three">
-          <div className="rev-kpi">
-            <span className="bo-muted">Revisión humana</span>
-            <strong>{plain.humanReview ? "Activa" : "Parcial"}</strong>
-            <span className={`bo-status ${plain.humanReview ? "ok" : "warn"}`}>{plain.humanReview ? "Una persona aprueba" : "Algunas acciones automáticas"}</span>
-          </div>
-          <div className="rev-kpi">
-            <span className="bo-muted">Aviso de IA al huésped</span>
-            <strong>{disclosureSet ? "Configurado" : "Pendiente"}</strong>
-            <span className={`bo-status ${disclosureSet ? "ok" : "warn"}`}>{disclosureSet ? "Cumple transparencia" : "Recomendado configurar"}</span>
-          </div>
-          <div className="rev-kpi">
-            <span className="bo-muted">Estado de la IA</span>
-            <strong>{aiEnabled ? "Encendida" : "Apagada"}</strong>
-            <span className={`bo-status ${aiEnabled ? "ok" : "warn"}`}>{aiEnabled ? "En uso" : "Sin uso"}</span>
-          </div>
-        </div>
-      </section>
+      <CocoaSection title="Seguridad y control" meta="tus garantías">
+        <CocoaKpiStrip min={240} stagger aria-label="Seguridad y control">
+          {guarantees.map((g) => (
+            <CocoaCallout key={g.id} tone={GUARANTEE_TONE[g.ok ? "true" : "false"]} title={g.label} icon={g.ok ? <CheckCircleIcon size={16} /> : <ExclamationCircleIcon size={16} />}>
+              <strong>{g.value}</strong>
+              <span style={captionStyle}>{g.caption}</span>
+            </CocoaCallout>
+          ))}
+        </CocoaKpiStrip>
+      </CocoaSection>
 
-      {/* Decisiones de la IA */}
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Decisiones de la IA · últimas 24 horas</p>
-            <h3 style={{ margin: 0 }}>Qué ha propuesto y quién lo ha decidido</h3>
-          </div>
-        </div>
-        <div className="bo-grid three">
-          <div className="rev-kpi">
-            <span className="bo-muted">Esperando tu visto bueno</span>
-            <strong>{decisions?.pending ?? 0}</strong>
-            <span className="bo-status warn">pendientes de aprobar</span>
-          </div>
-          <div className="rev-kpi">
-            <span className="bo-muted">Aprobadas (24 h)</span>
-            <strong>{decisions?.approved24h ?? 0}</strong>
-            <span className="bo-status ok">tu equipo dio el visto bueno</span>
-          </div>
-          <div className="rev-kpi">
-            <span className="bo-muted">Rechazadas (24 h)</span>
-            <strong>{decisions?.rejected24h ?? 0}</strong>
-            <span className="bo-status info">descartadas por tu equipo</span>
-          </div>
-        </div>
-        <p className="bo-muted" style={{ marginTop: 8 }}>
-          La IA nunca ejecuta una acción de alto riesgo sin que alguien de tu equipo la apruebe en la cola de revisión.
-        </p>
-      </section>
+      <CocoaSection
+        title="Qué ha propuesto y quién lo ha decidido"
+        meta="Decisiones de la IA · últimas 24 horas"
+        action={
+          <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("AiHumanReviewQueueScreen")}>
+            {ACTIONS.viewDetail}
+          </CocoaButton>
+        }
+      >
+        <CocoaKpiStrip min={200} aria-label="Decisiones de la IA en las últimas 24 horas">
+          <CocoaKpi
+            label="Esperando tu visto bueno"
+            value={decisions?.pending ?? 0}
+            deltaLabel="pendientes de aprobar"
+            polarity="neutral"
+            status={decisions && decisions.pending > 0 ? "warning" : "ok"}
+            degraded={!decisions}
+          />
+          <CocoaKpi label="Aprobadas (24 h)" value={decisions?.approved24h ?? 0} deltaLabel="tu equipo dio el visto bueno" polarity="neutral" status="ok" degraded={!decisions} />
+          <CocoaKpi label="Rechazadas (24 h)" value={decisions?.rejected24h ?? 0} deltaLabel="descartadas por tu equipo" polarity="neutral" status="ok" degraded={!decisions} />
+        </CocoaKpiStrip>
+        <p style={captionStyle}>La IA nunca ejecuta una acción de alto riesgo sin que alguien de tu equipo la apruebe en la cola de revisión.</p>
+      </CocoaSection>
 
-      {/* Coste */}
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Coste de la IA</h3>
-          <span className="bo-chip">últimos 30 días</span>
-        </div>
-        <div className="bo-grid two">
-          <div className="rev-kpi">
-            <span className="bo-muted">Gasto en IA (30 días)</span>
-            <strong>{eur(cost.data?.totalCostEur)}</strong>
-          </div>
-          <div className="rev-kpi">
-            <span className="bo-muted">Proyección mensual</span>
-            <strong>{eur(cost.data?.projectedMonthlyEur)}</strong>
-          </div>
-        </div>
-      </section>
+      <CocoaSection title="Coste de la IA" meta="últimos 30 días">
+        <CocoaKpiStrip min={200} aria-label="Coste de la IA">
+          <CocoaKpi label="Gasto en IA (30 días)" value={eur(cost.data?.totalCostEur)} polarity="neutral" status="ok" degraded={!cost.data} />
+          <CocoaKpi label="Proyección mensual" value={eur(cost.data?.projectedMonthlyEur)} polarity="neutral" status="ok" degraded={!cost.data} />
+        </CocoaKpiStrip>
+      </CocoaSection>
 
-      {/* Qué hace y qué no hace */}
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Qué hace y qué NO hace la IA</h3>
-        </div>
-        <div className="bo-grid two">
-          <div>
-            <p className="bo-muted">La IA te ayuda con</p>
-            <ul>
-              <li>Dar de alta el hotel: lee tus ficheros y prepara habitaciones, tarifas y datos.</li>
-              <li>Sugerir acciones a tu equipo (siempre revisables).</li>
-              <li>Comprobar la calidad de los datos antes de aplicarlos.</li>
+      <CocoaSection title="Qué hace y qué no hace la IA">
+        <CocoaGrid align="start">
+          <CocoaSpan cols={6} min={240}>
+            <p style={captionStyle}>La IA te ayuda con</p>
+            <ul className="c22-section__list" aria-label="La IA te ayuda con">
+              {HELPS_WITH.map((text) => (
+                <li key={text}>{text}</li>
+              ))}
             </ul>
-          </div>
-          <div>
-            <p className="bo-muted">La IA NO hace</p>
-            <ul>
-              <li>No cobra ni factura por su cuenta.</li>
-              <li>No cancela ni modifica reservas sin aprobación.</li>
-              <li>No toma decisiones de alto riesgo sin que una persona las confirme.</li>
+          </CocoaSpan>
+          <CocoaSpan cols={6} min={240}>
+            <p style={captionStyle}>La IA no hace</p>
+            <ul className="c22-section__list" aria-label="La IA no hace">
+              {DOES_NOT.map((text) => (
+                <li key={text}>{text}</li>
+              ))}
             </ul>
-          </div>
-        </div>
-      </section>
-
-      {settings.error || stats.error || cost.error ? (
-        <p className="bo-muted">No se pudieron cargar todos los datos de IA en este momento.</p>
-      ) : null}
-    </section>
+          </CocoaSpan>
+        </CocoaGrid>
+      </CocoaSection>
+    </CocoaPage>
   );
 }
+
+// Mirror skeleton: posture card, three guarantee tiles, decisions, cost, lists.
+function OwnerSummarySkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="card" height={140} />
+      <CocoaSkeleton.Strip count={3} min={240} />
+      <CocoaSkeleton.Strip count={3} min={200} />
+      <CocoaSkeleton.Strip count={2} min={200} />
+      <CocoaSkeleton variant="card" height={200} />
+    </div>
+  );
+}
+
+export default AiOwnerSummaryScreen;

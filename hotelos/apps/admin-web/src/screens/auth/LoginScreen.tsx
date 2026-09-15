@@ -132,7 +132,7 @@ export function LoginScreen(props: LoginScreenProps) {
   const canForgot = typeof props.onNavigate === "function";
 
   // The body already paints the canvas (--cocoa-background-window) in Inter:
-  // the page only centres the card; safe-area on phones.
+  // the page only centres the card; gutter --cocoa-content-padding (24 / 16 < 600, §5.1) + safe-area.
   return (
     <div
       style={{
@@ -140,8 +140,8 @@ export function LoginScreen(props: LoginScreenProps) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        padding: "var(--cocoa-space-5)",
-        paddingBottom: "max(var(--cocoa-space-5), env(safe-area-inset-bottom))",
+        padding: "var(--cocoa-content-padding)",
+        paddingBottom: "max(var(--cocoa-content-padding), env(safe-area-inset-bottom))",
         boxSizing: "border-box"
       }}
     >

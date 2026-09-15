@@ -11,8 +11,13 @@
 //   3. POST /auth/accept-invite → LoginResult. Any previous session is cleared
 //      first, then setSession() with the new one and a full reload to "/" (the
 //      shell reads the active property at module-evaluation time).
+//
+// Cocoa 22 (COCOA-22.md §4 «otro», PlantillaBase over the AuthShell frame):
+// CocoaPageHeader inside the elevated card, invitation facts in a
+// `c22-section__list`, CocoaField + CocoaInput (mismatch as the field's
+// error), CocoaCallout alerts, CocoaButton actions. The auth logic is untouched.
 
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import { clearSession, setSession } from "../../services/auth-storage";
 import { ApiError, clearPasswordChangeRequired } from "../../services/api-client";
 import {
@@ -20,12 +25,14 @@ import {
   DEFAULT_PASSWORD_POLICY,
   fetchInvitation,
   fetchPasswordPolicy,
-  formatExpiry,
   passwordMeetsPolicy,
   type InvitationPreview,
   type PasswordPolicy
 } from "../../services/authApi";
-import { AuthAlert, AuthShell, PasswordChecklist, PasswordField, goToLogin } from "../../auth/AuthShell";
+import { AUTH_EYEBROW, AuthAlert, AuthShell, HiddenUsername, PasswordChecklist, PasswordField, goToLogin } from "../../auth/AuthShell";
+import { CocoaButton, CocoaPageHeader, CocoaState } from "../../components/cocoa";
+import { FIELD_LABELS } from "../../content/actions";
+import { dateTime } from "../../lib/format";
 import { logBreadcrumb } from "../../lib/breadcrumb";
 
 type Phase = "loading" | "invalid" | "ready" | "done";
@@ -37,6 +44,10 @@ export type AcceptInviteScreenProps = {
 
 const INVALID_COPY =
   "Esta invitación no es válida, ya se ha utilizado o ha caducado. Pide a la persona que te invitó que la reenvíe desde Anfitorio.";
+
+// A long email must not push the row wider than the card (the list paints
+// values nowrap): clip it and keep the full value in the tooltip.
+const valueStyle: CSSProperties = { minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" };
 
 export function AcceptInviteScreen({ token }: AcceptInviteScreenProps) {
   const [phase, setPhase] = useState<Phase>(token ? "loading" : "invalid");
@@ -119,8 +130,9 @@ export function AcceptInviteScreen({ token }: AcceptInviteScreenProps) {
 
   if (phase === "loading") {
     return (
-      <AuthShell title="Comprobando tu invitación…">
-        <p style={{ margin: 0, color: "var(--ink-soft)" }}>Un momento.</p>
+      <AuthShell label="Comprobando tu invitación">
+        <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Comprobando tu invitación…" subtitle="Un momento." />
+        <CocoaState kind="loading" />
       </AuthShell>
     );
   }
@@ -128,13 +140,14 @@ export function AcceptInviteScreen({ token }: AcceptInviteScreenProps) {
   if (phase === "invalid") {
     return (
       <AuthShell
-        title="Invitación no válida"
+        label="Invitación no válida"
         footer={
-          <button type="button" className="bo-button-link" onClick={goToLogin}>
+          <CocoaButton variant="plain" tone="accent" onClick={goToLogin}>
             Ir a iniciar sesión
-          </button>
+          </CocoaButton>
         }
       >
+        <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Invitación no válida" />
         <AuthAlert tone="error">{loadError ?? INVALID_COPY}</AuthAlert>
       </AuthShell>
     );
@@ -142,48 +155,70 @@ export function AcceptInviteScreen({ token }: AcceptInviteScreenProps) {
 
   if (phase === "done") {
     return (
-      <AuthShell title="Cuenta activada">
+      <AuthShell label="Cuenta activada">
+        <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Cuenta activada" />
         <AuthAlert tone="success">Tu cuenta está lista. Entrando en Anfitorio…</AuthAlert>
       </AuthShell>
     );
   }
 
   const scope = [invitation?.organizationName, invitation?.propertyName].filter(Boolean).join(" · ");
+  // The greeting lives in the subtitle: the header title is one line on
+  // desktop and a long name would be clipped there.
+  const greeting = invitation?.fullName ? `Hola, ${invitation.fullName}. ` : "";
+  const role = invitation?.roleName ? ` con el rol ${invitation.roleName}` : "";
+  const subtitle = `${greeting}Te han invitado a ${scope || "Anfitorio"}${role}. Elige una contraseña para activar tu cuenta.`;
 
   return (
     <AuthShell
-      title={invitation?.fullName ? `Hola, ${invitation.fullName}` : "Crea tu contraseña"}
-      subtitle={
-        <>
-          Te han invitado a <strong>{scope || "Anfitorio"}</strong>
-          {invitation?.roleName ? <> con el rol <strong>{invitation.roleName}</strong></> : null}. Elige una contraseña para
-          activar tu cuenta.
-        </>
-      }
+      label="Crea tu contraseña"
       footer={
-        <button type="button" className="bo-button-link" onClick={goToLogin} disabled={submitting}>
+        <CocoaButton variant="plain" tone="accent" onClick={goToLogin} disabled={submitting}>
           Ya tengo cuenta · iniciar sesión
-        </button>
+        </CocoaButton>
       }
     >
-      <dl style={{ margin: 0, display: "grid", gridTemplateColumns: "auto 1fr", gap: "4px 12px", fontSize: 13 }}>
-        <dt style={{ color: "var(--ink-soft)" }}>Correo electrónico</dt>
-        <dd style={{ margin: 0, color: "var(--ink)" }}>{invitation?.email}</dd>
-        <dt style={{ color: "var(--ink-soft)" }}>Caduca</dt>
-        <dd style={{ margin: 0, color: "var(--ink)" }}>{formatExpiry(invitation?.expiresAt)}</dd>
-      </dl>
+      <CocoaPageHeader eyebrow={AUTH_EYEBROW} title="Crea tu contraseña" subtitle={subtitle} />
 
-      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--space-4)" }} noValidate>
+      <ul className="c22-section__list" aria-label="Datos de la invitación">
+        <li>
+          <span>{FIELD_LABELS.email}</span>
+          <strong style={valueStyle} title={invitation?.email}>
+            {invitation?.email}
+          </strong>
+        </li>
+        <li>
+          <span>Caduca</span>
+          <strong>{dateTime(invitation?.expiresAt, { style: "medium" })}</strong>
+        </li>
+      </ul>
+
+      <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }} noValidate>
         {/* Hidden username so password managers store the right login. */}
-        <input type="email" name="username" autoComplete="username" value={invitation?.email ?? ""} readOnly hidden />
-        <PasswordField label="Nueva contraseña" value={password} onChange={setPassword} autoComplete="new-password" disabled={submitting} autoFocus />
+        <HiddenUsername email={invitation?.email ?? ""} />
+        <PasswordField id="invite-password" label="Nueva contraseña" value={password} onChange={setPassword} autoComplete="new-password" disabled={submitting} autoFocus />
         <PasswordChecklist password={password} policy={policy} />
-        <PasswordField label="Repite la contraseña" value={confirm} onChange={setConfirm} autoComplete="new-password" disabled={submitting} />
-        {confirm && !confirmOk ? <AuthAlert tone="warn">Las contraseñas no coinciden.</AuthAlert> : null}
+        <PasswordField
+          id="invite-confirm"
+          label="Repite la contraseña"
+          value={confirm}
+          onChange={setConfirm}
+          autoComplete="new-password"
+          disabled={submitting}
+          error={confirm && !confirmOk ? "Las contraseñas no coinciden." : undefined}
+        />
         {error ? <AuthAlert tone="error">{error}</AuthAlert> : null}
-        <button type="submit" className="primary" disabled={!canSubmit} style={{ marginTop: "var(--space-2)" }}>
+        <CocoaButton
+          type="submit"
+          variant="filled"
+          tone="accent"
+          size="large"
+          loading={submitting}
+          disabled={!canSubmit}
+          style={{ width: "100%", marginTop: "var(--cocoa-space-1)" }}
+        >
           {submitting ? "Activando cuenta…" : "Activar cuenta y entrar"}
-        </button>
+        </CocoaButton>
       </form>
     </AuthShell>
   );

@@ -33,7 +33,7 @@ export { commandsKey };
 export type CocoaPageDensity = "comfortable" | "compact";
 export type CocoaPageGap = 3 | 4 | 5;
 
-export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange"> {
+export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange" | "wrap"> {
   /** Actions row (standalone → header; hosted → HOSTED_ACTIONS_ROW). */
   actions?: ReactNode;
   state?: CocoaPageState;
@@ -62,6 +62,7 @@ export function CocoaPage({
   tabs,
   activeTab,
   onTabChange,
+  wrap,
   actions,
   state,
   skeleton,
@@ -126,7 +127,7 @@ export function CocoaPage({
         ) : null
       ) : (
         <div className="c22-page__header">
-          <CocoaPageHeader eyebrow={eyebrow} title={title} subtitle={subtitle} icon={icon} actions={actions} tabs={tabs} activeTab={activeTab} onTabChange={onTabChange} />
+          <CocoaPageHeader eyebrow={eyebrow} title={title} subtitle={subtitle} icon={icon} actions={actions} tabs={tabs} activeTab={activeTab} onTabChange={onTabChange} wrap={wrap} />
         </div>
       )}
       <div className="c22-page__body cocoa-page-body" aria-busy={resolved === "loading" || undefined}>

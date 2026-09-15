@@ -614,18 +614,22 @@ export function CocoaDonut({ slices, centerLabel, centerValue, size = 160, legen
 // ----------------------------------------------------------------- Progress
 
 export interface CocoaProgressProps {
-  /** 0–100. */
+  /** 0–`max` (0–100 by default). */
   value: number;
+  /** Upper bound of `value` (default 100): the bar fills value / max — a share scaled to the largest channel, 12 of 48 rooms. */
+  max?: number;
   tone?: CocoaTone;
   label?: string;
-  /** Show «NN %» at the right of the label. Default true. */
+  /** Show the value at the right of the label (the percentage of `max`, or `valueLabel`). Default true. */
   showValue?: boolean;
+  /** Text at the right of the label instead of the computed percentage («12 de 48», the real share when the bar is scaled). */
+  valueLabel?: string;
   "aria-label"?: string;
 }
 
-export function CocoaProgress({ value, tone = "accent", label, showValue = true, "aria-label": ariaLabel }: CocoaProgressProps) {
-  const pct = clampPercent(value);
-  const text = formatPercent(pct, { maximumFractionDigits: 0 });
+export function CocoaProgress({ value, max = 100, tone = "accent", label, showValue = true, valueLabel, "aria-label": ariaLabel }: CocoaProgressProps) {
+  const pct = clampPercent(max > 0 ? (value / max) * 100 : 0);
+  const text = valueLabel ?? formatPercent(pct, { maximumFractionDigits: 0 });
   return (
     <div className="c22-chart" data-cocoa="chart" data-kind="progress" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-1)", width: "100%", fontFamily: "var(--cocoa-font)" }}>
       {label || showValue ? (
@@ -640,6 +644,7 @@ export function CocoaProgress({ value, tone = "accent", label, showValue = true,
         aria-valuenow={Math.round(pct)}
         aria-valuemin={0}
         aria-valuemax={100}
+        aria-valuetext={valueLabel}
         className="c22-progress"
         data-cocoa="progress"
         data-tone={tone}

@@ -5,21 +5,26 @@
 // a colored cost% badge. Hovering a segment highlights it and shows a tooltip
 // with detailed metrics (revenue, room nights, cost%).
 //
-// Wrapped in CocoaCard for consistent Cocoa-styled surfaces.
+// Cocoa 22 (ola 2): the ring geometry comes from `cocoa/cocoa-chart-math`
+// (`donutSegments`, inner radius 62 %) — the same helper `CocoaChart.Donut`
+// uses — the slice colours from the canon `DONUT_PALETTE` (no OTA brand
+// hexes: one accent, then the label greys) and every figure from
+// `lib/format`. Screens should use `CocoaChart.Donut`; this component stays
+// for legacy callers until wave 11.
 
-import {
-  useMemo,
-  useState,
-  type CSSProperties,
-  type MouseEvent as ReactMouseEvent
-} from "react";
+import { useMemo, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { CocoaCard } from "../cocoa/CocoaCard";
+import { DONUT_PALETTE, donutShareLabel } from "../cocoa/CocoaChart";
+import { donutSegments, type DonutSegment } from "../cocoa/cocoa-chart-math";
+import { toneBg, toneInk } from "../cocoa/cocoa-tones";
+import { money, number, percent } from "../../lib/format";
 
 export interface DirectorChannel {
   name: string;
   revenue: number;
   roomNights: number;
   costPct: number;
+  /** Explicit colour token for the slice (`var(--cocoa-*)`); defaults to the canon palette by index. */
   color?: string;
 }
 
@@ -29,195 +34,52 @@ export interface DirectorChannelMixDonutProps {
   centerLabel?: string;
 }
 
-interface ChannelSegment {
-  channel: DirectorChannel;
-  color: string;
-  share: number;
-  startAngle: number;
-  endAngle: number;
-  path: string;
-}
-
-const DEFAULT_COLORS: Record<string, string> = {
-  direct: "var(--cocoa-accent)",
-  booking: "#003580",
-  expedia: "#fcc04f",
-  airbnb: "#FF5A5F",
-  gds: "var(--cocoa-label-secondary)",
-  wholesale: "var(--cocoa-warning)"
-};
-
-const FALLBACK_PALETTE = [
-  "var(--cocoa-accent)",
-  "#003580",
-  "#fcc04f",
-  "#FF5A5F",
-  "var(--cocoa-label-secondary)",
-  "var(--cocoa-warning)",
-  "var(--cocoa-success)"
-];
-
-function normalizeKey(name: string): string {
-  return name.trim().toLowerCase();
-}
+type ChannelSlice = { value: number; channel: DirectorChannel; color: string };
 
 function resolveColor(channel: DirectorChannel, index: number): string {
   if (channel.color) return channel.color;
-  const key = normalizeKey(channel.name);
-  if (DEFAULT_COLORS[key]) return DEFAULT_COLORS[key];
-  return FALLBACK_PALETTE[index % FALLBACK_PALETTE.length] ?? "var(--cocoa-accent)";
-}
-
-function polarToCartesian(
-  cx: number,
-  cy: number,
-  radius: number,
-  angle: number
-): { x: number; y: number } {
-  const rad = (angle - 90) * (Math.PI / 180);
-  return {
-    x: cx + radius * Math.cos(rad),
-    y: cy + radius * Math.sin(rad)
-  };
-}
-
-function describeArcPath(
-  cx: number,
-  cy: number,
-  outerRadius: number,
-  innerRadius: number,
-  startAngle: number,
-  endAngle: number
-): string {
-  const safeEnd = endAngle - startAngle >= 360 ? startAngle + 359.999 : endAngle;
-  const largeArc = safeEnd - startAngle <= 180 ? 0 : 1;
-
-  const startOuter = polarToCartesian(cx, cy, outerRadius, startAngle);
-  const endOuter = polarToCartesian(cx, cy, outerRadius, safeEnd);
-  const startInner = polarToCartesian(cx, cy, innerRadius, safeEnd);
-  const endInner = polarToCartesian(cx, cy, innerRadius, startAngle);
-
-  return [
-    `M ${startOuter.x} ${startOuter.y}`,
-    `A ${outerRadius} ${outerRadius} 0 ${largeArc} 1 ${endOuter.x} ${endOuter.y}`,
-    `L ${startInner.x} ${startInner.y}`,
-    `A ${innerRadius} ${innerRadius} 0 ${largeArc} 0 ${endInner.x} ${endInner.y}`,
-    "Z"
-  ].join(" ");
+  return DONUT_PALETTE[index % DONUT_PALETTE.length] ?? DONUT_PALETTE[0];
 }
 
 function formatCurrency(value: number): string {
-  if (!Number.isFinite(value)) return "$0";
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
-  return `$${Math.round(value).toLocaleString()}`;
+  return money(value, { compact: true });
 }
 
-function formatPercent(value: number, fractionDigits = 1): string {
-  if (!Number.isFinite(value)) return "0%";
-  return `${value.toFixed(fractionDigits)}%`;
+function formatCostPct(value: number, fractionDigits = 1): string {
+  return percent(value, { maximumFractionDigits: fractionDigits });
 }
 
-function costBadgeColor(costPct: number): {
-  background: string;
-  color: string;
-} {
-  if (costPct >= 25) {
-    return {
-      background: "color-mix(in srgb, var(--cocoa-warning) 18%, transparent)",
-      color: "var(--cocoa-warning)"
-    };
-  }
-  if (costPct >= 15) {
-    return {
-      background: "color-mix(in srgb, var(--cocoa-accent) 14%, transparent)",
-      color: "var(--cocoa-accent)"
-    };
-  }
-  return {
-    background: "color-mix(in srgb, var(--cocoa-success) 16%, transparent)",
-    color: "var(--cocoa-success)"
-  };
+/** Cost badge tone: ≥ 25 % warning · ≥ 15 % accent · below success (AA ink over the tone wash). */
+function costBadgeColor(costPct: number): { background: string; color: string } {
+  if (costPct >= 25) return { background: toneBg("warning"), color: toneInk("warning") };
+  if (costPct >= 15) return { background: toneBg("accent"), color: toneInk("accent") };
+  return { background: toneBg("success"), color: toneInk("success") };
 }
 
-export function DirectorChannelMixDonut({
-  channels,
-  size = 160,
-  centerLabel = "Mix de canales"
-}: DirectorChannelMixDonutProps) {
+export function DirectorChannelMixDonut({ channels, size = 160, centerLabel = "Mix de canales" }: DirectorChannelMixDonutProps) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
-  const [tooltipPosition, setTooltipPosition] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
+  const [tooltipPosition, setTooltipPosition] = useState<{ x: number; y: number } | null>(null);
 
   const { segments, totalRevenue } = useMemo(() => {
-    const total = channels.reduce(
-      (sum, channel) => sum + (channel.revenue > 0 ? channel.revenue : 0),
-      0
-    );
-
-    if (total <= 0) {
-      return { segments: [] as ChannelSegment[], totalRevenue: 0 };
-    }
-
-    const cx = size / 2;
-    const cy = size / 2;
-    const outerRadius = size / 2;
-    const innerRadius = outerRadius * 0.62;
-
-    let angle = 0;
-    const result: ChannelSegment[] = channels.map((channel, index) => {
-      const share = channel.revenue > 0 ? channel.revenue / total : 0;
-      const sweep = share * 360;
-      const startAngle = angle;
-      const endAngle = angle + sweep;
-      angle = endAngle;
-      return {
-        channel,
-        color: resolveColor(channel, index),
-        share,
-        startAngle,
-        endAngle,
-        path: describeArcPath(
-          cx,
-          cy,
-          outerRadius,
-          innerRadius,
-          startAngle,
-          endAngle
-        )
-      };
-    });
-
-    return { segments: result, totalRevenue: total };
+    const slices: ChannelSlice[] = channels.map((channel, index) => ({ value: channel.revenue, channel, color: resolveColor(channel, index) }));
+    const { segments: computed, total } = donutSegments(slices, size);
+    return { segments: computed as DonutSegment<ChannelSlice>[], totalRevenue: total };
   }, [channels, size]);
 
-  const hoveredSegment =
-    hoveredIndex !== null ? segments[hoveredIndex] ?? null : null;
+  const hoveredSegment = hoveredIndex !== null ? segments[hoveredIndex] ?? null : null;
 
-  const handleSegmentEnter = (
-    index: number,
-    event: ReactMouseEvent<SVGPathElement>
-  ) => {
+  const handleSegmentEnter = (index: number, event: ReactMouseEvent<SVGPathElement>) => {
     setHoveredIndex(index);
     const bounds = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
     if (bounds) {
-      setTooltipPosition({
-        x: event.clientX - bounds.left,
-        y: event.clientY - bounds.top
-      });
+      setTooltipPosition({ x: event.clientX - bounds.left, y: event.clientY - bounds.top });
     }
   };
 
   const handleSegmentMove = (event: ReactMouseEvent<SVGPathElement>) => {
     const bounds = event.currentTarget.ownerSVGElement?.getBoundingClientRect();
     if (bounds) {
-      setTooltipPosition({
-        x: event.clientX - bounds.left,
-        y: event.clientY - bounds.top
-      });
+      setTooltipPosition({ x: event.clientX - bounds.left, y: event.clientY - bounds.top });
     }
   };
 
@@ -229,7 +91,7 @@ export function DirectorChannelMixDonut({
   const containerStyle: CSSProperties = {
     display: "flex",
     flexDirection: "column",
-    gap: "16px",
+    gap: "var(--cocoa-space-4)",
     width: "100%"
   };
 
@@ -254,37 +116,38 @@ export function DirectorChannelMixDonut({
     justifyContent: "center",
     pointerEvents: "none",
     textAlign: "center",
-    padding: "0 12px"
+    padding: "0 var(--cocoa-space-3)"
   };
 
   const centerValueStyle: CSSProperties = {
-    fontSize: "var(--cocoa-fs-title-3, 16px)",
-    fontWeight: 600,
+    fontSize: "var(--cocoa-fs-title-3)",
+    fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
     color: "var(--cocoa-label)",
-    lineHeight: 1.1
+    lineHeight: 1.1,
+    fontVariantNumeric: "tabular-nums"
   };
 
   const centerLabelStyle: CSSProperties = {
-    marginTop: "4px",
-    fontSize: "var(--cocoa-fs-caption-1, 11px)",
+    marginTop: "var(--cocoa-space-1)",
+    fontSize: "var(--cocoa-fs-caption-1)",
     color: "var(--cocoa-label-secondary)",
-    letterSpacing: "0.02em"
+    letterSpacing: "var(--cocoa-tracking-wide)"
   };
 
   const legendStyle: CSSProperties = {
     display: "flex",
     flexDirection: "column",
-    gap: "8px",
+    gap: "var(--cocoa-space-2)",
     width: "100%"
   };
 
   const legendRowBaseStyle: CSSProperties = {
     display: "flex",
     alignItems: "center",
-    gap: "8px",
-    padding: "6px 8px",
-    borderRadius: "var(--cocoa-radius-md, 6px)",
-    transition: "background var(--cocoa-duration-fast, 120ms) ease"
+    gap: "var(--cocoa-space-2)",
+    padding: "6px var(--cocoa-space-2)",
+    borderRadius: "var(--cocoa-radius-md)",
+    transition: "background var(--cocoa-duration-fast) var(--cocoa-ease-out)"
   };
 
   const legendSwatchStyle = (color: string): CSSProperties => ({
@@ -296,9 +159,9 @@ export function DirectorChannelMixDonut({
   });
 
   const legendNameStyle: CSSProperties = {
-    fontSize: "var(--cocoa-fs-body, 13px)",
+    fontSize: "var(--cocoa-fs-body)",
     color: "var(--cocoa-label)",
-    fontWeight: 500,
+    fontWeight: "var(--cocoa-fw-medium)" as CSSProperties["fontWeight"],
     flex: 1,
     overflow: "hidden",
     textOverflow: "ellipsis",
@@ -306,7 +169,7 @@ export function DirectorChannelMixDonut({
   };
 
   const legendShareStyle: CSSProperties = {
-    fontSize: "var(--cocoa-fs-subheadline, 12px)",
+    fontSize: "var(--cocoa-fs-subheadline)",
     color: "var(--cocoa-label-secondary)",
     fontVariantNumeric: "tabular-nums",
     minWidth: 44,
@@ -314,10 +177,10 @@ export function DirectorChannelMixDonut({
   };
 
   const costBadgeBaseStyle: CSSProperties = {
-    fontSize: "var(--cocoa-fs-caption-1, 11px)",
-    fontWeight: 600,
+    fontSize: "var(--cocoa-fs-caption-1)",
+    fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
     padding: "2px 6px",
-    borderRadius: "var(--cocoa-radius-sm, 4px)",
+    borderRadius: "var(--cocoa-radius-sm)",
     fontVariantNumeric: "tabular-nums",
     minWidth: 44,
     textAlign: "center"
@@ -331,15 +194,15 @@ export function DirectorChannelMixDonut({
           top: Math.max(tooltipPosition.y - 12, 0),
           transform: "translate(0, -100%)",
           pointerEvents: "none",
-          background: "var(--cocoa-background-content, #ffffff)",
+          background: "var(--cocoa-background-content)",
           color: "var(--cocoa-label)",
           border: "1px solid var(--cocoa-separator)",
-          borderRadius: "var(--cocoa-radius-md, 6px)",
-          boxShadow: "var(--cocoa-shadow-control, 0 4px 12px rgba(0,0,0,0.12))",
-          padding: "8px 10px",
-          fontSize: "var(--cocoa-fs-subheadline, 12px)",
+          borderRadius: "var(--cocoa-radius-md)",
+          boxShadow: "var(--cocoa-shadow-popover)",
+          padding: "var(--cocoa-space-2) 10px",
+          fontSize: "var(--cocoa-fs-subheadline)",
           whiteSpace: "nowrap",
-          zIndex: 4
+          zIndex: "var(--cocoa-z-tooltip)" as CSSProperties["zIndex"]
         }
       : null;
 
@@ -347,14 +210,14 @@ export function DirectorChannelMixDonut({
     display: "flex",
     alignItems: "center",
     gap: "6px",
-    fontWeight: 600,
-    marginBottom: "4px"
+    fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+    marginBottom: "var(--cocoa-space-1)"
   };
 
   const tooltipRowStyle: CSSProperties = {
     display: "flex",
     justifyContent: "space-between",
-    gap: "16px",
+    gap: "var(--cocoa-space-4)",
     color: "var(--cocoa-label-secondary)"
   };
 
@@ -369,42 +232,26 @@ export function DirectorChannelMixDonut({
     <CocoaCard variant="bordered" padding="lg">
       <div style={containerStyle}>
         <div style={chartWrapperStyle}>
-          <svg
-            width={size}
-            height={size}
-            viewBox={`0 0 ${size} ${size}`}
-            role="img"
-            aria-label={centerLabel}
-            style={svgStyle}
-          >
+          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={centerLabel} style={svgStyle}>
             {emptyState ? (
-              <circle
-                cx={size / 2}
-                cy={size / 2}
-                r={size / 2 - 0.5}
-                fill="none"
-                stroke="var(--cocoa-separator)"
-                strokeWidth={1}
-                strokeDasharray="4 4"
-              />
+              <circle cx={size / 2} cy={size / 2} r={size / 2 - 0.5} fill="none" stroke="var(--cocoa-separator)" strokeWidth={1} strokeDasharray="4 4" />
             ) : (
               segments.map((segment, index) => {
+                if (!segment.path) return null;
                 const isHovered = hoveredIndex === index;
-                const isDimmed =
-                  hoveredIndex !== null && hoveredIndex !== index;
+                const isDimmed = hoveredIndex !== null && hoveredIndex !== index;
                 const pathStyle: CSSProperties = {
                   cursor: "pointer",
-                  transition:
-                    "opacity var(--cocoa-duration-fast, 120ms) ease, transform var(--cocoa-duration-fast, 120ms) ease",
+                  transition: "opacity var(--cocoa-duration-fast) var(--cocoa-ease-out), transform var(--cocoa-duration-fast) var(--cocoa-ease-out)",
                   opacity: isDimmed ? 0.55 : 1,
                   transformOrigin: `${size / 2}px ${size / 2}px`,
                   transform: isHovered ? "scale(1.025)" : "scale(1)"
                 };
                 return (
                   <path
-                    key={`${segment.channel.name}-${index}`}
+                    key={`${segment.slice.channel.name}-${index}`}
                     d={segment.path}
-                    fill={segment.color}
+                    fill={segment.slice.color}
                     stroke="var(--cocoa-background-content)"
                     strokeWidth={1.5}
                     style={pathStyle}
@@ -412,7 +259,7 @@ export function DirectorChannelMixDonut({
                     onMouseMove={handleSegmentMove}
                     onMouseLeave={handleSegmentLeave}
                   >
-                    <title>{segment.channel.name}</title>
+                    <title>{segment.slice.channel.name}</title>
                   </path>
                 );
               })
@@ -425,34 +272,22 @@ export function DirectorChannelMixDonut({
           {tooltipStyle && hoveredSegment ? (
             <div style={tooltipStyle} role="tooltip">
               <div style={tooltipTitleStyle}>
-                <span
-                  style={{
-                    width: 8,
-                    height: 8,
-                    borderRadius: 2,
-                    background: hoveredSegment.color
-                  }}
-                />
-                {hoveredSegment.channel.name}
+                <span style={{ width: 8, height: 8, borderRadius: 2, background: hoveredSegment.slice.color }} />
+                {hoveredSegment.slice.channel.name}
               </div>
               <div style={tooltipRowStyle}>
-                <span>Revenue</span>
+                <span>Ingresos</span>
                 <span style={tooltipValueStyle}>
-                  {formatCurrency(hoveredSegment.channel.revenue)} (
-                  {formatPercent(hoveredSegment.share * 100)})
+                  {formatCurrency(hoveredSegment.slice.channel.revenue)} ({donutShareLabel(hoveredSegment.share)})
                 </span>
               </div>
               <div style={tooltipRowStyle}>
-                <span>Room nights</span>
-                <span style={tooltipValueStyle}>
-                  {hoveredSegment.channel.roomNights.toLocaleString()}
-                </span>
+                <span>Noches</span>
+                <span style={tooltipValueStyle}>{number(hoveredSegment.slice.channel.roomNights)}</span>
               </div>
               <div style={tooltipRowStyle}>
-                <span>Cost</span>
-                <span style={tooltipValueStyle}>
-                  {formatPercent(hoveredSegment.channel.costPct)}
-                </span>
+                <span>Coste</span>
+                <span style={tooltipValueStyle}>{formatCostPct(hoveredSegment.slice.channel.costPct)}</span>
               </div>
             </div>
           ) : null}
@@ -461,35 +296,19 @@ export function DirectorChannelMixDonut({
         <div style={legendStyle}>
           {segments.map((segment, index) => {
             const isHovered = hoveredIndex === index;
-            const badge = costBadgeColor(segment.channel.costPct);
+            const badge = costBadgeColor(segment.slice.channel.costPct);
             const rowStyle: CSSProperties = {
               ...legendRowBaseStyle,
-              background: isHovered
-                ? "var(--cocoa-fill-quaternary, rgba(0,0,0,0.04))"
-                : "transparent",
+              background: isHovered ? "var(--cocoa-fill-quaternary)" : "transparent",
               cursor: "default"
             };
             return (
-              <div
-                key={`${segment.channel.name}-legend-${index}`}
-                style={rowStyle}
-                onMouseEnter={() => setHoveredIndex(index)}
-                onMouseLeave={() => setHoveredIndex(null)}
-              >
-                <span style={legendSwatchStyle(segment.color)} />
-                <span style={legendNameStyle}>{segment.channel.name}</span>
-                <span style={legendShareStyle}>
-                  {formatPercent(segment.share * 100)}
-                </span>
-                <span
-                  style={{
-                    ...costBadgeBaseStyle,
-                    background: badge.background,
-                    color: badge.color
-                  }}
-                  title={`Cost ${formatPercent(segment.channel.costPct)}`}
-                >
-                  {formatPercent(segment.channel.costPct, 0)}
+              <div key={`${segment.slice.channel.name}-legend-${index}`} style={rowStyle} onMouseEnter={() => setHoveredIndex(index)} onMouseLeave={() => setHoveredIndex(null)}>
+                <span style={legendSwatchStyle(segment.slice.color)} />
+                <span style={legendNameStyle}>{segment.slice.channel.name}</span>
+                <span style={legendShareStyle}>{donutShareLabel(segment.share)}</span>
+                <span style={{ ...costBadgeBaseStyle, background: badge.background, color: badge.color }} title={`Coste ${formatCostPct(segment.slice.channel.costPct)}`}>
+                  {formatCostPct(segment.slice.channel.costPct, 0)}
                 </span>
               </div>
             );
@@ -497,10 +316,10 @@ export function DirectorChannelMixDonut({
           {segments.length === 0 ? (
             <div
               style={{
-                fontSize: "var(--cocoa-fs-subheadline, 12px)",
+                fontSize: "var(--cocoa-fs-subheadline)",
                 color: "var(--cocoa-label-secondary)",
                 textAlign: "center",
-                padding: "8px 0"
+                padding: "var(--cocoa-space-2) 0"
               }}
             >
               Sin datos de canales disponibles.

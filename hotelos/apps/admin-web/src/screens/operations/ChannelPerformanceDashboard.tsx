@@ -1,11 +1,40 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+// Channel performance — Informes › Rendimiento de canales (/informes/canales).
+//
+// Cocoa 22 (ola 9 · lote 9-A): standalone dashboard (DashboardStandalone):
+// KPI strip → 8/4 row (channel mix table + share donut) → 6/6 row
+// (profitability table + sync status list) → parity alerts table. Read only;
+// polls every two minutes.
+
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
-import { EmptyState } from "../../components/States";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { ACTIONS, UI_STATES } from "../../content/actions";
-import { dateTime, money as formatMoney, percent, plural } from "../../lib/format";
+import { toArray } from "../../utils/toArray";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { dateTime, money, number, percent, plural } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaKpiStatus,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+
+type ChannelMixRow = { channelName: string; reservations: number; revenueEur: number; sharePct: number };
+type ProfitableRow = { channelName: string; netRevenueEur: number; commissionEur: number; marginPct: number };
+type ParityAlert = { id: string; channelName?: string; severity?: string; detectedAt: string; resolvedAt?: string; description?: string };
+type SyncJobStatus = { status: string; count: number };
 
 type ChannelPerformanceData = {
   kpis: {
@@ -15,322 +44,205 @@ type ChannelPerformanceData = {
     reservations30d: number;
     revenue30dEur: number;
   };
-  channelMix: Array<{
-    channelName: string;
-    reservations: number;
-    revenueEur: number;
-    sharePct: number;
-  }>;
-  topProfitableChannels: Array<{
-    channelName: string;
-    netRevenueEur: number;
-    commissionEur: number;
-    marginPct: number;
-  }>;
-  recentParityAlerts: Array<{
-    id: string;
-    channelName?: string;
-    severity?: string;
-    detectedAt: string;
-    resolvedAt?: string;
-    description?: string;
-  }>;
-  syncJobsStatus: Array<{ status: string; count: number }>;
+  channelMix: ChannelMixRow[];
+  topProfitableChannels: ProfitableRow[];
+  recentParityAlerts: ParityAlert[];
+  syncJobsStatus: SyncJobStatus[];
 };
 
-function money(value: number | null | undefined): string {
-  return formatMoney(value);
-}
+// Share bars are scaled to the largest channel (as the legacy bars were); the
+// row carries the mix so the cell can read the maximum.
+type MixTableRow = ChannelMixRow & { maxSharePct: number };
 
-function pct(value: number | null | undefined): string {
-  return percent(value);
-}
-
-function formatDateTime(value?: string): string {
-  return dateTime(value);
-}
-
-function severityClass(severity?: string): "ok" | "warn" | "error" {
-  if (!severity) return "warn";
+function severityTone(severity?: string): CocoaTone {
+  if (!severity) return "warning";
   const s = severity.toLowerCase();
-  if (s === "critical" || s === "high" || s === "error") return "error";
-  if (s === "medium" || s === "warning" || s === "warn") return "warn";
-  return "ok";
+  if (s === "critical" || s === "high" || s === "error") return "danger";
+  if (s === "medium" || s === "warning" || s === "warn") return "warning";
+  return "success";
 }
 
-function severityPill(severity?: string) {
-  const status = severityClass(severity);
-  const cls = status === "ok" ? "cm-pill-ok" : status === "warn" ? "cm-pill-warn" : "cm-pill-error";
-  return <span className={`cm-pill ${cls}`}>{severity ?? "—"}</span>;
-}
-
-function syncStatusPill(status: string) {
+function syncTone(status: string): CocoaTone {
   const s = status.toLowerCase();
-  if (s === "succeeded" || s === "success" || s === "completed" || s === "done") {
-    return <span className="cm-pill cm-pill-ok">{status}</span>;
+  if (s === "succeeded" || s === "success" || s === "completed" || s === "done") return "success";
+  if (s === "failed" || s === "error" || s === "cancelled") return "danger";
+  return "warning";
+}
+
+const MIX_COLUMNS: CocoaTableColumn<MixTableRow>[] = [
+  { key: "channelName", label: "Canal", render: (row) => <strong>{row.channelName}</strong> },
+  { key: "reservations", label: "Reservas", align: "right", render: (row) => number(row.reservations) },
+  { key: "revenueEur", label: "Ingresos", align: "right", render: (row) => money(row.revenueEur) },
+  {
+    key: "sharePct",
+    label: "Cuota",
+    minWidth: 160,
+    render: (row) => (
+      <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
+        <span style={{ flex: "1 1 auto", minWidth: 72 }}>
+          <CocoaChart.Progress value={row.maxSharePct > 0 ? Math.max(2, (row.sharePct / row.maxSharePct) * 100) : 0} showValue={false} aria-label={`Cuota de ${row.channelName}: ${percent(row.sharePct)}`} />
+        </span>
+        <span>{percent(row.sharePct)}</span>
+      </div>
+    )
   }
-  if (s === "failed" || s === "error" || s === "cancelled") {
-    return <span className="cm-pill cm-pill-error">{status}</span>;
+];
+
+const PROFITABLE_COLUMNS: CocoaTableColumn<ProfitableRow>[] = [
+  { key: "channelName", label: "Canal", render: (row) => <strong>{row.channelName}</strong> },
+  { key: "netRevenueEur", label: "Ingreso neto", align: "right", render: (row) => money(row.netRevenueEur) },
+  { key: "commissionEur", label: "Comisión", align: "right", render: (row) => money(row.commissionEur), hideOnNarrow: true },
+  { key: "marginPct", label: "Margen", align: "right", render: (row) => percent(row.marginPct) }
+];
+
+const ALERT_COLUMNS: CocoaTableColumn<ParityAlert>[] = [
+  { key: "severity", label: "Severidad", render: (row) => <CocoaBadge tone={severityTone(row.severity)}>{row.severity ?? "—"}</CocoaBadge> },
+  { key: "channelName", label: "Canal", render: (row) => row.channelName ?? "—" },
+  { key: "description", label: "Descripción", render: (row) => row.description ?? "—", hideOnNarrow: true },
+  { key: "detectedAt", label: "Detectada", render: (row) => dateTime(row.detectedAt) },
+  {
+    key: "resolvedAt",
+    label: "Resuelta",
+    render: (row) =>
+      row.resolvedAt ? (
+        dateTime(row.resolvedAt)
+      ) : (
+        <CocoaBadge tone="warning" size="small">
+          abierta
+        </CocoaBadge>
+      )
   }
-  return <span className="cm-pill cm-pill-warn">{status}</span>;
+];
+
+function kpiStatus(status: "ok" | "warn" | "error"): CocoaKpiStatus {
+  return status === "ok" ? "ok" : status === "warn" ? "warning" : "critical";
+}
+
+// Skeleton espejo: strip of 5 tiles, then 8/4 · 6/6 · 12.
+function ChannelPerformanceSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} />
+      <CocoaSkeleton.Grid rows={[[8, 4], [6, 6], [12]]} height={200} />
+    </div>
+  );
 }
 
 export function ChannelPerformanceDashboard() {
-  const { data, loading, error, refresh } = useApiData<ChannelPerformanceData>(
-    "/dashboards/channel-performance",
-    { pollIntervalMs: 120000, query: { propertyId: PROPERTY_ID } }
-  );
+  const { data, loading, error, refresh } = useApiData<ChannelPerformanceData>("/dashboards/channel-performance", {
+    pollIntervalMs: 120000,
+    query: { propertyId: PROPERTY_ID }
+  });
 
   const kpis = data?.kpis;
-  const channelMix = data?.channelMix ?? [];
-  const topProfitableChannels = data?.topProfitableChannels ?? [];
-  const recentParityAlerts = data?.recentParityAlerts ?? [];
-  const syncJobsStatus = data?.syncJobsStatus ?? [];
+  const channelMix = toArray<ChannelMixRow>(data?.channelMix);
+  const topProfitableChannels = toArray<ProfitableRow>(data?.topProfitableChannels);
+  const recentParityAlerts = toArray<ParityAlert>(data?.recentParityAlerts);
+  const syncJobsStatus = toArray<SyncJobStatus>(data?.syncJobsStatus);
 
-  const parityStatus: "ok" | "warn" | "error" =
-    !kpis ? "warn"
-      : kpis.openParityAlerts === 0 ? "ok"
-      : kpis.openParityAlerts <= 2 ? "warn"
-      : "error";
-
-  const activeStatus: "ok" | "warn" | "error" =
-    !kpis ? "warn"
-      : kpis.activeChannels === 0 ? "error"
-      : kpis.activeChannels < 2 ? "warn"
-      : "ok";
-
-  const commissionStatus: "ok" | "warn" | "error" =
-    !kpis ? "warn"
-      : kpis.avgCommissionPct >= 20 ? "error"
-      : kpis.avgCommissionPct >= 12 ? "warn"
-      : "ok";
+  const parityStatus = !kpis ? "warn" : kpis.openParityAlerts === 0 ? "ok" : kpis.openParityAlerts <= 2 ? "warn" : "error";
+  const activeStatus = !kpis ? "warn" : kpis.activeChannels === 0 ? "error" : kpis.activeChannels < 2 ? "warn" : "ok";
+  const commissionStatus = !kpis ? "warn" : kpis.avgCommissionPct >= 20 ? "error" : kpis.avgCommissionPct >= 12 ? "warn" : "ok";
 
   const maxShare = channelMix.reduce((max, m) => (m.sharePct > max ? m.sharePct : max), 0);
+  const mixRows: MixTableRow[] = channelMix.map((row) => ({ ...row, maxSharePct: maxShare }));
+  const syncTotal = syncJobsStatus.reduce((s, j) => s + j.count, 0);
+  const header = treeHeaderFor("ChannelPerformanceDashboard", { eyebrow: "Informes", title: "Rendimiento de canales" });
 
   return (
-    <>
-      <CocoaPageHeader
-        eyebrow="Informes"
-        title="Rendimiento de canales"
-        subtitle="Reparto de ventas por canal, rentabilidad, alertas de paridad y estado de las sincronizaciones de los últimos 30 días. Solo lectura; se actualiza cada 2 minutos."
-        actions={<button type="button" className="ghost" onClick={refresh}>↻ {ACTIONS.refresh}</button>}
-      />
+    <CocoaPage
+      eyebrow={`${header.eyebrow} · ${getActiveProperty().propertyName}`}
+      title={header.title}
+      subtitle="Reparto de ventas por canal, rentabilidad, alertas de paridad y estado de las sincronizaciones de los últimos 30 días. Solo lectura; se actualiza cada 2 minutos."
+      actions={
+        <>
+          {loading && data ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          {error && data ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={loading && !data ? "loading" : error && !data ? "error" : !kpis ? "empty" : "ready"}
+      skeleton={<ChannelPerformanceSkeleton />}
+      empty={{ title: "Sin datos de canales", message: "El rendimiento aparece aquí cuando los canales conectados registren reservas." }}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "canales-rendimiento-refresh", label: "Actualizar el rendimiento de canales", run: refresh }]}
+    >
+      {kpis ? (
+        <>
+          <CocoaKpiStrip stagger aria-label="Indicadores de canales">
+            <CocoaKpi label="Canales activos" value={number(kpis.activeChannels)} deltaLabel="canales en estado «activo»" polarity="neutral" status={kpiStatus(activeStatus)} />
+            <CocoaKpi label="Alertas de paridad abiertas" value={number(kpis.openParityAlerts)} deltaLabel="diferencias de precio sin resolver" polarity="negative-good" status={kpiStatus(parityStatus)} />
+            <CocoaKpi label="Comisión media" value={percent(kpis.avgCommissionPct)} deltaLabel="entre canales con comisión definida" polarity="negative-good" status={kpiStatus(commissionStatus)} />
+            <CocoaKpi label="Reservas · 30 días" value={number(kpis.reservations30d)} deltaLabel="reservas externas importadas" polarity="neutral" status="ok" />
+            <CocoaKpi label="Ingresos · 30 días" value={money(kpis.revenue30dEur)} deltaLabel="ingresos brutos registrados" status="ok" />
+          </CocoaKpiStrip>
 
-      {error ? (
-        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
-          {UI_STATES.error.title}. {UI_STATES.error.message}
-        </section>
+          <CocoaGrid aria-label="Reparto por canal" align="start">
+            <CocoaSpan cols={8} min={480}>
+              <CocoaSection title="Reparto por canal" meta={plural(channelMix.length, "canal", "canales")} padding={channelMix.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+                {channelMix.length === 0 ? (
+                  <CocoaState kind="empty" inline title="No hay actividad de canales." message="Cuando entren reservas a través de los canales conectados aparecerá aquí el reparto por canal." />
+                ) : (
+                  <CocoaTable columns={MIX_COLUMNS} rows={mixRows} caption="Reparto por canal" aria-label="Reparto por canal" />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={4} min={240}>
+              <CocoaSection title="Cuota de ventas" meta="últimos 30 días">
+                {channelMix.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Sin reparto que representar." />
+                ) : (
+                  <CocoaChart.Donut
+                    slices={channelMix.map((row) => ({ label: row.channelName, value: row.sharePct }))}
+                    centerLabel="canales"
+                    centerValue={number(channelMix.length)}
+                    valueFormat={(value) => percent(value)}
+                    aria-label="Cuota de ventas por canal en los últimos 30 días"
+                  />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
+
+          <CocoaGrid aria-label="Rentabilidad y sincronización" align="start">
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Canales más rentables" meta={`${number(topProfitableChannels.length)} en cabeza`} padding={topProfitableChannels.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+                {topProfitableChannels.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Sin datos de rentabilidad." message="La rentabilidad neta por canal aparecerá aquí cuando el pipeline registre el primer snapshot del periodo." />
+                ) : (
+                  <CocoaTable columns={PROFITABLE_COLUMNS} rows={topProfitableChannels} caption="Canales más rentables" aria-label="Canales más rentables" />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Estado de las sincronizaciones" meta={plural(syncTotal, "tarea", "tareas")}>
+                {syncJobsStatus.length === 0 ? (
+                  <CocoaState kind="empty" inline title="No hay sincronizaciones en el periodo." />
+                ) : (
+                  <ul className="c22-section__list" aria-label="Sincronizaciones por estado">
+                    {syncJobsStatus.map((row) => (
+                      <li key={row.status}>
+                        <CocoaBadge tone={syncTone(row.status)}>{row.status}</CocoaBadge>
+                        <strong>{plural(row.count, "tarea", "tareas")}</strong>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
+
+          <CocoaSection title="Alertas de paridad recientes" meta={plural(recentParityAlerts.length, "alerta", "alertas")} padding={recentParityAlerts.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {recentParityAlerts.length === 0 ? (
+              <CocoaState kind="empty" inline title="No hay alertas de paridad recientes." />
+            ) : (
+              <CocoaTable columns={ALERT_COLUMNS} rows={recentParityAlerts} rowKey="id" caption="Alertas de paridad recientes" aria-label="Alertas de paridad recientes" />
+            )}
+          </CocoaSection>
+        </>
       ) : null}
-
-      <section className="rev-kpi-grid">
-        <article className={`rev-kpi rev-kpi-${activeStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Canales activos</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.activeChannels ?? 0)}</div>
-          <div className="rev-kpi-delta">Canales en estado «activo»</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${parityStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Alertas de paridad abiertas</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.openParityAlerts ?? 0)}</div>
-          <div className="rev-kpi-delta">Diferencias de precio entre canales sin resolver</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${commissionStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Comisión media</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : pct(kpis?.avgCommissionPct)}</div>
-          <div className="rev-kpi-delta">Promedio entre canales con comisión definida</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Reservas · 30 días</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : (kpis?.reservations30d ?? 0)}</div>
-          <div className="rev-kpi-delta">Reservas externas importadas</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Ingresos · 30 días</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.revenue30dEur)}</div>
-          <div className="rev-kpi-delta">Ingresos brutos registrados</div>
-        </article>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Reparto</p>
-              <h3>Reparto por canal</h3>
-            </div>
-            <span className="bo-chip">{channelMix.length} canales</span>
-          </div>
-          {channelMix.length === 0 ? (
-            <EmptyState
-              title="No hay actividad de canales"
-              message="Cuando entren reservas a través de los canales conectados aparecerá aquí el reparto por canal."
-            />
-          ) : (
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead>
-                  <tr>
-                    <th>Canal</th>
-                    <th style={{ textAlign: "right" }}>Reservas</th>
-                    <th style={{ textAlign: "right" }}>Ingresos</th>
-                    <th>Cuota</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {channelMix.map((row, idx) => {
-                    const barWidth = maxShare > 0 ? Math.max(2, (row.sharePct / maxShare) * 100) : 0;
-                    return (
-                      <tr key={`${row.channelName}-${idx}`}>
-                        <td><strong>{row.channelName}</strong></td>
-                        <td style={{ textAlign: "right" }}>{row.reservations}</td>
-                        <td style={{ textAlign: "right" }}>{money(row.revenueEur)}</td>
-                        <td>
-                          <div
-                            aria-label={`Share ${row.sharePct}%`}
-                            style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              minWidth: 140
-                            }}
-                          >
-                            <div
-                              style={{
-                                background: "var(--bg-muted, #eef0f4)",
-                                borderRadius: 4,
-                                height: 8,
-                                flex: 1,
-                                overflow: "hidden"
-                              }}
-                            >
-                              <div
-                                style={{
-                                  background: "var(--accent-ink, #2f6feb)",
-                                  height: "100%",
-                                  width: `${barWidth}%`
-                                }}
-                              />
-                            </div>
-                            <span style={{ fontVariantNumeric: "tabular-nums", minWidth: 48, textAlign: "right" }}>
-                              {pct(row.sharePct)}
-                            </span>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Rentabilidad</p>
-              <h3>Canales más rentables</h3>
-            </div>
-            <span className="bo-chip">{topProfitableChannels.length} top</span>
-          </div>
-          {topProfitableChannels.length === 0 ? (
-            <EmptyState
-              title="Sin datos de rentabilidad"
-              message="La rentabilidad neta por canal aparecerá aquí cuando el pipeline registre el primer snapshot del periodo."
-            />
-          ) : (
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead>
-                  <tr>
-                    <th>Canal</th>
-                    <th style={{ textAlign: "right" }}>Ingreso neto</th>
-                    <th style={{ textAlign: "right" }}>Comisión</th>
-                    <th style={{ textAlign: "right" }}>Margen</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topProfitableChannels.map((row, idx) => (
-                    <tr key={`${row.channelName}-${idx}`}>
-                      <td><strong>{row.channelName}</strong></td>
-                      <td style={{ textAlign: "right" }}>{money(row.netRevenueEur)}</td>
-                      <td style={{ textAlign: "right" }}>{money(row.commissionEur)}</td>
-                      <td style={{ textAlign: "right" }}>{pct(row.marginPct)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Paridad</p>
-            <h3>Alertas de paridad recientes</h3>
-          </div>
-          <span className="bo-chip">{recentParityAlerts.length} alertas</span>
-        </div>
-        {recentParityAlerts.length === 0 ? (
-          <p className="bo-muted">No hay alertas de paridad recientes.</p>
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Severidad</th>
-                  <th>Canal</th>
-                  <th>Descripción</th>
-                  <th>Detectada</th>
-                  <th>Resuelta</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentParityAlerts.map((alert) => (
-                  <tr
-                    key={alert.id}
-                    className={
-                      severityClass(alert.severity) === "error"
-                        ? "cm-row-error"
-                        : severityClass(alert.severity) === "warn"
-                          ? "cm-row-warn"
-                          : undefined
-                    }
-                  >
-                    <td>{severityPill(alert.severity)}</td>
-                    <td>{alert.channelName ?? "—"}</td>
-                    <td>{alert.description ?? "—"}</td>
-                    <td>{formatDateTime(alert.detectedAt)}</td>
-                    <td>{alert.resolvedAt ? formatDateTime(alert.resolvedAt) : <span className="bo-muted">abierta</span>}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Sincronización</p>
-            <h3>Estado de las sincronizaciones</h3>
-          </div>
-          <span className="bo-chip">{plural(syncJobsStatus.reduce((s, j) => s + j.count, 0), "tarea", "tareas")}</span>
-        </div>
-        {syncJobsStatus.length === 0 ? (
-          <p className="bo-muted">No hay sincronizaciones en el periodo.</p>
-        ) : (
-          <ul className="bo-list">
-            {syncJobsStatus.map((row) => (
-              <li key={row.status}>
-                {syncStatusPill(row.status)} <strong>{row.count}</strong> {row.count === 1 ? "tarea" : "tareas"}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-    </>
+    </CocoaPage>
   );
 }

@@ -64,7 +64,10 @@ export const ACTIONS = {
   moreActions: "Más acciones",
   help: "Ayuda",
   signOut: "Cerrar sesión",
-  signIn: "Iniciar sesión"
+  signIn: "Iniciar sesión",
+  // Cocoa 22 · ola 2
+  escalate: "Escalar",
+  assignToMe: "Asignar a mí"
 } as const;
 
 export type ActionKey = keyof typeof ACTIONS;
@@ -105,7 +108,9 @@ export const STATUS_LABELS = {
   all: "Todos",
   none: "Ninguno",
   optional: "Opcional",
-  required: "Obligatorio"
+  required: "Obligatorio",
+  // Cocoa 22 · ola 2
+  failed: "Fallido"
 } as const;
 
 export type StatusKey = keyof typeof STATUS_LABELS;

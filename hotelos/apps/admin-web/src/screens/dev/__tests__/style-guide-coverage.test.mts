@@ -72,7 +72,17 @@ const REQUIRED: ReadonlyArray<{ label: string; pattern: RegExp }> = [
   { label: "CocoaToolbar variant=\"content\"", pattern: usage("CocoaToolbar", '\\bvariant="content"') },
   { label: "CocoaFormSection + CocoaFormRow", pattern: /<CocoaFormSection\b[\s\S]*<CocoaFormRow\b|<CocoaFormRow\b[\s\S]*<CocoaFormSection\b/ },
   { label: "CocoaInput multiline", pattern: usage("CocoaInput", "\\bmultiline\\b") },
-  { label: "CocoaKbd announce", pattern: usage("CocoaKbd", "\\bannounce\\b") }
+  { label: "CocoaKbd announce", pattern: usage("CocoaKbd", "\\bannounce\\b") },
+  // Cocoa 22 · integración olas 1-2-4-9 (handoffs de primitivas)
+  { label: "CocoaButton wrap", pattern: usage("CocoaButton", "\\bwrap\\b") },
+  { label: "CocoaInput suggestions={…}", pattern: usage("CocoaInput", "\\bsuggestions=\\{") },
+  { label: "CocoaDatePicker withTime", pattern: usage("CocoaDatePicker", "\\bwithTime\\b") },
+  { label: "CocoaTable rowTone={…}", pattern: usage("CocoaTable", "\\browTone=\\{") },
+  { label: "CocoaDialog initialFocus={…}", pattern: usage("CocoaDialog", "\\binitialFocus=\\{") },
+  { label: "CocoaDrawer focusKey={…}", pattern: usage("CocoaDrawer", "\\bfocusKey=\\{") },
+  { label: "CocoaChart.Progress max={…}", pattern: usage("CocoaChart.Progress", "\\bmax=\\{") },
+  { label: "CocoaSection variant=\"plain\" padding=\"none\"", pattern: usage("CocoaSection", 'variant="plain" padding="none"') },
+  { label: ".cocoa-caption + .cocoa-link utilities", pattern: /className="cocoa-caption"[\s\S]*className="cocoa-link"/ }
 ];
 
 describe("style guide · coverage of the primitives (review#27)", () => {

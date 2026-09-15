@@ -102,6 +102,37 @@ input[type="search"]::-webkit-search-decoration {
   min-width: 0;
 }
 
+/* Caption of a group without a control (a row of chips, a legend): the
+   field-label metrics outside CocoaField (`.c22-field__label` stays scoped). */
+.cocoa-caption {
+  display: inline-block;
+  font-family: var(--cocoa-font);
+  font-size: var(--cocoa-fs-caption);
+  line-height: var(--cocoa-lh-caption);
+  font-weight: var(--cocoa-fw-semibold);
+  letter-spacing: var(--cocoa-tracking-wide);
+  text-transform: uppercase;
+  color: var(--cocoa-label-secondary);
+  min-width: 0;
+}
+
+/* Inline text link (<a href download>, «Abrir histórico»): the AA-safe accent
+   ink (the hue alone is 4.36:1 at 13 px), underline offset 2, shared ring. */
+.cocoa-link {
+  color: var(--cocoa-tone-accent-text);
+  font-weight: var(--cocoa-fw-semibold);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  border-radius: var(--cocoa-radius-sm);
+  transition: color var(--cocoa-duration-fast) var(--cocoa-ease-out);
+}
+.cocoa-link:hover { color: var(--cocoa-accent); }
+.cocoa-link:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--cocoa-focus-ring);
+}
+
 .cocoa-sr-only {
   position: absolute !important;
   width: 1px;
