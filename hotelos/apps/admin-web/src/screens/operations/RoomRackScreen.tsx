@@ -1,30 +1,45 @@
-// RoomRackScreen — "el corazón visual" del PMS (directriz Nov 2026).
+// Tablero de habitaciones — Recepción › Reservas › Tablero (/recepcion/reservas/tablero).
 //
-// Tablero por planta con habitaciones como tiles. Cada tile pinta:
-//   - número grande
-//   - color por estado (ocupada / lista / sucia / fuera-servicio / bloqueada)
-//   - badges encima (⭐ VIP, € saldo, 💬 petición, 🛎 incidencia, ⏰ HK urgente,
-//     ✈ llegada hoy, ↪ late checkout)
-//   - huésped actual o próxima llegada en 1 línea
-//
-// Click → side panel con detalle + acciones rápidas (ver folio, hacer check-in,
-// bloquear, marcar sucia, asignar HK).
-//
-// Reglas UX (directriz):
-//   - "Estados visuales claros"
-//   - "Cero información enterrada" — saldo/petición/llegada visibles sin click
-//   - "Acción frecuente a ≤ 2 clics"
-//   - Filtros por estado y planta
+// Cocoa 22 · ola 3 · lote 3-A (dashboard archetype, template DashboardAlojado):
+// CocoaPage → CocoaKpiStrip (ocupadas, listas, sucias, fuera de servicio,
+// llegadas y salidas de hoy) → CocoaToolbar (búsqueda, planta) + chips de
+// estado → una CocoaSection por planta con cada habitación como CocoaCard
+// interactiva (número, estado con barra de tono, huésped actual o próxima
+// llegada, avisos como CocoaBadge: nada enterrado, nada en emoji) →
+// CocoaDrawer con el detalle y las acciones rápidas (check-in / check-out
+// abren los drawers de Hoy; limpieza y bloqueo van al API) → toasts por
+// useToast. Same endpoint (/dashboards/room-rack) and 30 s polling as before;
+// hosted inside ReservasTabs the container paints the title.
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { LoadingBlock, ErrorState } from "../../components/States";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { QuickCheckInDrawer } from "./QuickCheckInDrawer";
 import { QuickCheckOutDrawer } from "./QuickCheckOutDrawer";
+import { floorKey, floorTitle } from "./room-rack-labels";
 import { useTabHost } from "../tabs/TabHost";
-import { money } from "../../lib/format";
+import { useToast } from "../../components/Toast";
+import { date, money, number, plural, time } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaCard,
+  CocoaDrawer,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSearchInput,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaToolbar,
+  toneColor,
+  type CocoaTone
+} from "../../components/cocoa";
 
 // ============================================================== types
 
@@ -68,7 +83,12 @@ type Tile = {
   nextArrival?: Reservation;
 };
 
+// Raw group of the API: `floor` is "" on Rías Altas, «Planta 1» on Los Tilos
+// and "—" when the column is null.
 type Floor = { floor: string; rooms: Tile[] };
+// Normalised group painted by the board (fix:3-A qa#11): a non-empty key for
+// the filter and a title that never reads «Planta » or «Planta Planta 1».
+type FloorGroup = { key: string; title: string; rooms: Tile[] };
 
 type RackData = {
   propertyId: string;
@@ -87,45 +107,59 @@ type RackData = {
 
 // ============================================================== display
 
-const OCCUPANCY_TONE: Record<Occupancy, { bg: string; border: string; ink: string; label: string }> = {
-  vacant_clean: { bg: "rgba(31, 138, 76, 0.10)", border: "#1f8a4c", ink: "#1f8a4c", label: "Lista" },
-  vacant_dirty: { bg: "rgba(210, 155, 0, 0.10)", border: "#d29b00", ink: "#a47600", label: "Sucia" },
-  occupied_stay: { bg: "rgba(38, 99, 196, 0.10)", border: "#2663c4", ink: "#1d4ea0", label: "Ocupada" },
-  occupied_departing_today: { bg: "rgba(143, 79, 191, 0.12)", border: "#8f4fbf", ink: "#6f3ad2", label: "Sale hoy" },
-  checked_out_today: { bg: "rgba(120, 120, 120, 0.10)", border: "#888", ink: "#666", label: "Salida hecha" },
-  out_of_order: { bg: "rgba(210, 59, 59, 0.10)", border: "#d23b3b", ink: "#a52828", label: "Fuera servicio" },
-  blocked_maintenance: { bg: "rgba(210, 59, 59, 0.10)", border: "#d23b3b", ink: "#a52828", label: "Bloqueada" }
+const OCCUPANCY_META: Record<Occupancy, { tone: CocoaTone; label: string }> = {
+  vacant_clean: { tone: "success", label: "Lista" },
+  vacant_dirty: { tone: "warning", label: "Sucia" },
+  occupied_stay: { tone: "info", label: "Ocupada" },
+  occupied_departing_today: { tone: "accent", label: "Sale hoy" },
+  checked_out_today: { tone: "neutral", label: "Salida hecha" },
+  out_of_order: { tone: "danger", label: "Fuera de servicio" },
+  blocked_maintenance: { tone: "danger", label: "Bloqueada" }
+};
+const OCCUPANCIES = Object.keys(OCCUPANCY_META) as Occupancy[];
+
+const BADGE_META: Record<Badge, { short: string; title: string; tone: CocoaTone }> = {
+  vip: { short: "VIP", title: "Huésped VIP", tone: "accent" },
+  balance_due: { short: "Saldo", title: "Saldo pendiente", tone: "warning" },
+  special_request: { short: "Petición", title: "Petición especial", tone: "info" },
+  hk_urgent: { short: "Limpieza urgente", title: "Limpieza urgente (llega en menos de 2 h)", tone: "danger" },
+  overbooking: { short: "Conflicto", title: "Conflicto de reserva", tone: "danger" },
+  incident: { short: "Incidencia", title: "Incidencia abierta", tone: "warning" },
+  late_checkout: { short: "Late check-out", title: "Late check-out", tone: "neutral" },
+  early_checkin: { short: "Early check-in", title: "Early check-in", tone: "neutral" },
+  vacant_due_soon: { short: "Llega hoy", title: "Llegada hoy", tone: "info" }
 };
 
-const BADGE_GLYPH: Record<Badge, string> = {
-  vip: "⭐",
-  balance_due: "€",
-  special_request: "💬",
-  hk_urgent: "⏰",
-  overbooking: "⚠",
-  incident: "🛎",
-  late_checkout: "↪",
-  early_checkin: "✈",
-  vacant_due_soon: "↑"
+const HK_LABEL: Record<string, string> = { clean: "limpia", dirty: "sucia", inspected: "inspeccionada" };
+
+const EMPTY_TOTALS: RackData["totals"] = { rooms: 0, occupied: 0, vacantClean: 0, vacantDirty: 0, outOfOrder: 0, arrivalsToday: 0, departuresToday: 0 };
+
+// ============================================================== styles (tokens only)
+
+function toneBarStyle(tone: CocoaTone): CSSProperties {
+  return { display: "block", height: 3, borderRadius: "var(--cocoa-radius-full)", background: toneColor(tone) };
+}
+
+const roomNumberStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-title-2)",
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  lineHeight: "var(--cocoa-lh-title-2)",
+  fontVariantNumeric: "tabular-nums"
 };
 
-const BADGE_TITLE: Record<Badge, string> = {
-  vip: "Huésped VIP",
-  balance_due: "Saldo pendiente",
-  special_request: "Petición especial",
-  hk_urgent: "Limpieza urgente (llega < 2h)",
-  overbooking: "Conflicto de reserva",
-  incident: "Incidencia abierta",
-  late_checkout: "Late check-out",
-  early_checkin: "Early check-in",
-  vacant_due_soon: "Llegada hoy"
+const tileLineStyle: CSSProperties = {
+  display: "block",
+  fontSize: "var(--cocoa-fs-callout)",
+  color: "var(--cocoa-label-secondary)",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  minWidth: 0
 };
+
+const mutedStyle: CSSProperties = { display: "block", fontSize: "var(--cocoa-fs-callout)", color: "var(--cocoa-label-secondary)" };
 
 // ============================================================== helpers
-
-function fmtEur(value: number | undefined | null): string {
-  return money(value);
-}
 
 // SECURITY (auditoría 2026-07): antes era `fetch` crudo sin Authorization → 401
 // en producción. Ahora va por apiRequest (JWT + manejo de sesión).
@@ -134,14 +168,24 @@ async function postAction(path: string, body?: unknown): Promise<{ ok: boolean; 
     await apiRequest(path, { method: "POST", body });
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : "Error" };
+    return { ok: false, message: err instanceof Error ? err.message : "No se pudo completar la acción." };
   }
+}
+
+function RackSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={6} />
+      <CocoaSkeleton.Grid rows={[[12], [12]]} height={200} />
+    </div>
+  );
 }
 
 // ============================================================== component
 
 export function RoomRackScreen() {
   const hosted = useTabHost() !== null;
+  const { showToast } = useToast();
   const propertyId = getActivePropertyId();
   const { data, loading, error, refresh } = useApiData<RackData>(`/dashboards/room-rack?propertyId=${propertyId}`, { pollIntervalMs: 30000 });
 
@@ -152,18 +196,29 @@ export function RoomRackScreen() {
   const [checkInResId, setCheckInResId] = useState<string | null>(null);
   const [checkOutResId, setCheckOutResId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<{ kind: "ok" | "warn" | "error"; text: string } | null>(null);
 
-  const totals = data?.totals ?? { rooms: 0, occupied: 0, vacantClean: 0, vacantDirty: 0, outOfOrder: 0, arrivalsToday: 0, departuresToday: 0 };
-  const floors = data?.floors ?? [];
+  const totals = data?.totals ?? EMPTY_TOTALS;
+  // Floors normalised and merged by key so every spelling of «no floor» is one
+  // «Sin planta» section (qa#11).
+  const floors: FloorGroup[] = useMemo(() => {
+    const groups = new Map<string, FloorGroup>();
+    for (const f of data?.floors ?? []) {
+      const key = floorKey(f.floor);
+      const group = groups.get(key);
+      if (group) group.rooms = [...group.rooms, ...f.rooms];
+      else groups.set(key, { key, title: floorTitle(f.floor), rooms: f.rooms });
+    }
+    return Array.from(groups.values());
+  }, [data]);
 
-  // Floor con tiles filtrados
+  // Floors with their filtered tiles.
   const filteredFloors = useMemo(() => {
     const q = query.trim().toLowerCase();
     return floors
-      .filter((f) => filterFloor === "all" || f.floor === filterFloor)
+      .filter((f) => filterFloor === "all" || f.key === filterFloor)
       .map((f) => ({
-        floor: f.floor,
+        key: f.key,
+        title: f.title,
         rooms: f.rooms.filter((r) => {
           if (filterOcc.size > 0 && !filterOcc.has(r.occupancy)) return false;
           if (q) {
@@ -175,6 +230,9 @@ export function RoomRackScreen() {
       }))
       .filter((f) => f.rooms.length > 0);
   }, [floors, filterOcc, filterFloor, query]);
+
+  const visibleCount = filteredFloors.reduce((sum, f) => sum + f.rooms.length, 0);
+  const filtersActive = filterOcc.size > 0 || filterFloor !== "all" || query.trim() !== "";
 
   const selectedTile = useMemo(() => {
     if (!selectedRoomId) return null;
@@ -194,12 +252,17 @@ export function RoomRackScreen() {
     });
   }
 
+  function clearFilters() {
+    setFilterOcc(new Set());
+    setFilterFloor("all");
+    setQuery("");
+  }
+
   async function handleBlockRoom(roomId: string, sellable: boolean) {
     setBusy(true);
     const result = await postAction(`/rooms/${roomId}/sellable`, { sellable });
     setBusy(false);
-    setToast({ kind: result.ok ? "ok" : "warn", text: result.ok ? (sellable ? "Habitación desbloqueada" : "Habitación bloqueada") : (result.message || "Error") });
-    setTimeout(() => setToast(null), 3500);
+    showToast(result.ok ? (sellable ? "Habitación desbloqueada" : "Habitación bloqueada") : (result.message ?? "No se pudo completar la acción."), { variant: result.ok ? "success" : "warning" });
     if (result.ok) refresh();
   }
 
@@ -207,142 +270,161 @@ export function RoomRackScreen() {
     setBusy(true);
     const result = await postAction(`/rooms/${roomId}/housekeeping-status`, { status });
     setBusy(false);
-    setToast({ kind: result.ok ? "ok" : "warn", text: result.ok ? `Estado HK → ${status}` : (result.message || "Error") });
-    setTimeout(() => setToast(null), 3500);
+    showToast(result.ok ? `Habitación marcada como ${HK_LABEL[status] ?? status}` : (result.message ?? "No se pudo completar la acción."), { variant: result.ok ? "success" : "warning" });
     if (result.ok) refresh();
   }
 
   // Audit 2026-06 · #10: first-load guard. Before any data arrives the derived
   // totals/floors are all zero, so the board rendered as a misleading "empty
-  // hotel". Show a real loading/error state instead (all hooks run above this).
-  if (!data) {
-    return (
-      <>
-        <div className="bo-page-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
-          {hosted ? null : (
-            <div className="bo-page-head-text">
-              <div className="bo-page-eyebrow">Recepción · Tablero</div>
-              <h1 className="bo-page-title">Habitaciones</h1>
-            </div>
-          )}
-          <div className="bo-page-head-actions">
-            <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
-          </div>
-        </div>
-        {error ? (
-          <ErrorState title="No se pudo cargar el tablero de habitaciones" message={error} onRetry={refresh} />
-        ) : (
-          <LoadingBlock label="Cargando el tablero de habitaciones…" />
-        )}
-      </>
-    );
-  }
+  // hotel". The page state paints a skeleton or the error instead.
+  const pageState = !data ? (error ? "error" : "loading") : "ready";
+  const dataAt = data ? time(data.generatedAt) : null;
+
+  const floorOptions = useMemo(
+    () => [{ value: "all", label: "Todas las plantas" }, ...floors.map((f) => ({ value: f.key, label: `${f.title} (${f.rooms.length})` }))],
+    [floors]
+  );
 
   return (
-    <>
-      <div className="bo-page-head" style={hosted ? { justifyContent: "flex-end" } : undefined}>
-        {hosted ? null : (
-          <div className="bo-page-head-text">
-            <div className="bo-page-eyebrow">Recepción · Tablero</div>
-            <h1 className="bo-page-title">Habitaciones</h1>
-            <p className="bo-page-subtitle">
-              Vista en tiempo real de las {totals.rooms} habitaciones. Click en una tile para ver detalles y actuar.
-            </p>
-          </div>
-        )}
-        <div className="bo-page-head-actions">
-          {loading ? <span className="bo-status info">cargando</span> : null}
-          {error ? <span className="bo-status error">{error}</span> : null}
-          <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
-        </div>
-      </div>
-
-      {/* KPI strip */}
-      <div className="rev-kpi-grid">
-        <KpiCard label="Ocupadas" value={totals.occupied} tone="info" />
-        <KpiCard label="Listas" value={totals.vacantClean} tone="ok" />
-        <KpiCard label="Sucias" value={totals.vacantDirty} tone="warn" />
-        <KpiCard label="Fuera de servicio" value={totals.outOfOrder} tone={totals.outOfOrder > 0 ? "error" : "ok"} />
-        <KpiCard label="Llegadas hoy" value={totals.arrivalsToday} tone="info" />
-        <KpiCard label="Salidas hoy" value={totals.departuresToday} tone="info" />
-      </div>
-
-      {/* Filtros */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Filtros</h3>
-          <span className="bo-muted" style={{ fontSize: 12 }}>{filteredFloors.reduce((s, f) => s + f.rooms.length, 0)} habitaciones visibles</span>
-        </div>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input
-            type="search"
-            placeholder="Buscar por nº o huésped"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            style={{ padding: "6px 10px", flex: "0 0 220px", border: "1px solid var(--border)", borderRadius: 6 }}
-          />
-          <select value={filterFloor} onChange={(e) => setFilterFloor(e.target.value)} style={{ padding: 6 }}>
-            <option value="all">Todas las plantas</option>
-            {floors.map((f) => (
-              <option key={f.floor} value={f.floor}>Planta {f.floor} ({f.rooms.length})</option>
-            ))}
-          </select>
-          {(Object.keys(OCCUPANCY_TONE) as Occupancy[]).map((o) => (
-            <button
-              key={o}
-              type="button"
-              className={filterOcc.has(o) ? "primary" : "ghost"}
-              onClick={() => toggleFilter(o)}
-              style={{ display: "inline-flex", alignItems: "center", gap: 6 }}
-            >
-              <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: OCCUPANCY_TONE[o].border }} />
-              {OCCUPANCY_TONE[o].label}
-            </button>
-          ))}
-          {filterOcc.size > 0 || filterFloor !== "all" || query ? (
-            <button type="button" className="ghost" onClick={() => { setFilterOcc(new Set()); setFilterFloor("all"); setQuery(""); }}>
-              Limpiar filtros
-            </button>
+    <CocoaPage
+      eyebrow="Recepción · Reservas"
+      title="Tablero de habitaciones"
+      subtitle={
+        hosted
+          ? undefined
+          : `Vista en tiempo real de ${plural(totals.rooms, "habitación", "habitaciones")}. Abre una para ver el detalle y actuar.${dataAt ? ` Datos a ${dataAt}.` : ""}`
+      }
+      actions={
+        <>
+          {error && data ? (
+            <CocoaBadge tone="warning" title={error}>
+              Sin actualizar
+            </CocoaBadge>
           ) : null}
-        </div>
-      </article>
+          <CocoaButton variant="bordered" tone="neutral" size="small" loading={loading && data !== null} onClick={refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={pageState}
+      skeleton={<RackSkeleton />}
+      error={{ title: "No se pudo cargar el tablero de habitaciones", message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "tablero-refresh", label: "Actualizar tablero de habitaciones", run: refresh }]}
+    >
+      <CocoaKpiStrip stagger aria-label="Estado de las habitaciones">
+        <CocoaKpi label="Ocupadas" value={number(totals.occupied)} />
+        <CocoaKpi label="Listas" value={number(totals.vacantClean)} status={totals.vacantClean > 0 ? "ok" : "warning"} />
+        <CocoaKpi label="Sucias" value={number(totals.vacantDirty)} status={totals.vacantDirty > 0 ? "warning" : "ok"} />
+        <CocoaKpi label="Fuera de servicio" value={number(totals.outOfOrder)} status={totals.outOfOrder > 0 ? "critical" : "ok"} />
+        <CocoaKpi label="Llegadas hoy" value={number(totals.arrivalsToday)} />
+        <CocoaKpi label="Salidas hoy" value={number(totals.departuresToday)} />
+      </CocoaKpiStrip>
 
-      {/* Floors */}
-      {filteredFloors.map((floor) => (
-        <article key={floor.floor} className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Planta {floor.floor}</h3>
-            <span className="bo-chip">{floor.rooms.length} habitaciones</span>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: 8 }}>
-            {floor.rooms.map((tile) => (
-              <RoomTile key={tile.roomId} tile={tile} selected={tile.roomId === selectedRoomId} onClick={() => setSelectedRoomId(tile.roomId)} />
-            ))}
-          </div>
-        </article>
-      ))}
+      <CocoaToolbar
+        variant="content"
+        aria-label="Filtros del tablero"
+        leftSlot={
+          <CocoaSearchInput
+            id="tablero-search"
+            value={query}
+            onChange={setQuery}
+            placeholder="Buscar por número o huésped…"
+            aria-label="Buscar habitación por número o huésped"
+          />
+        }
+        rightSlot={
+          <>
+            <CocoaSelect value={filterFloor} onChange={setFilterFloor} options={floorOptions} aria-label="Planta" />
+            <CocoaBadge tone="neutral">{plural(visibleCount, "habitación visible", "habitaciones visibles")}</CocoaBadge>
+          </>
+        }
+      />
 
-      {/* Side panel */}
-      {selectedTile ? (
-        <RoomDetailPanel
-          tile={selectedTile}
-          onClose={() => setSelectedRoomId(null)}
-          onCheckIn={(resId) => setCheckInResId(resId)}
-          onCheckOut={(resId) => setCheckOutResId(resId)}
-          onBlock={(roomId, sellable) => handleBlockRoom(roomId, sellable)}
-          onHkStatus={(roomId, status) => handleHkStatus(roomId, status)}
-          busy={busy}
-        />
-      ) : null}
+      <div className="cocoa-row" data-gap="2" role="group" aria-label="Filtrar por estado">
+        <span className="cocoa-caption">Estado</span>
+        {OCCUPANCIES.map((o) => {
+          const active = filterOcc.has(o);
+          const meta = OCCUPANCY_META[o];
+          return (
+            <CocoaButton
+              key={o}
+              variant={active ? "tinted" : "bordered"}
+              tone={active ? "accent" : "neutral"}
+              size="small"
+              aria-pressed={active}
+              onClick={() => toggleFilter(o)}
+              icon={<span aria-hidden="true" style={{ ...toneBarStyle(meta.tone), width: 10, height: 10 }} />}
+            >
+              {meta.label}
+            </CocoaButton>
+          );
+        })}
+        {filtersActive ? (
+          <CocoaButton variant="plain" tone="neutral" size="small" onClick={clearFilters}>
+            {ACTIONS.clearFilters}
+          </CocoaButton>
+        ) : null}
+      </div>
 
-      {/* Drawers */}
+      {filteredFloors.length === 0 ? (
+        <CocoaSection aria-label="Sin habitaciones">
+          <CocoaState
+            kind="empty"
+            illustration={filtersActive ? "search" : "box"}
+            title={filtersActive ? "Ninguna habitación coincide" : "Sin habitaciones"}
+            message={filtersActive ? "Cambia la búsqueda o los filtros de planta y estado." : "La propiedad no tiene habitaciones configuradas todavía."}
+            primaryAction={filtersActive ? { label: ACTIONS.clearFilters, onClick: clearFilters } : undefined}
+          />
+        </CocoaSection>
+      ) : (
+        filteredFloors.map((floor) => (
+          <CocoaSection key={floor.key} title={floor.title} meta={plural(floor.rooms.length, "habitación", "habitaciones")}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "var(--cocoa-space-2)" }}>
+              {floor.rooms.map((tile) => (
+                <RoomTile key={tile.roomId} tile={tile} onOpen={() => setSelectedRoomId(tile.roomId)} />
+              ))}
+            </div>
+          </CocoaSection>
+        ))
+      )}
+
+      <CocoaDrawer
+        open={selectedTile !== null}
+        onClose={() => setSelectedRoomId(null)}
+        title={selectedTile ? `Habitación ${selectedTile.roomNumber}` : "Habitación"}
+        subtitle={selectedTile ? `${selectedTile.roomTypeName ? `${selectedTile.roomTypeName} · ` : ""}${floorTitle(selectedTile.floor)}` : undefined}
+        side="right"
+        size="md"
+        footer={
+          <CocoaButton variant="plain" tone="neutral" onClick={() => setSelectedRoomId(null)}>
+            {ACTIONS.close}
+          </CocoaButton>
+        }
+      >
+        {selectedTile ? (
+          <RoomDetail
+            tile={selectedTile}
+            busy={busy}
+            onCheckIn={(resId) => {
+              setSelectedRoomId(null);
+              setCheckInResId(resId);
+            }}
+            onCheckOut={(resId) => {
+              setSelectedRoomId(null);
+              setCheckOutResId(resId);
+            }}
+            onBlock={(roomId, sellable) => void handleBlockRoom(roomId, sellable)}
+            onHkStatus={(roomId, status) => void handleHkStatus(roomId, status)}
+          />
+        ) : null}
+      </CocoaDrawer>
+
       {checkInResId ? (
         <QuickCheckInDrawer
           reservationId={checkInResId}
           onClose={() => setCheckInResId(null)}
           onCompleted={({ elapsedSeconds }) => {
-            setToast({ kind: "ok", text: `Check-in en ${elapsedSeconds}s` });
-            setTimeout(() => setToast(null), 4000);
+            showToast(`Check-in completado en ${plural(elapsedSeconds, "segundo", "segundos")}`, { variant: "success" });
             refresh();
           }}
         />
@@ -352,237 +434,153 @@ export function RoomRackScreen() {
           reservationId={checkOutResId}
           onClose={() => setCheckOutResId(null)}
           onCompleted={({ elapsedSeconds }) => {
-            setToast({ kind: "ok", text: `Check-out en ${elapsedSeconds}s` });
-            setTimeout(() => setToast(null), 4000);
+            showToast(`Check-out completado en ${plural(elapsedSeconds, "segundo", "segundos")}`, { variant: "success" });
             refresh();
           }}
         />
       ) : null}
-
-      {toast ? (
-        <div style={{ position: "fixed", bottom: 20, right: 20, zIndex: 70 }}>
-          <span className={`bo-status ${toast.kind === "ok" ? "ok" : toast.kind === "warn" ? "warn" : "error"}`}>{toast.text}</span>
-        </div>
-      ) : null}
-    </>
+    </CocoaPage>
   );
 }
 
 // ============================================================== sub-components
 
-function KpiCard({ label, value, tone }: { label: string; value: number; tone: "ok" | "warn" | "error" | "info" }) {
-  const klass = tone === "ok" ? "rev-kpi-ok" : tone === "warn" ? "rev-kpi-warn" : tone === "error" ? "rev-kpi-error" : "rev-kpi-ok";
-  return (
-    <article className={`rev-kpi ${klass}`}>
-      <div className="rev-kpi-head">
-        <span className="rev-kpi-label">{label}</span>
-      </div>
-      <div className="rev-kpi-value">{value}</div>
-    </article>
-  );
-}
-
-function RoomTile({ tile, selected, onClick }: { tile: Tile; selected: boolean; onClick: () => void }) {
-  const tone = OCCUPANCY_TONE[tile.occupancy];
+function RoomTile({ tile, onOpen }: { tile: Tile; onOpen: () => void }) {
+  const meta = OCCUPANCY_META[tile.occupancy];
   const focus = tile.currentReservation ?? tile.nextArrival;
+  const line = focus ? (tile.currentReservation ? focus.guestName : `Próxima: ${focus.guestName}`) : (tile.roomTypeName ?? "—");
+  const badges = tile.badges.slice(0, 4);
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 4,
-        padding: 10,
-        background: tone.bg,
-        border: `${selected ? 3 : 1}px solid ${tone.border}`,
-        borderRadius: 8,
-        cursor: "pointer",
-        textAlign: "left",
-        minHeight: 86,
-        position: "relative"
-      }}
-      title={`${tile.roomNumber} · ${tone.label}${tile.roomTypeName ? ` · ${tile.roomTypeName}` : ""}`}
+    <CocoaCard
+      variant="bordered"
+      padding="sm"
+      onClick={onOpen}
+      aria-label={`Habitación ${tile.roomNumber}, ${meta.label}${tile.roomTypeName ? `, ${tile.roomTypeName}` : ""}${focus ? `, ${line}` : ""}`}
+      style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-1)", minHeight: 96 }}
     >
-      {/* badges row */}
-      {tile.badges.length > 0 ? (
-        <div style={{ position: "absolute", top: 4, right: 6, display: "flex", gap: 3, fontSize: 11 }}>
-          {tile.badges.slice(0, 4).map((b) => (
-            <span key={b} title={BADGE_TITLE[b]} style={{ background: "white", borderRadius: 4, padding: "0 4px", fontWeight: 600, color: tone.ink }}>
-              {BADGE_GLYPH[b]}
-            </span>
+      <span aria-hidden="true" style={toneBarStyle(meta.tone)} />
+      <span className="cocoa-row" data-gap="2" data-justify="between" data-wrap="nowrap">
+        <strong style={roomNumberStyle}>{tile.roomNumber}</strong>
+        <CocoaBadge tone={meta.tone} variant="dot" size="small">
+          {meta.label}
+        </CocoaBadge>
+      </span>
+      <span style={tileLineStyle}>{line}</span>
+      {badges.length > 0 ? (
+        <span className="cocoa-cluster">
+          {badges.map((b) => (
+            <CocoaBadge key={b} tone={BADGE_META[b].tone} size="small" title={BADGE_META[b].title}>
+              {BADGE_META[b].short}
+            </CocoaBadge>
           ))}
-        </div>
-      ) : null}
-
-      <strong style={{ fontSize: 18, color: tone.ink, lineHeight: 1 }}>{tile.roomNumber}</strong>
-      <span style={{ fontSize: 11, color: tone.ink, fontWeight: 500 }}>{tone.label}</span>
-      {focus ? (
-        <span style={{ fontSize: 11, color: "var(--ink)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {tile.currentReservation ? "" : "→ "}{focus.guestName}
         </span>
-      ) : (
-        tile.roomTypeName ? <span style={{ fontSize: 11, color: "var(--muted, #888)" }}>{tile.roomTypeName}</span> : null
-      )}
-    </button>
+      ) : null}
+    </CocoaCard>
   );
 }
 
-function RoomDetailPanel({
+function GuestBlock({ title, reservation, when }: { title: string; reservation: Reservation; when: string }) {
+  return (
+    <CocoaSection title={title}>
+      <div className="cocoa-stack" data-gap="2">
+        <strong>{reservation.guestName}</strong>
+        <span style={mutedStyle}>{when}</span>
+        {reservation.vip ? (
+          <span className="cocoa-cluster">
+            <CocoaBadge tone="accent">VIP{reservation.loyaltyTier ? ` · ${reservation.loyaltyTier}` : ""}</CocoaBadge>
+          </span>
+        ) : null}
+        {reservation.balanceDue > 0 ? (
+          <CocoaCallout tone="warning" title={`Saldo pendiente: ${money(reservation.balanceDue)}`} />
+        ) : null}
+        {reservation.specialRequest ? (
+          <CocoaCallout tone="info" title="Petición especial">
+            {reservation.specialRequest}
+          </CocoaCallout>
+        ) : null}
+      </div>
+    </CocoaSection>
+  );
+}
+
+function RoomDetail({
   tile,
-  onClose,
+  busy,
   onCheckIn,
   onCheckOut,
   onBlock,
-  onHkStatus,
-  busy
+  onHkStatus
 }: {
   tile: Tile;
-  onClose: () => void;
+  busy: boolean;
   onCheckIn: (reservationId: string) => void;
   onCheckOut: (reservationId: string) => void;
   onBlock: (roomId: string, sellable: boolean) => void;
   onHkStatus: (roomId: string, status: string) => void;
-  busy: boolean;
 }) {
-  const tone = OCCUPANCY_TONE[tile.occupancy];
+  const meta = OCCUPANCY_META[tile.occupancy];
   const current = tile.currentReservation;
   const next = tile.nextArrival;
   const isBlocked = tile.occupancy === "blocked_maintenance" || tile.occupancy === "out_of_order";
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.4)",
-        display: "flex",
-        justifyContent: "flex-end",
-        zIndex: 50
-      }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div
-        style={{
-          width: "min(420px, 100vw)",
-          height: "100%",
-          background: "var(--surface)",
-          color: "var(--ink)",
-          padding: 16,
-          overflowY: "auto",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12,
-          boxShadow: "-8px 0 24px rgba(0,0,0,0.2)"
-        }}
-      >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-          <div>
-            <h2 style={{ margin: 0, fontSize: 24, color: tone.ink }}>Habitación {tile.roomNumber}</h2>
-            <div className="bo-muted" style={{ fontSize: 13 }}>
-              {tile.roomTypeName ? `${tile.roomTypeName} · ` : ""}Planta {tile.floor ?? "—"}
-            </div>
-            <div style={{ marginTop: 6 }}>
-              <span className="bo-chip" style={{ background: tone.bg, color: tone.ink, border: `1px solid ${tone.border}` }}>
-                {tone.label}
-              </span>
-              {tile.housekeepingStatus ? (
-                <span className="bo-chip" style={{ marginLeft: 4 }}>HK: {tile.housekeepingStatus}</span>
-              ) : null}
-            </div>
+    <div className="cocoa-stack" data-gap="4">
+      <span className="cocoa-cluster">
+        <CocoaBadge tone={meta.tone} variant="dot">
+          {meta.label}
+        </CocoaBadge>
+        {tile.housekeepingStatus ? <CocoaBadge tone="neutral">Limpieza: {HK_LABEL[tile.housekeepingStatus] ?? tile.housekeepingStatus}</CocoaBadge> : null}
+        {tile.badges.map((b) => (
+          <CocoaBadge key={b} tone={BADGE_META[b].tone} title={BADGE_META[b].title}>
+            {BADGE_META[b].title}
+          </CocoaBadge>
+        ))}
+      </span>
+
+      {current ? (
+        <GuestBlock
+          title="Huésped actual"
+          reservation={current}
+          when={`Salida ${date(current.departureDate, "weekdayShort")}${current.etd ? ` · hora prevista ${current.etd}` : ""}`}
+        />
+      ) : null}
+
+      {next ? (
+        <GuestBlock
+          title="Próxima llegada"
+          reservation={next}
+          when={`Llega ${date(next.arrivalDate, "weekdayShort")}${next.eta ? ` · hora prevista ${next.eta}` : ""}`}
+        />
+      ) : null}
+
+      <CocoaSection title="Acciones rápidas">
+        <div className="cocoa-stack" data-gap="2">
+          {current && current.status === "checked_in" ? (
+            <CocoaButton variant="filled" tone="accent" disabled={busy} onClick={() => onCheckOut(current.reservationId)}>
+              Hacer check-out
+            </CocoaButton>
+          ) : null}
+          {next && (next.status === "confirmed" || next.status === "checked_in") ? (
+            <CocoaButton variant="filled" tone="accent" disabled={busy} onClick={() => onCheckIn(next.reservationId)}>
+              Hacer check-in del próximo huésped
+            </CocoaButton>
+          ) : null}
+          <div className="cocoa-row" data-gap="2">
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile.roomId, "clean")}>
+              Marcar limpia
+            </CocoaButton>
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile.roomId, "dirty")}>
+              Marcar sucia
+            </CocoaButton>
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy} onClick={() => onHkStatus(tile.roomId, "inspected")}>
+              Inspeccionada
+            </CocoaButton>
           </div>
-          <button type="button" className="ghost" onClick={onClose}>✕</button>
+          <CocoaButton variant="bordered" tone={isBlocked ? "neutral" : "destructive"} size="small" disabled={busy} onClick={() => onBlock(tile.roomId, isBlocked)}>
+            {isBlocked ? "Desbloquear habitación" : "Bloquear habitación"}
+          </CocoaButton>
         </div>
-
-        {/* Badges expandidos */}
-        {tile.badges.length > 0 ? (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {tile.badges.map((b) => (
-              <span key={b} className="bo-status info" title={BADGE_TITLE[b]}>
-                {BADGE_GLYPH[b]} {BADGE_TITLE[b]}
-              </span>
-            ))}
-          </div>
-        ) : null}
-
-        {/* Reserva actual */}
-        {current ? (
-          <Section title="Huésped actual">
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <strong>{current.guestName}</strong>
-              <div className="bo-muted" style={{ fontSize: 13 }}>
-                Salida: {current.departureDate}{current.etd ? ` · ETD ${current.etd}` : ""}
-              </div>
-              {current.vip ? <div className="bo-status accent">⭐ VIP {current.loyaltyTier ?? ""}</div> : null}
-              {current.balanceDue > 0 ? <div className="bo-status warn">Saldo pendiente: {fmtEur(current.balanceDue)}</div> : null}
-              {current.specialRequest ? (
-                <div style={{ padding: "6px 8px", background: "var(--surface-elevated, rgba(0,0,0,0.04))", borderRadius: 6, fontSize: 13 }}>
-                  💬 {current.specialRequest}
-                </div>
-              ) : null}
-            </div>
-          </Section>
-        ) : null}
-
-        {/* Próxima llegada */}
-        {next ? (
-          <Section title="Próxima llegada">
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <strong>{next.guestName}</strong>
-              <div className="bo-muted" style={{ fontSize: 13 }}>
-                Llega: {next.arrivalDate}{next.eta ? ` · ETA ${next.eta}` : ""}
-              </div>
-              {next.vip ? <div className="bo-status accent">⭐ VIP {next.loyaltyTier ?? ""}</div> : null}
-              {next.specialRequest ? (
-                <div style={{ padding: "6px 8px", background: "var(--surface-elevated, rgba(0,0,0,0.04))", borderRadius: 6, fontSize: 13 }}>
-                  💬 {next.specialRequest}
-                </div>
-              ) : null}
-            </div>
-          </Section>
-        ) : null}
-
-        {/* Acciones */}
-        <Section title="Acciones rápidas">
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {current && current.status === "checked_in" ? (
-              <button type="button" className="primary" disabled={busy} onClick={() => onCheckOut(current.reservationId)}>
-                Hacer check-out →
-              </button>
-            ) : null}
-            {next && (next.status === "confirmed" || next.status === "checked_in") ? (
-              <button type="button" className="primary" disabled={busy} onClick={() => onCheckIn(next.reservationId)}>
-                Hacer check-in del próximo huésped →
-              </button>
-            ) : null}
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              <button type="button" className="ghost" disabled={busy} onClick={() => onHkStatus(tile.roomId, "clean")}>
-                Marcar limpia
-              </button>
-              <button type="button" className="ghost" disabled={busy} onClick={() => onHkStatus(tile.roomId, "dirty")}>
-                Marcar sucia
-              </button>
-              <button type="button" className="ghost" disabled={busy} onClick={() => onHkStatus(tile.roomId, "inspected")}>
-                Inspeccionada
-              </button>
-            </div>
-            <button type="button" className="ghost" disabled={busy} onClick={() => onBlock(tile.roomId, isBlocked)}>
-              {isBlocked ? "Desbloquear habitación" : "Bloquear habitación"}
-            </button>
-          </div>
-        </Section>
-      </div>
+      </CocoaSection>
     </div>
-  );
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <section style={{ border: "1px solid var(--border)", borderRadius: 8, padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-      <strong style={{ fontSize: 12, textTransform: "uppercase", letterSpacing: 0.5, color: "var(--muted, #888)" }}>{title}</strong>
-      {children}
-    </section>
   );
 }

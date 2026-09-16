@@ -1,6 +1,25 @@
+// GroupsEventsDashboard — Recepción › Grupos y eventos (/recepcion/grupos).
+//
+// Cocoa 22 (ola 3 · lote 3-B, archetype «dashboard», hosted inside
+// GruposEventosTabs and standalone): CocoaPage with the actions row (hosted:
+// the container paints the eyebrow and the H1; «Calendario» and «Cupos» are
+// its tabs, so those two buttons only appear standalone), a CocoaKpiStrip
+// (four KPIs plus the F&B revenue behind a disclosure), the pickup card
+// behind a disclosure, the upcoming groups as a CocoaTable (row → detail
+// drawer; row actions menu: block rooms · create event · import rooming
+// list), and a 6/6 grid with the upcoming events list and the top accounts
+// table. Every write goes through the group drawers (NewGroupDialog,
+// RoomBlockGridDialog, NewEventDialog, RoomingListImportDialog,
+// GroupDetailDialog).
+//
+// Endpoint: GET /dashboards/groups-events?propertyId (polled every two
+// minutes). Sidebar deep links `#nuevo-grupo`, `#nuevo-evento` and
+// `#importar-rooming` open the matching drawer on arrival.
+
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { getActivePropertyId } from "../../services/activeProperty";
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { toArray } from "../../utils/toArray";
 import { NewGroupDialog } from "./NewGroupDialog";
 import { RoomBlockGridDialog } from "./RoomBlockGridDialog";
 import { NewEventDialog } from "./NewEventDialog";
@@ -8,15 +27,29 @@ import { RoomingListImportDialog } from "./RoomingListImportDialog";
 import { GroupDetailDialog } from "./GroupDetailDialog";
 import { GroupsPickupCard } from "./GroupsPickupCard";
 import { useToast } from "../../components/Toast";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
-import { CocoaPopover } from "../../components/cocoa/CocoaPopover";
-import { HOSTED_ACTIONS_ROW, useTabHost } from "../tabs/TabHost";
-import { date, dateTime, money, number, percent } from "../../lib/format";
-
-const PROPERTY_ID = getActivePropertyId();
+import { useTabHost } from "../tabs/TabHost";
+import { navigateTo } from "../../lib/navigate";
+import { date, dateTime, money, number, percent, plural } from "../../lib/format";
+import { ACTIONS, A11Y_LABELS, FIELD_LABELS, STATUS_LABELS } from "../../content/actions";
+import { PlusIcon, UploadIcon } from "../../components/cocoa-icons/ActionIcons";
+import { BedIcon, CalendarIcon } from "../../components/cocoa-icons/NavigationIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaPopover,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaKpiStatus,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 type GroupsEventsDashboardData = {
   kpis: {
@@ -47,349 +80,54 @@ type GroupsEventsDashboardData = {
 };
 
 type UpcomingGroup = GroupsEventsDashboardData["upcomingGroups"][number];
+type UpcomingEvent = GroupsEventsDashboardData["upcomingEvents"][number];
 type TopAccount = GroupsEventsDashboardData["topAccounts"][number];
 
-type KpiStatus = "ok" | "warn" | "error";
-
-const EMPTY: GroupsEventsDashboardData = {
-  kpis: {
-    activeGroupBookings: 0,
-    roomsBlockedTotal: 0,
-    pickupPct: 0,
-    upcomingEvents: 0,
-    fAndBRevenueMtdEur: 0
-  },
-  upcomingGroups: [],
-  upcomingEvents: [],
-  topAccounts: []
+const EMPTY_KPIS: GroupsEventsDashboardData["kpis"] = {
+  activeGroupBookings: 0,
+  roomsBlockedTotal: 0,
+  pickupPct: 0,
+  upcomingEvents: 0,
+  fAndBRevenueMtdEur: 0
 };
 
-function formatEur(value: number): string {
-  return money(value);
+function pickupBadge(pct: number, blocked: number): ReactNode {
+  if (blocked === 0) return <CocoaBadge tone="neutral">sin bloqueo</CocoaBadge>;
+  const tone = pct >= 80 ? "success" : pct >= 50 ? "warning" : "danger";
+  return (
+    <CocoaBadge tone={tone} variant="tinted">
+      {percent(pct, { maximumFractionDigits: 0 })}
+    </CocoaBadge>
+  );
 }
 
-function formatNumber(value: number): string {
-  return number(value);
-}
+// Columns live outside the component (rule A5); the row actions are a closure.
+const UPCOMING_GROUP_COLUMNS: CocoaTableColumn<UpcomingGroup>[] = [
+  { key: "name", label: "Grupo", minWidth: 160, render: (g) => <strong>{g.name}</strong> },
+  { key: "arrivalDate", label: "Llegada", fit: true, render: (g) => date(g.arrivalDate) },
+  { key: "departureDate", label: "Salida", fit: true, hideOnNarrow: true, render: (g) => date(g.departureDate) },
+  { key: "roomsBlocked", label: "Bloqueadas", align: "right", render: (g) => number(g.roomsBlocked) },
+  { key: "pickedUp", label: "Vendidas", align: "right", hideOnNarrow: true, render: (g) => number(g.pickedUp) },
+  { key: "pickupPct", label: "Pickup", align: "right", fit: true, render: (g) => pickupBadge(g.pickupPct, g.roomsBlocked) }
+];
 
-function formatDate(iso?: string): string {
-  return date(iso);
-}
+const TOP_ACCOUNT_COLUMNS: CocoaTableColumn<TopAccount>[] = [
+  { key: "accountName", label: "Cuenta", render: (row) => <strong>{row.accountName}</strong> },
+  { key: "activeGroups", label: "Grupos activos", align: "right", fit: true, render: (row) => number(row.activeGroups) },
+  { key: "valueEur", label: "Valor", align: "right", fit: true, render: (row) => money(row.valueEur) }
+];
 
-function formatDateTime(iso: string): string {
-  return dateTime(iso, { style: "dayMonth" });
-}
-
-// -----------------------------------------------------------------------------
-// Inline cocoa primitives — until the full primitive set ships we render the
-// small building blocks (KPI card, status pill, badge, disclosure button)
-// inline. All visual concerns route through --cocoa-* tokens so light/dark
-// parity is preserved.
-// -----------------------------------------------------------------------------
-
-const STATUS_TOKENS: Record<KpiStatus, { ink: string; bg: string; label: string }> = {
-  ok: {
-    ink: "var(--cocoa-success)",
-    bg: "rgb(48 209 88 / 0.12)",
-    label: "OK"
-  },
-  warn: {
-    ink: "var(--cocoa-warning)",
-    bg: "rgb(255 159 10 / 0.14)",
-    label: "Atención"
-  },
-  error: {
-    ink: "var(--cocoa-danger)",
-    bg: "rgb(255 69 58 / 0.14)",
-    label: "Crítico"
-  }
+// Secondary line of a list item: identity from the system.
+const NOTE_STYLE: CSSProperties = {
+  color: "var(--cocoa-label-secondary)",
+  fontSize: "var(--cocoa-fs-callout)"
 };
 
-interface KpiCardProps {
-  label: string;
-  value: string;
-  caption?: string;
-  status: KpiStatus;
-}
-
-function KpiCard({ label, value, caption, status }: KpiCardProps) {
-  const tone = STATUS_TOKENS[status];
-  const cardStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--cocoa-space-1)",
-    padding: "var(--cocoa-space-4)",
-    background: "var(--cocoa-background-content)",
-    border: "1px solid var(--cocoa-separator)",
-    borderRadius: "var(--cocoa-radius-lg)",
-    borderLeft: `3px solid ${tone.ink}`,
-    fontFamily: "var(--cocoa-font)"
-  };
-  const labelStyle: CSSProperties = {
-    color: "var(--cocoa-label-secondary)",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    letterSpacing: "var(--cocoa-tracking-wide)",
-    textTransform: "uppercase",
-    margin: 0
-  };
-  const valueStyle: CSSProperties = {
-    color: "var(--cocoa-label)",
-    fontSize: "var(--cocoa-fs-title-1)",
-    fontWeight: 700,
-    letterSpacing: "var(--cocoa-tracking-tight)",
-    margin: 0,
-    lineHeight: 1.15
-  };
-  const captionStyle: CSSProperties = {
-    color: "var(--cocoa-label-secondary)",
-    fontSize: "var(--cocoa-fs-callout)",
-    margin: 0
-  };
-  return (
-    <article style={cardStyle}>
-      <p style={labelStyle}>{label}</p>
-      <p style={valueStyle}>{value}</p>
-      {caption ? <p style={captionStyle}>{caption}</p> : null}
-      <span style={{ position: "absolute", overflow: "hidden", width: 0, height: 0 }} aria-hidden>
-        {tone.label}
-      </span>
-    </article>
-  );
-}
-
-interface KpiGridProps {
-  children: ReactNode;
-}
-
-function KpiGrid({ children }: KpiGridProps) {
-  const style: CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: "var(--cocoa-space-3)"
-  };
-  return <section style={style}>{children}</section>;
-}
-
-type PillTone = "ok" | "warn" | "error" | "neutral";
-
-const PILL_TONES: Record<PillTone, { fg: string; bg: string }> = {
-  ok: { fg: "var(--cocoa-success)", bg: "rgb(48 209 88 / 0.15)" },
-  warn: { fg: "var(--cocoa-warning)", bg: "rgb(255 159 10 / 0.18)" },
-  error: { fg: "var(--cocoa-danger)", bg: "rgb(255 69 58 / 0.18)" },
-  neutral: { fg: "var(--cocoa-label-secondary)", bg: "var(--cocoa-background-sidebar)" }
-};
-
-function StatusPill({ tone, children }: { tone: PillTone; children: ReactNode }) {
-  const style: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px var(--cocoa-space-2)",
-    borderRadius: "var(--cocoa-radius-full)",
-    background: PILL_TONES[tone].bg,
-    color: PILL_TONES[tone].fg,
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    fontFamily: "var(--cocoa-font)",
-    lineHeight: 1.4,
-    whiteSpace: "nowrap"
-  };
-  return <span style={style}>{children}</span>;
-}
-
-function NeutralBadge({ children }: { children: ReactNode }) {
-  const style: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px var(--cocoa-space-2)",
-    borderRadius: "var(--cocoa-radius-full)",
-    background: "var(--cocoa-background-sidebar)",
-    color: "var(--cocoa-label-secondary)",
-    fontSize: "var(--cocoa-fs-caption)",
-    fontWeight: 600,
-    fontFamily: "var(--cocoa-font)",
-    lineHeight: 1.4
-  };
-  return <span style={style}>{children}</span>;
-}
-
-function pickupPill(pct: number, blocked: number) {
-  if (blocked === 0) return <StatusPill tone="neutral">no block</StatusPill>;
-  if (pct >= 80) return <StatusPill tone="ok">{pct}%</StatusPill>;
-  if (pct >= 50) return <StatusPill tone="warn">{pct}%</StatusPill>;
-  return <StatusPill tone="error">{pct}%</StatusPill>;
-}
-
-// -----------------------------------------------------------------------------
-// Disclosure button — chevron rotates with expanded state, uses tokens only.
-// Used both for "Mostrar más KPIs" and the pickup section header.
-// -----------------------------------------------------------------------------
-
-interface DisclosureButtonProps {
-  label: string;
-  expanded: boolean;
-  onToggle: () => void;
-  align?: "start" | "end";
-  trailing?: ReactNode;
-}
-
-function ChevronDown({ rotated }: { rotated: boolean }) {
-  return (
-    <svg
-      width="10"
-      height="10"
-      viewBox="0 0 10 10"
-      aria-hidden
-      style={{
-        transform: `rotate(${rotated ? 0 : -90}deg)`,
-        transition: "transform var(--cocoa-duration-fast) var(--cocoa-ease-out)",
-        flexShrink: 0
-      }}
-    >
-      <path d="M2 3.5 L5 7 L8 3.5 Z" fill="currentColor" />
-    </svg>
-  );
-}
-
-function DisclosureButton({ label, expanded, onToggle, align = "start", trailing }: DisclosureButtonProps) {
-  const wrapperStyle: CSSProperties = {
-    display: "flex",
-    justifyContent: align === "end" ? "flex-end" : "flex-start"
-  };
-  const buttonStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "var(--cocoa-space-2)",
-    padding: "var(--cocoa-space-1) var(--cocoa-space-2)",
-    background: "transparent",
-    border: "none",
-    borderRadius: "var(--cocoa-radius-sm)",
-    color: "var(--cocoa-label-secondary)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-callout)",
-    fontWeight: 600,
-    cursor: "pointer"
-  };
-  return (
-    <div style={wrapperStyle}>
-      <button type="button" style={buttonStyle} onClick={onToggle} aria-expanded={expanded}>
-        <ChevronDown rotated={expanded} />
-        <span>{label}</span>
-        {trailing}
-      </button>
-    </div>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Section header (card title + trailing badge) — replaces the bo-card-head /
-// bo-chip pair.
-// -----------------------------------------------------------------------------
-
-function CardHeader({ title, badge }: { title: string; badge?: ReactNode }) {
-  const style: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: "var(--cocoa-space-3)",
-    marginBottom: "var(--cocoa-space-3)"
-  };
-  const titleStyle: CSSProperties = {
-    color: "var(--cocoa-label)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-headline)",
-    fontWeight: 600,
-    letterSpacing: "var(--cocoa-tracking-tight)",
-    margin: 0
-  };
-  return (
-    <div style={style}>
-      <h3 style={titleStyle}>{title}</h3>
-      {badge}
-    </div>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Empty-state caption — replaces p.bo-muted for "no data" copy in cards.
-// -----------------------------------------------------------------------------
-
-function EmptyCaption({ children }: { children: ReactNode }) {
-  const style: CSSProperties = {
-    color: "var(--cocoa-label-secondary)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-body)",
-    margin: 0,
-    paddingBlock: "var(--cocoa-space-3)"
-  };
-  return <p style={style}>{children}</p>;
-}
-
-// -----------------------------------------------------------------------------
-// Lucide-style inline icons for the popover menu items + page actions.
-// Using inline SVG keeps the migration self-contained (no new dep).
-// -----------------------------------------------------------------------------
-
-const ICON_SIZE = 14;
-
-function IconAdd() {
-  return (
-    <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M8 3v10M3 8h10" />
-    </svg>
-  );
-}
-
-function IconRefresh() {
-  return (
-    <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M13.5 8.5a5.5 5.5 0 1 1-1.6-3.9" />
-      <path d="M13.5 2.5v3.5h-3.5" />
-    </svg>
-  );
-}
-
-function IconMore() {
-  return (
-    <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
-      <circle cx="3" cy="8" r="1.4" />
-      <circle cx="8" cy="8" r="1.4" />
-      <circle cx="13" cy="8" r="1.4" />
-    </svg>
-  );
-}
-
-function IconBed() {
-  return (
-    <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M2 11V4M2 8h12v3M14 11v2M2 13v-2" />
-      <circle cx="5.5" cy="7" r="1.2" />
-    </svg>
-  );
-}
-
-function IconMic() {
-  return (
-    <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <rect x="6" y="2" width="4" height="8" rx="2" />
-      <path d="M3.5 8a4.5 4.5 0 0 0 9 0M8 12.5V14" />
-    </svg>
-  );
-}
-
-function IconClipboard() {
-  return (
-    <svg width={ICON_SIZE} height={ICON_SIZE} viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <rect x="4" y="3" width="8" height="11" rx="1.5" />
-      <path d="M6 3V2h4v1" />
-    </svg>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// Popover menu — anchors a list of actions to a kebab trigger button. Replaces
-// the manual overlay + zIndex hand-roll. Tracks its own open state.
-// -----------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Row actions menu — a small «Acciones» button anchoring a CocoaPopover menu
+// with the three group operations. Clicks stop at the cell so the row (which
+// opens the detail drawer) does not fire.
+// ---------------------------------------------------------------------------
 
 interface MenuItem {
   key: string;
@@ -398,87 +136,46 @@ interface MenuItem {
   onSelect: () => void;
 }
 
-interface RowKebabProps {
-  items: MenuItem[];
-}
-
-function RowKebab({ items }: RowKebabProps) {
+function RowActionsMenu({ items, label }: { items: MenuItem[]; label: string }) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
 
-  const triggerStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    justifyContent: "center",
-    width: 28,
-    height: 28,
-    padding: 0,
-    background: "transparent",
-    border: "1px solid var(--cocoa-separator)",
-    borderRadius: "var(--cocoa-radius-sm)",
-    color: "var(--cocoa-label)",
-    cursor: "pointer",
-    fontFamily: "var(--cocoa-font)"
-  };
-
-  const menuStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--cocoa-space-1)",
-    minWidth: 200
-  };
-
-  const itemStyle: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: "var(--cocoa-space-2)",
-    padding: "var(--cocoa-space-2)",
-    background: "transparent",
-    border: "none",
-    borderRadius: "var(--cocoa-radius-sm)",
-    color: "var(--cocoa-label)",
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-body)",
-    cursor: "pointer",
-    textAlign: "left",
-    width: "100%"
-  };
-
   return (
     <>
-      <button
+      <CocoaButton
         ref={anchorRef}
-        type="button"
-        style={triggerStyle}
+        variant="bordered"
+        tone="neutral"
+        size="small"
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Más acciones"
-        onClick={() => setOpen((v) => !v)}
+        aria-label={label}
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((v) => !v);
+        }}
       >
-        <IconMore />
-      </button>
-      <CocoaPopover open={open} anchorEl={anchorRef.current} placement="bottom" onClose={() => setOpen(false)}>
-        <div role="menu" style={menuStyle}>
+        {FIELD_LABELS.actions}
+      </CocoaButton>
+      <CocoaPopover open={open} anchorEl={anchorRef.current} placement="bottom" onClose={() => setOpen(false)} role="menu" aria-label={label}>
+        <div className="cocoa-stack" data-gap="1" style={{ minWidth: 220 }}>
           {items.map((item) => (
-            <button
+            <CocoaButton
               key={item.key}
-              type="button"
+              variant="plain"
+              tone="neutral"
+              size="small"
               role="menuitem"
-              style={itemStyle}
-              onClick={() => {
+              icon={item.icon}
+              style={{ width: "100%", justifyContent: "flex-start" }}
+              onClick={(event) => {
+                event.stopPropagation();
                 item.onSelect();
                 setOpen(false);
               }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background = "var(--cocoa-background-sidebar)";
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "transparent";
-              }}
             >
-              <span style={{ color: "var(--cocoa-label-secondary)", display: "inline-flex" }}>{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
+              {item.label}
+            </CocoaButton>
           ))}
         </div>
       </CocoaPopover>
@@ -486,33 +183,40 @@ function RowKebab({ items }: RowKebabProps) {
   );
 }
 
+function DashboardSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton.Grid rows={[[12], [6, 6]]} />
+    </div>
+  );
+}
+
 export function GroupsEventsDashboard() {
   const hosted = useTabHost() !== null;
-  const state = useApiData<GroupsEventsDashboardData>(
-    `/dashboards/groups-events?propertyId=${PROPERTY_ID}`,
-    { pollIntervalMs: 120000 }
-  );
+  const propertyId = getActivePropertyId();
+  const state = useApiData<GroupsEventsDashboardData>(`/dashboards/groups-events?propertyId=${propertyId}`, { pollIntervalMs: 120000 });
 
   const { showToast } = useToast();
-  const data = state.data ?? EMPTY;
-  const { kpis, upcomingGroups, upcomingEvents, topAccounts } = data;
+  const kpis = state.data?.kpis ?? EMPTY_KPIS;
+  const upcomingGroups = toArray<UpcomingGroup>(state.data?.upcomingGroups);
+  const upcomingEvents = toArray<UpcomingEvent>(state.data?.upcomingEvents);
+  const topAccounts = toArray<TopAccount>(state.data?.topAccounts);
+
   const [newGroupOpen, setNewGroupOpen] = useState(false);
   const [blockGroupId, setBlockGroupId] = useState<string | null>(null);
   const [eventGroupId, setEventGroupId] = useState<string | null>(null);
   const [roomingGroupId, setRoomingGroupId] = useState<string | null>(null);
   const [detailGroupId, setDetailGroupId] = useState<string | null>(null);
-  // Standalone-dialog state: when opened via sidebar deep-links the user has
-  // no group selected yet, so the dialogs need their own "no preselected
-  // group" mode. Event + rooming dialogs require a target group id, so they
-  // surface a chooser when launched without one.
+  // Standalone drawer state: opened from the sidebar deep links the user has
+  // no group selected yet; the event and rooming drawers need a target group,
+  // so they pick the first upcoming one (or toast when there is none).
   const [standaloneEventOpen, setStandaloneEventOpen] = useState(false);
   const [standaloneRoomingOpen, setStandaloneRoomingOpen] = useState(false);
 
-  // Sidebar deep-link handler — entries like
-  // `GroupsEventsDashboard#nuevo-grupo` land on this screen and auto-open
-  // the right modal so users get the dialog they clicked, not just the
-  // landing page. We clear the hash after opening so a hard refresh does
-  // not re-fire the dialog uninvited.
+  // Sidebar deep links — `GroupsEventsDashboard#nuevo-grupo` and friends land
+  // here and open the right drawer. The hash is cleared afterwards so a
+  // reload does not reopen it uninvited.
   useEffect(() => {
     function handleHash() {
       const hash = window.location.hash.replace(/^#/, "");
@@ -530,12 +234,8 @@ export function GroupsEventsDashboard() {
     return () => window.removeEventListener("hashchange", handleHash);
   }, []);
 
-  // Standalone-event resolver: when the user opens the "Nuevo evento" CTA
-  // (or deep-links to #nuevo-evento) without selecting a group first, we
-  // either pre-select the most relevant upcoming group or — if none exist —
-  // surface a warning and bounce the user toward creating a group first.
-  // A future iteration can swap this for an inline group picker; for now
-  // the first upcoming group is the highest-signal default.
+  // «Nuevo evento» without a selected group: the first upcoming group is the
+  // highest-signal default; without groups, nudge the user to create one.
   useEffect(() => {
     if (!standaloneEventOpen) return;
     if (upcomingGroups.length > 0) {
@@ -546,8 +246,7 @@ export function GroupsEventsDashboard() {
     setStandaloneEventOpen(false);
   }, [standaloneEventOpen, upcomingGroups, showToast]);
 
-  // Same flow for "Importar rooming list" — choose the first upcoming group
-  // as the import target, or toast if there are no groups yet.
+  // Same flow for «Importar rooming list».
   useEffect(() => {
     if (!standaloneRoomingOpen) return;
     if (upcomingGroups.length > 0) {
@@ -557,326 +256,187 @@ export function GroupsEventsDashboard() {
     }
     setStandaloneRoomingOpen(false);
   }, [standaloneRoomingOpen, upcomingGroups, showToast]);
-  // DEV #5 layout declutter — toggle para esconder el 5º KPI (F&B revenue)
-  // que estaba "descontextualizado".
+
+  // The fifth KPI (F&B revenue) belongs to the events block: behind a disclosure.
   const [showSecondaryKpis, setShowSecondaryKpis] = useState(false);
-  // DEV #5 — accordion para la pickup card (sección detallada).
+  // The pickup card is collapsible.
   const [pickupExpanded, setPickupExpanded] = useState(true);
-  // showToast is hoisted higher (right after `state`) so the standalone-CTA
-  // useEffects above can call it without a TDZ violation.
 
-  const groupsStatus: KpiStatus = kpis.activeGroupBookings > 0 ? "ok" : "warn";
-  const blockedStatus: KpiStatus = kpis.roomsBlockedTotal > 0 ? "ok" : "warn";
-  const pickupStatus: KpiStatus =
-    kpis.pickupPct >= 80 ? "ok" : kpis.pickupPct >= 50 ? "warn" : "error";
-  const eventsStatus: KpiStatus = kpis.upcomingEvents > 0 ? "ok" : "warn";
-  const revenueStatus: KpiStatus = kpis.fAndBRevenueMtdEur > 0 ? "ok" : "warn";
+  const groupsStatus: CocoaKpiStatus = kpis.activeGroupBookings > 0 ? "ok" : "warning";
+  const blockedStatus: CocoaKpiStatus = kpis.roomsBlockedTotal > 0 ? "ok" : "warning";
+  const pickupStatus: CocoaKpiStatus = kpis.pickupPct >= 80 ? "ok" : kpis.pickupPct >= 50 ? "warning" : "critical";
+  const eventsStatus: CocoaKpiStatus = kpis.upcomingEvents > 0 ? "ok" : "warning";
+  const revenueStatus: CocoaKpiStatus = kpis.fAndBRevenueMtdEur > 0 ? "ok" : "warning";
 
-  // -----------------------------------------------------------------
-  // Upcoming-groups table columns. Numeric cells align right; the
-  // group-name cell uses a link-styled CocoaButton to open the detail
-  // dialog. Actions cell holds the row-level kebab with the three
-  // group operations.
-  // -----------------------------------------------------------------
-  const upcomingGroupColumns: CocoaTableColumn<UpcomingGroup>[] = [
-    {
-      key: "name",
-      label: "Grupo",
-      render: (g) => (
-        <CocoaButton variant="plain" size="small" tone="accent" onClick={() => setDetailGroupId(g.id)}>
-          {g.name}
-        </CocoaButton>
-      )
-    },
-    {
-      key: "arrivalDate",
-      label: "Llegada",
-      render: (g) => formatDate(g.arrivalDate)
-    },
-    {
-      key: "departureDate",
-      label: "Salida",
-      render: (g) => formatDate(g.departureDate)
-    },
-    {
-      key: "roomsBlocked",
-      label: "Bloqueadas",
-      align: "right",
-      render: (g) => formatNumber(g.roomsBlocked)
-    },
-    {
-      key: "pickedUp",
-      label: "Vendidas",
-      align: "right",
-      render: (g) => formatNumber(g.pickedUp)
-    },
-    {
-      key: "pickupPct",
-      label: "Pickup",
-      align: "right",
-      render: (g) => pickupPill(g.pickupPct, g.roomsBlocked)
-    },
-    {
-      key: "actions",
-      label: "Acciones",
-      align: "center",
-      render: (g) => (
-        <RowKebab
-          items={[
-            { key: "block", label: "Bloquear habitaciones", icon: <IconBed />, onSelect: () => setBlockGroupId(g.id) },
-            { key: "event", label: "Crear evento", icon: <IconMic />, onSelect: () => setEventGroupId(g.id) },
-            { key: "rooming", label: "Importar rooming list", icon: <IconClipboard />, onSelect: () => setRoomingGroupId(g.id) }
-          ]}
-        />
-      )
-    }
-  ];
-
-  // Top-accounts columns — numeric columns align right.
-  const topAccountColumns: CocoaTableColumn<TopAccount>[] = [
-    {
-      key: "accountName",
-      label: "Account",
-      render: (row) => <strong style={{ color: "var(--cocoa-label)" }}>{row.accountName}</strong>
-    },
-    {
-      key: "activeGroups",
-      label: "Grupos activos",
-      align: "right",
-      render: (row) => formatNumber(row.activeGroups)
-    },
-    {
-      key: "valueEur",
-      label: "Valor",
-      align: "right",
-      render: (row) => formatEur(row.valueEur)
-    }
-  ];
-
-  // Quick navigation helpers — both honour the existing hotelos-nav event so
-  // we stay consistent with the rest of the shell instead of touching
-  // window.location directly.
-  function navigateScreen(target: string) {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: target }));
+  function groupById(id: string | null): UpcomingGroup | undefined {
+    return id ? upcomingGroups.find((g) => g.id === id) : undefined;
   }
 
   const headerActions = (
     <>
-      <CocoaButton variant="bordered" tone="neutral" icon={<IconRefresh />} onClick={() => state.refresh()}>
-        Actualizar
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => state.refresh()}>
+        {ACTIONS.refresh}
       </CocoaButton>
-      <CocoaButton
-        variant="bordered"
-        tone="neutral"
-        onClick={() => navigateScreen("GroupsCalendarScreen")}
-      >
-        Calendario
+      {hosted ? null : (
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" icon={<CalendarIcon size={14} />} onClick={() => navigateTo("GroupsCalendarScreen")}>
+            Calendario
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("Allotments")}>
+            Cupos
+          </CocoaButton>
+        </>
+      )}
+      <CocoaButton variant="bordered" tone="neutral" size="small" icon={<UploadIcon size={14} />} onClick={() => setStandaloneRoomingOpen(true)}>
+        Importar rooming list
       </CocoaButton>
-      <CocoaButton
-        variant="bordered"
-        tone="neutral"
-        onClick={() => navigateScreen("Allotments")}
-      >
-        Cupos
-      </CocoaButton>
-      <CocoaButton
-        variant="bordered"
-        tone="neutral"
-        onClick={() => setStandaloneRoomingOpen(true)}
-      >
-        Importar rooming
-      </CocoaButton>
-      <CocoaButton
-        variant="bordered"
-        tone="neutral"
-        onClick={() => setStandaloneEventOpen(true)}
-      >
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setStandaloneEventOpen(true)}>
         Nuevo evento
       </CocoaButton>
-      <CocoaButton variant="filled" tone="accent" icon={<IconAdd />} onClick={() => setNewGroupOpen(true)}>
+      <CocoaButton variant="filled" tone="accent" size="small" icon={<PlusIcon size={14} />} onClick={() => setNewGroupOpen(true)}>
         Nuevo grupo
       </CocoaButton>
     </>
   );
 
-  const twoColumnGridStyle: CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
-    gap: "var(--cocoa-space-4)"
-  };
-
-  const screenStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--cocoa-space-4)",
-    fontFamily: "var(--cocoa-font)"
-  };
-
-  const eventListStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--cocoa-space-3)",
-    listStyle: "none",
-    margin: 0,
-    padding: 0
-  };
-
-  const eventItemStyle: CSSProperties = {
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--cocoa-space-1)",
-    paddingBlock: "var(--cocoa-space-2)",
-    borderBottom: "1px solid var(--cocoa-separator)"
-  };
-
-  const eventRowTopStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "var(--cocoa-space-2)",
-    flexWrap: "wrap"
-  };
-
-  const eventCaptionStyle: CSSProperties = {
-    color: "var(--cocoa-label-secondary)",
-    fontSize: "var(--cocoa-fs-callout)",
-    margin: 0
-  };
+  const blockGroup = groupById(blockGroupId);
+  const eventGroup = groupById(eventGroupId);
+  const roomingGroup = groupById(roomingGroupId);
 
   return (
-    <div style={screenStyle}>
-      {hosted ? (
-        <div style={HOSTED_ACTIONS_ROW}>{headerActions}</div>
-      ) : (
-        <CocoaPageHeader
-          eyebrow="Recepción · Grupos y eventos"
-          title="Grupos y eventos"
-          subtitle="Vista de solo lectura de bloques de grupo y eventos del periodo: reservas de grupo activas, habitaciones bloqueadas y pickup, próximos eventos con espacio y asistentes esperados, ingresos F&B del mes y cuentas con mayor actividad. Refresco automático cada dos minutos."
-          actions={headerActions}
-        />
-      )}
-
-      {state.error ? (
-        <CocoaCard variant="bordered" padding="md">
-          <p style={{ color: "var(--cocoa-danger)", margin: 0, fontFamily: "var(--cocoa-font)", fontSize: "var(--cocoa-fs-body)" }}>
-            No hemos podido cargar esta vista. Inténtalo de nuevo.
-          </p>
-        </CocoaCard>
+    <CocoaPage
+      eyebrow={`Recepción · ${getActiveProperty().propertyName}`}
+      title="Grupos y eventos"
+      subtitle={
+        hosted
+          ? undefined
+          : "Bloques de grupo y eventos del periodo: reservas de grupo activas, habitaciones bloqueadas y pickup, próximos eventos con espacio y asistentes, ingresos de restauración del mes y cuentas con mayor actividad. Se actualiza cada dos minutos."
+      }
+      actions={headerActions}
+      state={state.loading && !state.data ? "loading" : state.error && !state.data ? "error" : "ready"}
+      skeleton={<DashboardSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: state.error ?? undefined, onRetry: () => state.refresh() }}
+      commands={[
+        { id: "groups-events-refresh", label: "Actualizar grupos y eventos", run: () => state.refresh() },
+        { id: "groups-events-new-group", label: "Nuevo grupo", run: () => setNewGroupOpen(true) },
+        { id: "groups-events-new-event", label: "Nuevo evento", run: () => setStandaloneEventOpen(true) },
+        { id: "groups-events-import-rooming", label: "Importar rooming list", run: () => setStandaloneRoomingOpen(true) }
+      ]}
+    >
+      {state.error && state.data ? (
+        <CocoaCallout tone="danger" title="No hemos podido actualizar esta vista" role="alert">
+          Se muestran los últimos datos cargados. {state.error}
+        </CocoaCallout>
       ) : null}
 
-      {/* DEV #5 — 4 KPIs principales en la grid (límite). El 5º "F&B revenue MTD"
-          va detrás de un toggle "Mostrar más" porque pertenece al bloque de eventos. */}
-      <KpiGrid>
-        <KpiCard
-          label="Reservas de grupo activas"
-          value={formatNumber(kpis.activeGroupBookings)}
-          caption="en curso o próximas"
-          status={groupsStatus}
-        />
-        <KpiCard
-          label="Habitaciones bloqueadas"
-          value={formatNumber(kpis.roomsBlockedTotal)}
-          caption="en los bloques activos"
-          status={blockedStatus}
-        />
-        <KpiCard
-          label="Pickup"
-          value={percent(kpis.pickupPct, { maximumFractionDigits: 0 })}
-          caption="vendidas / bloqueadas"
-          status={pickupStatus}
-        />
-        <KpiCard
-          label="Próximos eventos"
-          value={formatNumber(kpis.upcomingEvents)}
-          caption="este mes y el siguiente"
-          status={eventsStatus}
-        />
-      </KpiGrid>
+      <CocoaKpiStrip stagger aria-label="Indicadores de grupos y eventos">
+        <CocoaKpi label="Reservas de grupo activas" value={number(kpis.activeGroupBookings)} caption="en curso o próximas" polarity="neutral" status={groupsStatus} />
+        <CocoaKpi label="Habitaciones bloqueadas" value={number(kpis.roomsBlockedTotal)} caption="en los bloques activos" polarity="neutral" status={blockedStatus} />
+        <CocoaKpi label="Pickup" value={percent(kpis.pickupPct, { maximumFractionDigits: 0 })} caption="vendidas sobre bloqueadas" status={pickupStatus} />
+        <CocoaKpi label="Próximos eventos" value={number(kpis.upcomingEvents)} caption="este mes y el siguiente" polarity="neutral" status={eventsStatus} />
+      </CocoaKpiStrip>
 
-      <DisclosureButton
-        label={showSecondaryKpis ? "Ocultar detalles" : "Mostrar más KPIs"}
-        expanded={showSecondaryKpis}
-        onToggle={() => setShowSecondaryKpis((v) => !v)}
-        align="end"
-      />
+      <div className="cocoa-row" data-justify="end">
+        <CocoaButton
+          variant="plain"
+          tone="neutral"
+          size="small"
+          aria-expanded={showSecondaryKpis}
+          aria-controls="groups-events-secondary-kpis"
+          onClick={() => setShowSecondaryKpis((v) => !v)}
+        >
+          {showSecondaryKpis ? "Ocultar indicadores secundarios" : "Mostrar más indicadores"}
+        </CocoaButton>
+      </div>
 
       {showSecondaryKpis ? (
-        <KpiGrid>
-          <KpiCard
-            label="Ingresos F&B del mes"
-            value={formatEur(kpis.fAndBRevenueMtdEur)}
-            caption="eventos, mes en curso"
-            status={revenueStatus}
-          />
-        </KpiGrid>
+        <div id="groups-events-secondary-kpis">
+          <CocoaKpiStrip aria-label="Indicadores secundarios">
+            <CocoaKpi label="Ingresos de restauración del mes" value={money(kpis.fAndBRevenueMtdEur)} caption="eventos, mes en curso" status={revenueStatus} />
+          </CocoaKpiStrip>
+        </div>
       ) : null}
 
-      {/* DEV #5 — accordion: pickup card colapsable; usuario decide cuándo ver el detalle. */}
-      <section style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-2)" }}>
-        <DisclosureButton
-          label="Captación de grupos · ciclo y liberación"
-          expanded={pickupExpanded}
-          onToggle={() => setPickupExpanded((v) => !v)}
-          trailing={
-            <span style={{ marginLeft: "var(--cocoa-space-2)", color: "var(--cocoa-label-tertiary)", fontWeight: 400 }}>
-              {pickupExpanded ? "Pulsa para plegar" : "Pulsa para desplegar"}
-            </span>
-          }
-        />
-        {pickupExpanded ? <GroupsPickupCard propertyId={PROPERTY_ID} /> : null}
-      </section>
+      <div className="cocoa-row" data-justify="between">
+        <span className="cocoa-caption">Captación de grupos · ciclo y liberación</span>
+        <CocoaButton
+          variant="plain"
+          tone="neutral"
+          size="small"
+          aria-expanded={pickupExpanded}
+          aria-controls="groups-events-pickup"
+          onClick={() => setPickupExpanded((v) => !v)}
+        >
+          {pickupExpanded ? A11Y_LABELS.collapse : A11Y_LABELS.expand}
+        </CocoaButton>
+      </div>
+      {pickupExpanded ? (
+        <div id="groups-events-pickup">
+          <GroupsPickupCard propertyId={propertyId} onSelect={(groupId) => setDetailGroupId(groupId)} />
+        </div>
+      ) : null}
 
-      <CocoaCard variant="bordered" padding="md">
-        <CardHeader title="Próximos grupos" badge={<NeutralBadge>{upcomingGroups.length} grupos</NeutralBadge>} />
+      <CocoaSection title="Próximos grupos" meta={plural(upcomingGroups.length, "grupo", "grupos")} padding="none" style={{ overflow: "clip" }}>
         {upcomingGroups.length === 0 ? (
-          <EmptyCaption>Sin reservas de grupo próximas en el periodo.</EmptyCaption>
+          <CocoaState kind="empty" inline title="Sin reservas de grupo próximas en el periodo." style={{ padding: "var(--cocoa-space-4)" }} />
         ) : (
           <CocoaTable<UpcomingGroup>
-            columns={upcomingGroupColumns}
+            columns={UPCOMING_GROUP_COLUMNS}
             rows={upcomingGroups}
             rowKey="id"
+            onSelect={(g) => setDetailGroupId(g.id)}
+            rowTitle={() => "Abrir el detalle del grupo"}
+            rowActions={(g) => (
+              <RowActionsMenu
+                label={`Acciones del grupo ${g.name}`}
+                items={[
+                  { key: "block", label: "Bloquear habitaciones", icon: <BedIcon size={14} />, onSelect: () => setBlockGroupId(g.id) },
+                  { key: "event", label: "Crear evento", icon: <CalendarIcon size={14} />, onSelect: () => setEventGroupId(g.id) },
+                  { key: "rooming", label: "Importar rooming list", icon: <UploadIcon size={14} />, onSelect: () => setRoomingGroupId(g.id) }
+                ]}
+              />
+            )}
+            caption="Próximos grupos"
+            aria-label="Próximos grupos"
           />
         )}
-      </CocoaCard>
+      </CocoaSection>
 
-      <section style={twoColumnGridStyle}>
-        <CocoaCard variant="bordered" padding="md">
-          <CardHeader title="Próximos eventos" badge={<NeutralBadge>{upcomingEvents.length} eventos</NeutralBadge>} />
-          {upcomingEvents.length === 0 ? (
-            <EmptyCaption>Sin eventos programados en el periodo.</EmptyCaption>
-          ) : (
-            <ul style={eventListStyle}>
-              {upcomingEvents.map((e) => (
-                <li key={e.id} style={eventItemStyle}>
-                  <div style={eventRowTopStyle}>
-                    <NeutralBadge>{formatDateTime(e.eventDate)}</NeutralBadge>
-                    <strong style={{ color: "var(--cocoa-label)" }}>{e.name}</strong>
-                    {e.revenueEur !== undefined ? (
-                      <NeutralBadge>{formatEur(e.revenueEur)}</NeutralBadge>
-                    ) : null}
-                  </div>
-                  <small style={eventCaptionStyle}>
-                    {e.spaceName ? <>{e.spaceName}</> : <>Sin espacio asignado</>}
-                    {e.expectedAttendees !== undefined ? <> · {formatNumber(e.expectedAttendees)} pax</> : null}
-                  </small>
-                </li>
-              ))}
-            </ul>
-          )}
-        </CocoaCard>
+      <CocoaGrid align="start" aria-label="Eventos y cuentas">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Próximos eventos" meta={plural(upcomingEvents.length, "evento", "eventos")}>
+            {upcomingEvents.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin eventos programados en el periodo." />
+            ) : (
+              <ul className="c22-section__list" aria-label="Próximos eventos">
+                {upcomingEvents.map((e) => (
+                  <li key={e.id}>
+                    <CocoaBadge tone="neutral">{dateTime(e.eventDate, { style: "dayMonth" })}</CocoaBadge>
+                    <span className="cocoa-stack" data-gap="1" style={{ flex: "1 1 auto", minWidth: 0 }}>
+                      <span>{e.name}</span>
+                      <span style={NOTE_STYLE}>
+                        {e.spaceName ?? "Sin espacio asignado"}
+                        {e.expectedAttendees !== undefined ? ` · ${plural(e.expectedAttendees, "asistente", "asistentes")}` : null}
+                      </span>
+                    </span>
+                    {e.revenueEur !== undefined ? <strong>{money(e.revenueEur)}</strong> : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
 
-        <CocoaCard variant="bordered" padding="md">
-          <CardHeader title="Principales cuentas" badge={<NeutralBadge>{topAccounts.length} principales</NeutralBadge>} />
-          {topAccounts.length === 0 ? (
-            <EmptyCaption>Sin cuentas con reservas de grupo activas.</EmptyCaption>
-          ) : (
-            <CocoaTable<TopAccount>
-              columns={topAccountColumns}
-              rows={topAccounts}
-              rowKey="accountName"
-            />
-          )}
-        </CocoaCard>
-      </section>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Principales cuentas" meta={plural(topAccounts.length, "cuenta", "cuentas")} padding="none" style={{ overflow: "clip" }}>
+            {topAccounts.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin cuentas con reservas de grupo activas." style={{ padding: "var(--cocoa-space-4)" }} />
+            ) : (
+              <CocoaTable<TopAccount> columns={TOP_ACCOUNT_COLUMNS} rows={topAccounts} rowKey="accountName" caption="Principales cuentas" aria-label="Principales cuentas" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
       {newGroupOpen ? (
         <NewGroupDialog
@@ -893,13 +453,13 @@ export function GroupsEventsDashboard() {
       {blockGroupId ? (
         <RoomBlockGridDialog
           groupBookingId={blockGroupId}
-          groupName={upcomingGroups.find((g) => g.id === blockGroupId)?.name ?? "Grupo"}
-          arrivalDate={upcomingGroups.find((g) => g.id === blockGroupId)?.arrivalDate ?? ""}
-          departureDate={upcomingGroups.find((g) => g.id === blockGroupId)?.departureDate ?? ""}
+          groupName={blockGroup?.name ?? "Grupo"}
+          arrivalDate={blockGroup?.arrivalDate ?? ""}
+          departureDate={blockGroup?.departureDate ?? ""}
           onClose={() => setBlockGroupId(null)}
           onSaved={(count) => {
             setBlockGroupId(null);
-            showToast(`Bloqueo guardado · ${count} celdas actualizadas.`, { variant: "success" });
+            showToast(`Bloqueo guardado · ${plural(count, "celda actualizada", "celdas actualizadas")}.`, { variant: "success" });
             state.refresh();
           }}
           onError={(msg) => showToast(msg, { variant: "error" })}
@@ -909,9 +469,9 @@ export function GroupsEventsDashboard() {
       {eventGroupId ? (
         <NewEventDialog
           groupBookingId={eventGroupId}
-          groupName={upcomingGroups.find((g) => g.id === eventGroupId)?.name ?? "Grupo"}
-          arrivalDate={upcomingGroups.find((g) => g.id === eventGroupId)?.arrivalDate ?? ""}
-          departureDate={upcomingGroups.find((g) => g.id === eventGroupId)?.departureDate ?? ""}
+          groupName={eventGroup?.name ?? "Grupo"}
+          arrivalDate={eventGroup?.arrivalDate ?? ""}
+          departureDate={eventGroup?.departureDate ?? ""}
           onClose={() => setEventGroupId(null)}
           onCreated={(event) => {
             setEventGroupId(null);
@@ -925,22 +485,20 @@ export function GroupsEventsDashboard() {
       {roomingGroupId ? (
         <RoomingListImportDialog
           groupBookingId={roomingGroupId}
-          groupName={upcomingGroups.find((g) => g.id === roomingGroupId)?.name ?? "Grupo"}
-          arrivalDate={upcomingGroups.find((g) => g.id === roomingGroupId)?.arrivalDate ?? ""}
-          departureDate={upcomingGroups.find((g) => g.id === roomingGroupId)?.departureDate ?? ""}
+          groupName={roomingGroup?.name ?? "Grupo"}
+          arrivalDate={roomingGroup?.arrivalDate ?? ""}
+          departureDate={roomingGroup?.departureDate ?? ""}
           onClose={() => setRoomingGroupId(null)}
           onImported={(count) => {
             setRoomingGroupId(null);
-            showToast(`Rooming list importada · ${count} entradas.`, { variant: "success" });
+            showToast(`Rooming list importada · ${plural(count, "entrada", "entradas")}.`, { variant: "success" });
             state.refresh();
           }}
           onError={(msg) => showToast(msg, { variant: "error" })}
         />
       ) : null}
 
-      {detailGroupId ? (
-        <GroupDetailDialog groupBookingId={detailGroupId} onClose={() => setDetailGroupId(null)} />
-      ) : null}
-    </div>
+      {detailGroupId ? <GroupDetailDialog groupBookingId={detailGroupId} onClose={() => setDetailGroupId(null)} /> : null}
+    </CocoaPage>
   );
 }

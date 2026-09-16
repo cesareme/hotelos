@@ -258,14 +258,9 @@
     max-width: 100%;
     min-width: 0;
   }
-  /* 4. Rate grid status bar (components/cocoa-rate-grid/rate-grid.css, loaded
-        after this sheet → .cocoa-content lifts the specificity): the actions
-        block is flex-shrink: 0 and pushed «Revisar y publicar» to x = 548. */
-  .cocoa-content .crg-status { padding-inline: var(--cocoa-space-3); }
-  .cocoa-content .crg-status__actions { flex: 1 1 100%; justify-content: flex-start; }
-  .cocoa-content .crg-status__actions > * { flex: 1 1 auto; }
-  .cocoa-content .crg-status__text,
-  .cocoa-content .crg-status__meta { white-space: normal; }
+  /* 4. (retired, Cocoa 22 · ola 5) The rate grid status bar is a CocoaActionBar
+        now: the primitive owns the phone placement, so the old `.crg-status`
+        override is gone. */
 
   /* Long words (emails, codes) never force horizontal scroll. */
   .cocoa-content { overflow-wrap: anywhere; }

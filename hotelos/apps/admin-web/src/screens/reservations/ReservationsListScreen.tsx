@@ -1,6 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+// Reservas — Recepción › Reservas › Lista (/recepcion/reservas/lista).
+//
+// Cocoa 22 · ola 3 · lote 3-A (list archetype, template `ListaTabla`; §6 keeps
+// it at the dashboard budget): CocoaPage → guidance card → CocoaKpiStrip with
+// the four operational counters (each opens its view) → CocoaToolbar (search,
+// segmented views with live counts, «N de M») → CocoaSection padding none +
+// CocoaTable (controlled sort, a row opens /recepcion/reservas/:id, footer
+// with the count and «Cargar más») → CocoaState empty / error inside the
+// section so the toolbar stays. Same queries, page size and 300 ms debounce
+// as before. Hosted inside ReservasTabs the container paints the title and
+// the «Nueva reserva» action.
+//
+// fix:3-A qa#7: a row without booker name only carries the primary guest id;
+// the names are resolved through /guests/:id (one request per distinct id
+// per mount) and, until they arrive or if the lookup fails, the row reads
+// «Huésped pendiente» — never the internal id.
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
 import { urlForScreen } from "../../navigation/nav-tree";
 import {
   fetchReservations,
@@ -13,26 +29,33 @@ import {
   type ReservationListQuery,
   type ReservationOperationalTab
 } from "../../services/pmsCommerceApi";
-import { PageHeader } from "../../components/v2/PageHeader";
+import { fetchGuest } from "../../services/guestsApi";
+import { guestFullName, pendingGuestIds, reservationGuestLabel } from "./reservation-guest-label";
 import { useTabHost } from "../tabs/TabHost";
-import { SearchInput } from "../../components/v2/SearchInput";
-import {
-  SegmentedControl,
-  type SegmentOption
-} from "../../components/v2/SegmentedControl";
-import { StatTile } from "../../components/v2/StatTile";
-import { StatusBadge, type StatusBadgeVariant } from "../../components/v2/StatusBadge";
-import {
-  DataTable,
-  type DataTableColumn,
-  type DataTableSort
-} from "../../components/v2/DataTable";
-import { LoadingBlock, ErrorState } from "../../components/States";
+import { navigateTo } from "../../lib/navigate";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
 import { RESERVATIONS_INSTRUCTIONS } from "../../content/screen-instructions/reservations";
-import { money } from "../../lib/format";
+import { date, money, number } from "../../lib/format";
+import { ACTIONS, FIELD_LABELS, newLabel } from "../../content/actions";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSearchInput,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaState,
+  CocoaTable,
+  CocoaToolbar,
+  openTabPath,
+  type CocoaTableColumn,
+  type CocoaTableSort,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -57,7 +80,7 @@ const STATUS_LABEL: Record<string, string> = {
   no_show: "No-show"
 };
 
-function statusVariant(status: string): StatusBadgeVariant {
+function statusTone(status: string): CocoaTone {
   switch (status) {
     case "confirmed":
     case "checked_in":
@@ -68,71 +91,14 @@ function statusVariant(status: string): StatusBadgeVariant {
     case "no_show":
       return "danger";
     case "draft":
-      return "warn";
+      return "warning";
     default:
       return "neutral";
   }
 }
 
-const MONTHS_ES = [
-  "ene",
-  "feb",
-  "mar",
-  "abr",
-  "may",
-  "jun",
-  "jul",
-  "ago",
-  "sep",
-  "oct",
-  "nov",
-  "dic"
-];
-
-function fmtShortDate(iso: string): string {
-  if (!iso) return "—";
-  const parts = iso.split("-");
-  if (parts.length !== 3) return iso;
-  const mi = Number(parts[1]) - 1;
-  if (mi < 0 || mi > 11) return iso;
-  return `${Number(parts[2])} ${MONTHS_ES[mi]}`;
-}
-
-function guestLabel(reservation: AdminReservation): string {
-  return (
-    reservation.bookerName ?? reservation.primaryGuestId ?? "Huésped pendiente"
-  );
-}
-
-// Lightweight chip used for "Source" cells. Mirrors the StatusBadge spacing
-// but uses neutral palette so it never competes with the status column.
-function SourceChip({ value }: { value?: string }) {
-  if (!value) return <span style={{ color: "var(--ink-muted, #6a6a6a)" }}>—</span>;
-  const style: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px 8px",
-    background: "var(--neutral-bg, #f0eee8)",
-    color: "var(--neutral-ink, #424242)",
-    border: "1px solid var(--neutral-line, #d8d4ca)",
-    borderRadius: "var(--radius-full, 999px)",
-    fontSize: "var(--fs-xs, 11px)",
-    fontWeight: 600,
-    whiteSpace: "nowrap"
-  };
-  return <span style={style}>{value}</span>;
-}
-
-function navTo(screen: string) {
-  // The App router listens for the `hotelos-nav` CustomEvent and reads
-  // `detail` as the target screen key.
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-}
-
-
 interface ReservationRow extends AdminReservation {
-  // Derived display helpers so DataTable columns can sort cleanly without
-  // recomputing on each render.
+  // Derived display helpers so the table can sort without recomputing.
   guestName: string;
   roomTypeLabel: string;
 }
@@ -141,9 +107,51 @@ type TabCounts = Partial<Record<StatusTab, number>>;
 
 const COUNT_TABS: StatusTab[] = ["all", "today_arrivals", "in_house", "future", "cancelled"];
 
+const TAB_LABEL: Record<StatusTab, string> = {
+  all: "Todas",
+  today_arrivals: "Llegan hoy",
+  in_house: "En casa",
+  today_departures: "Salen hoy",
+  future: "Futuras",
+  cancelled: "Canceladas"
+};
+const TAB_ORDER: StatusTab[] = ["all", "today_arrivals", "in_house", "today_departures", "future", "cancelled"];
+
+const COLUMNS: CocoaTableColumn<ReservationRow>[] = [
+  { key: "code", label: "Código", sortable: true, fit: true, render: (row) => <strong>{row.code}</strong> },
+  { key: "guestName", label: FIELD_LABELS.guest, sortable: true, minWidth: 160 },
+  { key: "arrivalDate", label: "Llegada", sortable: true, fit: true, render: (row) => date(row.arrivalDate, "dayMonth") },
+  { key: "departureDate", label: "Salida", sortable: true, fit: true, hideOnNarrow: true, render: (row) => date(row.departureDate, "dayMonth") },
+  { key: "roomTypeLabel", label: FIELD_LABELS.roomType, sortable: true, showFrom: "laptop" },
+  {
+    key: "sourceCode",
+    label: "Origen",
+    sortable: true,
+    fit: true,
+    showFrom: "desktop",
+    render: (row) => (row.sourceCode ? <CocoaBadge tone="neutral">{row.sourceCode}</CocoaBadge> : "—")
+  },
+  { key: "totalAmount", label: FIELD_LABELS.total, sortable: true, align: "right", render: (row) => <strong>{money(row.totalAmount, row.currency)}</strong> },
+  {
+    key: "status",
+    label: FIELD_LABELS.status,
+    sortable: true,
+    fit: true,
+    render: (row) => <CocoaBadge tone={statusTone(row.status)}>{STATUS_LABEL[row.status] ?? row.status}</CocoaBadge>
+  }
+];
+
 function mergeById(current: AdminReservation[], incoming: AdminReservation[]): AdminReservation[] {
   const seen = new Set(current.map((r) => r.id));
   return [...current, ...incoming.filter((r) => !seen.has(r.id))];
+}
+
+// Deep link to /recepcion/reservas/:id (Detalle tab of the Reservas container,
+// Tanda 5): reload + browser history restore the workspace and the detail
+// screen parses the id from the trailing slug.
+function openReservation(row: ReservationRow) {
+  const url = urlForScreen("ReservationDetailWorkspace", { id: row.id });
+  if (url) openTabPath(url);
 }
 
 export function ReservationsListScreen() {
@@ -160,16 +168,42 @@ export function ReservationsListScreen() {
   const [tab, setTab] = useState<StatusTab>("today_arrivals");
   const [tabCounts, setTabCounts] = useState<TabCounts>({});
   const [countsError, setCountsError] = useState<string | null>(null);
-  const [sort, setSort] = useState<DataTableSort>({
-    key: "arrivalDate",
-    direction: "asc"
-  });
+  const [sort, setSort] = useState<CocoaTableSort>({ key: "arrivalDate", direction: "asc" });
   // Guards against out-of-order responses when the user switches tabs quickly.
   const requestSeq = useRef(0);
+  // Primary guest names by id for the rows without booker name (qa#7). The
+  // list endpoint does not join the guest, so each distinct id is requested
+  // once per mount; a failed lookup keeps «Huésped pendiente» and is not
+  // retried until the screen mounts again.
+  const [guestNames, setGuestNames] = useState<Record<string, string>>({});
+  const requestedGuestIds = useRef(new Set<string>());
+  const mounted = useRef(true);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const ids = pendingGuestIds(reservations, requestedGuestIds.current);
+    if (ids.length === 0) return;
+    ids.forEach((id) => requestedGuestIds.current.add(id));
+    void Promise.allSettled(ids.map((id) => fetchGuest(id))).then((results) => {
+      if (!mounted.current) return;
+      const resolved: Record<string, string> = {};
+      results.forEach((result, index) => {
+        const name = result.status === "fulfilled" ? guestFullName(result.value.guest) : null;
+        if (name) resolved[ids[index]] = name;
+      });
+      if (Object.keys(resolved).length > 0) setGuestNames((current) => ({ ...current, ...resolved }));
+    });
+  }, [reservations]);
 
   const today = todayIsoLocal();
 
-  // Debounce the search box: the `q` filter is server-side now.
+  // Debounce the search box: the `q` filter is server-side.
   useEffect(() => {
     const t = window.setTimeout(() => setDebouncedQuery(query.trim()), 300);
     return () => window.clearTimeout(t);
@@ -202,9 +236,7 @@ export function ReservationsListScreen() {
       })
       .catch((err: unknown) => {
         if (seq !== requestSeq.current) return;
-        // Auditoría 2026-07: NUNCA fabricar reservas mock ante un fallo de API.
-        // Bajo el gate de auth de producción esto pintaba reservas inventadas
-        // (res_mock_*) como si fueran reales delante del usuario/inversor.
+        // Auditoría 2026-07: never fabricate reservations when the API fails.
         setReservations([]);
         setNextCursor(null);
         setTotal(null);
@@ -223,7 +255,7 @@ export function ReservationsListScreen() {
 
   // Per-tab counts for the KPI tiles and segment badges. One limit=1 request
   // per exact server filter; departures need the overlap window + refinement.
-  // A failed count shows "—" instead of a fabricated 0.
+  // A failed count shows «—» instead of a fabricated 0.
   const loadCounts = useCallback(async () => {
     setCountsError(null);
     const results = await Promise.allSettled([
@@ -266,22 +298,18 @@ export function ReservationsListScreen() {
     }
   }
 
-  function roomTypeName(roomTypeId: string): string {
-    return roomTypes.find((rt) => rt.id === roomTypeId)?.name ?? roomTypeId;
-  }
-
   // The server filter is exact for every tab but "today_departures"; the
   // refinement is applied uniformly so the two definitions never diverge.
   const filteredRows: ReservationRow[] = useMemo(() => {
+    const roomTypeName = (roomTypeId: string) => roomTypes.find((rt) => rt.id === roomTypeId)?.name ?? roomTypeId;
     return reservations
       .filter((r) => matchesReservationTab(r, tab, today))
       .map((r) => ({
         ...r,
-        guestName: guestLabel(r),
+        guestName: reservationGuestLabel(r, r.primaryGuestId ? guestNames[r.primaryGuestId] : undefined),
         roomTypeLabel: roomTypeName(r.roomTypeId)
       }));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reservations, tab, roomTypes, today]);
+  }, [reservations, tab, roomTypes, today, guestNames]);
 
   const sortedRows = useMemo(() => {
     const dir = sort.direction === "asc" ? 1 : -1;
@@ -311,143 +339,80 @@ export function ReservationsListScreen() {
     return rows;
   }, [filteredRows, sort]);
 
-  const badge = (key: StatusTab): number | string | undefined => tabCounts[key];
-  const tileValue = (key: StatusTab): number | string => tabCounts[key] ?? "—";
+  const countLabel = (key: StatusTab): string => (tabCounts[key] === undefined ? "—" : number(tabCounts[key]));
+  const countDegraded = (key: StatusTab): boolean => countsError !== null && tabCounts[key] === undefined;
 
-  const segments: SegmentOption[] = [
-    { value: "all", label: "Todas", badge: badge("all") },
-    {
-      value: "today_arrivals",
-      label: "Llegan hoy",
-      badge: badge("today_arrivals")
-    },
-    { value: "in_house", label: "En casa", badge: badge("in_house") },
-    {
-      value: "today_departures",
-      label: "Salen hoy",
-      badge: badge("today_departures")
-    },
-    { value: "future", label: "Futuras", badge: badge("future") },
-    { value: "cancelled", label: "Canceladas", badge: badge("cancelled") }
-  ];
-
-  const columns: DataTableColumn<ReservationRow>[] = [
-    {
-      key: "code",
-      label: "Código",
-      sortable: true,
-      render: (row) => (
-        <span style={{ fontWeight: 600, color: "var(--ink, #1a1a1a)" }}>
-          {row.code}
-        </span>
-      )
-    },
-    {
-      key: "guestName",
-      label: "Huésped",
-      sortable: true,
-      render: (row) => row.guestName
-    },
-    {
-      key: "arrivalDate",
-      label: "Llegada",
-      sortable: true,
-      render: (row) => fmtShortDate(row.arrivalDate)
-    },
-    {
-      key: "departureDate",
-      label: "Salida",
-      sortable: true,
-      render: (row) => fmtShortDate(row.departureDate)
-    },
-    {
-      key: "roomTypeLabel",
-      label: "Tipo hab.",
-      sortable: true,
-      render: (row) => row.roomTypeLabel
-    },
-    {
-      key: "sourceCode",
-      label: "Source",
-      sortable: true,
-      render: (row) => <SourceChip value={row.sourceCode} />
-    },
-    {
-      key: "totalAmount",
-      label: "Total",
-      sortable: true,
-      align: "right",
-      render: (row) => (
-        <span style={{ fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>
-          {money(row.totalAmount, row.currency)}
-        </span>
-      )
-    },
-    {
-      key: "status",
-      label: "Estado",
-      sortable: true,
-      render: (row) => (
-        <StatusBadge variant={statusVariant(row.status)} size="sm">
-          {STATUS_LABEL[row.status] ?? row.status}
-        </StatusBadge>
-      )
-    }
-  ];
-
-  function openReservation(row: ReservationRow) {
-    // Deep link to /recepcion/reservas/:id (Detalle tab of the Reservas
-    // container, Tanda 5): reload + browser history restore the workspace and
-    // the detail screen parses the id from the trailing slug.
-    const url = urlForScreen("ReservationDetailWorkspace", { id: row.id });
-    if (url) openTabPath(url);
-  }
-
-  const wrapperStyle: CSSProperties = {
-    padding: "var(--space-6, 24px)",
-    display: "flex",
-    flexDirection: "column",
-    gap: "var(--space-5, 20px)"
-  };
-
-  const toolbarStyle: CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "var(--space-3, 12px)",
-    flexWrap: "wrap"
-  };
-
-  const kpiGridStyle: CSSProperties = {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-    gap: "var(--space-4, 16px)"
-  };
+  const segments = TAB_ORDER.map((key) => ({
+    value: key,
+    label: tabCounts[key] === undefined ? TAB_LABEL[key] : `${TAB_LABEL[key]} (${number(tabCounts[key])})`
+  }));
 
   // Departures are refined client-side, so the server `total` overstates them;
   // for that tab we report the refined count instead.
   const shownTotal = tab === "today_departures" ? filteredRows.length : total;
   const hasMore = Boolean(nextCursor);
+  const ready = !loading && !error && sortedRows.length > 0;
+  const newReservationLabel = newLabel("f", "reserva");
+
+  const footer = ready ? (
+    <>
+      <span>
+        {sortedRows.length}
+        {shownTotal !== null ? ` de ${shownTotal}` : ""} reservas
+      </span>
+      {hasMore ? (
+        <CocoaButton variant="bordered" tone="neutral" size="small" loading={loadingMore} onClick={() => void loadMore()}>
+          Cargar más
+        </CocoaButton>
+      ) : null}
+    </>
+  ) : undefined;
+
+  let body;
+  if (loading) {
+    body = <CocoaTable columns={COLUMNS} rows={[]} loading aria-label="Reservas" />;
+  } else if (error) {
+    body = <CocoaState kind="error" title="No se pudieron cargar las reservas" message={error} onRetry={load} />;
+  } else if (sortedRows.length === 0) {
+    body = (
+      <CocoaState
+        kind="empty"
+        illustration={debouncedQuery ? "search" : "box"}
+        title={debouncedQuery ? "Ninguna reserva coincide con la búsqueda" : "No hay reservas para este filtro"}
+        message={debouncedQuery ? "Prueba con otro nombre o código." : "Cambia de vista o crea una reserva nueva."}
+        primaryAction={debouncedQuery ? { label: ACTIONS.clearFilters, onClick: () => setQuery("") } : { label: newReservationLabel, onClick: () => navigateTo("ReservationCreate") }}
+      />
+    );
+  } else {
+    body = (
+      <CocoaTable
+        columns={COLUMNS}
+        rows={sortedRows}
+        rowKey="id"
+        sortBy={sort}
+        onSort={setSort}
+        onSelect={openReservation}
+        rowTitle={() => "Abrir el detalle de la reserva"}
+        caption="Reservas"
+        aria-label="Reservas"
+      />
+    );
+  }
 
   return (
-    <section style={wrapperStyle}>
-      {hosted ? null : (
-        <PageHeader
-          eyebrow="PMS · Reservas"
-          title="Reservas"
-          subtitle="Búsqueda, filtros operativos y acceso al espacio de cada reserva."
-          actions={
-            <CocoaButton
-              variant="filled"
-              tone="accent"
-              icon={<PlusIcon />}
-              onClick={() => navTo("ReservationCreate")}
-            >
-              Nueva reserva
-            </CocoaButton>
-          }
-        />
-      )}
-
+    <CocoaPage
+      eyebrow="Recepción · Reservas"
+      title="Reservas"
+      subtitle={hosted ? undefined : "Búsqueda, filtros operativos y acceso al espacio de cada reserva."}
+      actions={
+        hosted ? undefined : (
+          <CocoaButton variant="filled" tone="accent" icon={<PlusIcon />} onClick={() => navigateTo("ReservationCreate")}>
+            {newReservationLabel}
+          </CocoaButton>
+        )
+      }
+      commands={[{ id: "reservas-nueva", label: newReservationLabel, run: () => navigateTo("ReservationCreate") }]}
+    >
       <CocoaScreenInstructionsCard
         title="Reservas"
         description={RESERVATIONS_INSTRUCTIONS.whatIsThis}
@@ -457,113 +422,79 @@ export function ReservationsListScreen() {
         persistKey="reservations"
       />
 
-      <div style={kpiGridStyle}>
-        <StatTile
+      <CocoaKpiStrip stagger aria-label="Reservas de hoy">
+        <CocoaKpi
           label="Llegadas hoy"
-          value={tileValue("today_arrivals")}
-          color="ok"
-          helper="Confirmadas o alojadas con llegada hoy"
-          loading={loading && tabCounts.today_arrivals === undefined}
+          value={countLabel("today_arrivals")}
+          caption="Confirmadas o alojadas con llegada hoy"
+          tone={tab === "today_arrivals" ? "accent" : undefined}
+          degraded={countDegraded("today_arrivals")}
           onClick={() => setTab("today_arrivals")}
         />
-        <StatTile
+        <CocoaKpi
           label="En casa"
-          value={tileValue("in_house")}
-          color="default"
-          helper="Huéspedes actualmente alojados"
-          loading={loading && tabCounts.in_house === undefined}
+          value={countLabel("in_house")}
+          caption="Huéspedes actualmente alojados"
+          tone={tab === "in_house" ? "accent" : undefined}
+          degraded={countDegraded("in_house")}
           onClick={() => setTab("in_house")}
         />
-        <StatTile
-          label="Salidas"
-          value={tileValue("today_departures")}
-          color="warn"
-          helper="Alojadas con salida hoy"
-          loading={loading && tabCounts.today_departures === undefined}
+        <CocoaKpi
+          label="Salidas hoy"
+          value={countLabel("today_departures")}
+          caption="Alojadas con salida hoy"
+          tone={tab === "today_departures" ? "accent" : undefined}
+          degraded={countDegraded("today_departures")}
           onClick={() => setTab("today_departures")}
         />
-        <StatTile
+        <CocoaKpi
           label="Futuras"
-          value={tileValue("future")}
-          color="default"
-          helper="Confirmadas y por llegar"
-          loading={loading && tabCounts.future === undefined}
+          value={countLabel("future")}
+          caption="Confirmadas y por llegar"
+          tone={tab === "future" ? "accent" : undefined}
+          degraded={countDegraded("future")}
           onClick={() => setTab("future")}
         />
-      </div>
+      </CocoaKpiStrip>
+
       {countsError ? (
-        <p style={{ margin: 0, fontSize: "var(--fs-xs, 12px)", color: "var(--ink-muted, #6a6a6a)" }}>
-          {countsError}{" "}
-          <button type="button" className="bo-link" onClick={() => void loadCounts()}>
-            Reintentar
-          </button>
-        </p>
+        <CocoaCallout
+          tone="warning"
+          role="status"
+          actions={
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void loadCounts()}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
+          {countsError}
+        </CocoaCallout>
       ) : null}
 
-      <div style={toolbarStyle}>
-        <div style={{ flex: "1 1 260px", maxWidth: 360 }}>
-          <SearchInput
+      <CocoaToolbar
+        variant="content"
+        aria-label="Búsqueda y vistas de reservas"
+        leftSlot={
+          <CocoaSearchInput
+            id="reservations-search"
             value={query}
             onChange={setQuery}
             placeholder="Buscar por nombre o código…"
-            ariaLabel="Buscar reservas"
+            aria-label="Buscar reservas por nombre o código"
           />
-        </div>
-        <SegmentedControl
-          value={tab}
-          options={segments}
-          onChange={(v) => setTab(v as StatusTab)}
-          size="md"
-          ariaLabel="Filtros operativos"
-        />
-        {shownTotal !== null && !loading ? (
-          <span style={{ fontSize: "var(--fs-xs, 12px)", color: "var(--ink-muted, #6a6a6a)" }}>
-            {sortedRows.length} de {shownTotal}
-          </span>
-        ) : null}
-      </div>
+        }
+        rightSlot={
+          <>
+            <CocoaSegmentedControl value={tab} options={segments} onChange={(v) => setTab(v as StatusTab)} size="small" aria-label="Vistas operativas" />
+            {shownTotal !== null && !loading ? <CocoaBadge tone="neutral">{`${sortedRows.length} de ${shownTotal}`}</CocoaBadge> : null}
+          </>
+        }
+      />
 
-      {loading ? (
-        <LoadingBlock label="Cargando reservas…" />
-      ) : error ? (
-        <ErrorState
-          title="No se pudieron cargar las reservas"
-          message={error}
-          onRetry={load}
-          retryLabel="Reintentar"
-        />
-      ) : (
-        <>
-          <DataTable<ReservationRow>
-            columns={columns}
-            rows={sortedRows}
-            rowKey="id"
-            sortBy={sort}
-            onSort={setSort}
-            onRowClick={openReservation}
-            density="comfortable"
-            emptyState={
-              debouncedQuery
-                ? "Ninguna reserva coincide con la búsqueda."
-                : "No hay reservas para este filtro."
-            }
-          />
-          {hasMore ? (
-            <div style={{ display: "flex", justifyContent: "center" }}>
-              <CocoaButton
-                variant="bordered"
-                tone="neutral"
-                onClick={() => void loadMore()}
-                disabled={loadingMore}
-                loading={loadingMore}
-              >
-                Cargar más
-              </CocoaButton>
-            </div>
-          ) : null}
-        </>
-      )}
-    </section>
+      <CocoaSection padding={ready ? "none" : "md"} footer={footer} style={{ overflow: "clip" }} aria-label="Listado de reservas">
+        {body}
+      </CocoaSection>
+    </CocoaPage>
   );
 }
 

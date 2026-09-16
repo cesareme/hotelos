@@ -5,11 +5,16 @@
 // engine and the tools of the revenue module read from the product manifest.
 // The sample KPIs, alerts and setup checks that used to sit here under a
 // sample-data badge are gone (browser-roles#8).
+//
+// Cocoa 22 (ola 5 · lote 5-B): standalone dashboard (DashboardStandalone).
+// Instructions card → «Señales en vivo» section with a KPI strip → 6/6 row
+// (pending recommendations · configuration) → tool cards in a 3-column grid.
+// Each block loads on its own (the header refresh bumps a nonce), so the
+// states live inside the sections. Same endpoints, same actions.
 
 import { useCallback, useEffect, useState } from "react";
 import { getModuleRouteItems } from "@hotelos/product";
 import { DEV_MODE_STORAGE_KEY, isDevModeEnabled, urlForScreen } from "../../navigation/nav-tree";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
 import {
   fetchPace,
   fetchPickup,
@@ -20,13 +25,26 @@ import {
   type ForecastAccuracyResult,
   type Recommendation
 } from "../../services/revenueApi";
-import { Spinner } from "../../components/States";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
+import { getActiveProperty } from "../../services/activeProperty";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
 import { REVENUE_INSTRUCTIONS } from "../../content/screen-instructions/revenue";
 import { ACTIONS } from "../../content/actions";
-import { money, plural } from "../../lib/format";
+import { money, number, percent, plural } from "../../lib/format";
 import { shellNavigate, treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  openTabPath,
+  type CocoaTone
+} from "../../components/cocoa";
 
 // Menu labels of the tree (Revenue › Panel de revenue), never retyped here.
 const HEADER = treeHeaderFor("RevenueHomeDashboard", { eyebrow: "Revenue", title: "Panel de revenue" });
@@ -42,6 +60,10 @@ function readDevStorage(): string | null {
 /** Dev-only tools (/desarrollo/*) only show up with `?dev=1` or localStorage anfitorio.dev=1 (Tanda 5 §4.3). */
 function devModeOn(): boolean {
   return typeof window !== "undefined" && isDevModeEnabled({ search: window.location.search, storageValue: readDevStorage() });
+}
+
+function signedInt(n: number): string {
+  return number(n, { maximumFractionDigits: 0, signDisplay: "exceptZero" });
 }
 
 // Real, live signals computed from reservations (Fase B backend): pace, pickup
@@ -77,40 +99,28 @@ function LiveRevenueSignals({ nonce }: { nonce: number }) {
   const occAcc = accuracy?.metrics.find((m) => m.metric === "occupancy");
 
   return (
-    <article className="bo-card">
-      <div className="bo-card-head">
-        <h3>Señales en vivo</h3>
-        <span className="bo-chip">calculadas desde las reservas</span>
-      </div>
+    <CocoaSection title="Señales en vivo" meta="calculadas desde las reservas" headingLevel={2}>
       {loading ? (
-        <p className="bo-muted" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Spinner size="sm" /> Cargando señales…</p>
-      ) : error ? (
-        <p className="bo-muted" style={{ textTransform: "none" }}>No se pudieron cargar las señales en vivo. {error}</p>
-      ) : (
-        <div className="rev-kpi-grid">
-          <article className="rev-kpi rev-kpi-ok">
-            <div className="rev-kpi-head"><span className="rev-kpi-label">Reservado a 30 días</span></div>
-            <div className="rev-kpi-value">{h30 ? plural(h30.otbRooms, "noche", "noches", { withCount: true }) : "—"}</div>
-            <div className="rev-kpi-delta">{h30 ? money(h30.otbRevenue) : ""}</div>
-          </article>
-          <article className={`rev-kpi rev-kpi-${(h90?.paceRooms ?? 0) >= 0 ? "ok" : "warn"}`}>
-            <div className="rev-kpi-head"><span className="rev-kpi-label">Ritmo a 90 días</span></div>
-            <div className="rev-kpi-value">{h90 ? `${h90.paceRooms >= 0 ? "+" : ""}${plural(h90.paceRooms, "noche", "noches", { withCount: true })}` : "—"}</div>
-            <div className="rev-kpi-delta">{pace?.comparison.label}</div>
-          </article>
-          <article className="rev-kpi rev-kpi-ok">
-            <div className="rev-kpi-head"><span className="rev-kpi-label">Captación 7 días</span></div>
-            <div className="rev-kpi-value">{pk7 ? plural(pk7.roomNights, "noche", "noches", { withCount: true }) : "—"}</div>
-            <div className="rev-kpi-delta">{pk7 ? `${plural(pk7.reservations, "reserva", "reservas", { withCount: true })} · ${money(pk7.revenue)}` : ""}</div>
-          </article>
-          <article className={`rev-kpi rev-kpi-${(occAcc?.accuracy ?? 0) >= 80 ? "ok" : "warn"}`}>
-            <div className="rev-kpi-head"><span className="rev-kpi-label">Precisión de la previsión (ocupación)</span></div>
-            <div className="rev-kpi-value">{occAcc?.accuracy != null ? `${occAcc.accuracy}%` : "—"}</div>
-            <div className="rev-kpi-delta">{occAcc?.samples ? `${plural(occAcc.samples, "día", "días", { withCount: true })} de contraste` : "sin histórico"}</div>
-          </article>
+        <div aria-hidden="true">
+          <CocoaSkeleton.Strip count={4} min={200} />
         </div>
+      ) : error ? (
+        <CocoaState kind="error" inline title="No se pudieron cargar las señales en vivo." message={error} />
+      ) : (
+        <CocoaKpiStrip min={200} stagger aria-label="Señales en vivo">
+          <CocoaKpi label="Reservado a 30 días" value={h30 ? number(h30.otbRooms) : "—"} unit={h30 ? "noches" : undefined} caption={h30 ? money(h30.otbRevenue) : undefined} polarity="neutral" status="ok" />
+          <CocoaKpi label="Ritmo a 90 días" value={h90 ? signedInt(h90.paceRooms) : "—"} unit={h90 ? "noches" : undefined} caption={pace?.comparison.label} polarity="positive-good" status={(h90?.paceRooms ?? 0) >= 0 ? "ok" : "warning"} />
+          <CocoaKpi label="Captación 7 días" value={pk7 ? number(pk7.roomNights) : "—"} unit={pk7 ? "noches" : undefined} caption={pk7 ? `${plural(pk7.reservations, "reserva", "reservas")} · ${money(pk7.revenue)}` : undefined} polarity="neutral" status="ok" />
+          <CocoaKpi
+            label="Precisión de la previsión (ocupación)"
+            value={occAcc?.accuracy != null ? percent(occAcc.accuracy) : "—"}
+            caption={occAcc?.samples ? `${plural(occAcc.samples, "día", "días")} de contraste` : "sin histórico"}
+            polarity="neutral"
+            status={(occAcc?.accuracy ?? 0) >= 80 ? "ok" : "warning"}
+          />
+        </CocoaKpiStrip>
       )}
-    </article>
+    </CocoaSection>
   );
 }
 
@@ -133,31 +143,39 @@ function PendingRecommendations({ nonce }: { nonce: number }) {
 
   const pending = (recs ?? []).filter((r) => r.status === "pending").length;
   const rulesUrl = urlForScreen("RevenueRules");
+  const openRules = () => (rulesUrl ? openTabPath(rulesUrl) : shellNavigate("RevenueRules"));
 
   return (
-    <article className="bo-card">
-      <div className="bo-card-head">
-        <h3>Recomendaciones de precio</h3>
-        {recs ? <span className={`cm-pill ${pending > 0 ? "cm-pill-warn" : "cm-pill-ok"}`}>{plural(pending, "pendiente", "pendientes", { withCount: true })}</span> : null}
-      </div>
+    <CocoaSection
+      title="Recomendaciones de precio"
+      meta={recs ? <CocoaBadge tone={pending > 0 ? "warning" : "success"}>{plural(pending, "pendiente", "pendientes")}</CocoaBadge> : undefined}
+      footer={
+        <CocoaButton variant="filled" tone="accent" size="small" onClick={openRules}>
+          Abrir reglas y recomendaciones
+        </CocoaButton>
+      }
+    >
       {error ? (
-        <p className="bo-muted" style={{ textTransform: "none" }}>{error}</p>
+        <CocoaState kind="error" inline title="No se pudieron cargar las recomendaciones." message={error} />
       ) : recs === null ? (
-        <p className="bo-muted" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><Spinner size="sm" /> Cargando recomendaciones…</p>
+        <CocoaSkeleton variant="text" lines={2} />
       ) : (
         <p>
           {pending > 0
-            ? `${plural(pending, "recomendación espera", "recomendaciones esperan", { withCount: true })} aprobación antes de aplicarse a la parrilla de tarifas.`
+            ? `${plural(pending, "recomendación espera", "recomendaciones esperan")} aprobación antes de aplicarse a la parrilla de tarifas.`
             : "No hay recomendaciones pendientes de aprobar. Genera nuevas desde Reglas y recomendaciones."}
         </p>
       )}
-      <div className="cm-actions">
-        <button type="button" className="primary" onClick={() => (rulesUrl ? openTabPath(rulesUrl) : shellNavigate("RevenueRules"))}>
-          Abrir reglas y recomendaciones
-        </button>
-      </div>
-    </article>
+    </CocoaSection>
   );
+}
+
+const ROUTE_STATUS: Record<string, { label: string; tone: CocoaTone }> = {
+  ready: { label: "listo", tone: "success" },
+  coming_soon: { label: "no disponible", tone: "neutral" }
+};
+function routeStatus(status: string | undefined): { label: string; tone: CocoaTone } {
+  return (status && ROUTE_STATUS[status]) || { label: "requiere configuración", tone: "warning" };
 }
 
 export function RevenueHomeDashboard() {
@@ -166,18 +184,17 @@ export function RevenueHomeDashboard() {
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
 
   return (
-    <section className="bo-card">
-      <CocoaPageHeader
-        eyebrow={HEADER.eyebrow}
-        title={HEADER.title}
-        subtitle="Ritmo, captación y precisión de la previsión calculados desde las reservas, recomendaciones de precio pendientes y acceso directo a las herramientas de revenue."
-        actions={
-          <button type="button" onClick={refresh}>
-            ↻ {ACTIONS.refresh}
-          </button>
-        }
-      />
-
+    <CocoaPage
+      eyebrow={`${HEADER.eyebrow} · ${getActiveProperty().propertyName}`}
+      title={HEADER.title}
+      subtitle="Ritmo, captación y precisión de la previsión calculados desde las reservas, recomendaciones de precio pendientes y acceso directo a las herramientas de revenue."
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
+          {ACTIONS.refresh}
+        </CocoaButton>
+      }
+      commands={[{ id: "panel-revenue-refresh", label: "Actualizar el panel de revenue", run: refresh }]}
+    >
       <CocoaScreenInstructionsCard
         title={HEADER.title}
         description={REVENUE_INSTRUCTIONS.whatIsThis}
@@ -189,52 +206,56 @@ export function RevenueHomeDashboard() {
 
       <LiveRevenueSignals nonce={nonce} />
 
-      <div className="bo-grid two">
-        <PendingRecommendations nonce={nonce} />
+      <CocoaGrid aria-label="Recomendaciones y configuración" align="start">
+        <CocoaSpan cols={6} min={320}>
+          <PendingRecommendations nonce={nonce} />
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Configuración de revenue"
+            footer={
+              <span className="cocoa-cluster">
+                <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => shellNavigate("RevenueCategorySetupForm")}>
+                  Configurar revenue
+                </CocoaButton>
+                <CocoaButton variant="filled" tone="accent" size="small" onClick={() => shellNavigate("SetupCenterScreen")}>
+                  Abrir puesta en marcha
+                </CocoaButton>
+              </span>
+            }
+          >
+            <p>Categorías de revenue, planes de tarifa y umbrales de automatización se configuran en Contabilidad y fiscal y en la puesta en marcha de la propiedad.</p>
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Configuración de revenue</h3>
-          </div>
-          <p>Categorías de revenue, planes de tarifa y umbrales de automatización se configuran en Contabilidad y fiscal y en la puesta en marcha de la propiedad.</p>
-          <div className="cm-actions">
-            <button type="button" onClick={() => shellNavigate("RevenueCategorySetupForm")}>Configurar revenue</button>
-            <button type="button" className="primary" onClick={() => shellNavigate("SetupCenterScreen")}>Abrir puesta en marcha</button>
-          </div>
-        </article>
-      </div>
-
-      <article className="bo-card">
-        <div className="bo-card-head">
-          <h3>Abrir una herramienta</h3>
-          <span className="bo-chip">{plural(adminRoutes.length, "herramienta", "herramientas", { withCount: true })} · según permisos</span>
-        </div>
-        <div className="rev-home-grid">
-          {adminRoutes.map((route) => (
-            <article key={route.label} className="rev-home-card">
-              <div className="bo-card-head">
-                <h3>{route.label}</h3>
-                <span className={`cm-pill ${route.status === "ready" ? "cm-pill-ok" : "cm-pill-warn"}`}>
-                  {route.status === "ready" ? "listo" : route.status === "coming_soon" ? "no disponible" : "requiere configuración"}
-                </span>
-              </div>
-              <p>{route.description}</p>
-              <div className="rev-home-foot">
-                <button
-                  type="button"
-                  className="primary"
-                  disabled={route.status === "coming_soon"}
-                  style={route.status === "coming_soon" ? { opacity: 0.55, cursor: "not-allowed" } : undefined}
-                  title={route.status === "coming_soon" ? "No disponible en esta propiedad" : undefined}
-                  onClick={() => route.url && openTabPath(route.url)}
-                >
-                  Abrir
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-      </article>
-    </section>
+      <CocoaSection variant="plain" padding="none" title="Abrir una herramienta" meta={`${plural(adminRoutes.length, "herramienta", "herramientas")} · según permisos`} headingLevel={2}>
+        {adminRoutes.length === 0 ? (
+          <CocoaState kind="empty" inline title="No hay herramientas de revenue disponibles con tus permisos." />
+        ) : (
+          <CocoaGrid aria-label="Herramientas de revenue" align="start">
+            {adminRoutes.map((route) => {
+              const status = routeStatus(route.status);
+              const unavailable = route.status === "coming_soon";
+              return (
+                <CocoaSpan key={route.label} cols={4} min={240}>
+                  <CocoaSection
+                    title={route.label}
+                    meta={<CocoaBadge tone={status.tone}>{status.label}</CocoaBadge>}
+                    footer={
+                      <CocoaButton variant="filled" tone="accent" size="small" disabled={unavailable} title={unavailable ? "No disponible en esta propiedad" : undefined} onClick={() => route.url && openTabPath(route.url)}>
+                        Abrir
+                      </CocoaButton>
+                    }
+                  >
+                    <p>{route.description}</p>
+                  </CocoaSection>
+                </CocoaSpan>
+              );
+            })}
+          </CocoaGrid>
+        )}
+      </CocoaSection>
+    </CocoaPage>
   );
 }

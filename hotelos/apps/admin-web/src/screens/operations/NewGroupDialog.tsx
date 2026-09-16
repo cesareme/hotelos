@@ -1,4 +1,12 @@
-import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+// NewGroupDialog — create a group booking (POST /groups/properties/:propertyId).
+//
+// Cocoa 22 (ola 3 · lote 3-B, archetype «diálogo / drawer»): a CocoaDrawer
+// (right, lg; bottom sheet on phones) whose body is a <form> of ten
+// CocoaFormSections (identification, dates and release, contact, company,
+// rate, attrition, billing, F&B, Spain specifics, notes). The footer holds two
+// buttons: Cancelar and «Crear grupo» (submits the form by `form=`).
+// Smart defaults by group type and the YYYY-MM-XXX code suggestion are kept.
+import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import {
   createGroupBooking,
   type CreateGroupPayload,
@@ -11,51 +19,84 @@ import {
   type PaymentMethod,
   type MealPlan
 } from "../../services/groupsApi";
-import { date } from "../../lib/format";
+import { date, percent } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
+import {
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaSelect,
+  CocoaSwitch
+} from "../../components/cocoa";
 
-// ─── Helpers locales (replicados para no acoplar con AllotmentsScreen) ──
+const FORM_ID = "new-group-form";
+const CODE_INPUT_ID = "new-group-code";
 
-const fieldsetStyle: CSSProperties = {
-  border: "1px solid var(--border, #e5e7eb)",
-  borderRadius: "var(--radius-sm, 6px)",
-  padding: 12,
-  margin: 0
-};
+// ─── Options (Spanish labels; the API enum stays in the value) ───────────
 
-const legendStyle: CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--ink-soft, #555)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  padding: "0 6px"
-};
+const GROUP_TYPE_OPTIONS: Array<{ value: GroupType; label: string }> = [
+  { value: "corporate", label: "Corporativo (empresa, convención interna)" },
+  { value: "mice", label: "MICE (reuniones, incentivos, congresos)" },
+  { value: "smerf", label: "SMERF (social, militar, religioso)" },
+  { value: "leisure", label: "Ocio (circuitos, asociaciones)" },
+  { value: "wedding", label: "Boda" },
+  { value: "sports", label: "Deportivo (equipos)" },
+  { value: "wholesale", label: "Mayorista (TT.OO., bloque puntual)" }
+];
 
-const inputStyle: CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  border: "1px solid var(--border, #d1d5db)",
-  borderRadius: "var(--radius-sm, 6px)",
-  background: "var(--surface, white)",
-  color: "var(--ink, #1a1a1a)",
-  fontSize: 14,
-  fontFamily: "inherit"
-};
+const STATUS_OPTIONS: Array<{ value: GroupStatus; label: string }> = [
+  { value: "inquiry", label: "Consulta inicial" },
+  { value: "tentative", label: "Provisional (pre-bloqueo)" },
+  { value: "definite", label: "Confirmado" }
+];
 
-function Field(props: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: "var(--ink)" }}>
-      <span style={{ fontWeight: 500 }}>{props.label}</span>
-      {props.children}
-      {props.hint ? <span className="bo-muted" style={{ fontSize: 11 }}>{props.hint}</span> : null}
-    </label>
-  );
-}
+const RATE_TYPE_OPTIONS: Array<{ value: RateType; label: string }> = [
+  { value: "net", label: "Tarifa neta" },
+  { value: "commissionable", label: "Tarifa comisionable" }
+];
 
-// ─── Estado del form (todo con defaults sensatos) ────────────────────────
+const CURRENCY_OPTIONS = [
+  { value: "EUR", label: "EUR" },
+  { value: "GBP", label: "GBP" },
+  { value: "USD", label: "USD" }
+];
+
+const ATTRITION_TYPE_OPTIONS: Array<{ value: AttritionType; label: string }> = [
+  { value: "cumulative", label: "Acumulativa (total estancia)" },
+  { value: "nightly", label: "Por noche" },
+  { value: "revenue", label: "Sobre los ingresos totales" }
+];
+
+const BILLING_METHOD_OPTIONS: Array<{ value: BillingMethod; label: string }> = [
+  { value: "master_folio", label: "Folio maestro (todo a un folio común)" },
+  { value: "split", label: "Separado (alojamiento y extras por separado)" },
+  { value: "individual", label: "Individual (cada huésped paga)" }
+];
+
+const PAYMENT_METHOD_OPTIONS: Array<{ value: PaymentMethod; label: string }> = [
+  { value: "cc_guarantee", label: "Tarjeta de garantía" },
+  { value: "prepay_pct", label: "Prepago anticipado (%)" },
+  { value: "deposit", label: "Depósito inicial" },
+  { value: "credit", label: "Crédito (cuenta corporativa)" },
+  { value: "transfer", label: "Transferencia bancaria" }
+];
+
+const MEAL_PLAN_OPTIONS: Array<{ value: MealPlan; label: string }> = [
+  { value: "none", label: "Ninguno (solo alojamiento)" },
+  { value: "HD", label: "HD · Media pensión" },
+  { value: "FB", label: "FB · Pensión completa" },
+  { value: "AI", label: "AI · Todo incluido" }
+];
+
+// ─── Form state (every field with a sensible default) ────────────────────
 
 type FormState = {
-  // Identificación
+  // Identification
   code: string;
   name: string;
   groupType: GroupType;
@@ -65,22 +106,22 @@ type FormState = {
   arrivalDate: string;
   departureDate: string;
   assignedToUserId: string;
-  // Contacto
+  // Contact
   contactPersonName: string;
   contactEmail: string;
   contactPhone: string;
   contactRole: string;
-  // Empresa
+  // Company
   companyName: string;
   companyTaxId: string;
   companyAddress: string;
   industry: string;
-  // Tarifa
+  // Rate
   contractedRate: string;
   currency: string;
   rateType: RateType;
   commissionPct: string;
-  // Cancelación / release
+  // Cancellation / release
   cutOffDate: string;
   roomingListDueDate: string;
   attritionType: AttritionType;
@@ -95,15 +136,14 @@ type FormState = {
   mealPlan: MealPlan;
   welcomeCocktail: boolean;
   galaDinner: boolean;
-  // ES specifics
+  // Spain specifics
   regimenEspecialAaee: boolean;
   confidentialArrival: boolean;
-  // Notas
+  // Notes
   notes: string;
 };
 
-// ─── Defaults inteligentes según tipo de grupo ─ research-backed ─────────
-// 5 perfiles tipo: wedding, mice, wholesale, sports, corporate
+// Smart defaults by group type (five industry profiles).
 function smartDefaultsForType(t: GroupType): Partial<FormState> {
   switch (t) {
     case "wedding":
@@ -121,7 +161,7 @@ function smartDefaultsForType(t: GroupType): Partial<FormState> {
   }
 }
 
-// Sugerencia de código YYYY-MM-XXX (XXX = sufijo aleatorio compacto de 3 chars)
+// Code suggestion YYYY-MM-XXX (XXX = compact random suffix).
 function suggestCode(): string {
   const now = new Date();
   const yyyy = now.getFullYear();
@@ -136,11 +176,14 @@ function todayIso(offsetDays = 0): string {
   return d.toISOString().slice(0, 10);
 }
 
-function fmtDateEs(iso: string): string {
-  return date(iso, "medium");
-}
+// Secondary note under a row (release summary): identity from the system.
+const NOTE_STYLE: CSSProperties = {
+  margin: 0,
+  color: "var(--cocoa-label-secondary)",
+  fontSize: "var(--cocoa-fs-callout)"
+};
 
-// ─── Componente principal ────────────────────────────────────────────────
+// ─── Main component ──────────────────────────────────────────────────────
 
 export function NewGroupDialog(props: {
   onClose: () => void;
@@ -148,7 +191,6 @@ export function NewGroupDialog(props: {
   onError: (msg: string) => void;
 }) {
   const [form, setForm] = useState<FormState>(() => ({
-    // Identificación
     code: suggestCode(),
     name: "",
     groupType: "corporate",
@@ -158,40 +200,32 @@ export function NewGroupDialog(props: {
     arrivalDate: todayIso(30),
     departureDate: todayIso(33),
     assignedToUserId: "",
-    // Contacto
     contactPersonName: "",
     contactEmail: "",
     contactPhone: "",
     contactRole: "",
-    // Empresa
     companyName: "",
     companyTaxId: "",
     companyAddress: "",
     industry: "",
-    // Tarifa
     contractedRate: "",
     currency: "EUR",
     rateType: "net",
     commissionPct: "",
-    // Cancelación / release
     cutOffDate: todayIso(15),
     roomingListDueDate: todayIso(20),
     attritionType: "cumulative",
     attritionThresholdPct: 80,
     attritionPenaltyPct: 100,
-    // Billing
     billingMethod: "master_folio",
     paymentMethod: "credit",
     depositPct: "",
-    // F&B
     breakfastIncluded: true,
     mealPlan: "none",
     welcomeCocktail: false,
     galaDinner: false,
-    // ES
     regimenEspecialAaee: false,
     confidentialArrival: false,
-    // Notas
     notes: ""
   }));
   const [submitting, setSubmitting] = useState(false);
@@ -206,7 +240,7 @@ export function NewGroupDialog(props: {
     setForm((f) => ({ ...f, ...patch, groupType: next }));
   }
 
-  // Texto dinámico del ciclo de release · "cut-off el [fecha] (T-X días antes)"
+  // Release summary: «fecha límite el [fecha] (T-X días antes de la llegada)».
   const cutOffSummary = useMemo(() => {
     if (!form.cutOffDate || !form.arrivalDate) return null;
     const arrive = new Date(form.arrivalDate);
@@ -214,14 +248,14 @@ export function NewGroupDialog(props: {
     if (Number.isNaN(arrive.getTime()) || Number.isNaN(cut.getTime())) return null;
     const diffDays = Math.round((arrive.getTime() - cut.getTime()) / 86400000);
     if (diffDays < 0) return null;
-    return `Release: cut-off el ${fmtDateEs(form.cutOffDate)} (T-${diffDays} días antes de la llegada)`;
+    return `Liberación: fecha límite el ${date(form.cutOffDate, "medium")} (T-${diffDays} días antes de la llegada).`;
   }, [form.cutOffDate, form.arrivalDate]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
 
-    // Validaciones básicas
+    // Basic validation.
     if (!form.code.trim()) return setError("El código es obligatorio.");
     if (!form.name.trim()) return setError("El nombre del grupo es obligatorio.");
     if (!form.contactPersonName.trim()) return setError("El nombre de contacto es obligatorio.");
@@ -236,7 +270,7 @@ export function NewGroupDialog(props: {
     if (form.paymentMethod === "prepay_pct" || form.paymentMethod === "deposit") {
       const dp = Number(form.depositPct);
       if (!form.depositPct.trim() || Number.isNaN(dp) || dp < 0 || dp > 100) {
-        return setError("Indica un % de depósito entre 0 y 100.");
+        return setError("Indica un porcentaje de depósito entre 0 y 100.");
       }
     }
 
@@ -263,9 +297,7 @@ export function NewGroupDialog(props: {
         contractedRate: form.contractedRate.trim() ? Number(form.contractedRate) : undefined,
         currency: form.currency,
         rateType: form.rateType,
-        commissionPct: form.rateType === "commissionable" && form.commissionPct.trim()
-          ? Number(form.commissionPct)
-          : undefined,
+        commissionPct: form.rateType === "commissionable" && form.commissionPct.trim() ? Number(form.commissionPct) : undefined,
         cutOffDate: form.cutOffDate || undefined,
         roomingListDueDate: form.roomingListDueDate || undefined,
         attritionType: form.attritionType,
@@ -273,9 +305,10 @@ export function NewGroupDialog(props: {
         attritionPenaltyPct: form.attritionPenaltyPct,
         billingMethod: form.billingMethod,
         paymentMethod: form.paymentMethod,
-        depositPct: (form.paymentMethod === "prepay_pct" || form.paymentMethod === "deposit") && form.depositPct.trim()
-          ? Number(form.depositPct)
-          : undefined,
+        depositPct:
+          (form.paymentMethod === "prepay_pct" || form.paymentMethod === "deposit") && form.depositPct.trim()
+            ? Number(form.depositPct)
+            : undefined,
         breakfastIncluded: form.breakfastIncluded,
         mealPlan: form.mealPlan,
         welcomeCocktail: form.welcomeCocktail,
@@ -299,566 +332,227 @@ export function NewGroupDialog(props: {
   const isDepositPctRequired = form.paymentMethod === "prepay_pct" || form.paymentMethod === "deposit";
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="new-group-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(15, 23, 42, 0.55)",
-        backdropFilter: "blur(2px)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
-      onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}
+    <CocoaDrawer
+      open
+      onClose={props.onClose}
+      title="Nuevo grupo"
+      subtitle="Da de alta un bloque de grupo. Los valores por defecto se adaptan al tipo de grupo (boda, MICE, deportivo, corporativo, mayorista…)."
+      side="right"
+      size="lg"
+      initialFocus={() => document.getElementById(CODE_INPUT_ID)}
+      footer={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose} disabled={submitting}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" type="submit" form={FORM_ID} loading={submitting} disabled={submitting}>
+            Crear grupo
+          </CocoaButton>
+        </>
+      }
     >
-      <form
-        onSubmit={submit}
-        className="bo-card"
-        style={{
-          width: "100%",
-          maxWidth: 760,
-          maxHeight: "92vh",
-          overflow: "auto",
-          background: "var(--surface-1, var(--surface))",
-          padding: "var(--space-5, 20px)",
-          borderRadius: "var(--radius-md, 12px)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12
-        }}
-      >
-        <div className="bo-card-head" style={{ marginBottom: 4 }}>
-          <div>
-            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 11, margin: 0 }}>
-              Comercial · Groups &amp; Events
-            </p>
-            <h3 id="new-group-title" style={{ margin: "2px 0 0 0" }}>Nuevo grupo</h3>
-          </div>
-          <button
-            type="button"
-            onClick={props.onClose}
-            aria-label="Cerrar"
-            style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "var(--ink)" }}
-          >×</button>
-        </div>
-
-        <p className="bo-muted" style={{ margin: 0, fontSize: 13 }}>
-          Da de alta un bloque de grupo. Los defaults se adaptan según el tipo de grupo
-          (boda, MICE, deportivo, corporate, wholesale…).
-        </p>
-
-        {/* 1. Identificación */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Identificación</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
-            <Field label="Código *" hint="Sugerencia formato YYYY-MM-XXX">
-              <input
-                type="text"
-                required
-                maxLength={32}
+      <form id={FORM_ID} onSubmit={submit} className="cocoa-stack" data-gap="4" noValidate>
+        <CocoaFormSection title="Identificación">
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Código" required help="Formato sugerido AAAA-MM-XXX.">
+              <CocoaInput
+                id={CODE_INPUT_ID}
                 value={form.code}
-                onChange={(e) => update("code", e.target.value.toUpperCase())}
-                style={inputStyle}
+                onChange={(value) => update("code", value.toUpperCase())}
+                maxLength={32}
                 placeholder="2026-05-ABC"
-                autoFocus
-              />
-            </Field>
-            <Field label="Nombre del grupo *">
-              <input
-                type="text"
+                autoComplete="off"
                 required
-                maxLength={160}
-                value={form.name}
-                onChange={(e) => update("name", e.target.value)}
-                style={inputStyle}
-                placeholder="Boda García-López · Junio 2026"
               />
-            </Field>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Tipo de grupo *" hint="Cambia los defaults inteligentes según el segmento.">
-              <select
-                value={form.groupType}
-                onChange={(e) => handleGroupTypeChange(e.target.value as GroupType)}
-                style={inputStyle}
-              >
-                <option value="corporate">🏢 Corporate (empresa / kick-off)</option>
-                <option value="mice">🎯 MICE (meetings / incentives / conf.)</option>
-                <option value="smerf">⛪ SMERF (social / militar / religioso)</option>
-                <option value="leisure">🏖️ Leisure (tours / asociaciones)</option>
-                <option value="wedding">💍 Wedding (boda)</option>
-                <option value="sports">⚽ Sports (equipos deportivos)</option>
-                <option value="wholesale">🌐 Wholesale (TT.OO. bloque puntual)</option>
-              </select>
-            </Field>
-            <Field label="Estado inicial *">
-              <select
-                value={form.status}
-                onChange={(e) => update("status", e.target.value as GroupStatus)}
-                style={inputStyle}
-              >
-                <option value="inquiry">Inquiry (consulta inicial)</option>
-                <option value="tentative">Tentative (pre-bloqueo)</option>
-                <option value="definite">Definite (confirmado)</option>
-              </select>
-            </Field>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 12 }}>
-            <Field label="Market code">
-              <input
-                type="text"
-                maxLength={32}
-                value={form.marketCode}
-                onChange={(e) => update("marketCode", e.target.value)}
-                style={inputStyle}
-                placeholder="CORP-ES"
-              />
-            </Field>
-            <Field label="Source code">
-              <input
-                type="text"
-                maxLength={32}
-                value={form.sourceCode}
-                onChange={(e) => update("sourceCode", e.target.value)}
-                style={inputStyle}
-                placeholder="DIRECT"
-              />
-            </Field>
-            <Field label="Asignado a (user ID)" hint="Opcional · responsable comercial del grupo.">
-              <input
-                type="text"
-                maxLength={64}
-                value={form.assignedToUserId}
-                onChange={(e) => update("assignedToUserId", e.target.value)}
-                style={inputStyle}
-                placeholder="user_..."
-              />
-            </Field>
-          </div>
-        </fieldset>
+            </CocoaField>
+            <CocoaField label="Nombre del grupo" required>
+              <CocoaInput value={form.name} onChange={(value) => update("name", value)} maxLength={160} placeholder="Boda García-López · Junio 2026" required />
+            </CocoaField>
+          </CocoaFormRow>
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Tipo de grupo" required help="Cambia los valores por defecto según el segmento.">
+              <CocoaSelect value={form.groupType} onChange={(value) => handleGroupTypeChange(value as GroupType)} options={GROUP_TYPE_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Estado inicial" required>
+              <CocoaSelect value={form.status} onChange={(value) => update("status", value as GroupStatus)} options={STATUS_OPTIONS} />
+            </CocoaField>
+          </CocoaFormRow>
+          <CocoaFormRow columns={3} min={160}>
+            <CocoaField label="Código de mercado">
+              <CocoaInput value={form.marketCode} onChange={(value) => update("marketCode", value)} maxLength={32} placeholder="CORP-ES" />
+            </CocoaField>
+            <CocoaField label="Código de origen">
+              <CocoaInput value={form.sourceCode} onChange={(value) => update("sourceCode", value)} maxLength={32} placeholder="DIRECTO" />
+            </CocoaField>
+            <CocoaField label="Asignado a (identificador de usuario)" hint="opcional" help="Responsable comercial del grupo.">
+              <CocoaInput value={form.assignedToUserId} onChange={(value) => update("assignedToUserId", value)} maxLength={64} placeholder="user_…" />
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        {/* 2. Fechas y release */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Fechas y release</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
-            <Field label="Llegada *">
-              <input
-                type="date"
-                required
-                value={form.arrivalDate}
-                onChange={(e) => update("arrivalDate", e.target.value)}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Salida *">
-              <input
-                type="date"
-                required
-                value={form.departureDate}
-                min={form.arrivalDate}
-                onChange={(e) => update("departureDate", e.target.value)}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Cut-off" hint="Fecha tope para que el grupo confirme rooming list.">
-              <input
-                type="date"
-                value={form.cutOffDate}
-                max={form.arrivalDate}
-                onChange={(e) => update("cutOffDate", e.target.value)}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Rooming list due">
-              <input
-                type="date"
-                value={form.roomingListDueDate}
-                max={form.arrivalDate}
-                onChange={(e) => update("roomingListDueDate", e.target.value)}
-                style={inputStyle}
-              />
-            </Field>
-          </div>
-          {cutOffSummary ? (
-            <p className="bo-muted" style={{ margin: "8px 0 0 0", fontSize: 12 }}>
-              {cutOffSummary}
-            </p>
-          ) : null}
-        </fieldset>
+        <CocoaFormSection title="Fechas y liberación">
+          <CocoaFormRow columns={4} min={160}>
+            <CocoaField label="Llegada" required>
+              <CocoaDatePicker value={form.arrivalDate} onChange={(value) => update("arrivalDate", value)} required />
+            </CocoaField>
+            <CocoaField label="Salida" required>
+              <CocoaDatePicker value={form.departureDate} onChange={(value) => update("departureDate", value)} min={form.arrivalDate} required />
+            </CocoaField>
+            <CocoaField label="Fecha límite (cut-off)" help="Fecha tope para que el grupo confirme la rooming list.">
+              <CocoaDatePicker value={form.cutOffDate} onChange={(value) => update("cutOffDate", value)} max={form.arrivalDate} />
+            </CocoaField>
+            <CocoaField label="Entrega de la rooming list">
+              <CocoaDatePicker value={form.roomingListDueDate} onChange={(value) => update("roomingListDueDate", value)} max={form.arrivalDate} />
+            </CocoaField>
+          </CocoaFormRow>
+          {cutOffSummary ? <p style={NOTE_STYLE}>{cutOffSummary}</p> : null}
+        </CocoaFormSection>
 
-        {/* 3. Contacto */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Contacto</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-            <Field label="Nombre de contacto *">
-              <input
-                type="text"
-                required
-                maxLength={120}
-                value={form.contactPersonName}
-                onChange={(e) => update("contactPersonName", e.target.value)}
-                style={inputStyle}
-                placeholder="María García"
-              />
-            </Field>
-            <Field label="Cargo / rol">
-              <input
-                type="text"
-                maxLength={80}
-                value={form.contactRole}
-                onChange={(e) => update("contactRole", e.target.value)}
-                style={inputStyle}
-                placeholder="Event Manager"
-              />
-            </Field>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Correo electrónico">
-              <input
-                type="email"
-                inputMode="email"
-                value={form.contactEmail}
-                onChange={(e) => update("contactEmail", e.target.value)}
-                style={inputStyle}
-                placeholder="maria@empresa.com"
-              />
-            </Field>
-            <Field label="Teléfono">
-              <input
-                type="tel"
-                inputMode="tel"
-                value={form.contactPhone}
-                onChange={(e) => update("contactPhone", e.target.value)}
-                style={inputStyle}
-                placeholder="+34 600 000 000"
-              />
-            </Field>
-          </div>
-        </fieldset>
+        <CocoaFormSection title="Contacto">
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Nombre de contacto" required>
+              <CocoaInput value={form.contactPersonName} onChange={(value) => update("contactPersonName", value)} maxLength={120} placeholder="María García" required />
+            </CocoaField>
+            <CocoaField label="Cargo">
+              <CocoaInput value={form.contactRole} onChange={(value) => update("contactRole", value)} maxLength={80} placeholder="Responsable de eventos" />
+            </CocoaField>
+          </CocoaFormRow>
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Correo electrónico">
+              <CocoaInput value={form.contactEmail} onChange={(value) => update("contactEmail", value)} type="email" inputMode="email" placeholder="maria@empresa.com" autoComplete="off" />
+            </CocoaField>
+            <CocoaField label="Teléfono">
+              <CocoaInput value={form.contactPhone} onChange={(value) => update("contactPhone", value)} type="tel" inputMode="tel" placeholder="+34 600 000 000" autoComplete="off" />
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        {/* 4. Empresa */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Empresa</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-            <Field label="Razón social">
-              <input
-                type="text"
-                maxLength={160}
-                value={form.companyName}
-                onChange={(e) => update("companyName", e.target.value)}
-                style={inputStyle}
-                placeholder="Acme Iberia S.L."
-              />
-            </Field>
-            <Field label="NIF / Tax ID">
-              <input
-                type="text"
-                maxLength={32}
-                value={form.companyTaxId}
-                onChange={(e) => update("companyTaxId", e.target.value)}
-                style={inputStyle}
-                placeholder="B12345678"
-              />
-            </Field>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
-            <Field label="Dirección">
-              <input
-                type="text"
-                maxLength={200}
-                value={form.companyAddress}
-                onChange={(e) => update("companyAddress", e.target.value)}
-                style={inputStyle}
-                placeholder="C/ Gran Vía 1, Madrid"
-              />
-            </Field>
-            <Field label="Sector / industry">
-              <input
-                type="text"
-                maxLength={80}
-                value={form.industry}
-                onChange={(e) => update("industry", e.target.value)}
-                style={inputStyle}
-                placeholder="Tech / Farma / Auto…"
-              />
-            </Field>
-          </div>
-        </fieldset>
+        <CocoaFormSection title="Empresa">
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Razón social">
+              <CocoaInput value={form.companyName} onChange={(value) => update("companyName", value)} maxLength={160} placeholder="Acme Iberia S.L." />
+            </CocoaField>
+            <CocoaField label="NIF">
+              <CocoaInput value={form.companyTaxId} onChange={(value) => update("companyTaxId", value)} maxLength={32} placeholder="B12345678" />
+            </CocoaField>
+          </CocoaFormRow>
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Dirección">
+              <CocoaInput value={form.companyAddress} onChange={(value) => update("companyAddress", value)} maxLength={200} placeholder="C/ Gran Vía 1, Madrid" />
+            </CocoaField>
+            <CocoaField label="Sector">
+              <CocoaInput value={form.industry} onChange={(value) => update("industry", value)} maxLength={80} placeholder="Tecnología, farmacia, automoción…" />
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        {/* 5. Tarifa */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Tarifa contratada</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-            <Field label="Modelo de tarifa *" hint="Net: el operador aplica markup. Comisionable: tarifa pública con %.">
-              <select
-                value={form.rateType}
-                onChange={(e) => update("rateType", e.target.value as RateType)}
-                style={inputStyle}
-              >
-                <option value="net">Tarifa neta (net)</option>
-                <option value="commissionable">Tarifa comisionable</option>
-              </select>
-            </Field>
+        <CocoaFormSection title="Tarifa contratada">
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Modelo de tarifa" required help="Neta: el operador aplica su margen. Comisionable: tarifa pública con porcentaje.">
+              <CocoaSelect value={form.rateType} onChange={(value) => update("rateType", value as RateType)} options={RATE_TYPE_OPTIONS} />
+            </CocoaField>
             {isCommissionPctRequired ? (
-              <Field label="Comisión (%) *" hint="Típico grupo corporativo: 8-15%. Wholesale: 18-25%.">
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  required
-                  min={0}
-                  max={100}
-                  step={0.1}
-                  value={form.commissionPct}
-                  onChange={(e) => update("commissionPct", e.target.value)}
-                  style={inputStyle}
-                  placeholder="12"
-                />
-              </Field>
+              <CocoaField label="Comisión (%)" required help="Habitual en corporativo: 8–15 %. Mayorista: 18–25 %.">
+                <CocoaInput value={form.commissionPct} onChange={(value) => update("commissionPct", value)} type="number" inputMode="decimal" min={0} max={100} step={0.1} placeholder="12" required />
+              </CocoaField>
             ) : (
-              <Field label="" hint="Net rate: la tarifa contratada es lo que cobras directamente.">
-                <input type="text" disabled style={{ ...inputStyle, opacity: 0.5 }} placeholder="—" />
-              </Field>
+              <CocoaField label="Comisión" help="Tarifa neta: la tarifa contratada es lo que cobras directamente.">
+                <CocoaInput value="" onChange={() => undefined} placeholder="No aplica" disabled />
+              </CocoaField>
             )}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
-            <Field label="Tarifa / habitación / noche" hint="Opcional. Si la dejas vacía se factura según rate plan público.">
-              <input
-                type="number"
-                inputMode="decimal"
-                min={0}
-                step={0.01}
-                value={form.contractedRate}
-                onChange={(e) => update("contractedRate", e.target.value)}
-                style={inputStyle}
-                placeholder="120.00"
-              />
-            </Field>
-            <Field label="Moneda">
-              <select
-                value={form.currency}
-                onChange={(e) => update("currency", e.target.value)}
-                style={inputStyle}
-              >
-                <option value="EUR">EUR</option>
-                <option value="GBP">GBP</option>
-                <option value="USD">USD</option>
-              </select>
-            </Field>
-          </div>
-        </fieldset>
+          </CocoaFormRow>
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Tarifa por habitación y noche" hint="opcional" help="Si la dejas vacía se factura según el plan de tarifas público.">
+              <CocoaInput value={form.contractedRate} onChange={(value) => update("contractedRate", value)} type="number" inputMode="decimal" min={0} step={0.01} placeholder="120,00" />
+            </CocoaField>
+            <CocoaField label="Moneda">
+              <CocoaSelect value={form.currency} onChange={(value) => update("currency", value)} options={CURRENCY_OPTIONS} />
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        {/* 6. Attrition */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Attrition (penalización por no-pickup)</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-            <Field label="Tipo de attrition *">
-              <select
-                value={form.attritionType}
-                onChange={(e) => update("attritionType", e.target.value as AttritionType)}
-                style={inputStyle}
-              >
-                <option value="cumulative">Acumulativa (total estancia)</option>
-                <option value="nightly">Por noche (nightly)</option>
-                <option value="revenue">Sobre revenue total</option>
-              </select>
-            </Field>
-            <Field label="Threshold (%) *" hint="Pickup mínimo sin penalización.">
-              <input
-                type="number"
-                inputMode="numeric"
-                required
-                min={0}
-                max={100}
-                step={1}
-                value={form.attritionThresholdPct}
-                onChange={(e) => update("attritionThresholdPct", Number(e.target.value))}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Penalty (%) *" hint="Sobre el déficit. 100% = se cobra al completo.">
-              <input
-                type="number"
-                inputMode="numeric"
-                required
-                min={0}
-                max={100}
-                step={1}
-                value={form.attritionPenaltyPct}
-                onChange={(e) => update("attritionPenaltyPct", Number(e.target.value))}
-                style={inputStyle}
-              />
-            </Field>
-          </div>
-          <p className="bo-muted" style={{ fontSize: 12, margin: "8px 0 0 0" }}>
-            Ejemplo: con 100 hab contratadas, threshold {form.attritionThresholdPct}%, si el pickup baja a 70%
-            la penalización = ({form.attritionThresholdPct}-70) × tarifa × noches × {form.attritionPenaltyPct}%.
-          </p>
-        </fieldset>
+        <CocoaFormSection title="Penalización por no ocupación (attrition)">
+          <CocoaFormRow columns={3} min={160}>
+            <CocoaField label="Tipo" required>
+              <CocoaSelect value={form.attritionType} onChange={(value) => update("attritionType", value as AttritionType)} options={ATTRITION_TYPE_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Umbral (%)" required help="Pickup mínimo sin penalización.">
+              <CocoaInput value={String(form.attritionThresholdPct)} onChange={(value) => update("attritionThresholdPct", Number(value))} type="number" inputMode="numeric" min={0} max={100} step={1} required />
+            </CocoaField>
+            <CocoaField label="Penalización (%)" required help="Sobre el déficit. 100 % = se cobra al completo.">
+              <CocoaInput value={String(form.attritionPenaltyPct)} onChange={(value) => update("attritionPenaltyPct", Number(value))} type="number" inputMode="numeric" min={0} max={100} step={1} required />
+            </CocoaField>
+          </CocoaFormRow>
+          <CocoaCallout tone="neutral" title="Ejemplo">
+            Con 100 habitaciones contratadas y umbral {percent(form.attritionThresholdPct)}, si el pickup baja al {percent(70)} la penalización es ({percent(form.attritionThresholdPct)} − {percent(70)}) × tarifa × noches ×{" "}
+            {percent(form.attritionPenaltyPct)}.
+          </CocoaCallout>
+        </CocoaFormSection>
 
-        {/* 7. Billing */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Facturación &amp; pago</legend>
-          <div style={{ display: "grid", gridTemplateColumns: isDepositPctRequired ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12 }}>
-            <Field label="Método de facturación *">
-              <select
-                value={form.billingMethod}
-                onChange={(e) => update("billingMethod", e.target.value as BillingMethod)}
-                style={inputStyle}
-              >
-                <option value="master_folio">Master folio (todo a un folio común)</option>
-                <option value="split">Split (room + extras separados)</option>
-                <option value="individual">Individual (cada huésped paga)</option>
-              </select>
-            </Field>
-            <Field label="Método de pago *">
-              <select
-                value={form.paymentMethod}
-                onChange={(e) => update("paymentMethod", e.target.value as PaymentMethod)}
-                style={inputStyle}
-              >
-                <option value="cc_guarantee">Tarjeta de garantía</option>
-                <option value="prepay_pct">Prepago % anticipado</option>
-                <option value="deposit">Depósito inicial</option>
-                <option value="credit">Crédito (cuenta corporativa)</option>
-                <option value="transfer">Transferencia bancaria</option>
-              </select>
-            </Field>
+        <CocoaFormSection title="Facturación y pago">
+          <CocoaFormRow columns={isDepositPctRequired ? 3 : 2} min={160}>
+            <CocoaField label="Método de facturación" required>
+              <CocoaSelect value={form.billingMethod} onChange={(value) => update("billingMethod", value as BillingMethod)} options={BILLING_METHOD_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Método de pago" required>
+              <CocoaSelect value={form.paymentMethod} onChange={(value) => update("paymentMethod", value as PaymentMethod)} options={PAYMENT_METHOD_OPTIONS} />
+            </CocoaField>
             {isDepositPctRequired ? (
-              <Field label="Depósito (%) *" hint="Porcentaje a cobrar por adelantado.">
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  required
-                  min={0}
-                  max={100}
-                  step={1}
-                  value={form.depositPct}
-                  onChange={(e) => update("depositPct", e.target.value)}
-                  style={inputStyle}
-                  placeholder="30"
-                />
-              </Field>
+              <CocoaField label="Depósito (%)" required help="Porcentaje a cobrar por adelantado.">
+                <CocoaInput value={form.depositPct} onChange={(value) => update("depositPct", value)} type="number" inputMode="decimal" min={0} max={100} step={1} placeholder="30" required />
+              </CocoaField>
             ) : null}
-          </div>
-        </fieldset>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        {/* 8. F&B */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>F&amp;B (catering &amp; restauración)</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Plan de comidas">
-              <select
-                value={form.mealPlan}
-                onChange={(e) => update("mealPlan", e.target.value as MealPlan)}
-                style={inputStyle}
-              >
-                <option value="none">Ninguno (sólo alojamiento)</option>
-                <option value="HD">HD · Media pensión</option>
-                <option value="FB">FB · Pensión completa</option>
-                <option value="AI">AI · Todo incluido</option>
-              </select>
-            </Field>
-            <Field label="Desayuno incluido">
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 14, color: "var(--ink)" }}>
-                <input
-                  type="checkbox"
-                  checked={form.breakfastIncluded}
-                  onChange={(e) => update("breakfastIncluded", e.target.checked)}
-                />
-                Incluido en tarifa
-              </label>
-            </Field>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 8 }}>
-            <Field label="Welcome cocktail">
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 14, color: "var(--ink)" }}>
-                <input
-                  type="checkbox"
-                  checked={form.welcomeCocktail}
-                  onChange={(e) => update("welcomeCocktail", e.target.checked)}
-                />
-                Cóctel de bienvenida
-              </label>
-            </Field>
-            <Field label="Cena de gala">
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 14, color: "var(--ink)" }}>
-                <input
-                  type="checkbox"
-                  checked={form.galaDinner}
-                  onChange={(e) => update("galaDinner", e.target.checked)}
-                />
-                Gala dinner incluido
-              </label>
-            </Field>
-          </div>
-        </fieldset>
+        <CocoaFormSection title="Restauración y eventos (F&B)">
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Régimen de comidas">
+              <CocoaSelect value={form.mealPlan} onChange={(value) => update("mealPlan", value as MealPlan)} options={MEAL_PLAN_OPTIONS} />
+            </CocoaField>
+            <div className="cocoa-stack" data-gap="2">
+              <CocoaField label="Desayuno incluido en la tarifa" inline>
+                <CocoaSwitch checked={form.breakfastIncluded} onChange={(value) => update("breakfastIncluded", value)} />
+              </CocoaField>
+              <CocoaField label="Cóctel de bienvenida" inline>
+                <CocoaSwitch checked={form.welcomeCocktail} onChange={(value) => update("welcomeCocktail", value)} />
+              </CocoaField>
+              <CocoaField label="Cena de gala incluida" inline>
+                <CocoaSwitch checked={form.galaDinner} onChange={(value) => update("galaDinner", value)} />
+              </CocoaField>
+            </div>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        {/* 9. ES Específicos */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>España · Específicos</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field
-              label="Régimen Especial AAEE"
-              hint="Activar si el cliente es agencia de viajes con REAV. Cambia el modo IVA."
-            >
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 14, color: "var(--ink)" }}>
-                <input
-                  type="checkbox"
-                  checked={form.regimenEspecialAaee}
-                  onChange={(e) => update("regimenEspecialAaee", e.target.checked)}
-                />
-                Aplicar REAV
-              </label>
-            </Field>
-            <Field
-              label="Llegada confidencial"
-              hint="Oculta el grupo en informes generales · útil para clubs deportivos VIP."
-            >
-              <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", fontSize: 14, color: "var(--ink)" }}>
-                <input
-                  type="checkbox"
-                  checked={form.confidentialArrival}
-                  onChange={(e) => update("confidentialArrival", e.target.checked)}
-                />
-                Confidencial
-              </label>
-            </Field>
-          </div>
-        </fieldset>
+        <CocoaFormSection title="España · Específicos">
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Aplicar REAV (Régimen Especial de Agencias de Viajes)" inline help="Actívalo si el cliente es una agencia de viajes con REAV: cambia el modo de IVA.">
+              <CocoaSwitch checked={form.regimenEspecialAaee} onChange={(value) => update("regimenEspecialAaee", value)} />
+            </CocoaField>
+            <CocoaField label="Llegada confidencial" inline help="Oculta el grupo en los informes generales; útil para clubes deportivos VIP.">
+              <CocoaSwitch checked={form.confidentialArrival} onChange={(value) => update("confidentialArrival", value)} />
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        {/* 10. Notas */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Notas internas</legend>
-          <Field label="Observaciones">
-            <textarea
+        <CocoaFormSection title="Notas internas">
+          <CocoaField label="Observaciones" fullWidth>
+            <CocoaInput
               value={form.notes}
-              onChange={(e) => update("notes", e.target.value)}
-              style={{ ...inputStyle, minHeight: 70, resize: "vertical" }}
-              placeholder="Condiciones especiales, allergens, alergias, preferencias de habitación…"
+              onChange={(value) => update("notes", value)}
+              multiline
+              rows={3}
+              placeholder="Condiciones especiales, alergias, preferencias de habitación…"
             />
-          </Field>
-        </fieldset>
+          </CocoaField>
+        </CocoaFormSection>
 
         {error ? (
-          <p className="bo-status error" style={{ textTransform: "none", margin: 0 }}>{error}</p>
+          <CocoaCallout tone="danger" title={error} role="alert">
+            {null}
+          </CocoaCallout>
         ) : null}
-
-        <div className="bo-row" style={{ gap: 8, justifyContent: "space-between", marginTop: 4 }}>
-          <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>* Campos obligatorios</p>
-          <div className="bo-row" style={{ gap: 8 }}>
-            <button type="button" onClick={props.onClose} disabled={submitting}>Cancelar</button>
-            <button type="submit" className="primary" disabled={submitting}>
-              {submitting ? "Creando…" : "Crear grupo"}
-            </button>
-          </div>
-        </div>
       </form>
-    </div>
+    </CocoaDrawer>
   );
 }

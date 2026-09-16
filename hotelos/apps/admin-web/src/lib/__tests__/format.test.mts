@@ -16,7 +16,11 @@ import {
   relativeTime,
   time,
   toDate,
-  toNumber
+  toNumber,
+  channelLabel,
+  marketSegmentLabel,
+  availabilityLabel,
+  hotelCategoryLabel
 } from "../format.ts";
 
 // ICU emits U+00A0 / U+202F before € and %; compare on plain spaces so an ICU
@@ -216,5 +220,102 @@ describe("format · L1c extensions (currency from the record, extra date styles)
     assert.equal(dateTime("2026-09-15T12:05:09Z", { style: "medium" }), "15 sept 2026, 14:05");
     assert.equal(dateTime("2026-09-15T12:05:09Z", { style: "dayMonth" }), "15 sept, 14:05");
     assert.equal(dateTime("nope", { style: "medium", empty: "—" }), "—");
+  });
+});
+
+// Cocoa 22 · ola 3 (qa#8): origin codes as Spanish names; the raw code stays in `title` at the call site.
+describe("format · origin codes (channelLabel, marketSegmentLabel)", () => {
+  it("names the reservation channels the Faranda data and the reservation form use", () => {
+    assert.equal(channelLabel("direct"), "Directo");
+    assert.equal(channelLabel("booking_com"), "Booking.com");
+    assert.equal(channelLabel("corporate"), "Corporativo");
+    assert.equal(channelLabel("ota"), "OTA");
+    assert.equal(channelLabel("group"), "Grupos");
+    assert.equal(channelLabel("expedia"), "Expedia");
+    assert.equal(channelLabel("walk_in"), "Walk-in");
+    assert.equal(channelLabel("gds"), "GDS");
+    assert.equal(channelLabel("wholesale"), "Mayorista / TTOO");
+  });
+
+  it("is case- and whitespace-insensitive and humanises unknown codes without leaking underscores", () => {
+    assert.equal(channelLabel(" BookingCom "), "Booking.com");
+    assert.equal(channelLabel("DIRECT"), "Directo");
+    assert.equal(channelLabel("new_ota"), "New ota");
+    assert.equal(channelLabel("some-agency"), "Some agency");
+  });
+
+  it("labels test connectors the way the reservation form does", () => {
+    assert.equal(channelLabel("booking_com_mock"), "Booking.com (conector de pruebas)");
+    assert.equal(channelLabel("expedia_mock"), "Expedia (conector de pruebas)");
+    assert.equal(channelLabel("google_hotels_mock"), "Google Hotels (conector de pruebas)");
+    assert.equal(channelLabel("mock"), "Mock");
+  });
+
+  it("returns the empty placeholder (or the caller's) for null, undefined and blank codes", () => {
+    assert.equal(channelLabel(null), EMPTY);
+    assert.equal(channelLabel(undefined), EMPTY);
+    assert.equal(channelLabel("   "), EMPTY);
+    assert.equal(channelLabel(null, { empty: "" }), "");
+    assert.equal(marketSegmentLabel(undefined), EMPTY);
+    assert.equal(marketSegmentLabel("", { empty: "sin segmento" }), "sin segmento");
+  });
+
+  it("names the market segments of the reservation form and the demo data", () => {
+    assert.equal(marketSegmentLabel("leisure"), "Ocio");
+    assert.equal(marketSegmentLabel("corporate"), "Corporativo");
+    assert.equal(marketSegmentLabel("mice"), "MICE / Convenciones");
+    assert.equal(marketSegmentLabel("wedding"), "Bodas");
+    assert.equal(marketSegmentLabel("government"), "Administración pública");
+    assert.equal(marketSegmentLabel("complimentary"), "Cortesía");
+    assert.equal(marketSegmentLabel("ota"), "OTA");
+    assert.equal(marketSegmentLabel("long_stay"), "Long stay");
+  });
+});
+
+// qa#18 (Cocoa 22 · ola 5 · lote 5-C): /revenue/competencia painted the
+// competitor category «urban» and the availability «available» as they arrive.
+describe("format · competitor set codes (hotelCategoryLabel, availabilityLabel)", () => {
+  it("names the hotel categories of the Faranda competitors and the seeds in Spanish", () => {
+    assert.equal(hotelCategoryLabel("urban"), "Urbano");
+    assert.equal(hotelCategoryLabel("resort"), "Vacacional");
+    assert.equal(hotelCategoryLabel("boutique"), "Boutique");
+    assert.equal(hotelCategoryLabel("luxury"), "Lujo");
+    assert.equal(hotelCategoryLabel("business"), "Negocios");
+    assert.equal(hotelCategoryLabel("cultural"), "Cultural");
+    assert.equal(hotelCategoryLabel("historic"), "Histórico");
+    assert.equal(hotelCategoryLabel("urban boutique"), "Boutique urbano");
+  });
+
+  it("is case-, separator- and whitespace-insensitive", () => {
+    assert.equal(hotelCategoryLabel(" URBAN "), "Urbano");
+    assert.equal(hotelCategoryLabel("urban_boutique"), "Boutique urbano");
+    assert.equal(hotelCategoryLabel("Urban-Boutique"), "Boutique urbano");
+    assert.equal(hotelCategoryLabel("urban   boutique"), "Boutique urbano");
+  });
+
+  it("keeps a free-text category the hotelier typed in the form, first letter up", () => {
+    assert.equal(hotelCategoryLabel("4*"), "4*");
+    assert.equal(hotelCategoryLabel("4 estrellas"), "4 estrellas");
+    assert.equal(hotelCategoryLabel("Boutique"), "Boutique");
+    assert.equal(hotelCategoryLabel("urbano"), "Urbano");
+    assert.equal(hotelCategoryLabel("beach_club"), "Beach club");
+  });
+
+  it("names the availability of a shopped rate and humanises unknown codes", () => {
+    assert.equal(availabilityLabel("available"), "Disponible");
+    assert.equal(availabilityLabel("sold_out"), "Agotado");
+    assert.equal(availabilityLabel("unavailable"), "No disponible");
+    assert.equal(availabilityLabel("on_request"), "Bajo petición");
+    assert.equal(availabilityLabel("AVAILABLE"), "Disponible");
+    assert.equal(availabilityLabel("waitlist"), "Waitlist");
+  });
+
+  it("returns the empty placeholder (or the caller's) for null, undefined and blank codes", () => {
+    assert.equal(hotelCategoryLabel(null), EMPTY);
+    assert.equal(hotelCategoryLabel(undefined), EMPTY);
+    assert.equal(hotelCategoryLabel("   "), EMPTY);
+    assert.equal(hotelCategoryLabel(null, { empty: "sin categoría" }), "sin categoría");
+    assert.equal(availabilityLabel(null), EMPTY);
+    assert.equal(availabilityLabel("", { empty: "" }), "");
   });
 });

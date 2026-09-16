@@ -6,8 +6,14 @@
 // percentage badge, never as a fabricated confidence band. When the server
 // reports forecastMissing/budgetMissing the UI says so honestly and offers
 // the real remediation (generate forecasts / load budget).
+//
+// Cocoa 22 (ola 5 · lote 5-B): dashboard hosted in HistoricoPrevisionTabs
+// (DashboardAlojado). Range toolbar (segmented presets + two date pickers) →
+// honest callouts (forecast / budget missing) → KPI strip → month outlook
+// cards in a 3-column grid → 6/6 line charts (real/OTB vs forecast) →
+// critical dates table → metric dictionary. Same endpoint, same actions.
 import { useTabHost } from "../tabs/TabHost";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import {
   fetchHistoryForecastBoard,
   generateForecasts,
@@ -16,9 +22,36 @@ import {
   type HistoryForecastBoard,
   type MonthOutlook
 } from "../../services/revenueApi";
-import { ErrorState, LoadingBlock, SkeletonLines, Spinner } from "../../components/States";
-import { NarrowViewportBanner } from "../../components/NarrowViewportBanner";
-import { money, number, percent, time } from "../../lib/format";
+import { getActiveProperty } from "../../services/activeProperty";
+import { navigateTo } from "../../lib/navigate";
+import { date, money, number, percent, plural, time } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaStat,
+  CocoaState,
+  CocoaTable,
+  CocoaToolbar,
+  toneInk,
+  type CocoaKpiStatus,
+  type CocoaLineSeries,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 // ---- date helpers (UTC slicing, module convention) -------------------------
 const MS_DAY = 86_400_000;
@@ -43,6 +76,7 @@ const RANGE_PRESETS: { id: string; label: string; range: () => { from: string; t
   { id: "month", label: "Mes actual", range: currentMonthRange },
   { id: "next90", label: "Próximos 90", range: () => ({ from: todayIso(), to: addDaysIso(todayIso(), 90) }) }
 ];
+const PRESET_OPTIONS = RANGE_PRESETS.map((p) => ({ value: p.id, label: p.label }));
 
 // ---- number/date formatting (es-ES) ----------------------------------------
 
@@ -58,10 +92,10 @@ function fmtConfidence(n: number): string {
   return percent(pct, { maximumFractionDigits: 0 });
 }
 function signedInt(n: number): string {
-  return `${n > 0 ? "+" : ""}${fmtInt(n)}`;
+  return number(n, { maximumFractionDigits: 0, signDisplay: "exceptZero" });
 }
 function signedMoney(n: number): string {
-  return `${n > 0 ? "+" : ""}${money(n)}`;
+  return money(n, { signDisplay: "exceptZero" });
 }
 function signedPct1(n: number): string {
   return percent(n, { signDisplay: "exceptZero", minimumFractionDigits: 1, maximumFractionDigits: 1 });
@@ -69,27 +103,11 @@ function signedPct1(n: number): string {
 function dash<T>(value: T | null | undefined, fmt: (v: T) => string): string {
   return value === null || value === undefined ? "—" : fmt(value);
 }
-function fmtDay(iso: string): string {
-  const [, m, d] = iso.split("-");
-  return `${d}/${m}`;
-}
-function fmtDateFull(iso: string): string {
-  const [y, m, d] = iso.split("-");
-  return `${d}/${m}/${y}`;
-}
-/** OTB timestamp → HH:MM in Europe/Madrid (spec convention: "OTB a las HH:MM"). */
-function fmtOtbTime(isoTimestamp: string): string {
-  return time(isoTimestamp);
-}
-function confidenceTone(c: number): "ok" | "warn" | "error" {
+function confidenceStatus(c: number): CocoaKpiStatus {
   const pct = c > 1.5 ? c : c * 100;
   if (pct >= 75) return "ok";
-  if (pct >= 50) return "warn";
-  return "error";
-}
-
-function navigateTo(screen: string) {
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
+  if (pct >= 50) return "warning";
+  return "critical";
 }
 
 // ---- shared footer: metric dictionary + honest sources ---------------------
@@ -105,229 +123,157 @@ const SOURCE_LABELS: Record<string, string> = {
 function DefinitionsFooter(props: { notes: string[]; sources: Record<string, string> }) {
   const sourceEntries = Object.entries(props.sources ?? {});
   return (
-    <article className="bo-card">
-      <div className="bo-card-head">
-        <h3>Definiciones</h3>
-        <span className="bo-chip">Diccionario único de métricas</span>
-      </div>
+    <CocoaSection
+      title="Definiciones"
+      meta="Diccionario único de métricas"
+      footer={sourceEntries.length > 0 ? <span>Fuentes: {sourceEntries.map(([key, value]) => `${SOURCE_LABELS[key] ?? key}: ${value}`).join(" · ")}</span> : undefined}
+    >
       {props.notes.length > 0 ? (
-        <ul className="bo-list">
+        <ul className="c22-section__list" aria-label="Definiciones de las métricas">
           {props.notes.map((note) => (
-            <li key={note}>{note}</li>
+            <li key={note}>
+              <span>{note}</span>
+            </li>
           ))}
         </ul>
       ) : (
-        <p className="bo-muted">El servidor no devolvió notas de métricas.</p>
+        <CocoaState kind="empty" inline title="El servidor no devolvió notas de métricas." />
       )}
-      {sourceEntries.length > 0 ? (
-        <p className="bo-muted" style={{ textTransform: "none", fontSize: 12, marginTop: 8 }}>
-          Fuentes: {sourceEntries.map(([key, value]) => `${SOURCE_LABELS[key] ?? key}: ${value}`).join(" · ")}
-        </p>
-      ) : null}
-    </article>
+    </CocoaSection>
   );
 }
 
-// ---- SVG line chart wired to real board rows --------------------------------
-// Solid line = actual (past) / OTB (today); dashed line = server forecast.
-// No confidence bands: confidence is a %, not a drawable interval.
-type ChartPoint = { date: string; solid: number | null; dashed: number | null; isToday: boolean };
-
-function buildPath(values: Array<number | null>, x: (i: number) => number, y: (v: number) => number): string {
-  let d = "";
-  let penDown = false;
-  values.forEach((v, i) => {
-    if (v === null) {
-      penDown = false;
-      return;
-    }
-    d += `${penDown ? "L" : "M"} ${x(i).toFixed(1)} ${y(v).toFixed(1)} `;
-    penDown = true;
-  });
-  return d.trim();
-}
-
-function BoardLineChart(props: { points: ChartPoint[]; fmtValue: (n: number) => string; fmtAxis: (n: number) => string; suggestedMax?: number }) {
-  const { points } = props;
-  const width = 760;
-  const height = 230;
-  const padL = 50;
-  const padR = 14;
-  const padT = 14;
-  const padB = 30;
-
-  const values = points.flatMap((p) => [p.solid, p.dashed].filter((v): v is number => v !== null));
-  if (points.length === 0 || values.length === 0) {
-    return <p className="bo-muted">Sin datos para el gráfico en el rango seleccionado.</p>;
+// ---- line charts wired to real board rows -----------------------------------
+// Solid line = actual (past, audited) / OTB (today and future); dashed line =
+// server forecast, which only exists from today on. CocoaChart.Line aligns the
+// series by index and cannot leave a gap, so before today the forecast series
+// follows the real figure (the dashed line sits under the solid one and only
+// diverges from today): the legend says «desde hoy». Handoff: gaps in
+// CocoaLinePoint (`y: number | null`).
+function boardSeries(rows: BoardRow[], pick: (r: BoardRow) => number, pickForecast: (r: BoardRow) => number | null, forecastAvailable: boolean): CocoaLineSeries[] {
+  const label = (r: BoardRow) => `${date(r.date, "dayMonth")}${r.isToday ? " · hoy" : ""}`;
+  const series: CocoaLineSeries[] = [{ id: "real", label: "Real / OTB", points: rows.map((r) => ({ x: label(r), y: pick(r) })), tone: "accent", width: 2 }];
+  if (forecastAvailable) {
+    series.push({
+      id: "forecast",
+      label: "Previsión (desde hoy)",
+      points: rows.map((r) => ({ x: label(r), y: pickForecast(r) ?? pick(r) })),
+      tone: "warning",
+      dashed: true,
+      width: 2
+    });
   }
-  const maxV = Math.max(...values, props.suggestedMax ?? 0, 1);
-  const x = (i: number) => padL + (points.length === 1 ? 0 : (i / (points.length - 1)) * (width - padL - padR));
-  const y = (v: number) => padT + (1 - v / maxV) * (height - padT - padB);
-
-  const solidPath = buildPath(points.map((p) => p.solid), x, y);
-  const dashedPath = buildPath(points.map((p) => p.dashed), x, y);
-  const todayIdx = points.findIndex((p) => p.isToday);
-  const labelStep = Math.max(1, Math.ceil(points.length / 8));
-  const ticks = [0, 0.25, 0.5, 0.75, 1].map((f) => maxV * f);
-
-  return (
-    <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" role="img" style={{ width: "100%", height: "auto", display: "block" }}>
-      {ticks.map((t) => (
-        <g key={`tick-${t}`}>
-          <line x1={padL} y1={y(t)} x2={width - padR} y2={y(t)} stroke="var(--line-soft)" strokeWidth={1} />
-          <text x={padL - 6} y={y(t) + 3} fontSize={10} fill="var(--ink-muted)" textAnchor="end">
-            {props.fmtAxis(t)}
-          </text>
-        </g>
-      ))}
-      {todayIdx >= 0 ? (
-        <g>
-          <line x1={x(todayIdx)} y1={padT} x2={x(todayIdx)} y2={height - padB} stroke="var(--warn-ink)" strokeWidth={1} strokeDasharray="3 3" />
-          <text x={x(todayIdx)} y={padT - 2} fontSize={9} fill="var(--warn-ink)" textAnchor="middle" fontWeight={700}>
-            HOY
-          </text>
-        </g>
-      ) : null}
-      {solidPath ? <path d={solidPath} fill="none" stroke="var(--inverse-surface)" strokeWidth={2} /> : null}
-      {dashedPath ? <path d={dashedPath} fill="none" stroke="var(--accent)" strokeWidth={2} strokeDasharray="6 4" /> : null}
-      {points.map((p, i) =>
-        p.solid !== null ? (
-          <circle key={`s-${p.date}`} cx={x(i)} cy={y(p.solid)} r={2} fill="var(--inverse-surface)">
-            <title>{`${fmtDay(p.date)} · actual/OTB: ${props.fmtValue(p.solid)}`}</title>
-          </circle>
-        ) : null
-      )}
-      {points.map((p, i) =>
-        p.dashed !== null ? (
-          <circle key={`f-${p.date}`} cx={x(i)} cy={y(p.dashed)} r={2} fill="var(--accent)">
-            <title>{`${fmtDay(p.date)} · previsión: ${props.fmtValue(p.dashed)}`}</title>
-          </circle>
-        ) : null
-      )}
-      {points.map((p, i) =>
-        i % labelStep === 0 ? (
-          <text key={`x-${p.date}`} x={x(i)} y={height - 8} fontSize={9} fill="var(--ink-muted)" textAnchor="middle">
-            {fmtDay(p.date)}
-          </text>
-        ) : null
-      )}
-    </svg>
-  );
+  return series;
 }
 
 // ---- month outlook cards ("mes en curso +3") --------------------------------
-const MONTH_STATUS: Record<MonthOutlook["status"], { label: string; badge: "ok" | "warn" | "error" | "info"; ink: string }> = {
-  ok: { label: "En objetivo", badge: "ok", ink: "var(--ok-ink)" },
-  warn: { label: "Vigilar", badge: "warn", ink: "var(--warn-ink)" },
-  risk: { label: "Riesgo", badge: "error", ink: "var(--danger-ink)" },
-  no_budget: { label: "Sin presupuesto", badge: "info", ink: "var(--ink-muted)" }
+const MONTH_STATUS: Record<MonthOutlook["status"], { label: string; tone: CocoaTone }> = {
+  ok: { label: "En objetivo", tone: "success" },
+  warn: { label: "Vigilar", tone: "warning" },
+  risk: { label: "Riesgo", tone: "danger" },
+  no_budget: { label: "Sin presupuesto", tone: "neutral" }
 };
+
+// Text ≤ 13 px in a tone: AA ink (rule 6, named object outside the literal).
+function inkStyle(tone: CocoaTone): CSSProperties {
+  return { color: toneInk(tone) };
+}
+// Secondary explanatory line under a figure (callout size, secondary label).
+const noteStyle: CSSProperties = { margin: 0, fontSize: "var(--cocoa-fs-callout)", lineHeight: "var(--cocoa-leading-text)", color: "var(--cocoa-label-secondary)" };
+
+/** «Occ x % · ADR y €» caption under a revenue figure; nothing when neither is known. */
+function occAdrHint(occPct: number | null, adr: number | null): string | undefined {
+  const parts = [occPct !== null ? `Occ ${fmtPct1(occPct)}` : "", adr !== null ? `ADR ${money(adr)}` : ""].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
 
 function MonthCard(props: { month: MonthOutlook }) {
   const m = props.month;
   const meta = MONTH_STATUS[m.status];
   return (
-    <article className="bo-card">
-      <div className="bo-card-head">
-        <h3 style={{ fontSize: 14, textTransform: "capitalize" }}>{m.label}</h3>
-        <span className={`bo-status ${meta.badge}`} style={{ textTransform: "none" }}>{meta.label}</span>
-      </div>
-      <div className="bo-metric" style={{ fontVariantNumeric: "tabular-nums" }}>{money(m.projectedRevenue)}</div>
-      <p className="bo-muted" style={{ textTransform: "none", fontSize: 12, margin: "2px 0 0" }}>
+    <CocoaSection title={m.label} meta={<CocoaBadge tone={meta.tone}>{meta.label}</CocoaBadge>}>
+      <CocoaStat label="Proyección del mes" value={money(m.projectedRevenue)} size="large" hint={occAdrHint(m.projectedOccPct, m.projectedAdr)} />
+      <p style={noteStyle}>
         {m.forecastRevenue !== null
-          ? `Proyección = real ${money(m.actualRevenue)} + prev. resto de mes ${money(m.forecastRevenue)} · OTB actual ${money(m.otbRevenue)}`
+          ? `Proyección = real ${money(m.actualRevenue)} + previsión del resto del mes ${money(m.forecastRevenue)} · OTB actual ${money(m.otbRevenue)}`
           : `Proyección = real ${money(m.actualRevenue)} + OTB ${money(m.otbRevenue)} (sin previsión)`}
       </p>
-      {m.projectedOccPct !== null || m.projectedAdr !== null ? (
-        <p className="bo-muted" style={{ textTransform: "none", fontSize: 12, margin: 0 }}>
-          {m.projectedOccPct !== null ? `Occ ${fmtPct1(m.projectedOccPct)}` : ""}
-          {m.projectedOccPct !== null && m.projectedAdr !== null ? " · " : ""}
-          {m.projectedAdr !== null ? `ADR ${money(m.projectedAdr)}` : ""}
-        </p>
-      ) : null}
-      <div style={{ borderTop: "1px solid var(--line-soft)", marginTop: 8, paddingTop: 8, display: "grid", gap: 4 }}>
+      {/* Last year's close mirrors the projection (figure + «Occ · ADR» caption).
+          As a list value the three fragments shared one nowrap <strong> (266 px)
+          inside the 245 px card of the 3-column grid at 1440 and pushed `main`
+          into horizontal scroll (qa#2); CocoaStat wraps its own value and hint. */}
+      <CocoaStat label="Cierre del año anterior" value={dash(m.lyRevenue, money)} hint={occAdrHint(m.lyOccPct, m.lyAdr)} />
+      <ul className="c22-section__list" aria-label={`Presupuesto y avance de ${m.label}`}>
         {m.budgetRevenue !== null ? (
           <>
-            <p style={{ margin: 0, fontSize: 13 }}>
-              Presupuesto: <strong>{money(m.budgetRevenue)}</strong>
-            </p>
-            <p style={{ margin: 0, fontSize: 13, color: meta.ink, fontWeight: 700 }}>
-              Gap: {dash(m.gapToBudget, signedMoney)}
-              {m.gapPct !== null ? ` (${signedPct1(m.gapPct)})` : ""}
-            </p>
+            <li>
+              <span>Presupuesto</span>
+              <strong>{money(m.budgetRevenue)}</strong>
+            </li>
+            <li>
+              <span>Diferencia con el presupuesto</span>
+              <strong style={inkStyle(meta.tone)}>
+                {dash(m.gapToBudget, signedMoney)}
+                {m.gapPct !== null ? ` (${signedPct1(m.gapPct)})` : ""}
+              </strong>
+            </li>
           </>
         ) : (
-          <p className="bo-muted" style={{ margin: 0, fontSize: 12.5, textTransform: "none" }}>Sin presupuesto cargado</p>
+          <li>
+            <span>Presupuesto</span>
+            <span>Sin presupuesto cargado</span>
+          </li>
         )}
-        <p className="bo-muted" style={{ margin: 0, fontSize: 12, textTransform: "none" }}>
-          Cierre LY: {dash(m.lyRevenue, money)}
-          {m.lyOccPct !== null ? ` · Occ ${fmtPct1(m.lyOccPct)}` : ""}
-          {m.lyAdr !== null ? ` · ADR ${money(m.lyAdr)}` : ""}
-        </p>
         {m.daysElapsed > 0 && m.daysElapsed < m.daysTotal ? (
-          <p className="bo-muted" style={{ margin: 0, fontSize: 12, textTransform: "none" }}>Día {m.daysElapsed} de {m.daysTotal}</p>
+          <li>
+            <span>Avance del mes</span>
+            <strong>
+              Día {fmtInt(m.daysElapsed)} de {fmtInt(m.daysTotal)}
+            </strong>
+          </li>
         ) : null}
-      </div>
-    </article>
+      </ul>
+    </CocoaSection>
   );
 }
 
 // ---- critical dates table ----------------------------------------------------
-function CriticalDatesTable(props: { dates: CriticalDate[] }) {
+const CRITICAL_COLUMNS: CocoaTableColumn<CriticalDate>[] = [
+  {
+    key: "date",
+    label: "Fecha",
+    fit: true,
+    render: (d) => (
+      <>
+        <strong>{date(d.date, "dayMonth")}</strong> <span style={noteStyle}>{d.dow}</span>
+      </>
+    )
+  },
+  { key: "daysOut", label: "Vista", align: "right", fit: true, render: (d) => `${fmtInt(d.daysOut)} d` },
+  { key: "severity", label: "Severidad", fit: true, render: (d) => <CocoaBadge tone={d.severity === "high" ? "danger" : "warning"}>{d.severity === "high" ? "Alta" : "Media"}</CocoaBadge> },
+  { key: "reason", label: "Motivo", minWidth: 200, render: (d) => d.reason },
+  { key: "occPct", label: "Occ OTB", align: "right", fit: true, render: (d) => fmtPct1(d.occPct) },
+  { key: "fcOccPct", label: "Occ prev.", align: "right", fit: true, render: (d) => dash(d.fcOccPct, fmtPct1), showFrom: "laptop" },
+  { key: "stlyOccPct", label: "Occ STLY", align: "right", fit: true, render: (d) => dash(d.stlyOccPct, fmtPct1), showFrom: "laptop" },
+  { key: "pickup7", label: "Pickup 7 d", align: "right", fit: true, render: (d) => dash(d.pickup7, signedInt), hideOnNarrow: true },
+  { key: "recommendation", label: "Recomendación BAR", minWidth: 160, render: (d) => d.recommendation ?? "—", showFrom: "desktop" },
+  { key: "compsetMedian", label: "Compset (mediana)", align: "right", fit: true, render: (d) => dash(d.compsetMedian, money), showFrom: "laptop" }
+];
+
+// Skeleton espejo: strip of 4 KPI, then 12 · 6/6 · 12.
+function BoardSkeleton() {
   return (
-    <div className="rev-report-wrap hfb-crit">
-      <table className="rev-report-table">
-        <thead>
-          <tr>
-            <th>Fecha</th>
-            <th>Vista</th>
-            <th>Severidad</th>
-            <th className="hfb-left">Motivo</th>
-            <th>Occ OTB</th>
-            <th>Occ prev.</th>
-            <th>Occ STLY</th>
-            <th>Pickup 7d</th>
-            <th className="hfb-left">Recomendación BAR</th>
-            <th>Compset (med.)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {props.dates.map((d) => (
-            <tr key={d.date}>
-              <td>
-                {fmtDay(d.date)} <span style={{ color: "var(--ink-muted)", fontWeight: 400 }}>{d.dow}</span>
-              </td>
-              <td>{fmtInt(d.daysOut)} d</td>
-              <td>
-                <span className={`bo-status ${d.severity === "high" ? "error" : "warn"}`} style={{ textTransform: "none" }}>
-                  {d.severity === "high" ? "Alta" : "Media"}
-                </span>
-              </td>
-              <td className="hfb-left">{d.reason}</td>
-              <td>{fmtPct1(d.occPct)}</td>
-              <td>{dash(d.fcOccPct, fmtPct1)}</td>
-              <td>{dash(d.stlyOccPct, fmtPct1)}</td>
-              <td>{dash(d.pickup7, signedInt)}</td>
-              <td className="hfb-left">{d.recommendation ?? "—"}</td>
-              <td>{dash(d.compsetMedian, money)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton.Grid rows={[[12], [6, 6], [12]]} height={240} />
     </div>
   );
 }
 
-// Component-scoped styles: only design tokens, no hardcoded colors.
-const BOARD_CSS = `
-.hfb-crit td.hfb-left, .hfb-crit th.hfb-left { text-align: left; white-space: normal; }
-.hfb-crit td.hfb-left { max-width: 280px; font-weight: 400; }
-.hfb-months { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fit, minmax(235px, 1fr)); margin-top: var(--space-2); }
-`;
-
 export function RevenueHistoryForecastDashboard() {
   // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
+  const hosted = useTabHost() !== null;
+  const header = treeHeaderFor("RevenueHistoryForecastDashboard", { eyebrow: "Revenue", title: "Histórico y previsión" });
   const [preset, setPreset] = useState<string>("-7+90");
   const [from, setFrom] = useState<string>(() => addDaysIso(todayIso(), -7));
   const [to, setTo] = useState<string>(() => addDaysIso(todayIso(), 90));
@@ -343,7 +289,7 @@ export function RevenueHistoryForecastDashboard() {
     try {
       setBoard(await fetchHistoryForecastBoard({ from, to }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo cargar el board de History & Forecast.");
+      setError(e instanceof Error ? e.message : "No se pudo cargar el cuadro de histórico y previsión.");
     } finally {
       setLoading(false);
     }
@@ -376,223 +322,182 @@ export function RevenueHistoryForecastDashboard() {
   }
 
   const dataRows = useMemo<BoardRow[]>(() => (board?.rows ?? []).filter((r) => r.rowType === "data" && Boolean(r.date)), [board]);
-
-  const occPoints = useMemo<ChartPoint[]>(
-    () =>
-      dataRows.map((r) => ({
-        date: r.date as string,
-        solid: r.isPast || r.isToday ? r.occPct : null,
-        dashed: r.fcOccPct,
-        isToday: Boolean(r.isToday)
-      })),
-    [dataRows]
-  );
-  const revenuePoints = useMemo<ChartPoint[]>(
-    () =>
-      dataRows.map((r) => ({
-        date: r.date as string,
-        solid: r.isPast || r.isToday ? r.roomRevenue : null,
-        dashed: r.fcRevenue,
-        isToday: Boolean(r.isToday)
-      })),
-    [dataRows]
-  );
+  const forecastAvailable = useMemo(() => dataRows.some((r) => r.fcOccPct !== null), [dataRows]);
+  const occSeries = useMemo(() => boardSeries(dataRows, (r) => r.occPct, (r) => r.fcOccPct, forecastAvailable), [dataRows, forecastAvailable]);
+  const revenueSeries = useMemo(() => boardSeries(dataRows, (r) => r.roomRevenue, (r) => r.fcRevenue, forecastAvailable), [dataRows, forecastAvailable]);
 
   const k = board?.kpis;
   const confidence = k?.forecastConfidenceAvg ?? null;
   const mtdVsStly = k?.mtd.vsStlyRevenuePct ?? null;
+  const openReport = () => navigateTo("RevenueHistoryForecastReport");
 
   return (
-    <>
-      <NarrowViewportBanner />
-      <style>{BOARD_CSS}</style>
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            {embedded ? null : (
-              <>
-                <p className="bo-muted">Revenue · Histórico y previsión</p>
-                <h2>{board?.propertyName ?? "Histórico y previsión"}</h2>
-              </>
+    <CocoaPage
+      eyebrow={`${header.eyebrow} · ${getActiveProperty().propertyName}`}
+      title={header.title}
+      subtitle={hosted ? undefined : "Cuadro de histórico y previsión: ventana de fechas, indicadores, proyección mensual, gráficos y fechas críticas."}
+      actions={
+        <>
+          {board ? <CocoaBadge tone="neutral">{plural(board.totalRooms, "habitación total", "habitaciones totales")}</CocoaBadge> : null}
+          <CocoaBadge tone="success" variant="dot">
+            En vivo
+          </CocoaBadge>
+          {error && board ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void load()} loading={loading} disabled={loading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={openReport}>
+            Ver informe detallado
+          </CocoaButton>
+        </>
+      }
+      state={loading && !board ? "loading" : error && !board ? "error" : "ready"}
+      skeleton={<BoardSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: () => void load() }}
+      commands={[
+        { id: "historico-prevision-refresh", label: "Actualizar histórico y previsión", run: () => void load() },
+        { id: "historico-prevision-report", label: "Ver informe detallado de histórico y previsión", run: openReport },
+        { id: "historico-prevision-generate", label: "Generar previsión (90 días)", run: () => void handleGenerate() }
+      ]}
+    >
+      <CocoaToolbar
+        variant="content"
+        wrap
+        aria-label="Ventana de fechas"
+        leftSlot={
+          <div className="cocoa-row" data-gap="2" data-align="end">
+            <CocoaField label="Rango">
+              <CocoaSegmentedControl value={preset} onChange={applyPreset} options={PRESET_OPTIONS} size="small" aria-label="Rango predefinido" />
+            </CocoaField>
+            <CocoaField label="Desde">
+              <CocoaDatePicker value={from} max={to} size="small" onChange={(v) => { setPreset(""); setFrom(v); }} aria-label="Inicio de la ventana" />
+            </CocoaField>
+            <CocoaField label="Hasta">
+              <CocoaDatePicker value={to} min={from} size="small" onChange={(v) => { setPreset(""); setTo(v); }} aria-label="Fin de la ventana" />
+            </CocoaField>
+          </div>
+        }
+        rightSlot={
+          board ? (
+            <p style={noteStyle}>
+              Datos a cierre de {date(board.businessDate, "short")} · OTB a las {time(board.generatedAt)} (Europe/Madrid) · Ventana {date(board.from, "short")} → {date(board.to, "short")}
+            </p>
+          ) : undefined
+        }
+      />
+
+      {board ? (
+        <>
+          {board.forecastMissing ? (
+            <CocoaCallout
+              tone="warning"
+              title="Sin previsión generada en la ventana"
+              actions={
+                <CocoaButton variant="filled" tone="accent" size="small" onClick={() => void handleGenerate()} loading={generating} disabled={generating}>
+                  Generar previsión (90 días)
+                </CocoaButton>
+              }
+            >
+              No hay filas de previsión para estas fechas, así que los bloques de previsión y la confianza aparecen vacíos: este cuadro nunca inventa datos.
+            </CocoaCallout>
+          ) : null}
+          {genError ? (
+            <CocoaCallout tone="danger" role="alert" title="No se pudo generar la previsión">
+              {genError}
+            </CocoaCallout>
+          ) : null}
+          {board.budgetMissing ? (
+            <CocoaCallout tone="info" title="Sin presupuesto">
+              Carga el presupuesto mensual para ver desviaciones frente a presupuesto.
+            </CocoaCallout>
+          ) : null}
+
+          {k ? (
+            <CocoaKpiStrip stagger aria-label="Indicadores de la ventana">
+              <CocoaKpi
+                label="Próximos 7 días (OTB)"
+                value={money(k.next7.revenue)}
+                caption={`${fmtInt(k.next7.roomsSold)} hab · ${fmtPct1(k.next7.occPct)} · ADR ${dash(k.next7.adr, money)}`}
+                delta={k.next7.pickup7 ?? undefined}
+                deltaLabel={k.next7.pickup7 === null ? "sin pickup a 7 días" : "hab · pickup 7 días"}
+                polarity="positive-good"
+                status={k.next7.pickup7 !== null && k.next7.pickup7 < 0 ? "warning" : "ok"}
+              />
+              <CocoaKpi
+                label="Próximos 30 días (OTB)"
+                value={money(k.next30.revenue)}
+                caption={`${fmtInt(k.next30.roomsSold)} hab · ${fmtPct1(k.next30.occPct)} · ADR ${dash(k.next30.adr, money)}`}
+                delta={k.next30.pickup7 ?? undefined}
+                deltaLabel={k.next30.pickup7 === null ? "sin pickup a 7 días" : "hab · pickup 7 días"}
+                polarity="positive-good"
+                status={k.next30.pickup7 !== null && k.next30.pickup7 < 0 ? "warning" : "ok"}
+              />
+              <CocoaKpi
+                label="Mes en curso (MTD)"
+                value={money(k.mtd.revenue)}
+                caption={`${fmtInt(k.mtd.roomsSold)} hab · ${fmtPct1(k.mtd.occPct)} · ADR ${dash(k.mtd.adr, money)}`}
+                delta={mtdVsStly ?? undefined}
+                deltaUnit="%"
+                deltaLabel={mtdVsStly === null ? "sin comparación con el año anterior" : "vs STLY"}
+                polarity="positive-good"
+                status={mtdVsStly !== null && mtdVsStly < 0 ? "warning" : "ok"}
+              />
+              <CocoaKpi
+                label="Confianza media de la previsión"
+                value={dash(confidence, fmtConfidence)}
+                caption={confidence === null ? "Genera la previsión para activar este indicador" : "Media de la ventana con previsión"}
+                polarity="neutral"
+                status={confidence === null ? "warning" : confidenceStatus(confidence)}
+              />
+            </CocoaKpiStrip>
+          ) : null}
+
+          <CocoaSection variant="plain" padding="none" title="Mes en curso +3: proyección frente a presupuesto" meta={plural(board.months.length, "mes", "meses")} headingLevel={2}>
+            {board.months.length > 0 ? (
+              <CocoaGrid aria-label="Proyección mensual" align="start">
+                {board.months.map((m) => (
+                  <CocoaSpan key={m.month} cols={3} min={240}>
+                    <MonthCard month={m} />
+                  </CocoaSpan>
+                ))}
+              </CocoaGrid>
+            ) : (
+              <CocoaState kind="empty" inline title="El servidor no devolvió proyección mensual." />
             )}
-            {board ? (
-              <p className="bo-muted" style={{ margin: "4px 0 0", textTransform: "none", fontSize: 12 }}>
-                Datos a cierre de {fmtDateFull(board.businessDate)} · OTB a las {fmtOtbTime(board.generatedAt)} (Europe/Madrid) · Ventana {fmtDateFull(board.from)} → {fmtDateFull(board.to)}
-              </p>
-            ) : null}
-          </div>
-          <div className="bo-pill-row">
-            {board ? <span className="bo-chip">{fmtInt(board.totalRooms)} hab. totales</span> : null}
-            <span className="bo-status info" style={{ textTransform: "none" }}>En vivo</span>
-            <button type="button" onClick={() => void load()} disabled={loading}>
-              {loading ? <><Spinner size="sm" /> Cargando…</> : "↻ Actualizar"}
-            </button>
-            <button type="button" className="primary" onClick={() => navigateTo("RevenueHistoryForecastReport")}>
-              Ver informe detallado
-            </button>
-          </div>
-        </div>
+          </CocoaSection>
 
-        <div className="bo-row" style={{ gap: 12, flexWrap: "wrap", alignItems: "center", marginTop: 4 }}>
-          <span className="bo-muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>Rango</span>
-          <div className="bo-pill-row">
-            {RANGE_PRESETS.map((p) => (
-              <button key={p.id} type="button" className={`bo-pill${preset === p.id ? " is-active" : ""}`} style={{ cursor: "pointer" }} onClick={() => applyPreset(p.id)}>
-                {p.label}
-              </button>
-            ))}
-          </div>
-          <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-            <input type="date" value={from} max={to} onChange={(e) => { setPreset(""); setFrom(e.target.value); }} />
-            <span className="bo-muted">→</span>
-            <input type="date" value={to} min={from} onChange={(e) => { setPreset(""); setTo(e.target.value); }} />
-          </div>
-        </div>
+          <CocoaGrid aria-label="Real y previsión por día">
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Ocupación: real frente a previsión" meta="Real / OTB · Previsión">
+                {dataRows.length > 0 ? (
+                  <CocoaChart.Line series={occSeries} yLabel="Ocupación" valueFormat={fmtPct1} aria-label="Ocupación diaria real u OTB frente a la previsión" />
+                ) : (
+                  <CocoaState kind="empty" inline title="Sin datos para el gráfico en la ventana seleccionada." />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Ingresos de habitaciones por día" meta="Real / OTB · Previsión">
+                {dataRows.length > 0 ? (
+                  <CocoaChart.Line series={revenueSeries} yLabel="€ por día" valueFormat={(n) => money(n)} aria-label="Ingresos diarios de habitaciones reales u OTB frente a la previsión" />
+                ) : (
+                  <CocoaState kind="empty" inline title="Sin datos para el gráfico en la ventana seleccionada." />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
 
-        {loading && !board ? (
-          <>
-            <LoadingBlock label="Cargando board de History & Forecast…" />
-            <div style={{ marginTop: 16 }}>
-              <SkeletonLines lines={8} />
-            </div>
-          </>
-        ) : error ? (
-          <ErrorState title="No se pudo cargar el board" message={error} onRetry={() => void load()} />
-        ) : board ? (
-          <>
-            {board.forecastMissing ? (
-              <article className="bo-card rev-alert" style={{ marginTop: 12 }}>
-                <div className="bo-card-head">
-                  <h3>Sin previsión generada en la ventana</h3>
-                  <span className="bo-status warn" style={{ textTransform: "none" }}>Acción requerida</span>
-                </div>
-                <p>
-                  No hay filas de previsión para estas fechas, así que los bloques de previsión y la confianza aparecen vacíos — este board nunca inventa datos.
-                </p>
-                {genError ? (
-                  <p role="alert" style={{ color: "var(--danger-ink)", fontSize: 13, margin: "4px 0" }}>{genError}</p>
-                ) : null}
-                <div className="bo-actions">
-                  <button type="button" className="primary" onClick={() => void handleGenerate()} disabled={generating}>
-                    {generating ? <><Spinner size="sm" /> Generando previsión…</> : "Generar previsión (90 días)"}
-                  </button>
-                </div>
-              </article>
-            ) : null}
-            {board.budgetMissing ? (
-              <p className="bo-muted" style={{ textTransform: "none", fontSize: 13, margin: "12px 0 0" }}>
-                <span className="bo-status info" style={{ textTransform: "none" }}>Sin presupuesto</span>{" "}
-                Carga el presupuesto mensual para ver desviaciones frente a presupuesto.
-              </p>
-            ) : null}
+          <CocoaSection title="Fechas críticas" meta={`${fmtInt(board.criticalDates.length)} de un máximo de 10`} padding={board.criticalDates.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {board.criticalDates.length > 0 ? (
+              <CocoaTable columns={CRITICAL_COLUMNS} rows={board.criticalDates} rowKey="date" density="compact" caption="Fechas críticas de la ventana" aria-label="Fechas críticas de la ventana" />
+            ) : (
+              <CocoaState kind="empty" inline title="Sin fechas críticas detectadas en la ventana: ninguna fecha supera los umbrales de demanda, ritmo o pickup." />
+            )}
+          </CocoaSection>
 
-            {k ? (
-              <div className="rev-kpi-grid" style={{ marginTop: 16 }}>
-                <article className="rev-kpi">
-                  <div className="rev-kpi-head"><span className="rev-kpi-label">Próximos 7 días (OTB)</span></div>
-                  <div className="rev-kpi-value">{money(k.next7.revenue)}</div>
-                  <div className="rev-kpi-delta">
-                    {fmtInt(k.next7.roomsSold)} hab · {fmtPct1(k.next7.occPct)} · ADR {dash(k.next7.adr, money)}
-                  </div>
-                  <div className="rev-kpi-delta" style={k.next7.pickup7 !== null && k.next7.pickup7 < 0 ? { color: "var(--danger-ink)" } : undefined}>
-                    Pickup 7d: {dash(k.next7.pickup7, (n) => `${signedInt(n)} hab`)}
-                  </div>
-                </article>
-                <article className="rev-kpi">
-                  <div className="rev-kpi-head"><span className="rev-kpi-label">Próximos 30 días (OTB)</span></div>
-                  <div className="rev-kpi-value">{money(k.next30.revenue)}</div>
-                  <div className="rev-kpi-delta">
-                    {fmtInt(k.next30.roomsSold)} hab · {fmtPct1(k.next30.occPct)} · ADR {dash(k.next30.adr, money)}
-                  </div>
-                  <div className="rev-kpi-delta" style={k.next30.pickup7 !== null && k.next30.pickup7 < 0 ? { color: "var(--danger-ink)" } : undefined}>
-                    Pickup 7d: {dash(k.next30.pickup7, (n) => `${signedInt(n)} hab`)}
-                  </div>
-                </article>
-                <article className={`rev-kpi${mtdVsStly !== null ? (mtdVsStly >= 0 ? " rev-kpi-ok" : " rev-kpi-warn") : ""}`}>
-                  <div className="rev-kpi-head"><span className="rev-kpi-label">Mes en curso (MTD)</span></div>
-                  <div className="rev-kpi-value">{money(k.mtd.revenue)}</div>
-                  <div className="rev-kpi-delta">
-                    {fmtInt(k.mtd.roomsSold)} hab · {fmtPct1(k.mtd.occPct)} · ADR {dash(k.mtd.adr, money)}
-                  </div>
-                  <div className="rev-kpi-delta" style={mtdVsStly !== null ? { color: mtdVsStly >= 0 ? "var(--ok-ink)" : "var(--danger-ink)", fontWeight: 600 } : undefined}>
-                    vs STLY: {dash(mtdVsStly, signedPct1)}
-                  </div>
-                </article>
-                <article className={`rev-kpi${confidence !== null ? ` rev-kpi-${confidenceTone(confidence)}` : ""}`}>
-                  <div className="rev-kpi-head">
-                    <span className="rev-kpi-label">Confianza media</span>
-                    <span className="rev-kpi-tag">previsión</span>
-                  </div>
-                  <div className="rev-kpi-value">{dash(confidence, fmtConfidence)}</div>
-                  <div className="rev-kpi-delta">
-                    {confidence === null ? "Genera la previsión para activar este KPI" : "Media de la ventana con previsión"}
-                  </div>
-                </article>
-              </div>
-            ) : null}
-
-            <article className="bo-card" style={{ marginTop: 16 }}>
-              <div className="bo-card-head">
-                <h3>Mes en curso +3 — proyección vs presupuesto</h3>
-                <span className="bo-chip">{board.months.length} meses</span>
-              </div>
-              {board.months.length > 0 ? (
-                <div className="hfb-months">
-                  {board.months.map((m) => (
-                    <MonthCard key={m.month} month={m} />
-                  ))}
-                </div>
-              ) : (
-                <p className="bo-muted">El servidor no devolvió proyección mensual.</p>
-              )}
-            </article>
-
-            <div className="rev-legend" style={{ marginTop: 16 }}>
-              <span className="rev-legend-item history">Actual / OTB</span>
-              <span className="rev-legend-item forecast">Previsión</span>
-              <span className="rev-legend-business">Hoy marcado en ámbar</span>
-            </div>
-
-            <div className="bo-grid two" style={{ marginTop: 8 }}>
-              <article className="bo-card">
-                <h3>Ocupación % — actual vs previsión</h3>
-                <BoardLineChart
-                  points={occPoints}
-                  fmtValue={fmtPct1}
-                  fmtAxis={(n) => `${Math.round(n)} %`}
-                  suggestedMax={100}
-                />
-              </article>
-              <article className="bo-card">
-                <h3>Ingresos de habitaciones (€/día)</h3>
-                <BoardLineChart
-                  points={revenuePoints}
-                  fmtValue={money}
-                  fmtAxis={(n) => money(n, { compact: true })}
-                />
-              </article>
-            </div>
-
-            <article className="bo-card" style={{ marginTop: 16 }}>
-              <div className="bo-card-head">
-                <h3>Fechas críticas</h3>
-                <span className="bo-chip">{board.criticalDates.length} de un máximo de 10</span>
-              </div>
-              {board.criticalDates.length > 0 ? (
-                <CriticalDatesTable dates={board.criticalDates} />
-              ) : (
-                <p className="bo-muted">
-                  Sin fechas críticas detectadas en la ventana: ninguna fecha supera los umbrales de demanda, ritmo o pickup.
-                </p>
-              )}
-            </article>
-
-            <div style={{ marginTop: 16 }}>
-              <DefinitionsFooter notes={board.metricNotes} sources={board.sources} />
-            </div>
-          </>
-        ) : null}
-      </section>
-    </>
+          <DefinitionsFooter notes={board.metricNotes} sources={board.sources} />
+        </>
+      ) : null}
+    </CocoaPage>
   );
 }

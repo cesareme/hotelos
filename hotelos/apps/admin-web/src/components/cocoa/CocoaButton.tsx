@@ -21,6 +21,7 @@ import { useCoarsePointer, TAP_TARGET_PX } from "../../lib/useCoarsePointer";
 export type CocoaButtonVariant = "filled" | "tinted" | "bordered" | "plain";
 export type CocoaButtonSize = "small" | "regular" | "large";
 export type CocoaButtonTone = "accent" | "neutral" | "destructive";
+export type CocoaButtonAlign = "start" | "center" | "between";
 
 export interface CocoaButtonProps {
   variant?: CocoaButtonVariant;
@@ -63,6 +64,10 @@ export interface CocoaButtonProps {
   "aria-selected"?: boolean;
   /** Multi-line label (selectable list rows, long titles in a 320 px column): the text wraps, the height follows it, left-aligned. Default: one line, fixed height. */
   wrap?: boolean;
+  /** Stretch to the container's width (rows of a listbox / menu, phone footers) — the geometry is inline, so a className cannot set it. */
+  fullWidth?: boolean;
+  /** Horizontal alignment of icon + label inside the button: `center` (default) · `start` (list rows) · `between` (label + trailing chevron). */
+  align?: CocoaButtonAlign;
 }
 
 const HEIGHT_BY_SIZE: Record<CocoaButtonSize, number> = { small: 22, regular: 28, large: 32 };
@@ -187,7 +192,9 @@ export function CocoaButton({
   "data-testid": dataTestId,
   role,
   "aria-selected": ariaSelected,
-  wrap = false
+  wrap = false,
+  fullWidth = false,
+  align = "center"
 }: CocoaButtonProps) {
   const isDisabled = disabled || loading;
   const coarse = useCoarsePointer();
@@ -265,9 +272,13 @@ export function CocoaButton({
       base.justifyContent = "flex-start";
     }
 
+    if (fullWidth) base.width = "100%";
+    if (align === "start") base.justifyContent = "flex-start";
+    else if (align === "between") base.justifyContent = "space-between";
+
     if (style) Object.assign(base, style);
     return base;
-  }, [variant, tone, toneVars, size, height, paddingX, radius, fontSize, gap, isDisabled, coarse, wrap, style]);
+  }, [variant, tone, toneVars, size, height, paddingX, radius, fontSize, gap, isDisabled, coarse, wrap, fullWidth, align, style]);
 
   // Hover: filled brightens (light moves toward the cursor), tinted deepens
   // slightly, ghost variants gain a control fill.
@@ -346,6 +357,8 @@ export function CocoaButton({
       data-tone={tone}
       data-size={size}
       data-wrap={wrap ? "true" : undefined}
+      data-full-width={fullWidth ? "true" : undefined}
+      data-align={align === "center" ? undefined : align}
       onClick={onClick}
       onFocus={onFocus}
       onBlur={onBlur}

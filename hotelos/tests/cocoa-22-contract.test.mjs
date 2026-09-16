@@ -45,30 +45,23 @@ const toPosix = (p) => p.split(sep).join("/");
  * Pilot lot (2026-09-15): GeneralManagerScreen (canon), GuestsListScreen,
  * PropertySetupForms, ShiftManagerScreen and LoginScreen (shell lot) are out.
  */
-export const ALLOWLIST_CEILING = 125;
+export const ALLOWLIST_CEILING = 68;
 
 export const NOT_MIGRATED = [
   "AccountingSettings.tsx",
   "AuditLogViewer.tsx",
   "BillingSettings.tsx",
-  "ChannelMappingsScreen.tsx",
-  "DemandCalendarAdminScreen.tsx",
   "GoLiveChecklist.tsx",
   "ModuleHealthCenter.tsx",
   "ModuleManager.tsx",
   "ModuleSettingsPlaceholder.tsx",
   "PaymentSettings.tsx",
   "PropertyMapper.tsx",
-  "RateShopperSettingsScreen.tsx",
-  "RevenueRulesScreen.tsx",
   "ScreenScaffold.tsx",
   "TaxComplianceSettings.tsx",
   "UserRoleManager.tsx",
-  "admin/AllotmentsScreen.tsx",
-  "admin/CancellationPoliciesScreen.tsx",
   "admin/InviteUserDialog.tsx",
   "admin/NewTenantWizardDialog.tsx",
-  "admin/RatePlansScreen.tsx",
   "admin/ResetPasswordConfirmDialog.tsx",
   "admin/TenantAdminConsoleScreen.tsx",
   "admin/TenantDetailScreen.tsx",
@@ -82,7 +75,6 @@ export const NOT_MIGRATED = [
   "backoffice/categories/CategoryDetailScreen.tsx",
   "backoffice/categories/CategoryManagerScreen.tsx",
   "backoffice/categories/CategoryOptionForm.tsx",
-  "channelManager/ChannelAggregatorHub.tsx",
   "compliance/AuthorityRoutingSettingsScreen.tsx",
   "compliance/ComplianceCenterScreen.tsx",
   "compliance/GdprRequestsScreen.tsx",
@@ -90,7 +82,6 @@ export const NOT_MIGRATED = [
   "compliance/GuestRegisterSettingsScreen.tsx",
   "compliance/PropertyTaxesScreen.tsx",
   "compliance/SesHospedajesSettingsScreen.tsx",
-  "crm/GuestSegmentsScreen.tsx",
   "dev/StyleGuideScreen.tsx",
   "developer/ApiReferenceScreen.tsx",
   "developer/CocoaShowcaseScreen.tsx",
@@ -101,55 +92,15 @@ export const NOT_MIGRATED = [
   "fiscal/FiscalDashboard.tsx",
   "fiscal/FiscalSubmissionsCenter.tsx",
   "fiscal/TbaiForalScreen.tsx",
-  "guest-portal/GuestPortalSettingsScreen.tsx",
-  "guestJourney/GuestJourneyWorkspace.tsx",
-  "guests/GuestProfileScreen.tsx",
-  "guests/GuestTimelineScreen.tsx",
-  "loyalty/LoyaltyProgramScreen.tsx",
-  "marketing/CampaignManagerScreen.tsx",
   "marketplace/MarketplaceCatalogScreen.tsx",
   "notifications/NotificationsScreen.tsx",
   "onboarding/CocoaOnboardingWizard.tsx",
   "onboarding/OnboardingInteractive.tsx",
   "onboarding/OnboardingScreens.tsx",
-  "operations/ConciergeInboxDashboard.tsx",
-  "operations/CrmDashboard.tsx",
-  "operations/GroupDetailDialog.tsx",
-  "operations/GroupsCalendarScreen.tsx",
-  "operations/GroupsEventsDashboard.tsx",
-  "operations/GroupsPickupCard.tsx",
-  "operations/LoyaltyDashboard.tsx",
-  "operations/NewEventDialog.tsx",
-  "operations/NewGroupDialog.tsx",
-  "operations/QualityDashboard.tsx",
-  "operations/ReputationDashboard.tsx",
-  "operations/RoomBlockGridDialog.tsx",
-  "operations/RoomRackScreen.tsx",
-  "operations/RoomingListImportDialog.tsx",
-  "operations/SalesPipelineDashboard.tsx",
-  "operations/SurveysDashboard.tsx",
   "operations/SustainabilityDashboard.tsx",
-  "operations/UpsellsDashboard.tsx",
   "preview/CocoaGalleryScreen.tsx",
-  "reservations/QuickActionsDialogs.tsx",
-  "reservations/ReservationAgentScreen.tsx",
-  "reservations/ReservationCreateScreen.tsx",
-  "reservations/ReservationWorkspaceScreen.tsx",
-  "reservations/ReservationsListScreen.tsx",
-  "revenue/RateGridEditorScreen.tsx",
-  "revenue/RateJournalScreen.tsx",
-  "revenue/RevenueComparisonDashboard.tsx",
-  "revenue/RevenueForecastExplorer.tsx",
-  "revenue/RevenueHistoryForecastDashboard.tsx",
-  "revenue/RevenueHistoryForecastReport.tsx",
-  "revenue/RevenueHomeDashboard.tsx",
-  "revenue/RevenueMeetingScreen.tsx",
   "tabs/NavItemTabs.tsx",
   "tabs/TabHost.tsx",
-  "tabs/comercial/CanalesTabs.tsx",
-  "tabs/comercial/ClientesTabs.tsx",
-  "tabs/comercial/ReputacionTabs.tsx",
-  "tabs/comercial/VentasAdicionalesTabs.tsx",
   "tabs/configuracion/ComunicacionesTabs.tsx",
   "tabs/configuracion/ContabilidadFiscalTabs.tsx",
   "tabs/configuracion/FacturacionPagosTabs.tsx",
@@ -164,15 +115,7 @@ export const NOT_MIGRATED = [
   "tabs/cumplimiento/RegistroViajerosTabs.tsx",
   "tabs/cumplimiento/SostenibilidadTabs.tsx",
   "tabs/cumplimiento/VerifactuTabs.tsx",
-  "tabs/recepcion/GruposEventosTabs.tsx",
-  "tabs/recepcion/HuespedesTabs.tsx",
-  "tabs/recepcion/NuevaReservaTabs.tsx",
-  "tabs/recepcion/ReservasTabs.tsx",
-  "tabs/revenue/HistoricoPrevisionTabs.tsx",
-  "tabs/revenue/ParrillaTabs.tsx",
-  "tabs/tab-helpers.tsx",
-  "timeline/LiveTimelineWorkspace.tsx",
-  "upsells/UpsellsSettingsScreen.tsx"
+  "tabs/tab-helpers.tsx"
 ];
 
 /**
@@ -221,12 +164,39 @@ const STYLE_BUDGET = {
   // Cocoa 22 · ola 6 · lote 6-A (Facturación y cobros: formulario · detalle · diálogo)
   "admin/FolioRoutingScreen.tsx": 15,
   "billing/FolioDetailScreen.tsx": 15,
-  "invoicing/InvoiceRectifyDialog.tsx": 15
+  "invoicing/InvoiceRectifyDialog.tsx": 15,
+  // Cocoa 22 · ola 5 · lote 5-C (Ajustes de revenue: Políticas de cancelación es formulario; Planes de tarifas, Competencia y Reglas son dashboard, 25 por defecto)
+  "admin/CancellationPoliciesScreen.tsx": 15,
+  // Cocoa 22 · ola 5 · lote 5-A (Parrilla y demanda: calendario 40; RateJournalScreen es «otro», 25 por defecto)
+  "DemandCalendarAdminScreen.tsx": 40,
+  "revenue/RateGridEditorScreen.tsx": 40,
+  // Cocoa 22 · ola 7 · lote 7-C (Ventas adicionales y portal: catálogo = lista + drawer, portal = formulario; los dos dashboards quedan en 25 por defecto)
+  "upsells/UpsellsSettingsScreen.tsx": 15,
+  "guest-portal/GuestPortalSettingsScreen.tsx": 15,
+  // Cocoa 22 · ola 5 · lote 5-B (Histórico y previsión: el informe diario es lista; cuadro, explorador, reunión, comparativa y panel son dashboard, 25 por defecto)
+  "revenue/RevenueHistoryForecastReport.tsx": 15,
+  // Cocoa 22 · ola 3 · lote 3-A (Reservas: cronograma calendario 40 · workspace de detalle 40 · agente de dictado formulario 15; tablero, lista y alta son 25 por defecto)
+  "timeline/LiveTimelineWorkspace.tsx": 40,
+  // Cocoa 22 · ola 3 · lote 3-C (Huéspedes, cupos y conserjería: recorrido, cronología y mensajes son workspace/calendario 40; Cupos y Ficha del huésped son dashboard, 25 por defecto)
+  "guestJourney/GuestJourneyWorkspace.tsx": 40,
+  "guests/GuestTimelineScreen.tsx": 40,
+  "operations/ConciergeInboxDashboard.tsx": 40,
+  // Cocoa 22 · ola 7 · lote 7-A (Canales: Correspondencias es lista; el hub de canales es dashboard, 25 por defecto)
+  "ChannelMappingsScreen.tsx": 15,
+  "reservations/ReservationWorkspaceScreen.tsx": 40,
+  "reservations/ReservationAgentScreen.tsx": 15,
+  // Cocoa 22 · ola 3 · lote 3-B (Grupos y eventos: diálogos y drawers 15 · calendario 40; GroupsPickupCard y GroupsEventsDashboard son dashboard, 25 por defecto)
+  "operations/GroupDetailDialog.tsx": 15,
+  "operations/NewGroupDialog.tsx": 15,
+  "operations/RoomingListImportDialog.tsx": 15,
+  "operations/RoomBlockGridDialog.tsx": 15,
+  "operations/NewEventDialog.tsx": 15,
+  "operations/GroupsCalendarScreen.tsx": 40
 };
 const DEFAULT_STYLE_BUDGET = 25;
 
-/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223). */
-const GLOBAL_CEILING = { boCard: 589, rawButtons: 419, rawTables: 91, rawInputs: 409, colourLiterals: 402, inlineStyles: 3223 };
+/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223; olas 3 · 5 · 7 integradas el 2026-09-16, lotes 3-A/3-B/3-C/5-A/5-B/5-C/7-A/7-B/7-C: 589/419/91/409/402/3223 → 307/203/40/158/70/1833; cierre de la Tanda B con las correcciones fix:* del 2026-09-16: sin cambio, los seis techos igualan los totales regenerados). */
+const GLOBAL_CEILING = { boCard: 307, rawButtons: 203, rawTables: 40, rawInputs: 158, colourLiterals: 70, inlineStyles: 1833 };
 
 // ----------------------------------------------------------------- helpers
 
@@ -522,8 +492,9 @@ function definedTokens() {
 }
 
 // Sub-views without a head of their own (plan §2.3): FrontDeskActionQueue is painted inside /hoy;
-// fiscal/ReportErrorCard is the error card the AEAT report screens paint inside their body (lote 8-B).
-const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$)/;
+// fiscal/ReportErrorCard is the error card the AEAT report screens paint inside their body (lote 8-B);
+// operations/GroupsPickupCard is the pickup card GroupsEventsDashboard paints on /recepcion/grupos (lote 3-B).
+const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$|operations\/GroupsPickupCard\.tsx$)/;
 const COLOUR_EXEMPT = /^(auth|preview|developer)\//;
 
 // ----------------------------------------------------------------- data

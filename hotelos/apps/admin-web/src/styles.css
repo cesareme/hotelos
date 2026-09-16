@@ -1563,7 +1563,9 @@ table tbody td {
   vertical-align: top;
 }
 
-table tbody tr:hover td { background: var(--surface-soft); }
+/* Cocoa 22: the raw grid tables (`data-cocoa-grid-table`, timeline lanes) keep
+   their own today / weekend wash — :where() keeps the specificity unchanged. */
+table:where(:not([data-cocoa-grid-table])) tbody tr:hover td { background: var(--surface-soft); }
 
 /* === Progress / inline metrics === */
 .bo-progress-row {

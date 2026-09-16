@@ -1,18 +1,47 @@
-// Guest Timeline Screen — vista única cronológica del huésped.
+// Cronología del huésped — Recepción › Huéspedes › Cronología (/recepcion/huespedes/:id/cronologia).
 //
 // Directriz Anfitorio (Nov 2026):
 //   "Cada huésped debe tener una vista tipo timeline, no una ficha fragmentada.
 //    Cualquier recepcionista debe entender al huésped en menos de 10 segundos."
 //
-// Layout:
-//   [Header] nombre + identidad + chips loyalty/VIP/alergias + saldo abierto
-//   [Métricas] estancias · noches · gasto · ADR · cancelaciones · no-shows
-//   [Tabs filtro] todos / reservas / pagos / incidencias / notas
-//   [Timeline vertical] eventos con tipo, importancia y monto
+// Cocoa 22 (ola 3 · lote 3-C): CocoaPage (hosted inside HuespedesTabs the
+// container paints «Huéspedes»; standalone the page paints the guest's name)
+// → «Perfil» CocoaSection (avatar, residence, identity, notes callout and the
+// VIP / loyalty / balance / incidents badges) → CocoaKpiStrip with the six
+// metrics → «Reservas vinculadas» CocoaTable → «Historial» CocoaSection with a
+// CocoaSegmentedControl filter and the events in an ol.c22-section__list
+// (CocoaBadge dot by importance, amount at the right). The guest id comes
+// from the tab URL (useRouteParam) or the legacy `?guestId` query; without it
+// the page offers a lookup by identifier. Same data: GET /guests/:id/timeline
+// (polling 60 s).
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { date, dateTime, money, number, relativeTime } from "../../lib/format";
+import { useTabHost } from "../tabs/TabHost";
+import { useRouteParam } from "../tabs/tab-helpers";
+import { urlForScreen } from "../../navigation/nav-tree";
+import { EMPTY, channelLabel, date, dateRange, dateTime, money, number, plural, relativeTime } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
+import { reservationStatusLabel } from "../operations/frontdesk-labels";
+import { BellIcon, InfoCircleIcon, StarIcon } from "../../components/cocoa-icons/StatusIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaField,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaTable,
+  toneInk,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type Profile = {
   id: string;
@@ -105,19 +134,7 @@ type TimelineData = {
 
 // ============================================================== display
 
-const EVENT_ICON: Record<EventType, string> = {
-  reservation_created: "📋",
-  check_in: "🔑",
-  check_out: "👋",
-  folio_charge: "🧾",
-  payment: "💳",
-  incident_opened: "🛎",
-  incident_closed: "✅",
-  special_request: "💬",
-  note: "📝",
-  no_show: "⛔",
-  cancellation: "❌"
-};
+const TIMELINE_URL = urlForScreen("GuestTimelineScreen") ?? "/recepcion/huespedes/:id/cronologia";
 
 const EVENT_LABEL: Record<EventType, string> = {
   reservation_created: "Reserva",
@@ -126,11 +143,22 @@ const EVENT_LABEL: Record<EventType, string> = {
   folio_charge: "Cargo",
   payment: "Pago",
   incident_opened: "Incidencia",
-  incident_closed: "Cierre incidencia",
+  incident_closed: "Cierre de incidencia",
   special_request: "Petición",
   note: "Nota",
   no_show: "No-show",
   cancellation: "Cancelación"
+};
+
+const IMPORTANCE_TONE: Record<TLEvent["importance"], CocoaTone> = { info: "neutral", highlight: "accent", alert: "danger" };
+
+const RESERVATION_TONE: Record<string, CocoaTone> = {
+  draft: "neutral",
+  confirmed: "info",
+  checked_in: "success",
+  checked_out: "neutral",
+  cancelled: "danger",
+  no_show: "danger"
 };
 
 type FilterTab = "all" | "reservations" | "payments" | "incidents" | "notes";
@@ -143,340 +171,264 @@ const FILTER_BY_TAB: Record<FilterTab, (e: TLEvent) => boolean> = {
   notes: (e) => e.type === "note" || e.type === "special_request"
 };
 
-function fmtEur(value: number | undefined | null): string {
-  return money(value);
-}
+const FILTER_OPTIONS: Array<{ value: FilterTab; label: string }> = [
+  { value: "all", label: "Todos" },
+  { value: "reservations", label: "Reservas" },
+  { value: "payments", label: "Pagos" },
+  { value: "incidents", label: "Incidencias" },
+  { value: "notes", label: "Notas" }
+];
 
-function fmtNumber(value: number): string {
-  return number(value);
-}
+const RESERVATION_COLUMNS: CocoaTableColumn<Reservation>[] = [
+  { key: "code", label: "Código", fit: true, render: (r) => <strong className="cocoa-mono">{r.code}</strong> },
+  { key: "propertyName", label: "Propiedad", hideOnNarrow: true, render: (r) => r.propertyName ?? r.propertyId },
+  { key: "stay", label: "Estancia", minWidth: 180, render: (r) => `${dateRange(r.arrivalDate, r.departureDate)} · ${plural(r.nights, "noche", "noches")}` },
+  {
+    key: "roomTypeName",
+    label: "Habitación · canal",
+    showFrom: "laptop",
+    render: (r) => {
+      // Channel as a name («Booking.com»); the wire code stays in `title` for support.
+      const text = [r.roomTypeName, r.channel ? channelLabel(r.channel) : null].filter(Boolean).join(" · ");
+      return text ? <span title={r.channel || undefined}>{text}</span> : EMPTY;
+    }
+  },
+  { key: "totalAmount", label: "Total", align: "right", fit: true, render: (r) => money(r.totalAmount) },
+  {
+    key: "balanceDue",
+    label: "Saldo",
+    align: "right",
+    fit: true,
+    render: (r) =>
+      r.balanceDue > 0 ? (
+        <CocoaBadge tone="danger" variant="tinted" uppercase={false}>
+          {money(r.balanceDue)}
+        </CocoaBadge>
+      ) : (
+        EMPTY
+      )
+  },
+  { key: "status", label: "Estado", fit: true, render: (r) => <CocoaBadge tone={RESERVATION_TONE[r.status] ?? "neutral"}>{reservationStatusLabel(r.status)}</CocoaBadge> }
+];
 
-function fmtDate(iso: string): string {
-  return date(iso, "medium");
-}
+// Avatar with the initials: accent wash, no gradient (§6 of the spec).
+const avatarStyle: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
+  width: 48,
+  height: 48,
+  borderRadius: "var(--cocoa-radius-full)",
+  background: "var(--cocoa-accent-bg)",
+  color: toneInk("accent"),
+  fontSize: "var(--cocoa-fs-title-2)",
+  fontWeight: "var(--cocoa-fw-bold)" as CSSProperties["fontWeight"]
+};
+const nameStyle: CSSProperties = { fontSize: "var(--cocoa-fs-title-2)", fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"] };
+const growStyle: CSSProperties = { flex: "1 1 240px", minWidth: 0 };
+const entryTextStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: 2, minWidth: 0, flex: "1 1 auto" };
+const paymentAmountStyle: CSSProperties = { color: toneInk("success") };
+const lookupRowStyle: CSSProperties = { maxWidth: 560 };
 
-function fmtRelTime(iso: string): string {
-  return relativeTime(iso);
-}
-
-// ============================================================== component
-
-/**
- * Guest id from the tab URL `/recepcion/huespedes/:id/cronologia` (Tanda 5), or
- * from the legacy `?guestId` query on the standalone route.
- */
-function getGuestIdFromQuery(): string | null {
+/** Legacy `?guestId` query of the standalone route (the tab URL carries the id itself). */
+function legacyQueryGuestId(): string | null {
   if (typeof window === "undefined") return null;
-  const segments = window.location.pathname.split("/").filter(Boolean);
-  if (segments.length >= 2 && segments[segments.length - 1] === "cronologia") {
-    const id = decodeURIComponent(segments[segments.length - 2]);
-    if (id && id !== "new") return id;
-  }
-  const params = new URLSearchParams(window.location.search);
-  return params.get("guestId");
+  return new URLSearchParams(window.location.search).get("guestId");
 }
 
-export function GuestTimelineScreen() {
-  const [guestId, setGuestId] = useState<string | null>(() => getGuestIdFromQuery());
-  const { data, loading, error, refresh } = useApiData<TimelineData>(
-    guestId ? `/guests/${guestId}/timeline` : null,
-    { pollIntervalMs: 60000 }
-  );
-  const [tab, setTab] = useState<FilterTab>("all");
-
-  const events = useMemo(() => (data?.events ?? []).filter(FILTER_BY_TAB[tab]), [data?.events, tab]);
-
-  if (!guestId) {
-    return (
-      <div style={{ padding: 32 }}>
-        <h1>Timeline del huésped</h1>
-        <p className="bo-muted">
-          Para ver el timeline, necesitas un guestId. Abre desde un perfil de huésped o pega un id manualmente:
-        </p>
-        <div style={{ display: "flex", gap: 8, marginTop: 16, maxWidth: 480 }}>
-          <input
-            type="text"
-            placeholder="cmpo9uy6v011xfymh5t83j13n"
-            style={{ flex: 1, padding: 8, border: "1px solid var(--border)", borderRadius: 6 }}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                const val = (e.target as HTMLInputElement).value.trim();
-                if (val) {
-                  setGuestId(val);
-                  if (typeof window !== "undefined") {
-                    const url = new URL(window.location.href);
-                    url.searchParams.set("guestId", val);
-                    window.history.pushState({}, "", url);
-                  }
-                }
-              }
-            }}
-          />
-          <button type="button" onClick={() => {
-            const input = document.querySelector<HTMLInputElement>('input[type="text"]');
-            if (input?.value.trim()) {
-              setGuestId(input.value.trim());
-            }
-          }}>Cargar</button>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          <div className="bo-page-eyebrow">CRM · Timeline</div>
-          <h1 className="bo-page-title">{data?.profile.fullName ?? "Cargando…"}</h1>
-          {data?.profile ? (
-            <p className="bo-page-subtitle">
-              {[data.profile.documentType, data.profile.documentNumber, data.profile.nationality, data.profile.email, data.profile.phone]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
-          ) : null}
-        </div>
-        <div className="bo-page-head-actions">
-          {loading ? <span className="bo-status info">cargando</span> : null}
-          {error ? <span className="bo-status error">{error}</span> : null}
-          <button type="button" className="ghost" onClick={refresh}>↻</button>
-        </div>
-      </div>
-
-      {data?.profile ? <ProfileBanner profile={data.profile} metrics={data.metrics} /> : null}
-      {data?.metrics ? <MetricsRow metrics={data.metrics} /> : null}
-      {data?.reservations.length ? <ReservationsRow reservations={data.reservations} /> : null}
-
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Historial</h3>
-          <span className="bo-muted" style={{ fontSize: 12 }}>{events.length} eventos</span>
-        </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-          {(Object.keys(FILTER_BY_TAB) as FilterTab[]).map((t) => (
-            <button
-              key={t}
-              type="button"
-              className={tab === t ? "primary" : "ghost"}
-              onClick={() => setTab(t)}
-              style={{ textTransform: "capitalize" }}
-            >
-              {t === "all" ? "Todos" : t === "reservations" ? "Reservas" : t === "payments" ? "Pagos" : t === "incidents" ? "Incidencias" : "Notas"}
-            </button>
-          ))}
-        </div>
-        {events.length === 0 ? (
-          <p className="bo-muted">Sin eventos para este filtro.</p>
-        ) : (
-          <ol style={{ listStyle: "none", padding: 0, margin: 0, position: "relative" }}>
-            {events.map((event, idx) => (
-              <TimelineEntry key={event.id} event={event} isLast={idx === events.length - 1} />
-            ))}
-          </ol>
-        )}
-      </article>
-    </>
-  );
+function identityLine(profile: Profile): string {
+  return [profile.documentType, profile.documentNumber, profile.nationality, profile.email, profile.phone].filter(Boolean).join(" · ");
 }
 
-// ============================================================== sub-components
-
-function ProfileBanner({ profile, metrics }: { profile: Profile; metrics: Metrics }) {
+function TimelineSkeleton() {
   return (
-    <article
-      className="bo-card"
-      style={{
-        background: "linear-gradient(135deg, var(--surface) 0%, var(--surface-elevated, rgba(110, 60, 200, 0.06)) 100%)",
-        display: "flex",
-        gap: 12,
-        alignItems: "center",
-        flexWrap: "wrap"
-      }}
-    >
-      <div
-        style={{
-          width: 56,
-          height: 56,
-          borderRadius: "50%",
-          background: profile.vipCode ? "linear-gradient(135deg, #ffd700 0%, #ffa500 100%)" : "linear-gradient(135deg, #6f3ad2 0%, #2663c4 100%)",
-          color: "white",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 22,
-          fontWeight: 700
-        }}
-      >
-        {profile.firstName.slice(0, 1)}{profile.surname1?.slice(0, 1) ?? ""}
-      </div>
-      <div style={{ flex: 1, minWidth: 200 }}>
-        <strong style={{ fontSize: 18 }}>{profile.fullName}</strong>
-        <div className="bo-muted" style={{ fontSize: 13, marginTop: 2 }}>
-          {[profile.languagePreference, profile.residenceLocality, profile.residenceCountry].filter(Boolean).join(" · ") || "Sin información de residencia"}
-        </div>
-        {profile.notes ? (
-          <div
-            style={{
-              marginTop: 6,
-              padding: "6px 8px",
-              background: "var(--surface-elevated, rgba(0,0,0,0.04))",
-              borderRadius: 6,
-              fontSize: 13,
-              borderLeft: "3px solid var(--accent, #6f3ad2)"
-            }}
-          >
-            📝 {profile.notes}
-          </div>
-        ) : null}
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
-        {profile.vipCode ? <span className="bo-status accent">⭐ VIP {profile.vipCode}</span> : null}
-        {profile.loyaltyTier ? <span className="bo-status info">🎖 {profile.loyaltyTier}{profile.loyaltyNumber ? ` · ${profile.loyaltyNumber}` : ""}</span> : null}
-        {metrics.openBalanceEur > 0 ? <span className="bo-status warn">€ {fmtEur(metrics.openBalanceEur)} pendiente</span> : null}
-        {metrics.openIncidents > 0 ? <span className="bo-status error">🛎 {metrics.openIncidents} incidencia(s) abiertas</span> : null}
-      </div>
-    </article>
-  );
-}
-
-function MetricsRow({ metrics }: { metrics: Metrics }) {
-  return (
-    <div className="rev-kpi-grid">
-      <Kpi label="Estancias completadas" value={fmtNumber(metrics.totalStays)} sublabel={metrics.firstStayDate ? `Desde ${fmtDate(metrics.firstStayDate)}` : undefined} />
-      <Kpi label="Noches totales" value={fmtNumber(metrics.totalNights)} />
-      <Kpi label="Gasto histórico" value={fmtEur(metrics.totalSpendEur)} sublabel="LTV" tone="ok" />
-      <Kpi label="ADR medio" value={fmtEur(metrics.avgAdrEur)} />
-      <Kpi label="Cancelaciones" value={fmtNumber(metrics.cancellations)} tone={metrics.cancellations > 0 ? "warn" : "ok"} />
-      <Kpi label="No-shows" value={fmtNumber(metrics.noShows)} tone={metrics.noShows > 0 ? "error" : "ok"} />
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="card" height={120} />
+      <CocoaSkeleton.Strip count={6} />
+      <CocoaSkeleton variant="card" height={260} />
     </div>
   );
 }
 
-function Kpi({ label, value, sublabel, tone }: { label: string; value: string; sublabel?: string; tone?: "ok" | "warn" | "error" }) {
-  const klass = tone === "warn" ? "rev-kpi-warn" : tone === "error" ? "rev-kpi-error" : "rev-kpi-ok";
-  return (
-    <article className={`rev-kpi ${klass}`}>
-      <div className="rev-kpi-head">
-        <span className="rev-kpi-label">{label}</span>
-      </div>
-      <div className="rev-kpi-value">{value}</div>
-      {sublabel ? <div className="bo-muted" style={{ fontSize: 11, marginTop: 2 }}>{sublabel}</div> : null}
-    </article>
-  );
-}
+// ============================================================== component
 
-function ReservationsRow({ reservations }: { reservations: Reservation[] }) {
+export function GuestTimelineScreen() {
+  const hosted = useTabHost() !== null;
+  // Guest id from the tab URL `/recepcion/huespedes/:id/cronologia` (Tanda 5),
+  // else from the legacy `?guestId` query or the lookup below.
+  const routeId = useRouteParam(TIMELINE_URL, "id");
+  const [manualId, setManualId] = useState<string | null>(() => legacyQueryGuestId());
+  const [draftId, setDraftId] = useState("");
+  const guestId = routeId && routeId !== "new" ? routeId : manualId;
+
+  const { data, loading, error, refresh } = useApiData<TimelineData>(guestId ? `/guests/${guestId}/timeline` : null, { pollIntervalMs: 60000 });
+  const [tab, setTab] = useState<FilterTab>("all");
+
+  const events = useMemo(() => (data?.events ?? []).filter(FILTER_BY_TAB[tab]), [data?.events, tab]);
+  const profile = data?.profile;
+
+  function loadManualId() {
+    const val = draftId.trim();
+    if (!val) return;
+    setManualId(val);
+    if (typeof window !== "undefined") {
+      const url = new URL(window.location.href);
+      url.searchParams.set("guestId", val);
+      window.history.pushState({}, "", url);
+    }
+  }
+
+  const pageState = !guestId ? "ready" : loading && !data ? "loading" : error && !data ? "error" : "ready";
+
   return (
-    <article className="bo-card" style={{ background: "var(--surface)" }}>
-      <div className="bo-card-head">
-        <h3 style={{ color: "var(--ink)" }}>Reservas vinculadas</h3>
-        <span className="bo-chip">{reservations.length}</span>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 8 }}>
-        {reservations.map((r) => (
-          <div
-            key={r.id}
-            style={{
-              border: "1px solid var(--border)",
-              borderRadius: 8,
-              padding: 10,
-              display: "flex",
-              flexDirection: "column",
-              gap: 4
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-              <strong style={{ fontSize: 14 }}>{r.code}</strong>
-              <span className="bo-chip" style={{ fontSize: 10 }}>{r.status}</span>
-            </div>
-            <div className="bo-muted" style={{ fontSize: 12 }}>{r.propertyName ?? r.propertyId}</div>
-            <div style={{ fontSize: 12 }}>
-              {fmtDate(r.arrivalDate)} → {fmtDate(r.departureDate)} · {r.nights} noches
-            </div>
-            <div style={{ fontSize: 12 }}>{r.roomTypeName} · {r.channel}</div>
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginTop: 4 }}>
-              <span>Total {fmtEur(r.totalAmount)}</span>
-              {r.balanceDue > 0 ? <span style={{ color: "var(--danger, #d23b3b)" }}>Saldo {fmtEur(r.balanceDue)}</span> : null}
-            </div>
+    <CocoaPage
+      eyebrow="Recepción · Huéspedes"
+      title={profile?.fullName ?? "Cronología del huésped"}
+      subtitle={hosted ? undefined : profile ? identityLine(profile) || "Cronología de estancias, pagos, incidencias y notas." : "Cronología de estancias, pagos, incidencias y notas."}
+      actions={
+        <>
+          {error && data ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={!guestId} loading={Boolean(guestId) && loading && Boolean(data)}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={pageState}
+      skeleton={<TimelineSkeleton />}
+      error={{ title: "No se pudo cargar la cronología", message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "guest-timeline-refresh", label: "Actualizar cronología", run: refresh }]}
+    >
+      {!guestId ? (
+        <CocoaSection title="Cronología del huésped" aria-label="Buscar un huésped por identificador">
+          <p>Abre la cronología desde la ficha de un huésped o indica su identificador.</p>
+          <div className="cocoa-row" data-gap="2" data-align="end" style={lookupRowStyle}>
+            <CocoaField label="Identificador del huésped" style={growStyle}>
+              <CocoaInput
+                value={draftId}
+                onChange={setDraftId}
+                placeholder="cmpo9uy6v011xfymh5t83j13n"
+                autoComplete="off"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") loadManualId();
+                }}
+              />
+            </CocoaField>
+            <CocoaButton variant="filled" tone="accent" onClick={loadManualId} disabled={!draftId.trim()}>
+              Cargar cronología
+            </CocoaButton>
           </div>
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function TimelineEntry({ event, isLast }: { event: TLEvent; isLast: boolean }) {
-  const icon = EVENT_ICON[event.type] ?? "•";
-  const importanceColor =
-    event.importance === "alert" ? "var(--danger, #d23b3b)" :
-    event.importance === "highlight" ? "var(--accent, #6f3ad2)" :
-    "var(--muted, #888)";
-
-  return (
-    <li style={{ position: "relative", paddingLeft: 32, paddingBottom: isLast ? 0 : 16 }}>
-      {/* Vertical line */}
-      {!isLast ? (
-        <span
-          style={{
-            position: "absolute",
-            left: 11,
-            top: 22,
-            bottom: -4,
-            width: 2,
-            background: "var(--border)"
-          }}
-        />
+        </CocoaSection>
       ) : null}
-      {/* Dot */}
-      <span
-        style={{
-          position: "absolute",
-          left: 0,
-          top: 0,
-          width: 24,
-          height: 24,
-          borderRadius: "50%",
-          background: "var(--surface)",
-          border: `2px solid ${importanceColor}`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          fontSize: 12
-        }}
-      >
-        {icon}
-      </span>
-      {/* Content */}
-      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-          <strong style={{ fontSize: 13 }}>{event.title}</strong>
-          <span
-            style={{
-              fontSize: 10,
-              padding: "1px 6px",
-              borderRadius: 4,
-              background: "var(--surface-elevated, rgba(0,0,0,0.05))",
-              color: "var(--muted, #888)"
-            }}
+
+      {data && profile ? (
+        <>
+          <CocoaSection
+            title={hosted ? profile.fullName : "Perfil"}
+            aria-label="Perfil del huésped"
+            meta={
+              <span className="cocoa-cluster">
+                {profile.vipCode ? (
+                  <CocoaBadge tone="accent" variant="tinted" icon={<StarIcon aria-hidden="true" />}>
+                    VIP {profile.vipCode}
+                  </CocoaBadge>
+                ) : null}
+                {profile.loyaltyTier ? (
+                  <CocoaBadge tone="info">
+                    {profile.loyaltyTier}
+                    {profile.loyaltyNumber ? ` · ${profile.loyaltyNumber}` : ""}
+                  </CocoaBadge>
+                ) : null}
+                {data.metrics.openBalanceEur > 0 ? (
+                  <CocoaBadge tone="warning" variant="tinted" uppercase={false}>
+                    Saldo pendiente {money(data.metrics.openBalanceEur)}
+                  </CocoaBadge>
+                ) : null}
+                {data.metrics.openIncidents > 0 ? (
+                  <CocoaBadge tone="danger" variant="tinted" icon={<BellIcon aria-hidden="true" />}>
+                    {plural(data.metrics.openIncidents, "incidencia abierta", "incidencias abiertas")}
+                  </CocoaBadge>
+                ) : null}
+              </span>
+            }
           >
-            {EVENT_LABEL[event.type]}
-          </span>
-          {event.amount !== undefined ? (
-            <span style={{ fontWeight: 600, color: event.type === "payment" ? "var(--ok, #1f8a4c)" : "var(--ink)" }}>
-              {event.type === "payment" ? "+" : ""}{fmtEur(event.amount)}
-            </span>
+            <div className="cocoa-row" data-gap="4" data-align="start">
+              <span aria-hidden="true" style={avatarStyle}>
+                {profile.firstName.slice(0, 1)}
+                {profile.surname1?.slice(0, 1) ?? ""}
+              </span>
+              <div className="cocoa-stack" data-gap="1" style={growStyle}>
+                <strong style={nameStyle}>{profile.fullName}</strong>
+                <span className="cocoa-caption">
+                  {[profile.languagePreference, profile.residenceLocality, profile.residenceCountry].filter(Boolean).join(" · ") || "Sin información de residencia"}
+                </span>
+                {identityLine(profile) ? <span className="cocoa-caption">{identityLine(profile)}</span> : null}
+              </div>
+            </div>
+            {profile.notes ? (
+              <CocoaCallout tone="neutral" title="Notas" icon={<InfoCircleIcon aria-hidden="true" />}>
+                {profile.notes}
+              </CocoaCallout>
+            ) : null}
+          </CocoaSection>
+
+          <CocoaKpiStrip stagger aria-label="Métricas del huésped">
+            <CocoaKpi
+              label="Estancias completadas"
+              value={number(data.metrics.totalStays)}
+              caption={data.metrics.firstStayDate ? `Desde ${date(data.metrics.firstStayDate, "medium")}` : undefined}
+              polarity="neutral"
+            />
+            <CocoaKpi label="Noches totales" value={number(data.metrics.totalNights)} polarity="neutral" />
+            <CocoaKpi label="Gasto histórico" value={money(data.metrics.totalSpendEur)} caption="Valor de vida" polarity="neutral" />
+            <CocoaKpi label="ADR medio" value={money(data.metrics.avgAdrEur)} polarity="neutral" />
+            <CocoaKpi label="Cancelaciones" value={number(data.metrics.cancellations)} polarity="negative-good" status={data.metrics.cancellations > 0 ? "warning" : undefined} />
+            <CocoaKpi label="No-shows" value={number(data.metrics.noShows)} polarity="negative-good" status={data.metrics.noShows > 0 ? "critical" : undefined} />
+          </CocoaKpiStrip>
+
+          {data.reservations.length > 0 ? (
+            <CocoaSection title="Reservas vinculadas" meta={plural(data.reservations.length, "reserva", "reservas")} padding="none" style={{ overflow: "clip" }}>
+              <CocoaTable columns={RESERVATION_COLUMNS} rows={data.reservations} rowKey="id" caption="Reservas vinculadas al huésped" aria-label="Reservas vinculadas" />
+            </CocoaSection>
           ) : null}
-        </div>
-        {event.subtitle ? (
-          <span className="bo-muted" style={{ fontSize: 12 }}>{event.subtitle}</span>
-        ) : null}
-        <span className="bo-muted" style={{ fontSize: 11 }}>
-          {fmtRelTime(event.timestamp)} · {dateTime(event.timestamp, { style: "medium" })}
-          {event.propertyName ? ` · ${event.propertyName}` : ""}
-          {event.reservationCode ? ` · ${event.reservationCode}` : ""}
-        </span>
-      </div>
-    </li>
+
+          <CocoaSection title="Historial" meta={plural(events.length, "evento", "eventos")}>
+            <div className="cocoa-row">
+              <CocoaSegmentedControl value={tab} onChange={(v) => setTab(v as FilterTab)} options={FILTER_OPTIONS} size="small" aria-label="Filtrar el historial" />
+            </div>
+            {events.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin eventos para este filtro." />
+            ) : (
+              <ol className="c22-section__list" aria-label="Eventos del huésped">
+                {events.map((event) => (
+                  <li key={event.id}>
+                    <span style={entryTextStyle}>
+                      <span className="cocoa-cluster">
+                        <CocoaBadge tone={IMPORTANCE_TONE[event.importance]} variant="dot" size="small">
+                          {EVENT_LABEL[event.type] ?? event.type}
+                        </CocoaBadge>
+                        <strong>{event.title}</strong>
+                      </span>
+                      {event.subtitle ? <span className="cocoa-caption">{event.subtitle}</span> : null}
+                      <span className="cocoa-caption">
+                        {relativeTime(event.timestamp)} · {dateTime(event.timestamp, { style: "medium" })}
+                        {event.propertyName ? ` · ${event.propertyName}` : ""}
+                        {event.reservationCode ? ` · ${event.reservationCode}` : ""}
+                      </span>
+                    </span>
+                    {event.amount !== undefined ? (
+                      <strong style={event.type === "payment" ? paymentAmountStyle : undefined}>
+                        {event.type === "payment" ? "+" : ""}
+                        {money(event.amount, event.amountCurrency)}
+                      </strong>
+                    ) : null}
+                  </li>
+                ))}
+              </ol>
+            )}
+          </CocoaSection>
+        </>
+      ) : null}
+    </CocoaPage>
   );
 }

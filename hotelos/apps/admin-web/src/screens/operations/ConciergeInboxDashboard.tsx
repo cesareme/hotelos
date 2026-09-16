@@ -1,10 +1,50 @@
+// Mensajes de huéspedes — Recepción › Mensajes (/recepcion/mensajes).
+//
+// Cocoa 22 (ola 3 · lote 3-C): CocoaPage (standalone) → CocoaKpiStrip with
+// the four live counters → «Sentimiento del huésped» as three
+// CocoaChart.Progress bars → CocoaGrid 6/6 with the conversations by channel
+// and the most frequent requests (CocoaTable) → «Conversaciones recientes»
+// CocoaTable (fit / showFrom columns, badges for status and AI). Same data:
+// GET /dashboards/concierge?propertyId (polling 30 s); a failed refresh with
+// stale data shows a danger callout instead of zeros.
+
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { ACTIONS, STATUS_LABELS, UI_STATES } from "../../content/actions";
-import { percent, relativeTime } from "../../lib/format";
+import { toArray } from "../../utils/toArray";
+import { ACTIONS, UI_STATES } from "../../content/actions";
+import { EMPTY, number, percent, plural, relativeTime } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+
+type ConversationRow = {
+  id: string;
+  guestId?: string;
+  channel: string;
+  status: string;
+  aiEnabled: boolean;
+  lastMessageAt?: string;
+  messageCount: number;
+};
+
+type ChannelRow = { channel: string; count: number };
+type RequestRow = { category: string; count: number };
 
 type ConciergeDashboard = {
   kpis: {
@@ -14,28 +54,60 @@ type ConciergeDashboard = {
     aiResolutionRatePct: number;
     sentimentAggregate: { positive: number; neutral: number; negative: number };
   };
-  conversationsByChannel: Array<{ channel: string; count: number }>;
-  recentConversations: Array<{
-    id: string;
-    guestId?: string;
-    channel: string;
-    status: string;
-    aiEnabled: boolean;
-    lastMessageAt?: string;
-    messageCount: number;
-  }>;
-  topGuestRequests: Array<{ category: string; count: number }>;
+  conversationsByChannel: ChannelRow[];
+  recentConversations: ConversationRow[];
+  topGuestRequests: RequestRow[];
 };
 
-function statusPill(status: string) {
-  if (status === "open") return <span className="cm-pill cm-pill-ok">abierta</span>;
-  if (status === "handoff") return <span className="cm-pill cm-pill-warn">pasada a persona</span>;
-  if (status === "closed") return <span className="cm-pill">cerrada</span>;
-  return <span className="cm-pill">{status}</span>;
+function conversationStatus(status: string): { label: string; tone: CocoaTone } {
+  if (status === "open") return { label: "abierta", tone: "success" };
+  if (status === "handoff") return { label: "pasada a persona", tone: "warning" };
+  if (status === "closed") return { label: "cerrada", tone: "neutral" };
+  return { label: status, tone: "neutral" };
 }
 
-function formatRelative(iso?: string): string {
-  return relativeTime(iso);
+const CHANNEL_COLUMNS: CocoaTableColumn<ChannelRow>[] = [
+  { key: "channel", label: "Canal" },
+  { key: "count", label: "Conversaciones", align: "right", fit: true, render: (r) => number(r.count) }
+];
+
+const REQUEST_COLUMNS: CocoaTableColumn<RequestRow>[] = [
+  { key: "category", label: "Categoría" },
+  { key: "count", label: "Cantidad", align: "right", fit: true, render: (r) => number(r.count) }
+];
+
+const RECENT_COLUMNS: CocoaTableColumn<ConversationRow>[] = [
+  { key: "id", label: "Conversación", fit: true, render: (r) => <span className="cocoa-mono">{r.id}</span> },
+  { key: "guestId", label: "Huésped", hideOnNarrow: true, render: (r) => r.guestId ?? EMPTY },
+  { key: "channel", label: "Canal", fit: true },
+  {
+    key: "status",
+    label: "Estado",
+    fit: true,
+    render: (r) => {
+      const s = conversationStatus(r.status);
+      return <CocoaBadge tone={s.tone}>{s.label}</CocoaBadge>;
+    }
+  },
+  {
+    key: "aiEnabled",
+    label: "IA",
+    fit: true,
+    showFrom: "tablet",
+    render: (r) => (r.aiEnabled ? <CocoaBadge tone="ai">IA activa</CocoaBadge> : <CocoaBadge tone="neutral">IA desactivada</CocoaBadge>)
+  },
+  { key: "messageCount", label: "Mensajes", align: "right", fit: true, render: (r) => number(r.messageCount) },
+  { key: "lastMessageAt", label: "Última actividad", fit: true, render: (r) => relativeTime(r.lastMessageAt) }
+];
+
+function ConciergeSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton variant="card" height={140} />
+      <CocoaSkeleton.Grid rows={[[6, 6]]} height={220} />
+    </div>
+  );
 }
 
 export function ConciergeInboxDashboard() {
@@ -44,168 +116,96 @@ export function ConciergeInboxDashboard() {
     pollIntervalMs: 30000
   });
 
-  const kpis = data?.kpis ?? {
-    openConversations: 0,
-    messagesLast24h: 0,
-    avgResponseMinutes: 0,
-    aiResolutionRatePct: 0,
-    sentimentAggregate: { positive: 0, neutral: 0, negative: 0 }
-  };
-  const sentiment = kpis.sentimentAggregate;
-  const channels = data?.conversationsByChannel ?? [];
-  const recent = data?.recentConversations ?? [];
-  const requests = data?.topGuestRequests ?? [];
+  const kpis = data?.kpis;
+  const sentiment = kpis?.sentimentAggregate ?? { positive: 0, neutral: 0, negative: 0 };
+  const sentimentTotal = sentiment.positive + sentiment.neutral + sentiment.negative;
+  const channels = toArray<ChannelRow>(data?.conversationsByChannel);
+  const recent = toArray<ConversationRow>(data?.recentConversations);
+  const requests = toArray<RequestRow>(data?.topGuestRequests);
 
   return (
-    <>
-      <CocoaPageHeader
-        eyebrow="Recepción"
-        title="Mensajes de huéspedes"
-        subtitle="Resumen en vivo de las conversaciones con los huéspedes: cobertura de la IA, tiempo de respuesta, sentimiento y peticiones más frecuentes de los últimos 7 días."
-        actions={<button type="button" className="ghost" onClick={() => refresh()}>↻ {ACTIONS.refresh}</button>}
-      />
-
-      {error ? (
-        <section className="bo-card">
-          <p className="bo-muted">{UI_STATES.error.title}. {UI_STATES.error.message}</p>
-        </section>
+    <CocoaPage
+      eyebrow="Recepción · Mensajes"
+      title="Mensajes de huéspedes"
+      subtitle="Resumen en vivo de las conversaciones con los huéspedes: cobertura de la IA, tiempo de respuesta, sentimiento y peticiones más frecuentes de los últimos 7 días."
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => refresh()} loading={loading && Boolean(data)}>
+          {ACTIONS.refresh}
+        </CocoaButton>
+      }
+      state={loading && !data ? "loading" : error && !data ? "error" : "ready"}
+      skeleton={<ConciergeSkeleton />}
+      error={{ title: UI_STATES.error.title, message: error ?? UI_STATES.error.message, onRetry: () => refresh() }}
+      commands={[{ id: "concierge-refresh", label: "Actualizar mensajes de huéspedes", run: () => refresh() }]}
+    >
+      {error && data ? (
+        <CocoaCallout tone="danger" title={UI_STATES.error.title} role="status">
+          {error}
+        </CocoaCallout>
       ) : null}
 
-      <section className="rev-kpi-grid">
-        <article className={`rev-kpi ${kpis.openConversations > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Conversaciones abiertas</span></div>
-          <div className="rev-kpi-value">{kpis.openConversations}</div>
-          <div className="rev-kpi-delta">{loading ? STATUS_LABELS.loading : "Esperan respuesta o están en manos de una persona"}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Mensajes · 24 h</span></div>
-          <div className="rev-kpi-value">{kpis.messagesLast24h}</div>
-          <div className="rev-kpi-delta">Recibidos y enviados</div>
-        </article>
-        <article className={`rev-kpi ${kpis.avgResponseMinutes > 15 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tiempo medio de respuesta</span></div>
-          <div className="rev-kpi-value">{kpis.avgResponseMinutes} min</div>
-          <div className="rev-kpi-delta">Del mensaje del huésped a la primera respuesta (persona o IA)</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Resueltas por la IA</span></div>
-          <div className="rev-kpi-value">{kpis.aiResolutionRatePct}%</div>
-          <div className="rev-kpi-delta">Sin intervención de una persona</div>
-        </article>
-      </section>
+      {kpis ? (
+        <CocoaKpiStrip stagger aria-label="Indicadores de mensajería">
+          <CocoaKpi
+            label="Conversaciones abiertas"
+            value={number(kpis.openConversations)}
+            caption="Esperan respuesta o están en manos de una persona"
+            polarity="negative-good"
+            status={kpis.openConversations > 0 ? "warning" : "ok"}
+          />
+          <CocoaKpi label="Mensajes · 24 h" value={number(kpis.messagesLast24h)} caption="Recibidos y enviados" polarity="neutral" />
+          <CocoaKpi
+            label="Tiempo medio de respuesta"
+            value={number(kpis.avgResponseMinutes)}
+            unit="min"
+            caption="Del mensaje del huésped a la primera respuesta (persona o IA)"
+            polarity="negative-good"
+            status={kpis.avgResponseMinutes > 15 ? "warning" : "ok"}
+          />
+          <CocoaKpi label="Resueltas por la IA" value={percent(kpis.aiResolutionRatePct)} caption="Sin intervención de una persona" polarity="positive-good" />
+        </CocoaKpiStrip>
+      ) : null}
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Sentimiento</p>
-            <h3>Sentimiento del huésped</h3>
-          </div>
-          <span className="bo-chip">{sentiment.positive + sentiment.neutral + sentiment.negative === 0 ? "sin datos de sentimiento" : "últimos 7 días"}</span>
-        </div>
-        <div style={{ display: "flex", height: 18, borderRadius: 8, overflow: "hidden", background: "var(--bo-surface-muted, #f4f4f5)" }}>
-          <div title={`Positivo ${percent(sentiment.positive)}`} style={{ width: `${sentiment.positive}%`, background: "var(--success-bg, #10b981)" }} />
-          <div title={`Neutro ${percent(sentiment.neutral)}`} style={{ width: `${sentiment.neutral}%`, background: "var(--bo-muted-bg, #9ca3af)" }} />
-          <div title={`Negativo ${percent(sentiment.negative)}`} style={{ width: `${sentiment.negative}%`, background: "var(--danger-bg, #ef4444)" }} />
-        </div>
-        <div className="bo-pill-row" style={{ marginTop: 12 }}>
-          <span className="bo-pill">Positive {sentiment.positive}%</span>
-          <span className="bo-pill">Neutral {sentiment.neutral}%</span>
-          <span className="bo-pill">Negative {sentiment.negative}%</span>
-        </div>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Conversaciones por canal</h3>
-            <span className="bo-chip">{channels.length} channels</span>
-          </div>
-          {channels.length === 0 ? (
-            <p className="bo-muted">Aún no hay conversaciones.</p>
-          ) : (
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Canal</th>
-                  <th style={{ textAlign: "right" }}>Conversaciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {channels.map((row) => (
-                  <tr key={row.channel}>
-                    <td>{row.channel}</td>
-                    <td style={{ textAlign: "right" }}>{row.count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Peticiones más frecuentes</h3>
-            <span className="bo-chip">{requests.length} categories</span>
-          </div>
-          {requests.length === 0 ? (
-            <p className="bo-muted">Sin peticiones clasificadas en el periodo.</p>
-          ) : (
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Categoría</th>
-                  <th style={{ textAlign: "right" }}>Cantidad</th>
-                </tr>
-              </thead>
-              <tbody>
-                {requests.map((row) => (
-                  <tr key={row.category}>
-                    <td>{row.category}</td>
-                    <td style={{ textAlign: "right" }}>{row.count}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Conversaciones recientes</h3>
-          <span className="bo-chip">{recent.length} shown</span>
-        </div>
-        {recent.length === 0 ? (
-          <p className="bo-muted">No hay conversaciones que mostrar.</p>
+      <CocoaSection title="Sentimiento del huésped" meta={sentimentTotal === 0 ? "Sin datos de sentimiento" : "Últimos 7 días"}>
+        {sentimentTotal === 0 ? (
+          <CocoaState kind="empty" inline title="Sin datos de sentimiento en el periodo." />
         ) : (
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Conversación</th>
-                <th>Huésped</th>
-                <th>Canal</th>
-                <th>Estado</th>
-                <th>AI</th>
-                <th style={{ textAlign: "right" }}>Mensajes</th>
-                <th>Última actividad</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recent.map((row) => (
-                <tr key={row.id}>
-                  <td><code>{row.id}</code></td>
-                  <td>{row.guestId ?? "—"}</td>
-                  <td>{row.channel}</td>
-                  <td>{statusPill(row.status)}</td>
-                  <td>{row.aiEnabled ? <span className="cm-pill cm-pill-ok">IA activa</span> : <span className="cm-pill">IA desactivada</span>}</td>
-                  <td style={{ textAlign: "right" }}>{row.messageCount}</td>
-                  <td>{formatRelative(row.lastMessageAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <>
+            <CocoaChart.Progress value={sentiment.positive} tone="success" label="Positivo" valueLabel={percent(sentiment.positive)} aria-label={`Sentimiento positivo ${percent(sentiment.positive)}`} />
+            <CocoaChart.Progress value={sentiment.neutral} tone="neutral" label="Neutro" valueLabel={percent(sentiment.neutral)} aria-label={`Sentimiento neutro ${percent(sentiment.neutral)}`} />
+            <CocoaChart.Progress value={sentiment.negative} tone="danger" label="Negativo" valueLabel={percent(sentiment.negative)} aria-label={`Sentimiento negativo ${percent(sentiment.negative)}`} />
+          </>
         )}
-      </section>
-    </>
+      </CocoaSection>
+
+      <CocoaGrid align="start" aria-label="Canales y peticiones">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Conversaciones por canal" meta={plural(channels.length, "canal", "canales")} padding={channels.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {channels.length === 0 ? (
+              <CocoaState kind="empty" inline title="Aún no hay conversaciones." />
+            ) : (
+              <CocoaTable columns={CHANNEL_COLUMNS} rows={channels} rowKey="channel" caption="Conversaciones por canal" aria-label="Conversaciones por canal" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Peticiones más frecuentes" meta={plural(requests.length, "categoría", "categorías")} padding={requests.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {requests.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin peticiones clasificadas en el periodo." />
+            ) : (
+              <CocoaTable columns={REQUEST_COLUMNS} rows={requests} rowKey="category" caption="Peticiones más frecuentes" aria-label="Peticiones más frecuentes" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+
+      <CocoaSection title="Conversaciones recientes" meta={plural(recent.length, "conversación mostrada", "conversaciones mostradas")} padding={recent.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {recent.length === 0 ? (
+          <CocoaState kind="empty" inline title="No hay conversaciones que mostrar." />
+        ) : (
+          <CocoaTable columns={RECENT_COLUMNS} rows={recent} rowKey="id" caption="Conversaciones recientes" aria-label="Conversaciones recientes" />
+        )}
+      </CocoaSection>
+    </CocoaPage>
   );
 }

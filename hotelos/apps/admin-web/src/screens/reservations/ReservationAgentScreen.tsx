@@ -1,6 +1,19 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+// Dictar una reserva — Recepción › Nueva reserva › Dictar (IA)
+// (/recepcion/reservas/nueva/dictar).
+//
+// Cocoa 22 · ola 3 · lote 3-A (form archetype, template `Formulario`):
+// CocoaPage → CocoaSection «Petición de reserva» with a multiline CocoaInput,
+// the dictation button (browser speech recognition, honest fallback when the
+// browser has none), example chips and «Procesar solicitud» → CocoaSection
+// «Revisa y confirma» with CocoaFormRow + CocoaField controls over the draft
+// the agent returned, the availability quotes as pressable chips and the two
+// actions (Cotizar · Crear reserva) → CocoaCallout with the outcome and
+// «Abrir reserva». Same API calls as before (ai-parse, availability quote,
+// createReservation) and the same dictation flow. Hosted inside
+// NuevaReservaTabs the container paints the title.
+
 import { useEffect, useRef, useState } from "react";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { getActivePropertyId } from "../../services/activeProperty";
 import { urlForScreen } from "../../navigation/nav-tree";
 import {
   aiParseReservation,
@@ -12,9 +25,24 @@ import {
   type AvailabilityQuote,
   type ReservationParseResult
 } from "../../services/pmsCommerceApi";
-import { Spinner } from "../../components/States";
 import { useTabHost } from "../tabs/TabHost";
-import { money } from "../../lib/format";
+import { money, percent, plural } from "../../lib/format";
+import { FIELD_LABELS } from "../../content/actions";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaFormRow,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaStepper,
+  openTabPath,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -27,6 +55,7 @@ const BOARD_OPTIONS = [
   { value: "AI", label: "Todo incluido (AI)" }
 ];
 
+// Sample requests (the agent understands Spanish and English input).
 const EXAMPLES = [
   "Doble para 2 adultos, 3 noches desde el próximo viernes, a nombre de María García",
   "Suite for a couple, 2 nights from 12/06, breakfast included, guest John Smith",
@@ -57,6 +86,20 @@ interface SpeechRecognitionLike {
   onresult: ((e: { results: ArrayLike<ArrayLike<{ transcript: string }>> }) => void) | null;
   onend: (() => void) | null;
   onerror: (() => void) | null;
+}
+
+function toCount(raw: string, fallback: number): number {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function MicIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <rect x="9" y="3" width="6" height="12" rx="3" stroke="currentColor" strokeWidth="1.7" />
+      <path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
 }
 
 export function ReservationAgentScreen() {
@@ -130,7 +173,7 @@ export function ReservationAgentScreen() {
       });
       if (res.source === "none") setStatus(res.message ?? "No se pudo entender la solicitud.");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Fallo al procesar.");
+      setStatus(error instanceof Error ? error.message : "No se pudo procesar la solicitud.");
     } finally {
       setParsing(false);
     }
@@ -148,9 +191,9 @@ export function ReservationAgentScreen() {
       setQuotes(q);
       const match = draft.roomTypeId ? q.find((x) => x.roomTypeId === draft.roomTypeId) : q.find((x) => x.availableRooms > 0);
       if (match && !draft.roomTypeId) set("roomTypeId", match.roomTypeId);
-      setStatus(`Disponibilidad consultada para ${q.length} tipos de habitación.`);
+      setStatus(`Disponibilidad consultada para ${plural(q.length, "tipo de habitación", "tipos de habitación")}.`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Fallo al cotizar.");
+      setStatus(error instanceof Error ? error.message : "No se pudo consultar la disponibilidad.");
     } finally {
       setBusy(false);
     }
@@ -194,151 +237,180 @@ export function ReservationAgentScreen() {
         } : undefined
       });
       setCreated(reservation);
-      setStatus(`Reserva ${reservation.code} creada.`);
+      setStatus(null);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Fallo al crear.");
+      setStatus(error instanceof Error ? error.message : "No se pudo crear la reserva.");
     } finally {
       setBusy(false);
     }
   }
 
-  const srcBadge = result
-    ? result.source === "ai" ? { label: "AI", cls: "ai" } : result.source === "rules" ? { label: "Understood", cls: "ok" } : { label: "Not understood", cls: "warn" }
+  function openCreated() {
+    if (!created) return;
+    openTabPath(urlForScreen("ReservationDetailWorkspace", { id: created.id }) ?? "/recepcion/reservas");
+  }
+
+  const source: { label: string; tone: CocoaTone } | null = result
+    ? result.source === "ai"
+      ? { label: "IA", tone: "ai" }
+      : result.source === "rules"
+        ? { label: "Entendida", tone: "success" }
+        : { label: "No entendida", tone: "warning" }
     : null;
+  const canCreate = Boolean(draft.arrivalDate && draft.departureDate && draft.roomTypeId);
 
   return (
-    <>
-      <section className="bo-card">
-        {hosted ? null : (
-          <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
-            <div>
-              <p className="bo-page-eyebrow">PMS · Agente de reservas</p>
-              <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>Reservar por voz o texto</h2>
-            </div>
-            <span className="bo-chip">Asistido por IA</span>
-          </div>
-        )}
-        <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
-          Dicta o escribe la petición en lenguaje natural. El agente extrae fechas, huéspedes, tipo de habitación y régimen en un
-          borrador que revisas antes de crear la reserva. No se reserva nada hasta que confirmes.
+    <CocoaPage
+      eyebrow="Recepción · Nueva reserva"
+      title="Dictar una reserva"
+      subtitle={hosted ? undefined : "Dicta o escribe la petición en lenguaje natural; el agente prepara un borrador que revisas antes de crear la reserva."}
+      actions={<CocoaBadge tone="ai">Asistido por IA</CocoaBadge>}
+      commands={[{ id: "dictar-procesar", label: "Procesar la petición dictada", run: () => void handleParse() }]}
+    >
+      <CocoaSection title="Petición de reserva" meta={speechSupported ? (listening ? "escuchando" : "voz o texto") : "solo texto"}>
+        <p>
+          El agente extrae fechas, huéspedes, tipo de habitación y régimen en un borrador que revisas antes de crear la reserva. No se reserva
+          nada hasta que confirmes.
         </p>
-
-        <div className="bo-form-field" style={{ marginTop: "var(--space-4)" }}>
-          <span>Petición de reserva</span>
-          <div style={{ position: "relative" }}>
-            <textarea
-              value={text}
-              onChange={(event) => setText(event.target.value)}
-              placeholder='e.g. "Doble para 2 adultos, 3 noches desde el próximo viernes, a nombre de María García"'
-              rows={3}
-              style={{ width: "100%", paddingRight: speechSupported ? 52 : undefined }}
-            />
-            {speechSupported ? (
-              <button
-                type="button"
-                className={listening ? "primary" : ""}
-                onClick={toggleListen}
-                aria-label={listening ? "Stop listening" : "Dictate"}
-                title={listening ? "Stop listening" : "Dictate"}
-                style={{ position: "absolute", top: 8, right: 8, width: 38, height: 38, padding: 0, borderRadius: "var(--radius-full)" }}
-              >
-                {listening ? "■" : (
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden>
-                    <rect x="9" y="3" width="6" height="12" rx="3" stroke="currentColor" strokeWidth="1.7" />
-                    <path d="M5 11a7 7 0 0 0 14 0M12 18v3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-                  </svg>
-                )}
-              </button>
-            ) : null}
-          </div>
-          {listening ? <small className="bo-status ai" style={{ display: "inline-flex", marginTop: 6 }}><Spinner size="sm" /> Escuchando…</small> : null}
-          {!speechSupported ? <small className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>Este navegador no admite dictado por voz: escribe la petición (funciona igual).</small> : null}
+        <CocoaField label="Petición" help={speechSupported ? undefined : "Este navegador no admite dictado por voz: escribe la petición (funciona igual)."}>
+          <CocoaInput
+            id="dictar-peticion"
+            value={text}
+            onChange={setText}
+            multiline
+            rows={3}
+            placeholder="Doble para 2 adultos, 3 noches desde el próximo viernes, a nombre de María García"
+          />
+        </CocoaField>
+        <div className="cocoa-row" data-gap="2">
+          {speechSupported ? (
+            <CocoaButton
+              variant={listening ? "tinted" : "bordered"}
+              tone={listening ? "accent" : "neutral"}
+              size="small"
+              aria-pressed={listening}
+              icon={<MicIcon />}
+              onClick={toggleListen}
+            >
+              {listening ? "Detener dictado" : "Dictar"}
+            </CocoaButton>
+          ) : null}
+          {listening ? (
+            <CocoaBadge tone="ai" variant="dot">
+              Escuchando…
+            </CocoaBadge>
+          ) : null}
+          <CocoaButton variant="filled" tone="accent" size="small" loading={parsing} disabled={parsing || !text.trim()} onClick={() => void handleParse()}>
+            Procesar solicitud
+          </CocoaButton>
         </div>
-
-        <div className="bo-pill-row" style={{ marginTop: "var(--space-2)" }}>
-          <span className="bo-muted">Prueba con:</span>
-          {EXAMPLES.map((ex) => (
-            <button type="button" className="bo-pill" key={ex} onClick={() => setText(ex)} style={{ cursor: "pointer" }}>{ex.slice(0, 38)}…</button>
+        <div className="cocoa-row" data-gap="2">
+          <span className="cocoa-caption">Prueba con</span>
+          {EXAMPLES.map((example) => (
+            <CocoaButton key={example} variant="plain" tone="neutral" size="small" title={example} onClick={() => setText(example)}>
+              {example.slice(0, 38)}…
+            </CocoaButton>
           ))}
         </div>
+        {status && !created ? (
+          <CocoaCallout tone="neutral" role="status">
+            {status}
+          </CocoaCallout>
+        ) : null}
+      </CocoaSection>
 
-        <div className="bo-actions" style={{ marginTop: "var(--space-4)" }}>
-          <button type="button" className="primary" onClick={handleParse} disabled={parsing || !text.trim()}>
-            {parsing ? <><Spinner size="sm" /> Procesando…</> : "Procesar solicitud"}
-          </button>
-        </div>
-        {status ? <p className={status.startsWith("Reservation") ? "bo-status ok" : "bo-muted"} style={{ marginTop: "var(--space-3)", display: "inline-flex", textTransform: "none", letterSpacing: 0 }}>{status}</p> : null}
-      </section>
+      {result && result.source !== "none" && source ? (
+        <CocoaSection
+          title="Revisa y confirma"
+          meta={
+            <CocoaBadge tone={source.tone}>
+              {source.label} · {percent(result.confidence * 100, { maximumFractionDigits: 0 })} de confianza
+            </CocoaBadge>
+          }
+        >
+          <CocoaFormRow columns={3} min={200}>
+            <CocoaField label="Llegada" required>
+              <CocoaDatePicker value={draft.arrivalDate} onChange={(v) => set("arrivalDate", v)} />
+            </CocoaField>
+            <CocoaField label="Salida" required>
+              <CocoaDatePicker value={draft.departureDate} onChange={(v) => set("departureDate", v)} />
+            </CocoaField>
+            <CocoaField label={FIELD_LABELS.roomType} required>
+              <CocoaSelect
+                value={draft.roomTypeId}
+                onChange={(v) => set("roomTypeId", v)}
+                placeholder="Selecciona…"
+                options={roomTypes.map((rt) => ({ value: rt.id, label: rt.name }))}
+              />
+            </CocoaField>
+            <CocoaField label="Adultos">
+              <CocoaStepper value={toCount(draft.adults, 2)} onChange={(n) => set("adults", String(n))} min={1} />
+            </CocoaField>
+            <CocoaField label="Niños">
+              <CocoaStepper value={toCount(draft.children, 0)} onChange={(n) => set("children", String(n))} min={0} />
+            </CocoaField>
+            <CocoaField label="Régimen">
+              <CocoaSelect value={draft.boardType} onChange={(v) => set("boardType", v)} options={BOARD_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Nombre del huésped" help="Nombre y apellido, por ejemplo «Ana García».">
+              <CocoaInput value={draft.guestName} onChange={(v) => set("guestName", v)} autoComplete="off" />
+            </CocoaField>
+            <CocoaField label={FIELD_LABELS.email}>
+              <CocoaInput type="email" value={draft.email} onChange={(v) => set("email", v)} autoComplete="off" />
+            </CocoaField>
+            <CocoaField label={FIELD_LABELS.phone}>
+              <CocoaInput type="tel" value={draft.phone} onChange={(v) => set("phone", v)} autoComplete="off" />
+            </CocoaField>
+            <CocoaField label="Peticiones especiales" fullWidth>
+              <CocoaInput value={draft.specialRequests} onChange={(v) => set("specialRequests", v)} multiline rows={2} />
+            </CocoaField>
+          </CocoaFormRow>
 
-      {result && result.source !== "none" ? (
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Reserva extraída</p>
-              <h3 style={{ margin: 0 }}>Revisa y confirma</h3>
-            </div>
-            {srcBadge ? <span className={`bo-status ${srcBadge.cls}`}>{srcBadge.label} · {Math.round(result.confidence * 100)} % de confianza</span> : null}
-          </div>
-
-          <div className="bo-grid three">
-            <label className="bo-form-field"><span>Llegada <strong>obligatoria</strong></span>
-              <input type="date" value={draft.arrivalDate} onChange={(e) => set("arrivalDate", e.target.value)} /></label>
-            <label className="bo-form-field"><span>Salida <strong>obligatoria</strong></span>
-              <input type="date" value={draft.departureDate} onChange={(e) => set("departureDate", e.target.value)} /></label>
-            <label className="bo-form-field"><span>Adultos / niños</span>
-              <div className="bo-inline-inputs">
-                <input type="number" min="1" value={draft.adults} onChange={(e) => set("adults", e.target.value)} aria-label="Adultos" />
-                <input type="number" min="0" value={draft.children} onChange={(e) => set("children", e.target.value)} aria-label="Niños" />
-              </div>
-            </label>
-            <label className="bo-form-field"><span>Tipo de habitación <strong>obligatorio</strong></span>
-              <select value={draft.roomTypeId} onChange={(e) => set("roomTypeId", e.target.value)}>
-                <option value="">Selecciona…</option>
-                {roomTypes.map((rt) => <option key={rt.id} value={rt.id}>{rt.name}</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field"><span>Régimen</span>
-              <select value={draft.boardType} onChange={(e) => set("boardType", e.target.value)}>
-                {BOARD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field"><span>Nombre del huésped</span>
-              <input value={draft.guestName} onChange={(e) => set("guestName", e.target.value)} /></label>
-            <label className="bo-form-field"><span>Correo electrónico</span>
-              <input type="email" value={draft.email} onChange={(e) => set("email", e.target.value)} /></label>
-            <label className="bo-form-field"><span>Teléfono</span>
-              <input value={draft.phone} onChange={(e) => set("phone", e.target.value)} /></label>
-          </div>
-          <label className="bo-form-field"><span>Peticiones especiales</span>
-            <textarea value={draft.specialRequests} onChange={(e) => set("specialRequests", e.target.value)} /></label>
-
-          {quotes.length ? (
-            <div className="bo-pill-row" style={{ margin: "var(--space-2) 0" }}>
-              {quotes.map((q) => (
-                <button type="button" key={q.roomTypeId} className={`bo-pill${draft.roomTypeId === q.roomTypeId ? " is-active" : ""}`} onClick={() => set("roomTypeId", q.roomTypeId)} style={{ cursor: "pointer" }}>
-                  {q.roomTypeName}: {q.availableRooms} disp. · {money(q.totalAmount, q.currency)}
-                </button>
-              ))}
+          {quotes.length > 0 ? (
+            <div className="cocoa-row" data-gap="2" role="group" aria-label="Disponibilidad por tipo de habitación">
+              {quotes.map((q) => {
+                const active = draft.roomTypeId === q.roomTypeId;
+                return (
+                  <CocoaButton
+                    key={q.roomTypeId}
+                    variant={active ? "tinted" : "bordered"}
+                    tone={active ? "accent" : "neutral"}
+                    size="small"
+                    aria-pressed={active}
+                    onClick={() => set("roomTypeId", q.roomTypeId)}
+                  >
+                    {q.roomTypeName}: {plural(q.availableRooms, "disponible", "disponibles")} · {money(q.totalAmount, q.currency)}
+                  </CocoaButton>
+                );
+              })}
             </div>
           ) : null}
 
-          <div className="bo-actions">
-            <button type="button" onClick={handleQuote} disabled={busy}>Cotizar disponibilidad</button>
-            <button type="button" className="primary" onClick={handleCreate} disabled={busy || !draft.arrivalDate || !draft.departureDate || !draft.roomTypeId}>
-              {busy ? <><Spinner size="sm" /> Procesando…</> : "Crear reserva"}
-            </button>
+          <div className="cocoa-row" data-gap="2">
+            <CocoaButton variant="bordered" tone="neutral" disabled={busy} onClick={() => void handleQuote()}>
+              Cotizar disponibilidad
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" loading={busy} disabled={busy || !canCreate} onClick={() => void handleCreate()}>
+              Crear reserva
+            </CocoaButton>
           </div>
 
           {created ? (
-            <article className="bo-card" style={{ marginTop: "var(--space-3)" }}>
-              <div className="bo-card-head"><h3 style={{ margin: 0 }}>{created.code}</h3><span className="bo-status ok">Creada</span></div>
-              <div className="bo-actions">
-                <button type="button" onClick={() => openTabPath(urlForScreen("ReservationDetailWorkspace", { id: created.id }) ?? "/recepcion/reservas")}>Abrir reserva</button>
-              </div>
-            </article>
+            <CocoaCallout
+              tone="success"
+              role="status"
+              title={`Reserva ${created.code} creada`}
+              actions={
+                <CocoaButton variant="filled" tone="accent" size="small" onClick={openCreated}>
+                  Abrir reserva
+                </CocoaButton>
+              }
+            >
+              Abre el detalle para asignar habitación y completar los datos del huésped.
+            </CocoaCallout>
           ) : null}
-        </section>
+        </CocoaSection>
       ) : null}
-    </>
+    </CocoaPage>
   );
 }

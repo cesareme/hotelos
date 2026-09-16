@@ -1,48 +1,33 @@
-import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
+// NewEventDialog — create an event (banquet, conference…) of a group.
+//
+// Cocoa 22 (ola 3 · lote 3-B, archetype «diálogo / drawer»): a CocoaDrawer
+// (right, md; bottom sheet on phones) whose body is a <form> of four
+// CocoaFormSections (identification, when, room and setup, notes); the
+// footer has two buttons: Cancelar and «Crear evento» (submits the form by
+// `form=`). Smart defaults by event type (setup and hours) are kept.
+// Reads GET /properties/:id/event-spaces; POST /groups/:id/events.
+import { useMemo, useState, type CSSProperties, type FormEvent } from "react";
 import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
+import { date, dateRange, number } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
+import {
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaSelect
+} from "../../components/cocoa";
 
-// ─── Helpers locales (replicados del NewGroupDialog para no acoplar) ─────
+const FORM_ID = "new-event-form";
+const NAME_INPUT_ID = "new-event-name";
 
-const fieldsetStyle: CSSProperties = {
-  border: "1px solid var(--border, #e5e7eb)",
-  borderRadius: "var(--radius-sm, 6px)",
-  padding: 12,
-  margin: 0
-};
-
-const legendStyle: CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--ink-soft, #555)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  padding: "0 6px"
-};
-
-const inputStyle: CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  border: "1px solid var(--border, #d1d5db)",
-  borderRadius: "var(--radius-sm, 6px)",
-  background: "var(--surface, white)",
-  color: "var(--ink, #1a1a1a)",
-  fontSize: 14,
-  fontFamily: "inherit"
-};
-
-function Field(props: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: "var(--ink)" }}>
-      <span style={{ fontWeight: 500 }}>{props.label}</span>
-      {props.children}
-      {props.hint ? <span className="bo-muted" style={{ fontSize: 11 }}>{props.hint}</span> : null}
-    </label>
-  );
-}
-
-// ─── Tipos de dominio · 6 categorías canónicas de evento ─────────────────
+// ─── Domain types · six canonical event types ────────────────────────────
 
 type EventType =
   | "welcome_cocktail"
@@ -96,7 +81,25 @@ type CreateEventPayload = {
   notes?: string;
 };
 
-// ─── Estado del form ─────────────────────────────────────────────────────
+const EVENT_TYPE_OPTIONS: Array<{ value: EventType; label: string }> = [
+  { value: "welcome_cocktail", label: "Cóctel de bienvenida" },
+  { value: "coffee_break", label: "Pausa café" },
+  { value: "gala_dinner", label: "Cena de gala" },
+  { value: "conference", label: "Conferencia" },
+  { value: "wedding", label: "Boda" },
+  { value: "other", label: "Otro" }
+];
+
+const SETUP_STYLE_OPTIONS: Array<{ value: SetupStyle; label: string }> = [
+  { value: "theatre", label: "Teatro (auditorio)" },
+  { value: "u_shape", label: "En U" },
+  { value: "classroom", label: "Aula" },
+  { value: "banquet", label: "Banquete (mesas redondas)" },
+  { value: "cocktail", label: "Cóctel (de pie)" },
+  { value: "boardroom", label: "Sala de juntas" }
+];
+
+// ─── Form state ──────────────────────────────────────────────────────────
 
 type FormState = {
   name: string;
@@ -110,7 +113,7 @@ type FormState = {
   notes: string;
 };
 
-// ─── Defaults inteligentes según tipo de evento ─ industria 2026 ─────────
+// Smart defaults by event type (setup and hours).
 function smartDefaultsForEventType(t: EventType): Partial<FormState> {
   switch (t) {
     case "gala_dinner":
@@ -128,11 +131,11 @@ function smartDefaultsForEventType(t: EventType): Partial<FormState> {
   }
 }
 
-// Combina date (YYYY-MM-DD) + time (HH:MM) en un ISO local-aware.
-function combineDateTime(date: string, time: string): string {
-  if (!date || !time) return "";
+// date (YYYY-MM-DD) + time (HH:MM) → ISO instant in the local zone.
+function combineDateTime(day: string, time: string): string {
+  if (!day || !time) return "";
   const [h, m] = time.split(":").map((v) => Number(v));
-  const [y, mo, d] = date.split("-").map((v) => Number(v));
+  const [y, mo, d] = day.split("-").map((v) => Number(v));
   if ([h, m, y, mo, d].some((n) => Number.isNaN(n))) return "";
   const local = new Date(y, mo - 1, d, h, m, 0, 0);
   return local.toISOString();
@@ -146,7 +149,14 @@ function normalizeEventSpaces(payload: EventSpacesResponse | null): EventSpace[]
   return [];
 }
 
-// ─── Componente principal ────────────────────────────────────────────────
+// Secondary note under a row (schedule summary): identity from the system.
+const NOTE_STYLE: CSSProperties = {
+  margin: 0,
+  color: "var(--cocoa-label-secondary)",
+  fontSize: "var(--cocoa-fs-callout)"
+};
+
+// ─── Main component ──────────────────────────────────────────────────────
 
 export function NewEventDialog(props: {
   groupBookingId: string;
@@ -173,14 +183,9 @@ export function NewEventDialog(props: {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Carga de salas disponibles para la propiedad activa.
-  const eventSpacesState = useApiData<EventSpacesResponse>(
-    `/properties/${propertyId}/event-spaces`
-  );
-  const eventSpaces = useMemo(
-    () => normalizeEventSpaces(eventSpacesState.data),
-    [eventSpacesState.data]
-  );
+  // Rooms available in the active property.
+  const eventSpacesState = useApiData<EventSpacesResponse>(`/properties/${propertyId}/event-spaces`);
+  const eventSpaces = useMemo(() => normalizeEventSpaces(eventSpacesState.data), [eventSpacesState.data]);
 
   function update<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((f) => ({ ...f, [key]: value }));
@@ -191,33 +196,30 @@ export function NewEventDialog(props: {
     setForm((f) => ({ ...f, ...patch, eventType: next }));
   }
 
-  // Resumen humano del horario para el usuario.
+  // Human summary of the schedule.
   const scheduleSummary = useMemo(() => {
     if (!form.date || !form.startTime || !form.endTime) return null;
-    if (form.endTime <= form.startTime) {
-      return "La hora de fin debe ser posterior a la hora de inicio.";
-    }
-    return `Evento programado el ${form.date} de ${form.startTime} a ${form.endTime}.`;
+    if (form.endTime <= form.startTime) return "La hora de fin debe ser posterior a la hora de inicio.";
+    return `Evento programado el ${date(form.date, "medium")} de ${form.startTime} a ${form.endTime}.`;
   }, [form.date, form.startTime, form.endTime]);
+
+  const stay = dateRange(props.arrivalDate, props.departureDate);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
 
-    // Validaciones básicas
     if (!form.name.trim()) return setError("El nombre del evento es obligatorio.");
     if (!form.date) return setError("La fecha del evento es obligatoria.");
     if (form.date < props.arrivalDate || form.date > props.departureDate) {
-      return setError(
-        `La fecha debe estar dentro del rango del grupo (${props.arrivalDate} → ${props.departureDate}).`
-      );
+      return setError(`La fecha debe estar dentro de la estancia del grupo (${stay}).`);
     }
-    if (!form.startTime || !form.endTime) return setError("Indica hora de inicio y fin.");
+    if (!form.startTime || !form.endTime) return setError("Indica la hora de inicio y la de fin.");
     if (form.endTime <= form.startTime) return setError("La hora de fin debe ser posterior a la de inicio.");
 
     const startAt = combineDateTime(form.date, form.startTime);
     const endAt = combineDateTime(form.date, form.endTime);
-    if (!startAt || !endAt) return setError("No se pudo calcular el rango horario del evento.");
+    if (!startAt || !endAt) return setError("No se pudo calcular el horario del evento.");
 
     setSubmitting(true);
     try {
@@ -227,17 +229,11 @@ export function NewEventDialog(props: {
         eventSpaceId: form.eventSpaceId.trim() || undefined,
         startAt,
         endAt,
-        expectedAttendees:
-          typeof form.expectedAttendees === "number" && form.expectedAttendees > 0
-            ? form.expectedAttendees
-            : undefined,
+        expectedAttendees: typeof form.expectedAttendees === "number" && form.expectedAttendees > 0 ? form.expectedAttendees : undefined,
         setupStyle: form.setupStyle,
         notes: form.notes.trim() || undefined
       };
-      const created = await apiRequest<GroupEvent>(
-        `/groups/${props.groupBookingId}/events`,
-        { method: "POST", body: payload }
-      );
+      const created = await apiRequest<GroupEvent>(`/groups/${props.groupBookingId}/events`, { method: "POST", body: payload });
       props.onCreated(created);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -248,224 +244,108 @@ export function NewEventDialog(props: {
     }
   }
 
+  const spaceOptions = [
+    { value: "", label: "Sin asignar" },
+    ...eventSpaces.map((space) => ({
+      value: space.id,
+      label: `${space.name}${typeof space.capacity === "number" ? ` (aforo ${number(space.capacity)})` : ""}`
+    }))
+  ];
+
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="new-event-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(15, 23, 42, 0.55)",
-        backdropFilter: "blur(2px)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
-      onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}
+    <CocoaDrawer
+      open
+      onClose={props.onClose}
+      title="Nuevo evento"
+      subtitle={`Asociado al grupo ${props.groupName} · estancia ${stay}`}
+      side="right"
+      size="md"
+      initialFocus={() => document.getElementById(NAME_INPUT_ID)}
+      footer={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose} disabled={submitting}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" type="submit" form={FORM_ID} loading={submitting} disabled={submitting}>
+            Crear evento
+          </CocoaButton>
+        </>
+      }
     >
-      <form
-        onSubmit={submit}
-        className="bo-card"
-        style={{
-          width: "100%",
-          maxWidth: 560,
-          maxHeight: "92vh",
-          overflow: "auto",
-          background: "var(--surface-1, var(--surface))",
-          padding: "var(--space-5, 20px)",
-          borderRadius: "var(--radius-md, 12px)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12
-        }}
-      >
-        <div className="bo-card-head" style={{ marginBottom: 4 }}>
-          <div>
-            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 11, margin: 0 }}>
-              Comercial · Groups &amp; Events
-            </p>
-            <h3 id="new-event-title" style={{ margin: "2px 0 0 0" }}>Nuevo evento</h3>
-            <p className="bo-muted" style={{ margin: "2px 0 0 0", fontSize: 12 }}>
-              Asociado al grupo <strong>{props.groupName}</strong> · ventana {props.arrivalDate} → {props.departureDate}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={props.onClose}
-            aria-label="Cerrar"
-            style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "var(--ink)" }}
-          >×</button>
-        </div>
+      <form id={FORM_ID} onSubmit={submit} className="cocoa-stack" data-gap="4" noValidate>
+        <CocoaFormSection title="Identificación">
+          <CocoaField label="Nombre del evento" required fullWidth>
+            <CocoaInput id={NAME_INPUT_ID} value={form.name} onChange={(value) => update("name", value)} maxLength={160} placeholder="Cena de gala García-López" required />
+          </CocoaField>
+          <CocoaField label="Tipo de evento" required help="Ajusta el horario y el montaje por defecto según el formato.">
+            <CocoaSelect value={form.eventType} onChange={(value) => handleEventTypeChange(value as EventType)} options={EVENT_TYPE_OPTIONS} />
+          </CocoaField>
+        </CocoaFormSection>
 
-        {/* 1. Identificación */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Identificación</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, marginBottom: 12 }}>
-            <Field label="Nombre del evento *">
-              <input
-                type="text"
-                required
-                maxLength={160}
-                value={form.name}
-                onChange={(e) => update("name", e.target.value)}
-                style={inputStyle}
-                placeholder="Cena de gala García-López"
-                autoFocus
-              />
-            </Field>
-          </div>
-          <Field label="Tipo de evento *" hint="Aplica defaults inteligentes (hora, setup) según el formato.">
-            <select
-              value={form.eventType}
-              onChange={(e) => handleEventTypeChange(e.target.value as EventType)}
-              style={inputStyle}
-            >
-              <option value="welcome_cocktail">🥂 Welcome cocktail</option>
-              <option value="coffee_break">☕ Coffee break</option>
-              <option value="gala_dinner">🍽️ Gala dinner</option>
-              <option value="conference">🎤 Conference</option>
-              <option value="wedding">💍 Wedding</option>
-              <option value="other">⚙️ Other</option>
-            </select>
-          </Field>
-        </fieldset>
+        <CocoaFormSection title="Cuándo">
+          <CocoaFormRow columns={3} min={140}>
+            <CocoaField label="Fecha" required help={`Dentro de ${stay}.`}>
+              <CocoaDatePicker value={form.date} onChange={(value) => update("date", value)} min={props.arrivalDate} max={props.departureDate} required />
+            </CocoaField>
+            <CocoaField label="Hora de inicio" required>
+              <CocoaInput value={form.startTime} onChange={(value) => update("startTime", value)} type="time" required />
+            </CocoaField>
+            <CocoaField label="Hora de fin" required>
+              <CocoaInput value={form.endTime} onChange={(value) => update("endTime", value)} type="time" min={form.startTime} required />
+            </CocoaField>
+          </CocoaFormRow>
+          {scheduleSummary ? <p style={NOTE_STYLE}>{scheduleSummary}</p> : null}
+        </CocoaFormSection>
 
-        {/* 2. Cuándo */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Cuándo</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 12 }}>
-            <Field label="Fecha *" hint={`Dentro de ${props.arrivalDate} → ${props.departureDate}`}>
-              <input
-                type="date"
-                required
-                value={form.date}
-                min={props.arrivalDate}
-                max={props.departureDate}
-                onChange={(e) => update("date", e.target.value)}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Hora inicio *">
-              <input
-                type="time"
-                required
-                value={form.startTime}
-                onChange={(e) => update("startTime", e.target.value)}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Hora fin *">
-              <input
-                type="time"
-                required
-                value={form.endTime}
-                min={form.startTime}
-                onChange={(e) => update("endTime", e.target.value)}
-                style={inputStyle}
-              />
-            </Field>
-          </div>
-          {scheduleSummary ? (
-            <p className="bo-muted" style={{ margin: "8px 0 0 0", fontSize: 12 }}>
-              {scheduleSummary}
-            </p>
-          ) : null}
-        </fieldset>
-
-        {/* 3. Sala y setup */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Sala y setup</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, marginBottom: 12 }}>
-            <Field
-              label="Sala / event space"
-              hint={
-                eventSpacesState.loading
-                  ? "Cargando salas disponibles…"
-                  : eventSpaces.length === 0
-                    ? "No hay salas registradas para esta propiedad."
-                    : "Selecciona el espacio asignado al evento."
-              }
-            >
-              <select
-                value={form.eventSpaceId}
-                onChange={(e) => update("eventSpaceId", e.target.value)}
-                style={inputStyle}
-                disabled={eventSpacesState.loading}
-              >
-                <option value="">— Sin asignar —</option>
-                {eventSpaces.map((space) => (
-                  <option key={space.id} value={space.id}>
-                    {space.name}
-                    {typeof space.capacity === "number" ? ` (cap. ${space.capacity})` : ""}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Estilo de montaje *" hint="Configuración del mobiliario / disposición.">
-              <select
-                value={form.setupStyle}
-                onChange={(e) => update("setupStyle", e.target.value as SetupStyle)}
-                style={inputStyle}
-              >
-                <option value="theatre">🎭 Theatre (auditorio)</option>
-                <option value="u_shape">🇺 U-shape</option>
-                <option value="classroom">🏫 Classroom (aula)</option>
-                <option value="banquet">🍽️ Banquet (mesas redondas)</option>
-                <option value="cocktail">🥂 Cocktail (de pie)</option>
-                <option value="boardroom">⚙️ Boardroom</option>
-              </select>
-            </Field>
-            <Field label="Asistentes esperados" hint="Pax aproximados para dimensionar F&B y montaje.">
-              <input
+        <CocoaFormSection title="Sala y montaje">
+          <CocoaField
+            label="Sala"
+            help={
+              eventSpacesState.loading
+                ? "Cargando salas disponibles…"
+                : eventSpaces.length === 0
+                  ? "No hay salas registradas para esta propiedad."
+                  : "Selecciona el espacio asignado al evento."
+            }
+          >
+            <CocoaSelect value={form.eventSpaceId} onChange={(value) => update("eventSpaceId", value)} options={spaceOptions} disabled={eventSpacesState.loading} />
+          </CocoaField>
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Estilo de montaje" required help="Disposición del mobiliario.">
+              <CocoaSelect value={form.setupStyle} onChange={(value) => update("setupStyle", value as SetupStyle)} options={SETUP_STYLE_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Asistentes esperados" help="Personas aproximadas para dimensionar restauración y montaje.">
+              <CocoaInput
+                value={form.expectedAttendees === "" ? "" : String(form.expectedAttendees)}
+                onChange={(value) => update("expectedAttendees", value === "" ? "" : Number(value))}
                 type="number"
                 inputMode="numeric"
                 min={0}
                 step={1}
-                value={form.expectedAttendees}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  update("expectedAttendees", v === "" ? "" : Number(v));
-                }}
-                style={inputStyle}
                 placeholder="50"
               />
-            </Field>
-          </div>
-        </fieldset>
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        {/* 4. Notas */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Notas</legend>
-          <Field label="Observaciones internas">
-            <textarea
+        <CocoaFormSection title="Notas">
+          <CocoaField label="Observaciones internas" fullWidth>
+            <CocoaInput
               value={form.notes}
-              onChange={(e) => update("notes", e.target.value)}
-              style={{ ...inputStyle, minHeight: 70, resize: "vertical" }}
-              placeholder="Alergias, AV / streaming, decoración, accesos VIP, timings, etc."
+              onChange={(value) => update("notes", value)}
+              multiline
+              rows={3}
+              placeholder="Alergias, audiovisuales, decoración, accesos VIP, horarios…"
             />
-          </Field>
-        </fieldset>
+          </CocoaField>
+        </CocoaFormSection>
 
         {error ? (
-          <p className="bo-status error" style={{ textTransform: "none", margin: 0 }}>{error}</p>
+          <CocoaCallout tone="danger" title={error} role="alert">
+            {null}
+          </CocoaCallout>
         ) : null}
-
-        <div className="bo-row" style={{ gap: 8, justifyContent: "space-between", marginTop: 4 }}>
-          <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>* Campos obligatorios</p>
-          <div className="bo-row" style={{ gap: 8 }}>
-            <button type="button" onClick={props.onClose} disabled={submitting}>Cancelar</button>
-            <button type="submit" className="primary" disabled={submitting}>
-              {submitting ? "Creando…" : "Crear evento"}
-            </button>
-          </div>
-        </div>
       </form>
-    </div>
+    </CocoaDrawer>
   );
 }

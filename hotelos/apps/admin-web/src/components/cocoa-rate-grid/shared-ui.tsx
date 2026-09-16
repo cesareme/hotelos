@@ -16,6 +16,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { CocoaButton } from "../cocoa/CocoaButton";
+import { XmarkIcon } from "../cocoa-icons/ActionIcons";
 import { WEEKDAY_LABELS, placePopover } from "./helpers";
 import type { TriState } from "./types";
 
@@ -120,9 +122,8 @@ export function RateGridSidePanel({ open, title, subtitle, children, footer, onC
           </h2>
           {subtitle ? <p className="crg-sheet__subtitle">{subtitle}</p> : null}
         </div>
-        <button type="button" className="crg-sheet__close" aria-label="Cerrar" onClick={onClose}>
-          ✕
-        </button>
+        {/* `crg-sheet__close` is only the marker the initial-focus logic above skips. */}
+        <CocoaButton variant="plain" size="small" tone="neutral" className="crg-sheet__close" aria-label="Cerrar" icon={<XmarkIcon size={14} />} onClick={onClose} />
       </div>
       <div className="crg-sheet__body">{children}</div>
       {footer ? <div className="crg-sheet__foot">{footer}</div> : null}

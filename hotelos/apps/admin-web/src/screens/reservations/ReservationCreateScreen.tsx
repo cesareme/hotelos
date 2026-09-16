@@ -1,6 +1,20 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+// Nueva reserva — Recepción › Nueva reserva › Formulario (/recepcion/reservas/nueva).
+//
+// Cocoa 22 · ola 3 · lote 3-A (wizard archetype, template `Asistente`; there is
+// no step primitive yet, so the indicator is CocoaChart.Progress + an
+// `ol.c22-section__list` with CocoaBadge dots — handoff CocoaSteps): the six
+// blocks of the booking form (Estancia · Huéspedes · Tarifa · Origen · Pagos ·
+// Solicitudes) become six steps, one CocoaFormSection group per step, with
+// Anterior / Siguiente in a CocoaActionBar and «Confirmar y crear reserva» on
+// the last one. Every field keeps its key and the request body is the same
+// createReservation payload as before (nothing is sent until the last step);
+// the availability quote, the OCR scan (CocoaFileInput) and the companions
+// list are untouched. On success the page paints `state="empty"` with the
+// success illustration and the two follow-up actions. Hosted inside
+// NuevaReservaTabs the container paints the title.
+
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { getActivePropertyId } from "../../services/activeProperty";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { fetchConfigurationCategories, type ConfigurationCategoryGroup } from "../../services/backofficeApi";
 import {
@@ -16,16 +30,34 @@ import {
 } from "../../services/pmsCommerceApi";
 import { useToast } from "../../components/Toast";
 import { logBreadcrumb } from "../../lib/breadcrumb";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaInput } from "../../components/cocoa/CocoaInput";
-import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaStepper } from "../../components/cocoa/CocoaStepper";
-import { CocoaDatePicker } from "../../components/cocoa/CocoaDatePicker";
-import { CocoaSwitch } from "../../components/cocoa/CocoaSwitch";
-import { CocoaFormFieldset } from "../../components/cocoa-extras/CocoaFormFieldset";
 import { useTabHost } from "../tabs/TabHost";
+import { navigateTo } from "../../lib/navigate";
 import { money, plural } from "../../lib/format";
+import { ACTIONS, FIELD_LABELS } from "../../content/actions";
+import {
+  CocoaActionBar,
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaCard,
+  CocoaChart,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaFileInput,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaGrid,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSpan,
+  CocoaStat,
+  CocoaStepper,
+  CocoaSwitch,
+  openTabPath,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -34,7 +66,7 @@ const TOMORROW_ISO = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().sl
 
 // Companion guest — accompanying guests linked to the primary reservation. The
 // titular fills in their own data in the main form; companions are added
-// dynamically (add/remove) inside the Huéspedes fieldset.
+// dynamically (add/remove) inside the Huéspedes step.
 type CompanionGuest = {
   id: string;
   firstName: string;
@@ -58,6 +90,8 @@ function newCompanion(type: CompanionGuest["type"] = "adult"): CompanionGuest {
     type
   };
 }
+
+const COMPANION_TYPE_LABEL: Record<CompanionGuest["type"], string> = { adult: "Adulto", child: "Niño", infant: "Bebé" };
 
 const defaultForm = {
   // ── Estancia ───────────────────────────────────────────────────────────
@@ -140,6 +174,8 @@ const defaultForm = {
   notes: ""
 };
 
+type FormValues = typeof defaultForm;
+
 const DOCUMENT_TYPE_OPTIONS = [
   { value: "DNI", label: "DNI" },
   { value: "NIE", label: "NIE" },
@@ -193,43 +229,40 @@ const LANGUAGE_OPTIONS = [
 ];
 
 // Booking source — high-level provenance of the reservation (origin channel).
-// Mews "BookingSource" + Opera "Source" + Cloudbeds "Source of business".
 const BOOKING_SOURCE_OPTIONS = [
-  { value: "direct", label: "Direct (web/email)" },
+  { value: "direct", label: "Directo (web / correo)" },
   { value: "phone", label: "Teléfono" },
   { value: "email", label: "Correo electrónico" },
   { value: "walk_in", label: "Walk-in" },
   { value: "booking_com", label: "Booking.com" },
   { value: "expedia", label: "Expedia" },
   { value: "airbnb", label: "Airbnb" },
-  { value: "wholesale", label: "Wholesale / TTOO" },
+  { value: "wholesale", label: "Mayorista / TTOO" },
   { value: "gds", label: "GDS" },
-  { value: "corporate", label: "Corporate" }
+  { value: "corporate", label: "Corporativo" }
 ];
 
-// Market segment — extended to include MICE, wedding and sports segments
-// commonly tracked by Opera/Cloudbeds for revenue analysis.
+// Market segment — MICE, weddings and sports segments included for revenue analysis.
 const MARKET_SEGMENT_OPTIONS = [
-  { value: "corporate", label: "Corporate" },
-  { value: "leisure", label: "Leisure" },
-  { value: "mice", label: "MICE / Conventions" },
-  { value: "wedding", label: "Wedding" },
-  { value: "sports", label: "Sports" },
-  { value: "group", label: "Group" },
-  { value: "government", label: "Government" },
-  { value: "wholesale", label: "Wholesale" },
-  { value: "complimentary", label: "Complimentary" }
+  { value: "corporate", label: "Corporativo" },
+  { value: "leisure", label: "Ocio" },
+  { value: "mice", label: "MICE / Convenciones" },
+  { value: "wedding", label: "Bodas" },
+  { value: "sports", label: "Deportes" },
+  { value: "group", label: "Grupos" },
+  { value: "government", label: "Administración pública" },
+  { value: "wholesale", label: "Mayorista" },
+  { value: "complimentary", label: "Cortesía" }
 ];
 
-// Payment methods — Mews "PaymentMethod" + Opera "Payment Type".
 const PAYMENT_METHOD_OPTIONS = [
-  { value: "cash", label: "Cash" },
-  { value: "credit_card", label: "Credit card" },
-  { value: "debit_card", label: "Debit card" },
-  { value: "bank_transfer", label: "Bank transfer" },
-  { value: "voucher", label: "Voucher / Gift card" },
-  { value: "company_invoice", label: "Company invoice" },
-  { value: "online_prepaid", label: "Online prepaid (OTA)" },
+  { value: "cash", label: "Efectivo" },
+  { value: "credit_card", label: "Tarjeta de crédito" },
+  { value: "debit_card", label: "Tarjeta de débito" },
+  { value: "bank_transfer", label: "Transferencia bancaria" },
+  { value: "voucher", label: "Bono / tarjeta regalo" },
+  { value: "company_invoice", label: "Factura a empresa" },
+  { value: "online_prepaid", label: "Prepago en línea (OTA)" },
   { value: "pms_account", label: "Cuenta PMS / facturación directa" }
 ];
 
@@ -241,9 +274,21 @@ const CHANNEL_OPTIONS = [
 ];
 
 const RATE_PLAN_OPTIONS = [
+  { value: "", label: "Sin plan tarifario" },
   { value: "rp_flexible", label: "Flexible BAR" },
-  { value: "rp_nonref", label: "Non-refundable" },
-  { value: "rp_breakfast", label: "Breakfast included" }
+  { value: "rp_nonref", label: "No reembolsable" },
+  { value: "rp_breakfast", label: "Desayuno incluido" }
+];
+
+// Steps of the wizard: one CocoaFormSection group each.
+type StepKey = "estancia" | "huespedes" | "tarifa" | "origen" | "pagos" | "solicitudes";
+const STEPS: Array<{ key: StepKey; label: string; description: string }> = [
+  { key: "estancia", label: "Estancia", description: "Fechas, ocupación, tipo de habitación y asignación opcional." },
+  { key: "huespedes", label: "Huéspedes", description: "Titular, identidad y residencia (SES Hospedajes) y acompañantes." },
+  { key: "tarifa", label: "Tarifa", description: "Plan tarifario, régimen, total y desglose de IVA." },
+  { key: "origen", label: "Origen", description: "Canal, fuente, segmento de mercado y referencias comerciales." },
+  { key: "pagos", label: "Pagos", description: "Método de pago, garantía, depósito y políticas comerciales." },
+  { key: "solicitudes", label: "Solicitudes", description: "Peticiones especiales, accesibilidad, dieta y notas internas." }
 ];
 
 function categoryOptions(groups: ConfigurationCategoryGroup[], categoryCode: string) {
@@ -254,75 +299,33 @@ function categoryOptions(groups: ConfigurationCategoryGroup[], categoryCode: str
     .map((option) => ({ value: option.code, label: option.label })) ?? [];
 }
 
-function updateField(setForm: Dispatch<SetStateAction<typeof defaultForm>>, key: keyof typeof defaultForm, value: string) {
+function updateField(setForm: Dispatch<SetStateAction<FormValues>>, key: keyof FormValues, value: string) {
   setForm((current) => ({ ...current, [key]: value }));
 }
 
-// Re-usable label wrapper for a Cocoa form row. We keep a thin wrapper so spacing
-// remains consistent without re-implementing every input's chrome.
-// A11y (audit 2026-06 · #14): scroll to + focus the first invalid required
-// field so the error is never off-screen. The label wraps its control, so we
-// find the input/select inside the field's container by id.
-function focusInvalidField(id: string) {
+// A11y (audit 2026-06 · #14): focus the first invalid required field after
+// the wizard has switched to its step, so the error is never off-screen.
+function focusField(id: string) {
   if (typeof document === "undefined") return;
-  const el = document.getElementById(id);
-  if (!el) return;
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
-  const control = el.querySelector("select, input, textarea") as HTMLElement | null;
-  control?.focus({ preventScroll: true });
+  window.requestAnimationFrame(() => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.focus({ preventScroll: true });
+  });
 }
 
-function FieldRow({ label, required, hint, children, id }: { label: string; required?: boolean; hint?: string; children: React.ReactNode; id?: string }) {
-  return (
-    <label
-      id={id}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: "var(--cocoa-space-1)",
-        fontFamily: "var(--cocoa-font)",
-        fontSize: "var(--cocoa-fs-body)",
-        color: "var(--cocoa-label)"
-      }}
-    >
-      <span style={{ fontSize: "var(--cocoa-fs-subheadline)", color: "var(--cocoa-label-secondary)" }}>
-        {label}
-        {required ? (
-          <span style={{ color: "var(--cocoa-danger)", marginLeft: "var(--cocoa-space-1)" }}>*</span>
-        ) : null}
-      </span>
-      {children}
-      {hint ? (
-        <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-tertiary)" }}>{hint}</span>
-      ) : null}
-    </label>
-  );
+// Stepper to string bridge: the form keeps the counts as strings (existing API
+// contract), so Cocoa's numeric stepper is parsed at the boundary.
+function parseStepper(raw: string, fallback: number) {
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
-
-// Standard three-column responsive grid used inside each fieldset.
-const gridThreeStyle: React.CSSProperties = {
-  display: "grid",
-  gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-  gap: "var(--cocoa-space-3)"
-};
-
-const actionsRowStyle: React.CSSProperties = {
-  display: "flex",
-  flexWrap: "wrap",
-  gap: "var(--cocoa-space-2)",
-  marginTop: "var(--cocoa-space-3)"
-};
-
-const sectionStackStyle: React.CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "var(--cocoa-space-5)"
-};
 
 export function ReservationCreateScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
-  const [form, setForm] = useState(defaultForm);
+  const [form, setForm] = useState<FormValues>(defaultForm);
   const [companions, setCompanions] = useState<CompanionGuest[]>([]);
   const [roomTypes, setRoomTypes] = useState<AdminRoomType[]>([]);
   const [rooms, setRooms] = useState<AdminRoom[]>([]);
@@ -330,18 +333,20 @@ export function ReservationCreateScreen() {
   const [quotes, setQuotes] = useState<AvailabilityQuote[]>([]);
   const [createdReservation, setCreatedReservation] = useState<AdminReservation | null>(null);
   const [status, setStatus] = useState("Listo para consultar disponibilidad y crear una reserva.");
+  const [step, setStep] = useState(0);
+  const [quoting, setQuoting] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [attempted, setAttempted] = useState(false);
 
   useEffect(() => {
     // Auditoría 2026-07: cargas INDEPENDIENTES. Antes un Promise.all descartaba
-    // los tipos de habitación reales si fallaba la llamada de categorías, y el
-    // selector caía a un mock hardcodeado ("Double"/rt_double) → reservas con
-    // roomTypeId inexistente.
+    // los tipos de habitación reales si fallaba la llamada de categorías.
     void fetchRoomTypes(PROPERTY_ID)
       .then(setRoomTypes)
       .catch(() => setStatus("No se pudieron cargar los tipos de habitación. Reintenta."));
     void fetchConfigurationCategories(PROPERTY_ID)
       .then((categoryResponse) => setCategoryGroups(categoryResponse.groups))
-      .catch(() => undefined); // opcional: los selects usan sus defaults locales
+      .catch(() => undefined); // opcional: los selects usan sus valores locales
     void fetchRooms(PROPERTY_ID).then(setRooms).catch(() => setRooms([]));
   }, []);
 
@@ -351,37 +356,22 @@ export function ReservationCreateScreen() {
   const cancellationOptions = useMemo(() => categoryOptions(categoryGroups, "cancellation_policies"), [categoryGroups]);
   const billingOptions = useMemo(() => categoryOptions(categoryGroups, "billing_instruction_types"), [categoryGroups]);
 
-  // Build the live select options for each select that supports a backend
-  // category override. We always supply at least one option to keep the select
-  // legible when the API is empty.
-  const roomTypeOptions = useMemo(
-    () =>
-      roomTypes.length
-        ? roomTypes.map((roomType) => ({ value: roomType.id, label: roomType.name }))
-        : // Auditoría 2026-07: sin mock "Double"/rt_double — un placeholder
-          // deshabilitado honesto en vez de un id inexistente que rompe el alta.
-          [{ value: "", label: "Sin tipos de habitación — configúralos primero" }],
-    [roomTypes]
-  );
+  // Auditoría 2026-07: sin tipos de habitación no hay opción inventada; el
+  // selector queda vacío con su placeholder y el alta se bloquea.
+  const roomTypeOptions = useMemo(() => roomTypes.map((roomType) => ({ value: roomType.id, label: roomType.name })), [roomTypes]);
 
   // Rooms that match the selected room type (for optional assignment at booking).
-  const assignableRooms = useMemo(
-    () => rooms.filter((room) => !form.roomTypeId || room.roomTypeId === form.roomTypeId),
+  const assignableRoomOptions = useMemo(
+    () => [
+      { value: "", label: "Sin asignar (se asigna en el check-in)" },
+      ...rooms
+        .filter((room) => !form.roomTypeId || room.roomTypeId === form.roomTypeId)
+        .map((room) => ({ value: room.id, label: `${room.number}${room.floor ? ` · ${room.floor}` : ""}` }))
+    ],
     [rooms, form.roomTypeId]
   );
 
-  const assignableRoomOptions = useMemo(
-    () => [
-      { value: "", label: "Sin asignar (se asigna en check-in)" },
-      ...assignableRooms.map((room) => ({
-        value: room.id,
-        label: `${room.number}${room.floor ? ` · ${room.floor}` : ""}`
-      }))
-    ],
-    [assignableRooms]
-  );
-
-  // Calculate nights count from arrival/departure for live display.
+  // Nights from arrival/departure for live display.
   const nightsCount = useMemo(() => {
     if (!form.arrivalDate || !form.departureDate) return 0;
     const a = new Date(`${form.arrivalDate}T00:00:00`);
@@ -390,30 +380,27 @@ export function ReservationCreateScreen() {
     return Math.max(0, diff);
   }, [form.arrivalDate, form.departureDate]);
 
-  // Live taxes preview (IVA reducido 10% for hospedaje en España).
+  // Live taxes preview (IVA reducido 10 % for hospedaje en España).
   const taxesPreview = useMemo(() => {
     const total = Number(form.totalAmount) || 0;
-    const base = total / 1.1;
-    const tax = total - base;
-    return { base: base.toFixed(2), tax: tax.toFixed(2) };
+    const base = Math.round((total / 1.1) * 100) / 100;
+    const tax = Math.round((total - base) * 100) / 100;
+    return { base, tax, total };
   }, [form.totalAmount]);
 
   function updateCompanion(id: string, key: keyof Omit<CompanionGuest, "id">, value: string) {
-    setCompanions((current) =>
-      current.map((c) => (c.id === id ? { ...c, [key]: value } : c))
-    );
+    setCompanions((current) => current.map((c) => (c.id === id ? { ...c, [key]: value } : c)));
   }
-
   function addCompanion(type: CompanionGuest["type"]) {
     setCompanions((current) => [...current, newCompanion(type)]);
   }
-
   function removeCompanion(id: string) {
     setCompanions((current) => current.filter((c) => c.id !== id));
   }
 
   async function handleQuote() {
-    setStatus("Consultando disponibilidad...");
+    setQuoting(true);
+    setStatus("Consultando disponibilidad…");
     logBreadcrumb("reservation.quote", "ui", {
       arrivalDate: form.arrivalDate,
       departureDate: form.departureDate,
@@ -430,47 +417,44 @@ export function ReservationCreateScreen() {
       setQuotes(response);
       const firstAvailable = response.find((quote) => quote.availableRooms > 0);
       if (firstAvailable) {
-        setForm((current) => ({
-          ...current,
-          roomTypeId: firstAvailable.roomTypeId,
-          totalAmount: String(firstAvailable.totalAmount)
-        }));
+        setForm((current) => ({ ...current, roomTypeId: firstAvailable.roomTypeId, totalAmount: String(firstAvailable.totalAmount) }));
       }
       setStatus("Disponibilidad consultada. Revisa tarifa, categorías y datos del huésped antes de confirmar.");
-      showToast(
-        firstAvailable
-          ? `Disponibilidad consultada · ${response.length} tipos de habitación`
-          : "Sin disponibilidad para esas fechas",
-        { variant: firstAvailable ? "success" : "info" }
-      );
+      showToast(firstAvailable ? `Disponibilidad consultada · ${plural(response.length, "tipo de habitación", "tipos de habitación")}` : "Sin disponibilidad para esas fechas", {
+        variant: firstAvailable ? "success" : "info"
+      });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "No se pudo consultar disponibilidad.";
+      const message = error instanceof Error ? error.message : "No se pudo consultar la disponibilidad.";
       setStatus(message);
       showToast(message, { variant: "error" });
+    } finally {
+      setQuoting(false);
     }
   }
 
   async function handleCreate() {
-    // Required-field guard. Defaults are now intentionally blank (no demo guest
-    // pre-filled), so block submitting without a room type (would 500 on the FK)
-    // or without a guest name (would create a nameless reservation).
+    // Required-field guard. Defaults are blank on purpose (no demo guest
+    // pre-filled): block without a room type (500 on the FK) or a guest name.
+    setAttempted(true);
     if (!form.roomTypeId) {
       const message = "Selecciona un tipo de habitación antes de crear la reserva.";
       setStatus(message);
       showToast(message, { variant: "error" });
-      focusInvalidField("rc-field-roomtype");
+      setStep(0);
+      focusField("rc-field-roomtype");
       return;
     }
     if (!form.firstName.trim() || !form.surname1.trim()) {
       const message = "Indica al menos el nombre y el primer apellido del huésped.";
       setStatus(message);
       showToast(message, { variant: "error" });
-      focusInvalidField(!form.firstName.trim() ? "rc-field-firstname" : "rc-field-surname1");
+      setStep(1);
+      focusField(!form.firstName.trim() ? "rc-field-firstname" : "rc-field-surname1");
       return;
     }
-    setStatus("Creando reserva y abriendo folio...");
-    // PII-safe: no incluimos nombre, email ni documento. Solo datos
-    // operacionales que ayudan a diagnosticar errores de creación.
+    setCreating(true);
+    setStatus("Creando reserva y abriendo folio…");
+    // PII-safe: no name, email or document; only operational data.
     logBreadcrumb("reservation.create.attempt", "mutation", {
       channel: form.channel,
       bookingSource: form.bookingSource,
@@ -518,8 +502,8 @@ export function ReservationCreateScreen() {
         ratePlanId: form.ratePlanId || undefined,
         boardType: form.boardType || undefined,
         totalAmount: Number(form.totalAmount),
-        baseAmount: Number(taxesPreview.base),
-        taxAmount: Number(taxesPreview.tax),
+        baseAmount: taxesPreview.base,
+        taxAmount: taxesPreview.tax,
         currency: "EUR",
         // Origen (commercial provenance)
         bookingSource: form.bookingSource,
@@ -603,19 +587,20 @@ export function ReservationCreateScreen() {
       const message = error instanceof Error ? error.message : "No se pudo crear la reserva.";
       setStatus(message);
       showToast(message, { variant: "error" });
+    } finally {
+      setCreating(false);
     }
   }
 
-  function handleScanFile(file: File | undefined) {
-    if (!file) return;
-    setStatus("Escaneando documento con IA…");
+  function handleScanFile(file: File) {
+    setStatus("Leyendo el documento con IA…");
     const reader = new FileReader();
     reader.onload = () => {
       void (async () => {
         try {
           const result = await scanIdDocument(String(reader.result));
           if (!result.configured) {
-            setStatus(result.message ?? "OCR no configurado; introduce los datos manualmente.");
+            setStatus(result.message ?? "Lectura de documentos no configurada; introduce los datos manualmente.");
             return;
           }
           const f = result.fields;
@@ -633,841 +618,525 @@ export function ReservationCreateScreen() {
           }));
           setStatus("Documento leído por IA. Revisa los datos antes de confirmar.");
         } catch (error) {
-          setStatus(error instanceof Error ? error.message : "No se pudo escanear el documento.");
+          setStatus(error instanceof Error ? error.message : "No se pudo leer el documento.");
         }
       })();
     };
     reader.readAsDataURL(file);
   }
 
-  // Convenience parsers for stepper -> string sync. The default form keeps the
-  // adults/children/infants/rooms count as strings (existing API contract), so we
-  // bridge Cocoa's numeric stepper through Number()/String() at the boundary.
-  const parseStepper = (raw: string, fallback: number) => {
-    const n = Number(raw);
-    return Number.isFinite(n) && n >= 0 ? n : fallback;
-  };
+  const set = (key: keyof FormValues) => (value: string) => updateField(setForm, key, value);
+  const last = step === STEPS.length - 1;
+  const current = STEPS[step];
+  const roomTypeError = attempted && !form.roomTypeId ? "Selecciona un tipo de habitación." : undefined;
+  const firstNameError = attempted && !form.firstName.trim() ? "El nombre es obligatorio." : undefined;
+  const surnameError = attempted && !form.surname1.trim() ? "El primer apellido es obligatorio." : undefined;
+
+  function stepTone(index: number): CocoaTone {
+    return index < step ? "success" : index === step ? "accent" : "neutral";
+  }
+
+  function openCreated() {
+    if (!createdReservation) return;
+    openTabPath(urlForScreen("ReservationDetailWorkspace", { id: createdReservation.id }) ?? "/recepcion/reservas");
+  }
+
+  const stepSummary = `Paso ${step + 1} de ${STEPS.length} · ${money(taxesPreview.total)} · ${plural(nightsCount, "noche", "noches")}`;
+
+  function renderStep() {
+    switch (current.key) {
+      case "estancia":
+        return (
+          <CocoaFormSection
+            title="Estancia"
+            description={`Fechas, ocupación, tipo de habitación y asignación opcional · ${plural(nightsCount, "noche", "noches")}`}
+            actions={
+              <>
+                <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("CategoryManagerScreen")}>
+                  Configurar categorías
+                </CocoaButton>
+                <CocoaButton variant="filled" tone="accent" size="small" loading={quoting} disabled={quoting} onClick={() => void handleQuote()}>
+                  Consultar disponibilidad
+                </CocoaButton>
+              </>
+            }
+          >
+            <CocoaFormRow columns={3} min={220}>
+              <CocoaField label="Fecha de llegada" required>
+                <CocoaDatePicker value={form.arrivalDate} onChange={set("arrivalDate")} />
+              </CocoaField>
+              <CocoaField label="Fecha de salida" required>
+                <CocoaDatePicker value={form.departureDate} onChange={set("departureDate")} />
+              </CocoaField>
+              <CocoaField label="Noches" help="Calculadas desde las fechas.">
+                <CocoaInput value={String(nightsCount)} onChange={() => undefined} readOnly />
+              </CocoaField>
+              <CocoaField label={FIELD_LABELS.roomType} required error={roomTypeError} help={roomTypes.length === 0 ? "Sin tipos de habitación: configúralos primero." : undefined}>
+                <CocoaSelect id="rc-field-roomtype" value={form.roomTypeId} onChange={set("roomTypeId")} options={roomTypeOptions} placeholder="Selecciona un tipo…" />
+              </CocoaField>
+              <CocoaField label="Habitación asignada" hint="opcional" help="Puede dejarse vacía y asignarse en el check-in.">
+                <CocoaSelect value={form.assignedRoomId} onChange={set("assignedRoomId")} options={assignableRoomOptions} />
+              </CocoaField>
+              <CocoaField label="Número de habitaciones">
+                <CocoaStepper value={parseStepper(form.roomsCount, 1)} onChange={(n) => updateField(setForm, "roomsCount", String(n))} min={1} />
+              </CocoaField>
+              <CocoaField label="Adultos">
+                <CocoaStepper value={parseStepper(form.adults, 1)} onChange={(n) => updateField(setForm, "adults", String(n))} min={1} />
+              </CocoaField>
+              <CocoaField label="Niños">
+                <CocoaStepper value={parseStepper(form.children, 0)} onChange={(n) => updateField(setForm, "children", String(n))} min={0} />
+              </CocoaField>
+              <CocoaField label="Bebés">
+                <CocoaStepper value={parseStepper(form.infants, 0)} onChange={(n) => updateField(setForm, "infants", String(n))} min={0} />
+              </CocoaField>
+              <CocoaField label="Hora prevista de llegada">
+                <CocoaInput value={form.eta} onChange={set("eta")} type="time" />
+              </CocoaField>
+              <CocoaField label="Hora prevista de salida">
+                <CocoaInput value={form.etd} onChange={set("etd")} type="time" />
+              </CocoaField>
+            </CocoaFormRow>
+
+            {quotes.length > 0 ? (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "var(--cocoa-space-3)" }}>
+                {quotes.map((quote) => {
+                  const selected = form.roomTypeId === quote.roomTypeId;
+                  return (
+                    <CocoaCard key={quote.roomTypeId} variant="bordered" padding="md" role="group" aria-label={quote.roomTypeName}>
+                      <div className="cocoa-stack" data-gap="2">
+                        <span className="cocoa-row" data-gap="2" data-justify="between">
+                          <strong>{quote.roomTypeName}</strong>
+                          <CocoaBadge tone={quote.availableRooms > 0 ? "success" : "danger"} size="small">
+                            {plural(quote.availableRooms, "disponible", "disponibles")}
+                          </CocoaBadge>
+                        </span>
+                        <CocoaStat label="Total de la estancia" value={money(quote.totalAmount, quote.currency)} hint={quote.cancellationPolicy} />
+                        <div className="cocoa-row" data-gap="2">
+                          <CocoaButton
+                            variant={selected ? "filled" : "tinted"}
+                            tone="accent"
+                            size="small"
+                            aria-pressed={selected}
+                            onClick={() => setForm((c) => ({ ...c, roomTypeId: quote.roomTypeId, totalAmount: String(quote.totalAmount) }))}
+                          >
+                            {selected ? "Tipo seleccionado" : "Seleccionar este tipo"}
+                          </CocoaButton>
+                        </div>
+                      </div>
+                    </CocoaCard>
+                  );
+                })}
+              </div>
+            ) : null}
+          </CocoaFormSection>
+        );
+
+      case "huespedes":
+        return (
+          <div className="cocoa-stack" data-gap="4">
+            <CocoaFormSection
+              title="Titular de la reserva"
+              description="La IA rellena los campos a partir del documento para que los revises. Nada se guarda sin tu confirmación."
+              actions={<CocoaFileInput label="Escanear documento (IA)" accept="image/*" onPick={handleScanFile} onReject={(message) => setStatus(message)} />}
+            >
+              <CocoaFormRow columns={3} min={220}>
+                <CocoaField label="Tratamiento">
+                  <CocoaSelect value={form.title} onChange={set("title")} options={TITLE_OPTIONS} />
+                </CocoaField>
+                <CocoaField label="Nombre" required error={firstNameError}>
+                  <CocoaInput id="rc-field-firstname" value={form.firstName} onChange={set("firstName")} autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Segundo nombre">
+                  <CocoaInput value={form.middleName} onChange={set("middleName")} autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Primer apellido" required error={surnameError}>
+                  <CocoaInput id="rc-field-surname1" value={form.surname1} onChange={set("surname1")} autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Segundo apellido">
+                  <CocoaInput value={form.surname2} onChange={set("surname2")} autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Idioma preferido">
+                  <CocoaSelect value={form.languagePreference} onChange={set("languagePreference")} options={LANGUAGE_OPTIONS} />
+                </CocoaField>
+                <CocoaField label={FIELD_LABELS.email}>
+                  <CocoaInput value={form.email} onChange={set("email")} type="email" autoComplete="off" />
+                </CocoaField>
+                <CocoaField label={FIELD_LABELS.phone}>
+                  <CocoaInput value={form.phone} onChange={set("phone")} type="tel" autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Móvil">
+                  <CocoaInput value={form.mobilePhone} onChange={set("mobilePhone")} type="tel" autoComplete="off" />
+                </CocoaField>
+              </CocoaFormRow>
+            </CocoaFormSection>
+
+            <CocoaFormSection title="Identidad y residencia" description="Datos del parte de viajeros (SES Hospedajes, RD 933/2021). Opcionales al reservar; se completan en el check-in.">
+              <CocoaFormRow columns={3} min={220}>
+                <CocoaField label="Tipo de documento">
+                  <CocoaSelect value={form.documentType} onChange={set("documentType")} options={DOCUMENT_TYPE_OPTIONS} />
+                </CocoaField>
+                <CocoaField label="Número de documento">
+                  <CocoaInput value={form.documentNumber} onChange={set("documentNumber")} placeholder="12345678Z" autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Número de soporte">
+                  <CocoaInput value={form.documentSupportNumber} onChange={set("documentSupportNumber")} placeholder="ABC123456" autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Fecha de nacimiento">
+                  <CocoaDatePicker value={form.dateOfBirth} onChange={set("dateOfBirth")} />
+                </CocoaField>
+                <CocoaField label="Nacionalidad" help="Código ISO de tres letras.">
+                  <CocoaInput value={form.nationality} onChange={set("nationality")} placeholder="ESP" maxLength={3} />
+                </CocoaField>
+                <CocoaField label="Sexo">
+                  <CocoaSelect value={form.sex} onChange={set("sex")} options={SEX_OPTIONS} />
+                </CocoaField>
+                <CocoaField label="País de expedición">
+                  <CocoaInput value={form.documentIssueCountry} onChange={set("documentIssueCountry")} placeholder="ESP" maxLength={3} />
+                </CocoaField>
+                <CocoaField label="Caducidad del documento">
+                  <CocoaDatePicker value={form.documentExpiryDate} onChange={set("documentExpiryDate")} />
+                </CocoaField>
+                <CocoaField label="Dirección de residencia">
+                  <CocoaInput value={form.residenceAddress} onChange={set("residenceAddress")} placeholder="Calle, número, piso" autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Localidad">
+                  <CocoaInput value={form.residenceLocality} onChange={set("residenceLocality")} placeholder="Madrid" autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Provincia">
+                  <CocoaInput value={form.residenceProvince} onChange={set("residenceProvince")} placeholder="Madrid" autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Código postal">
+                  <CocoaInput value={form.residencePostalCode} onChange={set("residencePostalCode")} placeholder="28001" autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="País de residencia">
+                  <CocoaInput value={form.residenceCountry} onChange={set("residenceCountry")} placeholder="España" autoComplete="off" />
+                </CocoaField>
+              </CocoaFormRow>
+            </CocoaFormSection>
+
+            <CocoaFormSection title="Datos comerciales del titular">
+              <CocoaFormRow columns={3} min={220}>
+                <CocoaField label="Empresa del huésped">
+                  <CocoaInput value={form.guestCompany} onChange={set("guestCompany")} autoComplete="off" />
+                </CocoaField>
+                <CocoaField label="Código VIP">
+                  <CocoaInput value={form.vipCode} onChange={set("vipCode")} placeholder="VIP1 / VVIP…" />
+                </CocoaField>
+                <CocoaField label="Programa de fidelización">
+                  <CocoaInput value={form.loyaltyProgram} onChange={set("loyaltyProgram")} />
+                </CocoaField>
+                <CocoaField label="Número de socio">
+                  <CocoaInput value={form.loyaltyNumber} onChange={set("loyaltyNumber")} />
+                </CocoaField>
+                <CocoaField label="Nivel del programa">
+                  <CocoaInput value={form.loyaltyTier} onChange={set("loyaltyTier")} placeholder="Silver / Gold…" />
+                </CocoaField>
+              </CocoaFormRow>
+            </CocoaFormSection>
+
+            <CocoaFormSection
+              title="Acompañantes"
+              description={`${plural(companions.length, "acompañante", "acompañantes")} · adultos ${form.adults} · niños ${form.children} · bebés ${form.infants}`}
+              actions={
+                <>
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => addCompanion("adult")}>
+                    {ACTIONS.add} adulto
+                  </CocoaButton>
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => addCompanion("child")}>
+                    {ACTIONS.add} niño
+                  </CocoaButton>
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => addCompanion("infant")}>
+                    {ACTIONS.add} bebé
+                  </CocoaButton>
+                </>
+              }
+            >
+              <CocoaFormRow columns={3} min={220}>
+                <CocoaField label="Edades de los niños" help="Separadas por comas. Las piden algunos canales y tarifas familiares.">
+                  <CocoaInput value={form.childrenAges} onChange={set("childrenAges")} placeholder="p. ej. 5, 8" />
+                </CocoaField>
+              </CocoaFormRow>
+              {companions.map((c, index) => (
+                <CocoaSection
+                  key={c.id}
+                  title={`Acompañante ${index + 1}: ${c.firstName || "sin nombre"} ${c.surname1}`.trim()}
+                  meta={<CocoaBadge tone="neutral">{COMPANION_TYPE_LABEL[c.type]}</CocoaBadge>}
+                  action={
+                    <CocoaButton variant="plain" tone="destructive" size="small" onClick={() => removeCompanion(c.id)}>
+                      {ACTIONS.remove}
+                    </CocoaButton>
+                  }
+                >
+                  <CocoaFormRow columns={3} min={200}>
+                    <CocoaField label="Nombre">
+                      <CocoaInput value={c.firstName} onChange={(v) => updateCompanion(c.id, "firstName", v)} autoComplete="off" />
+                    </CocoaField>
+                    <CocoaField label="Apellido">
+                      <CocoaInput value={c.surname1} onChange={(v) => updateCompanion(c.id, "surname1", v)} autoComplete="off" />
+                    </CocoaField>
+                    <CocoaField label="Fecha de nacimiento">
+                      <CocoaDatePicker value={c.dateOfBirth} onChange={(v) => updateCompanion(c.id, "dateOfBirth", v)} />
+                    </CocoaField>
+                    <CocoaField label="Tipo de documento">
+                      <CocoaSelect value={c.documentType} onChange={(v) => updateCompanion(c.id, "documentType", v)} options={DOCUMENT_TYPE_OPTIONS} />
+                    </CocoaField>
+                    <CocoaField label="Número de documento" help="Solo necesario a partir de 14 años.">
+                      <CocoaInput value={c.documentNumber} onChange={(v) => updateCompanion(c.id, "documentNumber", v)} autoComplete="off" />
+                    </CocoaField>
+                    <CocoaField label="Nacionalidad">
+                      <CocoaInput value={c.nationality} onChange={(v) => updateCompanion(c.id, "nationality", v)} placeholder="ESP" maxLength={3} />
+                    </CocoaField>
+                  </CocoaFormRow>
+                </CocoaSection>
+              ))}
+            </CocoaFormSection>
+          </div>
+        );
+
+      case "tarifa":
+        return (
+          <CocoaFormSection title="Tarifa" description={`Plan tarifario, régimen, total y desglose de IVA · ${money(taxesPreview.total)} · ${plural(nightsCount, "noche", "noches")}`}>
+            <CocoaFormRow columns={3} min={220}>
+              <CocoaField label={FIELD_LABELS.ratePlan}>
+                <CocoaSelect value={form.ratePlanId} onChange={set("ratePlanId")} options={RATE_PLAN_OPTIONS} />
+              </CocoaField>
+              <CocoaField label="Régimen">
+                <CocoaSelect value={form.boardType} onChange={set("boardType")} options={BOARD_OPTIONS} />
+              </CocoaField>
+              <CocoaField label="Precio total (€)" help="IVA incluido.">
+                <CocoaInput value={form.totalAmount} onChange={set("totalAmount")} type="number" inputMode="decimal" min={0} step="0.01" />
+              </CocoaField>
+            </CocoaFormRow>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: "var(--cocoa-space-3)" }}>
+              <CocoaStat label="Base imponible" value={money(taxesPreview.base)} />
+              <CocoaStat label="IVA (10 %)" value={money(taxesPreview.tax)} />
+              <CocoaStat label={FIELD_LABELS.total} value={money(taxesPreview.total)} tone="accent" />
+              <CocoaStat label="Precio por noche" value={money(nightsCount > 0 ? taxesPreview.total / nightsCount : 0)} />
+            </div>
+          </CocoaFormSection>
+        );
+
+      case "origen":
+        return (
+          <CocoaFormSection title="Origen" description="Canal, fuente, segmento de mercado y referencias comerciales.">
+            <CocoaFormRow columns={3} min={220}>
+              <CocoaField label="Origen de la reserva" help="Cómo entró la reserva (directo, OTA, walk-in, teléfono…).">
+                <CocoaSelect value={form.bookingSource} onChange={set("bookingSource")} options={BOOKING_SOURCE_OPTIONS} />
+              </CocoaField>
+              <CocoaField label="Segmento de mercado">
+                <CocoaSelect value={form.marketSegment} onChange={set("marketSegment")} options={marketOptions.length ? marketOptions : MARKET_SEGMENT_OPTIONS} />
+              </CocoaField>
+              <CocoaField label={FIELD_LABELS.channel} help="Canal técnico de distribución.">
+                <CocoaSelect value={form.channel} onChange={set("channel")} options={CHANNEL_OPTIONS} />
+              </CocoaField>
+              <CocoaField label="Código de origen">
+                <CocoaSelect
+                  value={form.sourceCode}
+                  onChange={set("sourceCode")}
+                  options={
+                    sourceOptions.length
+                      ? sourceOptions
+                      : [
+                          { value: "direct_web", label: "Web directa" },
+                          { value: "phone", label: "Teléfono" }
+                        ]
+                  }
+                />
+              </CocoaField>
+              <CocoaField label="Motivo de la estancia">
+                <CocoaSelect value={form.purposeOfStay} onChange={set("purposeOfStay")} options={PURPOSE_OPTIONS} />
+              </CocoaField>
+              <CocoaField label="Localizador externo (OTA)">
+                <CocoaInput value={form.externalReference} onChange={set("externalReference")} placeholder="Confirmación del canal" autoComplete="off" />
+              </CocoaField>
+              <CocoaField label="Empresa (facturación)">
+                <CocoaInput value={form.companyName} onChange={set("companyName")} placeholder="Razón social" autoComplete="off" />
+              </CocoaField>
+              <CocoaField label="Agencia de viajes">
+                <CocoaInput value={form.travelAgentName} onChange={set("travelAgentName")} placeholder="Agencia o turoperador" autoComplete="off" />
+              </CocoaField>
+              <CocoaField label="Código de grupo o bloqueo">
+                <CocoaInput value={form.groupCode} onChange={set("groupCode")} placeholder="GRP-2026-…" autoComplete="off" />
+              </CocoaField>
+              <CocoaField label="Nombre de quien reserva" help="Si no coincide con el huésped.">
+                <CocoaInput value={form.bookerName} onChange={set("bookerName")} autoComplete="off" />
+              </CocoaField>
+              <CocoaField label="Correo de quien reserva">
+                <CocoaInput value={form.bookerEmail} onChange={set("bookerEmail")} type="email" autoComplete="off" />
+              </CocoaField>
+            </CocoaFormRow>
+          </CocoaFormSection>
+        );
+
+      case "pagos":
+        return (
+          <CocoaFormSection
+            title="Pagos"
+            description={`Método de pago, garantía, depósito y políticas comerciales · cobrado ${money(form.depositPaid || 0)} de ${money(form.depositAmount || 0)}`}
+          >
+            <CocoaFormRow columns={3} min={220}>
+              <CocoaField label="Método de pago" help="Tipo de cobro acordado con el huésped.">
+                <CocoaSelect value={form.paymentMethod} onChange={set("paymentMethod")} options={PAYMENT_METHOD_OPTIONS} />
+              </CocoaField>
+              <CocoaField label="Depósito requerido (€)" help="Importe total a cobrar como anticipo.">
+                <CocoaInput value={form.depositAmount} onChange={set("depositAmount")} type="number" inputMode="decimal" min={0} step="0.01" placeholder="0,00" />
+              </CocoaField>
+              <CocoaField label="Depósito ya cobrado (€)" help="Cantidad ya pagada por el huésped.">
+                <CocoaInput value={form.depositPaid} onChange={set("depositPaid")} type="number" inputMode="decimal" min={0} step="0.01" placeholder="0,00" />
+              </CocoaField>
+              <CocoaField label="Vencimiento del depósito" help="Fecha límite para cobrar el anticipo.">
+                <CocoaDatePicker value={form.depositDueDate} onChange={set("depositDueDate")} />
+              </CocoaField>
+              <CocoaField label="Garantía">
+                <CocoaSelect
+                  value={form.guaranteeType}
+                  onChange={set("guaranteeType")}
+                  options={guaranteeOptions.length ? guaranteeOptions : [{ value: "card_guarantee", label: "Garantía con tarjeta" }]}
+                />
+              </CocoaField>
+              <CocoaField label="Política de cancelación">
+                <CocoaSelect
+                  value={form.cancellationPolicyCode}
+                  onChange={set("cancellationPolicyCode")}
+                  options={cancellationOptions.length ? cancellationOptions : [{ value: "flexible_18", label: "Flexible hasta las 18:00 del día anterior" }]}
+                />
+              </CocoaField>
+              <CocoaField label="Instrucción de cobro">
+                <CocoaSelect
+                  value={form.billingInstruction}
+                  onChange={set("billingInstruction")}
+                  options={
+                    billingOptions.length
+                      ? billingOptions
+                      : [
+                          { value: "guest_pays_checkout", label: "El huésped paga al check-out" },
+                          { value: "company_invoice", label: "Factura a empresa" }
+                        ]
+                  }
+                />
+              </CocoaField>
+            </CocoaFormRow>
+          </CocoaFormSection>
+        );
+
+      case "solicitudes":
+      default:
+        return (
+          <CocoaFormSection title="Solicitudes" description={`Peticiones especiales, accesibilidad, dieta, hora de llegada y notas internas · ${form.vipFlag === "yes" ? "VIP" : "Estándar"}`}>
+            <CocoaFormRow columns={3} min={220}>
+              <CocoaField label="Hora estimada de llegada" help="Para preparar la bienvenida y la operativa de recepción.">
+                <CocoaInput value={form.estimatedArrivalTime} onChange={set("estimatedArrivalTime")} type="time" />
+              </CocoaField>
+              <CocoaField label="Preferencias" help="Separadas por comas (planta, tipo de cama, almohada, vista…).">
+                <CocoaInput value={form.preferences} onChange={set("preferences")} placeholder="planta alta, cama grande, no fumador" />
+              </CocoaField>
+              <CocoaField label="Marcar como VIP" inline>
+                <CocoaSwitch checked={form.vipFlag === "yes"} onChange={(v) => updateField(setForm, "vipFlag", v ? "yes" : "")} size="small" />
+              </CocoaField>
+              <CocoaField label="Contacto de emergencia">
+                <CocoaInput value={form.emergencyContactName} onChange={set("emergencyContactName")} placeholder="Nombre" autoComplete="off" />
+              </CocoaField>
+              <CocoaField label="Teléfono de emergencia">
+                <CocoaInput value={form.emergencyContactPhone} onChange={set("emergencyContactPhone")} type="tel" autoComplete="off" />
+              </CocoaField>
+              <CocoaField label="Necesidades de accesibilidad" help="Separadas por comas. Visible para pisos y recepción." fullWidth>
+                <CocoaInput value={form.accessibilityNeeds} onChange={set("accessibilityNeeds")} placeholder="silla de ruedas, ducha adaptada, planta baja…" />
+              </CocoaField>
+              <CocoaField label="Requisitos dietéticos" help="Separados por comas. Importante para restauración." fullWidth>
+                <CocoaInput value={form.dietaryRequirements} onChange={set("dietaryRequirements")} placeholder="vegano, sin gluten, alergia a frutos secos…" />
+              </CocoaField>
+              <CocoaField label="Peticiones especiales" help="Visibles para el huésped." fullWidth>
+                <CocoaInput value={form.specialRequests} onChange={set("specialRequests")} multiline rows={3} placeholder="Cuna, llegada tardía, salida tardía…" />
+              </CocoaField>
+              <CocoaField label="Notas internas" help="Solo para el equipo." fullWidth>
+                <CocoaInput value={form.internalNotes} onChange={set("internalNotes")} multiline rows={3} placeholder="Información operativa que el huésped no debe ver." />
+              </CocoaField>
+              <CocoaField label="Consentimiento de marketing (RGPD)" help="El huésped acepta recibir comunicaciones comerciales." inline fullWidth>
+                <CocoaSwitch checked={form.marketingConsent === "yes"} onChange={(v) => updateField(setForm, "marketingConsent", v ? "yes" : "")} size="small" />
+              </CocoaField>
+              <CocoaField label="Notas adicionales" fullWidth>
+                <CocoaInput value={form.notes} onChange={set("notes")} multiline rows={3} placeholder="Otras anotaciones generales." />
+              </CocoaField>
+            </CocoaFormRow>
+          </CocoaFormSection>
+        );
+    }
+  }
 
   return (
-    <section className="bo-card">
-      {hosted ? null : (
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">PMS · Reserva manual</p>
-            <h2>Nueva reserva</h2>
-          </div>
-          <span className="bo-chip">Entrada manual</span>
-        </div>
-      )}
-      <p>
-        Recoge las categorías comerciales, los datos del huésped, las fechas de estancia, el contexto de tarifa y la instrucción de
-        facturación antes de confirmar. Las acciones críticas del ciclo de vida siguen pidiendo confirmación.
-      </p>
-
-      <div style={sectionStackStyle}>
-
-        {/* ===== 1 · Estancia ===== */}
-        <CocoaFormFieldset
-          title="1 · Estancia"
-          description={`Fechas, ocupación, tipo de habitación y asignación opcional · ${nightsCount} ${nightsCount === 1 ? "noche" : "noches"}`}
-        >
-          <div style={gridThreeStyle}>
-            <FieldRow label="Fecha de llegada" required>
-              <CocoaDatePicker value={form.arrivalDate} onChange={(v) => updateField(setForm, "arrivalDate", v)} />
-            </FieldRow>
-            <FieldRow label="Fecha de salida" required>
-              <CocoaDatePicker value={form.departureDate} onChange={(v) => updateField(setForm, "departureDate", v)} />
-            </FieldRow>
-            <FieldRow label="Noches (auto)" hint="Calculado automáticamente desde las fechas.">
-              <CocoaInput value={String(nightsCount)} onChange={() => {}} disabled type="number" />
-            </FieldRow>
-            <FieldRow label="Nº de habitaciones">
-              <CocoaStepper
-                value={parseStepper(form.roomsCount, 1)}
-                onChange={(n) => updateField(setForm, "roomsCount", String(n))}
-                min={1}
-              />
-            </FieldRow>
-            {/* TODO(cocoa): CocoaTimePicker */}
-            <FieldRow label="ETA (hora estimada de llegada)">
-              <CocoaInput value={form.eta} onChange={(v) => updateField(setForm, "eta", v)} type="time" />
-            </FieldRow>
-            {/* TODO(cocoa): CocoaTimePicker */}
-            <FieldRow label="ETD (hora estimada de salida)">
-              <CocoaInput value={form.etd} onChange={(v) => updateField(setForm, "etd", v)} type="time" />
-            </FieldRow>
-            <FieldRow label="Tipo de habitación" required id="rc-field-roomtype">
-              <CocoaSelect
-                value={form.roomTypeId}
-                onChange={(v) => updateField(setForm, "roomTypeId", v)}
-                options={roomTypeOptions}
-              />
-            </FieldRow>
-            <FieldRow label="Habitación asignada (opcional)" hint="Puede dejarse vacío y asignarse al check-in.">
-              <CocoaSelect
-                value={form.assignedRoomId}
-                onChange={(v) => updateField(setForm, "assignedRoomId", v)}
-                options={assignableRoomOptions}
-              />
-            </FieldRow>
-            <FieldRow label="Adultos">
-              <CocoaStepper
-                value={parseStepper(form.adults, 1)}
-                onChange={(n) => updateField(setForm, "adults", String(n))}
-                min={1}
-              />
-            </FieldRow>
-            <FieldRow label="Niños">
-              <CocoaStepper
-                value={parseStepper(form.children, 0)}
-                onChange={(n) => updateField(setForm, "children", String(n))}
-                min={0}
-              />
-            </FieldRow>
-            <FieldRow label="Bebés">
-              <CocoaStepper
-                value={parseStepper(form.infants, 0)}
-                onChange={(n) => updateField(setForm, "infants", String(n))}
-                min={0}
-              />
-            </FieldRow>
-          </div>
-
-          <div style={actionsRowStyle}>
-            <CocoaButton variant="filled" tone="accent" onClick={handleQuote}>Consultar disponibilidad</CocoaButton>
-            <CocoaButton
-              variant="bordered"
-              tone="neutral"
-              onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "CategoryManagerScreen" }))}
-            >
-              Configurar categorías
-            </CocoaButton>
-          </div>
-
-          {quotes.length ? (
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-                gap: "var(--cocoa-space-3)",
-                marginTop: "var(--cocoa-space-3)"
-              }}
-            >
-              {quotes.map((quote) => (
-                <CocoaCard key={quote.roomTypeId} variant="bordered" padding="md">
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--cocoa-space-2)" }}>
-                    <h3 style={{ margin: 0, fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>{quote.roomTypeName}</h3>
-                    <span
-                      style={{
-                        fontSize: "var(--cocoa-fs-caption)",
-                        color: quote.availableRooms > 0 ? "var(--cocoa-success)" : "var(--cocoa-danger)"
-                      }}
-                    >
-                      {quote.availableRooms} disponibles
-                    </span>
-                  </div>
-                  <div style={{ fontSize: "var(--cocoa-fs-title-2)", fontWeight: 600, color: "var(--cocoa-label)" }}>
-                    {money(quote.totalAmount, quote.currency)}
-                  </div>
-                  <p style={{ marginTop: "var(--cocoa-space-1)", marginBottom: "var(--cocoa-space-3)", color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-subheadline)" }}>
-                    {quote.cancellationPolicy}
-                  </p>
+    <CocoaPage
+      eyebrow="Recepción · Nueva reserva"
+      title="Nueva reserva"
+      subtitle={hosted ? undefined : "Recoge la estancia, los huéspedes, la tarifa, el origen, los pagos y las solicitudes antes de confirmar."}
+      state={createdReservation ? "empty" : "ready"}
+      empty={{
+        title: `Reserva ${createdReservation?.code ?? ""} creada`,
+        message: "Reserva guardada, huésped principal vinculado y folio abierto.",
+        illustration: "success",
+        primaryAction: { label: "Abrir el detalle de la reserva", onClick: openCreated },
+        secondaryAction: { label: "Abrir facturación", onClick: () => navigateTo("BillingCenter") }
+      }}
+      commands={[
+        { id: "nueva-reserva-disponibilidad", label: "Consultar disponibilidad de la nueva reserva", run: () => void handleQuote() },
+        { id: "nueva-reserva-crear", label: "Confirmar y crear la reserva", run: () => void handleCreate() }
+      ]}
+    >
+      <CocoaGrid align="start" aria-label="Asistente de nueva reserva">
+        <CocoaSpan cols={4} min={240}>
+          <CocoaSection title="Pasos" meta={`${step + 1} / ${STEPS.length}`}>
+            <CocoaChart.Progress value={((step + 1) / STEPS.length) * 100} label={current.label} showValue={false} aria-label={stepSummary} />
+            {/* aria-current marks the current step once, on the button (fix:3-A qa#12). */}
+            <ol className="c22-section__list" aria-label="Pasos del asistente">
+              {STEPS.map((s, index) => (
+                <li key={s.key}>
                   <CocoaButton
-                    variant="tinted"
-                    tone="accent"
-                    onClick={() =>
-                      setForm((current) => ({
-                        ...current,
-                        roomTypeId: quote.roomTypeId,
-                        totalAmount: String(quote.totalAmount)
-                      }))
-                    }
+                    variant="plain"
+                    tone={index === step ? "accent" : "neutral"}
+                    size="small"
+                    wrap
+                    aria-current={index === step ? "step" : undefined}
+                    onClick={() => setStep(index)}
+                    style={{ flex: "1 1 auto", justifyContent: "flex-start" }}
                   >
-                    Seleccionar este tipo
+                    {index + 1}. {s.label}
                   </CocoaButton>
-                </CocoaCard>
+                  <CocoaBadge tone={stepTone(index)} variant="dot" size="small">
+                    {index < step ? "revisado" : index === step ? "actual" : "pendiente"}
+                  </CocoaBadge>
+                </li>
               ))}
-            </div>
-          ) : null}
-        </CocoaFormFieldset>
-
-        {/* ===== 2 · Huéspedes ===== */}
-        <CocoaFormFieldset
-          title="2 · Huéspedes"
-          description={`Titular, acompañantes y bebés · Adultos ${form.adults} · Niños ${form.children} · Bebés ${form.infants}`}
-        >
-          {/* TODO(cocoa): OCR dropzone affordance — replace the native file label with a dedicated dropzone primitive when it ships. */}
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "var(--cocoa-space-2)",
-              marginBottom: "var(--cocoa-space-3)",
-              flexWrap: "wrap"
-            }}
-          >
-            <label
-              style={{
-                cursor: "pointer",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: "var(--cocoa-space-2)"
-              }}
-            >
-              <CocoaButton variant="tinted" tone="accent">Escanear documento (IA)</CocoaButton>
-              <input
-                type="file"
-                accept="image/*"
-                style={{ display: "none" }}
-                onChange={(event) => handleScanFile(event.target.files?.[0])}
-              />
-            </label>
-            <span style={{ color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-subheadline)" }}>
-              La IA rellena los campos para que los revises. Nada se guarda sin tu confirmación.
-            </span>
+            </ol>
+            <p>{current.description}</p>
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={8} min={480}>
+          <div className="cocoa-stack" data-gap="4">
+            {status ? (
+              <CocoaCallout tone="neutral" role="status">
+                {status}
+              </CocoaCallout>
+            ) : null}
+            {renderStep()}
           </div>
+        </CocoaSpan>
+      </CocoaGrid>
 
-          <h4 style={{ margin: 0, marginBottom: "var(--cocoa-space-2)", fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
-            Datos del titular de la reserva
-          </h4>
-          <div style={gridThreeStyle}>
-            <FieldRow label="Tratamiento">
-              <CocoaSelect value={form.title} onChange={(v) => updateField(setForm, "title", v)} options={TITLE_OPTIONS} />
-            </FieldRow>
-            <FieldRow label="Nombre del huésped" required id="rc-field-firstname">
-              <CocoaInput value={form.firstName} onChange={(v) => updateField(setForm, "firstName", v)} />
-            </FieldRow>
-            <FieldRow label="Segundo nombre">
-              <CocoaInput value={form.middleName} onChange={(v) => updateField(setForm, "middleName", v)} />
-            </FieldRow>
-            <FieldRow label="Primer apellido" required id="rc-field-surname1">
-              <CocoaInput value={form.surname1} onChange={(v) => updateField(setForm, "surname1", v)} />
-            </FieldRow>
-            <FieldRow label="Segundo apellido">
-              <CocoaInput value={form.surname2} onChange={(v) => updateField(setForm, "surname2", v)} />
-            </FieldRow>
-            <FieldRow label="Idioma preferido">
-              <CocoaSelect
-                value={form.languagePreference}
-                onChange={(v) => updateField(setForm, "languagePreference", v)}
-                options={LANGUAGE_OPTIONS}
-              />
-            </FieldRow>
-            <FieldRow label="Correo electrónico">
-              <CocoaInput value={form.email} onChange={(v) => updateField(setForm, "email", v)} type="email" />
-            </FieldRow>
-            <FieldRow label="Teléfono">
-              <CocoaInput value={form.phone} onChange={(v) => updateField(setForm, "phone", v)} type="tel" />
-            </FieldRow>
-            <FieldRow label="Móvil">
-              <CocoaInput value={form.mobilePhone} onChange={(v) => updateField(setForm, "mobilePhone", v)} type="tel" />
-            </FieldRow>
-          </div>
-
-          <h4 style={{ margin: 0, marginTop: "var(--cocoa-space-4)", marginBottom: "var(--cocoa-space-2)", fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
-            Identidad y residencia · SES Hospedajes (RD 933/2021)
-          </h4>
-          <div style={gridThreeStyle}>
-            <FieldRow label="Tipo de documento">
-              <CocoaSelect value={form.documentType} onChange={(v) => updateField(setForm, "documentType", v)} options={DOCUMENT_TYPE_OPTIONS} />
-            </FieldRow>
-            <FieldRow label="Número de documento">
-              <CocoaInput value={form.documentNumber} onChange={(v) => updateField(setForm, "documentNumber", v)} placeholder="12345678Z" />
-            </FieldRow>
-            <FieldRow label="Número de soporte">
-              <CocoaInput
-                value={form.documentSupportNumber}
-                onChange={(v) => updateField(setForm, "documentSupportNumber", v)}
-                placeholder="ABC123456"
-              />
-            </FieldRow>
-            <FieldRow label="Fecha de nacimiento">
-              <CocoaDatePicker value={form.dateOfBirth} onChange={(v) => updateField(setForm, "dateOfBirth", v)} />
-            </FieldRow>
-            {/* TODO(cocoa): nationality combobox */}
-            <FieldRow label="Nacionalidad (ISO)">
-              <CocoaInput value={form.nationality} onChange={(v) => updateField(setForm, "nationality", v)} placeholder="ESP" />
-            </FieldRow>
-            <FieldRow label="Sexo">
-              <CocoaSelect value={form.sex} onChange={(v) => updateField(setForm, "sex", v)} options={SEX_OPTIONS} />
-            </FieldRow>
-            <FieldRow label="País de expedición">
-              <CocoaInput
-                value={form.documentIssueCountry}
-                onChange={(v) => updateField(setForm, "documentIssueCountry", v)}
-                placeholder="ESP"
-              />
-            </FieldRow>
-            <FieldRow label="Caducidad del documento">
-              <CocoaDatePicker value={form.documentExpiryDate} onChange={(v) => updateField(setForm, "documentExpiryDate", v)} />
-            </FieldRow>
-            <FieldRow label="Dirección de residencia">
-              <CocoaInput
-                value={form.residenceAddress}
-                onChange={(v) => updateField(setForm, "residenceAddress", v)}
-                placeholder="Calle, número, piso"
-              />
-            </FieldRow>
-            <FieldRow label="Localidad">
-              <CocoaInput
-                value={form.residenceLocality}
-                onChange={(v) => updateField(setForm, "residenceLocality", v)}
-                placeholder="Madrid"
-              />
-            </FieldRow>
-            <FieldRow label="Provincia">
-              <CocoaInput
-                value={form.residenceProvince}
-                onChange={(v) => updateField(setForm, "residenceProvince", v)}
-                placeholder="Madrid"
-              />
-            </FieldRow>
-            <FieldRow label="Código postal">
-              <CocoaInput
-                value={form.residencePostalCode}
-                onChange={(v) => updateField(setForm, "residencePostalCode", v)}
-                placeholder="28001"
-              />
-            </FieldRow>
-            <FieldRow label="País de residencia">
-              <CocoaInput
-                value={form.residenceCountry}
-                onChange={(v) => updateField(setForm, "residenceCountry", v)}
-                placeholder="España"
-              />
-            </FieldRow>
-          </div>
-
-          <h4 style={{ margin: 0, marginTop: "var(--cocoa-space-4)", marginBottom: "var(--cocoa-space-2)", fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
-            Datos comerciales del titular
-          </h4>
-          <div style={gridThreeStyle}>
-            <FieldRow label="Empresa del huésped">
-              <CocoaInput value={form.guestCompany} onChange={(v) => updateField(setForm, "guestCompany", v)} />
-            </FieldRow>
-            <FieldRow label="Código VIP">
-              <CocoaInput value={form.vipCode} onChange={(v) => updateField(setForm, "vipCode", v)} placeholder="VIP1 / VVIP…" />
-            </FieldRow>
-            <FieldRow label="Titular de la reserva">
-              <CocoaInput value={form.bookerName} onChange={(v) => updateField(setForm, "bookerName", v)} />
-            </FieldRow>
-            <FieldRow label="Programa de fidelización">
-              <CocoaInput value={form.loyaltyProgram} onChange={(v) => updateField(setForm, "loyaltyProgram", v)} />
-            </FieldRow>
-            <FieldRow label="Nº de socio">
-              <CocoaInput value={form.loyaltyNumber} onChange={(v) => updateField(setForm, "loyaltyNumber", v)} />
-            </FieldRow>
-            <FieldRow label="Nivel / tier">
-              <CocoaInput value={form.loyaltyTier} onChange={(v) => updateField(setForm, "loyaltyTier", v)} placeholder="Silver / Gold…" />
-            </FieldRow>
-          </div>
-
-          {/* Acompañantes dinámicos (add/remove) ─ Mews-style accompanying guests */}
-          <h4 style={{ margin: 0, marginTop: "var(--cocoa-space-4)", marginBottom: "var(--cocoa-space-2)", fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
-            Composición del grupo · {companions.length} acompañante{companions.length === 1 ? "" : "s"}
-          </h4>
-          <div style={gridThreeStyle}>
-            <FieldRow label="Edades de los niños" hint="Separadas por comas. Requeridas por algunos canales y tarifas familiares.">
-              <CocoaInput
-                value={form.childrenAges}
-                onChange={(v) => updateField(setForm, "childrenAges", v)}
-                placeholder="p. ej. 5, 8"
-              />
-            </FieldRow>
-          </div>
-
-          <div style={actionsRowStyle}>
-            <CocoaButton variant="bordered" tone="neutral" onClick={() => addCompanion("adult")}>+ Acompañante adulto</CocoaButton>
-            <CocoaButton variant="bordered" tone="neutral" onClick={() => addCompanion("child")}>+ Acompañante niño</CocoaButton>
-            <CocoaButton variant="bordered" tone="neutral" onClick={() => addCompanion("infant")}>+ Bebé</CocoaButton>
-          </div>
-
-          {companions.length ? (
-            <div style={{ marginTop: "var(--cocoa-space-3)", display: "flex", flexDirection: "column", gap: "var(--cocoa-space-3)" }}>
-              {companions.map((c, index) => (
-                <CocoaCard key={c.id} variant="bordered" padding="md">
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      marginBottom: "var(--cocoa-space-2)"
-                    }}
-                  >
-                    <div>
-                      <p style={{ margin: 0, fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>
-                        Acompañante #{index + 1}
-                      </p>
-                      <h4 style={{ margin: 0, fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
-                        {c.firstName || "Sin nombre"} {c.surname1}
-                      </h4>
-                    </div>
-                    <span
-                      style={{
-                        fontSize: "var(--cocoa-fs-caption)",
-                        color: "var(--cocoa-label-secondary)",
-                        padding: "2px var(--cocoa-space-2)",
-                        background: "var(--cocoa-background-control)",
-                        borderRadius: "var(--cocoa-radius-sm)"
-                      }}
-                    >
-                      {c.type === "adult" ? "Adulto" : c.type === "child" ? "Niño" : "Bebé"}
-                    </span>
-                  </div>
-                  <div style={gridThreeStyle}>
-                    <FieldRow label="Nombre">
-                      <CocoaInput value={c.firstName} onChange={(v) => updateCompanion(c.id, "firstName", v)} />
-                    </FieldRow>
-                    <FieldRow label="Apellido">
-                      <CocoaInput value={c.surname1} onChange={(v) => updateCompanion(c.id, "surname1", v)} />
-                    </FieldRow>
-                    <FieldRow label="Fecha de nacimiento">
-                      <CocoaDatePicker value={c.dateOfBirth} onChange={(v) => updateCompanion(c.id, "dateOfBirth", v)} />
-                    </FieldRow>
-                    <FieldRow label="Tipo de documento">
-                      <CocoaSelect
-                        value={c.documentType}
-                        onChange={(v) => updateCompanion(c.id, "documentType", v)}
-                        options={DOCUMENT_TYPE_OPTIONS}
-                      />
-                    </FieldRow>
-                    <FieldRow label="Nº de documento">
-                      <CocoaInput
-                        value={c.documentNumber}
-                        onChange={(v) => updateCompanion(c.id, "documentNumber", v)}
-                        placeholder="Sólo necesario para >14 años"
-                      />
-                    </FieldRow>
-                    <FieldRow label="Nacionalidad">
-                      <CocoaInput
-                        value={c.nationality}
-                        onChange={(v) => updateCompanion(c.id, "nationality", v)}
-                        placeholder="ESP"
-                      />
-                    </FieldRow>
-                  </div>
-                  <div style={actionsRowStyle}>
-                    <CocoaButton variant="plain" tone="destructive" onClick={() => removeCompanion(c.id)}>Eliminar</CocoaButton>
-                  </div>
-                </CocoaCard>
-              ))}
-            </div>
-          ) : null}
-        </CocoaFormFieldset>
-
-        {/* ===== 3 · Tarifa ===== */}
-        <CocoaFormFieldset
-          title="3 · Tarifa"
-          description={`Plan tarifario, base, total y desglose de IVA · ${money(form.totalAmount || 0)} · ${plural(nightsCount, "noche", "noches")}`}
-        >
-          <div style={gridThreeStyle}>
-            <FieldRow label="Plan tarifario">
-              <CocoaSelect
-                value={form.ratePlanId}
-                onChange={(v) => updateField(setForm, "ratePlanId", v)}
-                options={RATE_PLAN_OPTIONS}
-              />
-            </FieldRow>
-            <FieldRow label="Régimen (board)">
-              <CocoaSelect
-                value={form.boardType}
-                onChange={(v) => updateField(setForm, "boardType", v)}
-                options={BOARD_OPTIONS}
-              />
-            </FieldRow>
-            <FieldRow label="Precio total (€)">
-              <CocoaInput
-                value={form.totalAmount}
-                onChange={(v) => updateField(setForm, "totalAmount", v)}
-                type="number"
-                inputMode="decimal"
-              />
-            </FieldRow>
-          </div>
-
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-              gap: "var(--cocoa-space-3)",
-              marginTop: "var(--cocoa-space-4)"
-            }}
-          >
-            <CocoaCard variant="bordered" padding="md">
-              <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Base imponible</span>
-              <strong style={{ display: "block", marginTop: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-title-3)", color: "var(--cocoa-label)" }}>
-                {money(taxesPreview.base)}
-              </strong>
-            </CocoaCard>
-            <CocoaCard variant="bordered" padding="md">
-              <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>IVA (10%)</span>
-              <strong style={{ display: "block", marginTop: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-title-3)", color: "var(--cocoa-label)" }}>
-                {money(taxesPreview.tax)}
-              </strong>
-            </CocoaCard>
-            <CocoaCard variant="bordered" padding="md">
-              <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Total</span>
-              <strong style={{ display: "block", marginTop: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-title-3)", color: "var(--cocoa-label)" }}>
-                {money(form.totalAmount || 0)}
-              </strong>
-            </CocoaCard>
-            <CocoaCard variant="bordered" padding="md">
-              <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Precio / noche</span>
-              <strong style={{ display: "block", marginTop: "var(--cocoa-space-1)", fontSize: "var(--cocoa-fs-title-3)", color: "var(--cocoa-label)" }}>
-                {money(nightsCount > 0 ? Number(form.totalAmount) / nightsCount : 0)}
-              </strong>
-            </CocoaCard>
-          </div>
-        </CocoaFormFieldset>
-
-        {/* ===== 4 · Origen ===== */}
-        <CocoaFormFieldset
-          title="4 · Origen"
-          description={`Canal, fuente, segmento de mercado y referencias comerciales · ${form.bookingSource} · ${form.marketSegment}`}
-        >
-          <div style={gridThreeStyle}>
-            <FieldRow label="Origen de la reserva" hint="Cómo entró la reserva (directo, OTA, walk-in, teléfono…).">
-              <CocoaSelect
-                value={form.bookingSource}
-                onChange={(v) => updateField(setForm, "bookingSource", v)}
-                options={BOOKING_SOURCE_OPTIONS}
-              />
-            </FieldRow>
-            <FieldRow label="Segmento de mercado" hint="Corporate, Leisure, MICE, Wedding, Sports, Group…">
-              <CocoaSelect
-                value={form.marketSegment}
-                onChange={(v) => updateField(setForm, "marketSegment", v)}
-                options={marketOptions.length ? marketOptions : MARKET_SEGMENT_OPTIONS}
-              />
-            </FieldRow>
-            <FieldRow label="Canal" hint="Canal técnico de distribución.">
-              <CocoaSelect
-                value={form.channel}
-                onChange={(v) => updateField(setForm, "channel", v)}
-                options={CHANNEL_OPTIONS}
-              />
-            </FieldRow>
-            <FieldRow label="Código de origen">
-              <CocoaSelect
-                value={form.sourceCode}
-                onChange={(v) => updateField(setForm, "sourceCode", v)}
-                options={
-                  sourceOptions.length
-                    ? sourceOptions
-                    : [
-                        { value: "direct_web", label: "Direct web" },
-                        { value: "phone", label: "Teléfono" }
-                      ]
-                }
-              />
-            </FieldRow>
-            <FieldRow label="Motivo de la estancia">
-              <CocoaSelect
-                value={form.purposeOfStay}
-                onChange={(v) => updateField(setForm, "purposeOfStay", v)}
-                options={PURPOSE_OPTIONS}
-              />
-            </FieldRow>
-            <FieldRow label="Localizador externo (OTA)">
-              <CocoaInput
-                value={form.externalReference}
-                onChange={(v) => updateField(setForm, "externalReference", v)}
-                placeholder="Confirmación del canal"
-              />
-            </FieldRow>
-            <FieldRow label="Empresa (facturación)">
-              <CocoaInput
-                value={form.companyName}
-                onChange={(v) => updateField(setForm, "companyName", v)}
-                placeholder="Razón social"
-              />
-            </FieldRow>
-            <FieldRow label="Agencia de viajes">
-              <CocoaInput
-                value={form.travelAgentName}
-                onChange={(v) => updateField(setForm, "travelAgentName", v)}
-                placeholder="Travel agent / TTOO"
-              />
-            </FieldRow>
-            <FieldRow label="Código de grupo / bloqueo">
-              <CocoaInput
-                value={form.groupCode}
-                onChange={(v) => updateField(setForm, "groupCode", v)}
-                placeholder="GRP-2026-..."
-              />
-            </FieldRow>
-            <FieldRow label="Nombre del titular">
-              <CocoaInput
-                value={form.bookerName}
-                onChange={(v) => updateField(setForm, "bookerName", v)}
-                placeholder="Quien hace la reserva (si != huésped)"
-              />
-            </FieldRow>
-            <FieldRow label="Correo del titular">
-              <CocoaInput
-                value={form.bookerEmail}
-                onChange={(v) => updateField(setForm, "bookerEmail", v)}
-                type="email"
-              />
-            </FieldRow>
-          </div>
-        </CocoaFormFieldset>
-
-        {/* ===== 5 · Pagos ===== */}
-        <CocoaFormFieldset
-          title="5 · Pagos"
-          description={`Método de pago, garantía, depósito y políticas comerciales · ${money(form.depositPaid || 0)} / ${money(form.depositAmount || 0)}`}
-        >
-          <div style={gridThreeStyle}>
-            <FieldRow label="Método de pago" hint="Tipo de cobro acordado con el huésped.">
-              <CocoaSelect
-                value={form.paymentMethod}
-                onChange={(v) => updateField(setForm, "paymentMethod", v)}
-                options={PAYMENT_METHOD_OPTIONS}
-              />
-            </FieldRow>
-            <FieldRow label="Depósito requerido (€)" hint="Importe total a cobrar como anticipo.">
-              <CocoaInput
-                value={form.depositAmount}
-                onChange={(v) => updateField(setForm, "depositAmount", v)}
-                type="number"
-                inputMode="decimal"
-                placeholder="0.00"
-              />
-            </FieldRow>
-            <FieldRow label="Depósito ya cobrado (€)" hint="Cantidad ya pagada por el huésped.">
-              <CocoaInput
-                value={form.depositPaid}
-                onChange={(v) => updateField(setForm, "depositPaid", v)}
-                type="number"
-                inputMode="decimal"
-                placeholder="0.00"
-              />
-            </FieldRow>
-            <FieldRow label="Vencimiento del depósito" hint="Fecha límite para cobrar el anticipo.">
-              <CocoaDatePicker value={form.depositDueDate} onChange={(v) => updateField(setForm, "depositDueDate", v)} />
-            </FieldRow>
-            <FieldRow label="Garantía">
-              <CocoaSelect
-                value={form.guaranteeType}
-                onChange={(v) => updateField(setForm, "guaranteeType", v)}
-                options={guaranteeOptions.length ? guaranteeOptions : [{ value: "card_guarantee", label: "Card guarantee" }]}
-              />
-            </FieldRow>
-            <FieldRow label="Política de cancelación">
-              <CocoaSelect
-                value={form.cancellationPolicyCode}
-                onChange={(v) => updateField(setForm, "cancellationPolicyCode", v)}
-                options={
-                  cancellationOptions.length
-                    ? cancellationOptions
-                    : [{ value: "flexible_18", label: "Flexible until 18:00 previous day" }]
-                }
-              />
-            </FieldRow>
-            <FieldRow label="Instrucción de cobro">
-              <CocoaSelect
-                value={form.billingInstruction}
-                onChange={(v) => updateField(setForm, "billingInstruction", v)}
-                options={
-                  billingOptions.length
-                    ? billingOptions
-                    : [
-                        { value: "guest_pays_checkout", label: "Guest pays at checkout" },
-                        { value: "company_invoice", label: "Company invoice" }
-                      ]
-                }
-              />
-            </FieldRow>
-          </div>
-        </CocoaFormFieldset>
-
-        {/* ===== 6 · Solicitudes ===== */}
-        <CocoaFormFieldset
-          title="6 · Solicitudes"
-          description={`Peticiones especiales, accesibilidad, dieta, ETA y notas internas · ${form.vipFlag === "yes" ? "VIP" : "Estándar"}`}
-        >
-          <div style={gridThreeStyle}>
-            {/* TODO(cocoa): CocoaTimePicker */}
-            <FieldRow label="Hora estimada de llegada" hint="Para preparar bienvenida y operativa de front desk.">
-              <CocoaInput
-                value={form.estimatedArrivalTime}
-                onChange={(v) => updateField(setForm, "estimatedArrivalTime", v)}
-                type="time"
-              />
-            </FieldRow>
-            <FieldRow label="Preferencias" hint="Separadas por comas (planta, tipo de cama, almohada, vista…).">
-              <CocoaInput
-                value={form.preferences}
-                onChange={(v) => updateField(setForm, "preferences", v)}
-                placeholder="planta alta, cama king, no fumador"
-              />
-            </FieldRow>
-            <div style={{ display: "flex", alignItems: "center", gap: "var(--cocoa-space-2)" }}>
-              <CocoaSwitch
-                checked={form.vipFlag === "yes"}
-                onChange={(v) => updateField(setForm, "vipFlag", v ? "yes" : "")}
-                label="Marcar como VIP"
-              />
-            </div>
-            <FieldRow label="Contacto de emergencia">
-              <CocoaInput
-                value={form.emergencyContactName}
-                onChange={(v) => updateField(setForm, "emergencyContactName", v)}
-                placeholder="Nombre"
-              />
-            </FieldRow>
-            <FieldRow label="Tel. de emergencia">
-              <CocoaInput
-                value={form.emergencyContactPhone}
-                onChange={(v) => updateField(setForm, "emergencyContactPhone", v)}
-                type="tel"
-              />
-            </FieldRow>
-          </div>
-
-          <div style={{ marginTop: "var(--cocoa-space-3)" }}>
-            <FieldRow
-              label="Necesidades de accesibilidad"
-              hint="Separadas por comas. Visible para housekeeping y front desk."
-            >
-              <CocoaInput
-                value={form.accessibilityNeeds}
-                onChange={(v) => updateField(setForm, "accessibilityNeeds", v)}
-                placeholder="silla de ruedas, ducha adaptada, planta baja…"
-              />
-            </FieldRow>
-          </div>
-
-          <div style={{ marginTop: "var(--cocoa-space-3)" }}>
-            <FieldRow label="Requisitos dietéticos" hint="Separados por comas. Importante para F&B.">
-              <CocoaInput
-                value={form.dietaryRequirements}
-                onChange={(v) => updateField(setForm, "dietaryRequirements", v)}
-                placeholder="vegano, sin gluten, alergia frutos secos…"
-              />
-            </FieldRow>
-          </div>
-
-          <div style={{ marginTop: "var(--cocoa-space-3)" }}>
-            <FieldRow label="Peticiones especiales (visibles para el huésped)">
-              <textarea
-                value={form.specialRequests}
-                onChange={(event) => updateField(setForm, "specialRequests", event.target.value)}
-                placeholder="Cuna, llegada tardía, late check-out…"
-                style={{
-                  width: "100%",
-                  minHeight: "80px",
-                  padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
-                  fontFamily: "var(--cocoa-font)",
-                  fontSize: "var(--cocoa-fs-body)",
-                  color: "var(--cocoa-label)",
-                  background: "var(--cocoa-background-control)",
-                  border: "1px solid var(--cocoa-separator)",
-                  borderRadius: "var(--cocoa-radius-md)",
-                  resize: "vertical",
-                  boxSizing: "border-box"
-                }}
-              />
-            </FieldRow>
-          </div>
-
-          <div style={{ marginTop: "var(--cocoa-space-3)" }}>
-            <FieldRow label="Notas internas (solo staff)">
-              <textarea
-                value={form.internalNotes}
-                onChange={(event) => updateField(setForm, "internalNotes", event.target.value)}
-                placeholder="Información operativa que el huésped no debe ver."
-                style={{
-                  width: "100%",
-                  minHeight: "80px",
-                  padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
-                  fontFamily: "var(--cocoa-font)",
-                  fontSize: "var(--cocoa-fs-body)",
-                  color: "var(--cocoa-label)",
-                  background: "var(--cocoa-background-control)",
-                  border: "1px solid var(--cocoa-separator)",
-                  borderRadius: "var(--cocoa-radius-md)",
-                  resize: "vertical",
-                  boxSizing: "border-box"
-                }}
-              />
-            </FieldRow>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", gap: "var(--cocoa-space-2)", marginTop: "var(--cocoa-space-3)" }}>
-            <CocoaSwitch
-              checked={form.marketingConsent === "yes"}
-              onChange={(v) => updateField(setForm, "marketingConsent", v ? "yes" : "")}
-              label="El huésped consiente recibir comunicaciones de marketing (RGPD)"
-            />
-          </div>
-
-          <div style={{ marginTop: "var(--cocoa-space-3)" }}>
-            <FieldRow label="Notas adicionales">
-              <textarea
-                value={form.notes}
-                onChange={(event) => updateField(setForm, "notes", event.target.value)}
-                placeholder="Otras anotaciones generales."
-                style={{
-                  width: "100%",
-                  minHeight: "80px",
-                  padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
-                  fontFamily: "var(--cocoa-font)",
-                  fontSize: "var(--cocoa-fs-body)",
-                  color: "var(--cocoa-label)",
-                  background: "var(--cocoa-background-control)",
-                  border: "1px solid var(--cocoa-separator)",
-                  borderRadius: "var(--cocoa-radius-md)",
-                  resize: "vertical",
-                  boxSizing: "border-box"
-                }}
-              />
-            </FieldRow>
-          </div>
-        </CocoaFormFieldset>
-      </div>
-
-      <div style={actionsRowStyle}>
-        <CocoaButton variant="filled" tone="accent" onClick={handleCreate}>Confirmar y crear reserva</CocoaButton>
-        <CocoaButton
-          variant="bordered"
-          tone="neutral"
-          onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "ReservationWorkspace" }))}
-        >
-          Abrir espacio de reservas
-        </CocoaButton>
-      </div>
-      {status ? <p style={{ marginTop: "var(--cocoa-space-2)", color: "var(--cocoa-label-secondary)" }}>{status}</p> : null}
-      {createdReservation ? (
-        <CocoaCard variant="elevated" padding="md" className="bo-card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "var(--cocoa-space-2)" }}>
-            <h3 style={{ margin: 0, fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
-              {createdReservation.code}
-            </h3>
-            <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-success)" }}>Creada</span>
-          </div>
-          <p style={{ color: "var(--cocoa-label-secondary)" }}>
-            Reserva guardada, huésped principal vinculado y folio abierto.
-          </p>
-          <div style={actionsRowStyle}>
-            <CocoaButton
-              variant="bordered"
-              tone="neutral"
-              onClick={() => openTabPath(urlForScreen("ReservationDetailWorkspace", { id: createdReservation.id }) ?? "/recepcion/reservas")}
-            >
-              Abrir el detalle de la reserva
-            </CocoaButton>
-            <CocoaButton
-              variant="bordered"
-              tone="neutral"
-              onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "BillingCenter" }))}
-            >
-              Abrir facturación
-            </CocoaButton>
-          </div>
-        </CocoaCard>
-      ) : null}
-    </section>
+      <CocoaActionBar
+        aria-label="Navegación del asistente"
+        status={stepSummary}
+        extra={
+          <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => navigateTo("ReservationWorkspace")}>
+            Abrir espacio de reservas
+          </CocoaButton>
+        }
+        secondary={step > 0 ? { label: ACTIONS.previous, onClick: () => setStep((s) => Math.max(0, s - 1)) } : undefined}
+        primary={
+          last
+            ? { label: creating ? "Creando…" : "Confirmar y crear reserva", loading: creating, disabled: creating, onClick: () => void handleCreate() }
+            : { label: ACTIONS.next, onClick: () => setStep((s) => Math.min(STEPS.length - 1, s + 1)) }
+        }
+        publishToastOffset
+      />
+    </CocoaPage>
   );
 }

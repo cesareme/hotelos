@@ -1,27 +1,53 @@
-// GroupDetailDialog — vista 360º de un grupo (lectura + edición + acciones).
+// GroupDetailDialog — 360º view of a group booking (read, edit and actions).
 //
-// Layout en pestañas internas:
-//  1. Resumen          → todos los campos del grupo organizados en secciones
-//                        (modo lectura o edición según el flag `editing`)
-//  2. Pickup & bloqueo → KPIs + barras día×día (mismo patrón que AllotmentLifecycleRow)
-//  3. Eventos          → placeholder de iteración futura
-//
-// Acciones de footer:
-//  • Modo lectura: "Editar", "Cambiar estado…" (dropdown), "Crear folio maestro", "Cerrar"
-//  • Modo edición: "Guardar cambios", "Descartar"
-//
-// Mismo patrón modal grande que NewGroupDialog (max-width amplio) y mismos
-// helpers locales de estilo replicados para evitar acoplamiento entre dialogs.
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+// Cocoa 22 (ola 3 · lote 3-B, archetype «diálogo / drawer»): a CocoaDrawer
+// (right, lg; bottom sheet on phones) with three inner views switched by a
+// CocoaSegmentedControl:
+//   1. Resumen          → every field of the group in CocoaFormSections, read
+//                         only or editable (`editing`); PATCH /groups/:id saves.
+//   2. Pickup y bloqueo → KPI strip + day-by-day bars from
+//                         GET /properties/:id/groups/pickup-summary (the same
+//                         shape the allotments summary uses).
+//   3. Eventos          → pointer to the Grupos y eventos board.
+// Footer (two buttons): read → Cerrar · Editar; edit → Descartar · Guardar.
+// «Cambiar estado» (CocoaPopover menu; cancelling is confirmed by a
+// destructive CocoaDialog) and «Crear folio maestro» (POST
+// /groups/:id/master-folio) live in the actions row above the views. Leaving
+// Resumen while editing asks to discard the draft (CocoaDialog).
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { LoadingBlock, ErrorState } from "../../components/States";
 import { useToast } from "../../components/Toast";
 import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
 import type { GroupBooking } from "../../services/groupsApi";
-import { date, money, percent, type CurrencyInput } from "../../lib/format";
+import { EMPTY, date, dateRange, money, number, percent, plural, type CurrencyInput } from "../../lib/format";
+import { ACTIONS, confirmDiscard } from "../../content/actions";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaDatePicker,
+  CocoaDialog,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPopover,
+  CocoaSegmentedControl,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaSwitch,
+  type CocoaBarsDatum,
+  type CocoaKpiStatus,
+  type CocoaTone
+} from "../../components/cocoa";
 
-// ─── Tipos del pickup-summary de grupos (espejo del de allotments) ───────
+// ─── Pickup summary types (mirror of the allotments summary) ─────────────
 
 type GroupPickupDay = {
   date: string;
@@ -57,117 +83,56 @@ type GroupsPickupSummary = {
   groups: GroupPickupRow[];
 };
 
-// Forma esperada de la respuesta del endpoint master-folio.
+// Shape of the master-folio endpoint answer.
 type MasterFolioResponse = {
   folioId?: string;
   id?: string;
   masterFolioId?: string;
 };
 
-// ─── Helpers locales (replicados para no acoplar con NewGroupDialog) ─────
+type GroupStatusChange = "inquiry" | "tentative" | "definite" | "cancelled";
+type ViewKey = "resumen" | "pickup" | "eventos";
 
-const fieldsetStyle: CSSProperties = {
-  border: "1px solid var(--border, #e5e7eb)",
-  borderRadius: "var(--radius-sm, 6px)",
-  padding: 12,
-  margin: 0
-};
-
-const legendStyle: CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--ink-soft, #555)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  padding: "0 6px"
-};
-
-const inputStyle: CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  border: "1px solid var(--border, #d1d5db)",
-  borderRadius: "var(--radius-sm, 6px)",
-  background: "var(--surface, white)",
-  color: "var(--ink, #1a1a1a)",
-  fontSize: 14,
-  fontFamily: "inherit"
-};
-
-function Field(props: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: "var(--ink)" }}>
-      <span style={{ fontWeight: 500 }}>{props.label}</span>
-      {props.children}
-      {props.hint ? <span className="bo-muted" style={{ fontSize: 11 }}>{props.hint}</span> : null}
-    </label>
-  );
-}
-
-// ─── Helpers de formato ──────────────────────────────────────────────────
-
-function fmtDateEs(iso: string | undefined | null): string {
-  return date(iso, "medium");
-}
-
-function fmtDateShort(iso: string): string {
-  return date(iso, "dayMonth");
-}
-
-function daysFromToday(iso: string | undefined | null): number | null {
-  if (!iso) return null;
-  const target = new Date(`${iso}T00:00:00`);
-  if (Number.isNaN(target.getTime())) return null;
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  return Math.round((target.getTime() - today.getTime()) / 86400000);
-}
-
-function dDaysLabel(n: number | null): string {
-  if (n === null) return "—";
-  if (n === 0) return "hoy";
-  if (n > 0) return `en ${n} días`;
-  return `hace ${Math.abs(n)} días`;
-}
-
-function fmtMoney(value: number | undefined | null, currency?: CurrencyInput): string {
-  return money(value, currency);
-}
-
-function fmtPct(value: number | undefined | null): string {
-  return percent(value);
-}
+// ─── Labels (Spanish; the API enum stays in the value) ───────────────────
 
 const GROUP_TYPE_LABEL: Record<string, string> = {
-  corporate: "Corporate",
+  corporate: "Corporativo",
   mice: "MICE",
   smerf: "SMERF",
-  leisure: "Leisure",
-  wedding: "Wedding",
-  sports: "Sports",
-  wholesale: "Wholesale"
+  leisure: "Ocio",
+  wedding: "Boda",
+  sports: "Deportivo",
+  wholesale: "Mayorista (TT.OO.)"
 };
 
 const GROUP_STATUS_LABEL: Record<string, string> = {
-  inquiry: "Inquiry",
-  tentative: "Tentative",
-  definite: "Definite",
+  inquiry: "Consulta",
+  tentative: "Provisional",
+  definite: "Confirmado",
   cancelled: "Cancelado"
 };
 
+const GROUP_STATUS_TONE: Record<string, CocoaTone> = {
+  inquiry: "neutral",
+  tentative: "warning",
+  definite: "success",
+  cancelled: "danger"
+};
+
 const RATE_TYPE_LABEL: Record<string, string> = {
-  net: "Tarifa neta (net)",
+  net: "Tarifa neta",
   commissionable: "Tarifa comisionable"
 };
 
 const ATTRITION_TYPE_LABEL: Record<string, string> = {
   cumulative: "Acumulativa (total estancia)",
   nightly: "Por noche",
-  revenue: "Sobre revenue total"
+  revenue: "Sobre los ingresos totales"
 };
 
 const BILLING_METHOD_LABEL: Record<string, string> = {
-  master_folio: "Master folio",
-  split: "Split (room + extras)",
+  master_folio: "Folio maestro",
+  split: "Separado (alojamiento y extras)",
   individual: "Individual"
 };
 
@@ -186,9 +151,56 @@ const MEAL_PLAN_LABEL: Record<string, string> = {
   AI: "AI · Todo incluido"
 };
 
-// ─── Componente principal ────────────────────────────────────────────────
+function toOptions(map: Record<string, string>): Array<{ value: string; label: string }> {
+  return Object.entries(map).map(([value, label]) => ({ value, label }));
+}
 
-type TabKey = "resumen" | "pickup" | "eventos";
+// ─── Date helpers ────────────────────────────────────────────────────────
+
+function daysFromToday(iso: string | undefined | null): number | null {
+  if (!iso) return null;
+  const target = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(target.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((target.getTime() - today.getTime()) / 86400000);
+}
+
+function dDaysLabel(n: number | null): string {
+  if (n === null) return EMPTY;
+  if (n === 0) return "hoy";
+  if (n > 0) return `en ${plural(n, "día", "días")}`;
+  return `hace ${plural(Math.abs(n), "día", "días")}`;
+}
+
+function fmtMoney(value: number | undefined | null, currency?: CurrencyInput): string {
+  return money(value, currency);
+}
+
+function pickupStatus(pct: number): CocoaKpiStatus {
+  return pct >= 70 ? "ok" : pct >= 40 ? "warning" : "critical";
+}
+
+function pickupTone(pct: number): CocoaTone {
+  return pct >= 70 ? "success" : pct >= 40 ? "warning" : "danger";
+}
+
+const noop = () => undefined;
+
+// Secondary lines (menu hints, notes): identity from the system, not a literal.
+const HINT_STYLE: CSSProperties = {
+  color: "var(--cocoa-label-secondary)",
+  fontSize: "var(--cocoa-fs-callout)",
+  fontWeight: "var(--cocoa-fw-regular)" as CSSProperties["fontWeight"],
+  textAlign: "left"
+};
+
+const NOTES_STYLE: CSSProperties = {
+  margin: 0,
+  whiteSpace: "pre-wrap"
+};
+
+// ─── Main component ──────────────────────────────────────────────────────
 
 export function GroupDetailDialog(props: {
   groupBookingId: string;
@@ -196,34 +208,37 @@ export function GroupDetailDialog(props: {
 }) {
   const propertyId = getActivePropertyId();
   const { showToast } = useToast();
-  const [tab, setTab] = useState<TabKey>("resumen");
+  const [view, setView] = useState<ViewKey>("resumen");
+  // View the user asked for while editing: confirmed by the discard dialog.
+  const [pendingView, setPendingView] = useState<ViewKey | null>(null);
 
-  // Estado de edición + draft + flags de acción
+  // Edit state: draft, flags and the last save error.
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<GroupBooking | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  // Estado local del grupo (lo que mostramos después de un PATCH exitoso).
+  // Local copy of the group (what a successful PATCH returned).
   const [localGroup, setLocalGroup] = useState<GroupBooking | null>(null);
 
-  // Dropdown "Cambiar estado…"
+  // «Cambiar estado» menu and its destructive confirmation.
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
   const [changingStatus, setChangingStatus] = useState(false);
+  const statusAnchorRef = useRef<HTMLButtonElement | null>(null);
 
-  // Crear folio maestro
+  // Master folio.
   const [creatingFolio, setCreatingFolio] = useState(false);
   const [masterFolioId, setMasterFolioId] = useState<string | null>(null);
 
-  // 1. Fetch del grupo
+  // 1. The group itself.
   const groupState = useApiData<GroupBooking>(`/groups/${props.groupBookingId}`);
 
-  // 2. Fetch del pickup-summary del property y filtramos por groupBookingId
+  // 2. The property pickup summary, filtered to this group.
   const pickupState = useApiData<GroupsPickupSummary>(
     `/properties/${propertyId}/groups/pickup-summary?windowDays=120`
   );
 
-  // Encuentra el row del grupo en el pickup-summary
   const pickupRow = useMemo<GroupPickupRow | null>(() => {
     const list = pickupState.data?.groups ?? [];
     return list.find((g) => g.groupBookingId === props.groupBookingId) ?? null;
@@ -232,14 +247,13 @@ export function GroupDetailDialog(props: {
   const loading = groupState.loading || pickupState.loading;
   const fatalError = groupState.error || pickupState.error;
 
-  // Sincroniza el localGroup con la primera carga del fetch.
+  // First fetch seeds the local copy.
   useEffect(() => {
     if (groupState.data && !localGroup) {
       setLocalGroup(groupState.data);
     }
   }, [groupState.data, localGroup]);
 
-  // Usamos siempre la versión local más reciente (que recibe el resultado de los PATCHes).
   const group = localGroup ?? groupState.data;
 
   function refreshAll() {
@@ -247,7 +261,7 @@ export function GroupDetailDialog(props: {
     pickupState.refresh();
   }
 
-  // ─── Acciones de edición ───────────────────────────────────────────────
+  // ─── Editing ───────────────────────────────────────────────────────────
 
   function startEditing() {
     if (!group) return;
@@ -289,25 +303,34 @@ export function GroupDetailDialog(props: {
     setDraft((prev) => (prev ? { ...prev, [key]: value } : prev));
   }
 
-  // ─── Acciones de cambio de estado ──────────────────────────────────────
-
-  async function changeStatus(nextStatus: "inquiry" | "tentative" | "definite" | "cancelled") {
-    if (!group) return;
-    if (nextStatus === "cancelled") {
-      const ok = window.confirm(
-        `¿Cancelar el grupo "${group.name ?? group.code ?? "(sin nombre)"}"?\n\n` +
-        "Esta acción liberará el bloqueo y notificará a los miembros del grupo. " +
-        "Podrás reactivarlo más adelante si es necesario."
-      );
-      if (!ok) return;
+  function handleViewChange(next: ViewKey) {
+    // Leaving Resumen while editing drops the draft: ask first.
+    if (editing && next !== "resumen") {
+      setPendingView(next);
+      return;
     }
-    setChangingStatus(true);
+    setView(next);
+  }
+
+  // ─── Status changes ────────────────────────────────────────────────────
+
+  function requestStatus(next: GroupStatusChange) {
     setStatusMenuOpen(false);
+    if (next === "cancelled") {
+      setCancelOpen(true);
+      return;
+    }
+    void changeStatus(next);
+  }
+
+  async function changeStatus(nextStatus: GroupStatusChange) {
+    if (!group) return;
+    setChangingStatus(true);
     try {
       const updated = await apiRequest<GroupBooking>(`/groups/${props.groupBookingId}`, {
         method: "PATCH",
-        // Cast explícito porque GroupStatus en groupsApi.ts no contempla "cancelled"
-        // pero el backend sí lo acepta como transición de estado válida.
+        // GroupStatus in groupsApi.ts has no "cancelled", but the backend
+        // accepts it as a valid transition.
         body: { status: nextStatus } as Partial<GroupBooking>
       });
       setLocalGroup(updated);
@@ -318,10 +341,11 @@ export function GroupDetailDialog(props: {
       showToast(`No se pudo cambiar el estado: ${message}`, { variant: "error" });
     } finally {
       setChangingStatus(false);
+      setCancelOpen(false);
     }
   }
 
-  // ─── Acción: crear folio maestro ───────────────────────────────────────
+  // ─── Master folio ──────────────────────────────────────────────────────
 
   async function createMasterFolio() {
     setCreatingFolio(true);
@@ -332,12 +356,7 @@ export function GroupDetailDialog(props: {
       );
       const newFolioId = response?.folioId ?? response?.masterFolioId ?? response?.id ?? null;
       setMasterFolioId(newFolioId);
-      showToast(
-        newFolioId
-          ? `Folio maestro creado · ${newFolioId}`
-          : "Folio maestro creado",
-        { variant: "success" }
-      );
+      showToast(newFolioId ? `Folio maestro creado · ${newFolioId}` : "Folio maestro creado", { variant: "success" });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       showToast(`No se pudo crear el folio maestro: ${message}`, { variant: "error" });
@@ -346,14 +365,37 @@ export function GroupDetailDialog(props: {
     }
   }
 
-  // ─── Render ────────────────────────────────────────────────────────────
+  // ─── Derived ───────────────────────────────────────────────────────────
+
+  const persistedFolioId = (group as (GroupBooking & { masterFolioId?: string }) | null | undefined)?.masterFolioId ?? null;
+  const folioToShow = masterFolioId ?? persistedFolioId;
+  const masterFolioExists = Boolean(folioToShow);
+  const statusKey = group?.status ?? "";
+  const groupTitle = group ? `${group.code ?? EMPTY} · ${group.name ?? "Grupo sin nombre"}` : "Detalle de grupo";
+  const subtitleParts = group
+    ? [GROUP_TYPE_LABEL[group.groupType ?? ""] ?? group.groupType, dateRange(group.arrivalDate, group.departureDate), editing ? "editando" : null].filter(Boolean)
+    : [];
+
+  const viewOptions = [
+    { value: "resumen", label: "Resumen" },
+    { value: "pickup", label: "Pickup y bloqueo", disabled: pickupRow === null },
+    { value: "eventos", label: "Eventos" }
+  ];
+
+  // ─── Body ──────────────────────────────────────────────────────────────
 
   let body: ReactNode;
   if (loading && !group) {
-    body = <LoadingBlock label="Cargando detalle del grupo…" />;
+    body = (
+      <div className="cocoa-stack" data-gap="3" aria-hidden="true">
+        <CocoaSkeleton variant="title" width="40%" />
+        <CocoaSkeleton variant="card" height={240} />
+      </div>
+    );
   } else if (fatalError || !group) {
     body = (
-      <ErrorState
+      <CocoaState
+        kind="error"
         title="No se pudo cargar"
         message={fatalError ?? "Grupo no encontrado."}
         onRetry={refreshAll}
@@ -361,344 +403,187 @@ export function GroupDetailDialog(props: {
     );
   } else {
     body = (
-      <>
-        <TabsBar
-          tab={tab}
-          onChange={(next) => {
-            // Si abandonan la pestaña de Resumen mientras editan, descartamos el modo edición.
-            if (editing && next !== "resumen") {
-              const ok = window.confirm("Estás editando. ¿Descartar los cambios al cambiar de pestaña?");
-              if (!ok) return;
-              discardEditing();
-            }
-            setTab(next);
-          }}
-          pickupAvailable={pickupRow !== null}
+      <div className="cocoa-stack" data-gap="4">
+        {editing ? null : (
+          <div className="cocoa-row" data-gap="2" data-justify="between">
+            <div className="cocoa-cluster">
+              <CocoaBadge tone={GROUP_STATUS_TONE[statusKey] ?? "info"} variant="dot">
+                {GROUP_STATUS_LABEL[statusKey] ?? (statusKey || "Sin estado")}
+              </CocoaBadge>
+              {masterFolioExists ? <CocoaBadge tone="accent">Folio maestro creado</CocoaBadge> : null}
+            </div>
+            <div className="cocoa-row" data-gap="2">
+              <CocoaButton
+                ref={statusAnchorRef}
+                variant="bordered"
+                tone="neutral"
+                size="small"
+                aria-haspopup="menu"
+                aria-expanded={statusMenuOpen}
+                loading={changingStatus}
+                disabled={changingStatus}
+                onClick={() => setStatusMenuOpen((open) => !open)}
+              >
+                Cambiar estado
+              </CocoaButton>
+              <CocoaButton
+                variant="bordered"
+                tone="neutral"
+                size="small"
+                loading={creatingFolio}
+                disabled={creatingFolio || masterFolioExists}
+                title={masterFolioExists ? "El folio maestro ya existe" : undefined}
+                onClick={() => void createMasterFolio()}
+              >
+                {masterFolioExists ? "Folio maestro creado" : "Crear folio maestro"}
+              </CocoaButton>
+            </div>
+          </div>
+        )}
+
+        <CocoaSegmentedControl
+          value={view}
+          onChange={(next) => handleViewChange(next as ViewKey)}
+          options={viewOptions}
+          size="small"
+          aria-label="Vistas del grupo"
         />
-        {tab === "resumen" ? (
-          <ResumenTab
+
+        {view === "resumen" ? (
+          <ResumenView
             group={group}
             draft={draft}
             editing={editing}
-            masterFolioId={masterFolioId}
+            folioToShow={folioToShow}
             saveError={saveError}
             onChangeField={updateDraftField}
           />
         ) : null}
-        {tab === "pickup" ? <PickupTab group={group} row={pickupRow} /> : null}
-        {tab === "eventos" ? <EventosTab /> : null}
-      </>
+        {view === "pickup" ? <PickupView group={group} row={pickupRow} /> : null}
+        {view === "eventos" ? <EventosView /> : null}
+      </div>
     );
   }
 
-  // ─── Marco modal ───────────────────────────────────────────────────────
+  const discardCopy = confirmDiscard();
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="group-detail-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(15, 23, 42, 0.55)",
-        backdropFilter: "blur(2px)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
-      onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}
+    <CocoaDrawer
+      open
+      onClose={props.onClose}
+      title={groupTitle}
+      subtitle={subtitleParts.length > 0 ? subtitleParts.join(" · ") : undefined}
+      side="right"
+      size="lg"
+      focusKey={group ? "loaded" : "loading"}
+      footer={
+        editing ? (
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={discardEditing} disabled={saving}>
+              {ACTIONS.discard}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" onClick={() => void saveEdit()} loading={saving} disabled={saving}>
+              {ACTIONS.saveChanges}
+            </CocoaButton>
+          </>
+        ) : (
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose}>
+              {ACTIONS.close}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" onClick={startEditing} disabled={!group}>
+              {ACTIONS.edit}
+            </CocoaButton>
+          </>
+        )
+      }
     >
-      <section
-        className="bo-card"
-        style={{
-          width: "100%",
-          maxWidth: 880,
-          maxHeight: "92vh",
-          overflow: "auto",
-          background: "var(--surface-1, var(--surface))",
-          padding: "var(--space-5, 20px)",
-          borderRadius: "var(--radius-md, 12px)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12
-        }}
+      {body}
+
+      <CocoaPopover
+        open={statusMenuOpen}
+        anchorEl={statusAnchorRef.current}
+        placement="bottom"
+        onClose={() => setStatusMenuOpen(false)}
+        role="menu"
+        aria-label="Cambiar el estado del grupo"
       >
-        <div className="bo-card-head" style={{ marginBottom: 4 }}>
-          <div>
-            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 11, margin: 0 }}>
-              Comercial · Groups &amp; Events
-            </p>
-            <h3 id="group-detail-title" style={{ margin: "2px 0 0 0" }}>
-              {group ? `${group.code ?? "—"} · ${group.name ?? "Grupo sin nombre"}` : "Detalle de grupo"}
-              {editing ? (
-                <span
-                  className="bo-muted"
-                  style={{ fontSize: 12, marginLeft: 10, color: "var(--accent, #0d8a5f)", fontWeight: 500 }}
-                >
-                  · editando
-                </span>
-              ) : null}
-            </h3>
-          </div>
-          <button
-            type="button"
-            onClick={props.onClose}
-            aria-label="Cerrar"
-            style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "var(--ink)" }}
-          >×</button>
+        <div className="cocoa-stack" data-gap="1" style={{ minWidth: 240 }}>
+          <StatusMenuItem label="Mantener como consulta" hint="Estado inicial · sin compromiso" onClick={() => requestStatus("inquiry")} />
+          <StatusMenuItem label="Pasar a provisional" hint="Bloqueo provisional · vence en la fecha límite" onClick={() => requestStatus("tentative")} />
+          <StatusMenuItem label="Confirmar el grupo" hint="Contrato firmado · bloqueo en firme" onClick={() => requestStatus("definite")} />
+          <StatusMenuItem label="Cancelar grupo" hint="Libera el bloqueo · pide confirmación" destructive onClick={() => requestStatus("cancelled")} />
         </div>
+      </CocoaPopover>
 
-        {body}
+      <CocoaDialog
+        open={cancelOpen}
+        onClose={() => setCancelOpen(false)}
+        tone="destructive"
+        title={`¿Cancelar el grupo «${group?.name ?? group?.code ?? "sin nombre"}»?`}
+        description="Esta acción liberará el bloqueo y notificará a los miembros del grupo. Podrás reactivarlo más adelante si es necesario."
+        confirmLabel="Cancelar grupo"
+        cancelLabel={ACTIONS.back}
+        busy={changingStatus}
+        onConfirm={() => changeStatus("cancelled")}
+      />
 
-        <FooterActions
-          editing={editing}
-          saving={saving}
-          changingStatus={changingStatus}
-          creatingFolio={creatingFolio}
-          hasGroup={!!group}
-          masterFolioExists={!!masterFolioId || !!(group as (GroupBooking & { masterFolioId?: string }) | null)?.masterFolioId}
-          statusMenuOpen={statusMenuOpen}
-          onToggleStatusMenu={() => setStatusMenuOpen((open) => !open)}
-          onStartEdit={startEditing}
-          onSave={() => void saveEdit()}
-          onDiscard={discardEditing}
-          onChangeStatus={(next) => void changeStatus(next)}
-          onCreateMasterFolio={() => void createMasterFolio()}
-          onClose={props.onClose}
-        />
-      </section>
-    </div>
+      <CocoaDialog
+        open={pendingView !== null}
+        onClose={() => setPendingView(null)}
+        tone="destructive"
+        title={discardCopy.title}
+        description="Estás editando el resumen. Al cambiar de vista se pierden los cambios sin guardar."
+        confirmLabel={discardCopy.confirmLabel}
+        cancelLabel={discardCopy.cancelLabel}
+        onConfirm={() => {
+          discardEditing();
+          if (pendingView) setView(pendingView);
+          setPendingView(null);
+        }}
+      />
+    </CocoaDrawer>
   );
 }
 
-// ─── Footer de acciones ──────────────────────────────────────────────────
-
-function FooterActions(props: {
-  editing: boolean;
-  saving: boolean;
-  changingStatus: boolean;
-  creatingFolio: boolean;
-  hasGroup: boolean;
-  masterFolioExists: boolean;
-  statusMenuOpen: boolean;
-  onToggleStatusMenu: () => void;
-  onStartEdit: () => void;
-  onSave: () => void;
-  onDiscard: () => void;
-  onChangeStatus: (next: "inquiry" | "tentative" | "definite" | "cancelled") => void;
-  onCreateMasterFolio: () => void;
-  onClose: () => void;
-}) {
-  if (props.editing) {
-    return (
-      <div className="bo-row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4 }}>
-        <button type="button" onClick={props.onDiscard} disabled={props.saving}>
-          Descartar
-        </button>
-        <button
-          type="button"
-          className="primary"
-          onClick={props.onSave}
-          disabled={props.saving}
-        >
-          {props.saving ? "Guardando…" : "Guardar cambios"}
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="bo-row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 4, position: "relative" }}>
-      <button type="button" onClick={props.onStartEdit} disabled={!props.hasGroup}>
-        Editar
-      </button>
-
-      <div style={{ position: "relative" }}>
-        <button
-          type="button"
-          onClick={props.onToggleStatusMenu}
-          disabled={!props.hasGroup || props.changingStatus}
-          aria-haspopup="menu"
-          aria-expanded={props.statusMenuOpen}
-        >
-          {props.changingStatus ? "Cambiando…" : "Cambiar estado…"}
-        </button>
-        {props.statusMenuOpen ? (
-          <div
-            role="menu"
-            style={{
-              position: "absolute",
-              bottom: "calc(100% + 4px)",
-              right: 0,
-              minWidth: 230,
-              background: "var(--surface-1, white)",
-              border: "1px solid var(--border, #e5e7eb)",
-              borderRadius: "var(--radius-sm, 6px)",
-              boxShadow: "0 4px 14px rgba(26,26,26,0.10), 0 12px 32px rgba(26,26,26,0.06)",
-              padding: 4,
-              display: "flex",
-              flexDirection: "column",
-              zIndex: 10
-            }}
-          >
-            <StatusMenuItem
-              label="Mantener como Inquiry"
-              hint="Estado inicial · sin compromiso"
-              onClick={() => props.onChangeStatus("inquiry")}
-            />
-            <StatusMenuItem
-              label="Confirmar a Tentative"
-              hint="Bloqueo provisional · expira en cut-off"
-              onClick={() => props.onChangeStatus("tentative")}
-            />
-            <StatusMenuItem
-              label="Confirmar a Definite"
-              hint="Contrato firmado · bloqueo en firme"
-              onClick={() => props.onChangeStatus("definite")}
-            />
-            <StatusMenuItem
-              label="Cancelar grupo"
-              hint="Libera bloqueo · pide confirmación"
-              tone="danger"
-              onClick={() => props.onChangeStatus("cancelled")}
-            />
-          </div>
-        ) : null}
-      </div>
-
-      <button
-        type="button"
-        onClick={props.onCreateMasterFolio}
-        disabled={!props.hasGroup || props.creatingFolio || props.masterFolioExists}
-        title={props.masterFolioExists ? "El folio maestro ya existe" : undefined}
-      >
-        {props.creatingFolio
-          ? "Creando…"
-          : props.masterFolioExists
-          ? "Folio maestro creado"
-          : "Crear folio maestro"}
-      </button>
-
-      <button type="button" onClick={props.onClose}>Cerrar</button>
-    </div>
-  );
-}
+// ─── Status menu item ────────────────────────────────────────────────────
 
 function StatusMenuItem(props: {
   label: string;
-  hint?: string;
-  tone?: "default" | "danger";
+  hint: string;
+  destructive?: boolean;
   onClick: () => void;
 }) {
-  const danger = props.tone === "danger";
   return (
-    <button
-      type="button"
+    <CocoaButton
+      variant="plain"
+      tone={props.destructive ? "destructive" : "neutral"}
+      size="small"
       role="menuitem"
+      wrap
       onClick={props.onClick}
-      style={{
-        textAlign: "left",
-        border: "none",
-        background: "transparent",
-        padding: "8px 10px",
-        borderRadius: 4,
-        cursor: "pointer",
-        display: "flex",
-        flexDirection: "column",
-        gap: 2,
-        color: danger ? "var(--danger, #dc2626)" : "var(--ink, #1a1a1a)"
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(0,0,0,0.04)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+      style={{ width: "100%", justifyContent: "flex-start" }}
     >
-      <span style={{ fontSize: 13, fontWeight: 500 }}>{props.label}</span>
-      {props.hint ? (
-        <span className="bo-muted" style={{ fontSize: 11 }}>{props.hint}</span>
-      ) : null}
-    </button>
+      <span className="cocoa-stack" data-gap="1">
+        <span>{props.label}</span>
+        <span style={HINT_STYLE}>{props.hint}</span>
+      </span>
+    </CocoaButton>
   );
 }
 
-// ─── Pestañas ────────────────────────────────────────────────────────────
+// ─── View 1 · Resumen ────────────────────────────────────────────────────
 
-function TabsBar(props: {
-  tab: TabKey;
-  onChange: (next: TabKey) => void;
-  pickupAvailable: boolean;
-}) {
-  const items: Array<{ key: TabKey; label: string; disabled?: boolean }> = [
-    { key: "resumen", label: "Resumen" },
-    { key: "pickup", label: "Pickup & bloqueo", disabled: !props.pickupAvailable },
-    { key: "eventos", label: "Eventos" }
-  ];
-  return (
-    <div
-      role="tablist"
-      aria-label="Secciones del grupo"
-      style={{
-        display: "flex",
-        gap: 4,
-        borderBottom: "1px solid var(--border, #e5e7eb)",
-        paddingBottom: 0
-      }}
-    >
-      {items.map((it) => {
-        const active = props.tab === it.key;
-        return (
-          <button
-            key={it.key}
-            role="tab"
-            type="button"
-            aria-selected={active}
-            disabled={it.disabled}
-            onClick={() => props.onChange(it.key)}
-            style={{
-              border: "none",
-              background: "transparent",
-              padding: "8px 14px",
-              fontSize: 13,
-              fontWeight: active ? 600 : 500,
-              cursor: it.disabled ? "not-allowed" : "pointer",
-              opacity: it.disabled ? 0.5 : 1,
-              color: active ? "var(--accent, #0d8a5f)" : "var(--ink, #1a1a1a)",
-              borderBottom: active ? "2px solid var(--accent, #0d8a5f)" : "2px solid transparent",
-              marginBottom: -1
-            }}
-          >
-            {it.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-// ─── Tab 1 · Resumen ─────────────────────────────────────────────────────
-
-// Helper para mostrar un input editable o un input deshabilitado según el flag.
-function readOnlyValue<K extends keyof GroupBooking>(
-  group: GroupBooking,
-  key: K
-): string {
-  const v = group[key];
-  if (v == null) return "—";
-  return String(v);
-}
-
-function ResumenTab(props: {
+function ResumenView(props: {
   group: GroupBooking;
   draft: GroupBooking | null;
   editing: boolean;
-  masterFolioId: string | null;
+  folioToShow: string | null;
   saveError: string | null;
   onChangeField: <K extends keyof GroupBooking>(key: K, value: GroupBooking[K]) => void;
 }) {
-  const { group, draft, editing, masterFolioId, saveError, onChangeField } = props;
-  // Para mostrar/editar usamos el draft cuando estamos editando; si no, el group.
+  const { group, draft, editing, folioToShow, saveError, onChangeField } = props;
+  // The draft is what we show and edit while editing; the group otherwise.
   const view = editing && draft ? draft : group;
 
   const arrivalDays = daysFromToday(view.arrivalDate);
@@ -706,721 +591,352 @@ function ResumenTab(props: {
   const cutOffDays = daysFromToday(view.cutOffDate);
   const roomingListDays = daysFromToday(view.roomingListDueDate);
 
-  // Ejemplo numérico aplicado a la attrition: asume 100 hab × 3 noches × tarifa
+  // Worked example of the attrition clause: 100 rooms × 3 nights × rate.
   const exampleAttrition = useMemo(() => {
     const threshold = view.attritionThresholdPct ?? 80;
     const penalty = view.attritionPenaltyPct ?? 100;
     const rate = view.contractedRate ?? 120;
     const exampleRooms = 100;
     const exampleNights = 3;
-    const examplePickupPct = Math.max(0, threshold - 10); // 10 puntos por debajo del threshold
+    const examplePickupPct = Math.max(0, threshold - 10);
     const deficitPct = threshold - examplePickupPct;
     const deficitRooms = Math.round((deficitPct / 100) * exampleRooms);
     const penaltyEur = deficitRooms * exampleNights * rate * (penalty / 100);
-    return {
-      threshold,
-      penalty,
-      rate,
-      exampleRooms,
-      exampleNights,
-      examplePickupPct,
-      deficitRooms,
-      penaltyEur
-    };
+    return { threshold, penalty, rate, exampleRooms, exampleNights, examplePickupPct, deficitRooms, penaltyEur };
   }, [view.attritionThresholdPct, view.attritionPenaltyPct, view.contractedRate]);
 
   const showCommission = view.rateType === "commissionable" && view.commissionPct != null;
   const showDeposit = (view.paymentMethod === "prepay_pct" || view.paymentMethod === "deposit") && view.depositPct != null;
 
-  // Detección del masterFolioId persistido en el propio group (por si vuelves al dialog).
-  const persistedFolioId =
-    (group as GroupBooking & { masterFolioId?: string }).masterFolioId ?? null;
-  const folioToShow = masterFolioId ?? persistedFolioId;
+  // ─── Field renderers (plain functions, so the inputs keep their identity) ─
 
-  // ─── Helpers de campo editable ───────────────────────────────────────
+  function stringOf(key: keyof GroupBooking): string {
+    const value = view[key];
+    return value == null ? "" : String(value);
+  }
 
-  function TextField<K extends keyof GroupBooking>(p: {
-    label: string;
-    fieldKey: K;
-    hint?: string;
-    type?: "text" | "date" | "number" | "email" | "tel";
-  }) {
-    const value = view[p.fieldKey];
-    const displayValue =
-      value == null ? (editing ? "" : "—") : String(value);
-    if (editing) {
-      return (
-        <Field label={p.label} hint={p.hint}>
-          <input
-            type={p.type ?? "text"}
-            value={displayValue}
-            style={inputStyle}
-            onChange={(e) => {
-              const raw = e.target.value;
-              if (p.type === "number") {
-                onChangeField(p.fieldKey, (raw === "" ? undefined : Number(raw)) as GroupBooking[K]);
-              } else {
-                onChangeField(p.fieldKey, (raw === "" ? undefined : raw) as GroupBooking[K]);
-              }
-            }}
-          />
-        </Field>
-      );
-    }
+  function readField(label: string, value: string, help?: string): ReactNode {
     return (
-      <Field label={p.label} hint={p.hint}>
-        <input type="text" disabled value={displayValue} style={{ ...inputStyle, opacity: 0.85 }} />
-      </Field>
+      <CocoaField label={label} help={help}>
+        <CocoaInput value={value || EMPTY} onChange={noop} readOnly />
+      </CocoaField>
     );
   }
 
-  function SelectField<K extends keyof GroupBooking>(p: {
-    label: string;
-    fieldKey: K;
-    options: Array<{ value: string; label: string }>;
-    placeholderLabel?: string;
-  }) {
-    const value = view[p.fieldKey];
-    const stringValue = value == null ? "" : String(value);
-    if (editing) {
-      return (
-        <Field label={p.label}>
-          <select
-            value={stringValue}
-            style={inputStyle}
-            onChange={(e) => {
-              const raw = e.target.value;
-              onChangeField(p.fieldKey, (raw === "" ? undefined : raw) as GroupBooking[K]);
-            }}
-          >
-            <option value="">{p.placeholderLabel ?? "(sin valor)"}</option>
-            {p.options.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </Field>
-      );
-    }
-    const displayLabel =
-      p.options.find((o) => o.value === stringValue)?.label ?? (stringValue || "—");
+  function textField<K extends keyof GroupBooking>(
+    key: K,
+    label: string,
+    opts: { help?: string; type?: "text" | "number" | "email" | "tel"; inputMode?: "text" | "numeric" | "decimal" | "email" | "tel" } = {}
+  ): ReactNode {
+    const value = stringOf(key);
+    if (!editing) return readField(label, value, opts.help);
     return (
-      <Field label={p.label}>
-        <input type="text" disabled value={displayLabel} style={{ ...inputStyle, opacity: 0.85 }} />
-      </Field>
+      <CocoaField label={label} help={opts.help}>
+        <CocoaInput
+          value={value}
+          onChange={(raw) => onChangeField(key, (raw === "" ? undefined : opts.type === "number" ? Number(raw) : raw) as GroupBooking[K])}
+          type={opts.type ?? "text"}
+          inputMode={opts.inputMode}
+          autoComplete="off"
+        />
+      </CocoaField>
     );
   }
 
-  function CheckboxField<K extends keyof GroupBooking>(p: {
-    label: string;
-    fieldKey: K;
-  }) {
-    const value = Boolean(view[p.fieldKey]);
-    if (editing) {
-      return (
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13 }}>
-          <input
-            type="checkbox"
-            checked={value}
-            onChange={(e) => onChangeField(p.fieldKey, e.target.checked as GroupBooking[K])}
-          />
-          <span>{p.label}</span>
-        </label>
-      );
-    }
-    return value ? <FbChip label={p.label} tone="ok" /> : null;
-  }
-
-  function TextAreaField<K extends keyof GroupBooking>(p: {
-    label: string;
-    fieldKey: K;
-  }) {
-    const value = view[p.fieldKey];
-    const stringValue = value == null ? "" : String(value);
-    if (editing) {
-      return (
-        <Field label={p.label}>
-          <textarea
-            value={stringValue}
-            rows={4}
-            style={{ ...inputStyle, fontFamily: "inherit", resize: "vertical" }}
-            onChange={(e) => {
-              const raw = e.target.value;
-              onChangeField(p.fieldKey, (raw === "" ? undefined : raw) as GroupBooking[K]);
-            }}
-          />
-        </Field>
-      );
-    }
-    if (!stringValue) return null;
+  function dateField<K extends keyof GroupBooking>(key: K, label: string, help?: string): ReactNode {
+    const value = stringOf(key);
+    if (!editing) return readField(label, date(value, "medium"), help);
     return (
-      <p style={{ margin: 0, fontSize: 13, color: "var(--ink)", whiteSpace: "pre-wrap" }}>{stringValue}</p>
+      <CocoaField label={label} help={help}>
+        <CocoaDatePicker value={value} onChange={(next) => onChangeField(key, (next === "" ? undefined : next) as GroupBooking[K])} />
+      </CocoaField>
     );
   }
+
+  function selectField<K extends keyof GroupBooking>(
+    key: K,
+    label: string,
+    options: Array<{ value: string; label: string }>,
+    emptyLabel = "(sin valor)"
+  ): ReactNode {
+    const value = stringOf(key);
+    if (!editing) return readField(label, options.find((o) => o.value === value)?.label ?? value);
+    return (
+      <CocoaField label={label}>
+        <CocoaSelect
+          value={value}
+          onChange={(raw) => onChangeField(key, (raw === "" ? undefined : raw) as GroupBooking[K])}
+          options={[{ value: "", label: emptyLabel }, ...options]}
+        />
+      </CocoaField>
+    );
+  }
+
+  function switchField<K extends keyof GroupBooking>(key: K, label: string, tone: CocoaTone = "success"): ReactNode {
+    const checked = Boolean(view[key]);
+    if (!editing) return checked ? <CocoaBadge tone={tone}>{label}</CocoaBadge> : null;
+    return (
+      <CocoaField label={label} inline>
+        <CocoaSwitch checked={checked} onChange={(next) => onChangeField(key, next as GroupBooking[K])} />
+      </CocoaField>
+    );
+  }
+
+  const hasFb = Boolean(view.breakfastIncluded) || (view.mealPlan && view.mealPlan !== "none") || Boolean(view.welcomeCocktail) || Boolean(view.galaDinner);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* Banner de error inline al guardar */}
+    <div className="cocoa-stack" data-gap="4">
       {saveError ? (
-        <div
-          className="bo-status"
-          style={{
-            textTransform: "none",
-            padding: "10px 12px",
-            borderRadius: "var(--radius-sm, 6px)",
-            background: "rgba(220, 38, 38, 0.1)",
-            borderLeft: "3px solid var(--danger, #dc2626)",
-            color: "var(--ink)",
-            fontSize: 13
-          }}
-        >
-          No se pudo guardar: {saveError}
-        </div>
+        <CocoaCallout tone="danger" title="No se pudo guardar" role="alert">
+          {saveError}
+        </CocoaCallout>
       ) : null}
 
-      {/* 1. Identificación */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>Identificación</legend>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
-          <TextField label="Código" fieldKey="code" />
-          <TextField label="Nombre del grupo" fieldKey="name" />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
-          <SelectField
-            label="Tipo de grupo"
-            fieldKey="groupType"
-            options={Object.entries(GROUP_TYPE_LABEL).map(([value, label]) => ({ value, label }))}
-          />
-          <SelectField
-            label="Estado"
-            fieldKey="status"
-            options={Object.entries(GROUP_STATUS_LABEL).map(([value, label]) => ({ value, label }))}
-          />
-          <TextField label="Market code" fieldKey="marketCode" />
-          <TextField label="Source code" fieldKey="sourceCode" />
-        </div>
-      </fieldset>
+      <CocoaFormSection title="Identificación">
+        <CocoaFormRow columns={2}>
+          {textField("code", "Código")}
+          {textField("name", "Nombre del grupo")}
+        </CocoaFormRow>
+        <CocoaFormRow columns={4} min={160}>
+          {selectField("groupType", "Tipo de grupo", toOptions(GROUP_TYPE_LABEL))}
+          {selectField("status", "Estado del grupo", toOptions(GROUP_STATUS_LABEL))}
+          {textField("marketCode", "Código de mercado")}
+          {textField("sourceCode", "Código de origen")}
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      {/* 2. Fechas */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>Fechas e hitos</legend>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
-          {editing ? (
-            <>
-              <TextField label="Llegada" fieldKey="arrivalDate" hint={dDaysLabel(arrivalDays)} type="date" />
-              <TextField label="Salida" fieldKey="departureDate" hint={dDaysLabel(departureDays)} type="date" />
-              <TextField label="Cut-off" fieldKey="cutOffDate" hint={dDaysLabel(cutOffDays)} type="date" />
-              <TextField label="Rooming list due" fieldKey="roomingListDueDate" hint={dDaysLabel(roomingListDays)} type="date" />
-            </>
+      <CocoaFormSection title="Fechas e hitos">
+        <CocoaFormRow columns={4} min={160}>
+          {dateField("arrivalDate", "Llegada", dDaysLabel(arrivalDays))}
+          {dateField("departureDate", "Salida", dDaysLabel(departureDays))}
+          {dateField("cutOffDate", "Fecha límite (cut-off)", dDaysLabel(cutOffDays))}
+          {dateField("roomingListDueDate", "Entrega de la rooming list", dDaysLabel(roomingListDays))}
+        </CocoaFormRow>
+      </CocoaFormSection>
+
+      <CocoaFormSection title="Contacto">
+        <CocoaFormRow columns={2}>
+          {textField("contactPersonName", "Persona de contacto")}
+          {textField("contactRole", "Cargo")}
+        </CocoaFormRow>
+        <CocoaFormRow columns={2}>
+          {editing || !view.contactEmail ? (
+            textField("contactEmail", "Correo electrónico", { type: "email", inputMode: "email" })
           ) : (
-            <>
-              <Field label="Llegada" hint={dDaysLabel(arrivalDays)}>
-                <input type="text" disabled value={fmtDateEs(view.arrivalDate)} style={{ ...inputStyle, opacity: 0.85 }} />
-              </Field>
-              <Field label="Salida" hint={dDaysLabel(departureDays)}>
-                <input type="text" disabled value={fmtDateEs(view.departureDate)} style={{ ...inputStyle, opacity: 0.85 }} />
-              </Field>
-              <Field label="Cut-off" hint={dDaysLabel(cutOffDays)}>
-                <input type="text" disabled value={fmtDateEs(view.cutOffDate)} style={{ ...inputStyle, opacity: 0.85 }} />
-              </Field>
-              <Field label="Rooming list due" hint={dDaysLabel(roomingListDays)}>
-                <input type="text" disabled value={fmtDateEs(view.roomingListDueDate)} style={{ ...inputStyle, opacity: 0.85 }} />
-              </Field>
-            </>
+            <CocoaField label="Correo electrónico">
+              <a className="cocoa-link" href={`mailto:${view.contactEmail}`}>{view.contactEmail}</a>
+            </CocoaField>
           )}
-        </div>
-      </fieldset>
-
-      {/* 3. Contacto */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>Contacto</legend>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-          <TextField label="Nombre" fieldKey="contactPersonName" />
-          <TextField label="Cargo / rol" fieldKey="contactRole" />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          {editing ? (
-            <>
-              <TextField label="Correo electrónico" fieldKey="contactEmail" type="email" />
-              <TextField label="Teléfono" fieldKey="contactPhone" type="tel" />
-            </>
+          {editing || !view.contactPhone ? (
+            textField("contactPhone", "Teléfono", { type: "tel", inputMode: "tel" })
           ) : (
-            <>
-              <Field label="Correo electrónico">
-                {view.contactEmail ? (
-                  <a
-                    href={`mailto:${view.contactEmail}`}
-                    style={{
-                      ...inputStyle,
-                      opacity: 0.95,
-                      textDecoration: "none",
-                      color: "var(--accent, #0d8a5f)",
-                      display: "inline-flex",
-                      alignItems: "center"
-                    }}
-                  >
-                    {view.contactEmail}
-                  </a>
-                ) : (
-                  <input type="text" disabled value="—" style={{ ...inputStyle, opacity: 0.85 }} />
-                )}
-              </Field>
-              <Field label="Teléfono">
-                {view.contactPhone ? (
-                  <a
-                    href={`tel:${view.contactPhone}`}
-                    style={{
-                      ...inputStyle,
-                      opacity: 0.95,
-                      textDecoration: "none",
-                      color: "var(--accent, #0d8a5f)",
-                      display: "inline-flex",
-                      alignItems: "center"
-                    }}
-                  >
-                    {view.contactPhone}
-                  </a>
-                ) : (
-                  <input type="text" disabled value="—" style={{ ...inputStyle, opacity: 0.85 }} />
-                )}
-              </Field>
-            </>
+            <CocoaField label="Teléfono">
+              <a className="cocoa-link" href={`tel:${view.contactPhone}`}>{view.contactPhone}</a>
+            </CocoaField>
           )}
-        </div>
-      </fieldset>
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      {/* 4. Empresa */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>Empresa</legend>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-          <TextField label="Razón social" fieldKey="companyName" />
-          <TextField label="NIF / Tax ID" fieldKey="companyTaxId" />
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
-          <TextField label="Dirección" fieldKey="companyAddress" />
-          <TextField label="Sector / industry" fieldKey="industry" />
-        </div>
-      </fieldset>
+      <CocoaFormSection title="Empresa">
+        <CocoaFormRow columns={2}>
+          {textField("companyName", "Razón social")}
+          {textField("companyTaxId", "NIF")}
+        </CocoaFormRow>
+        <CocoaFormRow columns={2}>
+          {textField("companyAddress", "Dirección")}
+          {textField("industry", "Sector")}
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      {/* 5. Tarifa */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>Tarifa contratada</legend>
-        <div style={{ display: "grid", gridTemplateColumns: showCommission || editing ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12 }}>
-          {editing ? (
-            <TextField label="Tarifa / habitación / noche" fieldKey="contractedRate" type="number" />
-          ) : (
-            <Field label="Tarifa / habitación / noche">
-              <input
-                type="text"
-                disabled
-                value={fmtMoney(view.contractedRate, view.currency)}
-                style={{ ...inputStyle, opacity: 0.85 }}
-              />
-            </Field>
-          )}
-          <SelectField
-            label="Modelo de tarifa"
-            fieldKey="rateType"
-            options={Object.entries(RATE_TYPE_LABEL).map(([value, label]) => ({ value, label }))}
-          />
-          {showCommission || editing ? (
-            editing ? (
-              <TextField label="Comisión (%)" fieldKey="commissionPct" type="number" />
-            ) : (
-              <Field label="Comisión">
-                <input
-                  type="text"
-                  disabled
-                  value={fmtPct(view.commissionPct)}
-                  style={{ ...inputStyle, opacity: 0.85 }}
-                />
-              </Field>
-            )
-          ) : null}
-        </div>
-      </fieldset>
+      <CocoaFormSection title="Tarifa contratada">
+        <CocoaFormRow columns={3} min={160}>
+          {editing
+            ? textField("contractedRate", "Tarifa por habitación y noche", { type: "number", inputMode: "decimal" })
+            : readField("Tarifa por habitación y noche", fmtMoney(view.contractedRate, view.currency))}
+          {selectField("rateType", "Modelo de tarifa", toOptions(RATE_TYPE_LABEL))}
+          {editing
+            ? textField("commissionPct", "Comisión (%)", { type: "number", inputMode: "decimal" })
+            : showCommission
+              ? readField("Comisión", percent(view.commissionPct))
+              : null}
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      {/* 6. Attrition */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>Attrition (penalización por no-pickup)</legend>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
-          <SelectField
-            label="Tipo"
-            fieldKey="attritionType"
-            options={Object.entries(ATTRITION_TYPE_LABEL).map(([value, label]) => ({ value, label }))}
-          />
-          {editing ? (
-            <>
-              <TextField label="Threshold (%)" fieldKey="attritionThresholdPct" type="number" />
-              <TextField label="Penalty (%)" fieldKey="attritionPenaltyPct" type="number" />
-            </>
-          ) : (
-            <>
-              <Field label="Threshold">
-                <input
-                  type="text"
-                  disabled
-                  value={fmtPct(view.attritionThresholdPct)}
-                  style={{ ...inputStyle, opacity: 0.85 }}
-                />
-              </Field>
-              <Field label="Penalty">
-                <input
-                  type="text"
-                  disabled
-                  value={fmtPct(view.attritionPenaltyPct)}
-                  style={{ ...inputStyle, opacity: 0.85 }}
-                />
-              </Field>
-            </>
-          )}
-        </div>
-        <p className="bo-muted" style={{ fontSize: 12, margin: "10px 0 0 0" }}>
-          Ejemplo: con {exampleAttrition.exampleRooms} habs × {exampleAttrition.exampleNights} noches,
-          threshold {exampleAttrition.threshold}%, si pickup baja a {exampleAttrition.examplePickupPct}%
-          ({exampleAttrition.deficitRooms} hab por debajo) → penalización ≈
-          {" "}<strong style={{ color: "var(--ink)" }}>
-            {fmtMoney(exampleAttrition.penaltyEur, view.currency)}
-          </strong>{" "}
-          ({exampleAttrition.penalty}% del déficit a tarifa {fmtMoney(exampleAttrition.rate, view.currency)}).
-        </p>
-      </fieldset>
+      <CocoaFormSection title="Penalización por no ocupación (attrition)">
+        <CocoaFormRow columns={3} min={160}>
+          {selectField("attritionType", "Tipo", toOptions(ATTRITION_TYPE_LABEL))}
+          {editing
+            ? textField("attritionThresholdPct", "Umbral (%)", { type: "number", inputMode: "numeric" })
+            : readField("Umbral", percent(view.attritionThresholdPct))}
+          {editing
+            ? textField("attritionPenaltyPct", "Penalización (%)", { type: "number", inputMode: "numeric" })
+            : readField("Penalización", percent(view.attritionPenaltyPct))}
+        </CocoaFormRow>
+        <CocoaCallout tone="neutral" title="Ejemplo">
+          Con {number(exampleAttrition.exampleRooms)} habitaciones y {plural(exampleAttrition.exampleNights, "noche", "noches")}, umbral{" "}
+          {percent(exampleAttrition.threshold)}: si el pickup baja a {percent(exampleAttrition.examplePickupPct)} ({plural(exampleAttrition.deficitRooms, "habitación", "habitaciones")} por debajo)
+          la penalización es de aproximadamente <strong>{fmtMoney(exampleAttrition.penaltyEur, view.currency)}</strong> ({percent(exampleAttrition.penalty)} del déficit a{" "}
+          {fmtMoney(exampleAttrition.rate, view.currency)}).
+        </CocoaCallout>
+      </CocoaFormSection>
 
-      {/* 7. Billing */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>Facturación &amp; pago</legend>
-        <div style={{ display: "grid", gridTemplateColumns: showDeposit || editing ? "1fr 1fr 1fr" : "1fr 1fr", gap: 12 }}>
-          <SelectField
-            label="Método de facturación"
-            fieldKey="billingMethod"
-            options={Object.entries(BILLING_METHOD_LABEL).map(([value, label]) => ({ value, label }))}
-          />
-          <SelectField
-            label="Método de pago"
-            fieldKey="paymentMethod"
-            options={Object.entries(PAYMENT_METHOD_LABEL).map(([value, label]) => ({ value, label }))}
-          />
-          {showDeposit || editing ? (
-            editing ? (
-              <TextField label="Depósito (%)" fieldKey="depositPct" type="number" />
-            ) : (
-              <Field label="Depósito">
-                <input
-                  type="text"
-                  disabled
-                  value={fmtPct(view.depositPct)}
-                  style={{ ...inputStyle, opacity: 0.85 }}
-                />
-              </Field>
-            )
-          ) : null}
-        </div>
+      <CocoaFormSection title="Facturación y pago">
+        <CocoaFormRow columns={3} min={160}>
+          {selectField("billingMethod", "Método de facturación", toOptions(BILLING_METHOD_LABEL))}
+          {selectField("paymentMethod", "Método de pago", toOptions(PAYMENT_METHOD_LABEL))}
+          {editing
+            ? textField("depositPct", "Depósito (%)", { type: "number", inputMode: "decimal" })
+            : showDeposit
+              ? readField("Depósito", percent(view.depositPct))
+              : null}
+        </CocoaFormRow>
+        {folioToShow ? (
+          <CocoaCallout tone="accent" title="Folio maestro">
+            <code className="cocoa-mono">{folioToShow}</code> · Todos los cargos del grupo se imputarán a este folio.
+          </CocoaCallout>
+        ) : (
+          <CocoaCallout tone="neutral">
+            Sin folio maestro creado. Usa «Crear folio maestro» cuando el grupo esté listo.
+          </CocoaCallout>
+        )}
+      </CocoaFormSection>
 
-        {/* Master folio · se muestra si existe uno creado en esta sesión o ya persistido */}
-        <div style={{ marginTop: 12, padding: "8px 10px", border: "1px dashed var(--border, #e5e7eb)", borderRadius: 4 }}>
-          {folioToShow ? (
-            <div className="bo-row" style={{ alignItems: "center", gap: 8, fontSize: 13 }}>
-              <span style={{ fontWeight: 500 }}>Folio maestro:</span>
-              <code style={{ background: "var(--surface-2, rgba(0,0,0,0.04))", padding: "2px 6px", borderRadius: 3 }}>
-                {folioToShow}
-              </code>
-              <span className="bo-muted" style={{ fontSize: 11 }}>
-                · Todos los cargos del grupo se imputarán a este folio.
-              </span>
-            </div>
-          ) : (
-            <span className="bo-muted" style={{ fontSize: 12 }}>
-              Sin folio maestro creado. Usa el botón &quot;Crear folio maestro&quot; del footer cuando el grupo esté listo.
-            </span>
-          )}
-        </div>
-      </fieldset>
-
-      {/* 8. F&B */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>F&amp;B (catering &amp; restauración)</legend>
+      <CocoaFormSection title="Restauración y eventos (F&B)">
         {editing ? (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <SelectField
-              label="Régimen / Meal plan"
-              fieldKey="mealPlan"
-              options={Object.entries(MEAL_PLAN_LABEL).map(([value, label]) => ({ value, label }))}
-            />
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, justifyContent: "center" }}>
-              <CheckboxField label="Desayuno incluido" fieldKey="breakfastIncluded" />
-              <CheckboxField label="Welcome cocktail" fieldKey="welcomeCocktail" />
-              <CheckboxField label="Gala dinner" fieldKey="galaDinner" />
+          <CocoaFormRow columns={2}>
+            {selectField("mealPlan", "Régimen de comidas", toOptions(MEAL_PLAN_LABEL))}
+            <div className="cocoa-stack" data-gap="2">
+              {switchField("breakfastIncluded", "Desayuno incluido")}
+              {switchField("welcomeCocktail", "Cóctel de bienvenida")}
+              {switchField("galaDinner", "Cena de gala")}
             </div>
+          </CocoaFormRow>
+        ) : hasFb ? (
+          <div className="cocoa-cluster">
+            {switchField("breakfastIncluded", "Desayuno incluido")}
+            {view.mealPlan && view.mealPlan !== "none" ? <CocoaBadge tone="success">{MEAL_PLAN_LABEL[view.mealPlan] ?? view.mealPlan}</CocoaBadge> : null}
+            {switchField("welcomeCocktail", "Cóctel de bienvenida", "accent")}
+            {switchField("galaDinner", "Cena de gala", "accent")}
           </div>
         ) : (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {view.breakfastIncluded ? <FbChip label="Breakfast" tone="ok" /> : null}
-            {view.mealPlan && view.mealPlan !== "none" ? (
-              <FbChip label={MEAL_PLAN_LABEL[view.mealPlan] ?? view.mealPlan} tone="ok" />
-            ) : null}
-            {view.welcomeCocktail ? <FbChip label="Welcome cocktail" tone="accent" /> : null}
-            {view.galaDinner ? <FbChip label="Gala dinner" tone="accent" /> : null}
-            {!view.breakfastIncluded &&
-              (!view.mealPlan || view.mealPlan === "none") &&
-              !view.welcomeCocktail &&
-              !view.galaDinner ? (
-              <span className="bo-muted" style={{ fontSize: 13 }}>Sin servicios de F&amp;B incluidos.</span>
-            ) : null}
-          </div>
+          <CocoaState kind="empty" inline title="Sin servicios de restauración incluidos." />
         )}
-      </fieldset>
+      </CocoaFormSection>
 
-      {/* 9. ES specifics */}
-      <fieldset style={fieldsetStyle}>
-        <legend style={legendStyle}>España · Específicos</legend>
+      <CocoaFormSection title="España · Específicos">
         {editing ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            <CheckboxField label="REAV (Régimen Especial AAEE)" fieldKey="regimenEspecialAaee" />
-            <CheckboxField label="Llegada confidencial" fieldKey="confidentialArrival" />
+          <div className="cocoa-stack" data-gap="2">
+            {switchField("regimenEspecialAaee", "REAV (Régimen Especial de Agencias de Viajes)")}
+            {switchField("confidentialArrival", "Llegada confidencial")}
+          </div>
+        ) : view.regimenEspecialAaee || view.confidentialArrival ? (
+          <div className="cocoa-cluster">
+            {switchField("regimenEspecialAaee", "REAV (Régimen Especial de Agencias de Viajes)", "warning")}
+            {switchField("confidentialArrival", "Llegada confidencial", "warning")}
           </div>
         ) : (
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-            {view.regimenEspecialAaee ? (
-              <FbChip label="REAV (Régimen Especial AAEE)" tone="warn" />
-            ) : (
-              <span className="bo-muted" style={{ fontSize: 13 }}>Sin régimen especial AAEE.</span>
-            )}
-            {view.confidentialArrival ? (
-              <FbChip label="Llegada confidencial" tone="warn" />
-            ) : null}
-          </div>
+          <CocoaState kind="empty" inline title="Sin régimen especial ni llegada confidencial." />
         )}
-      </fieldset>
+      </CocoaFormSection>
 
-      {/* 10. Notas */}
       {editing || view.notes ? (
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Notas internas</legend>
-          <TextAreaField label="Notas" fieldKey="notes" />
-        </fieldset>
+        <CocoaFormSection title="Notas internas">
+          {editing ? (
+            <CocoaField label="Notas" fullWidth>
+              <CocoaInput
+                value={stringOf("notes")}
+                onChange={(raw) => onChangeField("notes", raw === "" ? undefined : raw)}
+                multiline
+                rows={4}
+              />
+            </CocoaField>
+          ) : (
+            <p style={NOTES_STYLE}>{view.notes}</p>
+          )}
+        </CocoaFormSection>
       ) : null}
-
-      {/* Silenciamos la advertencia de helper no usado mientras solo lo dejamos disponible. */}
-      <span style={{ display: "none" }}>{readOnlyValue(group, "id")}</span>
     </div>
   );
 }
 
-function FbChip(props: { label: string; tone: "ok" | "warn" | "accent" }) {
-  const bg =
-    props.tone === "ok" ? "rgba(13, 138, 95, 0.12)"
-    : props.tone === "warn" ? "rgba(217, 119, 6, 0.12)"
-    : "rgba(13, 138, 95, 0.08)";
-  const border =
-    props.tone === "ok" ? "var(--ok, #0d8a5f)"
-    : props.tone === "warn" ? "var(--warn, #d97706)"
-    : "var(--accent, #0d8a5f)";
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        padding: "4px 10px",
-        borderRadius: 999,
-        background: bg,
-        border: `1px solid ${border}`,
-        color: "var(--ink)",
-        fontSize: 12,
-        fontWeight: 500
-      }}
-    >
-      {props.label}
-    </span>
-  );
-}
+// ─── View 2 · Pickup y bloqueo ───────────────────────────────────────────
 
-// ─── Tab 2 · Pickup & bloqueo ────────────────────────────────────────────
-
-function PickupTab(props: { group: GroupBooking; row: GroupPickupRow | null }) {
+function PickupView(props: { group: GroupBooking; row: GroupPickupRow | null }) {
   const { group, row } = props;
   const cutOffDays = daysFromToday(group.cutOffDate);
   const showCutOffBanner = cutOffDays != null && cutOffDays >= 0 && cutOffDays < 14;
 
   if (!row) {
     return (
-      <div className="bo-status" style={{ textTransform: "none", padding: 14, borderRadius: "var(--radius-sm, 6px)" }}>
-        Aún no hay datos de pickup para este grupo. El bloqueo de habitaciones todavía no se ha
-        registrado o está fuera de la ventana de 120 días.
-      </div>
+      <CocoaState
+        kind="empty"
+        title="Aún no hay datos de pickup para este grupo"
+        message="El bloqueo de habitaciones todavía no se ha registrado o está fuera de la ventana de 120 días."
+      />
     );
   }
 
   const threshold = group.attritionThresholdPct ?? 80;
   const belowThreshold = row.belowAttritionThreshold ?? row.pickupPct < threshold;
-  const pickupColor =
-    row.pickupPct >= 70 ? "var(--ok, #0d8a5f)"
-    : row.pickupPct >= 40 ? "var(--warn, #d97706)"
-    : "var(--danger, #dc2626)";
 
-  // Estimación de la penalty si quedara como está hoy
+  // Penalty estimate if the pickup stayed as it is today.
   const exampleNights = Math.max(1, row.days.length);
   const rate = group.contractedRate ?? 0;
   const penaltyPct = group.attritionPenaltyPct ?? 100;
   const deficitRooms = Math.max(0, Math.round(((threshold - row.pickupPct) / 100) * row.totalBlocked / exampleNights));
   const estimatedPenalty = deficitRooms * exampleNights * rate * (penaltyPct / 100);
 
+  const bars: CocoaBarsDatum[] = row.days.map((d) => ({
+    label: date(d.date, "dayMonth"),
+    value: d.pickupPct,
+    tone: pickupTone(d.pickupPct),
+    hint: `Bloqueadas ${number(d.blocked)} · Vendidas ${number(d.pickedUp)} · Liberadas ${number(d.released)} · Disponibles ${number(d.remaining)}`
+  }));
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* Banner de cut-off próximo */}
+    <div className="cocoa-stack" data-gap="4">
       {showCutOffBanner ? (
-        <div
-          className="bo-status warn"
-          style={{
-            textTransform: "none",
-            padding: "10px 12px",
-            borderRadius: "var(--radius-sm, 6px)",
-            background: "rgba(217, 119, 6, 0.12)",
-            borderLeft: "3px solid var(--warn, #d97706)",
-            color: "var(--ink)",
-            fontSize: 13
-          }}
-        >
-          Cut-off en {cutOffDays === 0 ? "hoy" : `${cutOffDays} día${cutOffDays === 1 ? "" : "s"}`}
-          {" "}({fmtDateEs(group.cutOffDate)}). Asegúrate de tener la rooming list y revisar el pickup actual.
-        </div>
+        <CocoaCallout tone="warning" title={`Fecha límite ${cutOffDays === 0 ? "hoy" : `en ${plural(cutOffDays, "día", "días")}`} (${date(group.cutOffDate, "medium")})`}>
+          Asegúrate de tener la rooming list y revisa el pickup actual.
+        </CocoaCallout>
       ) : null}
 
-      {/* Alerta attrition */}
       {belowThreshold ? (
-        <div
-          className="bo-status warn"
-          style={{
-            textTransform: "none",
-            padding: "10px 12px",
-            borderRadius: "var(--radius-sm, 6px)",
-            background: "rgba(220, 38, 38, 0.1)",
-            borderLeft: "3px solid var(--danger, #dc2626)",
-            color: "var(--ink)",
-            fontSize: 13
-          }}
-        >
-          Pickup actual <strong>{row.pickupPct}%</strong> está por debajo del threshold{" "}
-          <strong>{threshold}%</strong>. Penalización estimada{" "}
-          <strong>{fmtMoney(estimatedPenalty, group.currency)}</strong>
-          {" "}({penaltyPct}% del déficit, ~{deficitRooms} hab/día por debajo).
-        </div>
+        <CocoaCallout tone="danger" title={`Pickup ${percent(row.pickupPct)} por debajo del umbral ${percent(threshold)}`}>
+          Penalización estimada <strong>{fmtMoney(estimatedPenalty, group.currency)}</strong> ({percent(penaltyPct)} del déficit, unas{" "}
+          {plural(deficitRooms, "habitación", "habitaciones")} por día por debajo).
+        </CocoaCallout>
       ) : null}
 
-      {/* KPIs */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8 }}>
-        <Stat label="Blocked" value={row.totalBlocked} color="var(--ink, #1a1a1a)" />
-        <Stat label="Picked-up" value={row.totalPickedUp} color="var(--ok, #0d8a5f)" />
-        <Stat label="Remaining" value={row.totalRemaining} color="var(--accent, #0d8a5f)" />
-        <Stat label={`Pickup %`} value={row.pickupPct} color={pickupColor} suffix="%" />
-      </div>
+      <CocoaKpiStrip aria-label="Pickup del grupo">
+        <CocoaKpi label="Bloqueadas" value={number(row.totalBlocked)} polarity="neutral" />
+        <CocoaKpi label="Vendidas" value={number(row.totalPickedUp)} tone="success" polarity="neutral" />
+        <CocoaKpi label="Disponibles" value={number(row.totalRemaining)} tone="accent" polarity="neutral" />
+        <CocoaKpi label="Pickup" value={percent(row.pickupPct)} status={pickupStatus(row.pickupPct)} polarity="positive-good" />
+      </CocoaKpiStrip>
 
-      {/* Mini barras día a día */}
       {row.days.length > 0 ? (
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Día a día · {row.days.length} noches</legend>
-          <div
-            style={{
-              display: "flex",
-              gap: 1,
-              alignItems: "flex-end",
-              height: 60,
-              background: "var(--surface-2, rgba(0,0,0,0.03))",
-              padding: 4,
-              borderRadius: 4,
-              overflow: "auto"
-            }}
-          >
-            {row.days.map((d) => {
-              const total = Math.max(1, d.blocked);
-              const pkH = Math.round((d.pickedUp / total) * 52);
-              const rlH = Math.round((d.released / total) * 52);
-              const rmH = Math.round((d.remaining / total) * 52);
-              return (
-                <div
-                  key={d.date}
-                  title={`${fmtDateShort(d.date)}\nBlocked: ${d.blocked}\nPickup: ${d.pickedUp} (${d.pickupPct}%)\nReleased: ${d.released}\nRemaining: ${d.remaining}`}
-                  style={{
-                    minWidth: 6,
-                    flex: "1 1 auto",
-                    height: "100%",
-                    display: "flex",
-                    flexDirection: "column-reverse",
-                    cursor: "help"
-                  }}
-                >
-                  <div style={{ height: pkH, background: "var(--ok, #0d8a5f)" }} />
-                  <div style={{ height: rlH, background: "var(--ink-soft, #888)", opacity: 0.4 }} />
-                  <div style={{ height: rmH, background: "var(--accent, #0d8a5f)", opacity: 0.25 }} />
-                </div>
-              );
-            })}
-          </div>
-          <div className="bo-row" style={{ gap: 12, marginTop: 6, fontSize: 11 }}>
-            <Legend color="var(--ok, #0d8a5f)" label="Picked-up" />
-            <Legend color="rgba(13, 138, 95, 0.25)" label="Remaining" />
-            <Legend color="rgba(136, 136, 136, 0.4)" label="Released" />
-            <span className="bo-muted" style={{ marginLeft: "auto" }}>Hover para ver el detalle del día</span>
-          </div>
-        </fieldset>
+        <CocoaFormSection title="Día a día" description={`${plural(row.days.length, "noche", "noches")} · pickup de cada noche sobre lo bloqueado`}>
+          <CocoaChart.Bars
+            data={bars}
+            height={120}
+            valueFormat={(value) => percent(value, { maximumFractionDigits: 0 })}
+            aria-label={`Pickup día a día de ${plural(row.days.length, "noche", "noches")}`}
+          />
+        </CocoaFormSection>
       ) : null}
     </div>
   );
 }
 
-function Stat(props: { label: string; value: number; color: string; suffix?: string }) {
-  return (
-    <div
-      style={{
-        padding: "8px 10px",
-        borderRadius: 4,
-        background: "var(--surface-2, rgba(0,0,0,0.03))",
-        display: "flex",
-        flexDirection: "column",
-        gap: 2
-      }}
-    >
-      <span className="bo-muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-        {props.label}
-      </span>
-      <span
-        style={{
-          fontSize: 18,
-          fontWeight: 600,
-          color: props.color,
-          fontFeatureSettings: '"tnum"'
-        }}
-      >
-        {props.value}{props.suffix ?? ""}
-      </span>
-    </div>
-  );
-}
+// ─── View 3 · Eventos (the events of a group live in Grupos y eventos) ───
 
-function Legend(props: { color: string; label: string }) {
+function EventosView() {
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-      <span style={{ width: 10, height: 10, background: props.color, borderRadius: 2, display: "inline-block" }} />
-      <span className="bo-muted">{props.label}</span>
-    </span>
-  );
-}
-
-// ─── Tab 3 · Eventos (the events of a group live in Grupos y eventos) ─────────
-
-function EventosTab() {
-  return (
-    <fieldset style={fieldsetStyle}>
-      <legend style={legendStyle}>Eventos</legend>
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8, padding: "32px 16px" }}>
-        <span style={{ fontSize: 32, opacity: 0.4 }} aria-hidden>◌</span>
-        <p style={{ margin: 0, fontSize: 14, color: "var(--ink)" }}>
-          Los eventos del grupo se gestionan en Grupos y eventos.
-        </p>
-        <p className="bo-muted" style={{ margin: 0, fontSize: 12, textAlign: "center", maxWidth: 380 }}>
-          Desde la fila del grupo, «Crear evento» abre el alta de banquetes, salas, F&amp;B y audiovisuales; el
-          listado de eventos se consulta en el tablero de Grupos y eventos.
-        </p>
-      </div>
-    </fieldset>
+    <CocoaState
+      kind="empty"
+      title="Los eventos del grupo se gestionan en Grupos y eventos"
+      message="Desde la fila del grupo, «Crear evento» abre el alta de banquetes, salas, restauración y audiovisuales; el listado de eventos se consulta en el tablero de Grupos y eventos."
+    />
   );
 }

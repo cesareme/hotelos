@@ -1,29 +1,59 @@
-// Rate Plans (planes tarifarios) — BAR + variantes derivadas.
+// Planes de tarifas — Revenue › Planes de tarifas (/revenue/planes, standalone).
+// Cocoa 22 · ola 5 · lote 5-C (migrated from the legacy `.bo-*` screen).
 //
-// Modelo existente: `RatePlan` (packages/database/prisma/schema.prisma) con
-// `parentRatePlanId` + `derivationJson` para variantes (% o absoluto).
-// Restricciones (MLOS, max LOS, CTA, CTD) viven en `RestrictionDay` por día,
-// pero esta UI expone el "perfil por defecto" que el motor aplicará al crear
-// días sin override manual.
+// BAR (public base rate) plus its derived variants (percent or absolute) and
+// the default stay restrictions (min/max length of stay, closed to arrival or
+// departure) the engine applies to days without a manual override.
+//
+// Model: `RatePlan` (packages/database/prisma/schema.prisma) with
+// `parentRatePlanId` + `derivationJson`; restrictions live per day in
+// `RestrictionDay`, this screen edits the default profile.
 //
 // Backend: `GET/POST /properties/:propertyId/rate-plans` (ratePlansApi). If an
-// older API still answers 404, the screen shows an honest error state — never
+// older API still answers 404 the screen shows an honest error state — never
 // sample data (Tanda 5: no demo data in front of the hotelier).
+//
+// Layout: CocoaPage → CocoaKpiStrip (planes · activos · base · derivadas) →
+// CocoaSection padding none + CocoaTable (base rows washed with the accent
+// tone) → the create form lives in a CocoaDrawer (two CocoaFormSection, two
+// footer buttons); errors of the form stay on their CocoaField.
 
-import { useEffect, useState } from "react";
-import { getActivePropertyId } from "../../services/activeProperty";
+import { useEffect, useMemo, useState } from "react";
+import { getActiveProperty } from "../../services/activeProperty";
 import {
-  fetchRatePlans, createRatePlan,
+  fetchRatePlans,
+  createRatePlan,
   RatePlansNotImplementedError,
-  type RatePlan, type RatePlanType, type RestrictionPreset, type CreateRatePlanPayload
+  type RatePlan,
+  type RatePlanType,
+  type RestrictionPreset,
+  type CreateRatePlanPayload
 } from "../../services/ratePlansApi";
-import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
 import { useToast } from "../../components/Toast";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { ACTIONS, newLabel } from "../../content/actions";
-import { money } from "../../lib/format";
-
-const PROPERTY_ID = getActivePropertyId();
+import { ACTIONS, FIELD_LABELS, STATUS_LABELS, confirmDiscard, newLabel } from "../../content/actions";
+import { money, number, percent, plural } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const TYPE_LABEL: Record<string, string> = {
   BAR: "BAR · Tarifa pública (base)",
@@ -35,9 +65,9 @@ const TYPE_LABEL: Record<string, string> = {
   weekend: "Fin de semana"
 };
 
-const TYPE_BADGE_COLOR: Record<string, "ok" | "info" | "warn"> = {
-  BAR: "ok",
-  non_refundable: "warn",
+const TYPE_TONE: Record<string, CocoaTone> = {
+  BAR: "success",
+  non_refundable: "warning",
   flexible: "info",
   corporate: "info",
   package: "info",
@@ -52,16 +82,25 @@ const MEAL_PLAN_LABEL: Record<string, string> = {
   AI: "Todo incluido (AI)"
 };
 
+const TYPE_OPTIONS = Object.keys(TYPE_LABEL).map((value) => ({ value, label: TYPE_LABEL[value] }));
+const MEAL_PLAN_OPTIONS = Object.keys(MEAL_PLAN_LABEL).map((value) => ({ value, label: MEAL_PLAN_LABEL[value] }));
+const DERIVATION_OPTIONS = [
+  { value: "percent", label: "Porcentaje sobre la BAR (ej. −10)" },
+  { value: "absolute", label: "Importe sobre la BAR (ej. +5)" },
+  { value: "none", label: "Sin derivación" }
+];
+
+// The backend expects an UPPERCASE alphanumeric code (`_` and `-` allowed), 2–20 characters.
+const CODE = /^[A-Z0-9_-]{2,20}$/;
+
 function fmtDerivation(plan: RatePlan): string {
   if (!plan.parentRatePlanId) return "Base";
   const d = plan.derivationJson;
   if (d?.type === "percent" && typeof d.value === "number") {
-    const sign = d.value > 0 ? "+" : "";
-    return `${sign}${d.value}% sobre BAR`;
+    return `${percent(d.value, { signDisplay: "always", maximumFractionDigits: 2 })} sobre BAR`;
   }
   if (d?.type === "absolute" && typeof d.value === "number") {
-    const sign = d.value > 0 ? "+" : "";
-    return `${sign}${money(d.value)} sobre BAR`;
+    return `${money(d.value, { signDisplay: "always" })} sobre BAR`;
   }
   return "Derivado";
 }
@@ -98,17 +137,100 @@ function emptyDraft(): Draft {
   };
 }
 
+type DraftErrors = Partial<Record<"code" | "name" | "parentRatePlanId" | "derivationValue", string>>;
+
+/** Client-side checks (same rules the legacy screen applied before sending): every message lands on its field. */
+function validate(draft: Draft): DraftErrors {
+  const errors: DraftErrors = {};
+  const normalizedCode = draft.code.trim().toUpperCase();
+  if (!normalizedCode) errors.code = "El código es obligatorio.";
+  else if (!CODE.test(normalizedCode)) errors.code = "Código inválido. Usa 2-20 caracteres en MAYÚSCULAS, dígitos, '_' o '-'. Ej. BAR, NREF, FLEX_24.";
+  if (!draft.name.trim()) errors.name = "El nombre es obligatorio.";
+  if (draft.ratePlanType !== "BAR" && !draft.parentRatePlanId) errors.parentRatePlanId = "Las variantes deben tener un plan padre (BAR).";
+  if (draft.ratePlanType !== "BAR" && draft.derivationType !== "none") {
+    if (!draft.derivationValue.trim()) {
+      errors.derivationValue = "Indica el valor de la derivación, o cambia el tipo a 'sin derivación'.";
+    } else {
+      // Range check before Number(): percent in [-100, 500] (full discount or 5x markup), absolute in [-10000, 10000].
+      const value = Number(draft.derivationValue);
+      if (Number.isNaN(value) || !Number.isFinite(value)) errors.derivationValue = "El valor de la derivación debe ser un número válido.";
+      else if (draft.derivationType === "percent" && (value < -100 || value > 500)) errors.derivationValue = "El porcentaje de derivación debe estar entre -100% y +500%.";
+      else if (draft.derivationType === "absolute" && value < -10000) errors.derivationValue = "El valor absoluto de derivación es demasiado bajo (mínimo -10000 €).";
+      else if (draft.derivationType === "absolute" && value > 10000) errors.derivationValue = "El valor absoluto de derivación es demasiado alto (máximo +10000 €).";
+    }
+  }
+  return errors;
+}
+
+type RatePlanRow = RatePlan & { parentLabel: string };
+
+const COLUMNS: CocoaTableColumn<RatePlanRow>[] = [
+  { key: "code", label: "Código", fit: true, render: (p) => <strong>{p.code}</strong> },
+  { key: "name", label: FIELD_LABELS.name, minWidth: 160 },
+  {
+    key: "ratePlanType",
+    label: FIELD_LABELS.type,
+    fit: true,
+    render: (p) => (
+      <CocoaBadge tone={TYPE_TONE[p.ratePlanType] ?? "info"} size="small">
+        {TYPE_LABEL[p.ratePlanType] ?? p.ratePlanType}
+      </CocoaBadge>
+    )
+  },
+  { key: "parentLabel", label: "Plan padre", showFrom: "laptop", render: (p) => p.parentLabel },
+  { key: "derivation", label: "Derivación", fit: true, render: (p) => <strong>{fmtDerivation(p)}</strong> },
+  { key: "mealPlan", label: "Régimen", showFrom: "desktop", render: (p) => (p.mealPlan ? MEAL_PLAN_LABEL[p.mealPlan] ?? p.mealPlan : "—") },
+  { key: "mlos", label: "Mín. noches", align: "right", fit: true, hideOnNarrow: true, render: (p) => (p.restrictions?.mlos != null ? number(p.restrictions.mlos) : "—") },
+  { key: "maxLos", label: "Máx. noches", align: "right", fit: true, hideOnNarrow: true, render: (p) => (p.restrictions?.maxLos != null ? number(p.restrictions.maxLos) : "—") },
+  {
+    key: "cta",
+    label: "Cierre a la llegada",
+    fit: true,
+    showFrom: "desktop",
+    render: (p) => (p.restrictions?.cta ? <CocoaBadge tone="warning" size="small">{STATUS_LABELS.yes}</CocoaBadge> : "—")
+  },
+  {
+    key: "ctd",
+    label: "Cierre a la salida",
+    fit: true,
+    showFrom: "desktop",
+    render: (p) => (p.restrictions?.ctd ? <CocoaBadge tone="warning" size="small">{STATUS_LABELS.yes}</CocoaBadge> : "—")
+  },
+  {
+    key: "active",
+    label: FIELD_LABELS.status,
+    fit: true,
+    render: (p) => <CocoaBadge tone={p.active ? "success" : "neutral"}>{p.active ? STATUS_LABELS.active : STATUS_LABELS.inactive}</CocoaBadge>
+  }
+];
+
+function RatePlansSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton variant="card" height={280} />
+    </div>
+  );
+}
+
 export function RatePlansScreen() {
   const { showToast } = useToast();
+  const property = getActiveProperty();
 
   const [plans, setPlans] = useState<RatePlan[]>([]);
   const [loading, setLoading] = useState(true);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
 
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [touched, setTouched] = useState(false);
   const [draft, setDraft] = useState<Draft>(emptyDraft());
+  const [initialDraft, setInitialDraft] = useState<Draft>(emptyDraft());
+  const [askDiscard, setAskDiscard] = useState(false);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(initialDraft);
+  const discard = confirmDiscard();
 
   async function load() {
     setLoading(true);
@@ -133,62 +255,60 @@ export function RatePlansScreen() {
 
   useEffect(() => { void load(); }, []);
 
-  const parentOptions = plans.filter((p) => p.parentRatePlanId === null);
-  const parentName = (id: string | null): string => {
-    if (!id) return "—";
-    const p = plans.find((x) => x.id === id);
-    return p ? `${p.code} — ${p.name}` : id;
-  };
+  const parentOptions = useMemo(
+    () => plans.filter((p) => p.parentRatePlanId === null).map((p) => ({ value: p.id, label: `${p.code} — ${p.name}` })),
+    [plans]
+  );
+  const rows = useMemo<RatePlanRow[]>(() => {
+    const parentName = (id: string | null): string => {
+      if (!id) return "—";
+      const p = plans.find((x) => x.id === id);
+      return p ? `${p.code} — ${p.name}` : id;
+    };
+    return plans.map((p) => ({ ...p, parentLabel: parentName(p.parentRatePlanId) }));
+  }, [plans]);
+
+  const newPlanLabel = newLabel("m", "plan");
+  const errors = validate(draft);
+  const valid = Object.keys(errors).length === 0;
+  const isBar = draft.ratePlanType === "BAR";
+  const fieldError = (key: keyof DraftErrors) => (touched ? errors[key] : undefined);
+
+  function set<K extends keyof Draft>(key: K, value: Draft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
 
   function openCreate() {
-    setDraft(emptyDraft());
+    const next = emptyDraft();
+    setDraft(next);
+    setInitialDraft(next);
+    setTouched(false);
+    setFormError(null);
+    setNotice(null);
     setShowForm(true);
-    setMsg(null);
+  }
+
+  // Esc, the scrim and «Cancelar» ask before dropping a half-filled plan (dirty guard, plan §4.4).
+  function closeForm() {
+    if (busy) return;
+    if (dirty) {
+      setAskDiscard(true);
+      return;
+    }
+    setShowForm(false);
+  }
+
+  function discardForm() {
+    setAskDiscard(false);
+    setShowForm(false);
+    setDraft(emptyDraft());
   }
 
   async function save() {
-    if (!draft.code.trim() || !draft.name.trim()) { setMsg("Código y nombre son obligatorios."); return; }
-    // FIX 8: validar formato del código antes de enviarlo al backend.
-    // El backend espera UPPERCASE alfanumérico (`_` y `-` permitidos) entre 2 y 20 chars.
-    // Aceptar cualquier cosa rompía constraints en el insert.
+    setTouched(true);
+    if (!valid || busy) return;
     const normalizedCode = draft.code.trim().toUpperCase();
-    if (!/^[A-Z0-9_-]{2,20}$/.test(normalizedCode)) {
-      setMsg("Código inválido. Usa 2-20 caracteres en MAYÚSCULAS, dígitos, '_' o '-'. Ej. BAR, NREF, FLEX_24.");
-      return;
-    }
-    if (draft.ratePlanType !== "BAR" && !draft.parentRatePlanId) {
-      setMsg("Las variantes deben tener un plan padre (BAR).");
-      return;
-    }
-    if (draft.derivationType !== "none" && !draft.derivationValue.trim()) {
-      setMsg("Indica el valor de la derivación, o cambia el tipo a 'sin derivación'.");
-      return;
-    }
-
-    // FIX 9: validar rango/NaN del valor de derivación antes de aplicar Number().
-    // PCT: [-100, 500] (descuento total o markup 5x). ABS: >= 0 (no admitimos
-    // ingresos negativos como "derivación" — eso sería un descuento absoluto
-    // y se modela como valor negativo en una sub-tarifa, no como BAR negativa).
-    let derivationValueNum: number | undefined;
-    if (draft.derivationType !== "none") {
-      derivationValueNum = Number(draft.derivationValue);
-      if (Number.isNaN(derivationValueNum) || !Number.isFinite(derivationValueNum)) {
-        setMsg("El valor de la derivación debe ser un número válido.");
-        return;
-      }
-      if (draft.derivationType === "percent" && (derivationValueNum < -100 || derivationValueNum > 500)) {
-        setMsg("El porcentaje de derivación debe estar entre -100% y +500%.");
-        return;
-      }
-      if (draft.derivationType === "absolute" && derivationValueNum < -10000) {
-        setMsg("El valor absoluto de derivación es demasiado bajo (mínimo -10000 €).");
-        return;
-      }
-      if (draft.derivationType === "absolute" && derivationValueNum > 10000) {
-        setMsg("El valor absoluto de derivación es demasiado alto (máximo +10000 €).");
-        return;
-      }
-    }
+    const derivationValueNum = !isBar && draft.derivationType !== "none" ? Number(draft.derivationValue) : undefined;
 
     const restrictions: RestrictionPreset = {
       mlos: draft.mlos ? Number(draft.mlos) : null,
@@ -204,7 +324,7 @@ export function RatePlansScreen() {
       code: normalizedCode,
       name: draft.name.trim(),
       ratePlanType: draft.ratePlanType as RatePlanType,
-      parentRatePlanId: draft.ratePlanType === "BAR" ? null : (draft.parentRatePlanId || null),
+      parentRatePlanId: isBar ? null : (draft.parentRatePlanId || null),
       derivationJson: derivation,
       cancellationPolicyId: null,
       mealPlan: draft.mealPlan || null,
@@ -212,17 +332,18 @@ export function RatePlansScreen() {
       restrictions
     };
 
-    setBusy(true); setMsg(null);
+    setBusy(true);
+    setFormError(null);
     try {
       await createRatePlan(payload);
-      setMsg(`Plan «${draft.name}» creado.`);
+      setNotice(`Plan «${draft.name}» creado.`);
       showToast(`Plan «${draft.name}» creado`, { variant: "success" });
       await load();
       setShowForm(false);
       setDraft(emptyDraft());
     } catch (e) {
       const message = e instanceof Error ? e.message : "No se pudo crear el plan.";
-      setMsg(message);
+      setFormError(message);
       showToast(message, { variant: "error" });
     } finally {
       setBusy(false);
@@ -235,191 +356,194 @@ export function RatePlansScreen() {
     base: plans.filter((p) => !p.parentRatePlanId).length,
     variants: plans.filter((p) => !!p.parentRatePlanId).length
   };
+  const ready = !loading && plans.length > 0;
+
+  let body;
+  if (errorBanner && plans.length === 0) {
+    body = <CocoaState kind="error" title="No se pudieron cargar los planes de tarifas" message={errorBanner} onRetry={() => void load()} />;
+  } else if (plans.length === 0) {
+    body = (
+      <CocoaState
+        kind="empty"
+        illustration="box"
+        title="Sin planes tarifarios"
+        message="Empieza por crear una BAR (base) y luego derivar variantes como No reembolsable o Empresas."
+        primaryAction={{ label: newPlanLabel, onClick: openCreate }}
+      />
+    );
+  } else {
+    body = (
+      <CocoaTable
+        columns={COLUMNS}
+        rows={rows}
+        rowKey="id"
+        loading={loading && plans.length === 0}
+        rowTone={(p) => (p.parentRatePlanId ? undefined : "accent")}
+        caption="Planes de tarifas"
+        aria-label="Planes de tarifas"
+      />
+    );
+  }
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <CocoaPageHeader
-        eyebrow="Revenue"
-        title="Planes de tarifas"
-        subtitle="La tarifa pública (BAR) como base y sus variantes derivadas (porcentaje o importe) con sus restricciones de estancia mínima y máxima y de llegada o salida. El precio de cada día se calcula sobre la BAR del día."
-        actions={
+    <CocoaPage
+      eyebrow={`Revenue · ${property.propertyName}`}
+      title="Planes de tarifas"
+      subtitle="La tarifa pública (BAR) como base y sus variantes derivadas (porcentaje o importe) con sus restricciones de estancia mínima y máxima y de llegada o salida. El precio de cada día se calcula sobre la BAR del día."
+      actions={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void load()} loading={loading && plans.length > 0} disabled={loading || busy}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={openCreate} disabled={busy}>
+            {newPlanLabel}
+          </CocoaButton>
+        </>
+      }
+      state={loading && plans.length === 0 && !errorBanner ? "loading" : "ready"}
+      skeleton={<RatePlansSkeleton />}
+      commands={[
+        { id: "rate-plans-new", label: newPlanLabel, run: openCreate },
+        { id: "rate-plans-refresh", label: "Actualizar los planes de tarifas", run: () => void load() }
+      ]}
+    >
+      {errorBanner && plans.length > 0 ? (
+        <CocoaCallout
+          tone="danger"
+          role="alert"
+          title={STATUS_LABELS.loadError}
+          actions={
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void load()}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
+          {errorBanner}
+        </CocoaCallout>
+      ) : null}
+      {notice ? (
+        <CocoaCallout tone="success" role="status" title={STATUS_LABELS.saved}>
+          {notice}
+        </CocoaCallout>
+      ) : null}
+
+      <CocoaKpiStrip stagger aria-label="Resumen de planes de tarifas">
+        <CocoaKpi label="Planes" value={number(kpis.total)} caption="total" polarity="neutral" status="ok" />
+        <CocoaKpi label="Activos" value={number(kpis.active)} caption="a la venta" polarity="neutral" status="ok" />
+        <CocoaKpi label="Tarifas base" value={number(kpis.base)} caption="BAR" polarity="neutral" status="ok" />
+        <CocoaKpi label="Variantes derivadas" value={number(kpis.variants)} caption="sobre la BAR" polarity="neutral" status="ok" />
+      </CocoaKpiStrip>
+
+      <CocoaSection
+        title="Planes"
+        meta={ready ? plural(plans.length, "plan", "planes") : undefined}
+        padding={ready ? "none" : "md"}
+        style={{ overflow: "clip" }}
+        aria-label="Listado de planes de tarifas"
+      >
+        {body}
+      </CocoaSection>
+
+      <CocoaDrawer
+        open={showForm}
+        onClose={closeForm}
+        title="Nuevo plan tarifario"
+        subtitle="La variante hereda el precio de la BAR del día y aplica su derivación."
+        side="right"
+        size="lg"
+        dismissible={!busy}
+        footer={
           <>
-            {busy ? <Spinner size="sm" /> : null}
-            <button type="button" onClick={load} disabled={loading || busy}>↻ {ACTIONS.refresh}</button>
-            <button type="button" className="primary" onClick={openCreate} disabled={busy}>+ {newLabel("m", "plan")}</button>
+            <CocoaButton variant="bordered" tone="neutral" onClick={closeForm} disabled={busy}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" onClick={() => void save()} loading={busy} disabled={busy || (touched && !valid)}>
+              Crear plan
+            </CocoaButton>
           </>
         }
-      />
+      >
+        <div className="cocoa-stack" data-gap="4">
+          {formError ? (
+            <CocoaCallout tone="danger" role="alert" title={STATUS_LABELS.saveError}>
+              {formError}
+            </CocoaCallout>
+          ) : null}
 
-      {errorBanner ? (
-        <p role="alert" className="bo-status warn" style={{ textTransform: "none" }}>
-          {errorBanner}
-        </p>
-      ) : null}
-      {msg ? <p role="status" aria-live="polite" className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
+          <CocoaFormSection title="Identidad y derivación" description="Una BAR no tiene plan padre; cualquier otro tipo es una variante derivada de una BAR.">
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Código" required error={fieldError("code")} help="Entre 2 y 20 caracteres: mayúsculas, dígitos, «_» o «-».">
+                <CocoaInput value={draft.code} onChange={(v) => set("code", v.toUpperCase())} placeholder="BAR, NREF, FLEX, CORP…" maxLength={20} disabled={busy} />
+              </CocoaField>
+              <CocoaField label={FIELD_LABELS.name} required error={fieldError("name")}>
+                <CocoaInput value={draft.name} onChange={(v) => set("name", v)} placeholder="Ej. No reembolsable −10 % sobre BAR" disabled={busy} />
+              </CocoaField>
+              <CocoaField label={FIELD_LABELS.type} required>
+                <CocoaSelect value={draft.ratePlanType} onChange={(v) => set("ratePlanType", v)} options={TYPE_OPTIONS} disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Plan padre" required={!isBar} hint={isBar ? STATUS_LABELS.optional.toLowerCase() : undefined} error={fieldError("parentRatePlanId")}>
+                <CocoaSelect
+                  value={draft.parentRatePlanId}
+                  onChange={(v) => set("parentRatePlanId", v)}
+                  options={[{ value: "", label: isBar ? "Sin padre (base)" : "Selecciona la BAR padre…" }, ...parentOptions]}
+                  disabled={busy || isBar}
+                />
+              </CocoaField>
+              <CocoaField label="Tipo de derivación">
+                <CocoaSelect value={draft.derivationType} onChange={(v) => set("derivationType", v as Draft["derivationType"])} options={DERIVATION_OPTIONS} disabled={busy || isBar} />
+              </CocoaField>
+              <CocoaField label="Valor de derivación" error={fieldError("derivationValue")} help={draft.derivationType === "percent" ? "Porcentaje sobre la BAR: −10 rebaja un 10 %." : draft.derivationType === "absolute" ? "Importe en euros sobre la BAR: +5 suma 5 €." : undefined}>
+                <CocoaInput
+                  type="number"
+                  inputMode="decimal"
+                  step={0.01}
+                  value={draft.derivationValue}
+                  onChange={(v) => set("derivationValue", v)}
+                  placeholder="-10"
+                  disabled={busy || isBar || draft.derivationType === "none"}
+                />
+              </CocoaField>
+              <CocoaField label="Régimen">
+                <CocoaSelect value={draft.mealPlan} onChange={(v) => set("mealPlan", v)} options={MEAL_PLAN_OPTIONS} disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Plan activo" inline help="Un plan inactivo no se vende ni se publica en los canales.">
+                <CocoaSwitch checked={draft.active} onChange={(v) => set("active", v)} size="small" disabled={busy} />
+              </CocoaField>
+            </CocoaFormRow>
+          </CocoaFormSection>
 
-      <div className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Planes</span><span className="bo-status info">total</span></div>
-          <div className="rev-kpi-value">{kpis.total}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Activos</span><span className="bo-status ok">a la venta</span></div>
-          <div className="rev-kpi-value">{kpis.active}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tarifas base</span><span className="bo-status info">BAR</span></div>
-          <div className="rev-kpi-value">{kpis.base}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Variantes derivadas</span><span className="bo-status info">child</span></div>
-          <div className="rev-kpi-value">{kpis.variants}</div>
-        </article>
-      </div>
-
-      {loading && plans.length === 0 ? (
-        <LoadingBlock label="Cargando planes tarifarios…" />
-      ) : plans.length === 0 ? (
-        <EmptyState
-          title="Sin planes tarifarios"
-          message="Empieza por crear una BAR (base) y luego derivar variantes como Non-refundable o Corporate."
-          actions={<button type="button" className="primary" onClick={openCreate}>+ Nuevo plan</button>}
-        />
-      ) : (
-        <div className="rev-report-wrap">
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Código</th>
-                <th>Nombre</th>
-                <th>Tipo</th>
-                <th>Plan padre</th>
-                <th>Derivación</th>
-                <th>Régimen</th>
-                <th>MLOS</th>
-                <th>Max LOS</th>
-                <th>CTA</th>
-                <th>CTD</th>
-                <th>Estado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {plans.map((p) => {
-                const isBase = !p.parentRatePlanId;
-                const typeColor = TYPE_BADGE_COLOR[p.ratePlanType] ?? "info";
-                const r = p.restrictions ?? {};
-                return (
-                  <tr key={p.id} style={isBase ? { background: "var(--surface-alt, rgba(13, 138, 95, 0.04))" } : undefined}>
-                    <td className="mono"><strong>{p.code}</strong></td>
-                    <td>{p.name}</td>
-                    <td>
-                      <span className={`bo-status ${typeColor}`} style={{ fontSize: 10 }}>
-                        {TYPE_LABEL[p.ratePlanType] ?? p.ratePlanType}
-                      </span>
-                    </td>
-                    <td className="bo-muted">{parentName(p.parentRatePlanId)}</td>
-                    <td><strong>{fmtDerivation(p)}</strong></td>
-                    <td>{p.mealPlan ? (MEAL_PLAN_LABEL[p.mealPlan] ?? p.mealPlan) : <span className="bo-muted">—</span>}</td>
-                    <td>{r.mlos != null ? `${r.mlos} n.` : <span className="bo-muted">—</span>}</td>
-                    <td>{r.maxLos != null ? `${r.maxLos} n.` : <span className="bo-muted">—</span>}</td>
-                    <td>{r.cta ? <span className="bo-status warn" style={{ fontSize: 10 }}>sí</span> : <span className="bo-muted">—</span>}</td>
-                    <td>{r.ctd ? <span className="bo-status warn" style={{ fontSize: 10 }}>sí</span> : <span className="bo-muted">—</span>}</td>
-                    <td><span className={`bo-status ${p.active ? "ok" : "info"}`} style={{ fontSize: 10 }}>{p.active ? "activo" : "inactivo"}</span></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <CocoaFormSection
+            title="Restricciones por defecto"
+            description="Perfil que el motor aplica al crear días sin ajuste manual. Se puede editar por día desde el calendario de restricciones."
+          >
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Estancia mínima (noches)">
+                <CocoaInput type="number" inputMode="numeric" min={0} step={1} value={draft.mlos} onChange={(v) => set("mlos", v)} placeholder="1" disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Estancia máxima (noches)">
+                <CocoaInput type="number" inputMode="numeric" min={0} step={1} value={draft.maxLos} onChange={(v) => set("maxLos", v)} placeholder="30" disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Cierre a la llegada (CTA)" inline help="No se puede llegar ese día con este plan.">
+                <CocoaSwitch checked={draft.cta} onChange={(v) => set("cta", v)} size="small" disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Cierre a la salida (CTD)" inline help="No se puede salir ese día con este plan.">
+                <CocoaSwitch checked={draft.ctd} onChange={(v) => set("ctd", v)} size="small" disabled={busy} />
+              </CocoaField>
+            </CocoaFormRow>
+          </CocoaFormSection>
         </div>
-      )}
+      </CocoaDrawer>
 
-      {showForm ? (
-        <article className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)", margin: 0 }}>Nuevo plan tarifario</h3>
-            <button type="button" onClick={() => setShowForm(false)} aria-label="Cerrar formulario de nuevo plan tarifario" title="Cerrar">✕</button>
-          </div>
-          <div className="bo-grid two" style={{ gap: 10 }}>
-            <label className="bo-form-field">
-              <span>Code *</span>
-              <input value={draft.code} onChange={(e) => setDraft((d) => ({ ...d, code: e.target.value.toUpperCase() }))} placeholder="BAR, NREF, FLEX, CORP…" disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Nombre *</span>
-              <input value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} placeholder="Ej. Non-refundable -10% BAR" disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Tipo *</span>
-              <select value={draft.ratePlanType} onChange={(e) => setDraft((d) => ({ ...d, ratePlanType: e.target.value }))} disabled={busy}>
-                {Object.keys(TYPE_LABEL).map((t) => <option key={t} value={t}>{TYPE_LABEL[t]}</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>Plan padre {draft.ratePlanType !== "BAR" ? "*" : "(opcional)"}</span>
-              <select value={draft.parentRatePlanId} onChange={(e) => setDraft((d) => ({ ...d, parentRatePlanId: e.target.value }))} disabled={busy || draft.ratePlanType === "BAR"}>
-                <option value="">{draft.ratePlanType === "BAR" ? "Sin padre (base)" : "Selecciona BAR padre…"}</option>
-                {parentOptions.map((p) => <option key={p.id} value={p.id}>{p.code} — {p.name}</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>Tipo de derivación</span>
-              <select value={draft.derivationType} onChange={(e) => setDraft((d) => ({ ...d, derivationType: e.target.value as "percent" | "absolute" | "none" }))} disabled={busy || draft.ratePlanType === "BAR"}>
-                <option value="percent">% sobre BAR (ej. -10)</option>
-                <option value="absolute">€ absoluto (ej. +5)</option>
-                <option value="none">Sin derivación</option>
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>Valor de derivación</span>
-              <input type="number" step={0.01} value={draft.derivationValue} onChange={(e) => setDraft((d) => ({ ...d, derivationValue: e.target.value }))} placeholder="-10" disabled={busy || draft.ratePlanType === "BAR" || draft.derivationType === "none"} />
-            </label>
-            <label className="bo-form-field">
-              <span>Régimen (meal plan)</span>
-              <select value={draft.mealPlan} onChange={(e) => setDraft((d) => ({ ...d, mealPlan: e.target.value }))} disabled={busy}>
-                {Object.keys(MEAL_PLAN_LABEL).map((k) => <option key={k} value={k}>{MEAL_PLAN_LABEL[k]}</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>Activo</span>
-              <input type="checkbox" checked={draft.active} onChange={(e) => setDraft((d) => ({ ...d, active: e.target.checked }))} disabled={busy} />
-            </label>
-          </div>
-
-          <article className="bo-card" style={{ background: "var(--surface-alt, var(--surface))", marginTop: 12 }}>
-            <div className="bo-card-head" style={{ marginBottom: 6 }}>
-              <div>
-                <h4 style={{ margin: 0, color: "var(--ink)" }}>Restricciones inline</h4>
-                <p className="bo-muted" style={{ margin: "4px 0 0 0", fontSize: 12, textTransform: "none" }}>
-                  Perfil por defecto que el motor aplica al crear días sin override. Editable por día desde el calendario de restricciones.
-                </p>
-              </div>
-            </div>
-            <div className="bo-grid two" style={{ gap: 10 }}>
-              <label className="bo-form-field">
-                <span>MLOS (min length of stay)</span>
-                <input type="number" min={0} step={1} value={draft.mlos} onChange={(e) => setDraft((d) => ({ ...d, mlos: e.target.value }))} placeholder="1" disabled={busy} />
-              </label>
-              <label className="bo-form-field">
-                <span>Max LOS</span>
-                <input type="number" min={0} step={1} value={draft.maxLos} onChange={(e) => setDraft((d) => ({ ...d, maxLos: e.target.value }))} placeholder="30" disabled={busy} />
-              </label>
-              <label className="bo-form-field">
-                <span>CTA (closed to arrival)</span>
-                <input type="checkbox" checked={draft.cta} onChange={(e) => setDraft((d) => ({ ...d, cta: e.target.checked }))} disabled={busy} />
-              </label>
-              <label className="bo-form-field">
-                <span>CTD (closed to departure)</span>
-                <input type="checkbox" checked={draft.ctd} onChange={(e) => setDraft((d) => ({ ...d, ctd: e.target.checked }))} disabled={busy} />
-              </label>
-            </div>
-          </article>
-
-          <div className="bo-actions" style={{ marginTop: 10 }}>
-            <button type="button" className="primary" onClick={save} disabled={busy}>Crear plan</button>
-            <button type="button" onClick={() => setShowForm(false)} disabled={busy}>Cancelar</button>
-          </div>
-        </article>
-      ) : null}
-    </section>
+      <CocoaDialog
+        open={askDiscard}
+        onClose={() => setAskDiscard(false)}
+        tone="destructive"
+        title={discard.title}
+        description={discard.message}
+        confirmLabel={discard.confirmLabel}
+        cancelLabel={discard.cancelLabel}
+        onConfirm={discardForm}
+      />
+    </CocoaPage>
   );
 }

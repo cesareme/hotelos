@@ -15,6 +15,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { RateGridBulkOp, RateGridPriceOp, RateRestrictionsPatch } from "@hotelos/shared";
 import { CocoaButton } from "../cocoa/CocoaButton";
+import { XmarkIcon } from "../cocoa-icons/ActionIcons";
 import { RESTRICTION_LABELS, eachDay, formatDateRange, formatDateShort, formatMoney, isIsoDate, pluralize } from "./helpers";
 import { buildBulkPreview, expandBulkOp, isDerivedPlan, sortRatePlans, sortRoomTypes, type ExpandBulkOpResult } from "./rate-grid-utils";
 import { Field, NumericTriChip, RateGridSidePanel, Tabs, TriStateChip, WeekdayPicker } from "./shared-ui";
@@ -233,9 +234,7 @@ export function BulkEditSheet(props: BulkEditSheetProps) {
             <span className="crg-arrow">→</span>
             <input className="crg-input" style={{ width: 140 }} type="date" value={r.to} min={r.from} aria-label={`Hasta, rango ${i + 1}`} onChange={(e) => setRanges((rs) => rs.map((x, j) => (j === i ? { ...x, to: e.target.value } : x)))} />
             {ranges.length > 1 ? (
-              <button type="button" className="crg-sheet__close" aria-label={`Quitar rango ${i + 1}`} onClick={() => setRanges((rs) => rs.filter((_, j) => j !== i))}>
-                ✕
-              </button>
+              <CocoaButton variant="plain" size="small" tone="neutral" aria-label={`Quitar rango ${i + 1}`} icon={<XmarkIcon size={14} />} onClick={() => setRanges((rs) => rs.filter((_, j) => j !== i))} />
             ) : null}
           </div>
         ))}

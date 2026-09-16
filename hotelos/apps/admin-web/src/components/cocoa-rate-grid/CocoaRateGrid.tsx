@@ -38,7 +38,7 @@ import {
   type MouseEvent as ReactMouseEvent
 } from "react";
 import type { RateGridCell, RateGridCellPatch, RateRestrictionsPatch } from "@hotelos/shared";
-import { CocoaAlert } from "../cocoa-extras/CocoaAlert";
+import { CocoaDialog } from "../cocoa/CocoaDialog";
 import type { CellCommitMode } from "./CocoaRateGridCell";
 import { GridRowView } from "./CocoaRateGridRows";
 import { RateGridHeader } from "./RateGridHeader";
@@ -784,6 +784,9 @@ export function CocoaRateGrid(props: CocoaRateGridProps) {
       }
       if (meta && key === "Enter") {
         e.preventDefault();
+        // The grid owns Ctrl/Cmd+Enter (quick edit): keep it from the window
+        // listener of the CocoaActionBar below, whose primary is the same key.
+        e.stopPropagation();
         if (!readOnly && sel.keys.length > 0) onOpenQuickEdit(sel, activeRect());
         return;
       }
@@ -990,18 +993,19 @@ export function CocoaRateGrid(props: CocoaRateGridProps) {
           </div>
         </div>
       </div>
-      <CocoaAlert
+      {/* Cocoa 22 · ola 5: the same CocoaDialog as the rest of the editor (revert, discard, leave guard). */}
+      <CocoaDialog
         open={Boolean(convertPrompt)}
-        type="warning"
+        onClose={() => setConvertPrompt(null)}
         title="Convertir en manual"
-        message={
+        description={
           convertView && convertRow && convertRow.kind === "plan"
             ? `Esta celda es ${convertView.cell?.derivedFrom ? `derivada de ${convertView.cell.derivedFrom.ratePlanCode}` : "derivada"} (${formatMoney(convertView.basePrice, response.currency)}). Si la editas dejará de seguir al plan padre hasta que la devuelvas a derivado (Supr).`
             : "La celda dejará de seguir al plan padre."
         }
-        primaryAction={{ label: "Convertir en manual", onClick: confirmConvert }}
-        cancelAction={{ label: "Cancelar", onClick: () => setConvertPrompt(null) }}
-        onClose={() => setConvertPrompt(null)}
+        confirmLabel="Convertir en manual"
+        cancelLabel="Cancelar"
+        onConfirm={confirmConvert}
       />
     </>
   );

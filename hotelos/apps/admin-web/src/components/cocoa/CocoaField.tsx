@@ -138,6 +138,9 @@ export interface CocoaFormRowProps {
   /** Minimum column width in px (default 240); a narrower container drops columns. */
   min?: number;
   children: ReactNode;
+  /** Name the row as a group (`role="group"` + `aria-label`): inline forms in a section footer («Añadir competidor»). */
+  role?: "group";
+  "aria-label"?: string;
   className?: string;
   style?: CSSProperties;
 }
@@ -166,7 +169,7 @@ export function formRowColumns(columns: CocoaFormRowColumns, input: { width: num
  * measures its own width and emits the effective column count, so a row
  * inside a drawer or a narrow CocoaSpan never overflows its container.
  */
-export function CocoaFormRow({ columns = 2, min = 240, children, className, style }: CocoaFormRowProps) {
+export function CocoaFormRow({ columns = 2, min = 240, children, role, "aria-label": ariaLabel, className, style }: CocoaFormRowProps) {
   const ref = useRef<HTMLDivElement | null>(null);
   const width = useElementWidth(ref);
   const effective = formRowColumns(columns, { width, min, gap: FORM_ROW_GAP_PX });
@@ -176,7 +179,7 @@ export function CocoaFormRow({ columns = 2, min = 240, children, className, styl
     ...style
   };
   return (
-    <div ref={ref} className={["c22-form-row", "cocoa-form-row", className].filter(Boolean).join(" ")} style={rowStyle} data-cocoa="form-row" data-columns={effective}>
+    <div ref={ref} role={role} aria-label={ariaLabel} className={["c22-form-row", "cocoa-form-row", className].filter(Boolean).join(" ")} style={rowStyle} data-cocoa="form-row" data-columns={effective}>
       {children}
     </div>
   );

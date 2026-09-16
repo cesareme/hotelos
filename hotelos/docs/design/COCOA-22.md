@@ -299,11 +299,11 @@ Cada plantilla es un fichero completo que **compila contra las primitivas del wo
 | Lista / tabla | `ListaTabla` | alojada y standalone (búsqueda, orden controlado, drawer) | `guests/GuestsListScreen.tsx` |
 | Detalle | `Detalle` | standalone `/…/:id` y alojada como pestaña `:id` (`useRouteParam`) | `screens/billing/FolioDetailScreen.tsx` (lote 6-A) |
 | Formulario / ajustes | `Formulario` | alojada y standalone | `propertySetup/PropertySetupForms.tsx` |
-| Asistente / wizard | `Asistente` | standalone | — (ola 3: ReservationCreate) |
-| Workspace split | `Workspace` | standalone (rejilla 4/8; < 900 lista + drawer) | — (ola 8: ComplianceInbox) |
-| Calendario / parrilla | `Calendario` | standalone `fullBleed` + `density="compact"` | — (ola 5: RateGridEditor) |
+| Asistente / wizard | `Asistente` | standalone | `screens/reservations/ReservationCreateScreen.tsx` (lote 3-A) |
+| Workspace split | `Workspace` | standalone (rejilla 4/8; < 900 lista + drawer) | `screens/reservations/ReservationWorkspaceScreen.tsx` · `screens/guestJourney/GuestJourneyWorkspace.tsx` (ola 3) |
+| Calendario / parrilla | `Calendario` | standalone `fullBleed` + `density="compact"` | `screens/revenue/RateGridEditorScreen.tsx` (parrilla, lote 5-A) · `screens/timeline/LiveTimelineWorkspace.tsx` (cronograma, lote 3-A) |
 | Chat / asistente IA | `Chat` | standalone | — (AssistantChat) |
-| Diálogo / drawer | `DialogoDrawer` | componentes, no páginas (`*Dialog.tsx`, `*Drawer.tsx`) | — (ola 4) |
+| Diálogo / drawer | `DialogoDrawer` | componentes, no páginas (`*Dialog.tsx`, `*Drawer.tsx`) | `screens/operations/QuickCheckInDrawer.tsx` (ola 2) · `screens/operations/NewGroupDialog.tsx` (lote 3-B) |
 | Contenedor de pestañas | — | ya Cocoa (`NavItemTabs`, `CocoaRouteTabs`); solo consumen `CocoaPageHeader` | `screens/tabs/**` |
 
 Las llamadas a la API de las plantillas (`/ejemplo…`) son ilustrativas: sustitúyelas por el endpoint real y su tipo. Los `await new Promise(setTimeout)` marcan dónde va `apiRequest`.
@@ -1534,7 +1534,7 @@ Otros umbrales existentes que se conservan: 700 (`MOBILE_BREAKPOINT_PX`, landing
 | `ConfirmDialog`, `window.confirm`, overlays `position:fixed` locales | `CocoaDialog` | — |
 | `SidePanel`, `CocoaSheet` como panel lateral, drawers `*Drawer.tsx` | `CocoaDrawer` | `CocoaSheet` queda para hojas de importación/preview |
 | `Toast` Aurora | `Toast` con tokens Cocoa (misma API `useToast`) | — |
-| `.fp-sticky-actions`, `RateGridStatusBar`, barras locales | `CocoaActionBar` | publica `--hotelos-toast-offset` |
+| `.fp-sticky-actions`, `RateGridStatusBar`, barras locales | `CocoaActionBar` | publica `--hotelos-toast-offset` en `<html>` mientras está montada (único estilo en línea admitido en la raíz; plan §4.3 V4) |
 | Gráficos inline SVG por pantalla, `.rev-channel-bar`, `.bo-progress-bar` | `CocoaChart.{Sparkline,Bars,Line,Gauge,Donut,Progress}` | extraídos de `cocoa-director` |
 | Emoji (`✨ ⚠️ ✅`) | `cocoa-icons` (`SparkleIcon`, `StatusIcons`) | — |
 | Colores literales (539: 267 duros + 272 fallbacks `var(--x, #hex)`) | tokens; fallbacks eliminados (todos los tokens existen) | — |
@@ -1901,6 +1901,7 @@ export function clampPercent(value: number): number
 export type CocoaButtonVariant = "filled" | "tinted" | "bordered" | "plain";
 export type CocoaButtonSize = "small" | "regular" | "large";
 export type CocoaButtonTone = "accent" | "neutral" | "destructive";
+export type CocoaButtonAlign = "start" | "center" | "between";
 
 export interface CocoaButtonProps {
   variant?: CocoaButtonVariant;
@@ -1943,11 +1944,15 @@ export interface CocoaButtonProps {
   "aria-selected"?: boolean;
   /** Multi-line label (selectable list rows, long titles in a 320 px column): the text wraps, the height follows it, left-aligned. Default: one line, fixed height. */
   wrap?: boolean;
+  /** Stretch to the container's width (rows of a listbox / menu, phone footers) — the geometry is inline, so a className cannot set it. */
+  fullWidth?: boolean;
+  /** Horizontal alignment of icon + label inside the button: `center` (default) · `start` (list rows) · `between` (label + trailing chevron). */
+  align?: CocoaButtonAlign;
 }
 
 /** Text colour of a variant/tone pair (exported for the action bar's status text and tests): filled → ink on the hue; ghosts → AA tone ink. */
 export function buttonForeground(variant: CocoaButtonVariant, tone: CocoaButtonTone): string
-export function CocoaButton({ variant = "filled", size = "regular", tone = "accent", icon, iconPosition = "left", loading = false, disabled = false, onClick, onFocus, onBlur, onKeyDown, children, type = "button", className, style, id, name, form, tabIndex, autoFocus, ref, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-expanded": ariaExpanded, "aria-pressed": ariaPressed, "aria-controls": ariaControls, "aria-haspopup": ariaHasPopup, "aria-current": ariaCurrent, title, "data-cocoa": dataCocoa = "button", "data-tour": dataTour, "data-testid": dataTestId, role, "aria-selected": ariaSelected, wrap = false }: CocoaButtonProps)
+export function CocoaButton({ variant = "filled", size = "regular", tone = "accent", icon, iconPosition = "left", loading = false, disabled = false, onClick, onFocus, onBlur, onKeyDown, children, type = "button", className, style, id, name, form, tabIndex, autoFocus, ref, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-expanded": ariaExpanded, "aria-pressed": ariaPressed, "aria-controls": ariaControls, "aria-haspopup": ariaHasPopup, "aria-current": ariaCurrent, title, "data-cocoa": dataCocoa = "button", "data-tour": dataTour, "data-testid": dataTestId, role, "aria-selected": ariaSelected, wrap = false, fullWidth = false, align = "center" }: CocoaButtonProps)
 ```
 
 #### `CocoaCard.tsx`
@@ -1970,13 +1975,15 @@ export interface CocoaCardProps {
   "aria-label"?: string;
   "aria-labelledby"?: string;
   "aria-describedby"?: string;
+  /** Toggle state of a selectable interactive card (room tile, filter card): the drawer being open is not a state a screen reader hears. */
+  "aria-pressed"?: boolean;
   /** Contract marker; primitives built on the card override it (`kpi`, `section`). */
   "data-cocoa"?: string;
 }
 
 /** Resting shadow of a variant (what hover escalates from and mouse-leave restores). */
 export function cardRestingShadow(variant: CocoaCardVariant): string
-export function CocoaCard({ variant = "plain", padding = "md", children, onClick, className, style, role, id, "aria-label": ariaLabel, "aria-labelledby": ariaLabelledBy, "aria-describedby": ariaDescribedBy, "data-cocoa": dataCocoa = "card" }: CocoaCardProps)
+export function CocoaCard({ variant = "plain", padding = "md", children, onClick, className, style, role, id, "aria-label": ariaLabel, "aria-labelledby": ariaLabelledBy, "aria-describedby": ariaDescribedBy, "aria-pressed": ariaPressed, "data-cocoa": dataCocoa = "card" }: CocoaCardProps)
 ```
 
 #### `CocoaPageHeader.tsx`
@@ -2100,7 +2107,8 @@ export function CocoaSpan({ cols, min, rowSpan, children, className, style }: Co
 #### `CocoaKpi.tsx`
 
 ```ts
-export type CocoaKpiDeltaUnit = "%" | "pp" | "€" | "pts";
+/** Unit of the delta chip: the four usual ones keep autocomplete; any other short unit («hab», «noches») is accepted (`(string & {})`). */
+export type CocoaKpiDeltaUnit = "%" | "pp" | "€" | "pts" | (string & {});
 export type CocoaKpiPolarity = "positive-good" | "negative-good" | "neutral";
 export type CocoaKpiStatus = "ok" | "warning" | "critical";
 export type CocoaKpiSize = "regular" | "compact";
@@ -2437,6 +2445,9 @@ export interface CocoaFormRowProps {
   /** Minimum column width in px (default 240); a narrower container drops columns. */
   min?: number;
   children: ReactNode;
+  /** Name the row as a group (`role="group"` + `aria-label`): inline forms in a section footer («Añadir competidor»). */
+  role?: "group";
+  "aria-label"?: string;
   className?: string;
   style?: CSSProperties;
 }
@@ -2448,7 +2459,7 @@ export const FORM_ROW_GAP_PX = 12
 export function formRowColumns(columns: CocoaFormRowColumns, input: { width: number | null; min?: number; gap?: number }): number
 
 /** The template itself lives in the stylesheet (`.c22-form-row[data-columns]` → `repeat(N, minmax(0, 1fr))`, 1 column under 600 px): this component only measures its own width and emits the effective column count, so a row inside a drawer or a narrow CocoaSpan never overflows its container. */
-export function CocoaFormRow({ columns = 2, min = 240, children, className, style }: CocoaFormRowProps)
+export function CocoaFormRow({ columns = 2, min = 240, children, role, "aria-label": ariaLabel, className, style }: CocoaFormRowProps)
 
 export interface CocoaFormSectionProps {
   title: string;
@@ -2630,6 +2641,30 @@ export interface CocoaStepperProps {
 
 /** Clamp to [min, max] (pure). */
 export function clampStep(value: number, min: number, max: number): number
+
+/** Fine pointer: ± stacked (NSStepper); coarse: side by side «− +» (UIStepper). */
+export type CocoaStepperDirection = "column" | "row";
+
+export interface CocoaStepperGeometry {
+  direction: CocoaStepperDirection;
+  /** Outer height of the control: 22 / 28, 44 on touch (equals CocoaInput / CocoaSelect). */
+  height: number;
+  /** Outer width of each ± button, borders included: 16 / 18, 44 on touch. */
+  buttonWidth: number;
+  chevronSize: number;
+}
+
+/** Geometry of the control by size and pointer (pure). */
+export function stepperGeometry(size: NonNullable<CocoaStepperProps["size"]>, coarse: boolean): CocoaStepperGeometry
+
+export interface CocoaStepperPartStyles {
+  input: CSSProperties;
+  increment: CSSProperties;
+  decrement: CSSProperties;
+}
+
+/** Borders and corner radii of the three parts (pure): the outer edge paints `borderColor` (the control chrome: separator, accent on focus, danger on error), the dividers between parts paint the separator, and only the outer corners are rounded so the assembled control reads as one 8 px shell. */
+export function stepperPartStyles(direction: CocoaStepperDirection, borderColor: string): CocoaStepperPartStyles
 export function CocoaStepper({ value, onChange, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY, step = 1, size = "regular", disabled = false, error = false, id, name, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-invalid": ariaInvalid, className, style }: CocoaStepperProps)
 ```
 
@@ -2714,6 +2749,12 @@ export interface CocoaSegmentedControlProps {
   size?: CocoaSegmentedControlSize;
   /** Stretch every segment to share the width (phones). */
   fullWidth?: boolean;
+  /**
+   * id of the element the active tab controls (`aria-controls`, as CocoaRouteTabs
+   * does): give that container `role="tabpanel"` and an `aria-label` — the
+   * segmented control has no ids of its own to point `aria-labelledby` at.
+   */
+  panelId?: string;
   className?: string;
   style?: CSSProperties;
   "aria-label"?: string;
@@ -2733,7 +2774,7 @@ export function tabSurfaceStyle(isActive: boolean): CSSProperties
 
 /** Button style of a segment (pure): NO `boxShadow` and a transparent background — both live on the surface child. */
 export function segmentItemStyle(input: { isActive: boolean; disabled?: boolean; size: CocoaSegmentedControlSize; fullWidth: boolean }): CSSProperties
-export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, className, style, "aria-label": ariaLabel }: CocoaSegmentedControlProps)
+export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, panelId, className, style, "aria-label": ariaLabel }: CocoaSegmentedControlProps)
 ```
 
 #### `CocoaTable.tsx`
@@ -2789,6 +2830,13 @@ export interface CocoaTableProps<Row> {
   stickyFirstColumn?: boolean;
   /** Trailing actions cell per row (CocoaButton plain/small). */
   rowActions?: (row: Row) => ReactNode;
+  /**
+   * When the row actions show on a fine pointer: `hover` (default: hover, focus
+   * and selection; always on touch and in the phone cards) or `always` — for
+   * tables whose actions ARE the interaction (channels: probar · mapeos ·
+   * desactivar · archivar) and must be discoverable without a mouse move.
+   */
+  rowActionsVisible?: "hover" | "always";
   /** Tone wash of a row (`data-tone` on the <tr>, tone-bg on the phone card; hover and selection still win): low stock, overdue… */
   rowTone?: (row: Row) => CocoaTone | undefined;
   /** Native tooltip of a row («Abrir el detalle de la propiedad»). */
@@ -2831,7 +2879,7 @@ export function columnSizingStyle(column: Pick<CocoaTableColumn<unknown>, "width
 export function densityRowPadding(density: CocoaTableDensity | undefined): string
 export function resolveRowKey<Row>(row: Row, rowKey: string | ((row: Row) => string) | undefined, idx: number): string
 export function defaultRender<Row>(row: Row, key: string): ReactNode
-export function CocoaTable<Row>({ columns, rows, sortBy, onSort, rowKey, selectedKey, onSelect, emptyState, loading = false, density, stickyFirstColumn = false, rowActions, rowTone, rowTitle, footer, virtualize = false, caption, "aria-label": ariaLabel, maxHeight, className, style }: CocoaTableProps<Row>)
+export function CocoaTable<Row>({ columns, rows, sortBy, onSort, rowKey, selectedKey, onSelect, emptyState, loading = false, density, stickyFirstColumn = false, rowActions, rowActionsVisible = "hover", rowTone, rowTitle, footer, virtualize = false, caption, "aria-label": ariaLabel, maxHeight, className, style }: CocoaTableProps<Row>)
 ```
 
 #### `CocoaScrollArea.tsx`
@@ -3055,6 +3103,8 @@ export interface CocoaActionBarProps {
   sticky?: boolean;
   /** Render only below 600 px (the desktop keeps its header actions). */
   mobileOnly?: boolean;
+  /** Let the status wrap onto several lines (composed status: badge + text + chip); default one line with ellipsis. */
+  wrap?: boolean;
   publishToastOffset?: boolean;
   className?: string;
   /** Layout escape hatch only. */
@@ -3065,9 +3115,12 @@ export interface CocoaActionBarProps {
 /** Ctrl/⌘ + Enter (pure). */
 export function isPrimaryShortcut(event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey?: boolean }): boolean
 
+/** True when the shortcut's target sits inside an open overlay (dialog, drawer, sheet: `role="dialog"` / `"alertdialog"`), which owns Enter there (pure; takes anything with a `closest()` so tests need no DOM). */
+export function shortcutInsideOverlay(target: unknown): boolean
+
 /** Placement of the bar by tier (pure; informational `data-placement`, the stylesheet decides). */
 export function actionBarPlacement(input: { isNarrow: boolean; sticky: boolean }): "fixed" | "sticky" | "static"
-export function CocoaActionBar({ primary, secondary, extra, status, sticky = true, mobileOnly = false, publishToastOffset = false, className, style, "aria-label": ariaLabel }: CocoaActionBarProps)
+export function CocoaActionBar({ primary, secondary, extra, status, sticky = true, mobileOnly = false, wrap = false, publishToastOffset = false, className, style, "aria-label": ariaLabel }: CocoaActionBarProps)
 ```
 
 #### `CocoaChart.tsx`

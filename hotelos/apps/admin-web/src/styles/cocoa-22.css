@@ -716,6 +716,8 @@ table.cocoa-table {
 @media (hover: none) {
   .c22-table__actions { opacity: 1; }
 }
+/* `rowActionsVisible="always"` (CocoaTable): the actions ARE the interaction. */
+.c22-table[data-actions="always"] .c22-table__actions { opacity: 1; }
 /* Sticky first column (wide tables) */
 .c22-table[data-sticky-first-column="true"] :is(th, td):first-child {
   position: sticky;
@@ -727,6 +729,13 @@ table.cocoa-table {
 .c22-table[data-sticky-first-column="true"] thead th:first-child {
   z-index: 3;
   background: var(--cocoa-background-sidebar);
+}
+/* The sticky cell of the totals row keeps the foot's inverse surface (same
+   tokens as `.c22-table tfoot td`): the generic sticky rule above out-ranks
+   that one and used to paint «Total» content-white on white (qa#3). */
+.c22-table[data-sticky-first-column="true"] tfoot :is(th, td):first-child {
+  background: var(--inverse-surface);
+  color: var(--inverse-ink);
 }
 /* Phone: stacked label/value cards — <td data-label="…"> supplies the label */
 @media (max-width: 599px) {
@@ -1151,9 +1160,9 @@ table.cocoa-table {
   .c22-dialog__actions > button { width: 100%; min-height: var(--cocoa-touch-target); }
 }
 
-/* `--hotelos-toast-offset` is an ABSOLUTE bottom published by the rate grid
-   status bar (RateGridStatusBar.tsx · helpers.toastOffsetForBar, browser-ux#21);
-   default 120 px — mirrors toastViewportStyle() of CocoaToast.tsx. */
+/* `--hotelos-toast-offset` is an ABSOLUTE bottom published by CocoaActionBar
+   `publishToastOffset` (bar height + 24; the rate grid bar since Cocoa 22 · ola 5,
+   browser-ux#21); default 120 px — mirrors toastViewportStyle() of CocoaToast.tsx. */
 .c22-toast-stack {
   position: fixed;
   right: var(--cocoa-space-5);

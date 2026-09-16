@@ -961,7 +961,9 @@ export const STATUS_BAR_BASE_HEIGHT_PX = 44;
  * Bottom offset (px) the toast host must keep so it never covers the sticky
  * status bar: the base 120 px plus whatever the bar grew beyond its one-row
  * height (restore banner, «celdas guardadas sin enviar» chip wrapping to a
- * second row). browser-ux-final#9.
+ * second row). browser-ux-final#9. Since Cocoa 22 · ola 5 the bar is a
+ * CocoaActionBar and `publishToastOffset` writes the variable itself; this
+ * helper stays as the pure, unit-tested reference of that clearance.
  */
 export function toastOffsetForBar(barHeight: number): number {
   const extra = Number.isFinite(barHeight) ? Math.max(0, Math.round(barHeight) - STATUS_BAR_BASE_HEIGHT_PX) : 0;

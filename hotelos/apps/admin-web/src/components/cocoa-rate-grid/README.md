@@ -26,11 +26,11 @@ recomendaciones). Aquí no se redefine nada de eso.
 | `BulkEditSheet.tsx` | Hoja lateral 420 px de edición masiva → `BulkEditSubmission` (ops del contrato + parches previsualizados). |
 | `ReviewPublishDrawer.tsx` | Diff agrupado, canales con conteo y modo, progreso por canal (`publishState`); con borrador vacío y `pendingPush` pasa a modo «Enviar a canales» (`onPushPending` → POST /rate-grid/push). Sin «programar»: el API no tiene `scheduleAt`. |
 | `SyncStatusPanel.tsx` | Matriz celda × canal, «Solo errores», reintentar, ver en historial, «Enviar pendientes» (celdas guardadas sin enviar). |
-| `HistoryDrawer.tsx` | Journal con diff por celda, revertir, cargar más. |
+| `HistoryDrawer.tsx` | `HistoryList` (journal con diff por celda, revertir, cargar más; estados con `CocoaBadge`) y `HistoryDrawer`, que lo monta en el panel lateral del editor. La pestaña «Historial» (`RateJournalScreen`) pinta la misma lista dentro de una `CocoaSection`. |
 | `RecommendationPopover.tsx` | Titular + factores con peso + señales ausentes; Aceptar / Aceptar con ajuste / Rechazar (motivo). |
-| `RateGridStatusBar.tsx` | «12 cambios sin guardar · 3 tipos · 2 planes», Deshacer/Rehacer, Descartar (confirma si > 20), «Guardar sin enviar a canales», «Revisar y publicar» / «Enviar a canales» (celdas guardadas sin enviar), banner de restauración. Sticky abajo. aria-live. |
-| `shared-ui.tsx` | Panel lateral con focus-trap + Esc, popover fijo, chips tri-estado, selector L-D, pestañas. |
-| `rate-grid.css` | Estilos con tokens Cocoa (claro/oscuro heredado de `:root`). Prefijo `crg`. |
+| `RateGridStatusBar.tsx` | Sobre `CocoaActionBar` (Cocoa 22 · ola 5): estado «12 cambios sin guardar · 3 tipos · 2 planes» (aria-live), Deshacer/Rehacer, Descartar (`CocoaDialog` si > 20), «Guardar sin enviar a canales», «Revisar y publicar» / «Enviar a canales» (celdas guardadas sin enviar; Ctrl/⌘+Enter), banner de restauración como `CocoaCallout`. Sticky abajo (fija con safe-area en teléfono, solo las dos acciones); publica `--hotelos-toast-offset` con `publishToastOffset`. |
+| `shared-ui.tsx` | Panel lateral con focus-trap + Esc (cierre con `CocoaButton` de icono), popover fijo, chips tri-estado, selector L-D, pestañas. |
+| `rate-grid.css` | Estilos solo con tokens Cocoa (claro/oscuro heredado de `:root`; las recomendaciones usan el tono `--cocoa-tone-ai`, sin segundo acento ni colores literales). Prefijo `crg`. |
 | `index.ts` | Barrel: exporta todo. |
 
 ## Claves de celda
@@ -125,5 +125,5 @@ estados de sync llevan icono + texto además de color. Foco visible.
 - `useRateJournal` recarga la primera página en cada apertura del drawer y la pantalla llama a `refresh()` tras cada guardado/publicación/envío y desde «Recargar»: el historial muestra los asientos nuevos sin F5.
 - Recuentos: «entregas» solo para lo que el API encola (por tipo y canal, `queuedDeliveriesSummary`); lo que devuelve sync-status son **celdas del rango visible** (la ruta no filtra por journal) y así se etiqueta; `pluralize` en todos los resúmenes.
 - `resolveReviewDrawerMode` (rate-grid-utils): con un envío en curso el drawer conserva el flujo que lo lanzó (título, subtítulo, aviso «Cambio revertido…»), aunque el borrador se vacíe y exista un `pendingPush` anterior.
-- `RateGridStatusBar` publica `--hotelos-toast-offset` (`toastOffsetForBar`) y `Toast.tsx` lo lee: la barra de dos filas ya no queda bajo el toast.
+- `RateGridStatusBar` publica `--hotelos-toast-offset` y `Toast.tsx` lo lee: la barra de dos filas ya no queda bajo el toast (desde Cocoa 22 · ola 5 lo hace `CocoaActionBar publishToastOffset`; `toastOffsetForBar` se conserva como helper puro).
 - Etiquetas: `CHANNEL_MODE_LABELS` (select del hub) usa el mismo vocabulario que `channelModeLabel`; `providerLabel` / `channelTypeLabel` para las tarjetas y tablas legacy del Channel Manager; `lib/channel-hash.ts` (`withChannelHash`) mantiene `#channel=` al cambiar de canal en Mapeos.

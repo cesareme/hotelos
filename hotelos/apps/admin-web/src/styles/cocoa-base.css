@@ -132,6 +132,19 @@ input[type="search"]::-webkit-search-decoration {
   outline: none;
   box-shadow: 0 0 0 3px var(--cocoa-focus-ring);
 }
+/* Touch (§5.1, V6 «todo control ≥ 44 px»): a standalone link — a table cell
+   (the night of a recommendation), a field value (mailto:/tel:), a download —
+   grows to the tap target like CocoaButton does (qa#15: measured 78×16 at
+   390×844). Height only, widths stay natural (the mobile.css convention). A
+   link inside a paragraph is prose and keeps its line box (WCAG 2.5.8, inline
+   exception). */
+@media (pointer: coarse) {
+  .cocoa-link:not(p *) {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--cocoa-touch-target);
+  }
+}
 
 .cocoa-sr-only {
   position: absolute !important;

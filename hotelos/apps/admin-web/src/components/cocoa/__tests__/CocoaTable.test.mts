@@ -1,6 +1,30 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
-import { VIRTUALIZE_CHUNK, VIRTUALIZE_THRESHOLD, columnSizingStyle, defaultRender, densityRowPadding, isColumnVisible, isTableOverflowing, nextSort, resolveRowKey, visibleRowCount, wrapOverflowStyle } from "../CocoaTable.tsx";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { CocoaTable, VIRTUALIZE_CHUNK, VIRTUALIZE_THRESHOLD, columnSizingStyle, defaultRender, densityRowPadding, isColumnVisible, isTableOverflowing, nextSort, resolveRowKey, visibleRowCount, wrapOverflowStyle } from "../CocoaTable.tsx";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const cocoaCss = readFileSync(resolve(here, "../../../styles/cocoa-22.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+
+/** Body of the first `selector {…}` rule inside `css` (comments already stripped). */
+function ruleBody(css: string, selector: string): string {
+  const start = css.indexOf(`${selector} {`);
+  assert.ok(start >= 0, `rule ${selector} not found in cocoa-22.css`);
+  return css.slice(start, css.indexOf("}", start));
+}
+
+/** Opening tag of the first cell (`th`/`td`) inside the first `<section>…</section>` of `html`. */
+function firstCellTag(html: string, section: "thead" | "tbody" | "tfoot"): string {
+  const block = html.match(new RegExp(`<${section}[^>]*>[\\s\\S]*?</${section}>`));
+  assert.ok(block, `no <${section}> in ${html}`);
+  const cell = block[0].match(/<t[hd]\b[^>]*>/);
+  assert.ok(cell, `no cell in <${section}>`);
+  return cell[0];
+}
 
 describe("CocoaTable · sorting", () => {
   it("toggles asc → desc on the same key and starts asc on a new key", () => {
@@ -122,5 +146,49 @@ describe("CocoaTable · column sizing (qa#2)", () => {
     assert.deepEqual(columnSizingStyle({ align: "right", nowrap: false }), {});
     assert.deepEqual(columnSizingStyle({ fit: true, nowrap: false }), { width: 1 });
     assert.deepEqual(columnSizingStyle({ nowrap: true }), { whiteSpace: "nowrap" });
+  });
+});
+
+describe("CocoaTable · sticky first column keeps the section background (qa#3)", () => {
+  const columns = [
+    { key: "day", label: "Día" },
+    { key: "rooms", label: "Habitaciones", align: "right" as const },
+    { key: "revenue", label: "Ingresos", align: "right" as const }
+  ];
+  const rows = [
+    { id: 1, day: "01/09", rooms: 40, revenue: "3.200,00 €" },
+    { id: 2, day: "02/09", rooms: 42, revenue: "3.410,00 €" }
+  ];
+  const html = renderToStaticMarkup(createElement(CocoaTable, { columns, rows, rowKey: "id", stickyFirstColumn: true, footer: { day: "Total", rooms: 82, revenue: "6.610,00 €" }, "aria-label": "Informe diario" } as never));
+
+  it("the sticky cell of head, body and foot carries no inline background (the stylesheet paints it per section)", () => {
+    for (const section of ["thead", "tbody", "tfoot"] as const) {
+      const tag = firstCellTag(html, section);
+      assert.match(tag, /position:sticky/, `${section} first cell is sticky: ${tag}`);
+      assert.match(tag, /left:0/, `${section} first cell is pinned to the left: ${tag}`);
+      assert.doesNotMatch(tag, /background/, `${section} first cell must not paint its background inline: ${tag}`);
+    }
+  });
+
+  it("the table advertises the sticky column to the stylesheet and the foot still renders the totals", () => {
+    assert.match(html, /<table[^>]*data-sticky-first-column="true"/);
+    assert.match(html, /<tfoot>[\s\S]*Total[\s\S]*6\.610,00 €[\s\S]*<\/tfoot>/);
+  });
+
+  it("the stylesheet gives the sticky totals cell the same inverse surface and ink as the rest of the foot", () => {
+    const foot = ruleBody(cocoaCss, ".c22-table tfoot td");
+    const stickyFoot = ruleBody(cocoaCss, '.c22-table[data-sticky-first-column="true"] tfoot :is(th, td):first-child');
+    const footBackground = foot.match(/background:\s*([^;]+);/)?.[1];
+    const footColor = foot.match(/color:\s*([^;]+);/)?.[1];
+    assert.ok(footBackground && footColor, `tfoot rule paints background and colour: ${foot}`);
+    assert.match(stickyFoot, new RegExp(`background:\\s*${footBackground.replace(/[()]/g, "\\$&")};`));
+    assert.match(stickyFoot, new RegExp(`color:\\s*${footColor.replace(/[()]/g, "\\$&")};`));
+  });
+
+  it("the sticky totals rule out-ranks the generic sticky rule (0,3,2 > 0,3,1) and follows it in source order", () => {
+    const generic = cocoaCss.indexOf('.c22-table[data-sticky-first-column="true"] :is(th, td):first-child {');
+    const stickyFoot = cocoaCss.indexOf('.c22-table[data-sticky-first-column="true"] tfoot :is(th, td):first-child {');
+    assert.ok(generic >= 0 && stickyFoot > generic);
+    assert.match(ruleBody(cocoaCss, '.c22-table[data-sticky-first-column="true"] :is(th, td):first-child'), /background:\s*var\(--cocoa-background-content\);/);
   });
 });

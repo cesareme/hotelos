@@ -1,65 +1,51 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from "react";
+// RoomingListImportDialog — import a group's rooming list from a CSV.
+//
+// Cocoa 22 (ola 3 · lote 3-B, archetype «diálogo / drawer»): a CocoaDrawer
+// (right, lg; bottom sheet on phones) with three CocoaFormSections: the file
+// (CocoaFileInput: the only native file control lives in the primitive), the
+// downloadable template and the preview (CocoaTable with the first ten rows,
+// tinted rows for the invalid ones, aggregated errors in a callout). The
+// footer has two buttons: Cancelar and «Importar N filas».
+// POST /groups/:id/rooming-list/import with the valid rows only; the CSV
+// parser (delimiter detection, quotes, header aliases in Spanish and
+// English, date normalisation) is unchanged.
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { apiRequest } from "../../services/api-client";
 import { fetchRoomTypes, type AdminRoomType } from "../../services/pmsCommerceApi";
 import { getActivePropertyId } from "../../services/activeProperty";
+import { EMPTY, date, dateRange, number, plural } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
+import { DownloadIcon } from "../../components/cocoa-icons/ActionIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFileInput,
+  CocoaFormSection,
+  CocoaTable,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
-// ─── Styles compartidos con NewGroupDialog ───────────────────────────────
-
-const fieldsetStyle: CSSProperties = {
-  border: "1px solid var(--border, #e5e7eb)",
-  borderRadius: "var(--radius-sm, 6px)",
-  padding: 12,
-  margin: 0
-};
-
-const legendStyle: CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--ink-soft, #555)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  padding: "0 6px"
-};
-
-const inputStyle: CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  border: "1px solid var(--border, #d1d5db)",
-  borderRadius: "var(--radius-sm, 6px)",
-  background: "var(--surface, white)",
-  color: "var(--ink, #1a1a1a)",
-  fontSize: 14,
-  fontFamily: "inherit"
-};
-
-function Field(props: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: "var(--ink)" }}>
-      <span style={{ fontWeight: 500 }}>{props.label}</span>
-      {props.children}
-      {props.hint ? <span className="bo-muted" style={{ fontSize: 11 }}>{props.hint}</span> : null}
-    </label>
-  );
-}
-
-// ─── Tipos de entrada del rooming list (lo que parseamos) ────────────────
+// ─── Rooming list rows (what we parse) ───────────────────────────────────
 
 type RawRow = Record<string, string>;
 
 type ParsedRow = {
-  index: number;        // 1-based row number en el archivo
+  index: number; // 1-based row number in the file
   firstName: string;
   lastName: string;
   email: string;
   phone: string;
-  arrivalDate: string;  // YYYY-MM-DD (normalizado)
+  arrivalDate: string; // YYYY-MM-DD (normalised)
   departureDate: string;
   roomTypeCode: string;
-  roomTypeId: string;   // resuelto a partir de roomTypeCode
+  roomTypeId: string; // resolved from roomTypeCode
   sharing: string;
   dietary: string;
   specialRequests: string;
-  // Validación
+  // Validation
   isValid: boolean;
   errors: string[];
 };
@@ -79,10 +65,10 @@ type ImportPayloadEntry = {
 
 type ImportResult = {
   imported: number;
-  // El backend podría devolver más cosas, pero solo necesitamos el conteo.
+  // The backend may return more; only the count is needed here.
 };
 
-// ─── Mapeo de cabeceras (case insensitive · substring match) ─────────────
+// ─── Header mapping (case insensitive · substring match) ─────────────────
 
 type FieldKey =
   | "firstName"
@@ -96,7 +82,7 @@ type FieldKey =
   | "dietary"
   | "specialRequests";
 
-// Lista de aliases por campo. Buscamos por substring (case insensitive).
+// Aliases per field, matched by substring (case insensitive).
 const FIELD_ALIASES: Record<FieldKey, string[]> = {
   firstName: ["firstname", "first_name", "first name", "nombre"],
   lastName: ["lastname", "last_name", "last name", "apellido", "apellidos", "surname"],
@@ -122,9 +108,9 @@ function detectFieldKey(header: string): FieldKey | null {
   return null;
 }
 
-// ─── Parser CSV simple sin dependencias ──────────────────────────────────
-// Soporta comilla doble (escape "" dentro de cadenas entrecomilladas)
-// y detecta delimitador (, o ;) según frecuencia en la primera línea.
+// ─── Small CSV parser without dependencies ───────────────────────────────
+// Supports double quotes (escaped as "" inside quoted strings) and picks
+// the delimiter (, or ;) by frequency in the header line.
 
 function detectDelimiter(headerLine: string): "," | ";" {
   const commas = (headerLine.match(/,/g) ?? []).length;
@@ -165,13 +151,13 @@ function splitCsvLine(line: string, delimiter: string): string[] {
 }
 
 function parseCsv(text: string): RawRow[] {
-  // Normaliza saltos de línea (Windows / Mac classic) y elimina BOM.
+  // Normalise line breaks (Windows / classic Mac) and drop the BOM.
   const cleaned = text.replace(/^﻿/, "").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   const lines = cleaned.split("\n").filter((l) => l.trim().length > 0);
   if (lines.length === 0) return [];
   const delimiter = detectDelimiter(lines[0]);
   const headers = splitCsvLine(lines[0], delimiter);
-  // Mapea cada cabecera a una FieldKey conocida (o null si no se reconoce).
+  // Map every header to a known FieldKey (or null when unknown).
   const headerKeys: (FieldKey | null)[] = headers.map(detectFieldKey);
   const rows: RawRow[] = [];
   for (let i = 1; i < lines.length; i++) {
@@ -181,25 +167,23 @@ function parseCsv(text: string): RawRow[] {
       const key = headerKeys[c];
       if (!key) continue;
       const value = cells[c] ?? "";
-      // Si ya tenemos valor (cabecera duplicada), no sobrescribir si nuevo está vacío.
+      // A duplicated header never overwrites a value with an empty one.
       if (row[key] && !value) continue;
       row[key] = value;
     }
-    // Solo añadir filas con al menos un campo útil.
+    // Keep rows with at least one useful field.
     if (Object.values(row).some((v) => v && v.length > 0)) rows.push(row);
   }
   return rows;
 }
 
-// ─── Normalización de fechas (YYYY-MM-DD) ────────────────────────────────
-// Acepta formatos comunes: YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, MM/DD/YYYY.
+// ─── Date normalisation (YYYY-MM-DD) ─────────────────────────────────────
+// Accepts YYYY-MM-DD, DD/MM/YYYY, DD-MM-YYYY, MM/DD/YYYY.
 
 function toIsoDate(raw: string): string {
   const v = raw.trim();
   if (!v) return "";
-  // Ya viene en YYYY-MM-DD
   if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  // DD/MM/YYYY o DD-MM-YYYY
   const m1 = v.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
   if (m1) {
     const dd = m1[1].padStart(2, "0");
@@ -207,7 +191,7 @@ function toIsoDate(raw: string): string {
     const yyyy = m1[3];
     return `${yyyy}-${mm}-${dd}`;
   }
-  // Fallback: parsear con Date y volver a serializar.
+  // Fallback: parse with Date and serialise again.
   const d = new Date(v);
   if (!Number.isNaN(d.getTime())) {
     const yyyy = d.getFullYear();
@@ -218,7 +202,7 @@ function toIsoDate(raw: string): string {
   return "";
 }
 
-// ─── Validación de fila ──────────────────────────────────────────────────
+// ─── Row validation ──────────────────────────────────────────────────────
 
 function validateRow(
   raw: RawRow,
@@ -239,23 +223,23 @@ function validateRow(
   const dietary = (raw.dietary ?? "").trim();
   const specialRequests = (raw.specialRequests ?? "").trim();
 
-  if (!firstName) errors.push("firstName obligatorio");
-  if (!lastName) errors.push("lastName obligatorio");
+  if (!firstName) errors.push("nombre (firstName) obligatorio");
+  if (!lastName) errors.push("apellidos (lastName) obligatorios");
 
-  // Fechas: si vienen en el archivo se validan; si no, heredan del grupo.
+  // Dates: validated when present in the file; otherwise inherited from the group.
   const arrivalDate = arrivalRaw ? toIsoDate(arrivalRaw) : groupArrival;
   const departureDate = departureRaw ? toIsoDate(departureRaw) : groupDeparture;
-  if (arrivalRaw && !arrivalDate) errors.push(`arrivalDate inválida: "${arrivalRaw}"`);
-  if (departureRaw && !departureDate) errors.push(`departureDate inválida: "${departureRaw}"`);
+  if (arrivalRaw && !arrivalDate) errors.push(`llegada (arrivalDate) no válida: "${arrivalRaw}"`);
+  if (departureRaw && !departureDate) errors.push(`salida (departureDate) no válida: "${departureRaw}"`);
   if (arrivalDate && departureDate && departureDate <= arrivalDate) {
-    errors.push("departure debe ser posterior a arrival");
+    errors.push("la salida debe ser posterior a la llegada");
   }
 
-  // Room type: si viene código se exige que exista en el catálogo.
+  // Room type: a code, when given, must exist in the catalogue.
   let roomTypeId = "";
   if (roomTypeCode) {
     const found = roomTypeMap.get(roomTypeCode.toUpperCase());
-    if (!found) errors.push(`roomTypeCode "${roomTypeCode}" no existe`);
+    if (!found) errors.push(`el tipo de habitación "${roomTypeCode}" no existe`);
     else roomTypeId = found;
   }
 
@@ -277,7 +261,7 @@ function validateRow(
   };
 }
 
-// ─── Template descargable ────────────────────────────────────────────────
+// ─── Downloadable template ───────────────────────────────────────────────
 
 const TEMPLATE_HEADERS = [
   "firstName",
@@ -317,7 +301,7 @@ function buildTemplateCsv(arrivalDate: string, departureDate: string): string {
     "",
     "Aniversario · botella de cava"
   ];
-  // Escapamos campos con comas o comillas
+  // Escape fields with commas or quotes.
   const escape = (v: string) => {
     if (v.includes(",") || v.includes("\"") || v.includes("\n")) {
       return `"${v.replace(/"/g, "\"\"")}"`;
@@ -333,7 +317,7 @@ function downloadTemplate(arrivalDate: string, departureDate: string, groupName:
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
-  // Slugificación sencilla del nombre de grupo
+  // Simple slug of the group name.
   const slug = groupName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "group";
   a.href = url;
   a.download = `rooming-list-template-${slug}.csv`;
@@ -343,7 +327,58 @@ function downloadTemplate(arrivalDate: string, departureDate: string, groupName:
   URL.revokeObjectURL(url);
 }
 
-// ─── Componente principal ────────────────────────────────────────────────
+// ─── Preview table ───────────────────────────────────────────────────────
+
+const PREVIEW_COLUMNS: CocoaTableColumn<ParsedRow>[] = [
+  { key: "index", label: "Fila", fit: true, align: "right", render: (r) => number(r.index) },
+  { key: "firstName", label: "Nombre", minWidth: 120, render: (r) => r.firstName || EMPTY },
+  { key: "lastName", label: "Apellidos", minWidth: 120, render: (r) => r.lastName || EMPTY },
+  { key: "email", label: "Correo", hideOnNarrow: true, render: (r) => r.email || EMPTY },
+  { key: "arrivalDate", label: "Llegada", fit: true, hideOnNarrow: true, render: (r) => date(r.arrivalDate) },
+  { key: "departureDate", label: "Salida", fit: true, hideOnNarrow: true, render: (r) => date(r.departureDate) },
+  {
+    key: "roomTypeCode",
+    label: "Tipo",
+    fit: true,
+    render: (r) =>
+      r.roomTypeCode ? (
+        <span className="cocoa-row" data-gap="1" data-wrap="nowrap">
+          <span className="cocoa-mono">{r.roomTypeCode}</span>
+          {r.roomTypeId ? null : (
+            <CocoaBadge tone="danger" size="small">
+              no existe
+            </CocoaBadge>
+          )}
+        </span>
+      ) : (
+        EMPTY
+      )
+  },
+  {
+    key: "status",
+    label: "Validación",
+    fit: true,
+    render: (r) =>
+      r.isValid ? (
+        <CocoaBadge tone="success" size="small">
+          Correcta
+        </CocoaBadge>
+      ) : (
+        <CocoaBadge tone="danger" size="small" title={r.errors.join("; ")}>
+          Con errores
+        </CocoaBadge>
+      )
+  }
+];
+
+// Secondary notes (captions under a control): identity from the system.
+const NOTE_STYLE: CSSProperties = {
+  margin: 0,
+  color: "var(--cocoa-label-secondary)",
+  fontSize: "var(--cocoa-fs-callout)"
+};
+
+// ─── Main component ──────────────────────────────────────────────────────
 
 export function RoomingListImportDialog(props: {
   groupBookingId: string;
@@ -361,9 +396,11 @@ export function RoomingListImportDialog(props: {
   const [parsedRows, setParsedRows] = useState<ParsedRow[] | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Latest error callback without re-running the catalogue fetch on every render.
+  const onErrorRef = useRef(props.onError);
+  onErrorRef.current = props.onError;
 
-  // Cargar room types al montar para construir mapping code → id.
+  // Room types on mount: builds the code → id map.
   useEffect(() => {
     let cancelled = false;
     setLoadingRoomTypes(true);
@@ -375,13 +412,15 @@ export function RoomingListImportDialog(props: {
       .catch((err: unknown) => {
         if (cancelled) return;
         const msg = err instanceof Error ? err.message : String(err);
-        props.onError(`No se pudo cargar el catálogo de habitaciones: ${msg}`);
+        onErrorRef.current(`No se pudo cargar el catálogo de habitaciones: ${msg}`);
       })
       .finally(() => {
         if (!cancelled) setLoadingRoomTypes(false);
       });
-    return () => { cancelled = true; };
-  }, [propertyId, props]);
+    return () => {
+      cancelled = true;
+    };
+  }, [propertyId]);
 
   const roomTypeMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -391,7 +430,7 @@ export function RoomingListImportDialog(props: {
     return m;
   }, [roomTypes]);
 
-  // Stats derivadas (válidas / inválidas / total)
+  // Derived counts (valid / invalid / total).
   const stats = useMemo(() => {
     if (!parsedRows) return null;
     const total = parsedRows.length;
@@ -400,9 +439,7 @@ export function RoomingListImportDialog(props: {
     return { total, valid, invalid };
   }, [parsedRows]);
 
-  async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  async function handleFile(file: File) {
     setFileName(file.name);
     setParseError(null);
     setParsedRows(null);
@@ -413,10 +450,8 @@ export function RoomingListImportDialog(props: {
         setParseError("El archivo no contiene filas de datos.");
         return;
       }
-      const parsed: ParsedRow[] = raw.map((r, i) =>
-        validateRow(r, i + 2, roomTypeMap, props.arrivalDate, props.departureDate)
-        // i + 2 porque la fila 1 es la cabecera y la primera fila de datos es la fila 2 del archivo.
-      );
+      // i + 2: row 1 is the header, so the first data row is row 2 of the file.
+      const parsed: ParsedRow[] = raw.map((r, i) => validateRow(r, i + 2, roomTypeMap, props.arrivalDate, props.departureDate));
       setParsedRows(parsed);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -428,7 +463,6 @@ export function RoomingListImportDialog(props: {
     setFileName(null);
     setParsedRows(null);
     setParseError(null);
-    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   async function handleImport() {
@@ -449,10 +483,7 @@ export function RoomingListImportDialog(props: {
           dietary: r.dietary || undefined,
           specialRequests: r.specialRequests || undefined
         }));
-      const result = await apiRequest<ImportResult>(
-        `/groups/${props.groupBookingId}/rooming-list/import`,
-        { method: "POST", body: { entries } }
-      );
+      const result = await apiRequest<ImportResult>(`/groups/${props.groupBookingId}/rooming-list/import`, { method: "POST", body: { entries } });
       props.onImported(result.imported ?? entries.length);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -462,7 +493,7 @@ export function RoomingListImportDialog(props: {
     }
   }
 
-  // Errores agregados (para chip rojo)
+  // Aggregated errors (row + message).
   const aggregatedErrors = useMemo(() => {
     if (!parsedRows) return [];
     const out: { row: number; message: string }[] = [];
@@ -474,285 +505,122 @@ export function RoomingListImportDialog(props: {
   }, [parsedRows]);
 
   const previewRows = useMemo(() => parsedRows?.slice(0, 10) ?? [], [parsedRows]);
+  const stay = dateRange(props.arrivalDate, props.departureDate);
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="rooming-import-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(15, 23, 42, 0.55)",
-        backdropFilter: "blur(2px)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
-      onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}
+    <CocoaDrawer
+      open
+      onClose={props.onClose}
+      title="Importar rooming list"
+      subtitle={`${props.groupName} · ${stay}`}
+      side="right"
+      size="lg"
+      footer={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose} disabled={submitting}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          <CocoaButton
+            variant="filled"
+            tone="accent"
+            onClick={() => void handleImport()}
+            loading={submitting}
+            disabled={submitting || !stats || stats.valid === 0}
+          >
+            {stats ? `Importar ${plural(stats.valid, "fila", "filas")}` : ACTIONS.import}
+          </CocoaButton>
+        </>
+      }
     >
-      <div
-        className="bo-card"
-        style={{
-          width: "100%",
-          maxWidth: 760,
-          maxHeight: "92vh",
-          overflow: "auto",
-          background: "var(--surface-1, var(--surface))",
-          padding: "var(--space-5, 20px)",
-          borderRadius: "var(--radius-md, 12px)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12
-        }}
-      >
-        {/* Header */}
-        <div className="bo-card-head" style={{ marginBottom: 4 }}>
-          <div>
-            <p
-              className="bo-muted"
-              style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 11, margin: 0 }}
-            >
-              Operaciones · Groups &amp; Events
-            </p>
-            <h3 id="rooming-import-title" style={{ margin: "2px 0 0 0" }}>
-              Importar rooming list · {props.groupName}
-            </h3>
-          </div>
-          <div className="bo-row" style={{ gap: 8 }}>
-            <button
-              type="button"
-              onClick={() => downloadTemplate(props.arrivalDate, props.departureDate, props.groupName)}
-              title="Descarga un CSV de ejemplo con cabeceras y 2 filas demo."
-            >
-              Descargar template
-            </button>
-            <button
-              type="button"
-              onClick={props.onClose}
-              aria-label="Cerrar"
-              style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "var(--ink)" }}
-            >×</button>
-          </div>
-        </div>
-
-        <p className="bo-muted" style={{ margin: 0, fontSize: 13 }}>
-          Sube un CSV con los huéspedes del grupo. Las cabeceras admitidas son
-          tanto en inglés (firstName, lastName, arrivalDate, …) como en español
-          (nombre, apellido, llegada, salida, observaciones…). Las fechas
-          ausentes en el archivo heredan las del grupo
-          ({props.arrivalDate} → {props.departureDate}).
+      <div className="cocoa-stack" data-gap="4">
+        <p style={NOTE_STYLE}>
+          Sube un CSV con los huéspedes del grupo. Las cabeceras se admiten en inglés (firstName, lastName, arrivalDate…) y en español (nombre, apellido,
+          llegada, salida, observaciones…). Las fechas que falten en el archivo heredan las del grupo ({stay}).
         </p>
 
-        {/* 1. Uploader */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>1 · Selecciona archivo</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, alignItems: "end" }}>
-            <Field label="Archivo CSV *" hint="Delimitador autodetectado (coma o punto y coma).">
-              <input
-                ref={fileInputRef}
-                type="file"
+        <CocoaFormSection title="1 · Selecciona el archivo">
+          <div className="cocoa-row" data-gap="2" data-align="end">
+            <CocoaField label="Archivo CSV" required help="Delimitador detectado automáticamente (coma o punto y coma).">
+              <CocoaFileInput
                 accept=".csv,text/csv,application/vnd.ms-excel"
-                onChange={handleFileChange}
+                label="Elegir CSV"
+                fileName={fileName}
+                onPick={(file) => void handleFile(file)}
+                onReject={(message) => setParseError(message)}
                 disabled={loadingRoomTypes || submitting}
-                style={inputStyle}
               />
-            </Field>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {fileName ? (
-                <button type="button" onClick={reset} disabled={submitting}>
-                  Quitar archivo
-                </button>
-              ) : null}
-              {loadingRoomTypes ? (
-                <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>Cargando tipos de habitación…</p>
-              ) : (
-                <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-                  {roomTypes.length} tipos de habitación disponibles
-                </p>
-              )}
-            </div>
+            </CocoaField>
+            {fileName ? (
+              <CocoaButton variant="plain" tone="neutral" size="small" onClick={reset} disabled={submitting}>
+                Quitar archivo
+              </CocoaButton>
+            ) : null}
           </div>
-          {fileName ? (
-            <p className="bo-muted" style={{ margin: "8px 0 0 0", fontSize: 12 }}>
-              Archivo: <strong>{fileName}</strong>
-            </p>
-          ) : null}
-          {parseError ? (
-            <p className="bo-status error" style={{ textTransform: "none", margin: "8px 0 0 0" }}>{parseError}</p>
-          ) : null}
-        </fieldset>
-
-        {/* 2. Template */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>2 · Template (opcional)</legend>
-          <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-            Si no tienes un CSV preparado, descarga el template de ejemplo
-            (cabeceras + 2 huéspedes demo con las fechas del grupo). Edítalo
-            con tu hoja de cálculo preferida y vuelve a subirlo aquí.
+          <p style={NOTE_STYLE}>
+            {loadingRoomTypes ? "Cargando tipos de habitación…" : plural(roomTypes.length, "tipo de habitación disponible", "tipos de habitación disponibles")}
           </p>
-          <div className="bo-row" style={{ gap: 8, marginTop: 8 }}>
-            <button
-              type="button"
+          {parseError ? (
+            <CocoaCallout tone="danger" title={parseError} role="alert">
+              {null}
+            </CocoaCallout>
+          ) : null}
+        </CocoaFormSection>
+
+        <CocoaFormSection
+          title="2 · Plantilla (opcional)"
+          description="Si no tienes un CSV preparado, descarga la plantilla (cabeceras y dos huéspedes de ejemplo con las fechas del grupo), edítala con tu hoja de cálculo y súbela aquí."
+          actions={
+            <CocoaButton
+              variant="bordered"
+              tone="neutral"
+              size="small"
+              icon={<DownloadIcon size={14} />}
               onClick={() => downloadTemplate(props.arrivalDate, props.departureDate, props.groupName)}
             >
-              Descargar template CSV
-            </button>
-            <p className="bo-muted" style={{ fontSize: 11, margin: "auto 0" }}>
-              Cabeceras: {TEMPLATE_HEADERS.join(", ")}
-            </p>
-          </div>
-        </fieldset>
+              Descargar plantilla CSV
+            </CocoaButton>
+          }
+        >
+          <p style={NOTE_STYLE}>Cabeceras: {TEMPLATE_HEADERS.join(", ")}</p>
+        </CocoaFormSection>
 
-        {/* 3. Preview */}
         {parsedRows && stats ? (
-          <fieldset style={fieldsetStyle}>
-            <legend style={legendStyle}>3 · Preview &amp; validación</legend>
-
-            {/* Conteos */}
-            <div className="bo-row" style={{ gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
-              <span
-                style={{
-                  display: "inline-block",
-                  padding: "2px 8px",
-                  borderRadius: 999,
-                  background: "var(--surface-2, #f3f4f6)",
-                  color: "var(--ink, #111)",
-                  fontSize: 12
-                }}
-              >
-                Total: <strong>{stats.total}</strong>
-              </span>
-              <span
-                style={{
-                  display: "inline-block",
-                  padding: "2px 8px",
-                  borderRadius: 999,
-                  background: "rgba(34,197,94,0.15)",
-                  color: "#15803d",
-                  fontSize: 12
-                }}
-              >
-                Válidas: <strong>{stats.valid}</strong>
-              </span>
-              {stats.invalid > 0 ? (
-                <span
-                  style={{
-                    display: "inline-block",
-                    padding: "2px 8px",
-                    borderRadius: 999,
-                    background: "rgba(239,68,68,0.15)",
-                    color: "#b91c1c",
-                    fontSize: 12
-                  }}
-                >
-                  Inválidas: <strong>{stats.invalid}</strong>
-                </span>
-              ) : null}
+          <CocoaFormSection title="3 · Vista previa y validación">
+            <div className="cocoa-cluster">
+              <CocoaBadge tone="neutral">Total {number(stats.total)}</CocoaBadge>
+              <CocoaBadge tone="success">Válidas {number(stats.valid)}</CocoaBadge>
+              {stats.invalid > 0 ? <CocoaBadge tone="danger">Con errores {number(stats.invalid)}</CocoaBadge> : null}
             </div>
 
-            {/* Tabla preview · primeras 10 filas */}
-            <div style={{ overflowX: "auto", border: "1px solid var(--border, #e5e7eb)", borderRadius: 6 }}>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-                <thead>
-                  <tr style={{ background: "var(--surface-2, #f9fafb)", textAlign: "left" }}>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>#</th>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Nombre</th>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Apellido</th>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Correo</th>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Llegada</th>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Salida</th>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Tipo</th>
-                    <th style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #e5e7eb)" }}>Estado</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {previewRows.map((r) => (
-                    <tr key={r.index} style={{ background: r.isValid ? "transparent" : "rgba(239,68,68,0.05)" }}>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #f1f5f9)" }}>{r.index}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #f1f5f9)" }}>{r.firstName || "—"}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #f1f5f9)" }}>{r.lastName || "—"}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #f1f5f9)" }}>{r.email || "—"}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #f1f5f9)" }}>{r.arrivalDate || "—"}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #f1f5f9)" }}>{r.departureDate || "—"}</td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #f1f5f9)" }}>
-                        {r.roomTypeCode ? `${r.roomTypeCode}${r.roomTypeId ? "" : " (✗)"}` : "—"}
-                      </td>
-                      <td style={{ padding: "6px 8px", borderBottom: "1px solid var(--border, #f1f5f9)" }}>
-                        {r.isValid ? (
-                          <span style={{ color: "#15803d" }}>OK</span>
-                        ) : (
-                          <span style={{ color: "#b91c1c" }} title={r.errors.join("; ")}>Error</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <CocoaTable<ParsedRow>
+              columns={PREVIEW_COLUMNS}
+              rows={previewRows}
+              rowKey={(r) => String(r.index)}
+              rowTone={(r) => (r.isValid ? undefined : "danger")}
+              density="compact"
+              caption="Vista previa de la rooming list"
+              aria-label="Vista previa de la rooming list"
+            />
 
-            {parsedRows.length > 10 ? (
-              <p className="bo-muted" style={{ fontSize: 11, margin: "6px 0 0 0" }}>
-                Mostrando 10 de {parsedRows.length} filas.
-              </p>
-            ) : null}
+            {parsedRows.length > 10 ? <p style={NOTE_STYLE}>Mostrando 10 de {plural(parsedRows.length, "fila", "filas")}.</p> : null}
 
-            {/* Chip rojo agregando errores */}
             {aggregatedErrors.length > 0 ? (
-              <div
-                style={{
-                  marginTop: 10,
-                  padding: 10,
-                  borderRadius: 8,
-                  background: "rgba(239,68,68,0.08)",
-                  border: "1px solid rgba(239,68,68,0.3)",
-                  color: "#7f1d1d",
-                  fontSize: 12,
-                  maxHeight: 140,
-                  overflowY: "auto"
-                }}
-              >
-                <strong>{aggregatedErrors.length} error(es) detectados:</strong>
-                <ul style={{ margin: "6px 0 0 16px", padding: 0 }}>
+              <CocoaCallout tone="danger" title={`${plural(aggregatedErrors.length, "error detectado", "errores detectados")}`}>
+                <ul style={{ margin: 0, paddingLeft: "var(--cocoa-space-4)", maxHeight: 140, overflowY: "auto" }}>
                   {aggregatedErrors.slice(0, 20).map((e, idx) => (
-                    <li key={idx}>Fila {e.row}: {e.message}</li>
+                    <li key={idx}>
+                      Fila {number(e.row)}: {e.message}
+                    </li>
                   ))}
-                  {aggregatedErrors.length > 20 ? (
-                    <li>…y {aggregatedErrors.length - 20} más.</li>
-                  ) : null}
+                  {aggregatedErrors.length > 20 ? <li>…y {plural(aggregatedErrors.length - 20, "más", "más")}.</li> : null}
                 </ul>
-              </div>
+              </CocoaCallout>
             ) : null}
-          </fieldset>
+          </CocoaFormSection>
         ) : null}
 
-        {/* Footer */}
-        <div className="bo-row" style={{ gap: 8, justifyContent: "space-between", marginTop: 4 }}>
-          <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-            {stats ? `Importarán ${stats.valid} de ${stats.total} filas.` : "Sube un archivo para previsualizar."}
-          </p>
-          <div className="bo-row" style={{ gap: 8 }}>
-            <button type="button" onClick={props.onClose} disabled={submitting}>
-              Cancelar
-            </button>
-            <button
-              type="button"
-              className="primary"
-              onClick={handleImport}
-              disabled={submitting || !stats || stats.valid === 0}
-            >
-              {submitting
-                ? "Importando…"
-                : stats
-                  ? `Importar ${stats.valid} fila(s)`
-                  : "Importar todas"}
-            </button>
-          </div>
-        </div>
+        <p style={NOTE_STYLE}>{stats ? `Se importarán ${number(stats.valid)} de ${plural(stats.total, "fila", "filas")}.` : "Sube un archivo para ver la vista previa."}</p>
       </div>
-    </div>
+    </CocoaDrawer>
   );
 }

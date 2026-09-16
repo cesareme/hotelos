@@ -1,21 +1,52 @@
-import { useMemo, useState } from "react";
-import { useApiData } from "../hooks/useApiData";
-import { apiRequest, ApiError } from "../services/api-client";
-import { getActivePropertyId } from "../services/activeProperty";
-import { useToast } from "../components/Toast";
-import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
-import { toArray } from "../utils/toArray";
-import { navigateTo } from "../lib/navigate";
-import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
-import { date } from "../lib/format";
-
-// =====================================================================================
-// Revenue · Calendario de demanda (admin) — wired to
+// Revenue · Calendario de demanda — /revenue/calendario-demanda (standalone).
+//
+// Cocoa 22 · ola 5 · lote 5-A. The inventory files it under «calendario»,
+// but its body is a create form next to the list of events, so the page
+// follows the Formulario + ListaTabla recipes (docs/design/COCOA-22.md §4):
+// CocoaPage → CocoaKpiStrip (próximos · alto impacto · pasados) → CocoaGrid
+// 4/8 → CocoaFormSection (string-controlled fields, validation in
+// CocoaField.error, the primary in the section footer) · CocoaSection
+// padding none + CocoaTable (empty state inside the section, «Ver pasados»
+// as the section action). Below 600 px the table stacks its own cards.
+//
+// Wired to
 //   GET  /revenue/properties/:propertyId/demand-calendar  → { items: DemandEvent[] }
 //   POST /revenue/properties/:propertyId/demand-calendar  (permission revenue.recommend)
 // Events feed forecast confidence and the pricing explanations. The module
 // revenue_profit_engine must be enabled for the property (403 otherwise).
-// =====================================================================================
+
+import { useMemo, useState } from "react";
+import { useApiData } from "../hooks/useApiData";
+import { apiRequest, ApiError } from "../services/api-client";
+import { getActivePropertyId, getActivePropertyName } from "../services/activeProperty";
+import { useToast } from "../components/Toast";
+import { toArray } from "../utils/toArray";
+import { navigateTo } from "../lib/navigate";
+import { date, dateRange, number, plural } from "../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../content/actions";
+import { treeHeaderFor } from "./tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../components/cocoa";
 
 type Impact = "low" | "medium" | "high";
 
@@ -48,18 +79,28 @@ const IMPACTS: Array<{ value: Impact; label: string; score: number }> = [
   { value: "high", label: "Alto", score: 0.9 }
 ];
 
+const IMPACT_TONE: Record<Impact, CocoaTone> = { low: "success", medium: "warning", high: "danger" };
+
 function eventTypeLabel(value?: string): string {
   return EVENT_TYPES.find((option) => option.value === value)?.label ?? (value || "—");
 }
 
-function impactPill(value?: string) {
-  const impact = IMPACTS.find((option) => option.value === value);
-  const cls = value === "high" ? "cm-pill-error" : value === "medium" ? "cm-pill-warn" : "cm-pill-ok";
-  return <span className={`cm-pill ${cls}`}>{impact?.label ?? (value || "—")}</span>;
+function impactLabel(value?: string): string {
+  return IMPACTS.find((option) => option.value === value)?.label ?? (value || "—");
 }
 
-function fmtDate(value?: string): string {
-  return date(value, "medium", { empty: value ?? "—" });
+function impactTone(value?: string): CocoaTone {
+  return value === "low" || value === "medium" || value === "high" ? IMPACT_TONE[value] : "neutral";
+}
+
+function sourceLabel(value?: string): string {
+  return value === "manual" ? "Manual" : value ?? "—";
+}
+
+/** «12–18 sept 2026» for a multi-day event, «12 sept 2026» for a single day. */
+function eventDates(event: DemandEvent): string {
+  if (event.endDate && event.endDate !== event.startDate) return dateRange(event.startDate, event.endDate, { style: "medium", empty: event.startDate });
+  return date(event.startDate, "medium", { empty: event.startDate || "—" });
 }
 
 function today(): string {
@@ -74,8 +115,23 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
 }
 
+const COLUMNS: CocoaTableColumn<DemandEvent>[] = [
+  { key: "name", label: "Evento", minWidth: 160, render: (event) => <strong>{event.name}</strong> },
+  { key: "eventType", label: "Tipo", fit: true, render: (event) => eventTypeLabel(event.eventType) },
+  { key: "dates", label: "Fechas", fit: true, render: (event) => eventDates(event) },
+  {
+    key: "impact",
+    label: "Impacto",
+    fit: true,
+    render: (event) => <CocoaBadge tone={impactTone(event.expectedImpact)}>{impactLabel(event.expectedImpact)}</CocoaBadge>
+  },
+  { key: "source", label: "Origen", fit: true, hideOnNarrow: true, render: (event) => sourceLabel(event.source) }
+];
+
 export function DemandCalendarAdminScreen() {
   const propertyId = useMemo(() => getActivePropertyId(), []);
+  const propertyName = getActivePropertyName();
+  const head = treeHeaderFor("DemandCalendarAdmin", { eyebrow: "Revenue", title: "Calendario de demanda" });
   const { showToast } = useToast();
   const state = useApiData<{ items: DemandEvent[] }>(`/revenue/properties/${propertyId}/demand-calendar`);
 
@@ -85,6 +141,7 @@ export function DemandCalendarAdminScreen() {
   const [endDate, setEndDate] = useState(today());
   const [impact, setImpact] = useState<Impact>("medium");
   const [saving, setSaving] = useState(false);
+  const [attempted, setAttempted] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [showPast, setShowPast] = useState(false);
 
@@ -96,19 +153,21 @@ export function DemandCalendarAdminScreen() {
   const upcoming = events.filter((event) => event.endDate >= cutoff);
   const past = events.filter((event) => event.endDate < cutoff);
   const visible = showPast ? events : upcoming;
+  const highImpact = upcoming.filter((event) => event.expectedImpact === "high").length;
+  const nextEvent = upcoming[0] ?? null;
 
-  function validate(): string | null {
-    if (!name.trim()) return "Indica un nombre para el evento.";
-    if (!startDate || !endDate) return "Indica las fechas de inicio y fin.";
-    if (endDate < startDate) return "La fecha de fin no puede ser anterior a la de inicio.";
-    return null;
-  }
+  // Field errors show after the first attempt (a fresh form is not «wrong»).
+  const errors = {
+    name: !name.trim() ? "Indica un nombre para el evento." : undefined,
+    dates: !startDate || !endDate ? "Indica las fechas de inicio y fin." : endDate < startDate ? "La fecha de fin no puede ser anterior a la de inicio." : undefined
+  };
+  const valid = !errors.name && !errors.dates;
 
   async function create() {
     if (saving) return;
-    const problem = validate();
-    if (problem) {
-      setFormError(problem);
+    setAttempted(true);
+    if (!valid) {
+      setFormError(errors.name ?? errors.dates ?? null);
       return;
     }
     setSaving(true);
@@ -129,6 +188,7 @@ export function DemandCalendarAdminScreen() {
       setName("");
       setEventType("city_event");
       setImpact("medium");
+      setAttempted(false);
       state.refresh();
     } catch (err) {
       const message = errorMessage(err, "No se pudo crear el evento de demanda.");
@@ -139,125 +199,128 @@ export function DemandCalendarAdminScreen() {
     }
   }
 
-  if (state.loading && !state.data) return <LoadingBlock label="Cargando calendario de demanda…" />;
-  if (state.error && !state.data) {
-    return (
-      <ErrorState
-        title="No se pudo cargar el calendario de demanda"
-        message={state.error}
-        onRetry={state.refresh}
-      />
-    );
-  }
+  const pageState = state.loading && !state.data ? "loading" : state.error && !state.data ? "error" : "ready";
 
   return (
-    <>
-      <CocoaPageHeader
-        eyebrow="Revenue"
-        title="Calendario de demanda"
-        subtitle="Eventos, festivos y periodos de alta demanda que alimentan la previsión y explican los precios."
-        style={{ marginBottom: "var(--space-6)" }}
-        actions={
-          <>
-            <button type="button" className="ghost" onClick={() => navigateTo("RevenueForecastExplorer")}>Explorador de previsión</button>
-            <button type="button" className="ghost" onClick={() => navigateTo("RevenueHomeDashboard")}>Panel de revenue</button>
-          </>
-        }
-      />
+    <CocoaPage
+      eyebrow={`${head.eyebrow} · ${propertyName}`}
+      title={head.title}
+      subtitle="Eventos, festivos y periodos de alta demanda que alimentan la previsión y explican los precios."
+      state={pageState}
+      skeleton={
+        <>
+          <CocoaSkeleton.Strip count={3} min={200} />
+          <CocoaSkeleton.Grid rows={[[4, 8]]} height={320} />
+        </>
+      }
+      error={{ title: "No se pudo cargar el calendario de demanda", message: state.error ?? undefined, onRetry: state.refresh }}
+      actions={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("RevenueForecastExplorer")}>
+            Explorador de previsión
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("RevenueHomeDashboard")}>
+            Panel de revenue
+          </CocoaButton>
+        </>
+      }
+      commands={[
+        { id: "demand-calendar-add", label: "Añadir evento de demanda", run: () => void create(), shortcut: "⌘ Enter" },
+        { id: "demand-calendar-refresh", label: `${ACTIONS.refresh}: calendario de demanda`, run: state.refresh },
+        { id: "demand-calendar-forecast", label: "Abrir el explorador de previsión", run: () => navigateTo("RevenueForecastExplorer") }
+      ]}
+    >
+      <CocoaKpiStrip min={200} aria-label="Resumen del calendario de demanda">
+        <CocoaKpi
+          label="Próximos eventos"
+          value={number(upcoming.length)}
+          caption={nextEvent ? `Siguiente: ${date(nextEvent.startDate, "dayMonth")} · ${nextEvent.name}` : "Ninguno programado"}
+        />
+        <CocoaKpi label="De alto impacto" value={number(highImpact)} caption="Entre los próximos" tone={highImpact > 0 ? "danger" : undefined} />
+        <CocoaKpi label="Pasados" value={number(past.length)} caption="Ya fuera de la previsión" />
+      </CocoaKpiStrip>
 
-      <div className="bo-grid two">
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <h3>Nuevo evento de demanda</h3>
-          </div>
-          <label className="bo-form-field">
-            <span>Nombre *</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} disabled={saving} placeholder="Ej.: Congreso médico en el Palexco" />
-          </label>
-          <label className="bo-form-field">
-            <span>Tipo</span>
-            <select value={eventType} onChange={(e) => setEventType(e.target.value)} disabled={saving}>
-              {EVENT_TYPES.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          <div className="bo-grid two">
-            <label className="bo-form-field">
-              <span>Inicio *</span>
-              <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} disabled={saving} />
-            </label>
-            <label className="bo-form-field">
-              <span>Fin *</span>
-              <input type="date" value={endDate} min={startDate} onChange={(e) => setEndDate(e.target.value)} disabled={saving} />
-            </label>
-          </div>
-          <label className="bo-form-field">
-            <span>Impacto esperado</span>
-            <select value={impact} onChange={(e) => setImpact(e.target.value as Impact)} disabled={saving}>
-              {IMPACTS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-          {formError ? (
-            <p className="bo-muted" style={{ fontSize: 12, textTransform: "none", color: "var(--danger-ink)" }}>{formError}</p>
-          ) : null}
-          <div className="bo-actions">
-            <button type="button" className="primary" onClick={create} disabled={saving}>
-              {saving ? "Guardando…" : "Añadir evento"}
-            </button>
-          </div>
-        </section>
+      <CocoaGrid align="start">
+        <CocoaSpan cols={4} min={320}>
+          <CocoaFormSection
+            title="Nuevo evento de demanda"
+            description="Congresos, festivos o periodos de compresión: mejoran la confianza de la previsión de esta propiedad."
+            actions={
+              <CocoaButton variant="filled" tone="accent" onClick={() => void create()} loading={saving} disabled={saving}>
+                {saving ? STATUS_LABELS.saving : "Añadir evento"}
+              </CocoaButton>
+            }
+          >
+            <CocoaField label="Nombre" required error={attempted ? errors.name : undefined}>
+              <CocoaInput
+                value={name}
+                onChange={setName}
+                disabled={saving}
+                placeholder="Ej.: Congreso médico en el Palexco"
+                autoComplete="off"
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    void create();
+                  }
+                }}
+              />
+            </CocoaField>
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Tipo">
+                <CocoaSelect value={eventType} onChange={setEventType} options={EVENT_TYPES} disabled={saving} />
+              </CocoaField>
+              <CocoaField label="Impacto esperado">
+                <CocoaSelect value={impact} onChange={(value) => setImpact(value as Impact)} options={IMPACTS} disabled={saving} />
+              </CocoaField>
+            </CocoaFormRow>
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Inicio" required>
+                <CocoaDatePicker value={startDate} onChange={setStartDate} disabled={saving} />
+              </CocoaField>
+              <CocoaField label="Fin" required error={attempted ? errors.dates : undefined}>
+                <CocoaDatePicker value={endDate} min={startDate} onChange={setEndDate} disabled={saving} />
+              </CocoaField>
+            </CocoaFormRow>
+            {formError ? (
+              <CocoaCallout tone="danger" role="alert" title="No se pudo añadir el evento">
+                {formError}
+              </CocoaCallout>
+            ) : null}
+          </CocoaFormSection>
+        </CocoaSpan>
 
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <h3>{showPast ? "Todos los eventos" : "Próximos eventos"}</h3>
-            <div className="bo-actions" style={{ margin: 0 }}>
-              <span className="bo-status info">{visible.length}</span>
-              {past.length > 0 ? (
-                <button type="button" className="ghost" onClick={() => setShowPast((v) => !v)}>
-                  {showPast ? "Ocultar pasados" : `Ver pasados (${past.length})`}
-                </button>
-              ) : null}
-            </div>
-          </div>
-          {visible.length === 0 ? (
-            <EmptyState
-              title="Sin eventos de demanda"
-              message="Añade congresos, festivos o periodos de compresión para mejorar la confianza del forecast de esta propiedad."
-            />
-          ) : (
-            <div className="bo-table-wrap">
-              <table className="cm-table">
-                <thead>
-                  <tr>
-                    <th>Evento</th>
-                    <th>Tipo</th>
-                    <th>Fechas</th>
-                    <th>Impacto</th>
-                    <th>Origen</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {visible.map((event) => (
-                    <tr key={event.id}>
-                      <td><strong>{event.name}</strong></td>
-                      <td>{eventTypeLabel(event.eventType)}</td>
-                      <td>
-                        {fmtDate(event.startDate)}
-                        {event.endDate && event.endDate !== event.startDate ? ` → ${fmtDate(event.endDate)}` : ""}
-                      </td>
-                      <td>{impactPill(event.expectedImpact)}</td>
-                      <td className="bo-muted">{event.source === "manual" ? "Manual" : event.source ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </section>
-      </div>
-    </>
+        <CocoaSpan cols={8} min={480}>
+          <CocoaSection
+            title={showPast ? "Todos los eventos" : "Próximos eventos"}
+            meta={plural(visible.length, "evento", "eventos")}
+            action={
+              past.length > 0 ? (
+                <CocoaButton variant="plain" size="small" tone="accent" onClick={() => setShowPast((value) => !value)} aria-pressed={showPast}>
+                  {showPast ? "Ocultar pasados" : `Ver pasados (${number(past.length)})`}
+                </CocoaButton>
+              ) : undefined
+            }
+            padding={visible.length > 0 ? "none" : "md"}
+            footer={visible.length > 0 ? `${plural(visible.length, "evento", "eventos")} de ${plural(events.length, "evento registrado", "eventos registrados")}` : undefined}
+            style={{ overflow: "clip" }}
+            aria-label="Eventos de demanda"
+          >
+            {visible.length === 0 ? (
+              <CocoaState
+                kind="empty"
+                title="Sin eventos de demanda"
+                message="Añade congresos, festivos o periodos de compresión para mejorar la confianza de la previsión de esta propiedad."
+                secondaryAction={past.length > 0 ? { label: `Ver pasados (${number(past.length)})`, onClick: () => setShowPast(true) } : undefined}
+              />
+            ) : (
+              <CocoaTable columns={COLUMNS} rows={visible} rowKey="id" caption="Eventos de demanda" aria-label="Eventos de demanda" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+    </CocoaPage>
   );
 }
+
+export default DemandCalendarAdminScreen;

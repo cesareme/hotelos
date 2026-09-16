@@ -313,3 +313,156 @@ export function plural(count: Numeric, singular: string, pluralForm: string, opt
   const word = pluralRules.select(parsed) === "one" ? singular : pluralForm;
   return options.withCount === false ? word : `${number(parsed)} ${word}`;
 }
+
+// ----------------------------------------------------------------- origin codes
+// Cocoa 22 · ola 3 (lote 3-A / 3-C · qa#8). Wire codes of a reservation's
+// origin (`channel`, `sourceCode`, `marketSegment`) rendered as Spanish names,
+// so chips, facts and journey steps never show «booking_com» or «corporate» to
+// the hotelier. Unknown codes are humanised («new_ota» → «New ota») instead of
+// leaking the underscore; callers keep the raw code in `title` for support.
+// Test connectors («expedia_mock») read «(conector de pruebas)», the wording
+// the reservation form already uses for them.
+
+export type CodeLabelOptions = {
+  /** Text for null/empty codes. Default EMPTY. */
+  empty?: string;
+};
+
+const CHANNEL_LABELS: Record<string, string> = {
+  direct: "Directo",
+  direct_booking_engine: "Motor de reservas directo",
+  web: "Web",
+  phone: "Teléfono",
+  email: "Correo electrónico",
+  walk_in: "Walk-in",
+  corporate: "Corporativo",
+  group: "Grupos",
+  groups: "Grupos",
+  ota: "OTA",
+  gds: "GDS",
+  wholesale: "Mayorista / TTOO",
+  wholesaler: "Mayorista / TTOO",
+  agency: "Agencia de viajes",
+  metasearch: "Metabuscador",
+  manual: "Canal manual",
+  manual_channel: "Canal manual",
+  booking_com: "Booking.com",
+  bookingcom: "Booking.com",
+  expedia: "Expedia",
+  airbnb: "Airbnb",
+  vrbo: "Vrbo",
+  hotelbeds: "Hotelbeds",
+  channex: "Channex",
+  google_hotels: "Google Hotels",
+  tripadvisor: "Tripadvisor",
+  trivago: "Trivago"
+};
+
+const MARKET_SEGMENT_LABELS: Record<string, string> = {
+  corporate: "Corporativo",
+  leisure: "Ocio",
+  mice: "MICE / Convenciones",
+  wedding: "Bodas",
+  sports: "Deportes",
+  group: "Grupos",
+  groups: "Grupos",
+  government: "Administración pública",
+  wholesale: "Mayorista",
+  complimentary: "Cortesía",
+  ota: "OTA",
+  direct: "Directo",
+  transient: "Individual"
+};
+
+const TEST_CONNECTOR_SUFFIX = /[_-]?mock$/;
+
+/** "new_ota" → "New ota" (first letter up, underscores and dashes as spaces). */
+function humaniseCode(key: string): string {
+  const words = key.replace(/[_-]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "";
+}
+
+function codeLabel(labels: Record<string, string>, code: string | null | undefined, options: CodeLabelOptions): string {
+  const raw = typeof code === "string" ? code.trim() : "";
+  if (!raw) return options.empty ?? EMPTY;
+  const key = raw.toLowerCase();
+  if (labels[key]) return labels[key];
+  const base = key.replace(TEST_CONNECTOR_SUFFIX, "");
+  if (base && base !== key) return `${labels[base] ?? humaniseCode(base)} (conector de pruebas)`;
+  return humaniseCode(key);
+}
+
+/**
+ * channelLabel("booking_com") → "Booking.com" · "direct" → "Directo" ·
+ * "corporate" → "Corporativo" · "expedia_mock" → "Expedia (conector de pruebas)" ·
+ * "new_ota" → "New ota" · null → "—". Also for a reservation's `sourceCode`.
+ */
+export function channelLabel(code: string | null | undefined, options: CodeLabelOptions = {}): string {
+  return codeLabel(CHANNEL_LABELS, code, options);
+}
+
+/** marketSegmentLabel("leisure") → "Ocio" · "mice" → "MICE / Convenciones" · "ota" → "OTA" · null → "—". */
+export function marketSegmentLabel(code: string | null | undefined, options: CodeLabelOptions = {}): string {
+  return codeLabel(MARKET_SEGMENT_LABELS, code, options);
+}
+
+// Cocoa 22 · ola 5 (lote 5-C · qa#18). Codes of the competitor set
+// (/revenue/competencia): the hotel category the API stores as typed by the
+// hotelier or seeded («urban», «resort», «urban boutique», «4*») and the
+// availability of a shopped rate («available», «sold_out»). Known codes read
+// in Spanish; anything else is humanised, so a «4*» or «4 estrellas» typed in
+// the form stays as typed. Callers keep the raw code in `title` when it
+// differs from the label (rule C19).
+
+const HOTEL_CATEGORY_LABELS: Record<string, string> = {
+  urban: "Urbano",
+  city: "Urbano",
+  "urban boutique": "Boutique urbano",
+  boutique: "Boutique",
+  resort: "Vacacional",
+  vacation: "Vacacional",
+  holiday: "Vacacional",
+  beach: "Playa",
+  rural: "Rural",
+  luxury: "Lujo",
+  business: "Negocios",
+  cultural: "Cultural",
+  historic: "Histórico",
+  apart: "Apartamentos",
+  apartments: "Apartamentos",
+  aparthotel: "Aparthotel",
+  hostel: "Hostal",
+  budget: "Económico",
+  economy: "Económico",
+  midscale: "Gama media",
+  upscale: "Gama alta"
+};
+
+const AVAILABILITY_LABELS: Record<string, string> = {
+  available: "Disponible",
+  open: "Disponible",
+  limited: "Últimas unidades",
+  low: "Últimas unidades",
+  sold_out: "Agotado",
+  soldout: "Agotado",
+  unavailable: "No disponible",
+  closed: "Cerrado",
+  restricted: "Restringido",
+  on_request: "Bajo petición",
+  unknown: "Sin datos"
+};
+
+/**
+ * hotelCategoryLabel("urban") → "Urbano" · "resort" → "Vacacional" ·
+ * "urban_boutique" → "Boutique urbano" · "4*" → "4*" · "Boutique" → "Boutique" · null → "—".
+ * Underscores, dashes and repeated spaces are one space before the lookup.
+ */
+export function hotelCategoryLabel(code: string | null | undefined, options: CodeLabelOptions = {}): string {
+  const key = typeof code === "string" ? code.replace(/[_-]+/g, " ").replace(/\s+/g, " ") : code;
+  return codeLabel(HOTEL_CATEGORY_LABELS, key, options);
+}
+
+/** availabilityLabel("available") → "Disponible" · "sold_out" → "Agotado" · "waitlist" → "Waitlist" · null → "—". */
+export function availabilityLabel(code: string | null | undefined, options: CodeLabelOptions = {}): string {
+  return codeLabel(AVAILABILITY_LABELS, code, options);
+}

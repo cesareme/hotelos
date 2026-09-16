@@ -11,9 +11,10 @@
 //   density     `data-cocoa-density="compact|comfortable"` — cocoa-tokens.css
 //               resolves the `--cocoa-density-*` set (card padding, row
 //               height, cell padding, control height) for the whole subtree
-//   fullBleed   `data-full-bleed` — cocoa-22-layout.css cancels the content
-//               gutter (`--cocoa-content-padding`, 24 / 16) so grids and
-//               calendars use the whole width; the header keeps it
+//   fullBleed   `data-full-bleed` — cocoa-22-layout.css lets the wide scroller
+//               (a CocoaScrollArea, or the rate grid, as a direct child of the
+//               body) bleed into the content gutter (`--cocoa-content-padding`,
+//               24 / 16); header, toolbar, chips and states keep it (§5.1)
 //   commands    registered in the page-command registry while mounted; the
 //               command palette lists them as «Acciones de la página»
 //

@@ -37,6 +37,12 @@ export interface CocoaSegmentedControlProps {
   size?: CocoaSegmentedControlSize;
   /** Stretch every segment to share the width (phones). */
   fullWidth?: boolean;
+  /**
+   * id of the element the active tab controls (`aria-controls`, as CocoaRouteTabs
+   * does): give that container `role="tabpanel"` and an `aria-label` — the
+   * segmented control has no ids of its own to point `aria-labelledby` at.
+   */
+  panelId?: string;
   className?: string;
   style?: CSSProperties;
   "aria-label"?: string;
@@ -127,7 +133,7 @@ export function segmentItemStyle(input: { isActive: boolean; disabled?: boolean;
   };
 }
 
-export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, className, style, "aria-label": ariaLabel }: CocoaSegmentedControlProps) {
+export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, panelId, className, style, "aria-label": ariaLabel }: CocoaSegmentedControlProps) {
   const iconSize = ICON_SIZE_BY_SIZE[size];
   const refs = useRef(new Map<string, HTMLButtonElement>());
   const enabledValues = useMemo(() => options.filter((opt) => !opt.disabled).map((opt) => opt.value), [options]);
@@ -200,6 +206,7 @@ export function CocoaSegmentedControl({ value, onChange, options, size = "regula
             type="button"
             role="tab"
             aria-selected={isActive}
+            aria-controls={isActive && panelId ? panelId : undefined}
             aria-disabled={opt.disabled || undefined}
             disabled={opt.disabled}
             tabIndex={isActive ? 0 : -1}

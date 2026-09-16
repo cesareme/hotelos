@@ -1,17 +1,24 @@
 // Theme controller for the Back Office (light / dark / system).
 //
-// The actual colors live in styles.css as CSS custom properties. This module
-// only flips the `data-theme` attribute on <html> and persists the choice:
+// The actual colours live in `styles/cocoa-tokens.css` (Cocoa 22 tokens; the
+// legacy Aurora set in `styles.css` mirrors the same scopes). This module only
+// flips the `data-theme` attribute on <html> and persists the choice:
 //   - "light"  → force the light token set (ignore OS preference)
 //   - "dark"   → force the dark token set (ignore OS preference)
 //   - "system" → follow the OS via `@media (prefers-color-scheme: dark)`
 //
-// CSS contract (see styles.css):
-//   :root[data-theme="dark"] { …dark tokens… }
+// CSS contract (see styles/cocoa-tokens.css):
+//   :root                    { color-scheme: light; …light tokens… }
+//   :root[data-theme="dark"] { color-scheme: dark;  …dark tokens… }
 //   @media (prefers-color-scheme: dark) {
-//     :root:not([data-theme="light"]) { …dark tokens… }
+//     :root:not([data-theme="light"]) { color-scheme: dark; …dark tokens… }
 //   }
-// So "system" is represented by REMOVING the attribute.
+// So "system" is represented by REMOVING the attribute, and `color-scheme`
+// (native form controls, scrollbars) is derived by the stylesheet from that
+// attribute: nothing here writes to `<html style>`. The migration plan's V4
+// criterion and §5.4 probe (COCOA-22-MIGRACION.md) expect the root without
+// any inline `--cocoa-*`; the only inline the root may carry is
+// `--hotelos-toast-offset`, published by `CocoaActionBar publishToastOffset`.
 
 export type ThemePreference = "light" | "dark" | "system";
 export type ResolvedTheme = "light" | "dark";
@@ -33,7 +40,7 @@ export function resolveTheme(pref: ThemePreference = getThemePreference()): Reso
   return pref;
 }
 
-/** Reflect the preference onto <html data-theme> and color-scheme. */
+/** Reflect the preference onto <html data-theme>; the stylesheet derives `color-scheme` from it. */
 function reflect(pref: ThemePreference): void {
   if (typeof document === "undefined") return;
   const root = document.documentElement;
@@ -42,8 +49,6 @@ function reflect(pref: ThemePreference): void {
   } else {
     root.setAttribute("data-theme", pref);
   }
-  // Keep native form controls / scrollbars in sync.
-  root.style.colorScheme = resolveTheme(pref);
 }
 
 export function setThemePreference(pref: ThemePreference): void {
@@ -62,17 +67,11 @@ export function cycleThemePreference(): ThemePreference {
   return next;
 }
 
-/** Call once on boot (before first paint) to avoid a flash of the wrong theme. */
+/**
+ * Call once on boot (before first paint) to avoid a flash of the wrong theme.
+ * No OS listener is needed: in "system" mode the attribute is absent and the
+ * `prefers-color-scheme` media query of the stylesheet follows the OS live.
+ */
 export function initTheme(): void {
-  const pref = getThemePreference();
-  reflect(pref);
-  // React to OS changes while in "system" mode.
-  if (typeof matchMedia !== "undefined") {
-    const mq = matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => {
-      if (getThemePreference() === "system") reflect("system");
-    };
-    if (typeof mq.addEventListener === "function") mq.addEventListener("change", onChange);
-    else if (typeof mq.addListener === "function") mq.addListener(onChange);
-  }
+  reflect(getThemePreference());
 }

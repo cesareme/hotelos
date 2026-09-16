@@ -1,36 +1,77 @@
-// Programa de fidelización — configuración de tiers, ratio de puntos y
-// beneficios por nivel. El motor evalúa el tier del huésped cada vez que
-// completa una estancia y aplica beneficios automáticos.
+// Programa de fidelización — Comercial › Clientes y fidelización › Programa
+// (/comercial/clientes/programa, hosted inside ClientesTabs).
 //
-// Datos reales (apps/api/src/server.ts:2189-2190):
-//   GET  /crm/loyalty          — programas de la organización + membresías embebidas
-//   POST /crm/loyalty/programs — publica la configuración (nueva versión del programa)
+// Cocoa 22 · ola 7 · lote 7-B (docs/design/COCOA-22.md §4, archetype
+// «dashboard alojado»): CocoaPage → CocoaKpiStrip (members, active, points)
+// → CocoaGrid 5/7 (distribution by tier as CocoaChart.Progress rows · global
+// configuration as a CocoaFormSection with string-controlled fields) →
+// tier cards inside a CocoaSection (a CocoaSection per tier) → a CocoaDrawer
+// edits one tier. «Crear programa» / «Guardar cambios» lives in the page
+// actions and in ⌘K.
 //
-// El backend no expone PATCH de programas: cada «Guardar cambios» crea una
-// versión nueva vía POST y esta pantalla lee siempre la versión activa más
-// reciente. Los KPIs de miembros se calculan de las membresías reales
-// devueltas por la API (agregadas entre versiones del programa).
+// Data (apps/api/src/server.ts:2189-2190, module guest_data_crm_loyalty):
+//   GET  /crm/loyalty          — programmes of the organisation + embedded memberships
+//   POST /crm/loyalty/programs — publishes the configuration (a NEW version of the programme)
+//
+// The backend has no PATCH for programmes: every save creates a new version
+// through POST and the screen always reads the most recent active one. The
+// member KPIs come from the real memberships returned by the API (aggregated
+// across programme versions). Module gate (qa#14): nothing is requested until
+// guest_data_crm_loyalty is known to be enabled; with the module off the page
+// paints «Módulo no activado» (+ «Activar módulo» for users with modules.enable).
+//
+// Tier colours: a tier may carry a `color` in configurationJson (older
+// versions of this screen let the user pick one). Cocoa 22 paints no colour a
+// screen invents (§2, §6), so the value is preserved on every save but no
+// longer edited nor painted here.
 
-import { useTabHost } from "../tabs/TabHost";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import { getActiveProperty } from "../../services/activeProperty";
 import {
   createLoyaltyProgram,
   fetchLoyaltyPrograms,
   type LoyaltyMembership,
   type LoyaltyProgram
 } from "../../services/crmApi";
-import { ErrorState, LoadingBlock } from "../../components/States";
 import { useToast } from "../../components/Toast";
-import { date, money, number, percent } from "../../lib/format";
+import { ACTIONS, FIELD_LABELS } from "../../content/actions";
+import { date, money, number, percent, plural, toNumber } from "../../lib/format";
+import { moduleDisabledCopy } from "../operations/module-gate";
+import { useScreenModuleGate } from "../operations/useScreenModuleGate";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaSwitch
+} from "../../components/cocoa";
+
+// Menu labels of the tree (Comercial › Clientes y fidelización › Programa), never retyped here.
+const HEADER = treeHeaderFor("LoyaltyProgram", { eyebrow: "Comercial · Clientes y fidelización", title: "Programa" });
 
 type LoyaltyTier = {
   id: string;
   code: string;
   name: string;
-  color: string;
-  /** Estancias necesarias para alcanzar el tier en los últimos 12 meses. */
+  /** Kept as saved by older versions of the screen; not edited nor painted (see header). */
+  color?: string;
+  /** Stays needed to reach the tier in the last 12 months. */
   qualifyingStays: number;
-  /** Multiplicador de puntos en este tier. */
+  /** Points multiplier of the tier. */
   pointsMultiplier: number;
   benefits: string[];
 };
@@ -45,6 +86,26 @@ type LoyaltyConfig = {
   earnOnExtras: boolean;
 };
 
+/** Form state of the global configuration: numbers travel as strings (§4.2 A3) and are parsed on save. */
+type ConfigForm = {
+  programName: string;
+  pointsPerEur: string;
+  pointValueEur: string;
+  pointsExpiryMonths: string;
+  bonusOnBirthday: string;
+  earnOnTaxes: boolean;
+  earnOnExtras: boolean;
+};
+
+/** Form state of the tier drawer (numbers as strings, benefits one per line). */
+type TierForm = {
+  id: string;
+  name: string;
+  qualifyingStays: string;
+  pointsMultiplier: string;
+  benefits: string;
+};
+
 const DEFAULT_CONFIG: LoyaltyConfig = {
   programName: "Anfitorio Stays Club",
   pointsPerEur: 10,
@@ -55,47 +116,45 @@ const DEFAULT_CONFIG: LoyaltyConfig = {
   earnOnExtras: true
 };
 
-const TIER_PALETTE = ["#93a1ad", "#f0b46a", "#e8eef3", "#4ee0a3"];
-
-/** Plantilla sugerida cuando el programa aún no tiene tiers configurados. */
+/** Suggested template when the programme has no tiers yet. */
 const TEMPLATE_TIERS: LoyaltyTier[] = [
   {
     id: "tier_silver",
     code: "silver",
     name: "Plata",
-    color: "#93a1ad",
     qualifyingStays: 0,
     pointsMultiplier: 1,
-    benefits: ["10% descuento en F&B", "Welcome drink", "Wifi premium"]
+    benefits: ["10 % de descuento en restauración", "Bebida de bienvenida", "Wifi premium"]
   },
   {
     id: "tier_gold",
     code: "gold",
     name: "Oro",
-    color: "#f0b46a",
     qualifyingStays: 3,
     pointsMultiplier: 1.5,
-    benefits: ["Late check-out garantizado", "Upgrade según disponibilidad", "Desayuno cortesía 1/estancia"]
+    benefits: ["Salida tardía garantizada", "Mejora de habitación según disponibilidad", "Desayuno de cortesía una vez por estancia"]
   },
   {
     id: "tier_platinum",
     code: "platinum",
     name: "Platino",
-    color: "#e8eef3",
     qualifyingStays: 8,
     pointsMultiplier: 2,
-    benefits: ["Upgrade garantizado", "Early check-in + late check-out", "Acceso al lounge", "Welcome amenity premium"]
+    benefits: ["Mejora de habitación garantizada", "Entrada anticipada y salida tardía", "Acceso al salón", "Detalle de bienvenida premium"]
   },
   {
     id: "tier_diamond",
     code: "diamond",
     name: "Diamante",
-    color: "#4ee0a3",
     qualifyingStays: 15,
     pointsMultiplier: 3,
-    benefits: ["Suite upgrade prioritario", "Concierge personal 24/7", "Tarifa best-rate garantizada", "Regalo de cumpleaños"]
+    benefits: ["Prioridad de mejora a suite", "Conserje personal 24 h", "Mejor tarifa garantizada", "Regalo de cumpleaños"]
   }
 ];
+
+const SAVE_LABEL = ACTIONS.saveChanges;
+const CREATE_LABEL = "Crear programa";
+const TEMPLATE_LABEL = "Cargar plantilla de niveles (Plata → Diamante)";
 
 function num(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -109,7 +168,7 @@ function parseConfig(record: LoyaltyProgram): LoyaltyConfig {
   const cfg = (record.configurationJson ?? {}) as Record<string, unknown>;
   return {
     programName: record.name,
-    // Compat: versiones antiguas guardaban pointsPerEuro.
+    // Compat: older versions saved pointsPerEuro.
     pointsPerEur: num(cfg["pointsPerEur"] ?? cfg["pointsPerEuro"], DEFAULT_CONFIG.pointsPerEur),
     pointValueEur: num(cfg["pointValueEur"], DEFAULT_CONFIG.pointValueEur),
     pointsExpiryMonths: num(cfg["pointsExpiryMonths"], DEFAULT_CONFIG.pointsExpiryMonths),
@@ -120,22 +179,20 @@ function parseConfig(record: LoyaltyProgram): LoyaltyConfig {
 }
 
 /**
- * Normaliza los tiers guardados en configurationJson. Acepta el formato rico
- * de esta UI (objetos LoyaltyTier) y degrada listas de strings heredadas
- * (p. ej. ["member", "silver", "gold"]) a tiers básicos editables.
+ * Normalises the tiers saved in configurationJson. Accepts the rich format of
+ * this screen (LoyaltyTier objects) and degrades legacy string lists (e.g.
+ * ["member", "silver", "gold"]) to basic editable tiers.
  */
 function parseTiers(raw: unknown): LoyaltyTier[] {
   if (!Array.isArray(raw)) return [];
   const tiers: LoyaltyTier[] = [];
   raw.forEach((item, index) => {
-    const fallbackColor = TIER_PALETTE[index % TIER_PALETTE.length] ?? "#93a1ad";
     if (typeof item === "string" && item.trim() !== "") {
       const code = item.trim();
       tiers.push({
         id: `tier_${code}`,
         code,
         name: code.charAt(0).toUpperCase() + code.slice(1),
-        color: fallbackColor,
         qualifyingStays: 0,
         pointsMultiplier: 1,
         benefits: []
@@ -148,15 +205,16 @@ function parseTiers(raw: unknown): LoyaltyTier[] {
         ? t["name"]
         : typeof t["code"] === "string" && t["code"].trim() !== ""
           ? t["code"]
-          : `Tier ${index + 1}`;
+          : `Nivel ${index + 1}`;
       const code = typeof t["code"] === "string" && t["code"].trim() !== ""
         ? t["code"]
         : name.toLowerCase().replace(/\s+/g, "_");
+      const color = typeof t["color"] === "string" && t["color"].trim() !== "" ? t["color"] : undefined;
       tiers.push({
         id: typeof t["id"] === "string" && t["id"] !== "" ? t["id"] : `tier_${code}_${index}`,
         code,
         name,
-        color: typeof t["color"] === "string" && t["color"].startsWith("#") ? t["color"] : fallbackColor,
+        ...(color ? { color } : {}),
         qualifyingStays: num(t["qualifyingStays"], 0),
         pointsMultiplier: num(t["pointsMultiplier"], 1),
         benefits: Array.isArray(t["benefits"]) ? t["benefits"].filter((b): b is string => typeof b === "string") : []
@@ -166,32 +224,83 @@ function parseTiers(raw: unknown): LoyaltyTier[] {
   return tiers;
 }
 
-/** Versión vigente: la activa más reciente (o la más reciente si ninguna activa). */
+/** Current version: the most recent active one (or the most recent if none is active). */
 function pickCurrent(records: LoyaltyProgram[]): LoyaltyProgram | null {
   if (records.length === 0) return null;
   const sorted = [...records].sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
   return sorted.find((p) => p.active) ?? sorted[0] ?? null;
 }
 
-function fmtDate(iso: string | null | undefined): string {
-  return date(iso, "medium");
+function toForm(config: LoyaltyConfig): ConfigForm {
+  return {
+    programName: config.programName,
+    pointsPerEur: String(config.pointsPerEur),
+    pointValueEur: String(config.pointValueEur),
+    pointsExpiryMonths: String(config.pointsExpiryMonths),
+    bonusOnBirthday: String(config.bonusOnBirthday),
+    earnOnTaxes: config.earnOnTaxes,
+    earnOnExtras: config.earnOnExtras
+  };
+}
+
+function fromForm(form: ConfigForm): LoyaltyConfig {
+  return {
+    programName: form.programName.trim() || DEFAULT_CONFIG.programName,
+    pointsPerEur: toNumber(form.pointsPerEur) ?? DEFAULT_CONFIG.pointsPerEur,
+    pointValueEur: toNumber(form.pointValueEur) ?? DEFAULT_CONFIG.pointValueEur,
+    pointsExpiryMonths: toNumber(form.pointsExpiryMonths) ?? DEFAULT_CONFIG.pointsExpiryMonths,
+    bonusOnBirthday: toNumber(form.bonusOnBirthday) ?? DEFAULT_CONFIG.bonusOnBirthday,
+    earnOnTaxes: form.earnOnTaxes,
+    earnOnExtras: form.earnOnExtras
+  };
+}
+
+function tierToForm(tier: LoyaltyTier): TierForm {
+  return {
+    id: tier.id,
+    name: tier.name,
+    qualifyingStays: String(tier.qualifyingStays),
+    pointsMultiplier: String(tier.pointsMultiplier),
+    benefits: tier.benefits.join("\n")
+  };
+}
+
+function tierThreshold(tier: LoyaltyTier): string {
+  return tier.qualifyingStays === 0 ? "Nivel de entrada" : `Desde ${plural(tier.qualifyingStays, "estancia", "estancias")} al año`;
+}
+
+function multiplierLabel(multiplier: number): string {
+  return `×${number(multiplier, { maximumFractionDigits: 2 })} puntos`;
 }
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+// Mirror skeleton: the KPI strip, the 5/7 row and the tier strip.
+function ProgramSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton.Grid rows={[[5, 7]]} height={260} />
+      <CocoaSkeleton variant="card" height={220} />
+    </div>
+  );
+}
+
 export function LoyaltyProgramScreen() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
+  // Hosted inside ClientesTabs the container paints eyebrow + H1; CocoaPage adds the subtitle and actions row.
+  const propertyName = getActiveProperty().propertyName;
   const { showToast } = useToast();
+  // Module gate (qa#14): no request until guest_data_crm_loyalty is known to be enabled.
+  const moduleGate = useScreenModuleGate("LoyaltyProgram");
   const [programs, setPrograms] = useState<LoyaltyProgram[]>([]);
   const [current, setCurrent] = useState<LoyaltyProgram | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [config, setConfig] = useState<LoyaltyConfig>(DEFAULT_CONFIG);
+  const [form, setForm] = useState<ConfigForm>(() => toForm(DEFAULT_CONFIG));
   const [tiers, setTiers] = useState<LoyaltyTier[]>([]);
-  const [editingTier, setEditingTier] = useState<LoyaltyTier | null>(null);
+  const [editingTier, setEditingTier] = useState<TierForm | null>(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -203,13 +312,13 @@ export function LoyaltyProgramScreen() {
       const program = pickCurrent(records);
       setCurrent(program);
       if (program) {
-        setConfig(parseConfig(program));
+        setForm(toForm(parseConfig(program)));
         setTiers(parseTiers((program.configurationJson ?? {})["tiers"]));
         setDirty(false);
       } else {
-        // Aún no hay programa: la pantalla arranca con una propuesta editable
-        // que solo existe en el servidor cuando se pulsa «Crear programa».
-        setConfig(DEFAULT_CONFIG);
+        // No programme yet: the screen starts with an editable proposal that
+        // only exists on the server once «Crear programa» is pressed.
+        setForm(toForm(DEFAULT_CONFIG));
         setTiers(TEMPLATE_TIERS);
         setDirty(true);
       }
@@ -221,22 +330,25 @@ export function LoyaltyProgramScreen() {
   }, []);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (moduleGate.ready) void load();
+  }, [load, moduleGate.ready]);
 
-  // Membresías reales agregadas entre versiones del programa (el POST de
-  // guardado crea versiones nuevas y las membresías quedan ligadas a la suya).
-  const memberships = useMemo<LoyaltyMembership[]>(
-    () => programs.flatMap((p) => p.memberships ?? []),
-    [programs]
-  );
+  function reload() {
+    setLoading(true);
+    void load();
+  }
+
+  // Real memberships aggregated across programme versions (every save creates
+  // a new version and the memberships stay tied to their own).
+  const memberships = useMemo<LoyaltyMembership[]>(() => programs.flatMap((p) => p.memberships ?? []), [programs]);
 
   const kpis = useMemo(() => {
     const totalMembers = memberships.length;
     const active = memberships.filter((m) => m.status === "active").length;
     const totalPoints = memberships.reduce((sum, m) => sum + (Number.isFinite(m.pointsBalance) ? m.pointsBalance : 0), 0);
     const avgBalance = totalMembers > 0 ? Math.round(totalPoints / totalMembers) : 0;
-    return { totalMembers, active, totalPoints, avgBalance };
+    const activePct = totalMembers > 0 ? (active / totalMembers) * 100 : 0;
+    return { totalMembers, active, totalPoints, avgBalance, activePct };
   }, [memberships]);
 
   const distribution = useMemo(() => {
@@ -246,41 +358,61 @@ export function LoyaltyProgramScreen() {
       byTier.set(key, (byTier.get(key) ?? 0) + 1);
     }
     const total = memberships.length;
-    return Array.from(byTier.entries()).map(([tierCode, members]) => ({
+    const rows = Array.from(byTier.entries()).map(([tierCode, members]) => ({
       tierCode,
       members,
       pct: total > 0 ? (members / total) * 100 : 0
     }));
+    const max = rows.reduce((m, r) => Math.max(m, r.members), 0);
+    return { rows, max };
   }, [memberships]);
 
-  function tierMeta(code: string): { name: string; color: string } {
-    if (code === "sin_tier") return { name: "Sin tier", color: "#93a1ad" };
-    const tier = tiers.find((t) => t.code === code);
-    return { name: tier?.name ?? code, color: tier?.color ?? "#93a1ad" };
+  function tierName(code: string): string {
+    if (code === "sin_tier") return "Sin nivel";
+    return tiers.find((t) => t.code === code)?.name ?? code;
   }
 
-  function patchConfig(patch: Partial<LoyaltyConfig>) {
-    setConfig((prev) => ({ ...prev, ...patch }));
+  function patchForm(patch: Partial<ConfigForm>) {
+    setForm((prev) => ({ ...prev, ...patch }));
     setDirty(true);
   }
 
   function applyTierEdit() {
     if (!editingTier) return;
-    setTiers((prev) => prev.map((t) => (t.id === editingTier.id ? editingTier : t)));
+    const draft = editingTier;
+    setTiers((prev) =>
+      prev.map((t) =>
+        t.id === draft.id
+          ? {
+              ...t,
+              name: draft.name.trim() || t.name,
+              qualifyingStays: Math.max(0, toNumber(draft.qualifyingStays) ?? t.qualifyingStays),
+              pointsMultiplier: toNumber(draft.pointsMultiplier) ?? t.pointsMultiplier,
+              benefits: draft.benefits.split("\n").map((b) => b.trim()).filter(Boolean)
+            }
+          : t
+      )
+    );
     setEditingTier(null);
     setDirty(true);
   }
 
+  function loadTemplate() {
+    setTiers(TEMPLATE_TIERS);
+    setDirty(true);
+  }
+
   async function saveProgram() {
-    if (saving) return;
+    if (saving || !moduleGate.ready) return;
     const isCreate = current === null;
+    const config = fromForm(form);
     const payload = {
-      name: config.programName.trim() || DEFAULT_CONFIG.programName,
+      name: config.programName,
       configurationJson: {
-        pointsPerEur: num(config.pointsPerEur, DEFAULT_CONFIG.pointsPerEur),
-        pointValueEur: num(config.pointValueEur, DEFAULT_CONFIG.pointValueEur),
-        pointsExpiryMonths: num(config.pointsExpiryMonths, DEFAULT_CONFIG.pointsExpiryMonths),
-        bonusOnBirthday: num(config.bonusOnBirthday, DEFAULT_CONFIG.bonusOnBirthday),
+        pointsPerEur: config.pointsPerEur,
+        pointValueEur: config.pointValueEur,
+        pointsExpiryMonths: config.pointsExpiryMonths,
+        bonusOnBirthday: config.bonusOnBirthday,
         earnOnTaxes: config.earnOnTaxes,
         earnOnExtras: config.earnOnExtras,
         tiers
@@ -291,9 +423,7 @@ export function LoyaltyProgramScreen() {
       const created = await createLoyaltyProgram(payload);
       await load();
       showToast(
-        isCreate
-          ? `Programa «${created.name}» creado.`
-          : `Configuración guardada — nueva versión de «${created.name}» publicada.`,
+        isCreate ? `Programa «${created.name}» creado.` : `Configuración guardada: nueva versión de «${created.name}» publicada.`,
         { variant: "success" }
       );
     } catch (err) {
@@ -303,234 +433,230 @@ export function LoyaltyProgramScreen() {
     }
   }
 
-  if (loading) {
-    return (
-      <section className="bo-card">
-        <LoadingBlock label="Cargando programa de fidelización…" />
-      </section>
-    );
-  }
+  const config = fromForm(form);
+  const returnPct = config.pointsPerEur * config.pointValueEur;
+  const saveLabel = current === null ? CREATE_LABEL : SAVE_LABEL;
 
-  if (error) {
-    return (
-      <section className="bo-card">
-        <ErrorState
-          title="No se pudo cargar el programa de fidelización"
-          message={error}
-          onRetry={() => {
-            setLoading(true);
-            void load();
-          }}
-        />
-      </section>
-    );
-  }
+  // Module not active → the whole body is the «Módulo no activado» state (§3.10).
+  const moduleDisabled = moduleGate.status === "disabled";
+  const disabledCopy = moduleDisabledCopy(moduleGate.canEnable);
+  const state =
+    moduleGate.status === "loading" ? "loading" : moduleDisabled ? "empty" : loading ? "loading" : error ? "error" : "ready";
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <header className="bo-card-head">
-        <div>
-          {embedded ? null : (
-            <>
-              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-                Comercial · Clientes y fidelización
-              </p>
-              <h2 style={{ color: "var(--ink)" }}>{config.programName || "Programa de fidelización"}</h2>
-            </>
-          )}
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Programa por <strong>tiers + puntos</strong>. Los miembros suben de tier por estancias en los últimos 12 meses;
-            los puntos se canjean por estancias gratuitas, upgrades o reservas en F&B.
-          </p>
-        </div>
-        {dirty ? <span className="bo-status warn" style={{ alignSelf: "flex-start" }}>cambios sin guardar</span> : null}
-      </header>
-
+    <CocoaPage
+      eyebrow={`${HEADER.eyebrow} · ${propertyName}`}
+      title={HEADER.title}
+      subtitle="Programa por niveles y puntos: los miembros suben de nivel por estancias en los últimos 12 meses y canjean puntos por estancias, mejoras o consumo."
+      actions={
+        moduleGate.ready ? (
+          <>
+            {dirty ? <CocoaBadge tone="warning">cambios sin guardar</CocoaBadge> : null}
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={reload} disabled={loading || saving}>
+              {ACTIONS.refresh}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" size="small" onClick={() => void saveProgram()} loading={saving} disabled={loading || saving}>
+              {saveLabel}
+            </CocoaButton>
+          </>
+        ) : null
+      }
+      state={state}
+      skeleton={<ProgramSkeleton />}
+      empty={{
+        title: disabledCopy.title,
+        message: disabledCopy.message,
+        primaryAction: disabledCopy.cta ? { label: disabledCopy.cta, onClick: moduleGate.enable } : undefined
+      }}
+      error={{ title: "No se pudo cargar el programa de fidelización", message: error ?? undefined, onRetry: reload }}
+      commands={
+        moduleGate.ready
+          ? [
+              { id: "loyalty-program-save", label: `${saveLabel} · ${HEADER.title}`, run: () => void saveProgram() },
+              { id: "loyalty-program-refresh", label: "Actualizar programa de fidelización", run: reload }
+            ]
+          : moduleDisabled && disabledCopy.cta
+            ? [{ id: "loyalty-program-enable-module", label: `${disabledCopy.cta} · ${HEADER.title}`, run: moduleGate.enable }]
+            : []
+      }
+    >
       {current === null ? (
-        <p className="bo-status info" style={{ textTransform: "none" }}>
-          Todavía no hay ningún programa de fidelización en el servidor. Ajusta la propuesta y pulsa «Crear programa» para publicarla.
-        </p>
+        <CocoaCallout tone="info" title="Todavía no hay ningún programa de fidelización">
+          Ajusta la propuesta y pulsa «{CREATE_LABEL}» para publicarla. Por ahora el programa se guarda en la memoria del servidor y se pierde al reiniciarlo.
+        </CocoaCallout>
       ) : null}
 
-      {/* KPIs — calculados de las membresías reales devueltas por la API */}
-      <div className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Miembros totales</span></div>
-          <div className="rev-kpi-value">{number(kpis.totalMembers)}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Membresías activas</span>
-            {kpis.totalMembers > 0 ? <span className="bo-status ok">{Math.round((kpis.active / kpis.totalMembers) * 100)}%</span> : null}
-          </div>
-          <div className="rev-kpi-value">{number(kpis.active)}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Saldo total puntos</span></div>
-          <div className="rev-kpi-value">{number(kpis.totalPoints)}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Saldo medio</span></div>
-          <div className="rev-kpi-value">{number(kpis.avgBalance)}</div>
-        </article>
-      </div>
+      <CocoaKpiStrip stagger aria-label="Miembros del programa">
+        <CocoaKpi label="Miembros totales" value={number(kpis.totalMembers)} caption="membresías registradas" polarity="neutral" status="ok" />
+        <CocoaKpi
+          label="Membresías activas"
+          value={number(kpis.active)}
+          caption={kpis.totalMembers > 0 ? `${percent(kpis.activePct, { maximumFractionDigits: 0 })} del total` : "sin miembros todavía"}
+          polarity="neutral"
+          status="ok"
+        />
+        <CocoaKpi label="Saldo total de puntos" value={number(kpis.totalPoints)} caption="en circulación" polarity="neutral" status="ok" />
+        <CocoaKpi label="Saldo medio" value={number(kpis.avgBalance)} caption="puntos por miembro" polarity="neutral" status="ok" />
+      </CocoaKpiStrip>
 
-      {/* Distribución por tier */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head"><h3 style={{ color: "var(--ink)" }}>Distribución de miembros por tier</h3></div>
-        {memberships.length === 0 ? (
-          <p className="bo-muted" style={{ textTransform: "none" }}>Todavía no hay membresías registradas en el programa.</p>
-        ) : (
-          <>
-            <div style={{ display: "flex", gap: 6, marginTop: 8, height: 28, borderRadius: 6, overflow: "hidden", background: "var(--surface-2)" }}>
-              {distribution.map((d) => {
-                const meta = tierMeta(d.tierCode);
-                return (
-                  <div
-                    key={d.tierCode}
-                    style={{
-                      width: `${d.pct}%`,
-                      background: meta.color,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      fontSize: 11,
-                      color: "#0a0d10",
-                      fontWeight: 600
-                    }}
-                    title={`${meta.name}: ${number(d.members)} (${percent(d.pct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })})`}
-                  >
-                    {d.pct >= 6 ? meta.name : ""}
-                  </div>
-                );
-              })}
-            </div>
-            <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, marginTop: 4, fontSize: 11, color: "var(--ink-muted)" }}>
-              {distribution.map((d) => {
-                const meta = tierMeta(d.tierCode);
-                return (
-                  <span key={d.tierCode}>
-                    <span style={{ display: "inline-block", width: 8, height: 8, background: meta.color, borderRadius: 99, marginRight: 4 }} />
-                    {meta.name}: {number(d.members)} ({percent(d.pct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })})
-                  </span>
-                );
-              })}
-            </div>
-          </>
-        )}
-      </article>
+      <CocoaGrid align="start" aria-label="Distribución y configuración">
+        <CocoaSpan cols={5} min={320}>
+          <CocoaSection title="Miembros por nivel" meta={plural(memberships.length, "miembro", "miembros")}>
+            {distribution.rows.length === 0 ? (
+              <CocoaState kind="empty" inline title="Todavía no hay membresías registradas en el programa." />
+            ) : (
+              <ul className="c22-section__list" aria-label="Miembros por nivel">
+                {distribution.rows.map((row) => (
+                  <li key={row.tierCode}>
+                    <span style={{ flex: "1 1 auto", minWidth: 0 }}>
+                      <CocoaChart.Progress
+                        value={distribution.max > 0 ? Math.max(2, (row.members / distribution.max) * 100) : 0}
+                        label={tierName(row.tierCode)}
+                        valueLabel={`${number(row.members)} · ${percent(row.pct, { maximumFractionDigits: 1 })}`}
+                        aria-label={`${tierName(row.tierCode)}: ${plural(row.members, "miembro", "miembros")} (${percent(row.pct, { maximumFractionDigits: 1 })})`}
+                      />
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
 
-      {/* Configuración global */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Configuración global del programa</h3>
-          <button type="button" className="primary" onClick={() => void saveProgram()} disabled={saving}>
-            {saving ? "Guardando…" : current === null ? "Crear programa" : "Guardar cambios"}
-          </button>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
-          <label>Nombre comercial<input value={config.programName} onChange={(e) => patchConfig({ programName: e.target.value })} /></label>
-          <label>Puntos por € gastado<input type="number" value={config.pointsPerEur} onChange={(e) => patchConfig({ pointsPerEur: Number(e.target.value) })} /></label>
-          <label>Valor de 1 punto (€)<input type="number" step="0.001" value={config.pointValueEur} onChange={(e) => patchConfig({ pointValueEur: Number(e.target.value) })} /></label>
-          <label>Caducidad puntos (meses)<input type="number" value={config.pointsExpiryMonths} onChange={(e) => patchConfig({ pointsExpiryMonths: Number(e.target.value) })} /></label>
-          <label>Bonus cumpleaños (puntos)<input type="number" value={config.bonusOnBirthday} onChange={(e) => patchConfig({ bonusOnBirthday: Number(e.target.value) })} /></label>
-          <label style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <input type="checkbox" checked={config.earnOnTaxes} onChange={(e) => patchConfig({ earnOnTaxes: e.target.checked })} />
-            <span>Acumular puntos sobre impuestos</span>
-          </label>
-          <label style={{ display: "flex", flexDirection: "row", alignItems: "center", gap: 6 }}>
-            <input type="checkbox" checked={config.earnOnExtras} onChange={(e) => patchConfig({ earnOnExtras: e.target.checked })} />
-            <span>Acumular puntos sobre F&B y extras</span>
-          </label>
-        </div>
-        <p className="bo-muted" style={{ textTransform: "none", marginTop: 8, fontSize: 12 }}>
-          Ratio actual: <strong>{config.pointsPerEur} puntos × {money(config.pointValueEur, { decimals: "auto" })} = {percent(config.pointsPerEur * config.pointValueEur, { ratio: true, minimumFractionDigits: 1, maximumFractionDigits: 1 })} de retorno</strong> al canje.
-        </p>
-      </article>
+        <CocoaSpan cols={7} min={320}>
+          <CocoaFormSection title="Configuración global del programa" description="Ratio de puntos, valor de canje, caducidad y bonificaciones.">
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Nombre comercial" required>
+                <CocoaInput value={form.programName} onChange={(v) => patchForm({ programName: v })} placeholder={DEFAULT_CONFIG.programName} disabled={saving} />
+              </CocoaField>
+              <CocoaField label="Puntos por euro gastado">
+                <CocoaInput type="number" inputMode="decimal" min={0} step={1} value={form.pointsPerEur} onChange={(v) => patchForm({ pointsPerEur: v })} disabled={saving} />
+              </CocoaField>
+              <CocoaField label="Valor de un punto (€)">
+                <CocoaInput type="number" inputMode="decimal" min={0} step={0.001} value={form.pointValueEur} onChange={(v) => patchForm({ pointValueEur: v })} disabled={saving} />
+              </CocoaField>
+              <CocoaField label="Caducidad de los puntos (meses)">
+                <CocoaInput type="number" inputMode="numeric" min={0} step={1} value={form.pointsExpiryMonths} onChange={(v) => patchForm({ pointsExpiryMonths: v })} disabled={saving} />
+              </CocoaField>
+              <CocoaField label="Bonificación de cumpleaños (puntos)">
+                <CocoaInput type="number" inputMode="numeric" min={0} step={1} value={form.bonusOnBirthday} onChange={(v) => patchForm({ bonusOnBirthday: v })} disabled={saving} />
+              </CocoaField>
+            </CocoaFormRow>
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Acumular puntos sobre impuestos" inline>
+                <CocoaSwitch checked={form.earnOnTaxes} onChange={(v) => patchForm({ earnOnTaxes: v })} disabled={saving} />
+              </CocoaField>
+              <CocoaField label="Acumular puntos sobre restauración y extras" inline>
+                <CocoaSwitch checked={form.earnOnExtras} onChange={(v) => patchForm({ earnOnExtras: v })} disabled={saving} />
+              </CocoaField>
+            </CocoaFormRow>
+            <CocoaCallout tone="neutral" title="Ratio actual">
+              {number(config.pointsPerEur, { maximumFractionDigits: 2 })} puntos × {money(config.pointValueEur, { decimals: "auto" })} ={" "}
+              {percent(returnPct, { ratio: true, minimumFractionDigits: 1, maximumFractionDigits: 1 })} de retorno al canje.
+            </CocoaCallout>
+          </CocoaFormSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
-      {/* Tiers */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head"><h3 style={{ color: "var(--ink)" }}>Niveles del programa</h3></div>
+      <CocoaSection
+        title="Niveles del programa"
+        headingLevel={2}
+        meta={tiers.length > 0 ? plural(tiers.length, "nivel", "niveles") : undefined}
+        action={
+          tiers.length === 0 ? (
+            <CocoaButton variant="plain" tone="accent" size="small" onClick={loadTemplate} disabled={saving}>
+              {TEMPLATE_LABEL}
+            </CocoaButton>
+          ) : undefined
+        }
+      >
         {tiers.length === 0 ? (
-          <div>
-            <p className="bo-muted" style={{ textTransform: "none" }}>
-              La configuración guardada no define tiers todavía.
-            </p>
-            <button
-              type="button"
-              style={{ marginTop: 8 }}
-              onClick={() => {
-                setTiers(TEMPLATE_TIERS);
-                setDirty(true);
-              }}
-            >
-              Cargar plantilla de tiers (Plata → Diamante)
-            </button>
-          </div>
+          <CocoaState
+            kind="empty"
+            dashed
+            title="La configuración guardada no define niveles todavía."
+            message="Carga la plantilla sugerida y ajústala, o publica el programa solo con puntos."
+            primaryAction={{ label: TEMPLATE_LABEL, onClick: loadTemplate }}
+          />
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12, marginTop: 8 }}>
+          <CocoaKpiStrip min={240} aria-label="Niveles del programa">
             {tiers.map((tier) => (
-              <article key={tier.id} className="bo-card" style={{ background: "var(--surface-2, var(--surface))", borderTop: `4px solid ${tier.color}` }}>
-                <div className="bo-card-head">
-                  <div>
-                    <strong style={{ color: "var(--ink)", fontSize: 18 }}>{tier.name}</strong>
-                    <p className="bo-muted" style={{ margin: "2px 0 0", fontSize: 11 }}>
-                      {tier.qualifyingStays === 0 ? "Tier de entrada" : `Desde ${tier.qualifyingStays} estancias/año`} · ×{tier.pointsMultiplier} puntos
-                    </p>
-                  </div>
-                  <button type="button" onClick={() => setEditingTier({ ...tier, benefits: [...tier.benefits] })}>Editar</button>
+              <CocoaSection
+                key={tier.id}
+                title={tier.name}
+                meta={tierThreshold(tier)}
+                action={
+                  <CocoaButton variant="plain" tone="accent" size="small" onClick={() => setEditingTier(tierToForm(tier))} disabled={saving}>
+                    {ACTIONS.edit}
+                  </CocoaButton>
+                }
+              >
+                <div className="cocoa-cluster">
+                  <CocoaBadge tone="accent" variant="tinted" uppercase={false}>
+                    {multiplierLabel(tier.pointsMultiplier)}
+                  </CocoaBadge>
                 </div>
                 {tier.benefits.length === 0 ? (
-                  <p className="bo-muted" style={{ fontSize: 12, marginTop: 8, textTransform: "none" }}>Sin beneficios definidos.</p>
+                  <CocoaState kind="empty" inline title="Sin beneficios definidos." />
                 ) : (
-                  <ul style={{ fontSize: 12, color: "var(--ink)", marginTop: 8, paddingLeft: 18 }}>
-                    {tier.benefits.map((b, i) => <li key={i} style={{ marginBottom: 2 }}>{b}</li>)}
+                  <ul className="c22-section__list" aria-label={`Beneficios del nivel ${tier.name}`}>
+                    {tier.benefits.map((benefit, index) => (
+                      <li key={`${tier.id}-${index}`}>
+                        <span>{benefit}</span>
+                      </li>
+                    ))}
                   </ul>
                 )}
-              </article>
+              </CocoaSection>
             ))}
-          </div>
+          </CocoaKpiStrip>
         )}
-      </article>
+      </CocoaSection>
 
-      {/* Edit tier dialog */}
-      {editingTier ? (
-        <article className="bo-card" style={{ background: "var(--surface-2)", border: "1px solid var(--accent)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Editar tier «{editingTier.name}»</h3>
-            <button type="button" onClick={() => setEditingTier(null)}>Cerrar</button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
-            <label>Nombre<input value={editingTier.name} onChange={(e) => setEditingTier({ ...editingTier, name: e.target.value })} /></label>
-            <label>Estancias mínimas<input type="number" value={editingTier.qualifyingStays} onChange={(e) => setEditingTier({ ...editingTier, qualifyingStays: Number(e.target.value) })} /></label>
-            <label>Multiplicador puntos<input type="number" step="0.1" value={editingTier.pointsMultiplier} onChange={(e) => setEditingTier({ ...editingTier, pointsMultiplier: Number(e.target.value) })} /></label>
-            <label>Color<input type="color" value={editingTier.color} onChange={(e) => setEditingTier({ ...editingTier, color: e.target.value })} /></label>
-          </div>
-          <label style={{ display: "block", marginTop: 12 }}>Beneficios (uno por línea)
-            <textarea
-              rows={4}
-              value={editingTier.benefits.join("\n")}
-              onChange={(e) => setEditingTier({ ...editingTier, benefits: e.target.value.split("\n").filter(Boolean) })}
-              style={{ width: "100%" }}
-            />
-          </label>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 12 }}>
-            <button type="button" className="primary" onClick={applyTierEdit}>
-              Aplicar
-            </button>
-            <span className="bo-muted" style={{ fontSize: 11, textTransform: "none" }}>
-              Los cambios de tiers se publican con «Guardar cambios».
-            </span>
-          </div>
-        </article>
-      ) : null}
+      <CocoaCallout tone="neutral" title="Versiones del programa">
+        Cada guardado publica una nueva versión del programa y la pantalla muestra siempre la versión vigente.
+        {current ? ` Versión vigente publicada el ${date(current.createdAt, "medium")}.` : ""} Los indicadores y la distribución salen de las
+        membresías reales. Por ahora el programa y sus membresías se guardan en la memoria del servidor y se pierden al reiniciarlo.
+      </CocoaCallout>
 
-      <p className="bo-muted" style={{ fontSize: 11, textTransform: "none" }}>
-        La configuración (global + tiers) se lee de <code>GET /crm/loyalty</code> y cada guardado publica una nueva
-        versión del programa vía <code>POST /crm/loyalty/programs</code>.
-        {current ? <> Versión vigente publicada el {fmtDate(current.createdAt)}.</> : null}
-        {" "}Los KPIs y la distribución provienen de las membresías reales de la API.
-      </p>
-    </section>
+      <CocoaDrawer
+        open={editingTier !== null}
+        onClose={() => setEditingTier(null)}
+        title={editingTier ? `Editar nivel «${editingTier.name}»` : "Editar nivel"}
+        subtitle="Los cambios de niveles se publican con «Guardar cambios»."
+        side="right"
+        size="md"
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => setEditingTier(null)}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" onClick={applyTierEdit} disabled={!editingTier || editingTier.name.trim() === ""}>
+              {ACTIONS.apply}
+            </CocoaButton>
+          </>
+        }
+      >
+        {editingTier ? (
+          <div className="cocoa-stack" data-gap="3">
+            <CocoaFormRow columns={2}>
+              <CocoaField label={FIELD_LABELS.name} required fullWidth>
+                <CocoaInput value={editingTier.name} onChange={(v) => setEditingTier({ ...editingTier, name: v })} autoComplete="off" />
+              </CocoaField>
+              <CocoaField label="Estancias mínimas al año" help="0 = nivel de entrada.">
+                <CocoaInput type="number" inputMode="numeric" min={0} step={1} value={editingTier.qualifyingStays} onChange={(v) => setEditingTier({ ...editingTier, qualifyingStays: v })} />
+              </CocoaField>
+              <CocoaField label="Multiplicador de puntos">
+                <CocoaInput type="number" inputMode="decimal" min={0} step={0.1} value={editingTier.pointsMultiplier} onChange={(v) => setEditingTier({ ...editingTier, pointsMultiplier: v })} />
+              </CocoaField>
+            </CocoaFormRow>
+            <CocoaField label="Beneficios" help="Uno por línea.">
+              <CocoaInput multiline rows={5} value={editingTier.benefits} onChange={(v) => setEditingTier({ ...editingTier, benefits: v })} />
+            </CocoaField>
+          </div>
+        ) : null}
+      </CocoaDrawer>
+
+    </CocoaPage>
   );
 }

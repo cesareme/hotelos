@@ -1,113 +1,44 @@
+// RoomBlockGridDialog — room block matrix (room type × night) of a group.
+//
+// Cocoa 22 (ola 3 · lote 3-B, archetype «diálogo / drawer»): a CocoaDrawer
+// (right, lg; bottom sheet on phones) whose body is a <form> with the stay
+// summary (CocoaStat), the matrix inside a CocoaScrollArea (the only place a
+// raw table element is allowed: `data-cocoa-grid-table`, sticky header and first
+// column, own scroll) and the total. Every cell is a small CocoaInput; the
+// row and column shortcuts fill the empty cells with one value. The footer
+// has two buttons: Cancelar and «Guardar bloqueo» (submits the form).
+// POST /groups/:id/room-blocks/bulk with the cells above zero only.
 import { useMemo, useState, type CSSProperties, type FormEvent, type ReactNode } from "react";
 import { apiRequest } from "../../services/api-client";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { toArray } from "../../utils/toArray";
-import { LoadingBlock, EmptyState, ErrorState } from "../../components/States";
-import { date } from "../../lib/format";
+import { date, dateRange, number, plural } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
+import { CheckIcon } from "../../components/cocoa-icons/ActionIcons";
+import {
+  CocoaButton,
+  CocoaCallout,
+  CocoaDrawer,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaScrollArea,
+  CocoaSkeleton,
+  CocoaStat,
+  CocoaState
+} from "../../components/cocoa";
 
-// ─── Tipos locales ───────────────────────────────────────────────────────
+// ─── Local types ─────────────────────────────────────────────────────────
 
 type RoomType = { id: string; code: string; name: string; baseOccupancy?: number };
 type RoomBlockEntry = { roomTypeId: string; date: string; blockedCount: number };
 
-// ─── Helpers de estilo (replicados de NewGroupDialog) ────────────────────
+const FORM_ID = "room-block-form";
 
-const fieldsetStyle: CSSProperties = {
-  border: "1px solid var(--border, #e5e7eb)",
-  borderRadius: "var(--radius-sm, 6px)",
-  padding: 12,
-  margin: 0
-};
+// ─── Date helpers ────────────────────────────────────────────────────────
 
-const legendStyle: CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--ink-soft, #555)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  padding: "0 6px"
-};
-
-const inputStyle: CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  border: "1px solid var(--border, #d1d5db)",
-  borderRadius: "var(--radius-sm, 6px)",
-  background: "var(--surface, white)",
-  color: "var(--ink, #1a1a1a)",
-  fontSize: 14,
-  fontFamily: "inherit"
-};
-
-// Estilo específico de celda del grid: compacto.
-const cellInputStyle: CSSProperties = {
-  width: 50,
-  height: 32,
-  padding: "4px 6px",
-  border: "1px solid var(--border, #d1d5db)",
-  borderRadius: "var(--radius-sm, 6px)",
-  background: "var(--surface, white)",
-  color: "var(--ink, #1a1a1a)",
-  fontSize: 13,
-  fontFamily: "inherit",
-  textAlign: "center"
-};
-
-const thStyle: CSSProperties = {
-  background: "var(--surface-2, #f3f4f6)",
-  color: "var(--ink-soft, #4b5563)",
-  fontSize: 11,
-  fontWeight: 600,
-  textTransform: "uppercase",
-  letterSpacing: "0.05em",
-  padding: "8px 6px",
-  border: "1px solid var(--border, #e5e7eb)",
-  position: "sticky",
-  top: 0,
-  zIndex: 2,
-  whiteSpace: "nowrap"
-};
-
-const tdStyle: CSSProperties = {
-  padding: "6px",
-  border: "1px solid var(--border, #e5e7eb)",
-  background: "var(--surface, white)",
-  textAlign: "center",
-  verticalAlign: "middle"
-};
-
-const rowHeaderStyle: CSSProperties = {
-  ...tdStyle,
-  background: "var(--surface-2, #f9fafb)",
-  textAlign: "left",
-  position: "sticky",
-  left: 0,
-  zIndex: 1,
-  minWidth: 180
-};
-
-const totalCellStyle: CSSProperties = {
-  ...tdStyle,
-  background: "var(--surface-2, #f3f4f6)",
-  fontWeight: 600,
-  color: "var(--ink, #1f2937)"
-};
-
-function Field(props: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: "var(--ink)" }}>
-      <span style={{ fontWeight: 500 }}>{props.label}</span>
-      {props.children}
-      {props.hint ? <span className="bo-muted" style={{ fontSize: 11 }}>{props.hint}</span> : null}
-    </label>
-  );
-}
-
-// ─── Helpers de fechas ────────────────────────────────────────────────────
-
-// Calcula array de fechas YYYY-MM-DD entre arrival (inclusive) y departure (exclusive).
-// Esto es lo correcto en hospitality: no se bloquea la noche de check-out.
+// Nights between arrival (inclusive) and departure (exclusive): the check-out
+// night is never blocked.
 function nightsBetween(arrivalDate: string, departureDate: string): string[] {
   if (!arrivalDate || !departureDate) return [];
   const start = new Date(`${arrivalDate}T00:00:00`);
@@ -126,18 +57,85 @@ function nightsBetween(arrivalDate: string, departureDate: string): string[] {
   return out;
 }
 
-function fmtDayLabel(iso: string): string {
-  if (!iso) return "—";
-  const [, m, d] = iso.split("-");
-  if (!m || !d) return iso;
-  return `${d}/${m}`;
+// ─── Grid cells (one style each, identity from the system) ───────────────
+
+const TABLE_STYLE: CSSProperties = { borderSpacing: 0 };
+
+const HEAD_STYLE: CSSProperties = {
+  padding: "var(--cocoa-space-2)",
+  fontSize: "var(--cocoa-fs-caption)",
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  color: "var(--cocoa-label-secondary)",
+  textAlign: "center",
+  verticalAlign: "middle",
+  whiteSpace: "nowrap",
+  borderBottom: "1px solid var(--cocoa-separator)",
+  borderRight: "1px solid var(--cocoa-separator)"
+};
+
+const ROW_HEAD_STYLE: CSSProperties = {
+  padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
+  minWidth: 180,
+  textAlign: "left",
+  verticalAlign: "middle",
+  whiteSpace: "nowrap",
+  fontWeight: "var(--cocoa-fw-regular)" as CSSProperties["fontWeight"],
+  borderBottom: "1px solid var(--cocoa-separator)",
+  borderRight: "1px solid var(--cocoa-separator)"
+};
+
+const CELL_STYLE: CSSProperties = {
+  padding: "var(--cocoa-space-1)",
+  textAlign: "center",
+  verticalAlign: "middle",
+  borderBottom: "1px solid var(--cocoa-separator)",
+  borderRight: "1px solid var(--cocoa-separator)"
+};
+
+const TOTAL_STYLE: CSSProperties = {
+  padding: "var(--cocoa-space-2)",
+  textAlign: "center",
+  verticalAlign: "middle",
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  background: "var(--cocoa-background-sidebar)",
+  borderBottom: "1px solid var(--cocoa-separator)",
+  borderRight: "1px solid var(--cocoa-separator)"
+};
+
+const CODE_STYLE: CSSProperties = {
+  fontSize: "var(--cocoa-fs-caption)",
+  color: "var(--cocoa-label-secondary)"
+};
+
+function Head(props: { children: ReactNode; colSpan?: number; title?: string }) {
+  return (
+    <th scope="col" colSpan={props.colSpan} title={props.title} style={HEAD_STYLE}>
+      {props.children}
+    </th>
+  );
 }
 
-function dayOfWeekShort(iso: string): string {
-  return date(iso, "weekdayOnly", { empty: "" });
+function RowHead(props: { children: ReactNode }) {
+  return (
+    <th scope="row" style={ROW_HEAD_STYLE}>
+      {props.children}
+    </th>
+  );
 }
 
-// ─── Componente principal ────────────────────────────────────────────────
+function Cell(props: { children?: ReactNode; colSpan?: number }) {
+  return (
+    <td colSpan={props.colSpan} style={CELL_STYLE}>
+      {props.children}
+    </td>
+  );
+}
+
+function TotalCell(props: { children?: ReactNode }) {
+  return <td style={TOTAL_STYLE}>{props.children}</td>;
+}
+
+// ─── Main component ──────────────────────────────────────────────────────
 
 export function RoomBlockGridDialog(props: {
   groupBookingId: string;
@@ -149,87 +147,73 @@ export function RoomBlockGridDialog(props: {
   onError: (msg: string) => void;
 }) {
   const propertyId = getActivePropertyId();
-  const roomTypesState = useApiData<RoomType[]>(
-    `/properties/${propertyId}/room-types`,
-    { pollIntervalMs: 0 }
-  );
+  const roomTypesState = useApiData<RoomType[]>(`/properties/${propertyId}/room-types`, { pollIntervalMs: 0 });
   const roomTypes = toArray<RoomType>(roomTypesState.data);
 
-  const nights = useMemo(
-    () => nightsBetween(props.arrivalDate, props.departureDate),
-    [props.arrivalDate, props.departureDate]
-  );
+  const nights = useMemo(() => nightsBetween(props.arrivalDate, props.departureDate), [props.arrivalDate, props.departureDate]);
 
-  // Matriz: clave "roomTypeId|date" → blockedCount (string para input controlado).
+  // Matrix: "roomTypeId|date" → blockedCount (string, controlled inputs).
   const [matrix, setMatrix] = useState<Record<string, string>>({});
-
-  // "Apply to row" mini-form: cada fila tiene su propio buffer de input.
+  // «Apply to row» / «apply to column» buffers.
   const [rowApplyValue, setRowApplyValue] = useState<Record<string, string>>({});
-  // "Apply to column": idem por columna.
   const [colApplyValue, setColApplyValue] = useState<Record<string, string>>({});
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function cellKey(roomTypeId: string, date: string): string {
-    return `${roomTypeId}|${date}`;
+  function cellKey(roomTypeId: string, night: string): string {
+    return `${roomTypeId}|${night}`;
   }
 
-  function getCell(roomTypeId: string, date: string): string {
-    return matrix[cellKey(roomTypeId, date)] ?? "";
+  function getCell(roomTypeId: string, night: string): string {
+    return matrix[cellKey(roomTypeId, night)] ?? "";
   }
 
-  function setCell(roomTypeId: string, date: string, value: string) {
-    // Sanea: solo enteros no negativos. Vacío permitido.
+  function setCell(roomTypeId: string, night: string, value: string) {
+    // Non-negative integers only; empty allowed.
     const cleaned = value.replace(/[^0-9]/g, "");
-    setMatrix((m) => ({ ...m, [cellKey(roomTypeId, date)]: cleaned }));
+    setMatrix((m) => ({ ...m, [cellKey(roomTypeId, night)]: cleaned }));
   }
 
-  // Aplica el mismo valor a toda una fila (todas las noches del roomType).
-  // Comportamiento defensivo: si la celda ya tiene un valor > 0, lo respeta;
-  // sólo rellena las vacías. Esto evita pisar trabajo manual ya hecho.
+  // Same value on every night of a room type; cells already above zero are kept.
   function applyToRow(roomTypeId: string) {
     const raw = (rowApplyValue[roomTypeId] ?? "").trim();
     const n = Number(raw);
     if (!raw || Number.isNaN(n) || n < 0) return;
     setMatrix((m) => {
       const next = { ...m };
-      for (const date of nights) {
-        const k = cellKey(roomTypeId, date);
+      for (const night of nights) {
+        const k = cellKey(roomTypeId, night);
         const current = next[k] ?? "";
-        if (!current || current === "0") {
-          next[k] = String(n);
-        }
+        if (!current || current === "0") next[k] = String(n);
       }
       return next;
     });
   }
 
-  // Aplica el mismo valor a toda una columna (todos los roomTypes en esa noche).
-  function applyToColumn(date: string) {
-    const raw = (colApplyValue[date] ?? "").trim();
+  // Same value on every room type of a night; cells already above zero are kept.
+  function applyToColumn(night: string) {
+    const raw = (colApplyValue[night] ?? "").trim();
     const n = Number(raw);
     if (!raw || Number.isNaN(n) || n < 0) return;
     setMatrix((m) => {
       const next = { ...m };
       for (const rt of roomTypes) {
-        const k = cellKey(rt.id, date);
+        const k = cellKey(rt.id, night);
         const current = next[k] ?? "";
-        if (!current || current === "0") {
-          next[k] = String(n);
-        }
+        if (!current || current === "0") next[k] = String(n);
       }
       return next;
     });
   }
 
-  // Totales — derivados, no estado.
+  // Totals are derived, never state.
   const rowTotals = useMemo(() => {
     const out: Record<string, number> = {};
     for (const rt of roomTypes) {
       let sum = 0;
-      for (const date of nights) {
-        const v = Number(matrix[cellKey(rt.id, date)] ?? 0);
+      for (const night of nights) {
+        const v = Number(matrix[cellKey(rt.id, night)] ?? 0);
         if (!Number.isNaN(v)) sum += v;
       }
       out[rt.id] = sum;
@@ -239,55 +223,43 @@ export function RoomBlockGridDialog(props: {
 
   const colTotals = useMemo(() => {
     const out: Record<string, number> = {};
-    for (const date of nights) {
+    for (const night of nights) {
       let sum = 0;
       for (const rt of roomTypes) {
-        const v = Number(matrix[cellKey(rt.id, date)] ?? 0);
+        const v = Number(matrix[cellKey(rt.id, night)] ?? 0);
         if (!Number.isNaN(v)) sum += v;
       }
-      out[date] = sum;
+      out[night] = sum;
     }
     return out;
   }, [matrix, roomTypes, nights]);
 
-  const grandTotal = useMemo(
-    () => Object.values(rowTotals).reduce((a, b) => a + b, 0),
-    [rowTotals]
-  );
+  const grandTotal = useMemo(() => Object.values(rowTotals).reduce((a, b) => a + b, 0), [rowTotals]);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
 
-    if (!roomTypes.length) {
-      return setError("No hay tipos de habitación disponibles.");
-    }
-    if (!nights.length) {
-      return setError("El rango de fechas no contiene noches válidas.");
-    }
+    if (!roomTypes.length) return setError("No hay tipos de habitación disponibles.");
+    if (!nights.length) return setError("El rango de fechas no contiene noches válidas.");
 
-    // Construye payload sólo con celdas > 0.
+    // Only the cells above zero travel.
     const blocks: RoomBlockEntry[] = [];
     for (const rt of roomTypes) {
-      for (const date of nights) {
-        const raw = matrix[cellKey(rt.id, date)];
+      for (const night of nights) {
+        const raw = matrix[cellKey(rt.id, night)];
         if (!raw) continue;
         const n = Number(raw);
         if (Number.isNaN(n) || n <= 0) continue;
-        blocks.push({ roomTypeId: rt.id, date, blockedCount: n });
+        blocks.push({ roomTypeId: rt.id, date: night, blockedCount: n });
       }
     }
 
-    if (!blocks.length) {
-      return setError("No hay cantidades a bloquear. Introduce al menos una celda > 0.");
-    }
+    if (!blocks.length) return setError("No hay cantidades a bloquear. Introduce al menos una celda mayor que 0.");
 
     setSubmitting(true);
     try {
-      await apiRequest<{ ok: boolean; count?: number }>(
-        `/groups/${props.groupBookingId}/room-blocks/bulk`,
-        { method: "POST", body: { blocks } }
-      );
+      await apiRequest<{ ok: boolean; count?: number }>(`/groups/${props.groupBookingId}/room-blocks/bulk`, { method: "POST", body: { blocks } });
       props.onSaved(blocks.length);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -298,284 +270,190 @@ export function RoomBlockGridDialog(props: {
     }
   }
 
-  // ─── Estados de carga / vacío / error ─────────────────────────────────
+  // ─── Loading / empty / error ───────────────────────────────────────────
 
   let body: ReactNode;
-  if (roomTypesState.loading) {
-    body = <LoadingBlock label="Cargando tipos de habitación…" />;
+  if (roomTypesState.loading && !roomTypesState.data) {
+    body = <CocoaSkeleton variant="chart" height={200} />;
   } else if (roomTypesState.error) {
-    body = (
-      <ErrorState
-        message={roomTypesState.error}
-        onRetry={() => roomTypesState.refresh()}
-      />
-    );
+    body = <CocoaState kind="error" inline title={roomTypesState.error} onRetry={() => roomTypesState.refresh()} />;
   } else if (!roomTypes.length) {
     body = (
-      <EmptyState
+      <CocoaState
+        kind="empty"
         title="No hay tipos de habitación"
-        message="Para poder bloquear inventario por grupo necesitas dar de alta tipos de habitación en el panel de Property Setup."
+        message="Para bloquear inventario por grupo necesitas dar de alta tipos de habitación en la configuración de la propiedad."
       />
     );
   } else if (!nights.length) {
     body = (
-      <EmptyState
-        title="Rango de fechas inválido"
+      <CocoaState
+        kind="empty"
+        title="Rango de fechas no válido"
         message="La fecha de salida debe ser posterior a la de llegada para poder bloquear noches."
       />
     );
   } else {
     body = (
-      <>
-        {/* Resumen contextual del bloqueo */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Bloqueo</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
-            <Field label="Grupo">
-              <input type="text" value={props.groupName} disabled style={{ ...inputStyle, opacity: 0.85 }} />
-            </Field>
-            <Field label="Llegada">
-              <input type="text" value={fmtDayLabel(props.arrivalDate)} disabled style={{ ...inputStyle, opacity: 0.85 }} />
-            </Field>
-            <Field label="Salida">
-              <input type="text" value={fmtDayLabel(props.departureDate)} disabled style={{ ...inputStyle, opacity: 0.85 }} />
-            </Field>
-            <Field label="Noches">
-              <input type="text" value={String(nights.length)} disabled style={{ ...inputStyle, opacity: 0.85 }} />
-            </Field>
-          </div>
-        </fieldset>
-
-        {/* Matriz noche × roomType */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Matriz de bloqueo (habitaciones por noche)</legend>
-          <p className="bo-muted" style={{ fontSize: 12, margin: "0 0 8px 0" }}>
-            Introduce la cantidad de habitaciones a bloquear por tipo y noche. Sólo se enviarán
-            celdas con cantidad mayor que 0. Usa los atajos por fila o columna para rellenar más rápido.
-          </p>
-          <div style={{ overflow: "auto", maxHeight: "55vh", border: "1px solid var(--border, #e5e7eb)", borderRadius: "var(--radius-sm, 6px)" }}>
-            <table style={{ borderCollapse: "collapse", width: "auto", minWidth: "100%", fontSize: 13 }}>
-              <thead>
-                <tr>
-                  <th style={{ ...thStyle, position: "sticky", left: 0, zIndex: 3, minWidth: 180 }}>
-                    Tipo de habitación
-                  </th>
-                  {nights.map((date) => (
-                    <th key={date} style={thStyle} title={date}>
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
-                        <span style={{ fontWeight: 700 }}>{fmtDayLabel(date)}</span>
-                        <span style={{ fontWeight: 400, fontSize: 10, opacity: 0.7 }}>
-                          {dayOfWeekShort(date)}
-                        </span>
-                      </div>
-                    </th>
-                  ))}
-                  <th style={{ ...thStyle, minWidth: 70 }}>Total</th>
-                  <th style={{ ...thStyle, minWidth: 160 }}>Aplicar a fila</th>
-                </tr>
-              </thead>
-              <tbody>
-                {roomTypes.map((rt) => (
-                  <tr key={rt.id}>
-                    <td style={rowHeaderStyle}>
-                      <div style={{ display: "flex", flexDirection: "column" }}>
-                        <span style={{ fontFamily: "monospace", fontSize: 11, color: "var(--ink-soft, #6b7280)" }}>
-                          {rt.code}
-                        </span>
-                        <span style={{ fontWeight: 500 }}>{rt.name}</span>
-                      </div>
-                    </td>
-                    {nights.map((date) => (
-                      <td key={date} style={tdStyle}>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          aria-label={`Bloqueo ${rt.code} ${fmtDayLabel(date)}`}
-                          value={getCell(rt.id, date)}
-                          onChange={(e) => setCell(rt.id, date, e.target.value)}
-                          style={cellInputStyle}
-                          placeholder="0"
-                        />
-                      </td>
-                    ))}
-                    <td style={totalCellStyle}>{rowTotals[rt.id] ?? 0}</td>
-                    <td style={tdStyle}>
-                      <div style={{ display: "flex", gap: 4, justifyContent: "center" }}>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          aria-label={`Aplicar valor a toda la fila ${rt.code}`}
-                          value={rowApplyValue[rt.id] ?? ""}
-                          onChange={(e) =>
-                            setRowApplyValue((v) => ({
-                              ...v,
-                              [rt.id]: e.target.value.replace(/[^0-9]/g, "")
-                            }))
-                          }
-                          style={{ ...cellInputStyle, width: 60 }}
-                          placeholder="N"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => applyToRow(rt.id)}
-                          title="Rellenar las celdas vacías de la fila con este valor"
-                          style={{
-                            padding: "4px 10px",
-                            fontSize: 14,
-                            lineHeight: 1,
-                            cursor: "pointer",
-                            border: "1px solid var(--border, #d1d5db)",
-                            borderRadius: "var(--radius-sm, 6px)",
-                            background: "var(--surface, white)",
-                            color: "var(--ink)"
-                          }}
-                          aria-label={`Aplicar valor a fila ${rt.code}`}
-                        >→</button>
-                      </div>
-                    </td>
-                  </tr>
+      <CocoaScrollArea axis="both" stickyFirstColumn maxHeight="min(55vh, 520px)" aria-label="Matriz de bloqueo por tipo de habitación y noche">
+        <table data-cocoa-grid-table className="cocoa-tabular" style={TABLE_STYLE}>
+          <thead>
+            <tr>
+              <Head>Tipo de habitación</Head>
+              {nights.map((night) => (
+                <Head key={night} title={date(night, "long")}>
+                  <span className="cocoa-stack" data-gap="1">
+                    <span>{date(night, "dayMonth")}</span>
+                    <span>{date(night, "weekdayOnly")}</span>
+                  </span>
+                </Head>
+              ))}
+              <Head>Total</Head>
+              <Head>Aplicar a la fila</Head>
+            </tr>
+          </thead>
+          <tbody>
+            {roomTypes.map((rt) => (
+              <tr key={rt.id}>
+                <RowHead>
+                  <span className="cocoa-stack" data-gap="1">
+                    <span className="cocoa-mono" style={CODE_STYLE}>
+                      {rt.code}
+                    </span>
+                    <span>{rt.name}</span>
+                  </span>
+                </RowHead>
+                {nights.map((night) => (
+                  <Cell key={night}>
+                    <CocoaInput
+                      value={getCell(rt.id, night)}
+                      onChange={(value) => setCell(rt.id, night, value)}
+                      size="small"
+                      inputMode="numeric"
+                      placeholder="0"
+                      aria-label={`Bloqueo ${rt.code} ${date(night, "dayMonth")}`}
+                      style={{ width: 56 }}
+                    />
+                  </Cell>
                 ))}
-                {/* Footer: totales por columna + atajo "aplicar a toda la columna" */}
-                <tr>
-                  <td style={{ ...rowHeaderStyle, fontWeight: 600 }}>Total por noche</td>
-                  {nights.map((date) => (
-                    <td key={date} style={totalCellStyle}>{colTotals[date] ?? 0}</td>
-                  ))}
-                  <td style={{ ...totalCellStyle, fontSize: 14, color: "var(--accent, #2563eb)" }}>
-                    {grandTotal}
-                  </td>
-                  <td style={tdStyle} aria-hidden></td>
-                </tr>
-                <tr>
-                  <td style={{ ...rowHeaderStyle, fontSize: 11, color: "var(--ink-soft, #6b7280)" }}>
-                    Aplicar a columna ↓
-                  </td>
-                  {nights.map((date) => (
-                    <td key={date} style={tdStyle}>
-                      <div style={{ display: "flex", gap: 2, alignItems: "center", justifyContent: "center" }}>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          aria-label={`Aplicar valor a columna ${fmtDayLabel(date)}`}
-                          value={colApplyValue[date] ?? ""}
-                          onChange={(e) =>
-                            setColApplyValue((v) => ({
-                              ...v,
-                              [date]: e.target.value.replace(/[^0-9]/g, "")
-                            }))
-                          }
-                          style={{ ...cellInputStyle, width: 38 }}
-                          placeholder="N"
-                        />
-                        <button
-                          type="button"
-                          onClick={() => applyToColumn(date)}
-                          title={`Rellenar las celdas vacías de ${fmtDayLabel(date)} con este valor`}
-                          style={{
-                            padding: "2px 6px",
-                            fontSize: 12,
-                            lineHeight: 1,
-                            cursor: "pointer",
-                            border: "1px solid var(--border, #d1d5db)",
-                            borderRadius: "var(--radius-sm, 6px)",
-                            background: "var(--surface, white)",
-                            color: "var(--ink)"
-                          }}
-                          aria-label={`Aplicar valor a columna ${fmtDayLabel(date)}`}
-                        >↓</button>
-                      </div>
-                    </td>
-                  ))}
-                  <td style={tdStyle} aria-hidden></td>
-                  <td style={tdStyle} aria-hidden></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </fieldset>
-      </>
+                <TotalCell>{number(rowTotals[rt.id] ?? 0)}</TotalCell>
+                <Cell>
+                  <div className="cocoa-row" data-gap="1" data-wrap="nowrap">
+                    <CocoaInput
+                      value={rowApplyValue[rt.id] ?? ""}
+                      onChange={(value) => setRowApplyValue((v) => ({ ...v, [rt.id]: value.replace(/[^0-9]/g, "") }))}
+                      size="small"
+                      inputMode="numeric"
+                      placeholder="N"
+                      aria-label={`Valor a aplicar a toda la fila ${rt.code}`}
+                      style={{ width: 56 }}
+                    />
+                    <CocoaButton
+                      variant="plain"
+                      tone="neutral"
+                      size="small"
+                      icon={<CheckIcon size={14} />}
+                      aria-label={`Aplicar el valor a la fila ${rt.code}`}
+                      title="Rellena las celdas vacías de la fila con este valor"
+                      onClick={() => applyToRow(rt.id)}
+                    />
+                  </div>
+                </Cell>
+              </tr>
+            ))}
+            {/* Column totals and the «apply to column» shortcut. */}
+            <tr>
+              <RowHead>
+                <strong>Total por noche</strong>
+              </RowHead>
+              {nights.map((night) => (
+                <TotalCell key={night}>{number(colTotals[night] ?? 0)}</TotalCell>
+              ))}
+              <TotalCell>
+                <strong>{number(grandTotal)}</strong>
+              </TotalCell>
+              <Cell />
+            </tr>
+            <tr>
+              <RowHead>
+                <span style={CODE_STYLE}>Aplicar a la columna</span>
+              </RowHead>
+              {nights.map((night) => (
+                <Cell key={night}>
+                  <div className="cocoa-row" data-gap="1" data-wrap="nowrap">
+                    <CocoaInput
+                      value={colApplyValue[night] ?? ""}
+                      onChange={(value) => setColApplyValue((v) => ({ ...v, [night]: value.replace(/[^0-9]/g, "") }))}
+                      size="small"
+                      inputMode="numeric"
+                      placeholder="N"
+                      aria-label={`Valor a aplicar a la columna ${date(night, "dayMonth")}`}
+                      style={{ width: 56 }}
+                    />
+                    <CocoaButton
+                      variant="plain"
+                      tone="neutral"
+                      size="small"
+                      icon={<CheckIcon size={14} />}
+                      aria-label={`Aplicar el valor a la columna ${date(night, "dayMonth")}`}
+                      title={`Rellena las celdas vacías del ${date(night, "dayMonth")} con este valor`}
+                      onClick={() => applyToColumn(night)}
+                    />
+                  </div>
+                </Cell>
+              ))}
+              <Cell colSpan={2} />
+            </tr>
+          </tbody>
+        </table>
+      </CocoaScrollArea>
     );
   }
 
+  const canSave = !submitting && roomTypes.length > 0 && nights.length > 0;
+
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="room-block-grid-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(15, 23, 42, 0.55)",
-        backdropFilter: "blur(2px)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
-      onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}
+    <CocoaDrawer
+      open
+      onClose={props.onClose}
+      title="Bloqueo de habitaciones"
+      subtitle={`${props.groupName} · ${dateRange(props.arrivalDate, props.departureDate)} · ${plural(nights.length, "noche", "noches")}`}
+      side="right"
+      size="lg"
+      focusKey={roomTypes.length}
+      footer={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose} disabled={submitting}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" type="submit" form={FORM_ID} loading={submitting} disabled={!canSave}>
+            Guardar bloqueo
+          </CocoaButton>
+        </>
+      }
     >
-      <form
-        onSubmit={submit}
-        className="bo-card"
-        style={{
-          width: "100%",
-          maxWidth: 920,
-          maxHeight: "92vh",
-          overflow: "auto",
-          background: "var(--surface-1, var(--surface))",
-          padding: "var(--space-5, 20px)",
-          borderRadius: "var(--radius-md, 12px)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12
-        }}
-      >
-        <div className="bo-card-head" style={{ marginBottom: 4 }}>
-          <div>
-            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 11, margin: 0 }}>
-              Comercial · Groups &amp; Events
-            </p>
-            <h3 id="room-block-grid-title" style={{ margin: "2px 0 0 0" }}>
-              Bloqueo de habitaciones · {props.groupName}
-            </h3>
-          </div>
-          <button
-            type="button"
-            onClick={props.onClose}
-            aria-label="Cerrar"
-            style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "var(--ink)" }}
-          >×</button>
+      <form id={FORM_ID} onSubmit={submit} className="cocoa-stack" data-gap="4" noValidate>
+        <div className="cocoa-row" data-gap="4" data-align="start">
+          <CocoaStat label="Grupo" value={props.groupName} tabular={false} />
+          <CocoaStat label="Llegada" value={date(props.arrivalDate)} />
+          <CocoaStat label="Salida" value={date(props.departureDate)} />
+          <CocoaStat label="Noches" value={number(nights.length)} />
         </div>
 
-        <p className="bo-muted" style={{ margin: 0, fontSize: 13 }}>
-          Edita el bloqueo de inventario noche × tipo de habitación para este grupo.
-          Solo se enviarán celdas con cantidad mayor que 0.
-        </p>
-
-        {body}
+        <CocoaFormSection
+          title="Matriz de bloqueo (habitaciones por noche)"
+          description="Introduce la cantidad de habitaciones a bloquear por tipo y noche. Solo se envían las celdas con cantidad mayor que 0. Usa los atajos por fila o columna para rellenar más rápido."
+        >
+          {body}
+          <CocoaStat label="Total bloqueado" value={number(grandTotal)} suffix=" habitaciones-noche" tone="accent" />
+        </CocoaFormSection>
 
         {error ? (
-          <p className="bo-status error" style={{ textTransform: "none", margin: 0 }}>{error}</p>
+          <CocoaCallout tone="danger" title={error} role="alert">
+            {null}
+          </CocoaCallout>
         ) : null}
-
-        <div className="bo-row" style={{ gap: 8, justifyContent: "space-between", marginTop: 4 }}>
-          <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-            Total bloqueado: <strong style={{ color: "var(--ink)" }}>{grandTotal}</strong> habitaciones-noche
-          </p>
-          <div className="bo-row" style={{ gap: 8 }}>
-            <button type="button" onClick={props.onClose} disabled={submitting}>Cancelar</button>
-            <button
-              type="submit"
-              className="primary"
-              disabled={submitting || !roomTypes.length || !nights.length}
-            >
-              {submitting ? "Guardando…" : "Guardar bloqueo"}
-            </button>
-          </div>
-        </div>
       </form>
-    </div>
+    </CocoaDrawer>
   );
 }

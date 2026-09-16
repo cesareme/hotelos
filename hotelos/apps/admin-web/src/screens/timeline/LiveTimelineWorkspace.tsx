@@ -1,25 +1,18 @@
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-  type PointerEvent as ReactPointerEvent
-} from "react";
-import {
-  TimelineDateSelector,
-  TimelineFilterBar,
-  TimelineGrid,
-  TimelineHeader,
-  TimelineOverbookingAlert,
-  TimelineResourceRow,
-  TimelineRightDetailPanel,
-  type TimelineFilterGroup,
-  type TimelineGranularity,
-  type TimelineResource,
-  type TimelineStatus
-} from "@hotelos/ui/timeline";
+// Cronograma — Recepción › Reservas › Cronograma (/recepcion/reservas/cronograma).
+//
+// Cocoa 22 · ola 3 · lote 3-A (calendar archetype, template `Calendario`):
+// CocoaPage (full bleed, compact density) → CocoaToolbar with the period and
+// the scale → filter chips (status, channel) → CocoaScrollArea with a
+// grid table (`data-cocoa-grid-table`): sticky date header WITHOUT blur, sticky
+// resource column and its own horizontal + vertical scroll with momentum (the
+// page never scrolls sideways). Reservation blocks sit inside each room row:
+// hover shows a CocoaPopover, click / Enter opens a CocoaDrawer with the
+// detail (folio, activity, deep links, quick actions), drag moves the stay and
+// dragging the right edge resizes it. Every write (move, resize, check-in,
+// check-out, cancel, no-show, assign) passes through a CocoaDialog. Same API
+// calls as before; hosted inside ReservasTabs the container paints the title.
+
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import {
   assignReservationRoom,
@@ -39,12 +32,36 @@ import {
   type FolioBalance,
   type GuestActivity
 } from "../../services/pmsCommerceApi";
-import { EmptyState, ErrorState, LoadingBlock, Spinner } from "../../components/States";
-import { NarrowViewportBanner } from "../../components/NarrowViewportBanner";
 import { useTabHost } from "../tabs/TabHost";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { useToast } from "../../components/Toast";
 import { urlForScreen } from "../../navigation/nav-tree";
-import { date, dateRange, money, time, type DateStyle } from "../../lib/format";
+import { navigateTo } from "../../lib/navigate";
+import { channelLabel, date, dateRange, marketSegmentLabel, money, plural, time, type DateStyle } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS, TIME_LABELS } from "../../content/actions";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaDrawer,
+  CocoaField,
+  CocoaInput,
+  CocoaPage,
+  CocoaPopover,
+  CocoaScrollArea,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaStat,
+  CocoaState,
+  CocoaToolbar,
+  openTabPath,
+  toneBg,
+  toneBorder,
+  toneInk,
+  type CocoaTone
+} from "../../components/cocoa";
 
 // ---------------------------------------------------------------------------
 // Date helpers (date-only, UTC, no timezone drift)
@@ -53,11 +70,11 @@ const MS_DAY = 86_400_000;
 function parseDateOnly(value: string): Date {
   return new Date(`${value.slice(0, 10)}T00:00:00.000Z`);
 }
-function toDateOnly(date: Date): string {
-  return date.toISOString().slice(0, 10);
+function toDateOnly(value: Date): string {
+  return value.toISOString().slice(0, 10);
 }
-function addDays(date: Date, n: number): Date {
-  return new Date(date.getTime() + n * MS_DAY);
+function addDays(value: Date, n: number): Date {
+  return new Date(value.getTime() + n * MS_DAY);
 }
 function diffDays(from: Date, to: Date): number {
   return Math.round((to.getTime() - from.getTime()) / MS_DAY);
@@ -93,32 +110,54 @@ const RES_STATUS_LABEL: Record<string, string> = {
   tentative: "Tentativa",
   pending: "Pendiente"
 };
-const ROOM_STATUS_MAP: Record<string, TimelineStatus> = {
-  clean: "clean",
-  dirty: "dirty",
-  inspected: "inspected",
-  occupied: "occupied",
-  vacant: "vacant",
-  out_of_order: "out_of_order",
-  out_of_service: "out_of_service"
+const RES_STATUS_TONE: Record<string, CocoaTone> = {
+  confirmed: "info",
+  checked_in: "success",
+  checked_out: "neutral",
+  cancelled: "danger",
+  no_show: "neutral",
+  tentative: "warning",
+  pending: "warning"
 };
-type Tone = { bg: string; border: string; ink: string };
-const STATUS_TONE: Record<string, Tone> = {
-  confirmed: { bg: "#1d2a73", border: "#0b1026", ink: "#ffffff" },
-  checked_in: { bg: "#0f9f6e", border: "#0a7e57", ink: "#ffffff" },
-  checked_out: { bg: "#94a3b8", border: "#64748b", ink: "#0b1026" },
-  cancelled: { bg: "#fde2e2", border: "#c2413a", ink: "#7f1d1d" },
-  no_show: { bg: "#1f2937", border: "#0b1026", ink: "#ffffff" },
-  tentative: { bg: "#fff7e6", border: "#b7791f", ink: "#7a4b08" },
-  pending: { bg: "#fff7e6", border: "#b7791f", ink: "#7a4b08" }
-};
-function toneFor(status: string): Tone {
-  return STATUS_TONE[status] ?? STATUS_TONE.confirmed;
+function toneFor(status: string): CocoaTone {
+  return RES_STATUS_TONE[status] ?? "info";
 }
+function statusLabel(status: string): string {
+  return RES_STATUS_LABEL[status] ?? status;
+}
+const ROOM_STATUS_TONE: Record<string, CocoaTone> = {
+  clean: "success",
+  inspected: "success",
+  dirty: "warning",
+  occupied: "info",
+  vacant: "neutral",
+  out_of_order: "danger",
+  out_of_service: "danger"
+};
+const ROOM_STATUS_LABEL: Record<string, string> = {
+  clean: "Limpia",
+  inspected: "Inspeccionada",
+  dirty: "Sucia",
+  occupied: "Ocupada",
+  vacant: "Libre",
+  out_of_order: "Fuera de servicio",
+  out_of_service: "Fuera de servicio"
+};
+
+type Granularity = "day" | "week" | "month";
+const SCALE_OPTIONS = [
+  { value: "day", label: "7 días" },
+  { value: "week", label: "14 días" },
+  { value: "month", label: "30 días" }
+];
 
 const UNASSIGNED_ID = "__unassigned__";
 const BLOCK_HEIGHT = 46;
 const LANE_GAP = 6;
+const LEAD_WIDTH = 200;
+const GRID_MAX_HEIGHT = 640;
+
+type Resource = { id: string; name: string; resourceType: string; status: string; capacity?: string; subLabel?: string };
 
 type Block = {
   res: AdminReservation;
@@ -133,6 +172,8 @@ type Pending =
   | { type: "move"; res: AdminReservation; newRoomId: string | null; newRoomLabel?: string; newArrival: string | null; newDeparture: string | null }
   | { type: "resize"; res: AdminReservation; newDepartureDate: string }
   | { type: "checkin" | "checkout" | "cancel" | "noshow" | "assign"; res: AdminReservation };
+
+type QuickAction = "checkin" | "checkout" | "cancel" | "noshow" | "assign";
 
 // Assign overlapping blocks to vertical lanes (interval partitioning).
 function assignLanes(blocks: Omit<Block, "lane">[]): { laid: Block[]; laneCount: number } {
@@ -158,8 +199,148 @@ function assignLanes(blocks: Omit<Block, "lane">[]): { laid: Block[]; laneCount:
   return { laid: blocks.map((b, i) => ({ ...b, lane: laneOf[i] })), laneCount: Math.max(1, ends.length) };
 }
 
+// ---------------------------------------------------------------------------
+// Styles (tokens only; layout literals stay inline)
+// ---------------------------------------------------------------------------
+const tableStyle: CSSProperties = { borderSpacing: 0, minWidth: "max-content" };
+
+const leadHeadStyle: CSSProperties = {
+  width: LEAD_WIDTH,
+  minWidth: LEAD_WIDTH,
+  maxWidth: LEAD_WIDTH,
+  boxSizing: "border-box",
+  padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
+  textAlign: "left",
+  verticalAlign: "bottom",
+  borderBottom: "1px solid var(--cocoa-separator)",
+  borderRight: "1px solid var(--cocoa-separator)"
+};
+
+function dayHeadStyle(width: number, isToday: boolean, isWeekend: boolean): CSSProperties {
+  return {
+    width,
+    minWidth: width,
+    maxWidth: width,
+    boxSizing: "border-box",
+    padding: "var(--cocoa-space-2)",
+    textAlign: "left",
+    verticalAlign: "bottom",
+    borderBottom: "1px solid var(--cocoa-separator)",
+    borderRight: "1px solid var(--cocoa-separator)",
+    background: isToday ? "var(--cocoa-accent-bg)" : isWeekend ? "var(--cocoa-background-grouped)" : "var(--cocoa-background-sidebar)",
+    color: isToday ? "var(--cocoa-tone-accent-text)" : "var(--cocoa-label)",
+    fontSize: "var(--cocoa-fs-callout)",
+    fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+    lineHeight: "var(--cocoa-lh-callout)"
+  };
+}
+
+const leadCellStyle: CSSProperties = {
+  width: LEAD_WIDTH,
+  minWidth: LEAD_WIDTH,
+  maxWidth: LEAD_WIDTH,
+  boxSizing: "border-box",
+  padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
+  textAlign: "left",
+  verticalAlign: "middle",
+  borderBottom: "1px solid var(--cocoa-separator)",
+  borderRight: "1px solid var(--cocoa-separator)",
+  background: "var(--cocoa-background-content)",
+  fontWeight: "var(--cocoa-fw-regular)" as CSSProperties["fontWeight"]
+};
+
+function laneTdStyle(height: number, minWidth: number): CSSProperties {
+  return { padding: 0, position: "relative", height, minWidth, verticalAlign: "top", borderBottom: "1px solid var(--cocoa-separator)" };
+}
+
+function laneCellStyle(width: number, isToday: boolean, isWeekend: boolean): CSSProperties {
+  return {
+    display: "block",
+    flex: "0 0 auto",
+    width,
+    height: "100%",
+    boxSizing: "border-box",
+    borderRight: "1px solid var(--cocoa-separator)",
+    background: isToday ? "var(--cocoa-accent-bg)" : isWeekend ? "var(--cocoa-background-grouped)" : "transparent"
+  };
+}
+
+function blockStyle(input: { tone: CocoaTone; left: number; top: number; width: number; selected: boolean; dragging: boolean; cancelled: boolean }): CSSProperties {
+  return {
+    position: "absolute",
+    left: input.left,
+    top: input.top,
+    width: input.width,
+    height: BLOCK_HEIGHT,
+    boxSizing: "border-box",
+    display: "flex",
+    flexDirection: "column",
+    justifyContent: "center",
+    gap: 2,
+    minWidth: 0,
+    overflow: "hidden",
+    padding: "var(--cocoa-space-1) var(--cocoa-space-2)",
+    background: toneBg(input.tone),
+    border: `1px ${input.cancelled ? "dashed" : "solid"} ${toneBorder(input.tone)}`,
+    color: toneInk(input.tone),
+    borderRadius: "var(--cocoa-radius-md)",
+    boxShadow: input.dragging ? "var(--cocoa-shadow-floating)" : input.selected ? "0 0 0 2px var(--cocoa-accent)" : "var(--cocoa-shadow-control)",
+    cursor: input.dragging ? "grabbing" : "grab",
+    userSelect: "none",
+    touchAction: "none",
+    pointerEvents: input.dragging ? "none" : undefined,
+    zIndex: (input.dragging ? "var(--cocoa-z-sticky)" : "var(--cocoa-z-base)") as CSSProperties["zIndex"],
+    textAlign: "left"
+  };
+}
+
+const blockTitleStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-callout)",
+  fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"],
+  lineHeight: "var(--cocoa-lh-callout)",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis"
+};
+
+const blockMetaStyle: CSSProperties = {
+  fontSize: "var(--cocoa-fs-caption)",
+  lineHeight: "var(--cocoa-lh-caption)",
+  whiteSpace: "nowrap",
+  overflow: "hidden",
+  textOverflow: "ellipsis"
+};
+
+const handleStyle: CSSProperties = { position: "absolute", right: 0, top: 0, bottom: 0, width: 10, cursor: "ew-resize" };
+
+const mutedStyle: CSSProperties = { display: "block", fontSize: "var(--cocoa-fs-callout)", color: "var(--cocoa-label-secondary)", minWidth: 0 };
+
+const ellipsisStyle: CSSProperties = { display: "block", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 };
+
+function avatarStyle(tone: CocoaTone): CSSProperties {
+  return {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: 36,
+    height: 36,
+    flex: "0 0 auto",
+    borderRadius: "var(--cocoa-radius-full)",
+    background: toneBg(tone),
+    color: toneInk(tone),
+    fontSize: "var(--cocoa-fs-body)",
+    fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"]
+  };
+}
+
+const rangeLabelStyle: CSSProperties = { fontSize: "var(--cocoa-fs-body)", fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"], whiteSpace: "nowrap" };
+
+// ---------------------------------------------------------------------------
+// Screen
+// ---------------------------------------------------------------------------
 export function LiveTimelineWorkspace() {
   const hosted = useTabHost() !== null;
+  const { showToast } = useToast();
   const propertyId = useMemo(() => getActivePropertyId(), []);
 
   const [rooms, setRooms] = useState<AdminRoom[]>([]);
@@ -168,7 +349,7 @@ export function LiveTimelineWorkspace() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [granularity, setGranularity] = useState<TimelineGranularity>("week");
+  const [granularity, setGranularity] = useState<Granularity>("week");
   const [rangeStart, setRangeStart] = useState<Date>(() => todayUtc());
 
   const [statusSel, setStatusSel] = useState<string[] | null>(null);
@@ -179,7 +360,7 @@ export function LiveTimelineWorkspace() {
   const [activity, setActivity] = useState<GuestActivity | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
 
-  const [hover, setHover] = useState<{ res: AdminReservation; left: number; top: number } | null>(null);
+  const [hover, setHover] = useState<{ res: AdminReservation; anchor: HTMLElement } | null>(null);
 
   const [pending, setPending] = useState<Pending | null>(null);
   const [assignRoomId, setAssignRoomId] = useState("");
@@ -232,7 +413,7 @@ export function LiveTimelineWorkspace() {
         if (anchor) setRangeStart(addDays(parseDateOnly(anchor.arrivalDate), -1));
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "No se pudo cargar el timeline.");
+      setError(err instanceof Error ? err.message : "No se pudo cargar el cronograma.");
     } finally {
       if (first) setLoading(false);
       else setRangeLoading(false);
@@ -253,7 +434,7 @@ export function LiveTimelineWorkspace() {
       // Keep the current view, but flag it as stale instead of failing silently.
       setStaleSince({
         at: time(new Date()),
-        message: err instanceof Error ? err.message : "No se pudo actualizar el timeline."
+        message: err instanceof Error ? err.message : "No se pudo actualizar el cronograma."
       });
     }
   }, [propertyId, rangeQuery]);
@@ -314,29 +495,11 @@ export function LiveTimelineWorkspace() {
       const base = prev ?? channelsPresent;
       return base.includes(id) ? base.filter((x) => x !== id) : [...base, id];
     });
-
-  const filterGroups: TimelineFilterGroup[] = [
-    {
-      id: "status",
-      label: "Estado",
-      options: statusesPresent.map((s) => ({
-        id: s,
-        label: RES_STATUS_LABEL[s] ?? s,
-        count: reservations.filter((r) => r.status === s).length
-      })),
-      selectedIds: effStatus
-    },
-    {
-      id: "channel",
-      label: "Canal",
-      options: channelsPresent.map((c) => ({
-        id: c,
-        label: c,
-        count: reservations.filter((r) => r.channel === c).length
-      })),
-      selectedIds: effChannel
-    }
-  ];
+  const filtersTouched = statusSel !== null || channelSel !== null;
+  const resetFilters = () => {
+    setStatusSel(null);
+    setChannelSel(null);
+  };
 
   const visibleReservations = useMemo(
     () =>
@@ -374,8 +537,8 @@ export function LiveTimelineWorkspace() {
   }
 
   const rows = useMemo(() => {
-    const built: Array<{ resource: TimelineResource; blocks: Block[]; height: number }> = [];
-    const makeRow = (resource: TimelineResource, list: AdminReservation[]) => {
+    const built: Array<{ resource: Resource; blocks: Block[]; height: number }> = [];
+    const makeRow = (resource: Resource, list: AdminReservation[]) => {
       const raw = list.map(blockFor).filter(Boolean) as Omit<Block, "lane">[];
       const { laid, laneCount } = assignLanes(raw);
       built.push({ resource, blocks: laid, height: Math.max(64, laneCount * (BLOCK_HEIGHT + LANE_GAP) + LANE_GAP) });
@@ -395,7 +558,7 @@ export function LiveTimelineWorkspace() {
           id: room.id,
           name: `Hab. ${room.number}`,
           resourceType: rt?.name ?? "Habitación",
-          status: ROOM_STATUS_MAP[room.status] ?? "vacant",
+          status: room.status,
           capacity: rt?.maxOccupancy ? `${rt.maxOccupancy} pax` : undefined,
           subLabel: room.floor ? `Planta ${room.floor}` : undefined
         },
@@ -403,6 +566,7 @@ export function LiveTimelineWorkspace() {
       );
     }
     return built;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visibleReservations, sortedRooms, roomTypeById, rangeStart, rangeEnd, dayCount]);
 
   const overbookingCount = useMemo(() => {
@@ -441,6 +605,7 @@ export function LiveTimelineWorkspace() {
     [rangeStart, dayCount, todayKey]
   );
   const rangeLabel = dateRange(rangeStart, addDays(rangeStart, dayCount - 1));
+  const goToday = () => setRangeStart(todayUtc());
 
   // ---- drag + resize ------------------------------------------------------
   const dragRef = useRef<{ res: AdminReservation; mode: "move" | "resize"; startX: number; startY: number; moved: boolean } | null>(null);
@@ -483,7 +648,8 @@ export function LiveTimelineWorkspace() {
         }
         return;
       }
-      // move: detect target room row + day shift
+      // move: detect target room row + day shift (the dragged block ignores
+      // pointer events, so the row under the pointer is the drop target).
       const el = document.elementFromPoint(e.clientX, e.clientY);
       const rowEl = (el as HTMLElement | null)?.closest("[data-room-id]") as HTMLElement | null;
       const targetRoomId = rowEl?.getAttribute("data-room-id") ?? null;
@@ -542,7 +708,7 @@ export function LiveTimelineWorkspace() {
         await assignReservationRoom(pending.res.id, { roomId: assignRoomId });
       }
       await refresh();
-      setActionMsg("Hecho.");
+      showToast(dialogCopy(pending).done, { variant: "success" });
       setPending(null);
       setReason("");
       setAssignRoomId("");
@@ -553,125 +719,300 @@ export function LiveTimelineWorkspace() {
     }
   }
 
+  function cancelPending() {
+    setPending(null);
+    setActionMsg(null);
+  }
+
+  function startAction(type: QuickAction, res: AdminReservation) {
+    setActionMsg(null);
+    setAssignRoomId("");
+    setReason("");
+    setPending({ type, res });
+  }
+
   // Detalle de la reserva: /recepcion/reservas/:id (tab of the Reservas container, Tanda 5).
   function openReservation(id: string) {
     const url = urlForScreen("ReservationDetailWorkspace", { id });
     if (url) openTabPath(url);
   }
-  function nav(screen: string) {
-    window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
+  function openJourney(id: string) {
+    const url = urlForScreen("GuestJourneyWorkspace", { id });
+    if (url) openTabPath(url);
   }
+
+  const pageState = loading ? "loading" : error ? "error" : "ready";
+  const hoverTone = hover ? toneFor(hover.res.status) : "info";
+  const hoverRoom = hover?.res.assignedRoomId ? roomById.get(hover.res.assignedRoomId) : undefined;
+  const dialog = pending ? dialogCopy(pending) : null;
 
   // ---- render -------------------------------------------------------------
   return (
-    <>
-    <NarrowViewportBanner />
-    <section className="bo-card" style={{ display: "grid", gap: 16, minWidth: 0 }}>
-      <header style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", justifyContent: hosted ? "flex-end" : "space-between", gap: 16 }}>
-        {hosted ? null : (
-          <div style={{ flex: "1 1 320px", minWidth: 0 }}>
-            <p className="bo-page-eyebrow">Recepción · Reservas</p>
-            <h1 className="bo-page-title" style={{ marginTop: 2 }}>Cronograma</h1>
-            <p style={{ marginTop: 8, color: "var(--ink-muted)", maxWidth: "72ch" }}>
-              Reservas y habitaciones reales. Pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el
-              detalle con folio y actividad, y arrastra para mover o redimensionar la estancia. Las acciones críticas piden
-              confirmación antes de ejecutarse.
-            </p>
-          </div>
-        )}
-        {overbookingCount > 0 ? (
-          <TimelineOverbookingAlert
-            count={overbookingCount}
-            detail="Solape de reservas en la misma habitación"
-            onClick={() => undefined}
+    <CocoaPage
+      eyebrow="Recepción · Reservas"
+      title="Cronograma"
+      subtitle={
+        hosted
+          ? undefined
+          : "Reservas y habitaciones reales: pasa el ratón por un bloque para ver su ficha rápida, haz clic para abrir el detalle y arrastra para mover o alargar la estancia."
+      }
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" loading={rangeLoading} onClick={() => void refresh()}>
+          {ACTIONS.refresh}
+        </CocoaButton>
+      }
+      fullBleed
+      density="compact"
+      state={pageState}
+      skeleton={<CocoaSkeleton variant="chart" height={420} />}
+      error={{ title: "No se pudo cargar el cronograma", message: error ?? undefined, onRetry: () => void load() }}
+      commands={[
+        { id: "cronograma-refresh", label: "Actualizar cronograma", run: () => void refresh() },
+        { id: "cronograma-today", label: "Cronograma: ir a hoy", run: goToday }
+      ]}
+    >
+      <CocoaToolbar
+        variant="content"
+        aria-label="Periodo y escala del cronograma"
+        leftSlot={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setRangeStart(addDays(rangeStart, -dayCount))}>
+              {ACTIONS.previous}
+            </CocoaButton>
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={goToday}>
+              {TIME_LABELS.today}
+            </CocoaButton>
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setRangeStart(addDays(rangeStart, dayCount))}>
+              {ACTIONS.next}
+            </CocoaButton>
+            <strong style={rangeLabelStyle}>{rangeLabel}</strong>
+          </>
+        }
+        rightSlot={
+          <CocoaSegmentedControl
+            value={granularity}
+            onChange={(value) => setGranularity(value as Granularity)}
+            options={SCALE_OPTIONS}
+            size="small"
+            aria-label="Escala del cronograma"
           />
-        ) : null}
-      </header>
-
-      <TimelineDateSelector
-        rangeLabel={rangeLabel}
-        granularity={granularity}
-        onGranularityChange={setGranularity}
-        onPrev={() => setRangeStart(addDays(rangeStart, -dayCount))}
-        onNext={() => setRangeStart(addDays(rangeStart, dayCount))}
-        onToday={() => setRangeStart(todayUtc())}
-        onPickRange={() => undefined}
+        }
       />
 
-      {!loading && !error && reservations.length > 0 ? (
-        <TimelineFilterBar
-          groups={filterGroups}
-          onToggle={(groupId, optionId) => (groupId === "status" ? toggleStatus(optionId) : toggleChannel(optionId))}
-          onClear={() => {
-            setStatusSel([]);
-            setChannelSel([]);
-          }}
-        />
+      {reservations.length > 0 ? (
+        <div className="cocoa-row" data-gap="2" role="group" aria-label="Filtros del cronograma">
+          <span className="cocoa-caption">Estado</span>
+          {statusesPresent.map((status) => {
+            const active = effStatus.includes(status);
+            return (
+              <CocoaButton
+                key={status}
+                variant={active ? "tinted" : "bordered"}
+                tone={active ? "accent" : "neutral"}
+                size="small"
+                aria-pressed={active}
+                onClick={() => toggleStatus(status)}
+              >
+                {statusLabel(status)} · {reservations.filter((r) => r.status === status).length}
+              </CocoaButton>
+            );
+          })}
+          {channelsPresent.length > 0 ? <span className="cocoa-caption">Canal</span> : null}
+          {channelsPresent.map((channel) => {
+            const active = effChannel.includes(channel);
+            return (
+              <CocoaButton
+                key={channel}
+                variant={active ? "tinted" : "bordered"}
+                tone={active ? "accent" : "neutral"}
+                size="small"
+                aria-pressed={active}
+                title={channel}
+                onClick={() => toggleChannel(channel)}
+              >
+                {channelLabel(channel)} · {reservations.filter((r) => r.channel === channel).length}
+              </CocoaButton>
+            );
+          })}
+          {filtersTouched ? (
+            <CocoaButton variant="plain" tone="neutral" size="small" onClick={resetFilters}>
+              {ACTIONS.clearFilters}
+            </CocoaButton>
+          ) : null}
+        </div>
       ) : null}
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center" }}>
-        <span className="bo-chip">{rooms.length} habitaciones</span>
-        <span className="bo-chip">{visibleReservations.length} reservas visibles</span>
+      <div className="cocoa-row" data-gap="2" data-justify="between">
+        <span className="cocoa-cluster">
+          <CocoaBadge tone="neutral">{plural(rooms.length, "habitación", "habitaciones")}</CocoaBadge>
+          <CocoaBadge tone="neutral">{plural(visibleReservations.length, "reserva visible", "reservas visibles")}</CocoaBadge>
+          {overbookingCount > 0 ? <CocoaBadge tone="danger">{plural(overbookingCount, "solape", "solapes")} en la misma habitación</CocoaBadge> : null}
+          {rangeLoading ? (
+            <CocoaBadge tone="info" variant="dot">
+              Cargando periodo…
+            </CocoaBadge>
+          ) : null}
+        </span>
         {selected ? (
-          <span className="bo-status ok" style={{ textTransform: "none" }}>
+          <CocoaBadge tone="accent" variant="dot">
             Selección: {selected.code} · {guestLabel(selected)}
-          </span>
+          </CocoaBadge>
         ) : (
-          <span className="bo-muted" style={{ textTransform: "none" }}>Sin selección</span>
+          <CocoaBadge tone="neutral" variant="dot">
+            Sin selección
+          </CocoaBadge>
         )}
-        <button type="button" onClick={() => void refresh()}>↻ Actualizar</button>
-        {rangeLoading ? <span className="bo-muted" style={{ textTransform: "none" }}>Cargando rango…</span> : null}
-        {staleSince ? (
-          <span className="bo-status warn" style={{ textTransform: "none" }} title={staleSince.message}>
-            Datos desactualizados desde {staleSince.at} — no se pudo actualizar
-          </span>
-        ) : null}
       </div>
 
-      {loading ? (
-        <LoadingBlock label="Cargando habitaciones y reservas…" />
-      ) : error ? (
-        <ErrorState title="No se pudo cargar el timeline" message={error} onRetry={() => void load()} />
-      ) : rows.length === 0 ? (
-        <EmptyState
-          title="Sin datos para mostrar"
-          message="No hay habitaciones ni reservas que mostrar en este rango. Prueba a cambiar el periodo o los filtros."
-        />
+      {staleSince ? (
+        <CocoaCallout
+          tone="warning"
+          role="status"
+          title={`Datos desactualizados desde ${staleSince.at}`}
+          actions={
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refresh()}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
+          {staleSince.message}
+        </CocoaCallout>
+      ) : null}
+
+      {rows.length === 0 ? (
+        <CocoaSection aria-label="Sin datos en el periodo">
+          <CocoaState
+            kind="empty"
+            illustration="search"
+            title="Sin datos para mostrar"
+            message="No hay habitaciones ni reservas en este periodo. Cambia el periodo o los filtros."
+            primaryAction={{ label: `Ir a ${TIME_LABELS.today.toLowerCase()}`, onClick: goToday }}
+            secondaryAction={filtersTouched ? { label: ACTIONS.clearFilters, onClick: resetFilters } : undefined}
+          />
+        </CocoaSection>
       ) : (
-        <TimelineGrid>
-          <TimelineHeader leadingLabel="Recurso" days={days} cellWidth={cellWidth} />
-          {rows.map((row) => (
-            <div data-room-id={row.resource.id} key={row.resource.id}>
-              <TimelineResourceRow resource={row.resource} days={dayCount} cellWidth={cellWidth} height={row.height}>
-                {row.blocks.map((b) => (
-                  <ReservationBlockView
-                    key={b.res.id}
-                    block={b}
-                    cellWidth={cellWidth}
-                    selected={selectedId === b.res.id}
-                    drag={drag?.id === b.res.id ? drag : null}
-                    onPointerDownMove={(e) => beginDrag(b.res, "move", e)}
-                    onPointerDownResize={(e) => beginDrag(b.res, "resize", e)}
-                    onHover={(left, top) => setHover({ res: b.res, left, top })}
-                    onHoverEnd={() => setHover((h) => (h?.res.id === b.res.id ? null : h))}
-                    onKeyboardSelect={() => setSelectedId(b.res.id)}
-                  />
+        <CocoaScrollArea axis="both" stickyFirstColumn maxHeight={GRID_MAX_HEIGHT} aria-label="Cronograma de reservas por habitación">
+          <table data-cocoa-grid-table className="cocoa-tabular" style={tableStyle}>
+            <thead>
+              <tr>
+                <th scope="col" style={leadHeadStyle}>
+                  <span className="cocoa-caption">Recurso</span>
+                </th>
+                {days.map((day) => (
+                  <th key={day.key} scope="col" style={dayHeadStyle(cellWidth, day.isToday, day.isWeekend)} aria-current={day.isToday ? "date" : undefined}>
+                    <span className="cocoa-caption" style={{ display: "block" }}>
+                      {day.label}
+                    </span>
+                    {day.sublabel}
+                    {day.isToday ? ` · ${TIME_LABELS.today.toLowerCase()}` : ""}
+                  </th>
                 ))}
-              </TimelineResourceRow>
-            </div>
-          ))}
-        </TimelineGrid>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => {
+                const roomTone = ROOM_STATUS_TONE[row.resource.status] ?? "neutral";
+                const roomStatus = ROOM_STATUS_LABEL[row.resource.status] ?? row.resource.status;
+                return (
+                  <tr key={row.resource.id} data-room-id={row.resource.id}>
+                    <th scope="row" style={leadCellStyle}>
+                      <CocoaBadge tone={roomTone} variant="dot" title={roomStatus} aria-label={`${row.resource.name}, ${roomStatus}`}>
+                        {row.resource.name}
+                      </CocoaBadge>
+                      <span style={mutedStyle}>
+                        {row.resource.resourceType}
+                        {row.resource.capacity ? ` · ${row.resource.capacity}` : ""}
+                      </span>
+                      {row.resource.subLabel ? <span style={mutedStyle}>{row.resource.subLabel}</span> : null}
+                    </th>
+                    <td colSpan={dayCount} style={laneTdStyle(row.height, dayCount * cellWidth)}>
+                      <div aria-hidden="true" style={{ display: "flex", height: "100%" }}>
+                        {days.map((day) => (
+                          <span key={day.key} style={laneCellStyle(cellWidth, day.isToday, day.isWeekend)} />
+                        ))}
+                      </div>
+                      {row.blocks.map((b) => (
+                        <ReservationBlockView
+                          key={b.res.id}
+                          block={b}
+                          cellWidth={cellWidth}
+                          selected={selectedId === b.res.id}
+                          drag={drag?.id === b.res.id ? drag : null}
+                          onPointerDownMove={(e) => beginDrag(b.res, "move", e)}
+                          onPointerDownResize={(e) => beginDrag(b.res, "resize", e)}
+                          onHover={(anchor) => setHover({ res: b.res, anchor })}
+                          onHoverEnd={() => setHover((h) => (h?.res.id === b.res.id ? null : h))}
+                          onKeyboardSelect={() => setSelectedId(b.res.id)}
+                        />
+                      ))}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </CocoaScrollArea>
       )}
 
-      {/* Hover thumbnail */}
-      {hover && !drag ? <HoverCard res={hover.res} room={hover.res.assignedRoomId ? roomById.get(hover.res.assignedRoomId) : undefined} left={hover.left} top={hover.top} /> : null}
+      {/* Hover card (fixed layer, escapes the scroll area) */}
+      <CocoaPopover open={hover !== null && drag === null} anchorEl={hover?.anchor ?? null} placement="top" onClose={() => setHover(null)} role="tooltip" aria-label="Ficha rápida de la reserva">
+        {hover ? (
+          <div className="cocoa-stack" data-gap="2" style={{ width: 280, maxWidth: "80vw" }}>
+            <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
+              <span aria-hidden="true" style={avatarStyle(hoverTone)}>
+                {initials(guestLabel(hover.res))}
+              </span>
+              <span style={{ minWidth: 0 }}>
+                <strong style={ellipsisStyle}>{guestLabel(hover.res)}</strong>
+                <span style={mutedStyle}>{hover.res.code}</span>
+              </span>
+            </div>
+            <span className="cocoa-cluster">
+              <CocoaBadge tone={hoverTone}>{statusLabel(hover.res.status)}</CocoaBadge>
+              {hover.res.channel ? (
+                <CocoaBadge tone="neutral" title={hover.res.channel}>
+                  {channelLabel(hover.res.channel)}
+                </CocoaBadge>
+              ) : null}
+              <CocoaBadge tone="neutral">{hoverRoom ? `Hab. ${hoverRoom.number}` : "Sin habitación"}</CocoaBadge>
+            </span>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "var(--cocoa-space-2)" }}>
+              <CocoaStat label="Entrada" value={fmtDate(hover.res.arrivalDate, "weekdayShort")} tabular={false} />
+              <CocoaStat label="Salida" value={fmtDate(hover.res.departureDate, "weekdayShort")} tabular={false} />
+              <CocoaStat label="Noches" value={`${nightsOf(hover.res)}`} />
+              <CocoaStat label="Ocupación" value={`${hover.res.adults}A${hover.res.children ? ` · ${hover.res.children}N` : ""}`} />
+              <CocoaStat label="Importe" value={money(hover.res.totalAmount, hover.res.currency)} />
+              <CocoaStat
+                label="Segmento"
+                value={hover.res.marketSegment ? marketSegmentLabel(hover.res.marketSegment) : channelLabel(hover.res.sourceCode)}
+                tabular={false}
+              />
+            </div>
+            <span style={mutedStyle}>Haz clic para ver el detalle completo</span>
+          </div>
+        ) : null}
+      </CocoaPopover>
 
-      {/* Detail panel */}
-      <TimelineRightDetailPanel
-        open={!!selected}
+      {/* Detail drawer (bottom sheet on phones) */}
+      <CocoaDrawer
+        open={selected !== null}
+        onClose={() => setSelectedId(null)}
         title={selected ? selected.code : "Reserva"}
         subtitle={selected ? `${guestLabel(selected)} · ${selectedRoom ? `Hab. ${selectedRoom.number}` : "Sin habitación"}` : undefined}
-        onClose={() => setSelectedId(null)}
+        side="right"
+        size="lg"
+        footer={
+          selected ? (
+            <>
+              <CocoaButton variant="plain" tone="neutral" onClick={() => setSelectedId(null)}>
+                {ACTIONS.close}
+              </CocoaButton>
+              <CocoaButton variant="filled" tone="accent" onClick={() => openReservation(selected.id)}>
+                Abrir reserva
+              </CocoaButton>
+            </>
+          ) : undefined
+        }
       >
         {selected ? (
           <DetailPanel
@@ -681,39 +1022,58 @@ export function LiveTimelineWorkspace() {
             activity={activity}
             loading={detailLoading}
             error={detailError}
-            onOpenReservation={() => openReservation(selected.id)}
-            onNav={nav}
-            onAction={(type) => {
-              setActionMsg(null);
-              setAssignRoomId("");
-              setReason("");
-              setPending({ type, res: selected });
-            }}
+            onOpenJourney={() => openJourney(selected.id)}
+            onAction={(type) => startAction(type, selected)}
           />
         ) : null}
-      </TimelineRightDetailPanel>
+      </CocoaDrawer>
 
-      {/* Confirm / action modal */}
-      {pending ? (
-        <ActionModal
-          pending={pending}
-          rooms={sortedRooms}
-          roomTypeById={roomTypeById}
-          assignRoomId={assignRoomId}
-          onAssignRoomChange={setAssignRoomId}
-          reason={reason}
-          onReasonChange={setReason}
+      {/* Confirmation of every write */}
+      {pending && dialog ? (
+        <CocoaDialog
+          open
+          onClose={cancelPending}
+          title={dialog.title}
+          description={dialog.body}
+          tone={dialog.danger ? "destructive" : "primary"}
+          confirmLabel={dialog.verb}
+          cancelLabel={ACTIONS.cancel}
           busy={busy}
-          message={actionMsg}
-          onCancel={() => {
-            setPending(null);
-            setActionMsg(null);
-          }}
-          onConfirm={() => void applyPending()}
-        />
+          confirmDisabled={pending.type === "assign" && !assignRoomId}
+          initialFocus={
+            pending.type === "assign" || pending.type === "cancel" || pending.type === "noshow"
+              ? () => document.getElementById(pending.type === "assign" ? "cronograma-assign-room" : "cronograma-reason")
+              : undefined
+          }
+          onConfirm={applyPending}
+        >
+          {pending.type === "assign" ? (
+            <CocoaField label="Habitación" required>
+              <CocoaSelect
+                id="cronograma-assign-room"
+                value={assignRoomId}
+                onChange={setAssignRoomId}
+                placeholder="Seleccionar…"
+                options={sortedRooms.map((room) => ({
+                  value: room.id,
+                  label: `Hab. ${room.number}${roomTypeById.get(room.roomTypeId)?.name ? ` · ${roomTypeById.get(room.roomTypeId)!.name}` : ""}`
+                }))}
+              />
+            </CocoaField>
+          ) : null}
+          {pending.type === "cancel" || pending.type === "noshow" ? (
+            <CocoaField label="Motivo" hint={STATUS_LABELS.optional.toLowerCase()}>
+              <CocoaInput id="cronograma-reason" value={reason} onChange={setReason} placeholder="Motivo…" />
+            </CocoaField>
+          ) : null}
+          {actionMsg ? (
+            <CocoaCallout tone="danger" role="alert">
+              {actionMsg}
+            </CocoaCallout>
+          ) : null}
+        </CocoaDialog>
       ) : null}
-    </section>
-    </>
+    </CocoaPage>
   );
 }
 
@@ -727,32 +1087,30 @@ function ReservationBlockView(props: {
   drag: { mode: "move" | "resize"; dx: number; dy: number } | null;
   onPointerDownMove: (e: ReactPointerEvent) => void;
   onPointerDownResize: (e: ReactPointerEvent) => void;
-  onHover: (left: number, top: number) => void;
+  onHover: (anchor: HTMLElement) => void;
   onHoverEnd: () => void;
   onKeyboardSelect: () => void;
 }) {
   const { block, cellWidth, selected, drag } = props;
   const res = block.res;
   const tone = toneFor(res.status);
-  const left = block.clippedOffset * cellWidth + 4;
-  const baseWidth = block.clippedSpan * cellWidth - 8;
-  const top = block.lane * (BLOCK_HEIGHT + LANE_GAP) + LANE_GAP;
-
   const moveDx = drag?.mode === "move" ? drag.dx : 0;
   const moveDy = drag?.mode === "move" ? drag.dy : 0;
   const resizeDx = drag?.mode === "resize" ? drag.dx : 0;
-  const width = Math.max(40, baseWidth + resizeDx);
+  const left = block.clippedOffset * cellWidth + 4 + moveDx;
+  const top = block.lane * (BLOCK_HEIGHT + LANE_GAP) + LANE_GAP + moveDy;
+  const width = Math.max(40, block.clippedSpan * cellWidth - 8 + resizeDx);
+  const nights = nightsOf(res);
 
   return (
     <div
       role="button"
       tabIndex={0}
-      aria-label={`Reserva ${res.code} de ${guestLabel(res)}, ${RES_STATUS_LABEL[res.status] ?? res.status}`}
+      className="cocoa-focus-ring"
+      aria-label={`Reserva ${res.code} de ${guestLabel(res)}, ${statusLabel(res.status)}`}
+      aria-pressed={selected}
       onPointerDown={props.onPointerDownMove}
-      onMouseEnter={(e) => {
-        const r = e.currentTarget.getBoundingClientRect();
-        props.onHover(r.left, r.top);
-      }}
+      onMouseEnter={(e) => props.onHover(e.currentTarget)}
       onMouseLeave={props.onHoverEnd}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -760,137 +1118,18 @@ function ReservationBlockView(props: {
           props.onKeyboardSelect();
         }
       }}
-      style={{
-        position: "absolute",
-        left,
-        width,
-        top,
-        height: BLOCK_HEIGHT,
-        transform: drag ? `translate(${moveDx}px, ${moveDy}px)` : undefined,
-        background: tone.bg,
-        border: `${selected ? 2 : 1}px solid ${selected ? "#facc15" : tone.border}`,
-        color: tone.ink,
-        borderRadius: 10,
-        padding: "5px 10px",
-        textAlign: "left",
-        cursor: drag?.mode === "move" ? "grabbing" : "grab",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-        gap: 2,
-        minWidth: 0,
-        overflow: "hidden",
-        boxShadow: drag ? "0 14px 30px rgba(15,23,42,0.35)" : "0 6px 14px rgba(15,23,42,0.18)",
-        opacity: res.status === "cancelled" ? 0.7 : 1,
-        zIndex: drag ? 40 : 1,
-        touchAction: "none",
-        userSelect: "none"
-      }}
+      style={blockStyle({ tone, left, top, width, selected, dragging: drag !== null, cancelled: res.status === "cancelled" })}
     >
-      <strong style={{ fontSize: 13, fontWeight: 900, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+      <strong style={blockTitleStyle}>
         {block.continuesLeft ? "‹ " : ""}
         {guestLabel(res)}
         {block.continuesRight ? " ›" : ""}
       </strong>
-      <small style={{ fontSize: 11, fontWeight: 800, opacity: 0.92, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-        {RES_STATUS_LABEL[res.status] ?? res.status} · {nightsOf(res)} noche{nightsOf(res) === 1 ? "" : "s"} · {money(res.totalAmount, res.currency)}
+      <small style={blockMetaStyle}>
+        {statusLabel(res.status)} · {plural(nights, "noche", "noches")} · {money(res.totalAmount, res.currency)}
       </small>
-      {/* resize handle (right) */}
-      <span
-        onPointerDown={props.onPointerDownResize}
-        aria-hidden
-        style={{
-          position: "absolute",
-          right: 0,
-          top: 0,
-          bottom: 0,
-          width: 10,
-          cursor: "ew-resize",
-          borderTopRightRadius: 10,
-          borderBottomRightRadius: 10,
-          background: "rgba(255,255,255,0.18)"
-        }}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Hover thumbnail
-// ---------------------------------------------------------------------------
-function HoverCard(props: { res: AdminReservation; room?: AdminRoom; left: number; top: number }) {
-  const { res, room } = props;
-  const tone = toneFor(res.status);
-  const width = 300;
-  const left = Math.max(12, Math.min(props.left, window.innerWidth - width - 12));
-  const top = Math.max(12, props.top - 8);
-  const style: CSSProperties = {
-    position: "fixed",
-    left,
-    top,
-    transform: "translateY(-100%)",
-    width,
-    background: "var(--surface)",
-    border: "1px solid var(--line)",
-    borderRadius: 14,
-    boxShadow: "0 18px 44px rgba(15,23,42,0.22)",
-    padding: 14,
-    zIndex: 90,
-    pointerEvents: "none",
-    display: "grid",
-    gap: 10
-  };
-  return (
-    <div style={style}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span
-          aria-hidden
-          style={{
-            width: 38,
-            height: 38,
-            borderRadius: "50%",
-            background: tone.bg,
-            color: tone.ink,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            fontWeight: 900,
-            fontSize: 14,
-            flex: "0 0 auto"
-          }}
-        >
-          {initials(guestLabel(res))}
-        </span>
-        <div style={{ minWidth: 0 }}>
-          <strong style={{ display: "block", fontSize: 14, color: "var(--ink)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-            {guestLabel(res)}
-          </strong>
-          <small style={{ color: "var(--ink-muted)" }}>{res.code}</small>
-        </div>
-      </div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        <span className="bo-status ok" style={{ textTransform: "none" }}>{RES_STATUS_LABEL[res.status] ?? res.status}</span>
-        {res.channel ? <span className="bo-chip">{res.channel}</span> : null}
-        {room ? <span className="bo-chip">Hab. {room.number}</span> : <span className="bo-chip">Sin habitación</span>}
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, fontSize: 13 }}>
-        <HoverFact label="Entrada" value={fmtDate(res.arrivalDate, "weekdayShort")} />
-        <HoverFact label="Salida" value={fmtDate(res.departureDate, "weekdayShort")} />
-        <HoverFact label="Noches" value={`${nightsOf(res)}`} />
-        <HoverFact label="Ocupación" value={`${res.adults}A${res.children ? ` · ${res.children}N` : ""}`} />
-        <HoverFact label="Importe" value={money(res.totalAmount, res.currency)} />
-        <HoverFact label="Segmento" value={res.marketSegment || res.sourceCode || "—"} />
-      </div>
-      <small style={{ color: "var(--ink-faint)" }}>Haz clic para ver el detalle completo</small>
-    </div>
-  );
-}
-
-function HoverFact(props: { label: string; value: string }) {
-  return (
-    <div>
-      <small style={{ display: "block", fontSize: 10, fontWeight: 900, textTransform: "uppercase", color: "var(--ink-faint)" }}>{props.label}</small>
-      <span style={{ fontWeight: 800, color: "var(--ink)" }}>{props.value}</span>
+      {/* resize handle (right edge) */}
+      <span onPointerDown={props.onPointerDownResize} aria-hidden="true" style={handleStyle} />
     </div>
   );
 }
@@ -906,220 +1145,152 @@ function DetailPanel(props: {
   loading: boolean;
   /** Folio / activity fetch failures (QC-06): shown inline, never as blank facts. */
   error?: string | null;
-  onOpenReservation: () => void;
-  onNav: (screen: string) => void;
-  onAction: (type: "checkin" | "checkout" | "cancel" | "noshow" | "assign") => void;
+  onOpenJourney: () => void;
+  onAction: (type: QuickAction) => void;
 }) {
   const { res, room, folio, activity } = props;
+  const pendingValue = props.loading ? "…" : "—";
   const facts: Array<[string, string]> = [
-    ["Estado", RES_STATUS_LABEL[res.status] ?? res.status],
+    ["Estado", statusLabel(res.status)],
     ["Huésped", guestLabel(res)],
     ["Entrada", fmtDate(res.arrivalDate, "weekdayShort")],
     ["Salida", fmtDate(res.departureDate, "weekdayShort")],
     ["Noches", `${nightsOf(res)}`],
-    ["Ocupación", `${res.adults} adultos${res.children ? ` · ${res.children} niños` : ""}`],
+    ["Ocupación", `${plural(res.adults, "adulto", "adultos")}${res.children ? ` · ${plural(res.children, "niño", "niños")}` : ""}`],
     ["Habitación", room ? `Hab. ${room.number}` : "Sin asignar"],
-    ["Canal", res.channel || "—"],
+    ["Canal", channelLabel(res.channel)],
     ["Importe total", money(res.totalAmount, res.currency)],
-    ["Saldo pendiente", folio ? money(folio.balanceDue, folio.folio.currency) : props.loading ? "…" : "—"],
-    ["Pagos", folio ? `${money(folio.paymentsTotal, folio.folio.currency)} · ${folio.payments.length}` : props.loading ? "…" : "—"],
-    ["Actividad abierta", activity ? `${activity.counts.openTotal} abiertas · ${activity.counts.messages} mensajes` : props.loading ? "…" : "—"]
+    ["Saldo pendiente", folio ? money(folio.balanceDue, folio.folio.currency) : pendingValue],
+    ["Cobros", folio ? `${money(folio.paymentsTotal, folio.folio.currency)} · ${folio.payments.length}` : pendingValue],
+    ["Actividad abierta", activity ? `${activity.counts.openTotal} abiertas · ${plural(activity.counts.messages, "mensaje", "mensajes")}` : pendingValue]
   ];
 
   const links: Array<{ label: string; onClick: () => void }> = [
-    { label: "Abrir reserva", onClick: props.onOpenReservation },
-    { label: "Guest journey", onClick: () => props.onNav("GuestJourneyWorkspace") },
-    { label: "Folio / facturación", onClick: () => props.onNav("BillingCenter") },
-    { label: "Limpieza", onClick: () => props.onNav("HousekeepingDashboard") },
-    { label: "Mantenimiento", onClick: () => props.onNav("MaintenanceDashboard") },
-    { label: "Mensajes", onClick: () => props.onNav("ConciergeInboxDashboard") }
+    { label: "Recorrido del huésped", onClick: props.onOpenJourney },
+    { label: "Folio y facturación", onClick: () => navigateTo("BillingCenter") },
+    { label: "Limpieza", onClick: () => navigateTo("HousekeepingDashboard") },
+    { label: "Mantenimiento", onClick: () => navigateTo("MaintenanceDashboard") },
+    { label: "Mensajes", onClick: () => navigateTo("ConciergeInboxDashboard") }
   ];
 
   const isIn = res.status === "checked_in";
   const isOut = res.status === "checked_out";
   const isClosed = res.status === "cancelled" || res.status === "no_show";
+  const tone = toneFor(res.status);
 
   return (
-    <div style={{ display: "grid", gap: 14 }}>
+    <div className="cocoa-stack" data-gap="4">
       {props.error ? (
-        <div className="bo-status error" style={{ textTransform: "none" }}>{props.error}</div>
+        <CocoaCallout tone="warning" role="status">
+          {props.error}
+        </CocoaCallout>
       ) : null}
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-        <span className="bo-status ok" style={{ textTransform: "none" }}>{RES_STATUS_LABEL[res.status] ?? res.status}</span>
-        {res.channel ? <span className="bo-chip">{res.channel}</span> : null}
-        <span className="bo-chip">{room ? `Hab. ${room.number}` : "Sin habitación"}</span>
-        <span className="bo-chip">{nightsOf(res)} noche{nightsOf(res) === 1 ? "" : "s"}</span>
-      </div>
+      <span className="cocoa-cluster">
+        <CocoaBadge tone={tone}>{statusLabel(res.status)}</CocoaBadge>
+        {res.channel ? (
+          <CocoaBadge tone="neutral" title={res.channel}>
+            {channelLabel(res.channel)}
+          </CocoaBadge>
+        ) : null}
+        <CocoaBadge tone="neutral">{room ? `Hab. ${room.number}` : "Sin habitación"}</CocoaBadge>
+        <CocoaBadge tone="neutral">{plural(nightsOf(res), "noche", "noches")}</CocoaBadge>
+      </span>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(150px, 1fr))", gap: 8 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: "var(--cocoa-space-3)" }}>
         {facts.map(([label, value]) => (
-          <div key={label} style={{ border: "1px solid var(--line)", background: "var(--surface-soft)", borderRadius: 12, padding: "8px 10px" }}>
-            <small style={{ fontSize: 11, fontWeight: 900, textTransform: "uppercase", color: "var(--ink-muted)" }}>{label}</small>
-            <div style={{ marginTop: 2, fontWeight: 800, color: "var(--ink)" }}>{value}</div>
-          </div>
+          <CocoaStat key={label} label={label} value={value} tabular={false} />
         ))}
       </div>
 
-      {/* Recent activity */}
       {activity && activity.items.length > 0 ? (
-        <div style={{ display: "grid", gap: 6 }}>
-          <strong style={{ fontSize: 13 }}>Actividad reciente</strong>
-          {activity.items.slice(0, 4).map((item) => (
-            <div key={item.id} style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 13, borderBottom: "1px solid var(--line-soft)", paddingBottom: 4 }}>
-              <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.title}</span>
-              <span className={`bo-status ${item.open ? "warn" : "ok"}`} style={{ textTransform: "none", flex: "0 0 auto" }}>
-                {item.open ? "abierta" : "cerrada"}
-              </span>
-            </div>
-          ))}
-        </div>
+        <CocoaSection title="Actividad reciente" meta={plural(activity.items.length, "evento", "eventos")}>
+          <ul className="c22-section__list">
+            {activity.items.slice(0, 4).map((item) => (
+              <li key={item.id}>
+                <span style={ellipsisStyle}>{item.title}</span>
+                <CocoaBadge tone={item.open ? "warning" : "success"} size="small">
+                  {item.open ? "abierta" : "cerrada"}
+                </CocoaBadge>
+              </li>
+            ))}
+          </ul>
+        </CocoaSection>
       ) : null}
 
-      {/* Deep links to menus */}
-      <div style={{ display: "grid", gap: 6 }}>
-        <strong style={{ fontSize: 13 }}>Ir a</strong>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+      <CocoaSection title="Ir a">
+        <div className="cocoa-row" data-gap="2">
           {links.map((link) => (
-            <button key={link.label} type="button" className="bo-button-link" onClick={link.onClick}>
-              {link.label} →
-            </button>
+            <CocoaButton key={link.label} variant="plain" tone="accent" size="small" onClick={link.onClick}>
+              {link.label}
+            </CocoaButton>
           ))}
         </div>
-      </div>
+      </CocoaSection>
 
-      {/* Real quick actions */}
-      <div style={{ display: "grid", gap: 6 }}>
-        <strong style={{ fontSize: 13 }}>Acciones</strong>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-          <button type="button" className="bo-button-link" disabled={isIn || isOut || isClosed} onClick={() => props.onAction("checkin")}>Check-in</button>
-          <button type="button" className="bo-button-link" disabled={!isIn} onClick={() => props.onAction("checkout")}>Check-out</button>
-          <button type="button" className="bo-button-link" onClick={() => props.onAction("assign")}>Asignar habitación</button>
-          <button type="button" className="bo-button-link" disabled={isClosed} style={{ borderColor: "#c2413a", color: "#c2413a" }} onClick={() => props.onAction("cancel")}>Cancelar</button>
-          <button type="button" className="bo-button-link" disabled={isClosed || isIn || isOut} style={{ borderColor: "#c2413a", color: "#c2413a" }} onClick={() => props.onAction("noshow")}>No-show</button>
+      <CocoaSection title="Acciones">
+        <div className="cocoa-row" data-gap="2">
+          <CocoaButton variant="tinted" tone="accent" size="small" disabled={isIn || isOut || isClosed} onClick={() => props.onAction("checkin")}>
+            Check-in
+          </CocoaButton>
+          <CocoaButton variant="tinted" tone="accent" size="small" disabled={!isIn} onClick={() => props.onAction("checkout")}>
+            Check-out
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" disabled={isClosed} onClick={() => props.onAction("assign")}>
+            Asignar habitación
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="destructive" size="small" disabled={isClosed} onClick={() => props.onAction("cancel")}>
+            Cancelar reserva
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="destructive" size="small" disabled={isClosed || isIn || isOut} onClick={() => props.onAction("noshow")}>
+            Marcar no-show
+          </CocoaButton>
         </div>
-      </div>
+      </CocoaSection>
     </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Action / confirm modal
+// Copy of the confirmation dialog per pending action
 // ---------------------------------------------------------------------------
-function ActionModal(props: {
-  pending: Pending;
-  rooms: AdminRoom[];
-  roomTypeById: Map<string, AdminRoomType>;
-  assignRoomId: string;
-  onAssignRoomChange: (value: string) => void;
-  reason: string;
-  onReasonChange: (value: string) => void;
-  busy: boolean;
-  message: string | null;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const { pending } = props;
+function dialogCopy(pending: Pending): { title: string; body: string; verb: string; done: string; danger: boolean } {
   const res = pending.res;
-
-  let title = "Confirmar";
-  let body: string;
-  let verb = "Confirmar";
-  let danger = false;
-
+  const who = `${res.code} (${guestLabel(res)})`;
   switch (pending.type) {
     case "move":
-      title = "Mover reserva";
-      body = `Mover ${res.code} (${guestLabel(res)})${pending.newRoomLabel ? ` a ${pending.newRoomLabel}` : ""}${pending.newArrival ? `, nuevas fechas ${fmtDate(pending.newArrival)} → ${fmtDate(pending.newDeparture!)}` : ""}.`;
-      verb = "Mover";
-      break;
-    case "resize":
-      title = "Cambiar fechas";
-      body = `Ajustar la salida de ${res.code} (${guestLabel(res)}) a ${fmtDate(pending.newDepartureDate)} (${Math.max(1, diffDays(parseDateOnly(res.arrivalDate), parseDateOnly(pending.newDepartureDate)))} noches).`;
-      verb = "Guardar";
-      break;
+      return {
+        title: "Mover reserva",
+        body: `Mover ${who}${pending.newRoomLabel ? ` a ${pending.newRoomLabel}` : ""}${pending.newArrival && pending.newDeparture ? `, nuevas fechas ${dateRange(pending.newArrival, pending.newDeparture, { style: "dayMonth" })}` : ""}.`,
+        verb: "Mover",
+        done: "Reserva movida.",
+        danger: false
+      };
+    case "resize": {
+      const nights = Math.max(1, diffDays(parseDateOnly(res.arrivalDate), parseDateOnly(pending.newDepartureDate)));
+      return {
+        title: "Cambiar fechas",
+        body: `Ajustar la salida de ${who} a ${fmtDate(pending.newDepartureDate)} (${plural(nights, "noche", "noches")}).`,
+        verb: ACTIONS.save,
+        done: "Fechas actualizadas.",
+        danger: false
+      };
+    }
     case "checkin":
-      title = "Hacer check-in";
-      body = `Registrar la entrada de ${res.code} (${guestLabel(res)}).`;
-      verb = "Check-in";
-      break;
+      return { title: "Hacer check-in", body: `Registrar la entrada de ${who}.`, verb: "Check-in", done: "Check-in registrado.", danger: false };
     case "checkout":
-      title = "Hacer check-out";
-      body = `Registrar la salida de ${res.code} (${guestLabel(res)}).`;
-      verb = "Check-out";
-      break;
+      return { title: "Hacer check-out", body: `Registrar la salida de ${who}.`, verb: "Check-out", done: "Check-out registrado.", danger: false };
     case "cancel":
-      title = "Cancelar reserva";
-      body = `Cancelar ${res.code} (${guestLabel(res)}). Se aplicará la política de cancelación.`;
-      verb = "Cancelar reserva";
-      danger = true;
-      break;
+      return {
+        title: "Cancelar reserva",
+        body: `Cancelar ${who}. Se aplicará la política de cancelación.`,
+        verb: "Cancelar reserva",
+        done: "Reserva cancelada.",
+        danger: true
+      };
     case "noshow":
-      title = "Marcar como no-show";
-      body = `Marcar ${res.code} (${guestLabel(res)}) como no-show.`;
-      verb = "Marcar no-show";
-      danger = true;
-      break;
+      return { title: "Marcar como no-show", body: `Marcar ${who} como no-show.`, verb: "Marcar no-show", done: "No-show registrado.", danger: true };
     case "assign":
-      title = "Asignar habitación";
-      body = `Asignar una habitación a ${res.code} (${guestLabel(res)}).`;
-      verb = "Asignar";
-      break;
     default:
-      body = "";
+      return { title: "Asignar habitación", body: `Asignar una habitación a ${who}.`, verb: ACTIONS.assign, done: "Habitación asignada.", danger: false };
   }
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      onClick={props.onCancel}
-      style={{ position: "fixed", inset: 0, background: "rgba(11,16,38,0.42)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{ background: "var(--surface)", borderRadius: 18, padding: 22, maxWidth: 460, width: "100%", boxShadow: "0 22px 55px rgba(15,23,42,0.32)", display: "grid", gap: 12 }}
-      >
-        <strong style={{ fontSize: 20, color: "var(--ink)" }}>{title}</strong>
-        <p style={{ margin: 0, color: "var(--ink-soft)" }}>{body}</p>
-
-        {pending.type === "assign" ? (
-          <label style={{ display: "grid", gap: 4 }}>
-            <span className="bo-muted" style={{ textTransform: "none" }}>Habitación</span>
-            <select value={props.assignRoomId} onChange={(e) => props.onAssignRoomChange(e.target.value)}>
-              <option value="">Seleccionar…</option>
-              {props.rooms.map((room) => (
-                <option key={room.id} value={room.id}>
-                  Hab. {room.number}
-                  {props.roomTypeById.get(room.roomTypeId)?.name ? ` · ${props.roomTypeById.get(room.roomTypeId)!.name}` : ""}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-
-        {pending.type === "cancel" || pending.type === "noshow" ? (
-          <label style={{ display: "grid", gap: 4 }}>
-            <span className="bo-muted" style={{ textTransform: "none" }}>Motivo (opcional)</span>
-            <input value={props.reason} onChange={(e) => props.onReasonChange(e.target.value)} placeholder="Motivo…" />
-          </label>
-        ) : null}
-
-        {props.message ? <p style={{ margin: 0, color: props.message === "Hecho." ? "#0a7e57" : "#c2413a", fontWeight: 700 }}>{props.message}</p> : null}
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
-          <button type="button" className="bo-button-link" onClick={props.onCancel} disabled={props.busy}>Cancelar</button>
-          <button
-            type="button"
-            className="bo-button-link"
-            onClick={props.onConfirm}
-            disabled={props.busy}
-            style={{ background: danger ? "#c2413a" : "#1d2a73", borderColor: danger ? "#c2413a" : "#1d2a73", color: "#ffffff", display: "inline-flex", alignItems: "center", gap: 6 }}
-          >
-            {props.busy ? <Spinner size="sm" /> : null}
-            {verb}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }

@@ -462,13 +462,13 @@ Qué falta para producción con Channex:
    channex/airbnb/vrbo/hotelbeds (en Channex cada `rate_plan_id` pertenece a
    un solo tipo; `RP-<plan>` compartido es legítimo en Booking y Expedia, que
    direccionan por (tipo, plan)). El upsert devuelve `warnings[]` (el hub los
-   pinta: «Mapeos guardados con un aviso», verificado en navegador
+   pinta: «Correspondencias guardadas con un aviso», verificado en navegador
    (2026-09-15) con el aviso de Channex; el aviso de código de habitación,
    verificado en navegador el 15/09/2026 con Expedia · IND `EX-IND` →
-   `EX-DBL`: bloque «Mapeos guardados con un aviso / En Expedia cada código
-   de habitación externo…», toast «1 mapeo guardado con un aviso (ver
-   arriba).», «4/4 productos», y restaurado a `EX-IND` con «1 mapeo
-   guardado.» sin aviso) y la readiness emite el check
+   `EX-DBL`: bloque «Correspondencias guardadas con un aviso / En Expedia cada código
+   de habitación externo…», toast «1 correspondencia guardada con un aviso (ver
+   arriba).», «4/4 productos», y restaurado a `EX-IND` con «1 correspondencia
+   guardada.» sin aviso) y la readiness emite el check
    `product_codes` para todos los proveedores
    (`readiness.core.ts#productCodesCheck`: ok, warn en stub/sandbox, error en
    `real`; para Booking/Expedia solo códigos de habitación). El seed usa

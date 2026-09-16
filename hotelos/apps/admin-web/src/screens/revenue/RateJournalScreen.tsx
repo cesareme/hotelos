@@ -1,10 +1,13 @@
-// RateJournalScreen — standalone host of the rate grid HistoryDrawer.
+// RateJournalScreen — «Historial» tab of Parrilla de tarifas (and the
+// standalone deep link).
 //
-// Rate grid v2 (2026-09): the history lives INSIDE the editor (drawer with
-// diff + revert). This screen keeps the sidebar entry "Historial de tarifas"
-// and the deep link /backoffice/revenue/... alive as a thin wrapper: it mounts
-// the same drawer, backed by the same `useRateJournal` hook the editor uses,
-// so there is a single implementation of paging, diff loading and revert.
+// Rate grid v2 (2026-09): the history lives INSIDE the editor (side panel
+// with diff + revert). This screen keeps the tab «Historial» and the deep
+// link /backoffice/revenue/... alive as a thin host: it paints the same
+// `HistoryList` the editor's HistoryDrawer wraps (Cocoa 22 · ola 5 · lote
+// 5-A: inline in a CocoaSection here, side panel there — the two read the
+// same), backed by the same `useRateJournal` hook, so there is a single
+// implementation of paging, diff loading and revert.
 //
 // The hook is exported from here (not from a components/ file) because the
 // front-screen lot only owns screen + service files; the drawer component
@@ -15,8 +18,7 @@
 // `staleRevert` (cells + message) so both hosts render JournalStaleDialog
 // («Forzar reversión» → `{ force: true }`). Deep link: /backoffice/revenue/rate-journal.
 
-import { useTabHost } from "../tabs/TabHost";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RateChangeJournalEntry, RateChangeJournalItem, RateGridRatePlan, RateGridRoomType } from "@hotelos/shared";
 import {
   JOURNAL_STALE_CODE,
@@ -31,13 +33,13 @@ import { fetchRoomTypes } from "../../services/pmsCommerceApi";
 import { listChannels } from "../../services/channelsApi";
 import { pluralize } from "../../components/cocoa-rate-grid/helpers";
 import type { RateGridChannel } from "@hotelos/shared";
-import { getActivePropertyId } from "../../services/activeProperty";
+import { getActivePropertyId, getActivePropertyName } from "../../services/activeProperty";
 import { navigateTo } from "../../lib/navigate";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { ACTIONS } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import { CocoaButton, CocoaCallout, CocoaDialog, CocoaPage, CocoaSection } from "../../components/cocoa";
 import { useToast } from "../../components/Toast";
-import { HistoryDrawer } from "../../components/cocoa-rate-grid/HistoryDrawer";
+import { HistoryList, historySummary } from "../../components/cocoa-rate-grid/HistoryDrawer";
 import { JournalStaleDialog } from "../../components/cocoa-rate-grid/JournalStaleDialog";
 
 const PAGE_SIZE = 50;
@@ -50,7 +52,7 @@ export type RateJournalState = {
   error: string | null;
   expandedId: string | null;
   expandedItems: RateChangeJournalItem[] | null;
-  /** Journal id whose revert is being confirmed (ConfirmDialog owner). */
+  /** Journal id whose revert is being confirmed (the host paints the CocoaDialog). */
   pendingRevertId: string | null;
   reverting: boolean;
   /**
@@ -233,49 +235,19 @@ export function useRateJournal(propertyId: string, options: { enabled?: boolean;
   };
 }
 
-const screenStyle: CSSProperties = {
-  display: "flex",
-  flexDirection: "column",
-  gap: "var(--cocoa-space-4)",
-  fontFamily: "var(--cocoa-font)"
-};
-
-const JOURNAL_SUBTITLE = "Cada guardado o publicación del editor crea una entrada con su diff celda a celda. Desde aquí se revierte.";
-
-// Embedded as the «Historial» tab of Parrilla de tarifas: the container paints
-// the page header, so only the subtitle and the actions stay, in one row.
-const embeddedBarStyle: CSSProperties = {
-  display: "flex",
-  justifyContent: "space-between",
-  alignItems: "center",
-  gap: "var(--cocoa-space-3)",
-  flexWrap: "wrap"
-};
-const embeddedSubtitleStyle: CSSProperties = { color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)" };
-const embeddedActionsStyle: CSSProperties = { display: "inline-flex", gap: "var(--cocoa-space-2)", flexShrink: 0 };
-
-const noticeStyle: CSSProperties = {
-  padding: "var(--cocoa-space-3)",
-  borderRadius: "var(--cocoa-radius-md)",
-  border: "1px solid var(--cocoa-separator)",
-  background: "var(--cocoa-background-content)",
-  color: "var(--cocoa-label)",
-  fontSize: "var(--cocoa-fs-body)"
-};
+const JOURNAL_SUBTITLE = "Cada guardado o publicación del editor crea una entrada con el detalle de cada celda modificada. Desde aquí se revierte.";
 
 export function RateJournalScreen() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
   // Snapshot at mount: setActiveProperty reloads the page, so no subscription needed here.
   const propertyId = useMemo(() => getActivePropertyId(), []);
+  const propertyName = getActivePropertyName();
   const journal = useRateJournal(propertyId);
   const [roomTypes, setRoomTypes] = useState<RateGridRoomType[]>([]);
   const [ratePlans, setRatePlans] = useState<RateGridRatePlan[]>([]);
   const [channels, setChannels] = useState<RateGridChannel[]>([]);
-  const [open, setOpen] = useState(true);
 
   // Names for the diff rows and for `pushedTo`. The three catalogues are
-  // best-effort: the drawer falls back to ids when a lookup fails (the
+  // best-effort: the list falls back to ids when a lookup fails (the
   // failure is not the user's).
   useEffect(() => {
     let alive = true;
@@ -307,10 +279,15 @@ export function RateJournalScreen() {
 
   const openEditor = useCallback(() => navigateTo("RateGridEditorScreen"), []);
 
+  // Standalone: eyebrow «Revenue · propiedad» + h1; hosted as the «Historial»
+  // tab the container paints them and CocoaPage keeps subtitle and actions.
+  const category = treeHeaderFor("RateGridEditorScreen", { eyebrow: "Revenue", title: "Parrilla de tarifas" }).eyebrow;
+  const summary = historySummary({ count: journal.items.length, hasMore: journal.hasMore, loading: journal.loading });
+
   const headerActions = (
     <>
       <CocoaButton variant="bordered" tone="neutral" size="small" onClick={journal.refresh} loading={journal.loading}>
-        Actualizar
+        {ACTIONS.refresh}
       </CocoaButton>
       <CocoaButton variant="filled" tone="accent" size="small" onClick={openEditor}>
         Abrir el editor de tarifas
@@ -319,61 +296,57 @@ export function RateJournalScreen() {
   );
 
   return (
-    <div style={screenStyle}>
-      {embedded ? (
-        <div style={embeddedBarStyle}>
-          <span style={embeddedSubtitleStyle}>{JOURNAL_SUBTITLE}</span>
-          <span style={embeddedActionsStyle}>{headerActions}</span>
-        </div>
-      ) : (
-        <CocoaPageHeader eyebrow="Revenue · Parrilla de tarifas" title="Historial de cambios de tarifas" subtitle={JOURNAL_SUBTITLE} actions={headerActions} />
-      )}
-
+    <CocoaPage
+      eyebrow={`${category} · ${propertyName}`}
+      title="Historial de cambios de tarifas"
+      subtitle={JOURNAL_SUBTITLE}
+      actions={headerActions}
+      commands={[
+        { id: "rate-journal-refresh", label: `${ACTIONS.refresh}: historial de tarifas`, run: journal.refresh },
+        { id: "rate-journal-editor", label: "Abrir el editor de tarifas", run: openEditor }
+      ]}
+    >
       {journal.error ? (
-        <div role="status" style={noticeStyle}>
+        <CocoaCallout
+          tone="danger"
+          role="alert"
+          title="No se pudo cargar el historial"
+          actions={
+            <CocoaButton variant="bordered" size="small" tone="neutral" onClick={journal.refresh} loading={journal.loading}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
           {journal.error}
-        </div>
+        </CocoaCallout>
       ) : null}
 
-      {!open ? (
-        <div style={noticeStyle}>
-          El historial se ha cerrado.{" "}
-          <button type="button" className="bo-button-link" onClick={() => setOpen(true)}>
-            Volver a abrirlo
-          </button>{" "}
-          o{" "}
-          <button type="button" className="bo-button-link" onClick={openEditor}>
-            ir al editor
-          </button>
-          .
-        </div>
-      ) : null}
+      <CocoaSection title="Historial de cambios" meta={summary} aria-label="Historial de cambios de tarifas">
+        <HistoryList
+          items={journal.items}
+          hasMore={journal.hasMore}
+          loading={journal.loading}
+          roomTypes={roomTypes}
+          ratePlans={ratePlans}
+          channels={channels}
+          expandedId={journal.expandedId}
+          expandedItems={journal.expandedItems}
+          onLoadMore={journal.loadMore}
+          onRevert={journal.requestRevert}
+          onShowDiff={journal.showDiff}
+        />
+      </CocoaSection>
 
-      <HistoryDrawer
-        open={open}
-        items={journal.items}
-        hasMore={journal.hasMore}
-        loading={journal.loading}
-        roomTypes={roomTypes}
-        ratePlans={ratePlans}
-        channels={channels}
-        expandedId={journal.expandedId}
-        expandedItems={journal.expandedItems}
-        onLoadMore={journal.loadMore}
-        onRevert={journal.requestRevert}
-        onShowDiff={journal.showDiff}
-        onClose={() => setOpen(false)}
-      />
-
-      <ConfirmDialog
+      <CocoaDialog
         open={journal.pendingRevertId !== null}
+        onClose={journal.cancelRevert}
+        tone="destructive"
         title="Revertir este cambio"
         description="Se crea una entrada nueva que restaura en Anfitorio los valores anteriores de todas las celdas de este cambio. Los canales no se tocan: desde el editor de tarifas podrás enviarles las celdas revertidas."
-        confirmLabel={journal.reverting ? "Revirtiendo…" : "Revertir"}
-        cancelLabel="Cancelar"
-        variant="danger"
+        confirmLabel={journal.reverting ? "Revirtiendo…" : ACTIONS.revert}
+        cancelLabel={ACTIONS.cancel}
+        busy={journal.reverting}
         onConfirm={() => void journal.confirmRevert()}
-        onCancel={journal.cancelRevert}
       />
 
       <JournalStaleDialog
@@ -387,7 +360,7 @@ export function RateJournalScreen() {
         onForce={() => void journal.forceRevert()}
         onCancel={journal.cancelStaleRevert}
       />
-    </div>
+    </CocoaPage>
   );
 }
 

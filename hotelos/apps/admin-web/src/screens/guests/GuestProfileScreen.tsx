@@ -1,27 +1,61 @@
-import { useEffect, useMemo, useState } from "react";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
-import { urlForScreen } from "../../navigation/nav-tree";
-import {
-  createGuest,
-  fetchGuest,
-  updateGuest,
-  type GuestDetail,
-  type GuestInput,
-  type GuestStay
-} from "../../services/guestsApi";
-import { LoadingBlock, ErrorState } from "../../components/States";
-import { money } from "../../lib/format";
+// Ficha del huésped — Recepción › Huéspedes › Ficha (/recepcion/huespedes/:id · /new).
+//
+// Cocoa 22 (ola 3 · lote 3-C): CocoaPage (hosted inside HuespedesTabs the
+// container paints «Huéspedes» and the tabs Listado · Ficha · Cronología;
+// standalone the page paints the guest's name) → CocoaKpiStrip (stays,
+// lifetime value, VIP, loyalty) → four CocoaFormSections (identity, contact,
+// residence, loyalty and preferences) with CocoaField + CocoaInput / Select /
+// DatePicker / Switch → CocoaActionBar (Crear huésped · Guardar cambios,
+// ⌘/Ctrl+Enter, status text) → «Estancias» CocoaTable (a row opens the
+// reservation). Same API: fetchGuest, createGuest, updateGuest; the `:id`
+// comes from the tab URL (useRouteParam) and `new` opens an empty form.
 
-const TITLE_OPTIONS = ["", "Sr.", "Sra.", "Srta.", "Dr.", "Dra.", "Mr.", "Mrs.", "Ms.", "Mx."];
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { urlForScreen } from "../../navigation/nav-tree";
+import { createGuest, fetchGuest, updateGuest, type GuestDetail, type GuestInput, type GuestStay } from "../../services/guestsApi";
+import { useToast } from "../../components/Toast";
+import { useTabHost } from "../tabs/TabHost";
+import { useRouteParam } from "../tabs/tab-helpers";
+import { reservationStatusLabel } from "../operations/frontdesk-labels";
+import { EMPTY, date, money, number, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import {
+  CocoaActionBar,
+  CocoaBadge,
+  CocoaButton,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  openTabPath,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
+
+const FICHA_URL = urlForScreen("GuestDetail") ?? "/recepcion/huespedes/:id";
+const LIST_URL = urlForScreen("GuestsList") ?? "/recepcion/huespedes";
+
+// A real «none» choice is an explicit { value: "", label } option (never a placeholder).
+const TITLE_OPTIONS = ["", "Sr.", "Sra.", "Srta.", "Dr.", "Dra.", "Mr.", "Mrs.", "Ms.", "Mx."].map((t) => ({ value: t, label: t || EMPTY }));
 const SEX_OPTIONS = [
-  { value: "", label: "—" },
+  { value: "", label: EMPTY },
   { value: "M", label: "Hombre" },
   { value: "F", label: "Mujer" },
   { value: "X", label: "No especificado" }
 ];
-const DOC_OPTIONS = ["", "DNI", "NIE", "PASSPORT", "TIE"];
+const DOC_OPTIONS = ["", "DNI", "NIE", "PASSPORT", "TIE"].map((d) => ({ value: d, label: d || EMPTY }));
 const LANG_OPTIONS = [
-  { value: "", label: "—" },
+  { value: "", label: EMPTY },
   { value: "es", label: "Español" },
   { value: "en", label: "English" },
   { value: "fr", label: "Français" },
@@ -32,7 +66,7 @@ const LANG_OPTIONS = [
 
 type FormState = Record<string, string> & { marketingConsent?: string };
 
-const EMPTY: FormState = {
+const EMPTY_FORM: FormState = {
   title: "", firstName: "", middleName: "", surname1: "", surname2: "",
   documentType: "", documentNumber: "", documentSupportNumber: "", documentIssueCountry: "", documentExpiryDate: "",
   nationality: "", sex: "", languagePreference: "", dateOfBirth: "",
@@ -42,6 +76,7 @@ const EMPTY: FormState = {
   preferences: "", emergencyContactName: "", emergencyContactPhone: "", marketingConsent: "", notes: ""
 };
 
+/** Last path segment: the legacy standalone route names the guest the same way as the tab URL. */
 function currentGuestId(): string {
   return window.location.pathname.split("/").filter(Boolean).at(-1) ?? "new";
 }
@@ -83,35 +118,83 @@ function buildInput(form: FormState): GuestInput {
   };
 }
 
-function Field(props: { label: string; k: string; form: FormState; set: (k: string, v: string) => void; type?: string; hint?: string; required?: boolean }) {
+const STAY_TONE: Record<string, CocoaTone> = {
+  draft: "neutral",
+  confirmed: "info",
+  checked_in: "success",
+  checked_out: "neutral",
+  cancelled: "danger",
+  no_show: "danger"
+};
+
+const STAY_COLUMNS: CocoaTableColumn<GuestStay>[] = [
+  { key: "code", label: "Reserva", fit: true, render: (s) => <strong className="cocoa-mono">{s.code}</strong> },
+  { key: "status", label: "Estado", fit: true, render: (s) => <CocoaBadge tone={STAY_TONE[s.status] ?? "neutral"}>{reservationStatusLabel(s.status)}</CocoaBadge> },
+  { key: "arrivalDate", label: "Entrada", fit: true, render: (s) => (s.arrivalDate ? date(s.arrivalDate, "medium") : EMPTY) },
+  { key: "departureDate", label: "Salida", fit: true, hideOnNarrow: true, render: (s) => (s.departureDate ? date(s.departureDate, "medium") : EMPTY) },
+  { key: "totalAmount", label: "Importe", align: "right", fit: true, render: (s) => money(s.totalAmount, s.currency) },
+  { key: "isPrimary", label: "Rol", fit: true, hideOnNarrow: true, render: (s) => (s.isPrimary ? "Titular" : "Acompañante") }
+];
+
+const CLIP: CSSProperties = { overflow: "clip" };
+
+function openReservation(id: string) {
+  openTabPath(urlForScreen("ReservationDetailWorkspace", { id }) ?? "/recepcion/reservas");
+}
+
+type FieldProps = {
+  label: string;
+  k: string;
+  form: FormState;
+  set: (k: string, v: string) => void;
+  type?: "text" | "email" | "date";
+  hint?: string;
+  required?: boolean;
+  error?: string;
+};
+
+/** Text, email or date control bound to one key of the form. */
+function Field(props: FieldProps) {
+  const value = props.form[props.k] ?? "";
   return (
-    <label className="bo-form-field">
-      <span>{props.label}{props.required ? <strong> required</strong> : null}</span>
-      <input type={props.type ?? "text"} value={props.form[props.k] ?? ""} onChange={(e) => props.set(props.k, e.target.value)} />
-      {props.hint ? <small>{props.hint}</small> : null}
-    </label>
+    <CocoaField label={props.label} required={props.required} help={props.hint} error={props.error}>
+      {props.type === "date" ? (
+        <CocoaDatePicker value={value} onChange={(v) => props.set(props.k, v)} />
+      ) : (
+        <CocoaInput type={props.type ?? "text"} inputMode={props.type === "email" ? "email" : undefined} value={value} onChange={(v) => props.set(props.k, v)} autoComplete="off" />
+      )}
+    </CocoaField>
+  );
+}
+
+function ProfileSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton variant="card" height={220} />
+      <CocoaSkeleton variant="card" height={160} />
+    </div>
   );
 }
 
 export function GuestProfileScreen() {
-  const [guestId, setGuestId] = useState(currentGuestId());
+  const hosted = useTabHost() !== null;
+  const routeId = useRouteParam(FICHA_URL, "id");
+  const guestId = routeId ?? currentGuestId();
   const isNew = guestId === "new";
-  const [form, setForm] = useState<FormState>(EMPTY);
+  const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [detail, setDetail] = useState<GuestDetail | null>(null);
   const [loading, setLoading] = useState(!isNew);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    function onNav() { setGuestId(currentGuestId()); }
-    window.addEventListener("popstate", onNav);
-    return () => window.removeEventListener("popstate", onNav);
-  }, []);
+  const [nameMissing, setNameMissing] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const { showToast } = useToast();
 
   useEffect(() => {
     if (guestId === "new") {
-      setForm(EMPTY);
+      setForm(EMPTY_FORM);
       setDetail(null);
       setLoading(false);
       return;
@@ -123,7 +206,7 @@ export function GuestProfileScreen() {
         setDetail(d);
         const g = d.guest;
         setForm({
-          ...EMPTY,
+          ...EMPTY_FORM,
           title: g.title ?? "", firstName: g.firstName ?? "", middleName: g.middleName ?? "",
           surname1: g.surname1 ?? "", surname2: g.surname2 ?? "",
           documentType: g.documentType ?? "", documentNumber: g.documentNumber ?? "",
@@ -142,162 +225,164 @@ export function GuestProfileScreen() {
       })
       .catch((err: unknown) => setError(err instanceof Error ? err.message : "No se pudo cargar el huésped"))
       .finally(() => setLoading(false));
-  }, [guestId]);
+  }, [guestId, reloadNonce]);
 
   function set(k: string, v: string) {
+    if (k === "firstName" && v.trim()) setNameMissing(false);
     setForm((cur) => ({ ...cur, [k]: v }));
   }
 
   async function handleSave() {
     if (!form.firstName.trim()) {
+      setNameMissing(true);
       setStatus("El nombre es obligatorio.");
       return;
     }
     setSaving(true);
-    setStatus(isNew ? "Creando huésped…" : "Guardando…");
+    setStatus(isNew ? "Creando huésped…" : STATUS_LABELS.saving);
     try {
       const input = buildInput(form);
       if (isNew) {
         const created = await createGuest(input);
         setStatus(`Huésped ${created.fullName} creado.`);
-        openTabPath(urlForScreen("GuestDetail", { id: created.id }) ?? "/recepcion/huespedes");
+        showToast(`Huésped ${created.fullName} creado.`, { variant: "success" });
+        openTabPath(urlForScreen("GuestDetail", { id: created.id }) ?? LIST_URL);
       } else {
         const updated = await updateGuest(guestId, input);
         setStatus(`Cambios guardados (${updated.fullName}).`);
+        showToast(STATUS_LABELS.saved, { variant: "success" });
       }
     } catch (err) {
-      setStatus(err instanceof Error ? err.message : "No se pudo guardar.");
+      const message = err instanceof Error ? err.message : "No se pudo guardar.";
+      setStatus(message);
+      showToast(message, { variant: "error" });
     } finally {
       setSaving(false);
     }
   }
 
   const lifetime = useMemo(() => detail?.stats.lifetimeValue ?? 0, [detail]);
-
-  if (loading) return <section className="bo-card"><LoadingBlock label="Cargando huésped…" /></section>;
-  if (error) return <section className="bo-card"><ErrorState message={error} onRetry={() => setGuestId(currentGuestId())} /></section>;
+  const guestName = isNew ? "Nuevo huésped" : detail?.guest.fullName || form.firstName || "Huésped";
+  const stays = detail?.stayHistory ?? [];
+  const primaryLabel = isNew ? "Crear huésped" : ACTIONS.saveChanges;
 
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">CRM · Perfil de huésped</p>
-          <h2>{isNew ? "Nuevo huésped" : (detail?.guest.fullName || form.firstName || "Huésped")}</h2>
-        </div>
-        <button type="button" onClick={() => openTabPath(urlForScreen("GuestsList") ?? "/recepcion/huespedes")}>← Volver al listado</button>
-      </div>
-
+    <CocoaPage
+      eyebrow="Recepción · Huéspedes"
+      title={guestName}
+      subtitle={hosted ? undefined : isNew ? "Alta de un perfil de huésped: identidad, contacto, residencia y fidelización." : "Identidad, contacto, residencia, fidelización y estancias del huésped."}
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => openTabPath(LIST_URL)}>
+          Volver al listado
+        </CocoaButton>
+      }
+      state={loading ? "loading" : error ? "error" : "ready"}
+      skeleton={<ProfileSkeleton />}
+      error={{ title: "No se pudo cargar el huésped", message: error ?? undefined, onRetry: () => setReloadNonce((n) => n + 1) }}
+      commands={[
+        { id: "guest-profile-save", label: primaryLabel, run: () => void handleSave() },
+        { id: "guest-profile-back", label: "Volver al listado de huéspedes", run: () => openTabPath(LIST_URL) }
+      ]}
+    >
       {!isNew && detail ? (
-        <div className="rev-kpi-grid" style={{ marginBottom: "var(--space-4)" }}>
-          <div className="rev-kpi"><span className="rev-kpi-label">Estancias</span><span className="rev-kpi-value">{detail.stats.stays}</span></div>
-          <div className="rev-kpi"><span className="rev-kpi-label">Valor de vida (LTV)</span><span className="rev-kpi-value">{money(lifetime)}</span></div>
-          <div className="rev-kpi"><span className="rev-kpi-label">VIP</span><span className="rev-kpi-value">{detail.guest.vipCode ?? "—"}</span></div>
-          <div className="rev-kpi"><span className="rev-kpi-label">Fidelización</span><span className="rev-kpi-value">{detail.guest.loyaltyTier ?? "—"}</span></div>
-        </div>
+        <CocoaKpiStrip stagger aria-label="Resumen del huésped">
+          <CocoaKpi label="Estancias" value={number(detail.stats.stays)} polarity="neutral" />
+          <CocoaKpi label="Valor de vida" value={money(lifetime)} caption="Gasto acumulado" polarity="neutral" />
+          <CocoaKpi label="VIP" value={detail.guest.vipCode ?? EMPTY} polarity="neutral" />
+          <CocoaKpi label="Fidelización" value={detail.guest.loyaltyTier ?? EMPTY} caption={detail.guest.loyaltyProgram ?? undefined} polarity="neutral" />
+        </CocoaKpiStrip>
       ) : null}
 
-      {/* Identidad */}
-      <div className="bo-card-head" style={{ marginTop: 8 }}><div><p className="bo-muted">Identidad</p><h3 style={{ margin: 0 }}>Nombre y documento</h3></div></div>
-      <div className="bo-grid three">
-        <label className="bo-form-field"><span>Tratamiento</span>
-          <select value={form.title} onChange={(e) => set("title", e.target.value)}>{TITLE_OPTIONS.map((t) => <option key={t} value={t}>{t || "—"}</option>)}</select>
-        </label>
-        <Field label="Nombre" k="firstName" form={form} set={set} required />
-        <Field label="Segundo nombre" k="middleName" form={form} set={set} />
-        <Field label="Primer apellido" k="surname1" form={form} set={set} />
-        <Field label="Segundo apellido" k="surname2" form={form} set={set} />
-        <label className="bo-form-field"><span>Sexo</span>
-          <select value={form.sex} onChange={(e) => set("sex", e.target.value)}>{SEX_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
-        </label>
-        <Field label="Fecha de nacimiento" k="dateOfBirth" form={form} set={set} type="date" />
-        <Field label="Nacionalidad (ISO)" k="nationality" form={form} set={set} hint="p. ej. ESP" />
-        <label className="bo-form-field"><span>Idioma preferido</span>
-          <select value={form.languagePreference} onChange={(e) => set("languagePreference", e.target.value)}>{LANG_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
-        </label>
-        <label className="bo-form-field"><span>Tipo de documento</span>
-          <select value={form.documentType} onChange={(e) => set("documentType", e.target.value)}>{DOC_OPTIONS.map((d) => <option key={d} value={d}>{d || "—"}</option>)}</select>
-        </label>
-        <Field label="Nº de documento" k="documentNumber" form={form} set={set} />
-        <Field label="Nº de soporte" k="documentSupportNumber" form={form} set={set} />
-        <Field label="País de expedición" k="documentIssueCountry" form={form} set={set} hint="ESP" />
-        <Field label="Caducidad del documento" k="documentExpiryDate" form={form} set={set} type="date" />
-      </div>
+      <CocoaFormSection title={hosted && !isNew ? guestName : "Identidad"} description="Nombre y documento">
+        <CocoaFormRow columns={3}>
+          <CocoaField label="Tratamiento">
+            <CocoaSelect value={form.title} onChange={(v) => set("title", v)} options={TITLE_OPTIONS} />
+          </CocoaField>
+          <Field label="Nombre" k="firstName" form={form} set={set} required error={nameMissing ? "El nombre es obligatorio." : undefined} />
+          <Field label="Segundo nombre" k="middleName" form={form} set={set} />
+          <Field label="Primer apellido" k="surname1" form={form} set={set} />
+          <Field label="Segundo apellido" k="surname2" form={form} set={set} />
+          <CocoaField label="Sexo">
+            <CocoaSelect value={form.sex} onChange={(v) => set("sex", v)} options={SEX_OPTIONS} />
+          </CocoaField>
+          <Field label="Fecha de nacimiento" k="dateOfBirth" form={form} set={set} type="date" />
+          <Field label="Nacionalidad (ISO)" k="nationality" form={form} set={set} hint="p. ej. ESP" />
+          <CocoaField label="Idioma preferido">
+            <CocoaSelect value={form.languagePreference} onChange={(v) => set("languagePreference", v)} options={LANG_OPTIONS} />
+          </CocoaField>
+          <CocoaField label="Tipo de documento">
+            <CocoaSelect value={form.documentType} onChange={(v) => set("documentType", v)} options={DOC_OPTIONS} />
+          </CocoaField>
+          <Field label="Nº de documento" k="documentNumber" form={form} set={set} />
+          <Field label="Nº de soporte" k="documentSupportNumber" form={form} set={set} />
+          <Field label="País de expedición" k="documentIssueCountry" form={form} set={set} hint="ESP" />
+          <Field label="Caducidad del documento" k="documentExpiryDate" form={form} set={set} type="date" />
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      {/* Contacto */}
-      <div className="bo-card-head" style={{ marginTop: 8 }}><div><p className="bo-muted">Contacto</p><h3 style={{ margin: 0 }}>Teléfonos, email, empresa</h3></div></div>
-      <div className="bo-grid three">
-        <Field label="Correo electrónico" k="email" form={form} set={set} type="email" />
-        <Field label="Teléfono" k="phone" form={form} set={set} />
-        <Field label="Móvil" k="mobilePhone" form={form} set={set} />
-        <Field label="Empresa" k="company" form={form} set={set} />
-      </div>
+      <CocoaFormSection title="Contacto" description="Teléfonos, correo y empresa">
+        <CocoaFormRow columns={3}>
+          <Field label="Correo electrónico" k="email" form={form} set={set} type="email" />
+          <Field label="Teléfono" k="phone" form={form} set={set} />
+          <Field label="Móvil" k="mobilePhone" form={form} set={set} />
+          <Field label="Empresa" k="company" form={form} set={set} />
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      {/* Residencia */}
-      <div className="bo-card-head" style={{ marginTop: 8 }}><div><p className="bo-muted">Residencia</p><h3 style={{ margin: 0 }}>Dirección postal</h3></div></div>
-      <div className="bo-grid three">
-        <Field label="Dirección" k="residenceAddress" form={form} set={set} />
-        <Field label="Localidad" k="residenceLocality" form={form} set={set} />
-        <Field label="Provincia" k="residenceProvince" form={form} set={set} />
-        <Field label="Código postal" k="residencePostalCode" form={form} set={set} />
-        <Field label="País" k="residenceCountry" form={form} set={set} />
-      </div>
+      <CocoaFormSection title="Residencia" description="Dirección postal">
+        <CocoaFormRow columns={3}>
+          <Field label="Dirección" k="residenceAddress" form={form} set={set} />
+          <Field label="Localidad" k="residenceLocality" form={form} set={set} />
+          <Field label="Provincia" k="residenceProvince" form={form} set={set} />
+          <Field label="Código postal" k="residencePostalCode" form={form} set={set} />
+          <Field label="País" k="residenceCountry" form={form} set={set} />
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      {/* Fidelización y preferencias */}
-      <div className="bo-card-head" style={{ marginTop: 8 }}><div><p className="bo-muted">Fidelización y preferencias</p><h3 style={{ margin: 0 }}>VIP, programa, peticiones, consentimientos</h3></div></div>
-      <div className="bo-grid three">
-        <Field label="Código VIP" k="vipCode" form={form} set={set} hint="VIP1 / VVIP…" />
-        <Field label="Programa de fidelización" k="loyaltyProgram" form={form} set={set} />
-        <Field label="Nº de socio" k="loyaltyNumber" form={form} set={set} />
-        <Field label="Nivel / tier" k="loyaltyTier" form={form} set={set} hint="Silver / Gold…" />
-        <Field label="Contacto de emergencia" k="emergencyContactName" form={form} set={set} />
-        <Field label="Tel. de emergencia" k="emergencyContactPhone" form={form} set={set} />
-      </div>
-      <label className="bo-form-field"><span>Preferencias</span>
-        <input value={form.preferences} onChange={(e) => set("preferences", e.target.value)} placeholder="planta alta, cama king, no fumador" />
-        <small>Separadas por comas.</small>
-      </label>
-      <label className="bo-form-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-        <input type="checkbox" checked={form.marketingConsent === "yes"} onChange={(e) => set("marketingConsent", e.target.checked ? "yes" : "")} style={{ width: "auto" }} />
-        <span style={{ fontWeight: 500 }}>Consiente comunicaciones de marketing (RGPD)</span>
-      </label>
-      <label className="bo-form-field"><span>Notas</span>
-        <textarea value={form.notes} onChange={(e) => set("notes", e.target.value)} />
-      </label>
+      <CocoaFormSection title="Fidelización y preferencias" description="VIP, programa, peticiones y consentimientos">
+        <CocoaFormRow columns={3}>
+          <Field label="Código VIP" k="vipCode" form={form} set={set} hint="VIP1 / VVIP…" />
+          <Field label="Programa de fidelización" k="loyaltyProgram" form={form} set={set} />
+          <Field label="Nº de socio" k="loyaltyNumber" form={form} set={set} />
+          <Field label="Nivel" k="loyaltyTier" form={form} set={set} hint="Silver / Gold…" />
+          <Field label="Contacto de emergencia" k="emergencyContactName" form={form} set={set} />
+          <Field label="Tel. de emergencia" k="emergencyContactPhone" form={form} set={set} />
+          <CocoaField label="Preferencias" help="Separadas por comas." fullWidth>
+            <CocoaInput value={form.preferences} onChange={(v) => set("preferences", v)} placeholder="planta alta, cama king, no fumador" />
+          </CocoaField>
+          <CocoaField label="Consiente comunicaciones de marketing (RGPD)" inline fullWidth>
+            <CocoaSwitch checked={form.marketingConsent === "yes"} onChange={(v) => set("marketingConsent", v ? "yes" : "")} />
+          </CocoaField>
+          <CocoaField label="Notas" fullWidth>
+            <CocoaInput multiline rows={3} value={form.notes} onChange={(v) => set("notes", v)} />
+          </CocoaField>
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      <div className="bo-actions">
-        <button className="primary" type="button" onClick={handleSave} disabled={saving}>
-          {isNew ? "Crear huésped" : "Guardar cambios"}
-        </button>
-      </div>
-      {status ? <p className="bo-muted" style={{ marginTop: 8 }}>{status}</p> : null}
+      <CocoaActionBar
+        aria-label="Guardar la ficha del huésped"
+        status={status ?? undefined}
+        primary={{ label: primaryLabel, onClick: () => void handleSave(), loading: saving }}
+        publishToastOffset
+      />
 
-      {/* Historial de estancias */}
       {!isNew ? (
-        <>
-          <div className="bo-card-head" style={{ marginTop: 16 }}><div><p className="bo-muted">Historial</p><h3 style={{ margin: 0 }}>Estancias</h3></div></div>
-          {detail && detail.stayHistory.length ? (
-            <div className="bo-table-wrap">
-              <table>
-                <thead><tr><th>Reserva</th><th>Estado</th><th>Entrada</th><th>Salida</th><th>Importe</th><th>Rol</th></tr></thead>
-                <tbody>
-                  {detail.stayHistory.map((s: GuestStay) => (
-                    <tr key={s.id} style={{ cursor: "pointer" }} onClick={() => openTabPath(urlForScreen("ReservationDetailWorkspace", { id: s.id }) ?? "/recepcion/reservas")}>
-                      <td><strong>{s.code}</strong></td>
-                      <td><span className="bo-chip">{s.status}</span></td>
-                      <td>{s.arrivalDate ?? "—"}</td>
-                      <td>{s.departureDate ?? "—"}</td>
-                      <td>{money(s.totalAmount, s.currency)}</td>
-                      <td>{s.isPrimary ? "Titular" : "Acompañante"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        <CocoaSection title="Estancias" meta={detail ? plural(stays.length, "estancia", "estancias") : undefined} padding={stays.length > 0 ? "none" : "md"} style={CLIP}>
+          {stays.length > 0 ? (
+            <CocoaTable
+              columns={STAY_COLUMNS}
+              rows={stays}
+              rowKey="id"
+              onSelect={(s) => openReservation(s.id)}
+              rowTitle={() => "Abrir la reserva"}
+              caption="Estancias del huésped"
+              aria-label="Estancias del huésped"
+            />
           ) : (
-            <p className="bo-muted">Sin estancias registradas todavía.</p>
+            <CocoaState kind="empty" inline title="Sin estancias registradas todavía." />
           )}
-        </>
+        </CocoaSection>
       ) : null}
-    </section>
+    </CocoaPage>
   );
 }

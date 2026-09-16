@@ -38,6 +38,8 @@ export interface CocoaCardProps {
   "aria-label"?: string;
   "aria-labelledby"?: string;
   "aria-describedby"?: string;
+  /** Toggle state of a selectable interactive card (room tile, filter card): the drawer being open is not a state a screen reader hears. */
+  "aria-pressed"?: boolean;
   /** Contract marker; primitives built on the card override it (`kpi`, `section`). */
   "data-cocoa"?: string;
 }
@@ -94,6 +96,7 @@ export function CocoaCard({
   "aria-label": ariaLabel,
   "aria-labelledby": ariaLabelledBy,
   "aria-describedby": ariaDescribedBy,
+  "aria-pressed": ariaPressed,
   "data-cocoa": dataCocoa = "card"
 }: CocoaCardProps) {
   const isInteractive = typeof onClick === "function";
@@ -158,6 +161,7 @@ export function CocoaCard({
       aria-label={ariaLabel}
       aria-labelledby={ariaLabelledBy}
       aria-describedby={ariaDescribedBy}
+      aria-pressed={isInteractive ? ariaPressed : undefined}
       data-cocoa={dataCocoa}
       data-variant={variant}
       data-padding={padding}

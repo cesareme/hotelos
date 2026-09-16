@@ -379,8 +379,9 @@
   --cocoa-touch-target:        44px;
   --cocoa-action-bar-height:   56px;
   --cocoa-header-gap:          var(--cocoa-space-3);
-  /* CocoaPage fullBleed cancels exactly this inset (negative margin +
-     header padding), so it always equals the content gutter. */
+  /* CocoaPage fullBleed bleeds its wide scroller by exactly this inset
+     (negative inline margin on the CocoaScrollArea / rate grid that is a
+     direct child of the body), so it always equals the content gutter. */
   --cocoa-content-inset:       var(--cocoa-content-padding);
 
   /* Breakpoints (informational — media queries cannot read custom

@@ -812,7 +812,8 @@ const BUTTON_SAMPLE = `<CocoaButton variant="filled" tone="accent" icon={<PlusIc
 <CocoaButton variant="plain" tone="destructive" loading={busy}>Eliminar</CocoaButton>
 <CocoaButton variant="plain" tone="neutral" aria-label="Avisos" icon={<BellIcon size={16} />} />   // icono solo: aria-label obligatorio
 <CocoaButton variant="plain" tone="neutral">Buscar <CocoaKbd>⌘K</CocoaKbd></CocoaButton>
-<CocoaButton variant="plain" tone="neutral" wrap aria-current={selected}>Título largo de una fila seleccionable…</CocoaButton>   // filas de lista 4/8: la altura sigue al texto, alineado a la izquierda`;
+<CocoaButton variant="plain" tone="neutral" wrap aria-current={selected}>Título largo de una fila seleccionable…</CocoaButton>   // filas de lista 4/8: la altura sigue al texto, alineado a la izquierda
+<CocoaButton variant="plain" tone="neutral" fullWidth align="between" role="option" aria-selected icon={<CheckIcon size={12} />} iconPosition="right">Booking.com</CocoaButton>   // fila de listbox: ancho de la columna, marca a la derecha`;
 
 function ButtonsSection() {
   const [busy, setBusy] = useState(false);
@@ -879,6 +880,23 @@ function ButtonsSection() {
             Filas seleccionables de un workspace (título largo en una columna de 320 px): <Mono>wrap</Mono> deja crecer la altura y alinea a la izquierda; una sola línea sigue midiendo 22 / 28 / 32.
           </Note>
         </div>
+        <div className="cocoa-row" data-gap="2" data-align="start">
+          <Caption minWidth={72}>fullWidth · align</Caption>
+          <div className="cocoa-stack" data-gap="1" style={{ width: 240 }} role="listbox" aria-label="Canales de ejemplo">
+            <CocoaButton variant="plain" tone="neutral" size="small" fullWidth align="between" role="option" aria-selected icon={<CheckIcon size={12} />} iconPosition="right">
+              Booking.com
+            </CocoaButton>
+            <CocoaButton variant="plain" tone="neutral" size="small" fullWidth align="start" role="option" aria-selected={false}>
+              Expedia
+            </CocoaButton>
+            <CocoaButton variant="bordered" tone="neutral" size="small" fullWidth>
+              Todos
+            </CocoaButton>
+          </div>
+          <Note flex="1 1 240px">
+            La geometría del botón es inline, así que <Mono>className</Mono> no puede fijar el ancho: <Mono>fullWidth</Mono> lo estira a la columna y <Mono>align</Mono> coloca icono y etiqueta (<Mono>start</Mono> filas de lista · <Mono>between</Mono> etiqueta + marca de selección).
+          </Note>
+        </div>
         <Note>Foco: halo de 3 px Esmeralda vía <Mono>.cocoa-focus-ring:focus-visible</Mono>. En pantallas migradas no queda ningún botón nativo crudo.</Note>
         <CodeSample code={BUTTON_SAMPLE} />
       </div>
@@ -935,7 +953,7 @@ function FieldsSection() {
   return (
     <CocoaSection id="guia-campos" headingLevel={2} title="Campos · CocoaField + controles" meta="Input, textarea, select, switch, fecha (y hora), stepper, fichero, búsqueda, segmented y sugerencias; 16 px en táctil">
       <div className="cocoa-stack" data-gap="4">
-        <CocoaFormRow columns={3} min={220}>
+        <CocoaFormRow columns={3} min={220} role="group" aria-label="Controles de texto de ejemplo">
           <CocoaField label="Texto" help="Ayuda en callout secondary">
             <CocoaInput value={text} onChange={setText} placeholder="Escribe algo" />
           </CocoaField>
@@ -1049,7 +1067,8 @@ const FORM_SAMPLE = `<CocoaPage eyebrow="Revenue · Rías Altas" title="Plan tar
   <CocoaActionBar
     status={dirty ? "Cambios sin guardar" : "Guardado a las 10:12"}
     secondary={{ label: "Cancelar", onClick: reset }}
-    primary={{ label: "Guardar", loading: saving, onClick: save }}   // Ctrl/⌘ + Enter
+    primary={{ label: "Guardar", loading: saving, onClick: save }}   // Ctrl/⌘ + Enter (se ignora dentro de un drawer / diálogo abierto)
+    wrap   // el estado compuesto (badge + texto + chip) puede ocupar varias líneas
   />
   <CocoaActionBar mobileOnly primary={{ label: "Guardar", onClick: save }} />   // < 600 px: fija abajo; en escritorio no se pinta
 </CocoaPage>`;
@@ -1135,6 +1154,7 @@ function FormSection() {
       </div>
       <CocoaActionBar
         sticky={false}
+        wrap
         status={savedAt ? `Guardado a las ${date(savedAt, "short")}` : submitted ? "Cambios sin guardar" : `Precio ${money(price)} · ${number(minNights)} noche(s) mín.`}
         secondary={{ label: "Cancelar", onClick: reset }}
         primary={{ label: "Guardar", loading: saving, onClick: save }}
@@ -1224,6 +1244,7 @@ const KPI_SAMPLE = `<CocoaKpiStrip stagger>
   <CocoaKpi label="Ocupación" value={percent(67.4)} delta={3.2} deltaUnit="pp" deltaLabel="vs LY" polarity="positive-good" sparkline={occ} status="ok" />
   <CocoaKpi label="ADR" value={money(118.4)} delta={-2.4} deltaUnit="%" deltaLabel="vs LY" status="warning" sparkline={adr} />
   <CocoaKpi label="Cancelaciones" value={number(12)} delta={-8} deltaUnit="%" polarity="negative-good" status="ok" />
+  <CocoaKpi label="Próximos 7 días" value={number(412)} unit="noches" delta={12} deltaUnit="hab" deltaLabel="pickup 7 días" />   // unidad libre («hab», «noches») además de % · pp · € · pts
   <CocoaKpi label="Comp-set" value="—" degraded />                               // «—» con tooltip, nunca un 0 verde
   <CocoaKpi label="Pendientes" value={number(4)} size="compact" icon={<ClockIcon size={14} />} onClick={openQueue} />
   <CocoaKpi label="Pendientes de cobro" value={money(3180)} caption="4 facturas" status="warning" />   // caption = contexto bajo la cifra (no es unidad)
@@ -1250,6 +1271,7 @@ function KpiSection() {
           <CocoaKpi label="Sin estado" value={percent(12.5)} size="compact" sparkline={SPARK_FLAT} />
           <CocoaKpi label="Cifra en tono" value={money(1240)} size="compact" tone="danger" delta={18} deltaUnit="%" polarity="negative-good" />
           <CocoaKpi label="Pendientes de cobro" value={money(3180)} caption="4 facturas" size="compact" polarity="negative-good" status="warning" />
+          <CocoaKpi label="Próximos 7 días" value={number(412)} unit="noches" size="compact" delta={12} deltaUnit="hab" deltaLabel="pickup 7 días" polarity="positive-good" />
         </CocoaKpiStrip>
         <div className="cocoa-row" data-gap="4">
           <Caption minWidth={72}>delta</Caption>
@@ -1299,10 +1321,12 @@ const CARD_SAMPLE = `<CocoaSection title="Pace próximos 30 días" meta="OTB · 
 <CocoaSection variant="plain" padding="none" headingLevel={2} title="Mensual" meta="día 1 del mes">   // cabecera de grupo a ras de la rejilla (sin tarjeta)
   <CocoaGrid>…</CocoaGrid>
 </CocoaSection>
-<CocoaCard variant="elevated" padding="md" onClick={open} aria-label="Abrir reserva">…</CocoaCard>   // hover → window shadow, −2 px`;
+<CocoaCard variant="elevated" padding="md" onClick={open} aria-label="Abrir reserva">…</CocoaCard>   // hover → window shadow, −2 px
+<CocoaCard variant="bordered" onClick={select} aria-pressed={selected} aria-label="Habitación 108">…</CocoaCard>   // tile seleccionable: el lector oye el estado`;
 
 function CardsSection() {
   const { showToast } = useToast();
+  const [pressed, setPressed] = useState(false);
   return (
     <CocoaSection id="guia-tarjetas" headingLevel={2} title="Tarjetas y secciones · CocoaCard + CocoaSection" meta="bordered (por defecto) · elevated (destacada / interactiva) · plain · cabecera title-3 + caption">
       <div className="cocoa-stack" data-gap="4">
@@ -1316,10 +1340,19 @@ function CardsSection() {
             </CocoaCard>
           </CocoaSpan>
           <CocoaSpan cols={4} min={240}>
-            <CocoaCard variant="elevated" padding="md" onClick={() => showToast("Tarjeta interactiva pulsada", { variant: "info" })} aria-label="Tarjeta interactiva de ejemplo">
+            <CocoaCard
+              variant="elevated"
+              padding="md"
+              aria-pressed={pressed}
+              onClick={() => {
+                setPressed((current) => !current);
+                showToast(pressed ? "Tarjeta deseleccionada" : "Tarjeta seleccionada", { variant: "info" });
+              }}
+              aria-label="Tarjeta interactiva de ejemplo"
+            >
               <div className="cocoa-stack" data-gap="1">
-                <Caption>elevated · interactiva</Caption>
-                <Note>Sombra card; al pasar el ratón sube 2 px con sombra window. Enter / Espacio la activan.</Note>
+                <Caption>elevated · interactiva{pressed ? " · seleccionada" : ""}</Caption>
+                <Note>Sombra card; al pasar el ratón sube 2 px con sombra window. Enter / Espacio la activan; <Mono>aria-pressed</Mono> dice si el tile está seleccionado.</Note>
               </div>
             </CocoaCard>
           </CocoaSpan>
@@ -1528,6 +1561,7 @@ const TABLE_SAMPLE = `const columns: CocoaTableColumn<Row>[] = [
   <CocoaTable columns={columns} rows={rows} rowKey="id" sortBy={sort} onSort={setSort}
     selectedKey={selected?.id} onSelect={setSelected} rowActions={(r) => <CocoaButton variant="plain" size="small">Abrir</CocoaButton>}
     rowTone={(r) => (r.status === "pendiente" ? "warning" : undefined)} rowTitle={(r) => "Abrir la reserva " + r.id}   // lavado de tono por fila (bajo hover y selección) · tooltip nativo
+    rowActionsVisible="always"   // acciones siempre visibles cuando SON la interacción (por defecto: hover / foco / selección)
     footer caption="Reservas de la semana" />
 </CocoaSection>
 // < 600 px → tarjetas apiladas etiqueta / valor · parrillas anchas → <CocoaScrollArea axis="x" stickyFirstColumn>
@@ -1548,6 +1582,7 @@ function TablesSection() {
   const [sort, setSort] = useState<CocoaTableSort>({ key: "arrival", direction: "asc" });
   const [selected, setSelected] = useState<ReservationRow | null>(null);
   const [loading, setLoading] = useState(false);
+  const [actionsAlways, setActionsAlways] = useState(false);
   const rows = useMemo(() => [...RESERVATIONS].sort((a, b) => compareRows(a, b, sort)), [sort]);
   const total = RESERVATIONS.filter((row) => row.status !== "cancelada").reduce((sum, row) => sum + row.amount, 0);
   const columns: CocoaTableColumn<ReservationRow>[] = [
@@ -1604,6 +1639,7 @@ function TablesSection() {
           loading={loading}
           footer
           caption="Reservas de la semana (ejemplo)"
+          rowActionsVisible={actionsAlways ? "always" : "hover"}
           rowActions={(row) => (
             <CocoaButton variant="plain" tone="accent" size="small" onClick={() => setSelected(row)}>
               Abrir
@@ -1611,6 +1647,10 @@ function TablesSection() {
           )}
         />
         <div className="cocoa-stack" data-gap="4" style={{ padding: "var(--cocoa-space-4)" }}>
+          <div className="cocoa-row" data-gap="3">
+            <CocoaSwitch size="small" checked={actionsAlways} onChange={setActionsAlways} label="Acciones por fila siempre visibles (rowActionsVisible)" />
+            <Note as="span">Por defecto aparecen al pasar el ratón, con el foco o la selección (y siempre en táctil); «always» para tablas cuyas acciones son la interacción principal.</Note>
+          </div>
           <div className="cocoa-stack" data-gap="2">
             <Caption>Tabla vacía</Caption>
             <CocoaTable<ReservationRow> columns={columns.slice(0, 3)} rows={[]} rowKey="id" caption="Tabla vacía de ejemplo" emptyState={<CocoaState kind="empty" inline title="Sin reservas para este filtro" message="Amplía el rango de fechas o quita el canal." />} />
@@ -1690,11 +1730,14 @@ const TABS_SAMPLE = `// Pestañas de página = URL (contenedor de screens/tabs/*
          { key: "cronograma", label: "Cronograma", lazy: () => import("../reservations/LiveTimeline") }]} />
 // Vistas internas sin URL (≤ 4 opciones): CocoaSegmentedControl
 <CocoaPage title="Mi día" tabs={[{ value: "hoy", label: "Hoy" }, { value: "semana", label: "Semana" }]} activeTab={view} onTabChange={setView}>…</CocoaPage>
+<CocoaSegmentedControl value={view} onChange={setView} options={views} aria-label="Vistas del grupo" panelId={panelId} />   // aria-controls en la pestaña activa
+<div role="tabpanel" id={panelId} aria-label="Resumen del grupo">…</div>
 // Barra de filtros de contenido:
 <CocoaToolbar variant="content" leftSlot={<CocoaSearchInput … />} rightSlot={<CocoaSelect … />} />`;
 
 function TabsSection() {
   const [view, setView] = useState("hoy");
+  const panelId = `${useId()}-panel`;
   const [query, setQuery] = useState("");
   const [channel, setChannel] = useState("");
   const [range, setRange] = useState("7d");
@@ -1712,8 +1755,14 @@ function TabsSection() {
               { value: "trimestre", label: "Trimestre" }
             ]}
             aria-label="Periodo de ejemplo"
+            panelId={panelId}
           />
           <CocoaSegmentedControl fullWidth value={view} onChange={setView} options={[{ value: "hoy", label: "Hoy" }, { value: "semana", label: "Semana" }]} aria-label="Periodo a ancho completo" style={{ maxWidth: 320 }} />
+        </div>
+        <div role="tabpanel" id={panelId} aria-label="Vista seleccionada de ejemplo">
+          <Note>
+            Vista <Mono>{view}</Mono> · la pestaña activa apunta a este contenedor con <Mono>aria-controls</Mono> (<Mono>panelId</Mono>); el panel lleva <Mono>role=&quot;tabpanel&quot;</Mono> y su propio <Mono>aria-label</Mono>.
+          </Note>
         </div>
         <div style={{ border: "1px dashed var(--cocoa-separator)", borderRadius: "var(--cocoa-radius-md)" }}>
           <CocoaToolbar

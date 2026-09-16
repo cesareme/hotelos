@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { DRAWER_WIDTH, drawerGeometry } from "../CocoaDrawer.tsx";
 import { DIALOG_WIDTH, dialogInitialFocus } from "../CocoaDialog.tsx";
 import { toastTone, toastViewportStyle } from "../CocoaToast.tsx";
-import { actionBarPlacement, isPrimaryShortcut } from "../CocoaActionBar.tsx";
+import { actionBarPlacement, isPrimaryShortcut, shortcutInsideOverlay } from "../CocoaActionBar.tsx";
 import { SHEET_MAX_WIDTH } from "../CocoaSheet.tsx";
 
 describe("CocoaDrawer · geometry (§3.9)", () => {
@@ -79,6 +79,15 @@ describe("CocoaActionBar · shortcut and placement", () => {
     assert.equal(isPrimaryShortcut({ key: "Enter", metaKey: false, ctrlKey: false }), false);
     assert.equal(isPrimaryShortcut({ key: "Enter", metaKey: true, ctrlKey: false, altKey: true }), false);
     assert.equal(isPrimaryShortcut({ key: "a", metaKey: true, ctrlKey: false }), false);
+  });
+  it("ignores the shortcut while its target sits inside an open dialog / drawer / sheet", () => {
+    const inside = { closest: (selector: string) => (selector.includes('[role="dialog"]') ? {} : null) };
+    const outside = { closest: () => null };
+    assert.equal(shortcutInsideOverlay(inside), true);
+    assert.equal(shortcutInsideOverlay(outside), false);
+    assert.equal(shortcutInsideOverlay(null), false);
+    assert.equal(shortcutInsideOverlay(undefined), false);
+    assert.equal(shortcutInsideOverlay({}), false); // a window / document target has no closest()
   });
   it("fixed on phones, sticky or static on desktop", () => {
     assert.equal(actionBarPlacement({ isNarrow: true, sticky: false }), "fixed");

@@ -92,7 +92,7 @@ const OVERRIDE = {
 
 /** Files with zero importers in apps/admin-web/src: retired in their wave, never migrated. */
 const DEAD = {
-  "reservations/QuickActionsDialogs.tsx": "0 importadores en apps/admin-web/src",
+  // reservations/QuickActionsDialogs.tsx: retired in wave 3 (git D, lote 3-C).
   "billing/SplitFolioDialog.tsx": "0 importadores",
   "billing/InvoiceDetailScreen.tsx": "0 importadores (solo un comentario en billing/invoiceStatus.ts:2); sin clave ni URL",
   "onboarding/CocoaOnboardingWizard.tsx": "0 importadores; lo lee layouts/__tests__/shell-cocoa22-contract.test.mts:16 (ajustar el test al retirarlo)",

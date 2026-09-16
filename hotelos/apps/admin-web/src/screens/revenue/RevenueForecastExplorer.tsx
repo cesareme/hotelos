@@ -1,10 +1,33 @@
+// Forecast explorer — /revenue/historico-prevision/explorador (hosted in
+// HistoricoPrevisionTabs). Reads the canonical forecast rows of the property
+// for the next 30/60/90 days; every figure comes from the server.
+//
+// Cocoa 22 (ola 5 · lote 5-B): hosted dashboard (DashboardAlojado). Horizon
+// select in the actions row → KPI strip (days, confidence, occupancy, ADR,
+// RevPAR, revenue) → daily table → honest source footer.
 import { useTabHost } from "../tabs/TabHost";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { toArray } from "../../utils/toArray";
-import { getActivePropertyId } from "../../services/activeProperty";
-import { ErrorState, LoadingBlock, SkeletonLines } from "../../components/States";
-import { money, percent } from "../../lib/format";
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { navigateTo } from "../../lib/navigate";
+import { date, money, number, percent, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaTable,
+  type CocoaKpiStatus,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 // Live shape returned by GET /revenue/properties/:propertyId/forecast
 // (see apps/api/src/modules/revenue/forecast.service.ts → mapForecast).
@@ -37,16 +60,15 @@ function fmtPct(value: number, fractionDigits = 1): string {
   const pct = value > 1.5 ? value : value * 100;
   return percent(pct, { minimumFractionDigits: fractionDigits, maximumFractionDigits: fractionDigits });
 }
-function fmtDate(iso: string): string {
-  // 2026-05-31 → 31/05
-  const [, mm, dd] = iso.split("-");
-  return `${dd}/${mm}`;
-}
-function confidenceTone(c: number): "ok" | "warn" | "error" {
+function confidenceTone(c: number): CocoaTone {
   const pct = c > 1.5 ? c : c * 100;
-  if (pct >= 75) return "ok";
-  if (pct >= 50) return "warn";
-  return "error";
+  if (pct >= 75) return "success";
+  if (pct >= 50) return "warning";
+  return "danger";
+}
+function confidenceStatus(c: number): CocoaKpiStatus {
+  const tone = confidenceTone(c);
+  return tone === "success" ? "ok" : tone === "warning" ? "warning" : "critical";
 }
 
 // Horizon options. listForecasts (apps/api/src/modules/revenue/forecast.service.ts)
@@ -55,10 +77,42 @@ function confidenceTone(c: number): "ok" | "warn" | "error" {
 // the pilot) is fully visible.
 const HORIZON_OPTIONS = [30, 60, 90] as const;
 type HorizonDays = (typeof HORIZON_OPTIONS)[number];
+const HORIZON_SELECT_OPTIONS = HORIZON_OPTIONS.map((days) => ({ value: String(days), label: `Próximos ${days} días` }));
+
+const COLUMNS: CocoaTableColumn<ForecastRow>[] = [
+  { key: "forecastDate", label: "Fecha", fit: true, render: (row) => <strong>{date(row.forecastDate, "dayMonth")}</strong> },
+  { key: "expectedOccupancy", label: "Ocup. prevista", align: "right", fit: true, render: (row) => fmtPct(Number(row.expectedOccupancy || 0), 1) },
+  { key: "expectedRoomsSold", label: "Hab. vendidas", align: "right", fit: true, render: (row) => number(Math.round(Number(row.expectedRoomsSold || 0))), hideOnNarrow: true },
+  { key: "expectedAdr", label: "ADR", align: "right", fit: true, render: (row) => money(Number(row.expectedAdr || 0)) },
+  { key: "expectedRevpar", label: "RevPAR", align: "right", fit: true, render: (row) => money(Number(row.expectedRevpar || 0)), showFrom: "laptop" },
+  { key: "expectedRoomRevenue", label: "Ingresos hab.", align: "right", fit: true, render: (row) => money(Number(row.expectedRoomRevenue || 0)) },
+  {
+    key: "confidence",
+    label: "Confianza",
+    align: "right",
+    fit: true,
+    render: (row) => {
+      const c = Number(row.confidence || 0);
+      return <CocoaBadge tone={confidenceTone(c)}>{fmtPct(c, 0)}</CocoaBadge>;
+    }
+  },
+  { key: "modelVersion", label: "Modelo", fit: true, render: (row) => <code className="cocoa-mono">{row.modelVersion ?? "—"}</code>, showFrom: "laptop" }
+];
+
+// Skeleton espejo: strip of 6 KPI, then the table card.
+function ExplorerSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={6} />
+      <CocoaSkeleton.Grid rows={[[12]]} height={360} />
+    </div>
+  );
+}
 
 export function RevenueForecastExplorer() {
   // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
+  const hosted = useTabHost() !== null;
+  const header = treeHeaderFor("RevenueForecastExplorer", { eyebrow: "Revenue · Histórico y previsión", title: "Explorador de previsión" });
   const propertyId = getActivePropertyId();
   const [horizonDays, setHorizonDays] = useState<HorizonDays>(30);
   const { from, to } = useMemo(() => rangeFrom(horizonDays), [horizonDays]);
@@ -88,147 +142,59 @@ export function RevenueForecastExplorer() {
     };
   }, [rows]);
 
-  const confidenceStatus = confidenceTone(summary.avgConfidence);
+  const windowLabel = `Próximos ${horizonDays} días · ${date(from, "short")} → ${date(to, "short")}`;
+  const openBoard = () => navigateTo("RevenueHistoryForecastDashboard");
 
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          {embedded ? null : (
-            <>
-              <p className="bo-muted">Revenue · Histórico y previsión</p>
-              <h2>Explorador de previsión</h2>
-            </>
-          )}
-          <p className="bo-muted" style={{ margin: "4px 0 0", textTransform: "none", fontSize: 12 }}>
-            Próximos {horizonDays} días · {from} → {to}
-          </p>
-        </div>
-        <div className="bo-pill-row">
-          <label className="bo-muted" style={{ textTransform: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
-            Horizonte
-            <select
-              aria-label="Horizonte de previsión"
-              value={horizonDays}
-              onChange={(event) => setHorizonDays(Number(event.target.value) as HorizonDays)}
-            >
-              {HORIZON_OPTIONS.map((days) => (
-                <option key={days} value={days}>Próximos {days} días</option>
-              ))}
-            </select>
-          </label>
-          <span className="bo-status info" style={{ textTransform: "none" }}>En vivo</span>
-          <button type="button" onClick={refresh} disabled={loading}>
-            ↻ Actualizar
-          </button>
-        </div>
-      </div>
-
-      {error ? (
-        <ErrorState
-          title="No se pudo cargar la previsión"
-          message={error}
-          onRetry={refresh}
-        />
-      ) : loading && rows.length === 0 ? (
+    <CocoaPage
+      eyebrow={`${header.eyebrow} · ${getActiveProperty().propertyName}`}
+      title={header.title}
+      subtitle={hosted ? undefined : windowLabel}
+      actions={
         <>
-          <LoadingBlock label="Cargando previsión…" />
-          <div style={{ marginTop: 16 }}>
-            <SkeletonLines lines={6} />
-          </div>
+          <CocoaSelect value={String(horizonDays)} onChange={(v) => setHorizonDays(Number(v) as HorizonDays)} options={HORIZON_SELECT_OPTIONS} size="small" aria-label="Horizonte de previsión" />
+          <CocoaBadge tone="success" variant="dot">
+            En vivo
+          </CocoaBadge>
+          {loading && rows.length > 0 ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          {error && rows.length > 0 ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} loading={loading} disabled={loading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
         </>
-      ) : rows.length === 0 ? (
-        <p className="bo-muted">
-          No hay previsión generada para los próximos {horizonDays} días. Genera la previsión desde el panel de Revenue.
-        </p>
-      ) : (
-        <>
-          <div className="rev-kpi-grid">
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Días con previsión</span></div>
-              <div className="rev-kpi-value">{summary.days}</div>
-            </article>
-            <article className={`rev-kpi rev-kpi-${confidenceStatus}`}>
-              <div className="rev-kpi-head">
-                <span className="rev-kpi-label">Confianza media</span>
-                <span className="rev-kpi-tag">previsión</span>
-              </div>
-              <div className="rev-kpi-value">{fmtPct(summary.avgConfidence, 0)}</div>
-            </article>
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head">
-                <span className="rev-kpi-label">Ocupación media</span>
-                <span className="rev-kpi-tag">previsión</span>
-              </div>
-              <div className="rev-kpi-value">{fmtPct(summary.avgOcc, 1)}</div>
-            </article>
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head">
-                <span className="rev-kpi-label">ADR medio</span>
-                <span className="rev-kpi-tag">previsión</span>
-              </div>
-              <div className="rev-kpi-value">{money(summary.avgAdr)}</div>
-            </article>
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head">
-                <span className="rev-kpi-label">RevPAR medio</span>
-                <span className="rev-kpi-tag">previsión</span>
-              </div>
-              <div className="rev-kpi-value">{money(summary.avgRevpar)}</div>
-            </article>
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head">
-                <span className="rev-kpi-label">Ingresos previstos ({horizonDays}d)</span>
-                <span className="rev-kpi-tag">previsión</span>
-              </div>
-              <div className="rev-kpi-value">{money(summary.totalRevenue)}</div>
-            </article>
-          </div>
+      }
+      state={error && rows.length === 0 ? "error" : loading && rows.length === 0 ? "loading" : rows.length === 0 ? "empty" : "ready"}
+      skeleton={<ExplorerSkeleton />}
+      empty={{
+        title: `No hay previsión generada para los próximos ${horizonDays} días`,
+        message: "Genera la previsión desde el cuadro de histórico y previsión.",
+        primaryAction: { label: "Abrir histórico y previsión", onClick: openBoard }
+      }}
+      error={{ title: "No se pudo cargar la previsión", message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "explorador-prevision-refresh", label: "Actualizar el explorador de previsión", run: refresh }]}
+    >
+      <CocoaKpiStrip stagger aria-label="Resumen de la previsión">
+        <CocoaKpi label="Días con previsión" value={number(summary.days)} caption={windowLabel} polarity="neutral" status="ok" />
+        <CocoaKpi label="Confianza media" value={fmtPct(summary.avgConfidence, 0)} caption="previsión" polarity="neutral" status={confidenceStatus(summary.avgConfidence)} />
+        <CocoaKpi label="Ocupación media" value={fmtPct(summary.avgOcc, 1)} caption="previsión" polarity="neutral" status="ok" />
+        <CocoaKpi label="ADR medio" value={money(summary.avgAdr)} caption="previsión" polarity="neutral" status="ok" />
+        <CocoaKpi label="RevPAR medio" value={money(summary.avgRevpar)} caption="previsión" polarity="neutral" status="ok" />
+        <CocoaKpi label={`Ingresos previstos (${horizonDays} d)`} value={money(summary.totalRevenue)} caption="previsión" polarity="neutral" status="ok" />
+      </CocoaKpiStrip>
 
-          <div className="rev-report-wrap" style={{ marginTop: 16 }}>
-            <table className="rev-report-table">
-              <thead>
-                <tr>
-                  <th>Fecha</th>
-                  <th>Ocup. prevista</th>
-                  <th>Hab. vendidas</th>
-                  <th>ADR</th>
-                  <th>RevPAR</th>
-                  <th>Ingresos hab.</th>
-                  <th>Confianza</th>
-                  <th>Modelo</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((row) => {
-                  const tone = confidenceTone(Number(row.confidence || 0));
-                  return (
-                    <tr key={row.id}>
-                      <td>{fmtDate(row.forecastDate)}</td>
-                      <td>{fmtPct(Number(row.expectedOccupancy || 0), 1)}</td>
-                      <td>{Math.round(Number(row.expectedRoomsSold || 0))}</td>
-                      <td>{money(Number(row.expectedAdr || 0))}</td>
-                      <td>{money(Number(row.expectedRevpar || 0))}</td>
-                      <td>{money(Number(row.expectedRoomRevenue || 0))}</td>
-                      <td>
-                        <span className={`bo-status ${tone}`} style={{ textTransform: "none" }}>
-                          {fmtPct(Number(row.confidence || 0), 0)}
-                        </span>
-                      </td>
-                      <td><code style={{ fontSize: 12 }}>{row.modelVersion ?? "—"}</code></td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          <p className="bo-muted" style={{ marginTop: 12, textTransform: "none", fontSize: 12 }}>
-            Fuente: GET /revenue/properties/{propertyId}/forecast (range={horizonDays}d). La confianza, ocupación y
-            ADR se calculan en el backend desde la tabla canónica RevenueForecast, sin invenciones del cliente.
-          </p>
-        </>
-      )}
-    </section>
+      <CocoaSection
+        title="Previsión por día"
+        meta={plural(rows.length, "día", "días")}
+        padding="none"
+        style={{ overflow: "clip" }}
+        footer={
+          <span>
+            Fuente: GET /revenue/properties/{propertyId}/forecast (range={horizonDays}d). La confianza, la ocupación y el ADR los calcula el servidor desde la tabla canónica RevenueForecast, sin invenciones del cliente.
+          </span>
+        }
+      >
+        <CocoaTable columns={COLUMNS} rows={rows} rowKey="id" density="compact" loading={loading && rows.length === 0} caption="Previsión por día" aria-label="Previsión por día" />
+      </CocoaSection>
+    </CocoaPage>
   );
 }

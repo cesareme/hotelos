@@ -169,7 +169,7 @@ function classify(relPath, src, m) {
 // containers and the sub-views the contract exempts (mirror of HEADER_EXEMPT
 // in tests/cocoa-22-contract.test.mjs, rule 7) — the «sin cabecera» penalty
 // does not apply to them.
-const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$)/;
+const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$|operations\/GroupsPickupCard\.tsx$)/;
 
 function debtPoints(m, headerExempt = false) {
   return Math.round(

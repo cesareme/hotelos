@@ -1,15 +1,49 @@
+// Políticas de cancelación — Revenue › Políticas de cancelación
+// (/revenue/politicas-cancelacion, standalone). Cocoa 22 · ola 5 · lote 5-C
+// (migrated from the legacy `.bo-*` screen), archetype «formulario».
+//
+// GET /properties/:propertyId/cancellation-policies (polling 60 s) lists the
+// policies; create / update / delete go through services/cancellationApi.
+// Layout: CocoaPage → CocoaSection padding none + CocoaTable (a row opens the
+// policy in a CocoaDrawer that is the create AND edit form: three
+// CocoaFormSection, two footer buttons; «Eliminar» per row → CocoaDialog with
+// `busy`).
+//
+// Progressive penalties (the closer to check-in, the higher the charge) are
+// modelled as pairs {hoursBefore, penaltyPct}, the usual Booking / Expedia /
+// Mews shape for semi-flexible policies. The current model only stores one
+// pair (freeCancelHours + penaltyType/Value), so the windows travel encoded at
+// the end of `description` (SLIDING_PREFIX + JSON) until the backend exposes
+// `slidingScale` on `CancellationPolicy`; the table paints them as badges.
+
 import { useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { getActivePropertyId } from "../../services/activeProperty";
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import {
   createCancellationPolicy, updateCancellationPolicy, deleteCancellationPolicy,
   type CancellationPolicy, type PenaltyType
 } from "../../services/cancellationApi";
-import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useToast } from "../../components/Toast";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { ACTIONS, newLabel } from "../../content/actions";
+import { ACTIONS, FIELD_LABELS, STATUS_LABELS, confirmDelete, confirmDiscard, newLabel } from "../../content/actions";
+import { money, number, percent, plural } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -20,21 +54,13 @@ const PENALTY_LABEL: Record<PenaltyType, string> = {
   all_stay: "Estancia completa",
   none: "Sin cargo"
 };
+const PENALTY_OPTIONS = (Object.keys(PENALTY_LABEL) as PenaltyType[]).map((value) => ({ value, label: PENALTY_LABEL[value] }));
 
-// Sliding scale = ventanas progresivas: cuánto más cerca del check-in, mayor
-// la penalización. Se modela como array de pares {hoursBefore, penaltyPct}.
-// Industria estándar Booking / Expedia / Mews para políticas Semi-Flexible.
-//
-// TODO(backend): el modelo actual sólo soporta un único par
-// (freeCancelHours + penaltyType/Value). Cuando el backend exponga
-// `slidingScale: Array<{hoursBefore, penaltyPct}>` en `CancellationPolicy`,
-// el form ya está preparado: editamos derivationJson en `description` como
-// JSON para mostrar las ventanas en la tabla como chips.
 type SlidingWindow = { hoursBefore: number; penaltyPct: number };
 
 type Draft = {
   code: string; name: string; description: string;
-  freeCancelHours: number;
+  freeCancelHours: string;
   penaltyType: PenaltyType; penaltyValue: string;
   noShowPenaltyType: PenaltyType; noShowPenaltyValue: string;
   slidingScale: SlidingWindow[];
@@ -64,7 +90,7 @@ function encodeSliding(clean: string, sliding: SlidingWindow[]): string | undefi
 
 function emptyDraft(): Draft {
   return {
-    code: "", name: "", description: "", freeCancelHours: 48,
+    code: "", name: "", description: "", freeCancelHours: "48",
     penaltyType: "first_night", penaltyValue: "",
     noShowPenaltyType: "first_night", noShowPenaltyValue: "",
     slidingScale: [],
@@ -72,8 +98,51 @@ function emptyDraft(): Draft {
   };
 }
 
+/** «Primera noche» · «Porcentaje del total (50 %)» · «Importe fijo (€) (30,00 €)». */
+function penaltyText(type: PenaltyType, value: number | null): string {
+  if (value == null) return PENALTY_LABEL[type];
+  return `${PENALTY_LABEL[type]} (${type === "percent" ? percent(value) : money(value)})`;
+}
+
+const COLUMNS: CocoaTableColumn<CancellationPolicy>[] = [
+  { key: "code", label: "Código", fit: true, render: (p) => <strong>{p.code}</strong> },
+  { key: "name", label: FIELD_LABELS.name, minWidth: 160 },
+  {
+    key: "freeCancelHours",
+    label: "Cancelación gratuita",
+    fit: true,
+    render: (p) => (p.freeCancelHours > 0 ? `${number(p.freeCancelHours)} h antes` : <CocoaBadge tone="warning" size="small">No reembolsable</CocoaBadge>)
+  },
+  {
+    key: "sliding",
+    label: "Escalado",
+    showFrom: "laptop",
+    render: (p) => {
+      const { sliding } = parseSliding(p.description ?? null);
+      if (sliding.length === 0) return penaltyText(p.penaltyType, p.penaltyValue);
+      return (
+        <span className="cocoa-cluster">
+          {sliding.map((w, i) => (
+            <CocoaBadge key={i} tone="neutral" size="small" uppercase={false}>
+              T−{number(w.hoursBefore)} h · {percent(w.penaltyPct)}
+            </CocoaBadge>
+          ))}
+        </span>
+      );
+    }
+  },
+  { key: "noShow", label: "No-show", showFrom: "desktop", render: (p) => penaltyText(p.noShowPenaltyType, p.noShowPenaltyValue) },
+  {
+    key: "active",
+    label: FIELD_LABELS.status,
+    fit: true,
+    render: (p) => <CocoaBadge tone={p.active ? "success" : "neutral"}>{p.active ? "Activa" : "Inactiva"}</CocoaBadge>
+  }
+];
+
 export function CancellationPoliciesScreen() {
   const { showToast } = useToast();
+  const property = getActiveProperty();
   const { data, loading, error, refresh } = useApiData<{ items: CancellationPolicy[] }>(
     `/properties/${PROPERTY_ID}/cancellation-policies`,
     { pollIntervalMs: 60000 }
@@ -81,31 +150,71 @@ export function CancellationPoliciesScreen() {
   const policies = data?.items ?? [];
 
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
   const [editing, setEditing] = useState<CancellationPolicy | null>(null);
   const [showForm, setShowForm] = useState(false);
+  const [touched, setTouched] = useState(false);
   const [draft, setDraft] = useState<Draft>(emptyDraft());
+  const [initialDraft, setInitialDraft] = useState<Draft>(emptyDraft());
+  const [askDiscard, setAskDiscard] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<CancellationPolicy | null>(null);
 
+  const newPolicyLabel = newLabel("f", "política");
+  const dirty = JSON.stringify(draft) !== JSON.stringify(initialDraft);
+  const discard = confirmDiscard();
+  const errors = {
+    code: draft.code.trim() ? undefined : "El código es obligatorio.",
+    name: draft.name.trim() ? undefined : "El nombre es obligatorio."
+  };
+  const valid = !errors.code && !errors.name;
+
+  function set<K extends keyof Draft>(key: K, value: Draft[K]) {
+    setDraft((current) => ({ ...current, [key]: value }));
+  }
+
   function openCreate() {
+    const next = emptyDraft();
     setEditing(null);
-    setDraft(emptyDraft());
+    setDraft(next);
+    setInitialDraft(next);
+    setTouched(false);
+    setFormError(null);
+    setNotice(null);
     setShowForm(true);
-    setMsg(null);
   }
   function openEdit(p: CancellationPolicy) {
     const { sliding, clean } = parseSliding(p.description ?? null);
-    setEditing(p);
-    setDraft({
+    const next: Draft = {
       code: p.code, name: p.name, description: clean,
-      freeCancelHours: p.freeCancelHours,
+      freeCancelHours: String(p.freeCancelHours),
       penaltyType: p.penaltyType, penaltyValue: p.penaltyValue?.toString() ?? "",
       noShowPenaltyType: p.noShowPenaltyType, noShowPenaltyValue: p.noShowPenaltyValue?.toString() ?? "",
       slidingScale: sliding,
       active: p.active
-    });
+    };
+    setEditing(p);
+    setDraft(next);
+    setInitialDraft(next);
+    setTouched(false);
+    setFormError(null);
+    setNotice(null);
     setShowForm(true);
-    setMsg(null);
+  }
+  // Esc, the scrim and «Cancelar» ask before dropping unsaved changes (dirty guard, plan §4.4).
+  function closeForm() {
+    if (busy) return;
+    if (dirty) {
+      setAskDiscard(true);
+      return;
+    }
+    setShowForm(false);
+    setEditing(null);
+  }
+  function discardForm() {
+    setAskDiscard(false);
+    setShowForm(false);
+    setEditing(null);
   }
 
   function addWindow() {
@@ -125,13 +234,15 @@ export function CancellationPoliciesScreen() {
   }
 
   async function save() {
-    if (!draft.code.trim() || !draft.name.trim()) { setMsg("Code y nombre son obligatorios."); return; }
-    // Validar sliding: ordenadas decreciente por hours, penaltyPct 0-100
+    setTouched(true);
+    if (!valid || busy) return;
+    // Progressive windows: hours never negative, penalty between 0 and 100 %.
     for (const w of draft.slidingScale) {
-      if (w.hoursBefore < 0) { setMsg("Las horas en la sliding scale no pueden ser negativas."); return; }
-      if (w.penaltyPct < 0 || w.penaltyPct > 100) { setMsg("La penalización debe estar entre 0 y 100%."); return; }
+      if (w.hoursBefore < 0) { setFormError("Las horas de las penalizaciones progresivas no pueden ser negativas."); return; }
+      if (w.penaltyPct < 0 || w.penaltyPct > 100) { setFormError("La penalización debe estar entre 0 y 100%."); return; }
     }
-    setBusy(true); setMsg(null);
+    setBusy(true);
+    setFormError(null);
     try {
       const payload = {
         code: draft.code.trim(), name: draft.name.trim(),
@@ -145,13 +256,13 @@ export function CancellationPoliciesScreen() {
       };
       if (editing) await updateCancellationPolicy(editing.id, payload);
       else await createCancellationPolicy(payload);
-      setMsg(editing ? "Política actualizada." : "Política creada.");
+      setNotice(editing ? "Política actualizada." : "Política creada.");
       showToast(editing ? `Política «${draft.name}» actualizada` : `Política «${draft.name}» creada`, { variant: "success" });
       setShowForm(false); setEditing(null);
       refresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : "No se pudo guardar.";
-      setMsg(message);
+      setFormError(message);
       showToast(message, { variant: "error" });
     } finally { setBusy(false); }
   }
@@ -159,202 +270,222 @@ export function CancellationPoliciesScreen() {
   async function confirmRemove() {
     const p = pendingDelete;
     if (!p) return;
-    setPendingDelete(null);
-    setBusy(true); setMsg(null);
+    setBusy(true);
+    setNotice(null);
     try {
       await deleteCancellationPolicy(p.id);
-      setMsg("Política eliminada.");
-      showToast(`Política "${p.name}" eliminada`, { variant: "success" });
+      setNotice("Política eliminada.");
+      showToast(`Política «${p.name}» eliminada`, { variant: "success" });
+      setPendingDelete(null);
       refresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : "No se pudo eliminar.";
-      setMsg(message);
+      setNotice(null);
+      setPendingDelete(null);
       showToast(message, { variant: "error" });
     } finally { setBusy(false); }
   }
 
+  const ready = !loading && !error && policies.length > 0;
+  const deleteCopy = pendingDelete ? confirmDelete(`la política «${pendingDelete.name}»`) : null;
+
+  let body;
+  if (loading && policies.length === 0) {
+    body = <CocoaTable columns={COLUMNS} rows={[]} loading aria-label="Políticas de cancelación" />;
+  } else if (error) {
+    body = <CocoaState kind="error" title="No se pudieron cargar las políticas" message={error} onRetry={refresh} />;
+  } else if (policies.length === 0) {
+    body = (
+      <CocoaState
+        kind="empty"
+        illustration="box"
+        title="Sin políticas"
+        message="Crea la primera política de cancelación para empezar a aplicarla en reservas."
+        primaryAction={{ label: newPolicyLabel, onClick: openCreate }}
+      />
+    );
+  } else {
+    body = (
+      <CocoaTable
+        columns={COLUMNS}
+        rows={policies}
+        rowKey="id"
+        selectedKey={editing?.id}
+        onSelect={openEdit}
+        rowTitle={() => "Abrir la política para editarla"}
+        rowActions={(p) => (
+          <CocoaButton
+            variant="plain"
+            tone="destructive"
+            size="small"
+            disabled={busy}
+            onClick={(event) => {
+              event.stopPropagation();
+              setPendingDelete(p);
+            }}
+          >
+            {ACTIONS.delete}
+          </CocoaButton>
+        )}
+        caption="Políticas de cancelación"
+        aria-label="Políticas de cancelación"
+      />
+    );
+  }
+
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <CocoaPageHeader
-        eyebrow="Revenue"
-        title="Políticas de cancelación"
-        subtitle="Ventana de cancelación gratuita, penalización aplicable y, si quieres, penalizaciones progresivas (cuanto más cerca de la entrada, mayor el cargo). El cargo se aplica al folio al cancelar o en el cierre del día."
-        actions={
+    <CocoaPage
+      eyebrow={`Revenue · ${property.propertyName}`}
+      title="Políticas de cancelación"
+      subtitle="Ventana de cancelación gratuita, penalización aplicable y, si quieres, penalizaciones progresivas (cuanto más cerca de la entrada, mayor el cargo). El cargo se aplica al folio al cancelar o en el cierre del día."
+      actions={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} loading={loading && policies.length > 0} disabled={loading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={openCreate} disabled={busy}>
+            {newPolicyLabel}
+          </CocoaButton>
+        </>
+      }
+      commands={[
+        { id: "cancellation-policies-new", label: newPolicyLabel, run: openCreate },
+        { id: "cancellation-policies-refresh", label: "Actualizar las políticas de cancelación", run: refresh }
+      ]}
+    >
+      {notice ? (
+        <CocoaCallout tone="success" role="status" title={STATUS_LABELS.saved}>
+          {notice}
+        </CocoaCallout>
+      ) : null}
+
+      <CocoaSection
+        title="Políticas"
+        meta={ready ? plural(policies.length, "política", "políticas") : undefined}
+        padding={ready ? "none" : "md"}
+        style={{ overflow: "clip" }}
+        aria-label="Listado de políticas de cancelación"
+      >
+        {body}
+      </CocoaSection>
+
+      <CocoaDrawer
+        open={showForm}
+        onClose={closeForm}
+        title={editing ? `Editar «${editing.name}»` : "Nueva política"}
+        subtitle={editing ? `${editing.code} · ${editing.active ? "Activa" : "Inactiva"}` : undefined}
+        side="right"
+        size="lg"
+        dismissible={!busy}
+        footer={
           <>
-            {busy ? <Spinner size="sm" /> : null}
-            <button type="button" onClick={refresh} disabled={loading}>↻ {ACTIONS.refresh}</button>
-            <button type="button" className="primary" onClick={openCreate} disabled={busy}>+ {newLabel("f", "política")}</button>
+            <CocoaButton variant="bordered" tone="neutral" onClick={closeForm} disabled={busy}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" onClick={() => void save()} loading={busy} disabled={busy || (touched && !valid)}>
+              {editing ? ACTIONS.saveChanges : "Crear política"}
+            </CocoaButton>
           </>
         }
-      />
+      >
+        <div className="cocoa-stack" data-gap="4">
+          {formError ? (
+            <CocoaCallout tone="danger" role="alert" title={STATUS_LABELS.saveError}>
+              {formError}
+            </CocoaCallout>
+          ) : null}
 
-      {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
+          <CocoaFormSection title="Identificación" description="El código identifica la política en los planes de tarifas y no se cambia una vez creada.">
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Código" required error={touched ? errors.code : undefined}>
+                <CocoaInput value={draft.code} onChange={(v) => set("code", v)} placeholder="FLEX, SEMI, NREF…" disabled={busy || !!editing} />
+              </CocoaField>
+              <CocoaField label={FIELD_LABELS.name} required error={touched ? errors.name : undefined}>
+                <CocoaInput value={draft.name} onChange={(v) => set("name", v)} disabled={busy} />
+              </CocoaField>
+              <CocoaField label={FIELD_LABELS.description} fullWidth hint={STATUS_LABELS.optional.toLowerCase()}>
+                <CocoaInput value={draft.description} onChange={(v) => set("description", v)} multiline rows={2} disabled={busy} />
+              </CocoaField>
+            </CocoaFormRow>
+          </CocoaFormSection>
 
-      {loading && policies.length === 0 ? (
-        <LoadingBlock label="Cargando políticas…" />
-      ) : error ? (
-        <ErrorState title="No se pudo cargar" message={error} onRetry={refresh} />
-      ) : policies.length === 0 ? (
-        <EmptyState title="Sin políticas" message="Crea la primera política de cancelación para empezar a aplicarla en reservas." />
-      ) : (
-        <div className="rev-report-wrap">
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Código</th><th>Nombre</th><th>Cancelación gratuita</th><th>Escalado</th><th>No-show</th><th>Activa</th><th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {policies.map((p) => {
-                const { sliding } = parseSliding(p.description ?? null);
-                return (
-                  <tr key={p.id} style={{ cursor: "pointer" }} onClick={() => openEdit(p)}>
-                    <td className="mono"><strong>{p.code}</strong></td>
-                    <td>{p.name}</td>
-                    <td>{p.freeCancelHours > 0 ? `${p.freeCancelHours} h antes` : <span className="bo-status warn" style={{ fontSize: 10 }}>No reembolsable</span>}</td>
-                    <td>
-                      {sliding.length === 0 ? (
-                        <span className="bo-muted" style={{ fontSize: 12 }}>
-                          {PENALTY_LABEL[p.penaltyType]}{p.penaltyValue != null ? ` (${p.penaltyValue}${p.penaltyType === "percent" ? "%" : "€"})` : ""}
-                        </span>
-                      ) : (
-                        <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                          {sliding.map((w, i) => (
-                            <span key={i} className="bo-chip" style={{ fontSize: 11 }}>
-                              T−{w.hoursBefore}h · {w.penaltyPct}%
-                            </span>
-                          ))}
-                        </span>
-                      )}
-                    </td>
-                    <td>
-                      {PENALTY_LABEL[p.noShowPenaltyType]}
-                      {p.noShowPenaltyValue != null ? ` (${p.noShowPenaltyValue}${p.noShowPenaltyType === "percent" ? "%" : "€"})` : ""}
-                    </td>
-                    <td><span className={`bo-status ${p.active ? "ok" : "info"}`} style={{ fontSize: 10 }}>{p.active ? "sí" : "no"}</span></td>
-                    <td onClick={(e) => { e.stopPropagation(); setPendingDelete(p); }}><button type="button" className="bo-link" disabled={busy}>Eliminar</button></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+          <CocoaFormSection title="Cancelación y penalizaciones" description="Dentro de la ventana gratuita no hay cargo; fuera de ella se aplica la penalización por defecto salvo que haya tramos progresivos.">
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Horas gratis antes de la llegada" help="0 convierte la política en no reembolsable.">
+                <CocoaInput type="number" inputMode="numeric" min={0} value={draft.freeCancelHours} onChange={(v) => set("freeCancelHours", v)} disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Política activa" inline help="Una política inactiva no se puede asignar a nuevos planes.">
+                <CocoaSwitch checked={draft.active} onChange={(v) => set("active", v)} size="small" disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Penalización por cancelación (por defecto)">
+                <CocoaSelect value={draft.penaltyType} onChange={(v) => set("penaltyType", v as PenaltyType)} options={PENALTY_OPTIONS} disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Valor (si % o €)">
+                <CocoaInput value={draft.penaltyValue} onChange={(v) => set("penaltyValue", v)} inputMode="decimal" placeholder="50" disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Penalización por no-show">
+                <CocoaSelect value={draft.noShowPenaltyType} onChange={(v) => set("noShowPenaltyType", v as PenaltyType)} options={PENALTY_OPTIONS} disabled={busy} />
+              </CocoaField>
+              <CocoaField label="Valor (si % o €)">
+                <CocoaInput value={draft.noShowPenaltyValue} onChange={(v) => set("noShowPenaltyValue", v)} inputMode="decimal" placeholder="50" disabled={busy} />
+              </CocoaField>
+            </CocoaFormRow>
+          </CocoaFormSection>
 
-      {showForm ? (
-        <article className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>{editing ? `Editar «${editing.name}»` : "Nueva política"}</h3>
-            <button type="button" onClick={() => { setShowForm(false); setEditing(null); }}>✕</button>
-          </div>
-          <div className="bo-grid two" style={{ gap: 10 }}>
-            <label className="bo-form-field">
-              <span>Code *</span>
-              <input value={draft.code} onChange={(e) => setDraft((d) => ({ ...d, code: e.target.value }))} placeholder="FLEX, SEMI, NREF…" disabled={busy || !!editing} />
-            </label>
-            <label className="bo-form-field">
-              <span>Nombre *</span>
-              <input value={draft.name} onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))} disabled={busy} />
-            </label>
-            <label className="bo-form-field" style={{ gridColumn: "1 / -1" }}>
-              <span>Descripción</span>
-              <input value={draft.description} onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Horas gratis antes de la llegada</span>
-              <input type="number" min={0} value={draft.freeCancelHours} onChange={(e) => setDraft((d) => ({ ...d, freeCancelHours: Number(e.target.value) }))} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Activa</span>
-              <input type="checkbox" checked={draft.active} onChange={(e) => setDraft((d) => ({ ...d, active: e.target.checked }))} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Penalización por cancelación (fallback)</span>
-              <select value={draft.penaltyType} onChange={(e) => setDraft((d) => ({ ...d, penaltyType: e.target.value as PenaltyType }))} disabled={busy}>
-                {(Object.keys(PENALTY_LABEL) as PenaltyType[]).map((t) => <option key={t} value={t}>{PENALTY_LABEL[t]}</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>Valor (si % o €)</span>
-              <input value={draft.penaltyValue} onChange={(e) => setDraft((d) => ({ ...d, penaltyValue: e.target.value }))} placeholder="50" disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Penalización por no-show</span>
-              <select value={draft.noShowPenaltyType} onChange={(e) => setDraft((d) => ({ ...d, noShowPenaltyType: e.target.value as PenaltyType }))} disabled={busy}>
-                {(Object.keys(PENALTY_LABEL) as PenaltyType[]).map((t) => <option key={t} value={t}>{PENALTY_LABEL[t]}</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>Valor (si % o €)</span>
-              <input value={draft.noShowPenaltyValue} onChange={(e) => setDraft((d) => ({ ...d, noShowPenaltyValue: e.target.value }))} placeholder="50" disabled={busy} />
-            </label>
-          </div>
-
-          {/* Sliding scale editor */}
-          <article className="bo-card" style={{ background: "var(--surface-alt, var(--surface))", marginTop: 12 }}>
-            <div className="bo-card-head" style={{ marginBottom: 6 }}>
-              <div>
-                <h4 style={{ margin: 0, color: "var(--ink)" }}>Sliding scale (opcional)</h4>
-                <p className="bo-muted" style={{ margin: "4px 0 0 0", fontSize: 12, textTransform: "none" }}>
-                  Penalizaciones progresivas según se acerca la llegada. Ej. T−72h · 25%, T−48h · 50%, T−24h · 100%.
-                  Si está vacío, se usa el fallback de arriba.
-                </p>
-              </div>
-              <button type="button" onClick={addWindow} disabled={busy}>+ Añadir ventana</button>
-            </div>
+          <CocoaFormSection
+            title="Penalizaciones progresivas"
+            description="Tramos según se acerca la llegada. Ej. T−72 h · 25 %, T−48 h · 50 %, T−24 h · 100 %. Si no hay tramos, se usa la penalización por defecto."
+            actions={
+              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={addWindow} disabled={busy}>
+                Añadir ventana
+              </CocoaButton>
+            }
+          >
             {draft.slidingScale.length === 0 ? (
-              <p className="bo-muted" style={{ fontSize: 12, margin: 0, fontStyle: "italic" }}>
-                Sin ventanas. Pulsa <strong>+ Añadir ventana</strong> para definir penalizaciones por tramo.
-              </p>
+              <CocoaState kind="empty" inline title="Sin tramos: se aplica la penalización por defecto." />
             ) : (
-              <div className="bo-stack" style={{ gap: 6 }}>
+              <div className="cocoa-stack" data-gap="3">
                 {draft.slidingScale.map((w, i) => (
-                  <div key={i} className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-                    <span className="bo-muted" style={{ fontSize: 12, minWidth: 50 }}>T−</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={1}
-                      value={w.hoursBefore}
-                      onChange={(e) => updateWindow(i, { hoursBefore: Number(e.target.value) })}
-                      disabled={busy}
-                      style={{ width: 80 }}
-                    />
-                    <span className="bo-muted" style={{ fontSize: 12 }}>h →</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      step={1}
-                      value={w.penaltyPct}
-                      onChange={(e) => updateWindow(i, { penaltyPct: Number(e.target.value) })}
-                      disabled={busy}
-                      style={{ width: 80 }}
-                    />
-                    <span className="bo-muted" style={{ fontSize: 12 }}>%</span>
-                    <button type="button" className="bo-link" onClick={() => removeWindow(i)} disabled={busy}>Eliminar</button>
+                  <div key={i} className="cocoa-row" data-gap="2" data-align="end">
+                    <CocoaField label="Horas antes de la llegada (T−)">
+                      <CocoaInput type="number" inputMode="numeric" min={0} step={1} value={String(w.hoursBefore)} onChange={(v) => updateWindow(i, { hoursBefore: Number(v) })} disabled={busy} />
+                    </CocoaField>
+                    <CocoaField label="Penalización (%)">
+                      <CocoaInput type="number" inputMode="numeric" min={0} max={100} step={1} value={String(w.penaltyPct)} onChange={(v) => updateWindow(i, { penaltyPct: Number(v) })} disabled={busy} />
+                    </CocoaField>
+                    <CocoaButton variant="plain" tone="destructive" size="small" onClick={() => removeWindow(i)} disabled={busy} aria-label={`Eliminar el tramo T−${number(w.hoursBefore)} h`}>
+                      {ACTIONS.delete}
+                    </CocoaButton>
                   </div>
                 ))}
               </div>
             )}
-          </article>
+          </CocoaFormSection>
+        </div>
+      </CocoaDrawer>
 
-          <div className="bo-actions" style={{ marginTop: 10 }}>
-            <button type="button" className="primary" onClick={save} disabled={busy}>{editing ? "Guardar cambios" : "Crear política"}</button>
-            <button type="button" onClick={() => { setShowForm(false); setEditing(null); }} disabled={busy}>Cancelar</button>
-          </div>
-        </article>
-      ) : null}
-
-      <ConfirmDialog
+      <CocoaDialog
         open={pendingDelete !== null}
-        title={pendingDelete ? `¿Eliminar la política «${pendingDelete.name}»?` : ""}
-        description="Esta acción no se puede deshacer."
-        confirmLabel="Eliminar"
-        variant="danger"
-        onConfirm={() => void confirmRemove()}
-        onCancel={() => setPendingDelete(null)}
+        onClose={() => { if (!busy) setPendingDelete(null); }}
+        tone="destructive"
+        title={deleteCopy?.title ?? ""}
+        description={deleteCopy?.message}
+        confirmLabel={deleteCopy?.confirmLabel}
+        cancelLabel={deleteCopy?.cancelLabel}
+        busy={busy}
+        onConfirm={confirmRemove}
       />
-    </section>
+
+      <CocoaDialog
+        open={askDiscard}
+        onClose={() => setAskDiscard(false)}
+        tone="destructive"
+        title={discard.title}
+        description={discard.message}
+        confirmLabel={discard.confirmLabel}
+        cancelLabel={discard.cancelLabel}
+        onConfirm={discardForm}
+      />
+    </CocoaPage>
   );
 }

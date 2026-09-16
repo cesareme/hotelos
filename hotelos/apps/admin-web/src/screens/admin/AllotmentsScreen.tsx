@@ -1,4 +1,20 @@
-import { useMemo, useState } from "react";
+// Cupos de tour operadores — Recepción › Grupos y eventos › Cupos (/recepcion/grupos/cupos).
+//
+// Cocoa 22 (ola 3 · lote 3-C, plantilla DashboardAlojado): CocoaPage with the
+// three inner views as `tabs` (Pickup y liberación · Cupos contratados · Tour
+// operadores; hosted inside GruposEventosTabs the container paints the head
+// and HostedHead paints the views), a CocoaKpiStrip, one CocoaSection per
+// allotment with CocoaChart.Progress / CocoaStat / CocoaChart.Line for the
+// pickup lifecycle, CocoaTable for the two lists and two CocoaDrawers for the
+// «Nuevo TT.OO.» and «Nuevo cupo» forms (CocoaFormSection + CocoaField).
+// Same endpoints and payloads as before:
+//   GET  /organizations/:orgId/tour-operators
+//   GET  /properties/:id/allotments · /allotments/pickup-summary?windowDays=60
+//   GET  /properties/:id/room-types (inside the allotment drawer)
+//   POST /properties/:id/allotments · /allotments/release-expired
+//   POST /organizations/:orgId/tour-operators
+
+import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { toArray } from "../../utils/toArray";
 import { getActivePropertyId, getActiveOrganizationId } from "../../services/activeProperty";
@@ -12,27 +28,129 @@ import {
   type PickupSummary,
   type PickupSummaryAllotment
 } from "../../services/allotmentApi";
-import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
 import { useToast } from "../../components/Toast";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedControl";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
 import { ALLOTMENTS_INSTRUCTIONS } from "../../content/screen-instructions/allotments";
 import { useTabHost } from "../tabs/TabHost";
-import { date, number } from "../../lib/format";
+import { EMPTY, date, dateRange, money, number, percent, plural, time, toNumber } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaDatePicker,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaStat,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  type CocoaLineSeries,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 const ORG_ID = getActiveOrganizationId();
 
-function fmtDate(iso: string): string {
-  return date(iso, "medium");
-}
-function fmtNum(n: number): string {
-  return number(n, { maximumFractionDigits: 1 });
+type AllotmentsView = "pickup" | "allotments" | "operators";
+
+const VIEWS: Array<{ value: AllotmentsView; label: string }> = [
+  { value: "pickup", label: "Pickup y liberación" },
+  { value: "allotments", label: "Cupos contratados" },
+  { value: "operators", label: "Tour operadores" }
+];
+
+const CURRENCY_OPTIONS = [
+  { value: "EUR", label: "EUR" },
+  { value: "GBP", label: "GBP" },
+  { value: "USD", label: "USD" }
+];
+
+const NEW_OPERATOR_LABEL = "Nuevo TT.OO.";
+const NEW_ALLOTMENT_LABEL = "Nuevo cupo";
+
+// Tables inside a section: clip to the radius without creating a scroll container (D26).
+const CLIP: CSSProperties = { overflow: "clip" };
+// Four compact stats of a lifecycle card (2 columns on phones, 4 on desktop).
+const STATS_GRID: CSSProperties = { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: "var(--cocoa-space-3)" };
+
+function allotmentStatus(status: string): { label: string; tone: CocoaTone } {
+  if (status === "active") return { label: STATUS_LABELS.active, tone: "success" };
+  if (status === "expired") return { label: STATUS_LABELS.expired, tone: "neutral" };
+  if (status === "draft") return { label: STATUS_LABELS.draft, tone: "warning" };
+  return { label: status, tone: "warning" };
 }
 
-type AllotmentsTab = "pickup" | "allotments" | "operators";
+const OPERATOR_COLUMNS: CocoaTableColumn<TourOperator>[] = [
+  { key: "code", label: "Código", fit: true, render: (t) => <strong className="cocoa-mono">{t.code}</strong> },
+  { key: "name", label: "Nombre", minWidth: 160 },
+  { key: "taxId", label: "NIF", fit: true, hideOnNarrow: true, render: (t) => t.taxId ?? EMPTY },
+  { key: "contactEmail", label: "Correo", showFrom: "laptop", render: (t) => t.contactEmail ?? EMPTY },
+  {
+    key: "defaultCommissionPct",
+    label: "Comisión",
+    align: "right",
+    fit: true,
+    render: (t) => (t.defaultCommissionPct != null ? percent(t.defaultCommissionPct, { maximumFractionDigits: 1 }) : EMPTY)
+  },
+  { key: "paymentTermsDays", label: "Plazo", align: "right", fit: true, hideOnNarrow: true, render: (t) => plural(t.paymentTermsDays, "día", "días") },
+  {
+    key: "active",
+    label: "Estado",
+    fit: true,
+    render: (t) => <CocoaBadge tone={t.active ? "success" : "neutral"}>{t.active ? STATUS_LABELS.active : STATUS_LABELS.inactive}</CocoaBadge>
+  }
+];
+
+type AllotmentRow = Allotment & { operatorName: string };
+
+const ALLOTMENT_COLUMNS: CocoaTableColumn<AllotmentRow>[] = [
+  { key: "code", label: "Código", fit: true, render: (a) => <strong className="cocoa-mono">{a.code}</strong> },
+  { key: "name", label: "Nombre", minWidth: 160 },
+  { key: "operatorName", label: "Turoperador", hideOnNarrow: true },
+  { key: "period", label: "Periodo", fit: true, render: (a) => dateRange(a.validFrom, a.validTo) },
+  { key: "totalRooms", label: "Hab./día", align: "right", fit: true, render: (a) => number(a.totalRooms) },
+  { key: "releaseDays", label: "Liberación", align: "right", fit: true, hideOnNarrow: true, render: (a) => plural(a.releaseDays, "día", "días") },
+  {
+    key: "contractedRate",
+    label: "Tarifa",
+    align: "right",
+    fit: true,
+    showFrom: "laptop",
+    render: (a) => (a.contractedRate != null ? money(a.contractedRate, a.currency) : EMPTY)
+  },
+  {
+    key: "status",
+    label: "Estado",
+    fit: true,
+    render: (a) => {
+      const s = allotmentStatus(a.status);
+      return <CocoaBadge tone={s.tone}>{s.label}</CocoaBadge>;
+    }
+  }
+];
+
+function AllotmentsSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton.Grid rows={[[6, 6]]} height={280} />
+    </div>
+  );
+}
 
 export function AllotmentsScreen() {
   const hosted = useTabHost() !== null;
@@ -41,31 +159,59 @@ export function AllotmentsScreen() {
   const pickup = useApiData<PickupSummary>(`/properties/${PROPERTY_ID}/allotments/pickup-summary?windowDays=60`, { pollIntervalMs: 60000 });
 
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
   const [toOpen, setToOpen] = useState(false);
   const [allotOpen, setAllotOpen] = useState(false);
-  // DEV #5 layout declutter — la pantalla mezcla 3 dominios (Pickup, Allotments,
-  // Tour Operadores) en card-stack vertical. Tabs reducen el scroll a 1/3.
-  const [activeTab, setActiveTab] = useState<AllotmentsTab>("pickup");
+  // Each opening remounts the drawer form (fresh fields), as the old conditional dialogs did.
+  const [toSession, setToSession] = useState(0);
+  const [allotSession, setAllotSession] = useState(0);
+  // Only one of the three domains is painted at a time (less scrolling).
+  const [view, setView] = useState<AllotmentsView>("pickup");
   const { showToast } = useToast();
 
-  const tourOperators = tos.data?.items ?? [];
-  const allotments = allots.data?.items ?? [];
+  const tourOperators = useMemo(() => toArray<TourOperator>(tos.data?.items), [tos.data]);
+  const allotments = useMemo(() => toArray<Allotment>(allots.data?.items), [allots.data]);
   const toName = useMemo(() => new Map(tourOperators.map((t) => [t.id, t.name])), [tourOperators]);
+  const allotmentRows = useMemo<AllotmentRow[]>(
+    () => allotments.map((a) => ({ ...a, operatorName: a.tourOperatorId ? (toName.get(a.tourOperatorId) ?? a.tourOperatorId) : EMPTY })),
+    [allotments, toName]
+  );
+  const pickupAllotments = useMemo(() => toArray<PickupSummaryAllotment>(pickup.data?.allotments), [pickup.data]);
+
+  function refreshAll() {
+    tos.refresh();
+    allots.refresh();
+    pickup.refresh();
+  }
+
+  function openOperatorDrawer() {
+    setToSession((n) => n + 1);
+    setToOpen(true);
+  }
+
+  function openAllotmentDrawer() {
+    setAllotSession((n) => n + 1);
+    setAllotOpen(true);
+  }
 
   async function release() {
-    setBusy(true); setMsg(null);
+    setBusy(true);
+    setNotice(null);
     try {
       const r = await releaseExpired();
-      setMsg(`Release ejecutado: ${r.releasedDays} día(s) liberados (${r.releasedRooms} habitaciones devueltas al pool general).`);
+      setNotice({
+        tone: "success",
+        text: `Liberación ejecutada: ${plural(r.releasedDays, "día liberado", "días liberados")} (${plural(r.releasedRooms, "habitación devuelta", "habitaciones devueltas")} al cupo general).`
+      });
       allots.refresh();
       pickup.refresh();
     } catch (e) {
-      setMsg(e instanceof Error ? e.message : "No se pudo liberar cuota.");
-    } finally { setBusy(false); }
+      setNotice({ tone: "danger", text: e instanceof Error ? e.message : "No se pudo liberar cuota." });
+    } finally {
+      setBusy(false);
+    }
   }
 
-  // KPIs
   const kpis = useMemo(() => {
     const active = allotments.filter((a) => a.status === "active");
     const totalRooms = active.reduce((s, a) => s + a.totalRooms, 0);
@@ -73,55 +219,63 @@ export function AllotmentsScreen() {
     return { active: active.length, totalRooms, uniqueTos: uniqTos.size, all: allotments.length };
   }, [allotments]);
 
+  const initialLoading = (allots.loading && !allots.data) || (tos.loading && !tos.data);
+  const pageState = initialLoading ? "loading" : allots.error && !allots.data ? "error" : "ready";
+
+  const operatorsReady = !tos.loading && !tos.error && tourOperators.length > 0;
+  const allotmentsReady = !allots.loading && !allots.error && allotments.length > 0;
+  const noOperators = tourOperators.length === 0;
+
   return (
-    <CocoaCard variant="bordered" padding="lg" className="bo-card">
-      <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-4)" }}>
-      <header style={{ display: "flex", alignItems: "flex-start", justifyContent: hosted ? "flex-end" : "space-between", gap: "var(--cocoa-space-4)", width: "100%" }}>
-        {hosted ? null : (
-        <div style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-1)", minWidth: 0, flex: "1 1 auto" }}>
-          <p style={{ color: "var(--cocoa-label-tertiary)", fontSize: "var(--cocoa-fs-caption)", fontWeight: 600, letterSpacing: "var(--cocoa-tracking-wide)", textTransform: "uppercase", lineHeight: 1.2, margin: 0 }}>Recepción · Grupos y eventos</p>
-          <h2 style={{ color: "var(--cocoa-label)", fontSize: "var(--cocoa-fs-title-2)", fontWeight: 700, letterSpacing: "var(--cocoa-tracking-tight)", lineHeight: 1.2, margin: 0 }}>Cupos de tour operadores</h2>
-          <p style={{ color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)", lineHeight: 1.35, margin: 0 }}>
-            Cuotas contratadas con TT.OO. (Hotelbeds, TUI, FTI, JetTours…). Las cuotas no usadas se devuelven al cupo general
-            <strong> N días antes</strong> de la llegada (periodo de liberación).
-          </p>
-        </div>
-        )}
-        <div style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", alignItems: "center", flexShrink: 0 }}>
-          {busy ? <Spinner size="sm" /> : null}
-          <CocoaButton variant="bordered" tone="neutral" onClick={() => { tos.refresh(); allots.refresh(); pickup.refresh(); }} disabled={busy}>↻ Actualizar</CocoaButton>
-          <CocoaButton variant="bordered" tone="neutral" disabled={busy} onClick={release}>⤓ Liberar cuotas vencidas</CocoaButton>
-          <CocoaButton variant="filled" tone="accent" onClick={() => setToOpen(true)} disabled={busy}>+ Nuevo TT.OO.</CocoaButton>
-          <CocoaButton variant="filled" tone="accent" onClick={() => setAllotOpen(true)} disabled={busy || tourOperators.length === 0}>+ Nuevo allotment</CocoaButton>
-        </div>
-      </header>
+    <CocoaPage
+      eyebrow="Recepción · Grupos y eventos"
+      title="Cupos de tour operadores"
+      subtitle={
+        hosted
+          ? undefined
+          : "Cuotas contratadas con tour operadores y bancos de camas. Las no usadas vuelven al cupo general N días antes de la llegada (periodo de liberación)."
+      }
+      tabs={VIEWS}
+      activeTab={view}
+      onTabChange={(v) => setView(v as AllotmentsView)}
+      actions={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll} disabled={busy}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={release} loading={busy}>
+            Liberar cuotas vencidas
+          </CocoaButton>
+          <CocoaButton variant="tinted" tone="accent" size="small" onClick={openOperatorDrawer} disabled={busy}>
+            {NEW_OPERATOR_LABEL}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={openAllotmentDrawer} disabled={busy || noOperators}>
+            {NEW_ALLOTMENT_LABEL}
+          </CocoaButton>
+        </>
+      }
+      state={pageState}
+      skeleton={<AllotmentsSkeleton />}
+      error={{ title: "No se pudieron cargar los cupos", message: allots.error ?? undefined, onRetry: refreshAll }}
+      commands={[
+        { id: "allotments-refresh", label: "Actualizar cupos", run: refreshAll },
+        { id: "allotments-release", label: "Liberar cuotas vencidas", run: () => void release() },
+        { id: "allotments-new-operator", label: NEW_OPERATOR_LABEL, run: openOperatorDrawer },
+        { id: "allotments-new", label: NEW_ALLOTMENT_LABEL, run: openAllotmentDrawer }
+      ]}
+    >
+      {notice ? (
+        <CocoaCallout tone={notice.tone} role="status">
+          {notice.text}
+        </CocoaCallout>
+      ) : null}
 
-      {msg ? <p role="status" aria-live="polite" className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
-
-      {/* DEV #5 — KPI "Tour operadores" total y "TT.OO. con contrato" son
-          info redundante (ambos cuentan TT.OO. desde ángulos distintos). Los
-          dejamos pero la grid sigue siendo de 4 (límite). */}
-      <div className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Cupos activos</span><span className="bo-status info">activos</span></div><div className="rev-kpi-value">{kpis.active}</div></article>
-        <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Habitaciones contratadas</span><span className="bo-status info">total / día</span></div><div className="rev-kpi-value">{kpis.totalRooms}</div></article>
-        <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">TT.OO. con contrato</span><span className="bo-status info">distintos</span></div><div className="rev-kpi-value">{kpis.uniqueTos}</div></article>
-        <article className="rev-kpi rev-kpi-ok"><div className="rev-kpi-head"><span className="rev-kpi-label">Tour operadores</span><span className="bo-status info">org</span></div><div className="rev-kpi-value">{tourOperators.length}</div></article>
-      </div>
-
-      {/* DEV #5 — Tabs internas: Pickup (default) / Allotments / Tour operadores.
-          Solo una sección a la vez → reduce scroll vertical ~⅔. */}
-      <div style={{ display: "flex", alignItems: "center" }}>
-        <CocoaSegmentedControl
-          value={activeTab}
-          onChange={(v) => setActiveTab(v as AllotmentsTab)}
-          options={[
-            { value: "pickup", label: "Pickup & Release" },
-            { value: "allotments", label: "Cupos contratados" },
-            { value: "operators", label: "Tour operadores" }
-          ]}
-          aria-label="Vistas de cupos"
-        />
-      </div>
+      <CocoaKpiStrip stagger aria-label="Indicadores de cupos">
+        <CocoaKpi label="Cupos activos" value={number(kpis.active)} caption={plural(kpis.all, "cupo en total", "cupos en total")} polarity="neutral" />
+        <CocoaKpi label="Habitaciones contratadas" value={number(kpis.totalRooms)} unit="/ día" caption="En cupos activos" polarity="neutral" />
+        <CocoaKpi label="TT.OO. con contrato" value={number(kpis.uniqueTos)} caption="Operadores distintos" polarity="neutral" />
+        <CocoaKpi label="Tour operadores" value={number(tourOperators.length)} caption="En la organización" polarity="neutral" />
+      </CocoaKpiStrip>
 
       <CocoaScreenInstructionsCard
         title="Cupos de tour operadores"
@@ -132,148 +286,232 @@ export function AllotmentsScreen() {
         persistKey="allotments"
       />
 
-      {/* PILOT · Pickup & ciclo de release — visualización del estado del cupo día a día */}
-      {activeTab === "pickup" ? (
-        <PickupLifecycleCard pickup={pickup.data ?? null} loading={pickup.loading} />
-      ) : null}
-
-      {activeTab === "operators" ? (
-      <CocoaCard variant="bordered" padding="md" className="bo-card">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--cocoa-space-3)", marginBottom: "var(--cocoa-space-3)" }}>
-          <h3 style={{ color: "var(--cocoa-label)", fontSize: "var(--cocoa-fs-title-3)", fontWeight: 600, margin: 0 }}>Tour operadores</h3>
-          <div style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", alignItems: "center" }}>
-            <span className="bo-chip">{tourOperators.length}</span>
-            <CocoaButton variant="filled" tone="accent" onClick={() => setToOpen(true)}>+ Nuevo TT.OO.</CocoaButton>
-          </div>
-        </div>
-        {tos.loading && tourOperators.length === 0 ? <LoadingBlock label="Cargando TT.OO.…" /> : tos.error ? (
-          <ErrorState title="No se pudieron cargar los TT.OO." message={typeof tos.error === "string" ? tos.error : (tos.error as Error)?.message} onRetry={() => tos.refresh()} />
-        ) : tourOperators.length === 0 ? (
-          <EmptyState
-            title="Sin TT.OO."
-            message="Aún no hay tour operadores configurados. Crea uno para empezar a contratar cupos."
-            actions={<CocoaButton variant="filled" tone="accent" onClick={() => setToOpen(true)}>+ Nuevo TT.OO.</CocoaButton>}
-          />
+      {view === "pickup" ? (
+        pickupAllotments.length > 0 ? (
+          <CocoaGrid align="start" aria-label="Pickup y ciclo de liberación por cupo">
+            {pickupAllotments.map((a) => (
+              <CocoaSpan key={a.allotmentId} cols={6} min={320}>
+                <AllotmentLifecycleCard allotment={a} />
+              </CocoaSpan>
+            ))}
+          </CocoaGrid>
         ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead><tr><th>Código</th><th>Nombre</th><th>NIF</th><th>Correo</th><th>Comisión</th><th>Plazo</th><th>Estado</th></tr></thead>
-              <tbody>
-                {tourOperators.map((t) => (
-                  <tr key={t.id}>
-                    <td className="mono"><strong>{t.code}</strong></td>
-                    <td>{t.name}</td>
-                    <td className="mono">{t.taxId ?? "—"}</td>
-                    <td>{t.contactEmail ?? "—"}</td>
-                    <td>{t.defaultCommissionPct != null ? `${t.defaultCommissionPct}%` : "—"}</td>
-                    <td>{t.paymentTermsDays} d</td>
-                    <td><span className={`bo-status ${t.active ? "ok" : "info"}`} style={{ fontSize: 10 }}>{t.active ? "activo" : "inactivo"}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </CocoaCard>
+          <CocoaSection title="Pickup y ciclo de liberación" meta={pickup.data ? `Próximos 60 días · datos a ${time(pickup.data.generatedAt)}` : "Próximos 60 días"}>
+            {pickup.loading && !pickup.data ? (
+              <CocoaState kind="loading" inline title="Calculando pickup y próximas liberaciones…" />
+            ) : pickup.error && !pickup.data ? (
+              <CocoaState kind="error" inline title="No se pudo calcular el pickup" message={pickup.error} onRetry={pickup.refresh} />
+            ) : (
+              <CocoaState
+                kind="empty"
+                inline
+                title="Sin cupos con actividad en los próximos 60 días."
+                message="Cuando haya cupos vigentes verás aquí, día a día, lo contratado, lo vendido y lo liberado."
+              />
+            )}
+          </CocoaSection>
+        )
       ) : null}
 
-      {activeTab === "allotments" ? (
-      <CocoaCard variant="bordered" padding="md" className="bo-card">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--cocoa-space-3)", marginBottom: "var(--cocoa-space-3)" }}>
-          <h3 style={{ color: "var(--cocoa-label)", fontSize: "var(--cocoa-fs-title-3)", fontWeight: 600, margin: 0 }}>Allotments contratados</h3>
-          <div style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", alignItems: "center" }}>
-            <span className="bo-chip">{allotments.length}</span>
-            <CocoaButton variant="filled" tone="accent" onClick={() => setAllotOpen(true)} disabled={tourOperators.length === 0}>+ Nuevo cupo</CocoaButton>
-          </div>
-        </div>
-        {allots.loading && allotments.length === 0 ? <LoadingBlock label="Cargando cupos…" /> : allotments.length === 0 ? (
-          <EmptyState
-            title="Sin cupos"
-            message={tourOperators.length === 0 ? "Primero crea un tour operador, luego podrás contratar cupos." : "Aún no hay cupos contratados para esta propiedad."}
-            actions={tourOperators.length > 0 ? <CocoaButton variant="filled" tone="accent" onClick={() => setAllotOpen(true)}>+ Nuevo cupo</CocoaButton> : null}
-          />
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead><tr><th>Código</th><th>Nombre</th><th>Turoperador</th><th>Periodo</th><th>Hab/día</th><th>Liberación</th><th>Tarifa</th><th>Estado</th></tr></thead>
-              <tbody>
-                {allotments.map((a) => (
-                  <tr key={a.id}>
-                    <td className="mono"><strong>{a.code}</strong></td>
-                    <td>{a.name}</td>
-                    <td>{a.tourOperatorId ? toName.get(a.tourOperatorId) ?? a.tourOperatorId : "—"}</td>
-                    <td>{fmtDate(a.validFrom)} → {fmtDate(a.validTo)}</td>
-                    <td>{a.totalRooms}</td>
-                    <td>{a.releaseDays} d</td>
-                    <td>{a.contractedRate != null ? `${fmtNum(a.contractedRate)} ${a.currency}` : "—"}</td>
-                    <td><span className={`bo-status ${a.status === "active" ? "ok" : a.status === "expired" ? "info" : "warn"}`} style={{ fontSize: 10 }}>{a.status}</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </CocoaCard>
+      {view === "operators" ? (
+        <CocoaSection
+          title="Tour operadores"
+          meta={plural(tourOperators.length, "operador", "operadores")}
+          action={
+            <CocoaButton variant="plain" tone="accent" size="small" onClick={openOperatorDrawer}>
+              {NEW_OPERATOR_LABEL}
+            </CocoaButton>
+          }
+          padding={operatorsReady ? "none" : "md"}
+          style={CLIP}
+        >
+          {tos.loading && tourOperators.length === 0 ? (
+            <CocoaTable columns={OPERATOR_COLUMNS} rows={[]} loading aria-label="Tour operadores" />
+          ) : tos.error && tourOperators.length === 0 ? (
+            <CocoaState kind="error" title="No se pudieron cargar los tour operadores" message={tos.error} onRetry={tos.refresh} />
+          ) : tourOperators.length === 0 ? (
+            <CocoaState
+              kind="empty"
+              illustration="box"
+              title="Sin tour operadores"
+              message="Aún no hay tour operadores configurados. Crea uno para empezar a contratar cupos."
+              primaryAction={{ label: NEW_OPERATOR_LABEL, onClick: openOperatorDrawer }}
+            />
+          ) : (
+            <CocoaTable columns={OPERATOR_COLUMNS} rows={tourOperators} rowKey="id" caption="Tour operadores" aria-label="Tour operadores" />
+          )}
+        </CocoaSection>
       ) : null}
 
-      {toOpen ? (
-        <NewTourOperatorDialog
-          onClose={() => setToOpen(false)}
-          onCreated={(t) => {
-            setToOpen(false);
-            tos.refresh();
-            showToast(`Tour operador «${t.name}» creado.`, { variant: "success" });
-          }}
-          onError={(err) => showToast(err, { variant: "error" })}
-        />
+      {view === "allotments" ? (
+        <CocoaSection
+          title="Cupos contratados"
+          meta={plural(allotments.length, "cupo", "cupos")}
+          action={
+            <CocoaButton variant="plain" tone="accent" size="small" onClick={openAllotmentDrawer} disabled={noOperators}>
+              {NEW_ALLOTMENT_LABEL}
+            </CocoaButton>
+          }
+          padding={allotmentsReady ? "none" : "md"}
+          style={CLIP}
+        >
+          {allots.loading && allotments.length === 0 ? (
+            <CocoaTable columns={ALLOTMENT_COLUMNS} rows={[]} loading aria-label="Cupos contratados" />
+          ) : allots.error && allotments.length === 0 ? (
+            <CocoaState kind="error" title="No se pudieron cargar los cupos" message={allots.error} onRetry={allots.refresh} />
+          ) : allotments.length === 0 ? (
+            <CocoaState
+              kind="empty"
+              illustration="box"
+              title="Sin cupos"
+              message={noOperators ? "Primero crea un tour operador; después podrás contratar cupos." : "Aún no hay cupos contratados para esta propiedad."}
+              primaryAction={noOperators ? { label: NEW_OPERATOR_LABEL, onClick: openOperatorDrawer } : { label: NEW_ALLOTMENT_LABEL, onClick: openAllotmentDrawer }}
+            />
+          ) : (
+            <CocoaTable columns={ALLOTMENT_COLUMNS} rows={allotmentRows} rowKey="id" caption="Cupos contratados" aria-label="Cupos contratados" />
+          )}
+        </CocoaSection>
       ) : null}
 
-      {allotOpen ? (
-        <NewAllotmentDialog
-          tourOperators={tourOperators}
-          onClose={() => setAllotOpen(false)}
-          onCreated={(a) => {
-            setAllotOpen(false);
-            allots.refresh();
-            pickup.refresh();
-            showToast(`Cupo «${a.name}» creado (${a.totalRooms} hab/día).`, { variant: "success" });
-          }}
-          onError={(err) => showToast(err, { variant: "error" })}
-        />
-      ) : null}
-      </div>
-    </CocoaCard>
+      {/* Both drawers are siblings and both session counters start at 0: prefixed keys keep them distinct (qa#5). */}
+      <NewTourOperatorDrawer
+        key={`to-${toSession}`}
+        open={toOpen}
+        onClose={() => setToOpen(false)}
+        onCreated={(t) => {
+          setToOpen(false);
+          tos.refresh();
+          showToast(`Tour operador «${t.name}» creado.`, { variant: "success" });
+        }}
+        onError={(err) => showToast(err, { variant: "error" })}
+      />
+
+      <NewAllotmentDrawer
+        key={`allot-${allotSession}`}
+        open={allotOpen}
+        tourOperators={tourOperators}
+        onClose={() => setAllotOpen(false)}
+        onCreated={(a) => {
+          setAllotOpen(false);
+          allots.refresh();
+          pickup.refresh();
+          showToast(`Cupo «${a.name}» creado (${plural(a.totalRooms, "habitación", "habitaciones")} al día).`, { variant: "success" });
+        }}
+        onError={(err) => showToast(err, { variant: "error" })}
+      />
+    </CocoaPage>
   );
 }
 
-// ───────────────────────────────────────────────────────── Dialog crear TT.OO.
+// ───────────────────────────────────────────────────────── Pickup lifecycle
 
-function NewTourOperatorDialog(props: {
-  onClose: () => void;
-  onCreated: (t: TourOperator) => void;
-  onError: (msg: string) => void;
-}) {
-  const [form, setForm] = useState<CreateTourOperatorPayload>({
-    code: "",
-    name: "",
-    taxId: "",
-    contactEmail: "",
-    contactPhone: "",
-    defaultCommissionPct: undefined,
-    paymentTermsDays: 30,
-    currency: "EUR",
-    notes: "",
-    active: true
-  });
+function pickupTone(pct: number): CocoaTone {
+  // Industry thresholds: below 40 % low (danger), 40–70 % medium (warning), above 70 % healthy (success).
+  return pct >= 70 ? "success" : pct >= 40 ? "warning" : "danger";
+}
+
+function pickupLabel(pct: number): string {
+  return pct >= 70 ? "Saludable" : pct >= 40 ? "Medio" : pct >= 1 ? "Bajo" : "Sin pickup";
+}
+
+function AllotmentLifecycleCard({ allotment }: { allotment: PickupSummaryAllotment }) {
+  const tone = pickupTone(allotment.pickupPct);
+  const label = pickupLabel(allotment.pickupPct);
+  const pct = percent(allotment.pickupPct, { maximumFractionDigits: 0 });
+  // Warn when the next release would hand back at least half of the contracted block.
+  const upcomingHighRelease = allotment.upcomingReleaseRooms > 0 && allotment.upcomingReleaseRooms >= allotment.totalRooms * 0.5;
+  const nextRelease =
+    allotment.daysToNextRelease != null && allotment.nextReleaseDate
+      ? ` · próxima liberación el ${date(allotment.nextReleaseDate, "dayMonth")} (T−${number(allotment.daysToNextRelease)} d)`
+      : "";
+
+  const series: CocoaLineSeries[] = [
+    { id: "sold", label: "Vendido", points: allotment.days.map((d) => ({ x: date(d.date, "dayMonth"), y: d.pickedUp })), tone: "success", width: 2 },
+    { id: "remaining", label: "Disponible", points: allotment.days.map((d) => ({ x: date(d.date, "dayMonth"), y: d.remaining })), tone: "accent", width: 2 },
+    { id: "released", label: "Liberado", points: allotment.days.map((d) => ({ x: date(d.date, "dayMonth"), y: d.released })), tone: "tertiary", width: 1 }
+  ];
+
+  return (
+    <CocoaSection
+      title={`${allotment.code} · ${allotment.name}`}
+      meta={
+        <CocoaBadge tone={tone} variant="tinted">
+          {pct} · {label}
+        </CocoaBadge>
+      }
+    >
+      <p className="cocoa-caption">
+        Vigencia {dateRange(allotment.validFrom, allotment.validTo)} · {plural(allotment.totalRooms, "habitación", "habitaciones")} al día · liberación{" "}
+        {plural(allotment.releaseDays, "día", "días")} antes de la llegada{nextRelease}
+      </p>
+      <CocoaChart.Progress value={allotment.pickupPct} tone={tone} label="Pickup" valueLabel={`${pct} · ${label}`} aria-label={`Pickup del cupo ${allotment.code}: ${pct}, ${label}`} />
+      <div style={STATS_GRID}>
+        <CocoaStat label="Contratado" value={number(allotment.totalBlocked)} />
+        <CocoaStat label="Vendido" value={number(allotment.totalPickedUp)} tone="success" />
+        <CocoaStat label="Liberado" value={number(allotment.totalReleased)} tone="neutral" />
+        <CocoaStat label="Disponible" value={number(allotment.totalRemaining)} tone="accent" />
+      </div>
+      {upcomingHighRelease ? (
+        <CocoaCallout tone="warning" title="Liberación importante a la vista">
+          Sin pickup adicional, en los próximos {plural(allotment.daysToNextRelease ?? allotment.releaseDays, "día", "días")} se liberarán unas{" "}
+          <strong>{plural(allotment.upcomingReleaseRooms, "habitación", "habitaciones")}</strong> al cupo general.
+        </CocoaCallout>
+      ) : null}
+      {allotment.days.length > 0 ? (
+        <CocoaChart.Line
+          series={series}
+          height={140}
+          yLabel="Habitaciones"
+          aria-label={`Día a día del cupo ${allotment.code}: vendido, disponible y liberado en ${plural(allotment.days.length, "noche", "noches")}`}
+        />
+      ) : (
+        <CocoaState kind="empty" inline title="Sin noches en la ventana de 60 días." />
+      )}
+    </CocoaSection>
+  );
+}
+
+// ───────────────────────────────────────────────────────── Drawer: nuevo TT.OO.
+
+type OperatorForm = {
+  code: string;
+  name: string;
+  taxId: string;
+  contactEmail: string;
+  contactPhone: string;
+  defaultCommissionPct: string;
+  paymentTermsDays: string;
+  currency: string;
+  notes: string;
+  active: boolean;
+};
+
+const EMPTY_OPERATOR: OperatorForm = {
+  code: "",
+  name: "",
+  taxId: "",
+  contactEmail: "",
+  contactPhone: "",
+  defaultCommissionPct: "",
+  paymentTermsDays: "30",
+  currency: "EUR",
+  notes: "",
+  active: true
+};
+
+function NewTourOperatorDrawer(props: { open: boolean; onClose: () => void; onCreated: (t: TourOperator) => void; onError: (msg: string) => void }) {
+  const [form, setForm] = useState<OperatorForm>(EMPTY_OPERATOR);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  function update<K extends keyof CreateTourOperatorPayload>(key: K, value: CreateTourOperatorPayload[K]) {
+  function update<K extends keyof OperatorForm>(key: K, value: OperatorForm[K]) {
     setForm((f) => ({ ...f, [key]: value }));
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  const missingCode = error !== null && !form.code.trim();
+  const missingName = error !== null && !form.name.trim();
+
+  async function submit() {
     setError(null);
     if (!form.code.trim() || !form.name.trim()) {
       setError("Código y nombre son obligatorios.");
@@ -281,19 +519,19 @@ function NewTourOperatorDialog(props: {
     }
     setSubmitting(true);
     try {
-      const cleanPayload: CreateTourOperatorPayload = {
+      const payload: CreateTourOperatorPayload = {
         code: form.code.trim(),
         name: form.name.trim(),
-        taxId: form.taxId?.trim() || undefined,
-        contactEmail: form.contactEmail?.trim() || undefined,
-        contactPhone: form.contactPhone?.trim() || undefined,
-        defaultCommissionPct: form.defaultCommissionPct,
-        paymentTermsDays: form.paymentTermsDays ?? 30,
-        currency: form.currency?.trim() || "EUR",
-        notes: form.notes?.trim() || undefined,
-        active: form.active ?? true
+        taxId: form.taxId.trim() || undefined,
+        contactEmail: form.contactEmail.trim() || undefined,
+        contactPhone: form.contactPhone.trim() || undefined,
+        defaultCommissionPct: toNumber(form.defaultCommissionPct) ?? undefined,
+        paymentTermsDays: toNumber(form.paymentTermsDays) ?? 30,
+        currency: form.currency.trim() || "EUR",
+        notes: form.notes.trim() || undefined,
+        active: form.active
       };
-      const created = await createTourOperator(cleanPayload);
+      const created = await createTourOperator(payload);
       props.onCreated(created);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -305,185 +543,74 @@ function NewTourOperatorDialog(props: {
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="new-to-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(15, 23, 42, 0.55)",
-        backdropFilter: "blur(2px)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
-      onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}
+    <CocoaDrawer
+      open={props.open}
+      onClose={props.onClose}
+      title="Nuevo tour operador"
+      subtitle="Da de alta un tour operador con el que vas a contratar cupos."
+      side="right"
+      size="md"
+      footer={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose} disabled={submitting}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" onClick={() => void submit()} loading={submitting}>
+            Crear tour operador
+          </CocoaButton>
+        </>
+      }
     >
-      <form
-        onSubmit={submit}
-        className="bo-card"
-        style={{
-          width: "100%",
-          maxWidth: 560,
-          maxHeight: "90vh",
-          overflow: "auto",
-          background: "var(--surface-1, var(--surface))",
-          padding: "var(--space-5, 20px)",
-          borderRadius: "var(--radius-md, 12px)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12
-        }}
-      >
-        <div className="bo-card-head" style={{ marginBottom: 4 }}>
-          <h3 id="new-to-title" style={{ margin: 0 }}>Nuevo tour operador</h3>
-          <button type="button" onClick={props.onClose} aria-label="Cerrar" style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "var(--ink)" }}>×</button>
-        </div>
-
-        <p className="bo-muted" style={{ margin: 0, fontSize: 13 }}>
-          Da de alta un tour operador con el que vas a contratar cupos.
-        </p>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginTop: 4 }}>
-          <Field label="Código *" hint="Ej. TUI, HOTELBEDS">
-            <input
-              type="text"
-              required
-              maxLength={20}
-              value={form.code}
-              onChange={(e) => update("code", e.target.value.toUpperCase())}
-              style={inputStyle}
-              placeholder="TUI"
-              autoFocus
-            />
-          </Field>
-          <Field label="Nombre *">
-            <input
-              type="text"
-              required
-              maxLength={120}
-              value={form.name}
-              onChange={(e) => update("name", e.target.value)}
-              style={inputStyle}
-              placeholder="TUI Group"
-            />
-          </Field>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="NIF / Tax ID">
-            <input
-              type="text"
-              value={form.taxId ?? ""}
-              onChange={(e) => update("taxId", e.target.value)}
-              style={inputStyle}
-              placeholder="DE123456789"
-            />
-          </Field>
-          <Field label="Moneda">
-            <select
-              value={form.currency ?? "EUR"}
-              onChange={(e) => update("currency", e.target.value)}
-              style={inputStyle}
-            >
-              <option value="EUR">EUR</option>
-              <option value="GBP">GBP</option>
-              <option value="USD">USD</option>
-            </select>
-          </Field>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Email de contacto">
-            <input
-              type="email"
-              inputMode="email"
-              value={form.contactEmail ?? ""}
-              onChange={(e) => update("contactEmail", e.target.value)}
-              style={inputStyle}
-              placeholder="contracting@tui.com"
-            />
-          </Field>
-          <Field label="Teléfono">
-            <input
-              type="tel"
-              inputMode="tel"
-              value={form.contactPhone ?? ""}
-              onChange={(e) => update("contactPhone", e.target.value)}
-              style={inputStyle}
-              placeholder="+49 ..."
-            />
-          </Field>
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Field label="Comisión por defecto (%)">
-            <input
-              type="number"
-              inputMode="decimal"
-              min={0}
-              max={100}
-              step={0.1}
-              value={form.defaultCommissionPct ?? ""}
-              onChange={(e) => update("defaultCommissionPct", e.target.value === "" ? undefined : Number(e.target.value))}
-              style={inputStyle}
-              placeholder="22"
-            />
-          </Field>
-          <Field label="Plazo de pago (días)">
-            <input
-              type="number"
-              inputMode="numeric"
-              min={0}
-              max={365}
-              step={1}
-              value={form.paymentTermsDays ?? 30}
-              onChange={(e) => update("paymentTermsDays", Number(e.target.value))}
-              style={inputStyle}
-            />
-          </Field>
-        </div>
-
-        <Field label="Notas">
-          <textarea
-            value={form.notes ?? ""}
-            onChange={(e) => update("notes", e.target.value)}
-            style={{ ...inputStyle, minHeight: 60, resize: "vertical" }}
-            placeholder="Condiciones especiales, contactos, etc."
-          />
-        </Field>
-
-        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: "var(--ink)" }}>
-          <input
-            type="checkbox"
-            checked={form.active ?? true}
-            onChange={(e) => update("active", e.target.checked)}
-          />
-          Activo
-        </label>
-
+      <div className="cocoa-stack" data-gap="3">
         {error ? (
-          <p className="bo-status error" style={{ textTransform: "none", margin: 0 }}>{error}</p>
+          <CocoaCallout tone="danger" role="alert">
+            {error}
+          </CocoaCallout>
         ) : null}
-
-        <div className="bo-row" style={{ gap: 8, justifyContent: "flex-end", marginTop: 8 }}>
-          <button type="button" onClick={props.onClose} disabled={submitting}>Cancelar</button>
-          <button type="submit" className="primary" disabled={submitting}>
-            {submitting ? "Creando…" : "Crear tour operador"}
-          </button>
-        </div>
-      </form>
-    </div>
+        <CocoaFormRow columns={2}>
+          <CocoaField label="Código" required help="Ej. TUI, HOTELBEDS" error={missingCode ? "El código es obligatorio." : undefined}>
+            <CocoaInput value={form.code} onChange={(v) => update("code", v.toUpperCase())} maxLength={20} placeholder="TUI" autoFocus />
+          </CocoaField>
+          <CocoaField label="Nombre" required error={missingName ? "El nombre es obligatorio." : undefined}>
+            <CocoaInput value={form.name} onChange={(v) => update("name", v)} maxLength={120} placeholder="TUI Group" />
+          </CocoaField>
+          <CocoaField label="NIF">
+            <CocoaInput value={form.taxId} onChange={(v) => update("taxId", v)} placeholder="DE123456789" />
+          </CocoaField>
+          <CocoaField label="Moneda">
+            <CocoaSelect value={form.currency} onChange={(v) => update("currency", v)} options={CURRENCY_OPTIONS} />
+          </CocoaField>
+          <CocoaField label="Correo de contacto">
+            <CocoaInput type="email" inputMode="email" value={form.contactEmail} onChange={(v) => update("contactEmail", v)} placeholder="contratacion@operador.com" />
+          </CocoaField>
+          <CocoaField label="Teléfono">
+            <CocoaInput type="tel" inputMode="tel" value={form.contactPhone} onChange={(v) => update("contactPhone", v)} placeholder="+49 …" />
+          </CocoaField>
+          <CocoaField label="Comisión por defecto (%)">
+            <CocoaInput type="number" inputMode="decimal" min={0} max={100} step={0.1} value={form.defaultCommissionPct} onChange={(v) => update("defaultCommissionPct", v)} placeholder="22" />
+          </CocoaField>
+          <CocoaField label="Plazo de pago (días)">
+            <CocoaInput type="number" inputMode="numeric" min={0} max={365} step={1} value={form.paymentTermsDays} onChange={(v) => update("paymentTermsDays", v)} />
+          </CocoaField>
+          <CocoaField label="Notas" fullWidth>
+            <CocoaInput multiline rows={3} value={form.notes} onChange={(v) => update("notes", v)} placeholder="Condiciones especiales, contactos, etc." />
+          </CocoaField>
+          <CocoaField label="Activo" inline fullWidth>
+            <CocoaSwitch checked={form.active} onChange={(v) => update("active", v)} />
+          </CocoaField>
+        </CocoaFormRow>
+      </div>
+    </CocoaDrawer>
   );
 }
 
-// ───────────────────────────────────────────────────────── Dialog crear Allotment
+// ───────────────────────────────────────────────────────── Drawer: nuevo cupo
 
 type RoomType = { id: string; code: string; name: string; baseOccupancy?: number };
+
+type AllotmentType = "soft" | "hard" | "free_sale";
+type CounterpartyType = "tour_operator" | "bedbank" | "corporate" | "ota";
+type RateType = "net" | "commissionable";
 
 type CreateAllotmentForm = {
   code: string;
@@ -492,12 +619,11 @@ type CreateAllotmentForm = {
   roomTypeId: string;
   validFrom: string;
   validTo: string;
-  totalRooms: number;
-  releaseDays: number;
-  // Industria · campos B2B (research-backed: Mews/Opera/Protel/Cloudbeds)
-  allotmentType: "soft" | "hard" | "free_sale";
-  counterpartyType: "tour_operator" | "bedbank" | "corporate" | "ota";
-  rateType: "net" | "commissionable";
+  totalRooms: string;
+  releaseDays: string;
+  allotmentType: AllotmentType;
+  counterpartyType: CounterpartyType;
+  rateType: RateType;
   contractedRate: string;
   commissionPct: string;
   currency: string;
@@ -506,13 +632,36 @@ type CreateAllotmentForm = {
   notes: string;
 };
 
-// Release periods recomendados por tipo de contraparte (industria 2026)
-const RELEASE_RECOMMENDATIONS: Record<CreateAllotmentForm["counterpartyType"], { days: number; rationale: string }> = {
+// Recommended release periods by counterparty (industry, 2026).
+const RELEASE_RECOMMENDATIONS: Record<CounterpartyType, { days: number; rationale: string }> = {
   bedbank: { days: 30, rationale: "Hotelbeds, WebBeds, Restel: estándar 30-60 días." },
-  tour_operator: { days: 21, rationale: "TUI, Jet2, FTI: estándar 14-21 días en mercado europeo." },
+  tour_operator: { days: 21, rationale: "TUI, Jet2, FTI: estándar 14-21 días en el mercado europeo." },
   corporate: { days: 7, rationale: "Cuentas corporativas: 4-7 días típicos." },
-  ota: { days: 3, rationale: "Si firmas allotment con OTA (raro): 3-7 días." }
+  ota: { days: 3, rationale: "Si firmas un cupo con una OTA (poco habitual): 3-7 días." }
 };
+
+const COUNTERPARTY_OPTIONS: Array<{ value: CounterpartyType; label: string }> = [
+  { value: "tour_operator", label: "Tour operador (TUI, Jet2, FTI…)" },
+  { value: "bedbank", label: "Banco de camas / mayorista (Hotelbeds, Restel…)" },
+  { value: "corporate", label: "Cuenta corporativa" },
+  { value: "ota", label: "OTA con contrato directo" }
+];
+
+const ALLOTMENT_TYPE_OPTIONS: Array<{ value: AllotmentType; label: string }> = [
+  { value: "soft", label: "Cupo flexible (con periodo de liberación)" },
+  { value: "hard", label: "Cupo garantizado (sin liberación)" },
+  { value: "free_sale", label: "Venta libre (sin inventario reservado)" }
+];
+
+const RATE_TYPE_OPTIONS: Array<{ value: RateType; label: string }> = [
+  { value: "net", label: "Tarifa neta" },
+  { value: "commissionable", label: "Tarifa comisionable" }
+];
+
+const INITIAL_STATUS_OPTIONS: Array<{ value: "active" | "draft"; label: string }> = [
+  { value: "active", label: STATUS_LABELS.active },
+  { value: "draft", label: STATUS_LABELS.draft }
+];
 
 function todayIso(offsetDays = 0): string {
   const d = new Date();
@@ -523,13 +672,20 @@ function todayIso(offsetDays = 0): string {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function NewAllotmentDialog(props: {
+function releaseHelp(form: CreateAllotmentForm): string {
+  if (form.allotmentType === "hard") return "Cupo garantizado: el TT.OO. paga aunque no venda. No hay liberación.";
+  if (form.allotmentType === "free_sale") return "Venta libre: vende contra la disponibilidad general. La liberación no aplica.";
+  return RELEASE_RECOMMENDATIONS[form.counterpartyType].rationale;
+}
+
+function NewAllotmentDrawer(props: {
+  open: boolean;
   tourOperators: TourOperator[];
   onClose: () => void;
   onCreated: (a: Allotment) => void;
   onError: (msg: string) => void;
 }) {
-  const roomTypes = useApiData<RoomType[]>(`/properties/${PROPERTY_ID}/room-types`, { pollIntervalMs: 0 });
+  const roomTypes = useApiData<RoomType[]>(props.open ? `/properties/${PROPERTY_ID}/room-types` : null, { pollIntervalMs: 0 });
   const roomTypeList = toArray<RoomType>(roomTypes.data);
 
   const [form, setForm] = useState<CreateAllotmentForm>({
@@ -539,8 +695,8 @@ function NewAllotmentDialog(props: {
     roomTypeId: "",
     validFrom: todayIso(0),
     validTo: todayIso(180),
-    totalRooms: 5,
-    releaseDays: 21, // recomendado para TT.OO. europeo
+    totalRooms: "5",
+    releaseDays: "21", // recommended for a European tour operator
     allotmentType: "soft",
     counterpartyType: "tour_operator",
     rateType: "net",
@@ -558,29 +714,31 @@ function NewAllotmentDialog(props: {
     setForm((f) => ({ ...f, [key]: value }));
   }
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  const totalRooms = toNumber(form.totalRooms) ?? 0;
+  const releaseDays = toNumber(form.releaseDays) ?? 0;
+  const operatorOptions = props.tourOperators.filter((t) => t.active).map((t) => ({ value: t.id, label: `${t.code} · ${t.name}` }));
+  const roomTypeOptions = roomTypeList.map((r) => ({ value: r.id, label: `${r.code} · ${r.name}` }));
+
+  async function submit() {
     setError(null);
 
-    // Validaciones locales
     if (!form.code.trim()) return setError("El código es obligatorio.");
     if (!form.name.trim()) return setError("El nombre es obligatorio.");
     if (!form.roomTypeId) return setError("Selecciona un tipo de habitación.");
     if (!form.validFrom || !form.validTo) return setError("Las fechas son obligatorias.");
     if (form.validTo <= form.validFrom) return setError("La fecha hasta debe ser posterior a la fecha desde.");
-    if (form.totalRooms <= 0) return setError("Las habitaciones por día deben ser > 0.");
-    if (form.releaseDays < 0) return setError("Los días de release no pueden ser negativos.");
+    if (totalRooms <= 0) return setError("Las habitaciones por día deben ser mayores que 0.");
+    if (releaseDays < 0) return setError("Los días de liberación no pueden ser negativos.");
 
-    // Auto-completa nombre si está vacío con el TT.OO. + roomType
+    // The name falls back to «TT.OO. · tipo de habitación» when left blank.
     const toName = props.tourOperators.find((t) => t.id === form.tourOperatorId)?.name;
     const rtName = roomTypeList.find((r) => r.id === form.roomTypeId)?.name;
     const finalName = form.name.trim() || `${toName ?? "Cupo"} · ${rtName ?? form.code}`;
 
-    // Validación tarifa comisionable
     if (form.rateType === "commissionable") {
       const pct = Number(form.commissionPct);
       if (!form.commissionPct.trim() || Number.isNaN(pct) || pct < 0 || pct > 100) {
-        return setError("Para tarifa comisionable, indica un porcentaje entre 0 y 100.");
+        return setError("Para una tarifa comisionable, indica un porcentaje entre 0 y 100.");
       }
     }
 
@@ -593,15 +751,13 @@ function NewAllotmentDialog(props: {
         roomTypeId: form.roomTypeId,
         validFrom: form.validFrom,
         validTo: form.validTo,
-        totalRooms: form.totalRooms,
-        releaseDays: form.allotmentType === "hard" ? 0 : form.releaseDays,
+        totalRooms,
+        releaseDays: form.allotmentType === "hard" ? 0 : releaseDays,
         allotmentType: form.allotmentType,
         counterpartyType: form.counterpartyType,
         rateType: form.rateType,
         contractedRate: form.contractedRate.trim() ? Number(form.contractedRate) : undefined,
-        commissionPct: form.rateType === "commissionable" && form.commissionPct.trim()
-          ? Number(form.commissionPct)
-          : undefined,
+        commissionPct: form.rateType === "commissionable" && form.commissionPct.trim() ? Number(form.commissionPct) : undefined,
         currency: form.currency,
         status: form.status,
         stopSell: form.stopSell,
@@ -619,621 +775,170 @@ function NewAllotmentDialog(props: {
   }
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="new-allot-title"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(15, 23, 42, 0.55)",
-        backdropFilter: "blur(2px)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16
-      }}
-      onClick={(e) => { if (e.target === e.currentTarget) props.onClose(); }}
-      onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}
+    <CocoaDrawer
+      open={props.open}
+      onClose={props.onClose}
+      title="Nuevo cupo de tour operador"
+      subtitle="Contrata bloques de habitaciones para un periodo. Las no usadas vuelven al cupo general N días antes de la llegada."
+      side="right"
+      size="lg"
+      footer={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose} disabled={submitting}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" onClick={() => void submit()} loading={submitting} disabled={roomTypeList.length === 0}>
+            Crear cupo
+          </CocoaButton>
+        </>
+      }
     >
-      <form
-        onSubmit={submit}
-        className="bo-card"
-        style={{
-          width: "100%",
-          maxWidth: 680,
-          maxHeight: "92vh",
-          overflow: "auto",
-          background: "var(--surface-1, var(--surface))",
-          padding: "var(--space-5, 20px)",
-          borderRadius: "var(--radius-md, 12px)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 12
-        }}
-      >
-        <div className="bo-card-head" style={{ marginBottom: 4 }}>
-          <div>
-            <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 11, margin: 0 }}>Comercial · Distribución</p>
-            <h3 id="new-allot-title" style={{ margin: "2px 0 0 0" }}>Nuevo cupo de tour operador</h3>
-          </div>
-          <button type="button" onClick={props.onClose} aria-label="Cerrar" style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "var(--ink)" }}>×</button>
-        </div>
+      <div className="cocoa-stack" data-gap="3">
+        {error ? (
+          <CocoaCallout tone="danger" role="alert">
+            {error}
+          </CocoaCallout>
+        ) : null}
 
-        <p className="bo-muted" style={{ margin: 0, fontSize: 13 }}>
-          Contrata bloques de habitaciones para un periodo. Las no usadas vuelven al pool general
-          <strong> N días antes</strong> de la llegada.
-        </p>
+        <CocoaFormSection title="Identificación" columns={2}>
+          <CocoaField label="Código" required help="Ej. TUI-VRN-2026">
+            <CocoaInput value={form.code} onChange={(v) => update("code", v.toUpperCase())} maxLength={32} placeholder="TUI-2026" autoFocus />
+          </CocoaField>
+          <CocoaField label="Nombre" required help="Si lo dejas vacío se genera con el TT.OO. y el tipo de habitación">
+            <CocoaInput value={form.name} onChange={(v) => update("name", v)} maxLength={120} placeholder="TUI · Habitación doble verano 2026" />
+          </CocoaField>
+        </CocoaFormSection>
 
-        {/* Identificación */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Identificación</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12 }}>
-            <Field label="Código *" hint="Ej. TUI-VRN-2026">
-              <input
-                type="text"
-                required
-                maxLength={32}
-                value={form.code}
-                onChange={(e) => update("code", e.target.value.toUpperCase())}
-                style={inputStyle}
-                placeholder="TUI-2026"
-                autoFocus
-              />
-            </Field>
-            <Field label="Nombre" hint="Si lo dejas vacío se autogenera con TT.OO. + tipo de habitación">
-              <input
-                type="text"
-                maxLength={120}
-                value={form.name}
-                onChange={(e) => update("name", e.target.value)}
-                style={inputStyle}
-                placeholder="TUI · Habitación doble verano 2026"
-              />
-            </Field>
-          </div>
-        </fieldset>
+        <CocoaFormSection title="Modelo contractual" columns={2}>
+          <CocoaField label="Tipo de contraparte" required help="Define el modelo de liberación y la naturaleza del contrato.">
+            <CocoaSelect
+              value={form.counterpartyType}
+              onChange={(v) => {
+                const next = v as CounterpartyType;
+                // The recommended release period follows the counterparty.
+                const rec = RELEASE_RECOMMENDATIONS[next];
+                setForm((f) => ({ ...f, counterpartyType: next, releaseDays: String(rec.days) }));
+              }}
+              options={COUNTERPARTY_OPTIONS}
+            />
+          </CocoaField>
+          <CocoaField label="Modelo de cupo" required help="Flexible: la liberación devuelve lo no vendido. Garantizado: el TT.OO. se compromete al pago.">
+            <CocoaSelect value={form.allotmentType} onChange={(v) => update("allotmentType", v as AllotmentType)} options={ALLOTMENT_TYPE_OPTIONS} />
+          </CocoaField>
+        </CocoaFormSection>
 
-        {/* Modelo contractual */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Modelo contractual</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field
-              label="Tipo de contraparte *"
-              hint="Define el modelo de release y la naturaleza del contrato."
-            >
-              <select
-                value={form.counterpartyType}
-                onChange={(e) => {
-                  const v = e.target.value as CreateAllotmentForm["counterpartyType"];
-                  // Auto-ajusta releaseDays al recomendado del tipo
-                  const rec = RELEASE_RECOMMENDATIONS[v];
-                  setForm((f) => ({ ...f, counterpartyType: v, releaseDays: rec.days }));
-                }}
-                style={inputStyle}
-              >
-                <option value="tour_operator">Tour operador (TUI, Jet2, FTI…)</option>
-                <option value="bedbank">Bedbank / wholesaler (Hotelbeds, Restel…)</option>
-                <option value="corporate">Cuenta corporativa</option>
-                <option value="ota">OTA con contrato directo</option>
-              </select>
-            </Field>
-            <Field
-              label="Modelo de cupo *"
-              hint="Soft = release devuelve no vendido. Hard = TT.OO. compromete pago (commit)."
-            >
-              <select
-                value={form.allotmentType}
-                onChange={(e) => update("allotmentType", e.target.value as CreateAllotmentForm["allotmentType"])}
-                style={inputStyle}
-              >
-                <option value="soft">Soft allotment (con release period)</option>
-                <option value="hard">Hard allotment / commit (sin release)</option>
-                <option value="free_sale">Free sale (sin inventario reservado)</option>
-              </select>
-            </Field>
-          </div>
-        </fieldset>
+        <CocoaFormSection title="Asignación" columns={2}>
+          <CocoaField label="Tour operador" required>
+            <CocoaSelect value={form.tourOperatorId} onChange={(v) => update("tourOperatorId", v)} options={operatorOptions} placeholder="Selecciona un TT.OO." required />
+          </CocoaField>
+          <CocoaField
+            label="Tipo de habitación"
+            required
+            error={!roomTypes.loading && roomTypeList.length === 0 ? "No hay tipos de habitación. Créalos primero en Configuración → Tipos de habitación." : undefined}
+          >
+            <CocoaSelect
+              value={form.roomTypeId}
+              onChange={(v) => update("roomTypeId", v)}
+              options={roomTypeOptions}
+              placeholder={roomTypes.loading ? "Cargando tipos…" : "Selecciona un tipo"}
+              disabled={roomTypes.loading || roomTypeList.length === 0}
+              required
+            />
+          </CocoaField>
+        </CocoaFormSection>
 
-        {/* Asignación */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Asignación</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <Field label="Tour operador *">
-              <select
-                required
-                value={form.tourOperatorId}
-                onChange={(e) => update("tourOperatorId", e.target.value)}
-                style={inputStyle}
-              >
-                <option value="" disabled>Selecciona un TT.OO.</option>
-                {props.tourOperators.filter((t) => t.active).map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.code} · {t.name}
-                  </option>
-                ))}
-              </select>
-            </Field>
-            <Field label="Tipo de habitación *">
-              {roomTypes.loading ? (
-                <span className="bo-muted" style={{ fontSize: 13 }}>Cargando tipos…</span>
-              ) : roomTypeList.length === 0 ? (
-                <span className="bo-status warn" style={{ fontSize: 12, textTransform: "none" }}>
-                  No hay tipos de habitación. Créalos primero en Configuración → Tipos de habitación.
-                </span>
-              ) : (
-                <select
-                  required
-                  value={form.roomTypeId}
-                  onChange={(e) => update("roomTypeId", e.target.value)}
-                  style={inputStyle}
-                >
-                  <option value="" disabled>Selecciona un tipo</option>
-                  {roomTypeList.map((r) => (
-                    <option key={r.id} value={r.id}>
-                      {r.code} · {r.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-            </Field>
-          </div>
-        </fieldset>
-
-        {/* Vigencia + capacidad */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Vigencia y capacidad</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
-            <Field label="Desde *">
-              <input
-                type="date"
-                required
-                value={form.validFrom}
-                onChange={(e) => update("validFrom", e.target.value)}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Hasta *" hint="Máx. 2 años">
-              <input
-                type="date"
-                required
-                value={form.validTo}
-                onChange={(e) => update("validTo", e.target.value)}
-                min={form.validFrom}
-                style={inputStyle}
-              />
-            </Field>
-            <Field label="Hab/día *">
-              <input
-                type="number"
-                inputMode="numeric"
-                required
-                min={1}
-                step={1}
-                value={form.totalRooms}
-                onChange={(e) => update("totalRooms", Number(e.target.value))}
-                style={inputStyle}
-              />
-            </Field>
-            <Field
-              label="Release (días)"
-              hint={form.allotmentType === "hard"
-                ? "Hard allotment: TT.OO. paga aunque no venda. No hay release."
-                : form.allotmentType === "free_sale"
-                ? "Free sale: vende contra disponibilidad general. Release N/A."
-                : RELEASE_RECOMMENDATIONS[form.counterpartyType].rationale}
-            >
-              <input
+        <CocoaFormSection title="Vigencia y capacidad">
+          <CocoaFormRow columns={4} min={140}>
+            <CocoaField label="Desde" required>
+              <CocoaDatePicker value={form.validFrom} onChange={(v) => update("validFrom", v)} required />
+            </CocoaField>
+            <CocoaField label="Hasta" required help="Máximo 2 años">
+              <CocoaDatePicker value={form.validTo} onChange={(v) => update("validTo", v)} min={form.validFrom} required />
+            </CocoaField>
+            <CocoaField label="Hab./día" required>
+              <CocoaInput type="number" inputMode="numeric" min={1} step={1} value={form.totalRooms} onChange={(v) => update("totalRooms", v)} required />
+            </CocoaField>
+            <CocoaField label="Liberación (días)" help={releaseHelp(form)}>
+              <CocoaInput
                 type="number"
                 inputMode="numeric"
                 min={0}
                 max={365}
                 step={1}
                 value={form.releaseDays}
-                onChange={(e) => update("releaseDays", Number(e.target.value))}
+                onChange={(v) => update("releaseDays", v)}
                 disabled={form.allotmentType !== "soft"}
-                style={{
-                  ...inputStyle,
-                  opacity: form.allotmentType !== "soft" ? 0.5 : 1,
-                  cursor: form.allotmentType !== "soft" ? "not-allowed" : "text"
-                }}
               />
-            </Field>
-          </div>
-
-          {/* Preview en vivo del ciclo release */}
-          {form.allotmentType === "soft" && form.releaseDays > 0 && form.totalRooms > 0 ? (
-            <ReleasePreview
-              releaseDays={form.releaseDays}
-              totalRooms={form.totalRooms}
-              validFrom={form.validFrom}
-              counterpartyType={form.counterpartyType}
-            />
+            </CocoaField>
+          </CocoaFormRow>
+          {form.allotmentType === "soft" && releaseDays > 0 && totalRooms > 0 ? (
+            <ReleasePreview releaseDays={releaseDays} totalRooms={totalRooms} validFrom={form.validFrom} />
           ) : null}
-        </fieldset>
+        </CocoaFormSection>
 
-        {/* Tarifa */}
-        <fieldset style={fieldsetStyle}>
-          <legend style={legendStyle}>Tarifa contratada</legend>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
-            <Field
-              label="Modelo de tarifa *"
-              hint="Net: el operador aplica su markup. Comisionable: tarifa pública con % comisión."
-            >
-              <select
-                value={form.rateType}
-                onChange={(e) => update("rateType", e.target.value as CreateAllotmentForm["rateType"])}
-                style={inputStyle}
-              >
-                <option value="net">Tarifa neta (net rate)</option>
-                <option value="commissionable">Tarifa comisionable</option>
-              </select>
-            </Field>
+        <CocoaFormSection title="Tarifa contratada">
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Modelo de tarifa" required help="Neta: el operador aplica su margen. Comisionable: tarifa pública con un porcentaje de comisión.">
+              <CocoaSelect value={form.rateType} onChange={(v) => update("rateType", v as RateType)} options={RATE_TYPE_OPTIONS} />
+            </CocoaField>
             {form.rateType === "commissionable" ? (
-              <Field label="Comisión (%) *" hint="Típico TT.OO. europeo: 18-25%. Corporate: 8-15%.">
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  min={0}
-                  max={100}
-                  step={0.1}
-                  required
-                  value={form.commissionPct}
-                  onChange={(e) => update("commissionPct", e.target.value)}
-                  style={inputStyle}
-                  placeholder="22"
-                />
-              </Field>
+              <CocoaField label="Comisión (%)" required help="Habitual en TT.OO. europeos: 18-25 %. Corporativo: 8-15 %.">
+                <CocoaInput type="number" inputMode="decimal" min={0} max={100} step={0.1} value={form.commissionPct} onChange={(v) => update("commissionPct", v)} placeholder="22" required />
+              </CocoaField>
             ) : (
-              <Field label="" hint="Net rate: la tarifa contratada es lo que cobras directamente.">
-                <input type="text" disabled style={{ ...inputStyle, opacity: 0.5 }} placeholder="—" />
-              </Field>
+              <CocoaField label="Comisión (%)" help="Tarifa neta: la tarifa contratada es lo que cobras directamente.">
+                <CocoaInput value="" onChange={() => undefined} disabled placeholder={EMPTY} />
+              </CocoaField>
             )}
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12 }}>
-            <Field label="Tarifa /noche" hint="Opcional. Si la dejas vacía se factura según rate plan público.">
-              <input
-                type="number"
-                inputMode="decimal"
-                min={0}
-                step={0.01}
-                value={form.contractedRate}
-                onChange={(e) => update("contractedRate", e.target.value)}
-                style={inputStyle}
-                placeholder="65.00"
-              />
-            </Field>
-            <Field label="Moneda">
-              <select
-                value={form.currency}
-                onChange={(e) => update("currency", e.target.value)}
-                style={inputStyle}
-              >
-                <option value="EUR">EUR</option>
-                <option value="GBP">GBP</option>
-                <option value="USD">USD</option>
-              </select>
-            </Field>
-            <Field label="Estado inicial">
-              <select
-                value={form.status}
-                onChange={(e) => update("status", e.target.value as "draft" | "active")}
-                style={inputStyle}
-              >
-                <option value="active">Activo</option>
-                <option value="draft">Borrador</option>
-              </select>
-            </Field>
-          </div>
-        </fieldset>
+          </CocoaFormRow>
+          <CocoaFormRow columns={3} min={160}>
+            <CocoaField label="Tarifa por noche" help="Opcional. Si la dejas vacía se factura según el plan de tarifas público.">
+              <CocoaInput type="number" inputMode="decimal" min={0} step={0.01} value={form.contractedRate} onChange={(v) => update("contractedRate", v)} placeholder="65" />
+            </CocoaField>
+            <CocoaField label="Moneda">
+              <CocoaSelect value={form.currency} onChange={(v) => update("currency", v)} options={CURRENCY_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Estado inicial">
+              <CocoaSelect value={form.status} onChange={(v) => update("status", v as "draft" | "active")} options={INITIAL_STATUS_OPTIONS} />
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
 
-        <Field label="Notas">
-          <textarea
-            value={form.notes}
-            onChange={(e) => update("notes", e.target.value)}
-            style={{ ...inputStyle, minHeight: 60, resize: "vertical" }}
-            placeholder="Condiciones especiales del contrato, contactos, referencias…"
-          />
-        </Field>
-
-        {error ? (
-          <p className="bo-status error" style={{ textTransform: "none", margin: 0 }}>{error}</p>
-        ) : null}
-
-        <div className="bo-row" style={{ gap: 8, justifyContent: "space-between", marginTop: 8 }}>
-          <p className="bo-muted" style={{ fontSize: 12, margin: 0 }}>
-            * Campos obligatorios
-          </p>
-          <div className="bo-row" style={{ gap: 8 }}>
-            <button type="button" onClick={props.onClose} disabled={submitting}>Cancelar</button>
-            <button type="submit" className="primary" disabled={submitting || roomTypeList.length === 0}>
-              {submitting ? "Creando…" : "Crear cupo"}
-            </button>
-          </div>
-        </div>
-      </form>
-    </div>
+        <CocoaField label="Notas">
+          <CocoaInput multiline rows={3} value={form.notes} onChange={(v) => update("notes", v)} placeholder="Condiciones especiales del contrato, contactos, referencias…" />
+        </CocoaField>
+      </div>
+    </CocoaDrawer>
   );
 }
 
-// ───────────────────────────────────────────────────────── Estilos compartidos
-
-const fieldsetStyle: React.CSSProperties = {
-  border: "1px solid var(--border, #e5e7eb)",
-  borderRadius: "var(--radius-sm, 6px)",
-  padding: 12,
-  margin: 0
-};
-
-const legendStyle: React.CSSProperties = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--ink-soft, #555)",
-  textTransform: "uppercase",
-  letterSpacing: "0.06em",
-  padding: "0 6px"
-};
-
-const inputStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  border: "1px solid var(--border, #d1d5db)",
-  borderRadius: "var(--radius-sm, 6px)",
-  background: "var(--surface, white)",
-  color: "var(--ink, #1a1a1a)",
-  fontSize: 14,
-  fontFamily: "inherit"
-};
-
-function ReleasePreview(props: {
-  releaseDays: number;
-  totalRooms: number;
-  validFrom: string;
-  counterpartyType: CreateAllotmentForm["counterpartyType"];
-}) {
+function ReleasePreview(props: { releaseDays: number; totalRooms: number; validFrom: string }) {
   const from = new Date(props.validFrom);
-  // Para la primera noche del cupo, el release ocurre el día: arrival - releaseDays
-  const firstNight = props.validFrom;
+  // For the first night of the block the release happens on arrival − releaseDays.
   const firstReleaseDate = new Date(from.getTime() - props.releaseDays * 86400000);
   const fmt = (d: Date) => date(d, "medium");
 
   return (
-    <div
-      style={{
-        marginTop: 12,
-        padding: 12,
-        borderRadius: "var(--radius-sm, 6px)",
-        background: "var(--surface-2, rgba(13, 138, 95, 0.06))",
-        borderLeft: "3px solid var(--ok, #0d8a5f)",
-        fontSize: 13
-      }}
-    >
-      <strong style={{ color: "var(--ink)" }}>📅 Ciclo de vida del cupo (preview)</strong>
-      <ul style={{ margin: "8px 0 0 0", paddingLeft: 18, color: "var(--ink-soft, #555)", lineHeight: 1.6 }}>
+    <CocoaCallout tone="accent" title="Ciclo de vida del cupo (vista previa)">
+      <ul className="c22-section__list">
         <li>
-          Para la primera noche (<strong>{fmt(from)}</strong>), tu cupo de <strong>{props.totalRooms} habs</strong> queda bloqueado hasta el
-          {" "}
-          <strong>{fmt(firstReleaseDate)}</strong>
-          {" "}(día = <strong>noche − {props.releaseDays} días</strong>).
+          <span>
+            Para la primera noche (<strong>{fmt(from)}</strong>), tu cupo de <strong>{plural(props.totalRooms, "habitación", "habitaciones")}</strong> queda bloqueado hasta el{" "}
+            <strong>{fmt(firstReleaseDate)}</strong> (día = noche − {plural(props.releaseDays, "día", "días")}).
+          </span>
         </li>
         <li>
-          Si para esa fecha el TT.OO. no ha vendido todas, lo no vendido vuelve automáticamente al <strong>pool general</strong>{" "}
-          y queda disponible para venta directa u otros canales.
+          <span>Si para esa fecha el TT.OO. no ha vendido todas, lo no vendido vuelve automáticamente al cupo general y queda disponible para venta directa u otros canales.</span>
         </li>
         <li>
-          El proceso aplica <strong>rolling cut-off por noche</strong>: cada noche se libera <strong>{props.releaseDays} días</strong> antes
-          de su check-in (patrón Opera / Protel).
+          <span>El corte es progresivo por noche: cada noche se libera {plural(props.releaseDays, "día", "días")} antes de su entrada.</span>
         </li>
-        <li className="bo-muted" style={{ fontSize: 12 }}>
-          Cuando una reserva del TT.OO. entra en el sistema, decrementa el cupo. Cuando se cancela, devuelve al pool (NO al cupo) si ya pasó el corte diario.
+        <li>
+          <span className="cocoa-caption">
+            Cuando una reserva del TT.OO. entra en el sistema, descuenta del cupo. Si se cancela después del corte diario, la habitación vuelve al cupo general, no al cupo del operador.
+          </span>
         </li>
       </ul>
-    </div>
-  );
-}
-
-function Field(props: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 13, color: "var(--ink)" }}>
-      <span style={{ fontWeight: 500 }}>{props.label}</span>
-      {props.children}
-      {props.hint ? <span className="bo-muted" style={{ fontSize: 11 }}>{props.hint}</span> : null}
-    </label>
-  );
-}
-
-// ─────────────────────────────────────────────── Pickup lifecycle visualization
-
-function PickupLifecycleCard(props: { pickup: PickupSummary | null; loading: boolean }) {
-  if (props.loading && !props.pickup) {
-    return (
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Pickup &amp; ciclo de release · próximos 60 días</h3>
-        </div>
-        <LoadingBlock label="Calculando pickup y próximas liberaciones…" />
-      </article>
-    );
-  }
-  const allotments = props.pickup?.allotments ?? [];
-  if (allotments.length === 0) {
-    return null; // Si no hay cupos, no mostramos esta sección (KPIs ya lo dicen)
-  }
-
-  return (
-    <article className="bo-card" style={{ background: "var(--surface)" }}>
-      <div className="bo-card-head">
-        <div>
-          <h3 style={{ color: "var(--ink)", margin: 0 }}>Pickup &amp; ciclo de release</h3>
-          <p className="bo-muted" style={{ margin: "4px 0 0 0", fontSize: 12, textTransform: "none" }}>
-            Próximos 60 días · Estado actual del cupo día a día (blocked / picked-up / released).
-            El scheduler libera cada día las habs cuyo release period haya vencido.
-          </p>
-        </div>
-        <span className="bo-chip">{allotments.length} cupos</span>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 12 }}>
-        {allotments.map((a) => (
-          <AllotmentLifecycleRow key={a.allotmentId} allotment={a} />
-        ))}
-      </div>
-    </article>
-  );
-}
-
-function AllotmentLifecycleRow({ allotment }: { allotment: PickupSummaryAllotment }) {
-  // Color por nivel de pickup (industria: bajo <40% rojo, medio 40-70% ámbar, bueno >70% verde)
-  const pickupColor = allotment.pickupPct >= 70 ? "var(--ok, #0d8a5f)"
-    : allotment.pickupPct >= 40 ? "var(--warn, #d97706)"
-    : "var(--danger, #dc2626)";
-  const pickupLabel = allotment.pickupPct >= 70 ? "Saludable"
-    : allotment.pickupPct >= 40 ? "Medio"
-    : allotment.pickupPct >= 1 ? "Bajo"
-    : "Sin pickup";
-
-  // Alerta si el próximo release liberará un volumen significativo
-  const upcomingHighRelease = allotment.upcomingReleaseRooms >= allotment.totalRooms * 0.5;
-
-  return (
-    <div
-      style={{
-        padding: 12,
-        borderRadius: "var(--radius-sm, 6px)",
-        background: "var(--surface-1, var(--surface))",
-        border: "1px solid var(--border, rgba(0,0,0,0.06))"
-      }}
-    >
-      {/* Header: code · name · pickup% */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
-        <div style={{ flex: "1 1 auto" }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-            <strong style={{ fontFamily: "var(--font-mono, monospace)", fontSize: 13 }}>{allotment.code}</strong>
-            <span style={{ color: "var(--ink)", fontSize: 14 }}>{allotment.name}</span>
-          </div>
-          <p className="bo-muted" style={{ margin: "2px 0 0 0", fontSize: 12 }}>
-            Vigencia: {date(allotment.validFrom)} → {date(allotment.validTo)} · {allotment.totalRooms} hab/día contratadas · release T−{allotment.releaseDays}d
-          </p>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}>
-          <span style={{
-            display: "inline-block",
-            padding: "3px 8px",
-            borderRadius: 999,
-            background: pickupColor,
-            color: "white",
-            fontSize: 12,
-            fontWeight: 600
-          }}>
-            {allotment.pickupPct}% pickup · {pickupLabel}
-          </span>
-          {allotment.daysToNextRelease != null && allotment.nextReleaseDate ? (
-            <span className="bo-muted" style={{ fontSize: 11 }}>
-              Próx. release: T−{allotment.daysToNextRelease}d ({date(allotment.nextReleaseDate, "dayMonth")})
-            </span>
-          ) : null}
-        </div>
-      </div>
-
-      {/* Stats compactas */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 8 }}>
-        <Stat label="Contratado" value={allotment.totalBlocked} color="var(--ink, #1a1a1a)" />
-        <Stat label="Vendido" value={allotment.totalPickedUp} color="var(--ok, #0d8a5f)" />
-        <Stat label="Liberado" value={allotment.totalReleased} color="var(--ink-soft, #888)" />
-        <Stat label="Disponible" value={allotment.totalRemaining} color="var(--accent, #0d8a5f)" />
-      </div>
-
-      {/* Alerta de próxima liberación significativa */}
-      {upcomingHighRelease && allotment.upcomingReleaseRooms > 0 ? (
-        <div style={{
-          padding: "8px 10px",
-          borderRadius: "var(--radius-sm, 6px)",
-          background: "rgba(217, 119, 6, 0.1)",
-          borderLeft: "3px solid var(--warn, #d97706)",
-          fontSize: 12,
-          marginBottom: 8,
-          color: "var(--ink)"
-        }}>
-          ⚠️ Sin pickup adicional, en los próximos {allotment.daysToNextRelease ?? allotment.releaseDays} días se liberarán
-          {" "}<strong>~{allotment.upcomingReleaseRooms} habitaciones</strong> al pool general.
-        </div>
-      ) : null}
-
-      {/* Barra diaria stacked (picked-up + released + remaining) */}
-      {allotment.days.length > 0 ? (
-        <div>
-          <p className="bo-muted" style={{ fontSize: 11, margin: "0 0 4px 0", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-            Día a día · {allotment.days.length} noches
-          </p>
-          <div style={{
-            display: "flex",
-            gap: 1,
-            alignItems: "flex-end",
-            height: 60,
-            background: "var(--surface-2, rgba(0,0,0,0.03))",
-            padding: 4,
-            borderRadius: 4,
-            overflow: "auto"
-          }}>
-            {allotment.days.map((d) => {
-              const total = Math.max(1, d.blocked);
-              const pkH = Math.round((d.pickedUp / total) * 52);
-              const rlH = Math.round((d.released / total) * 52);
-              const rmH = Math.round((d.remaining / total) * 52);
-              return (
-                <div
-                  key={d.date}
-                  title={`${date(d.date)}\nContratado: ${d.blocked}\nVendido: ${d.pickedUp} (${d.pickupPct}%)\nLiberado: ${d.released}\nDisponible: ${d.remaining}`}
-                  style={{
-                    minWidth: 6,
-                    flex: "1 1 auto",
-                    height: "100%",
-                    display: "flex",
-                    flexDirection: "column-reverse",
-                    cursor: "help"
-                  }}
-                >
-                  <div style={{ height: pkH, background: "var(--ok, #0d8a5f)" }} />
-                  <div style={{ height: rlH, background: "var(--ink-soft, #888)", opacity: 0.4 }} />
-                  <div style={{ height: rmH, background: "var(--accent, #0d8a5f)", opacity: 0.25 }} />
-                </div>
-              );
-            })}
-          </div>
-          <div className="bo-row" style={{ gap: 12, marginTop: 6, fontSize: 11 }}>
-            <Legend color="var(--ok, #0d8a5f)" label="Vendido" />
-            <Legend color="rgba(13, 138, 95, 0.25)" label="Disponible" />
-            <Legend color="rgba(136, 136, 136, 0.4)" label="Liberado al pool" />
-            <span className="bo-muted" style={{ marginLeft: "auto" }}>Hover para ver el detalle del día</span>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function Stat({ label, value, color }: { label: string; value: number; color: string }) {
-  return (
-    <div style={{
-      padding: "6px 10px",
-      borderRadius: 4,
-      background: "var(--surface-2, rgba(0,0,0,0.03))",
-      display: "flex",
-      flexDirection: "column",
-      gap: 2
-    }}>
-      <span className="bo-muted" style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.04em" }}>{label}</span>
-      <span style={{ fontSize: 16, fontWeight: 600, color, fontFeatureSettings: '"tnum"' }}>{value}</span>
-    </div>
-  );
-}
-
-function Legend({ color, label }: { color: string; label: string }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-      <span style={{ width: 10, height: 10, background: color, borderRadius: 2, display: "inline-block" }} />
-      <span className="bo-muted">{label}</span>
-    </span>
+    </CocoaCallout>
   );
 }

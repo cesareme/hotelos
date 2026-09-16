@@ -519,6 +519,9 @@ export interface HistoryDrawerProps {
   onClose: () => void;
 }
 
+/** The journal list on its own (the «Historial» tab paints it inline; the drawer wraps it). */
+export type HistoryListProps = Omit<HistoryDrawerProps, "open" | "onClose">;
+
 /* ------------------------------------------------------------------ */
 /*  Recommendations                                                    */
 /* ------------------------------------------------------------------ */

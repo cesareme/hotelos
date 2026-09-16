@@ -1,12 +1,17 @@
-// Channel manager — OTA aggregator hub.
+// Channel manager — OTA aggregator hub (Comercial › Canales de venta, /comercial/canales).
 //
-// Top of the screen: KPI cards (active channels, last sync, open parity alerts,
-// reservations 24h). Then a channel cards grid (with logo placeholder built
-// from the provider code initial), then an unified push panel (rates,
-// availability, restrictions), then a sync jobs table and a parity alerts
-// panel.
+// Cocoa 22 · ola 7 · lote 7-A (dashboard: DashboardAlojado / DashboardStandalone).
+// CocoaPage (hosted inside CanalesTabs the container paints category and H1;
+// standalone the page paints eyebrow · title · subtitle) → CocoaKpiStrip
+// (active channels, last sync, open parity alerts, reservations 24 h) → the
+// Rate grid v2 layer (alta, channels connected to the editor, deliveries log)
+// → aggregator channel cards (readiness checklist + expandable mappings) →
+// unified push → recent sync jobs → open parity alerts. Every table is a
+// CocoaTable, every control a Cocoa primitive; the archive confirmation is a
+// CocoaDialog and the write-only credentials are captured in a CocoaDrawer
+// instead of a row cell (same POST, same fields).
 //
-// Data:
+// Data (unchanged):
 //   /channel-manager/channels             (30s poll)
 //   /channel-manager/sync-jobs            (30s poll)
 //   /channel-manager/parity/alerts        (30s poll, status=open)
@@ -18,24 +23,24 @@
 // has not been mapped yet. The result table surfaces that text from the API
 // response so the user can act on it.
 
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useTabHost } from "../tabs/TabHost";
-import { getActivePropertyId } from "../../services/activeProperty";
-import type { CSSProperties } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import { getActivePropertyId, getActivePropertyName } from "../../services/activeProperty";
 import { apiRequest } from "../../services/api-client";
 import { useApiData } from "../../hooks/useApiData";
 import { useToast } from "../../components/Toast";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { navigateTo } from "../../lib/navigate";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
 import { CHANNELS_INSTRUCTIONS } from "../../content/screen-instructions/channels";
+import { ACTIONS } from "../../content/actions";
+import { ExclamationCircleIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
   CHANNEL_MODE_LABELS,
   CHANNEL_PROVIDER_CATALOG,
   archiveChannel,
   createChannel,
   drainDeliveries,
-  listChannels,
   listChannelsWithDetails,
   listDeliveries,
   patchChannel,
@@ -48,18 +53,38 @@ import {
 } from "../../services/channelsApi";
 import { CHANNEL_HAS_PENDING_DELIVERIES_CODE, classifyRateGridError, fetchRatePlans } from "../../services/rateGridApi";
 import { fetchRoomTypes } from "../../services/pmsCommerceApi";
-import { getActivePropertyName } from "../../services/activeProperty";
 import { channelModeLabel, channelTypeLabel, deliveryStatusLabel, providerLabel } from "../../components/cocoa-rate-grid/helpers";
-import { date, dateTime, money } from "../../lib/format";
-
-function navigateToScreen(screen: string): void {
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-}
+import { date, dateRange, dateTime, money, number, plural, time } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaDialog,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  CocoaToolbar,
+  toneInk,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
 /** Spanish labels for the raw statuses of channels, sync jobs and legacy push results. */
-const STATUS_LABELS: Record<string, string> = {
+const CHANNEL_STATUS_LABELS: Record<string, string> = {
   active: "activo",
   inactive: "inactivo",
   paused: "en pausa",
@@ -88,8 +113,69 @@ const SYNC_TYPE_LABELS: Record<string, string> = {
   parity_check: "chequeo de paridad"
 };
 
+/** Parity alert severities as the hotelier reads them (the raw value stays in the tooltip). */
+const SEVERITY_LABELS: Record<string, string> = {
+  critical: "crítica",
+  high: "alta",
+  medium: "media",
+  warn: "media",
+  warning: "media",
+  low: "baja",
+  info: "informativa"
+};
+
+/** Credential field names of the providers (write-only; keys unchanged, labels for the drawer). */
+const CREDENTIAL_FIELD_LABELS: Record<string, string> = {
+  apiKey: "Clave de API",
+  propertyId: "Identificador de la propiedad en el canal",
+  username: "Usuario",
+  password: "Contraseña",
+  hotelId: "Identificador del hotel",
+  secret: "Secreto"
+};
+
 function statusLabel(status: string): string {
-  return STATUS_LABELS[status.toLowerCase()] ?? status;
+  return CHANNEL_STATUS_LABELS[status.toLowerCase()] ?? status;
+}
+
+function statusTone(status: string): CocoaTone {
+  const s = status.toLowerCase();
+  if (s === "active" || s === "success" || s === "succeeded" || s === "ok" || s === "completed" || s === "connected") return "success";
+  if (s === "failed" || s === "error" || s === "inactive" || s === "cancelled" || s === "disconnected") return "danger";
+  return "warning";
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const label = statusLabel(status);
+  // Tooltip in Spanish too (the raw enum only when there is no translation).
+  const title = label === status ? status : `Estado: ${label}`;
+  return (
+    <CocoaBadge tone={statusTone(status)} title={title}>
+      {label}
+    </CocoaBadge>
+  );
+}
+
+function severityTone(severity: string): CocoaTone {
+  const s = severity.toLowerCase();
+  if (s === "critical" || s === "high") return "danger";
+  if (s === "medium" || s === "warn" || s === "warning") return "warning";
+  return "info";
+}
+
+function SeverityBadge({ severity }: { severity: string }) {
+  const label = SEVERITY_LABELS[severity.toLowerCase()] ?? severity;
+  return (
+    <CocoaBadge tone={severityTone(severity)} title={label === severity ? undefined : severity}>
+      {label}
+    </CocoaBadge>
+  );
+}
+
+function deliveryTone(status: string): CocoaTone {
+  if (status === "confirmed" || status === "sent") return "success";
+  if (status === "rejected" || status === "timeout") return "danger";
+  return "warning";
 }
 
 type ChannelRow = {
@@ -198,6 +284,10 @@ type MappingCoverage = {
   complete: boolean;
 };
 
+const CHECK_TONE: Record<ReadinessCheck["status"], CocoaTone> = { ok: "success", warn: "warning", error: "danger" };
+
+const MAPPING_MISSING = /No (room|rate) mappings configured/i;
+
 function fmtTime(value: string | null | undefined): string {
   return dateTime(value, { style: "dayMonth" });
 }
@@ -205,56 +295,6 @@ function fmtTime(value: string | null | undefined): string {
 /** "2026-12-16" → "16/12/2026" (es-ES). */
 function fmtDate(iso: string | null | undefined): string {
   return date(iso);
-}
-
-function severityClass(severity: string): "ok" | "warn" | "error" {
-  const s = severity.toLowerCase();
-  if (s === "critical" || s === "high") return "error";
-  if (s === "medium" || s === "warn" || s === "warning") return "warn";
-  return "ok";
-}
-
-function statusPill(status: string) {
-  const s = status.toLowerCase();
-  const label = statusLabel(status);
-  // Tooltip in Spanish too (the raw enum only when there is no translation).
-  const title = label === status ? status : `Estado: ${label}`;
-  if (s === "active" || s === "success" || s === "succeeded" || s === "ok" || s === "completed") {
-    return <span className="cm-pill cm-pill-ok" title={title}>{label}</span>;
-  }
-  if (s === "failed" || s === "error" || s === "inactive" || s === "cancelled" || s === "disconnected") {
-    return <span className="cm-pill cm-pill-error" title={title}>{label}</span>;
-  }
-  return <span className="cm-pill cm-pill-warn" title={title}>{label}</span>;
-}
-
-function severityPill(severity: string) {
-  const cls = severityClass(severity);
-  const pill = cls === "ok" ? "cm-pill-ok" : cls === "warn" ? "cm-pill-warn" : "cm-pill-error";
-  return <span className={`cm-pill ${pill}`}>{severity}</span>;
-}
-
-function statusDotColor(status: "ok" | "warn" | "error"): string {
-  if (status === "ok") return "var(--success-ink, #1e7d34)";
-  if (status === "warn") return "var(--warning-ink, #b8860b)";
-  return "var(--danger-ink, #b3261e)";
-}
-
-function StatusDot({ status, title }: { status: "ok" | "warn" | "error"; title?: string }) {
-  return (
-    <span
-      aria-hidden
-      title={title}
-      style={{
-        display: "inline-block",
-        width: 10,
-        height: 10,
-        borderRadius: "50%",
-        background: statusDotColor(status),
-        flexShrink: 0
-      }}
-    />
-  );
 }
 
 function todayIso(): string {
@@ -267,7 +307,35 @@ function inDaysIso(days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
-// Per-channel readiness mini-panel: a colored-dot checklist + a go-live badge.
+// Secondary paragraph inside a card (callout size, secondary ink); the only
+// text style of the screen, so every note reads the same.
+const noteStyle: CSSProperties = { margin: 0, fontSize: "var(--cocoa-fs-callout)", lineHeight: "var(--cocoa-lh-callout)", color: "var(--cocoa-label-secondary)" };
+const noteRightStyle: CSSProperties = { ...noteStyle, textAlign: "right", minWidth: 0 };
+// Error text inside a table cell: the AA-safe danger ink (never the hue at 13 px).
+const dangerTextStyle: CSSProperties = { color: toneInk("danger") };
+// Tables inside a card: clip to the radius without creating a scroll container (§4.2 D26).
+const clipStyle: CSSProperties = { overflow: "clip" };
+const markupInputStyle: CSSProperties = { width: 72 };
+const modeSelectStyle: CSSProperties = { width: 168 };
+
+function Note({ children, title, align }: { children: ReactNode; title?: string; align?: "right" }) {
+  return (
+    <p style={align === "right" ? noteRightStyle : noteStyle} title={title}>
+      {children}
+    </p>
+  );
+}
+
+function CoverageBadge({ mapped, total, noun }: { mapped: number; total: number; noun: string }) {
+  const complete = total > 0 && mapped >= total;
+  return (
+    <CocoaBadge tone={complete ? "success" : total === 0 ? "neutral" : "warning"}>
+      {number(mapped)}/{number(total)} {noun}
+    </CocoaBadge>
+  );
+}
+
+// Per-channel readiness mini-panel: a dot checklist + a go-live badge.
 // Fetches on mount (lightweight; one call per visible channel card).
 function ChannelReadinessPanel({ channelId, refreshKey }: { channelId: string; refreshKey: number }) {
   const [data, setData] = useState<ChannelReadiness | null>(null);
@@ -276,53 +344,65 @@ function ChannelReadinessPanel({ channelId, refreshKey }: { channelId: string; r
   useEffect(() => {
     let cancelled = false;
     apiRequest<ChannelReadiness>(`/channel-manager/channels/${channelId}/readiness`)
-      .then((value) => { if (!cancelled) { setData(value); setError(null); } })
-      .catch((err) => { if (!cancelled) setError(err instanceof Error ? err.message : String(err)); });
-    return () => { cancelled = true; };
+      .then((value) => {
+        if (!cancelled) {
+          setData(value);
+          setError(null);
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [channelId, refreshKey]);
 
   if (error) {
-    return <div className="bo-muted" style={{ fontSize: 12, color: "var(--danger-ink, #b3261e)" }}>Preparación: {error}</div>;
+    return <CocoaState kind="error" inline title="Preparación no disponible" message={error} />;
   }
   if (!data) {
-    return <div className="bo-muted" style={{ fontSize: 12 }}>Preparación: …</div>;
+    return <CocoaState kind="loading" inline />;
   }
   return (
-    <div style={{ marginTop: 8, padding: 8, borderRadius: 8, background: "var(--surface-2, #f5f6f8)" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-        <strong style={{ fontSize: 12 }}>Preparación del canal</strong>
-        {data.readyToGoLive ? (
-          <span className="cm-pill cm-pill-ok">Listo para producción</span>
-        ) : (
-          <span className="cm-pill cm-pill-warn">Configuración incompleta</span>
-        )}
+    <div className="cocoa-stack" data-gap="2">
+      <div className="cocoa-row" data-justify="between" data-gap="2">
+        <strong className="cocoa-caption">Preparación del canal</strong>
+        {data.readyToGoLive ? <CocoaBadge tone="success">Listo para producción</CocoaBadge> : <CocoaBadge tone="warning">Configuración incompleta</CocoaBadge>}
       </div>
-      <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+      <ul className="c22-section__list" aria-label="Comprobaciones de preparación">
         {data.checks.map((c) => (
-          <li key={c.key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <StatusDot status={c.status} title={c.detail} />
-            <span style={{ fontSize: 12 }}>{c.label}</span>
-            <span className="bo-muted" style={{ fontSize: 11, marginLeft: "auto", textAlign: "right" }} title={c.detail}>
+          <li key={c.key}>
+            <CocoaBadge tone={CHECK_TONE[c.status]} variant="dot" size="small" title={c.detail}>
+              {c.label}
+            </CocoaBadge>
+            <Note align="right" title={c.detail}>
               {c.detail}
-            </span>
+            </Note>
           </li>
         ))}
       </ul>
-      <div className="bo-muted" style={{ fontSize: 11, marginTop: 4 }}>Modo del conector: {channelModeLabel(data.adapterMode)}</div>
+      <Note>Modo del conector: {channelModeLabel(data.adapterMode)}</Note>
     </div>
   );
 }
 
+const ROOM_MAPPING_COLUMNS: CocoaTableColumn<RoomMappingRow>[] = [
+  { key: "roomType", label: "Tipo de habitación", render: (m) => m.roomTypeName ?? m.roomTypeId },
+  { key: "externalRoomCode", label: "Código externo", fit: true },
+  { key: "externalRoomId", label: "ID externo", fit: true, hideOnNarrow: true, render: (m) => m.externalRoomId ?? "—" }
+];
+
+const RATE_MAPPING_COLUMNS: CocoaTableColumn<RateMappingRow>[] = [
+  { key: "ratePlan", label: "Plan tarifario", render: (m) => m.ratePlanName ?? m.ratePlanId },
+  { key: "externalRateCode", label: "Código externo", fit: true },
+  { key: "externalRateId", label: "ID externo", fit: true, hideOnNarrow: true, render: (m) => m.externalRateId ?? "—" }
+];
+
 // Per-channel mappings section: room-type and rate-plan tables with inline
-// add / delete, plus a coverage line ("3/5 room types mapped"). Expandable so
+// add / delete, plus a coverage badge («3/5 tipos con código»). Expandable so
 // the card stays compact until the hotelier needs to wire mappings.
-function ChannelMappingsPanel({
-  channelId,
-  onChanged
-}: {
-  channelId: string;
-  onChanged: () => void;
-}) {
+function ChannelMappingsPanel({ channelId, onChanged }: { channelId: string; onChanged: () => void }) {
   const [rooms, setRooms] = useState<RoomMappingRow[]>([]);
   const [rates, setRates] = useState<RateMappingRow[]>([]);
   const [coverage, setCoverage] = useState<MappingCoverage | null>(null);
@@ -377,7 +457,9 @@ function ChannelMappingsPanel({
         method: "POST",
         body: { roomTypeId: roomTypeId.trim(), externalRoomId: roomExtId.trim() || null, externalRoomCode: roomExtCode.trim() }
       });
-      setRoomTypeId(""); setRoomExtId(""); setRoomExtCode("");
+      setRoomTypeId("");
+      setRoomExtId("");
+      setRoomExtCode("");
       await afterMutate();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -407,7 +489,9 @@ function ChannelMappingsPanel({
         method: "POST",
         body: { ratePlanId: ratePlanId.trim(), externalRateId: rateExtId.trim() || null, externalRateCode: rateExtCode.trim() }
       });
-      setRatePlanId(""); setRateExtId(""); setRateExtCode("");
+      setRatePlanId("");
+      setRateExtId("");
+      setRateExtCode("");
       await afterMutate();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -428,92 +512,89 @@ function ChannelMappingsPanel({
     }
   }
 
-  const inputStyle: CSSProperties = { fontSize: 12, padding: "3px 6px" };
+  if (loading) return <CocoaState kind="loading" inline />;
 
   return (
-    <div style={{ marginTop: 8, padding: 8, borderRadius: 8, background: "var(--surface-2, #f5f6f8)" }}>
+    <div className="cocoa-stack" data-gap="3">
       {error ? (
-        <div className="bo-muted" style={{ fontSize: 12, color: "var(--danger-ink, #b3261e)", marginBottom: 6 }}>{error}</div>
+        <CocoaCallout tone="danger" role="alert">
+          {error}
+        </CocoaCallout>
       ) : null}
-      {loading ? (
-        <div className="bo-muted" style={{ fontSize: 12 }}>Cargando mapeos…</div>
-      ) : (
-        <>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <strong style={{ fontSize: 12 }}>Tipos de habitación → código externo</strong>
-            {coverage ? (
-              <span className={`cm-pill ${coverage.roomTypesMapped >= coverage.roomTypesTotal && coverage.roomTypesTotal > 0 ? "cm-pill-ok" : "cm-pill-warn"}`}>
-                {coverage.roomTypesMapped}/{coverage.roomTypesTotal} tipos mapeados
-              </span>
-            ) : null}
-          </div>
-          <table className="cm-table" style={{ fontSize: 12 }}>
-            <thead>
-              <tr>
-                <th>Tipo de habitación</th>
-                <th>Código externo</th>
-                <th>ID externo</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rooms.map((m) => (
-                <tr key={m.id}>
-                  <td>{m.roomTypeName ?? m.roomTypeId}</td>
-                  <td>{m.externalRoomCode}</td>
-                  <td className="bo-muted">{m.externalRoomId ?? "—"}</td>
-                  <td>
-                    <button type="button" className="ghost" disabled={busy} onClick={() => deleteRoom(m.id)}>Eliminar</button>
-                  </td>
-                </tr>
-              ))}
-              <tr>
-                <td><input style={inputStyle} placeholder="id del tipo de habitación" aria-label="Id del tipo de habitación" value={roomTypeId} onChange={(e) => setRoomTypeId(e.target.value)} /></td>
-                <td><input style={inputStyle} placeholder="código externo" aria-label="Código externo de la habitación" value={roomExtCode} onChange={(e) => setRoomExtCode(e.target.value)} /></td>
-                <td><input style={inputStyle} placeholder="id externo (opcional)" aria-label="Id externo de la habitación" value={roomExtId} onChange={(e) => setRoomExtId(e.target.value)} /></td>
-                <td><button type="button" className="primary" disabled={busy} onClick={addRoom}>Añadir</button></td>
-              </tr>
-            </tbody>
-          </table>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "10px 0 6px" }}>
-            <strong style={{ fontSize: 12 }}>Planes tarifarios → código externo</strong>
-            {coverage ? (
-              <span className={`cm-pill ${coverage.ratePlansMapped >= coverage.ratePlansTotal && coverage.ratePlansTotal > 0 ? "cm-pill-ok" : "cm-pill-warn"}`}>
-                {coverage.ratePlansMapped}/{coverage.ratePlansTotal} planes mapeados
-              </span>
-            ) : null}
-          </div>
-          <table className="cm-table" style={{ fontSize: 12 }}>
-            <thead>
-              <tr>
-                <th>Plan tarifario</th>
-                <th>Código externo</th>
-                <th>ID externo</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rates.map((m) => (
-                <tr key={m.id}>
-                  <td>{m.ratePlanName ?? m.ratePlanId}</td>
-                  <td>{m.externalRateCode}</td>
-                  <td className="bo-muted">{m.externalRateId ?? "—"}</td>
-                  <td>
-                    <button type="button" className="ghost" disabled={busy} onClick={() => deleteRate(m.id)}>Eliminar</button>
-                  </td>
-                </tr>
-              ))}
-              <tr>
-                <td><input style={inputStyle} placeholder="id del plan tarifario" aria-label="Id del plan tarifario" value={ratePlanId} onChange={(e) => setRatePlanId(e.target.value)} /></td>
-                <td><input style={inputStyle} placeholder="código externo" aria-label="Código externo del plan" value={rateExtCode} onChange={(e) => setRateExtCode(e.target.value)} /></td>
-                <td><input style={inputStyle} placeholder="id externo (opcional)" aria-label="Id externo del plan" value={rateExtId} onChange={(e) => setRateExtId(e.target.value)} /></td>
-                <td><button type="button" className="primary" disabled={busy} onClick={addRate}>Añadir</button></td>
-              </tr>
-            </tbody>
-          </table>
-        </>
+      <div className="cocoa-row" data-gap="2">
+        <strong className="cocoa-caption">Tipos de habitación → código externo</strong>
+        {coverage ? <CoverageBadge mapped={coverage.roomTypesMapped} total={coverage.roomTypesTotal} noun="tipos con código" /> : null}
+      </div>
+      {rooms.length === 0 ? (
+        <CocoaState kind="empty" inline title="Sin correspondencias de habitación para este canal." />
+      ) : (
+        <CocoaTable
+          columns={ROOM_MAPPING_COLUMNS}
+          rows={rooms}
+          rowKey="id"
+          density="compact"
+          caption="Correspondencias de tipos de habitación"
+          rowActions={(m) => (
+            <CocoaButton variant="plain" tone="destructive" size="small" disabled={busy} onClick={() => void deleteRoom(m.id)}>
+              {ACTIONS.delete}
+            </CocoaButton>
+          )}
+        />
       )}
+      <CocoaFormRow columns={3} min={160}>
+        <CocoaField label="Id del tipo de habitación">
+          <CocoaInput size="small" value={roomTypeId} onChange={setRoomTypeId} placeholder="id del tipo de habitación" />
+        </CocoaField>
+        <CocoaField label="Código externo">
+          <CocoaInput size="small" value={roomExtCode} onChange={setRoomExtCode} placeholder="código externo" />
+        </CocoaField>
+        <CocoaField label="Id externo" hint="opcional">
+          <CocoaInput size="small" value={roomExtId} onChange={setRoomExtId} placeholder="id externo" />
+        </CocoaField>
+      </CocoaFormRow>
+      <div className="cocoa-row" data-justify="end">
+        <CocoaButton variant="tinted" tone="accent" size="small" loading={busy} disabled={busy || !roomTypeId.trim() || !roomExtCode.trim()} onClick={() => void addRoom()}>
+          Añadir habitación
+        </CocoaButton>
+      </div>
+
+      <div className="cocoa-row" data-gap="2">
+        <strong className="cocoa-caption">Planes tarifarios → código externo</strong>
+        {coverage ? <CoverageBadge mapped={coverage.ratePlansMapped} total={coverage.ratePlansTotal} noun="planes con código" /> : null}
+      </div>
+      {rates.length === 0 ? (
+        <CocoaState kind="empty" inline title="Sin correspondencias de tarifa para este canal." />
+      ) : (
+        <CocoaTable
+          columns={RATE_MAPPING_COLUMNS}
+          rows={rates}
+          rowKey="id"
+          density="compact"
+          caption="Correspondencias de planes tarifarios"
+          rowActions={(m) => (
+            <CocoaButton variant="plain" tone="destructive" size="small" disabled={busy} onClick={() => void deleteRate(m.id)}>
+              {ACTIONS.delete}
+            </CocoaButton>
+          )}
+        />
+      )}
+      <CocoaFormRow columns={3} min={160}>
+        <CocoaField label="Id del plan tarifario">
+          <CocoaInput size="small" value={ratePlanId} onChange={setRatePlanId} placeholder="id del plan tarifario" />
+        </CocoaField>
+        <CocoaField label="Código externo">
+          <CocoaInput size="small" value={rateExtCode} onChange={setRateExtCode} placeholder="código externo" />
+        </CocoaField>
+        <CocoaField label="Id externo" hint="opcional">
+          <CocoaInput size="small" value={rateExtId} onChange={setRateExtId} placeholder="id externo" />
+        </CocoaField>
+      </CocoaFormRow>
+      <div className="cocoa-row" data-justify="end">
+        <CocoaButton variant="tinted" tone="accent" size="small" loading={busy} disabled={busy || !ratePlanId.trim() || !rateExtCode.trim()} onClick={() => void addRate()}>
+          Añadir plan
+        </CocoaButton>
+      </div>
     </div>
   );
 }
@@ -521,9 +602,10 @@ function ChannelMappingsPanel({
 // ---------------------------------------------------------------------------
 // Rate grid v2 · channel layer (GET /properties/:id/channels for the list;
 // /channel-manager/channels/:channelId/* and /channel-manager/deliveries* for
-// everything else — services/channelsApi.ts). Kept as ONE self-contained panel so
-// the legacy hub above keeps working against the old API: when the v2 routes
-// answer 404 the panel says so and nothing else on the screen breaks.
+// everything else — services/channelsApi.ts). Kept as ONE self-contained panel
+// (three sections) so the legacy hub keeps working against the old API: when
+// the v2 routes answer 404 the panel says so and nothing else on the screen
+// breaks.
 // ---------------------------------------------------------------------------
 
 const DELIVERY_STATUSES = ["", "queued", "sending", "sent", "confirmed", "rejected", "timeout", "superseded"];
@@ -536,14 +618,18 @@ const CREDENTIAL_FIELDS: Record<string, string[]> = {
   vrbo: ["apiKey"]
 };
 
+const MODE_OPTIONS = (Object.keys(CHANNEL_MODE_LABELS) as ChannelMode[]).map((m) => ({ value: m, label: CHANNEL_MODE_LABELS[m] }));
+const PROVIDER_OPTIONS = CHANNEL_PROVIDER_CATALOG.map((c) => ({ value: c.code, label: c.label }));
+const DELIVERY_STATUS_OPTIONS = DELIVERY_STATUSES.map((st) => ({ value: st, label: st ? deliveryStatusLabel(st) : "Todos los estados" }));
+
 function describeV2Error(err: unknown, route = "/properties/:id/channels"): string {
   const info = classifyRateGridError(err);
-  if (info.kind === "not_deployed") return `Este API no expone todavía la ruta v2 ${route}: hace falta reiniciar el API con el módulo cableado.`;
+  if (info.kind === "not_deployed") return `El servidor todavía no admite esta función (${route}): hace falta reiniciarlo con el módulo de canales activado.`;
   if (info.kind === "forbidden") return "Sin permiso (channel_manager.manage) para esta operación.";
   return info.message;
 }
 
-function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChanged: () => void }) {
+function ChannelV2Panel({ propertyId, refreshKey, onChanged }: { propertyId: string; refreshKey: number; onChanged: () => void }) {
   const { showToast } = useToast();
   const [rows, setRows] = useState<ChannelAdminRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -557,7 +643,13 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
   const [mode, setMode] = useState<ChannelMode>("stub");
   const [markup, setMarkup] = useState("0");
 
-  // Credentials (write-only)
+  // Per-row markup drafts (the input commits on blur; the draft clears when the rows reload).
+  const [markupDraft, setMarkupDraft] = useState<Record<string, string>>({});
+  useEffect(() => {
+    setMarkupDraft({});
+  }, [rows]);
+
+  // Credentials (write-only) — captured in a drawer.
   const [credChannelId, setCredChannelId] = useState<string | null>(null);
   const [credValues, setCredValues] = useState<Record<string, string>>({});
   const [testResult, setTestResult] = useState<Record<string, string>>({});
@@ -621,7 +713,7 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
     return () => {
       cancelled = true;
     };
-  }, [propertyId, nonce]);
+  }, [propertyId, nonce, refreshKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -640,7 +732,7 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
     return () => {
       cancelled = true;
     };
-  }, [propertyId, filterChannel, filterStatus, filterFrom, filterTo, deliveriesNonce]);
+  }, [propertyId, filterChannel, filterStatus, filterFrom, filterTo, deliveriesNonce, refreshKey]);
 
   const refresh = () => {
     setNonce((n) => n + 1);
@@ -682,7 +774,7 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
         setName("");
         refresh();
       },
-      "Canal creado. Carga credenciales y mapea productos antes de publicar."
+      "Canal creado. Carga las credenciales y relaciona los productos antes de publicar."
     );
   }
 
@@ -700,6 +792,12 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
       await patchChannel(row.id, { defaultMarkupPercent: pct });
       refresh();
     });
+  }
+
+  function commitMarkup(row: ChannelAdminRow) {
+    const draft = markupDraft[row.id];
+    if (draft === undefined) return;
+    if (draft !== String(row.markupPercent ?? 0)) void handleMarkupChange(row, draft);
   }
 
   // Desactivar / Activar (PATCH status): an inactive channel keeps its
@@ -724,7 +822,7 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
     setBusy(`archive:${row.id}`);
     try {
       const res = await archiveChannel(row.id);
-      showToast(`${row.name} archivado (se conservan ${res.keptDeliveries} entregas en el historial). Volver a dar de alta ${row.providerCode} lo revive.`, { variant: "success" });
+      showToast(`${row.name} archivado (se conservan ${number(res.keptDeliveries)} entregas en el historial). Volver a dar de alta ${row.providerCode} lo revive.`, { variant: "success" });
       refresh();
     } catch (err) {
       const info = classifyRateGridError(err);
@@ -776,17 +874,21 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
     await run("drain", async () => {
       // One run per channel of this property (the API takes a single channelId).
       const res = await drainDeliveries({ channelIds: rows.map((r) => r.id) });
-      showToast(`Drenaje ejecutado: ${res.processed} de ${res.candidates} entregas procesadas${res.errors.length > 0 ? ` · ${res.errors.length} errores` : ""}.`, { variant: res.errors.length > 0 ? "info" : "success" });
+      showToast(`Drenaje ejecutado: ${number(res.processed)} de ${number(res.candidates)} entregas procesadas${res.errors.length > 0 ? ` · ${plural(res.errors.length, "error", "errores")}` : ""}.`, { variant: res.errors.length > 0 ? "info" : "success" });
       setDeliveriesNonce((n) => n + 1);
       refresh();
     });
   }
 
   async function handleRetry(delivery: ChannelDeliveryRow) {
-    await run(`retry:${delivery.id}`, async () => {
-      await retryDelivery(delivery.id);
-      setDeliveriesNonce((n) => n + 1);
-    }, "Entrega reencolada.");
+    await run(
+      `retry:${delivery.id}`,
+      async () => {
+        await retryDelivery(delivery.id);
+        setDeliveriesNonce((n) => n + 1);
+      },
+      "Entrega reencolada."
+    );
   }
 
   async function handleLoadMoreDeliveries() {
@@ -799,319 +901,494 @@ function ChannelV2Panel({ propertyId, onChanged }: { propertyId: string; onChang
   }
 
   const channelName = (id: string) => rows.find((r) => r.id === id)?.name ?? id;
-  const inputStyle: CSSProperties = { fontSize: 12, padding: "3px 6px" };
   const catalog = CHANNEL_PROVIDER_CATALOG.find((c) => c.code === providerCode);
+  const credRow = credChannelId ? (rows.find((r) => r.id === credChannelId) ?? null) : null;
+  const credentialsReady = Object.values(credValues).some((v) => v.trim() !== "");
+
+  function closeCredentials() {
+    setCredChannelId(null);
+    setCredValues({});
+  }
+
+  const channelColumns: CocoaTableColumn<ChannelAdminRow>[] = [
+    {
+      key: "name",
+      label: "Canal",
+      minWidth: 220,
+      render: (row) => (
+        <div className="cocoa-stack" data-gap="1">
+          <strong>{row.name}</strong>
+          <span className="cocoa-cluster">
+            <Note title={row.providerCode}>{providerLabel(row.providerCode)}</Note>
+            <StatusBadge status={row.status} />
+            {row.readyToPush ? (
+              <CocoaBadge tone="success">listo</CocoaBadge>
+            ) : (
+              <CocoaBadge tone="warning" uppercase={false} title={row.readinessSummary ?? undefined}>
+                {row.readinessSummary ?? "incompleto"}
+              </CocoaBadge>
+            )}
+          </span>
+          {testResult[row.id] ? <Note>Prueba: {testResult[row.id]}</Note> : null}
+        </div>
+      )
+    },
+    {
+      key: "mode",
+      label: "Modo",
+      render: (row) => (
+        <div className="cocoa-stack" data-gap="1">
+          {/* The select edits the REQUESTED mode; the instance cap (CHANNEL_MAX_MODE) decides the effective one. */}
+          <CocoaSelect
+            size="small"
+            value={row.requestedMode ?? row.mode}
+            options={MODE_OPTIONS}
+            disabled={busy !== null}
+            aria-label={`Modo de ${row.name}`}
+            onChange={(value) => void handleModeChange(row, value as ChannelMode)}
+            style={modeSelectStyle}
+          />
+          {row.requestedMode && row.requestedMode !== row.mode ? (
+            <Note title={`Solicitado: ${channelModeLabel(row.requestedMode)} · tope de la instancia (CHANNEL_MAX_MODE): ${channelModeLabel(row.maxMode)}`}>
+              <ExclamationCircleIcon size={12} aria-hidden="true" /> Efectivo: <strong>{channelModeLabel(row.mode)}</strong> (solicitado {channelModeLabel(row.requestedMode)}; la instancia lo limita a{" "}
+              {channelModeLabel(row.maxMode ?? row.mode)})
+            </Note>
+          ) : null}
+        </div>
+      )
+    },
+    {
+      key: "markupPercent",
+      label: "Recargo",
+      align: "right",
+      fit: true,
+      render: (row) => (
+        <span className="cocoa-row" data-gap="1" data-wrap="nowrap">
+          <CocoaInput
+            size="small"
+            inputMode="decimal"
+            value={markupDraft[row.id] ?? String(row.markupPercent ?? 0)}
+            onChange={(value) => setMarkupDraft((prev) => ({ ...prev, [row.id]: value }))}
+            onBlur={() => commitMarkup(row)}
+            disabled={busy !== null}
+            aria-label={`Recargo de ${row.name} en porcentaje`}
+            style={markupInputStyle}
+          />
+          <span aria-hidden="true">%</span>
+        </span>
+      )
+    },
+    {
+      key: "credentials",
+      label: "Credenciales",
+      fit: true,
+      render: (row) => (
+        <div className="cocoa-stack" data-gap="1">
+          <span className="cocoa-row" data-gap="1" data-wrap="nowrap">
+            {row.credentialsUndecryptable ? (
+              <CocoaBadge tone="danger" uppercase={false} title="Hay credenciales guardadas pero la clave de cifrado actual no puede abrirlas (clave rotada sin backfill): vuelve a guardarlas.">
+                ilegibles (clave rotada)
+              </CocoaBadge>
+            ) : row.hasCredentials ? (
+              <CocoaBadge tone="success">cargadas</CocoaBadge>
+            ) : (
+              <CocoaBadge tone="warning">sin credenciales</CocoaBadge>
+            )}
+            <CocoaButton
+              variant="plain"
+              tone="accent"
+              size="small"
+              onClick={() => {
+                setCredChannelId(row.id);
+                setCredValues({});
+              }}
+            >
+              {row.hasCredentials ? "Sustituir" : "Cargar"}
+            </CocoaButton>
+          </span>
+          {row.credentialsUndecryptable ? <Note>Vuelve a guardarlas para que el canal pueda usarlas.</Note> : null}
+        </div>
+      )
+    },
+    { key: "mappedProducts", label: "Productos", align: "right", fit: true, showFrom: "laptop", render: (row) => number(row.mappedProducts) }
+  ];
+
+  const deliveryColumns: CocoaTableColumn<ChannelDeliveryRow>[] = [
+    { key: "when", label: "Cuándo", fit: true, render: (d) => fmtTime(d.updatedAt ?? d.createdAt) },
+    { key: "channel", label: "Canal", fit: true, render: (d) => channelName(d.channelId) },
+    { key: "kind", label: "Tipo", fit: true, render: (d) => DELIVERY_KIND_LABELS[d.kind] ?? d.kind },
+    {
+      key: "product",
+      label: "Producto",
+      minWidth: 180,
+      render: (d) => <Note title={`${d.roomTypeId} · ${d.ratePlanId}`}>{productLabel(d.roomTypeId, d.ratePlanId)}</Note>
+    },
+    { key: "date", label: "Fecha", fit: true, hideOnNarrow: true, render: (d) => fmtDate(d.date) },
+    {
+      key: "status",
+      label: "Estado",
+      fit: true,
+      render: (d) => (
+        <CocoaBadge tone={deliveryTone(d.status)} title={d.status}>
+          {deliveryStatusLabel(d.status)}
+        </CocoaBadge>
+      )
+    },
+    { key: "attempts", label: "Intentos", align: "right", fit: true, showFrom: "laptop", render: (d) => number(d.attempts) },
+    { key: "lastError", label: "Error", minWidth: 160, showFrom: "desktop", render: (d) => <Note>{d.lastError ?? "—"}</Note> }
+  ];
+
+  const channelsReady = !loading && rows.length > 0;
+  const deliveriesReady = !deliveriesError && deliveries.length > 0;
 
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Rate grid v2</p>
-          <h3>Canales conectados al editor de tarifas</h3>
+    <>
+      <CocoaSection title="Dar de alta un canal" meta="Editor de tarifas">
+        <div className="cocoa-stack" data-gap="3">
+          <Note>
+            Los cambios publicados desde el editor se encolan como entregas por canal (tarifas / disponibilidad / restricciones) y un proceso las envía con reintentos. Modo{" "}
+            <strong>simulado</strong> = sin red; <strong>modo de pruebas</strong> = entorno de pruebas del proveedor; <strong>real</strong> solo con credenciales cargadas. Nada sale a
+            Internet sin modo real.
+          </Note>
+          {error ? (
+            <CocoaCallout tone="danger" role="alert">
+              {error}
+            </CocoaCallout>
+          ) : null}
+          <CocoaFormRow columns={4} min={160}>
+            <CocoaField label="Proveedor">
+              <CocoaSelect value={providerCode} onChange={setProviderCode} options={PROVIDER_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Nombre" required>
+              <CocoaInput value={name} onChange={setName} placeholder={`Booking.com · ${getActivePropertyName() || "mi hotel"}`} />
+            </CocoaField>
+            <CocoaField label="Modo">
+              <CocoaSelect value={mode} onChange={(value) => setMode(value as ChannelMode)} options={MODE_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Recargo (%)">
+              <CocoaInput value={markup} onChange={setMarkup} inputMode="decimal" />
+            </CocoaField>
+          </CocoaFormRow>
+          <div className="cocoa-row" data-justify="between" data-gap="2">
+            {catalog ? <Note>{catalog.note}</Note> : <span />}
+            <CocoaButton variant="filled" tone="accent" loading={busy === "create"} disabled={busy !== null || !name.trim()} onClick={() => void handleCreate()}>
+              Dar de alta
+            </CocoaButton>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <span className="bo-chip">{rows.length} canales</span>
-          <button type="button" className="ghost" disabled={busy !== null} onClick={handleDrain}>
-            {busy === "drain" ? "Drenando…" : "Drenar ahora"}
-          </button>
-          <button type="button" className="ghost" onClick={refresh}>
-            ↻
-          </button>
-        </div>
-      </div>
-      <p className="bo-muted" style={{ marginTop: 0, textTransform: "none" }}>
-        Los cambios publicados desde el editor se encolan como entregas por canal (tarifas / disponibilidad / restricciones) y un proceso las envía con
-        reintentos. Modo <strong>simulado</strong> = sin red; <strong>modo de pruebas</strong> = entorno de pruebas del proveedor; <strong>real</strong> solo
-        con credenciales cargadas. Nada sale a Internet sin modo real.
-      </p>
+      </CocoaSection>
 
-      {error ? (
-        <div className="bo-muted" style={{ fontSize: 12, color: "var(--danger-ink, #b3261e)", marginBottom: 8, textTransform: "none" }} role="alert">
-          {error}
-        </div>
-      ) : null}
+      <CocoaSection
+        title="Canales conectados al editor de tarifas"
+        meta={plural(rows.length, "canal", "canales")}
+        padding={channelsReady ? "none" : "md"}
+        style={clipStyle}
+        action={
+          <CocoaButton variant="plain" tone="accent" size="small" loading={busy === "drain"} disabled={busy !== null} onClick={() => void handleDrain()}>
+            Drenar ahora
+          </CocoaButton>
+        }
+      >
+        {loading ? (
+          <CocoaState kind="loading" inline />
+        ) : rows.length === 0 && !error ? (
+          <CocoaState kind="empty" inline title="Sin canales todavía." message="Da de alta el primero arriba (empieza en modo simulado o de pruebas)." />
+        ) : rows.length === 0 ? (
+          <CocoaState kind="error" inline title="No se pudieron cargar los canales" message={error ?? undefined} onRetry={refresh} />
+        ) : (
+          <CocoaTable
+            columns={channelColumns}
+            rows={rows}
+            rowKey="id"
+            caption="Canales conectados al editor de tarifas"
+            rowActions={(row) => (
+              <>
+                <CocoaButton variant="bordered" tone="neutral" size="small" loading={busy === `test:${row.id}`} disabled={busy !== null} onClick={() => void handleTest(row)}>
+                  Probar conexión
+                </CocoaButton>
+                <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("ChannelMappings", `channel=${encodeURIComponent(row.id)}`)}>
+                  Correspondencias
+                </CocoaButton>
+                <CocoaButton
+                  variant="plain"
+                  tone="neutral"
+                  size="small"
+                  loading={busy === `status:${row.id}`}
+                  disabled={busy !== null}
+                  title={row.status === "active" ? "El canal deja de ofrecerse en el editor y no se le encola nada; conserva credenciales y correspondencias" : "Vuelve a ofrecer el canal en el editor"}
+                  onClick={() => void handleToggleStatus(row)}
+                >
+                  {row.status === "active" ? ACTIONS.deactivate : ACTIONS.activate}
+                </CocoaButton>
+                <CocoaButton
+                  variant="plain"
+                  tone="destructive"
+                  size="small"
+                  loading={busy === `archive:${row.id}`}
+                  disabled={busy !== null}
+                  title="Archivado lógico: el canal desaparece del editor y del hub; el historial de entregas se conserva y una nueva alta del mismo proveedor lo revive"
+                  onClick={() => setArchiveTarget(row)}
+                >
+                  {ACTIONS.archive}
+                </CocoaButton>
+              </>
+            )}
+          />
+        )}
+      </CocoaSection>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "flex-end", marginBottom: 12 }}>
-        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span className="bo-muted" style={{ fontSize: 12 }}>Proveedor</span>
-          <select value={providerCode} onChange={(e) => setProviderCode(e.target.value)}>
-            {CHANNEL_PROVIDER_CATALOG.map((c) => (
-              <option key={c.code} value={c.code}>{c.label}</option>
-            ))}
-          </select>
-        </label>
-        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span className="bo-muted" style={{ fontSize: 12 }}>Nombre</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder={`Booking.com · ${getActivePropertyName() || "mi hotel"}`} />
-        </label>
-        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span className="bo-muted" style={{ fontSize: 12 }}>Modo</span>
-          <select value={mode} onChange={(e) => setMode(e.target.value as ChannelMode)}>
-            {(Object.keys(CHANNEL_MODE_LABELS) as ChannelMode[]).map((m) => (
-              <option key={m} value={m}>{CHANNEL_MODE_LABELS[m]}</option>
-            ))}
-          </select>
-        </label>
-        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span className="bo-muted" style={{ fontSize: 12 }}>Recargo %</span>
-          <input value={markup} onChange={(e) => setMarkup(e.target.value)} inputMode="decimal" style={{ width: 80 }} />
-        </label>
-        <button type="button" className="primary" disabled={busy !== null || !name.trim()} onClick={handleCreate}>
-          {busy === "create" ? "Creando…" : "Dar de alta"}
-        </button>
-        {catalog ? <span className="bo-muted" style={{ fontSize: 12, flexBasis: "100%", textTransform: "none" }}>{catalog.note}</span> : null}
-      </div>
-
-      {loading ? (
-        <p className="bo-muted">Cargando canales v2…</p>
-      ) : rows.length === 0 && !error ? (
-        <p className="bo-muted">Sin canales todavía. Da de alta el primero arriba (empieza en modo simulado o de pruebas).</p>
-      ) : (
-        <div className="rev-report-wrap">
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Canal</th>
-                <th>Modo</th>
-                <th style={{ textAlign: "right" }}>Recargo</th>
-                <th>Credenciales</th>
-                <th style={{ textAlign: "right" }}>Productos</th>
-                <th>Listo</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <tr key={row.id}>
-                  <td>
-                    <strong>{row.name}</strong>
-                    <div className="bo-muted" style={{ fontSize: 12, textTransform: "none" }}>{row.providerCode} · {statusPill(row.status)}</div>
-                    {testResult[row.id] ? <div className="bo-muted" style={{ fontSize: 12, textTransform: "none" }}>Prueba: {testResult[row.id]}</div> : null}
-                  </td>
-                  <td>
-                    {/* The select edits the REQUESTED mode; the instance cap (CHANNEL_MAX_MODE) decides the effective one. */}
-                    <select value={row.requestedMode ?? row.mode} disabled={busy !== null} aria-label={`Modo de ${row.name}`} onChange={(e) => void handleModeChange(row, e.target.value as ChannelMode)}>
-                      {(Object.keys(CHANNEL_MODE_LABELS) as ChannelMode[]).map((m) => (
-                        <option key={m} value={m}>{CHANNEL_MODE_LABELS[m]}</option>
-                      ))}
-                    </select>
-                    {row.requestedMode && row.requestedMode !== row.mode ? (
-                      <div className="bo-muted" style={{ fontSize: 11, textTransform: "none", marginTop: 4 }} title={`Solicitado: ${channelModeLabel(row.requestedMode)} · tope de la instancia (CHANNEL_MAX_MODE): ${channelModeLabel(row.maxMode)}`}>
-                        ⚠ Efectivo: <strong>{channelModeLabel(row.mode)}</strong> (solicitado {channelModeLabel(row.requestedMode)}; la instancia lo limita a {channelModeLabel(row.maxMode ?? row.mode)})
-                      </div>
-                    ) : null}
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    <input
-                      key={`${row.id}:${row.markupPercent}`}
-                      defaultValue={String(row.markupPercent ?? 0)}
-                      style={{ ...inputStyle, width: 60, textAlign: "right" }}
-                      inputMode="decimal"
-                      onBlur={(e) => {
-                        if (e.target.value !== String(row.markupPercent ?? 0)) void handleMarkupChange(row, e.target.value);
-                      }}
-                    />
-                    %
-                  </td>
-                  <td>
-                    {row.credentialsUndecryptable ? (
-                      <span className="cm-pill cm-pill-error" style={{ textTransform: "none" }} title="Hay credenciales guardadas pero la clave de cifrado actual no puede abrirlas (clave rotada sin backfill): vuelve a guardarlas.">
-                        ilegibles (clave rotada)
-                      </span>
-                    ) : row.hasCredentials ? (
-                      <span className="cm-pill cm-pill-ok">cargadas</span>
-                    ) : (
-                      <span className="cm-pill cm-pill-warn">sin credenciales</span>
-                    )}
-                    {row.credentialsUndecryptable && credChannelId !== row.id ? (
-                      <div className="bo-muted" style={{ fontSize: 11, textTransform: "none", marginTop: 4 }}>Vuelve a guardarlas para que el canal pueda usarlas.</div>
-                    ) : null}
-                    {credChannelId === row.id ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 6 }}>
-                        {(CREDENTIAL_FIELDS[row.providerCode] ?? ["apiKey"]).map((field) => (
-                          <input
-                            key={field}
-                            style={inputStyle}
-                            type={/password|secret/i.test(field) ? "password" : "text"}
-                            placeholder={field}
-                            value={credValues[field] ?? ""}
-                            onChange={(e) => setCredValues((prev) => ({ ...prev, [field]: e.target.value }))}
-                            autoComplete="off"
-                          />
-                        ))}
-                        <div style={{ display: "flex", gap: 4 }}>
-                          <button type="button" className="primary" disabled={busy !== null} onClick={() => void handleSaveCredentials(row)}>Guardar</button>
-                          <button type="button" className="ghost" onClick={() => { setCredChannelId(null); setCredValues({}); }}>Cancelar</button>
-                        </div>
-                        <span className="bo-muted" style={{ fontSize: 11 }}>Solo escritura: se cifran en el servidor y no se vuelven a mostrar.</span>
-                      </div>
-                    ) : (
-                      <button type="button" className="ghost" style={{ marginLeft: 6 }} onClick={() => { setCredChannelId(row.id); setCredValues({}); }}>
-                        {row.hasCredentials ? "Sustituir" : "Cargar"}
-                      </button>
-                    )}
-                  </td>
-                  <td style={{ textAlign: "right" }}>{row.mappedProducts}</td>
-                  <td>
-                    {row.readyToPush ? (
-                      <span className="cm-pill cm-pill-ok">listo</span>
-                    ) : (
-                      <span className="cm-pill cm-pill-warn" style={{ textTransform: "none" }} title={row.readinessSummary ?? undefined}>
-                        {row.readinessSummary ?? "incompleto"}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                      <button type="button" className="ghost" disabled={busy !== null} onClick={() => void handleTest(row)}>
-                        {busy === `test:${row.id}` ? "…" : "Probar conexión"}
-                      </button>
-                      <button type="button" className="ghost" onClick={() => navigateToScreen(`ChannelMappings#channel=${encodeURIComponent(row.id)}`)}>
-                        Mapeos
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={busy !== null}
-                        title={row.status === "active" ? "El canal deja de ofrecerse en el editor y no se le encola nada; conserva credenciales y mapeos" : "Vuelve a ofrecer el canal en el editor"}
-                        onClick={() => void handleToggleStatus(row)}
-                      >
-                        {busy === `status:${row.id}` ? "…" : row.status === "active" ? "Desactivar" : "Activar"}
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={busy !== null}
-                        style={{ color: "var(--danger-ink, #b3261e)" }}
-                        title="Archivado lógico: el canal desaparece del editor y del hub; el historial de entregas se conserva y una nueva alta del mismo proveedor lo revive"
-                        onClick={() => setArchiveTarget(row)}
-                      >
-                        {busy === `archive:${row.id}` ? "…" : "Archivar"}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      <ConfirmDialog
+      <CocoaDialog
         open={archiveTarget !== null}
+        onClose={() => setArchiveTarget(null)}
         title={archiveTarget ? `Archivar ${archiveTarget.name}` : "Archivar canal"}
-        description="El canal desaparece del editor de tarifas y de este hub; sus entregas y mapeos se conservan en el historial. No se archiva si tiene entregas pendientes de envío (en cola o en vuelo): drena primero. Dar de alta de nuevo el mismo proveedor lo revive."
-        confirmLabel="Archivar"
-        cancelLabel="Cancelar"
-        variant="danger"
+        description="El canal desaparece del editor de tarifas y de este hub; sus entregas y correspondencias se conservan en el historial. No se archiva si tiene entregas pendientes de envío (en cola o en vuelo): drena primero. Dar de alta de nuevo el mismo proveedor lo revive."
+        tone="destructive"
+        confirmLabel={ACTIONS.archive}
+        cancelLabel={ACTIONS.cancel}
         onConfirm={() => {
           if (archiveTarget) void handleArchive(archiveTarget);
         }}
-        onCancel={() => setArchiveTarget(null)}
       />
 
-      <div className="bo-card-head" style={{ marginTop: 16 }}>
-        <div>
-          <p className="bo-muted">Cola de envíos</p>
-          <h3>Log de entregas</h3>
-        </div>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
-          <select value={filterChannel} onChange={(e) => setFilterChannel(e.target.value)} aria-label="Canal">
-            <option value="">Todos los canales</option>
-            {rows.map((r) => (
-              <option key={r.id} value={r.id}>{r.name}</option>
+      <CocoaDrawer
+        open={credRow !== null}
+        onClose={closeCredentials}
+        title={credRow ? `Credenciales de ${credRow.name}` : "Credenciales"}
+        subtitle="Solo escritura: se cifran en el servidor y no se vuelven a mostrar."
+        side="right"
+        size="sm"
+        dismissible={busy === null}
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={closeCredentials} disabled={busy !== null}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" loading={credRow !== null && busy === `cred:${credRow.id}`} disabled={busy !== null || !credentialsReady} onClick={() => credRow && void handleSaveCredentials(credRow)}>
+              {ACTIONS.save}
+            </CocoaButton>
+          </>
+        }
+      >
+        {credRow ? (
+          <div className="cocoa-stack" data-gap="3">
+            {(CREDENTIAL_FIELDS[credRow.providerCode] ?? ["apiKey"]).map((field) => (
+              <CocoaField key={field} label={CREDENTIAL_FIELD_LABELS[field] ?? field}>
+                <CocoaInput
+                  type={/password|secret/i.test(field) ? "password" : "text"}
+                  value={credValues[field] ?? ""}
+                  onChange={(value) => setCredValues((prev) => ({ ...prev, [field]: value }))}
+                  autoComplete="off"
+                  placeholder={field}
+                />
+              </CocoaField>
             ))}
-          </select>
-          <select value={filterStatus} onChange={(e) => setFilterStatus(e.target.value)} aria-label="Estado">
-            {DELIVERY_STATUSES.map((st) => (
-              <option key={st || "all"} value={st}>{st ? deliveryStatusLabel(st) : "Todos los estados"}</option>
-            ))}
-          </select>
-          <input type="date" value={filterFrom} onChange={(e) => setFilterFrom(e.target.value)} aria-label="Desde" />
-          <input type="date" value={filterTo} onChange={(e) => setFilterTo(e.target.value)} aria-label="Hasta" />
-          <button type="button" className="ghost" aria-label="Actualizar el log de entregas" onClick={() => setDeliveriesNonce((n) => n + 1)}>↻</button>
-        </div>
-      </div>
-      {deliveriesError ? (
-        <p className="bo-muted" style={{ fontSize: 12, color: "var(--danger-ink, #b3261e)", textTransform: "none" }} role="alert">{deliveriesError}</p>
-      ) : deliveries.length === 0 ? (
-        <p className="bo-muted">Sin entregas con estos filtros.</p>
-      ) : (
-        <div className="rev-report-wrap">
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Cuándo</th>
-                <th>Canal</th>
-                <th>Tipo</th>
-                <th>Producto</th>
-                <th>Fecha</th>
-                <th>Estado</th>
-                <th style={{ textAlign: "right" }}>Intentos</th>
-                <th>Error</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {deliveries.map((d) => (
-                <tr key={d.id}>
-                  <td>{fmtTime(d.updatedAt ?? d.createdAt)}</td>
-                  <td>{channelName(d.channelId)}</td>
-                  <td>{DELIVERY_KIND_LABELS[d.kind] ?? d.kind}</td>
-                  <td className="bo-muted" style={{ fontSize: 12, textTransform: "none" }} title={`${d.roomTypeId} · ${d.ratePlanId}`}>{productLabel(d.roomTypeId, d.ratePlanId)}</td>
-                  <td>{fmtDate(d.date)}</td>
-                  <td><span className={`cm-pill ${d.status === "confirmed" || d.status === "sent" ? "cm-pill-ok" : d.status === "rejected" || d.status === "timeout" ? "cm-pill-error" : "cm-pill-warn"}`} title={d.status}>{deliveryStatusLabel(d.status)}</span></td>
-                  <td style={{ textAlign: "right" }}>{d.attempts}</td>
-                  <td className="bo-muted" style={{ fontSize: 12 }}>{d.lastError ?? "—"}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className="ghost"
-                      disabled={busy !== null || !(d.status === "rejected" || d.status === "timeout")}
-                      title={d.status === "rejected" || d.status === "timeout" ? "Vuelve a encolar la entrega" : `Solo se reintentan entregas rechazadas o sin respuesta (estado: ${deliveryStatusLabel(d.status)})`}
-                      onClick={() => void handleRetry(d)}
-                    >
-                      {busy === `retry:${d.id}` ? "…" : "Reintentar"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          {deliveriesCursor ? (
-            <button type="button" className="ghost" style={{ marginTop: 8 }} disabled={busy !== null} onClick={() => void handleLoadMoreDeliveries()}>
+          </div>
+        ) : null}
+      </CocoaDrawer>
+
+      <CocoaSection
+        title="Log de entregas"
+        meta={deliveriesReady ? plural(deliveries.length, "entrega", "entregas") : "Cola de envíos"}
+        padding={deliveriesReady ? "none" : "md"}
+        style={clipStyle}
+        footer={
+          deliveriesReady && deliveriesCursor ? (
+            <CocoaButton variant="plain" tone="accent" size="small" loading={busy === "more"} disabled={busy !== null} onClick={() => void handleLoadMoreDeliveries()}>
               Cargar más
-            </button>
-          ) : null}
+            </CocoaButton>
+          ) : undefined
+        }
+      >
+        <div className="cocoa-stack" data-gap="3">
+          <CocoaToolbar
+            variant="content"
+            aria-label="Filtros del log de entregas"
+            leftSlot={
+              <>
+                <CocoaSelect size="small" value={filterChannel} onChange={setFilterChannel} aria-label="Canal" options={[{ value: "", label: "Todos los canales" }, ...rows.map((r) => ({ value: r.id, label: r.name }))]} />
+                <CocoaSelect size="small" value={filterStatus} onChange={setFilterStatus} aria-label="Estado" options={DELIVERY_STATUS_OPTIONS} />
+                <CocoaDatePicker size="small" value={filterFrom} onChange={setFilterFrom} aria-label="Desde" />
+                <CocoaDatePicker size="small" value={filterTo} onChange={setFilterTo} aria-label="Hasta" />
+              </>
+            }
+            rightSlot={
+              <CocoaButton variant="bordered" tone="neutral" size="small" aria-label="Actualizar el log de entregas" onClick={() => setDeliveriesNonce((n) => n + 1)}>
+                {ACTIONS.refresh}
+              </CocoaButton>
+            }
+          />
+          {deliveriesError ? (
+            <CocoaState kind="error" inline title="No se pudo cargar el log de entregas" message={deliveriesError} onRetry={() => setDeliveriesNonce((n) => n + 1)} />
+          ) : deliveries.length === 0 ? (
+            <CocoaState kind="empty" inline title="Sin entregas con estos filtros." />
+          ) : (
+            <CocoaTable
+              columns={deliveryColumns}
+              rows={deliveries}
+              rowKey="id"
+              density="compact"
+              caption="Log de entregas"
+              rowActions={(d) => {
+                const retryable = d.status === "rejected" || d.status === "timeout";
+                return (
+                  <CocoaButton
+                    variant="plain"
+                    tone="accent"
+                    size="small"
+                    loading={busy === `retry:${d.id}`}
+                    disabled={busy !== null || !retryable}
+                    title={retryable ? "Vuelve a encolar la entrega" : `Solo se reintentan entregas rechazadas o sin respuesta (estado: ${deliveryStatusLabel(d.status)})`}
+                    onClick={() => void handleRetry(d)}
+                  >
+                    {ACTIONS.retry}
+                  </CocoaButton>
+                );
+              }}
+            />
+          )}
         </div>
-      )}
-    </section>
+      </CocoaSection>
+    </>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Aggregator layer (legacy routes): channel cards, unified push, sync jobs,
+// parity alerts.
+// ---------------------------------------------------------------------------
+
+type PushResultRow = PushResult["results"][number] & { channelName: string };
+
+const PUSH_RESULT_COLUMNS: CocoaTableColumn<PushResultRow>[] = [
+  { key: "channelName", label: "Canal" },
+  { key: "providerCode", label: "Proveedor", fit: true, hideOnNarrow: true, render: (r) => providerLabel(r.providerCode) },
+  { key: "ok", label: "Estado", fit: true, render: (r) => <StatusBadge status={r.ok ? "success" : "failed"} /> },
+  { key: "pushed", label: "Enviados", align: "right", fit: true, render: (r) => number(r.pushed ?? 0) },
+  { key: "latencyMs", label: "Latencia", align: "right", fit: true, showFrom: "tablet", render: (r) => (r.latencyMs ? `${number(r.latencyMs)} ms` : "—") },
+  {
+    key: "errors",
+    label: "Errores",
+    minWidth: 200,
+    render: (r) => {
+      const errText = r.errors?.join("; ") ?? "";
+      if (!errText) return "—";
+      const mappingMissing = MAPPING_MISSING.test(errText);
+      return <span style={mappingMissing ? dangerTextStyle : undefined}>{mappingMissing ? `${errText} — abre «Correspondencias» en la tarjeta del canal para corregirlo.` : errText}</span>;
+    }
+  }
+];
+
+type SyncJobView = SyncJobRow & { channelName: string; latency: string };
+
+const SYNC_JOB_COLUMNS: CocoaTableColumn<SyncJobView>[] = [
+  { key: "createdAt", label: "Cuándo", fit: true, render: (j) => fmtTime(j.createdAt) },
+  { key: "channelName", label: "Canal" },
+  { key: "syncType", label: "Tarea", render: (j) => <span title={j.syncType}>{SYNC_TYPE_LABELS[j.syncType] ?? j.syncType}</span> },
+  { key: "status", label: "Estado", fit: true, render: (j) => <StatusBadge status={j.status} /> },
+  { key: "latency", label: "Latencia", align: "right", fit: true, showFrom: "tablet" },
+  { key: "errorMessage", label: "Error", minWidth: 160, hideOnNarrow: true, render: (j) => <Note>{j.errorMessage ?? "—"}</Note> }
+];
+
+const PARITY_COLUMNS: CocoaTableColumn<ParityAlertRow>[] = [
+  { key: "stayDate", label: "Noche", fit: true, render: (a) => fmtDate(a.stayDate) },
+  { key: "sourceChannel", label: "Canal", fit: true, render: (a) => a.sourceChannel ?? "—" },
+  { key: "severity", label: "Gravedad", fit: true, render: (a) => <SeverityBadge severity={a.severity} /> },
+  { key: "directRate", label: "Nuestro precio", align: "right", fit: true, render: (a) => money(a.directRate, a.currency ?? undefined) },
+  { key: "channelRate", label: "Precio en el canal", align: "right", fit: true, render: (a) => money(a.channelRate, a.currency ?? undefined) },
+  { key: "message", label: "Mensaje", minWidth: 200, hideOnNarrow: true, render: (a) => <Note>{a.message}</Note> }
+];
+
+function HubSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton variant="card" height={220} />
+      <CocoaSkeleton variant="card" height={240} />
+    </div>
+  );
+}
+
+function ChannelCard({
+  channel,
+  readinessNonce,
+  testing,
+  syncing,
+  expanded,
+  onTest,
+  onSync,
+  onToggleMappings,
+  onMappingsChanged
+}: {
+  channel: ChannelRow;
+  readinessNonce: number;
+  testing: boolean;
+  syncing: boolean;
+  expanded: boolean;
+  onTest: () => void;
+  onSync: () => void;
+  onToggleMappings: () => void;
+  onMappingsChanged: () => void;
+}) {
+  const errorMessage = channel.latestSync?.errorMessage ?? null;
+  return (
+    <CocoaSection title={channel.name} meta={<StatusBadge status={channel.status} />}>
+      <div className="cocoa-stack" data-gap="3">
+        {/* Labelled and never uppercase: «AIRBNB · VACATION_RENTAL» read as a raw enum (browser-ux-final#12). */}
+        <Note title={`${channel.providerCode} · ${channel.channelType}`}>
+          {providerLabel(channel.providerCode)} · {channelTypeLabel(channel.channelType)}
+        </Note>
+        <ul className="c22-section__list" aria-label={`Resumen de ${channel.name}`}>
+          <li>
+            <span>Última sincronización</span>
+            <strong>{fmtTime(channel.latestSync?.finishedAt ?? channel.latestSync?.createdAt ?? channel.lastSyncAt)}</strong>
+          </li>
+          <li>
+            <span>Correspondencias</span>
+            <strong>
+              {plural(channel.roomMappingsCount, "habitación", "habitaciones")} · {plural(channel.rateMappingsCount, "tarifa", "tarifas")}
+            </strong>
+          </li>
+        </ul>
+        {errorMessage ? (
+          <CocoaCallout tone="danger" icon={<ExclamationCircleIcon size={16} />}>
+            {MAPPING_MISSING.test(errorMessage) ? `${errorMessage}. Configura las correspondencias más abajo.` : errorMessage}
+          </CocoaCallout>
+        ) : null}
+        <div className="cocoa-row" data-gap="2">
+          <CocoaButton variant="bordered" tone="neutral" size="small" loading={testing} disabled={testing} onClick={onTest}>
+            Probar
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" loading={syncing} disabled={syncing} onClick={onSync}>
+            Sincronizar ahora
+          </CocoaButton>
+          <CocoaButton variant="plain" tone="accent" size="small" aria-expanded={expanded} onClick={onToggleMappings}>
+            {expanded ? "Ocultar correspondencias" : "Correspondencias"}
+          </CocoaButton>
+        </div>
+        <ChannelReadinessPanel channelId={channel.id} refreshKey={readinessNonce} />
+        {expanded ? <ChannelMappingsPanel channelId={channel.id} onChanged={onMappingsChanged} /> : null}
+      </div>
+    </CocoaSection>
+  );
+}
+
+const SUBTITLE =
+  "Un único punto para tarifas, disponibilidad y restricciones: cada publicación del editor de tarifas llega a Booking, Expedia, Airbnb, Hotelbeds y Vrbo. Las reservas de los canales entran como reservas externas y la paridad de precios se vigila de forma continua.";
+
 export function ChannelAggregatorHub() {
   // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
-  const channelsState = useApiData<{ channels: ChannelRow[] }>(
-    `/channel-manager/channels?propertyId=${PROPERTY_ID}`,
-    { pollIntervalMs: 30000 }
-  );
-  const jobsState = useApiData<{ jobs: SyncJobRow[] }>(
-    `/channel-manager/sync-jobs?propertyId=${PROPERTY_ID}`,
-    { pollIntervalMs: 30000 }
-  );
-  const alertsState = useApiData<{ alerts: ParityAlertRow[] }>(
-    `/channel-manager/parity/alerts?propertyId=${PROPERTY_ID}&status=open`,
-    { pollIntervalMs: 30000 }
-  );
+  const channelsState = useApiData<{ channels: ChannelRow[] }>(`/channel-manager/channels?propertyId=${PROPERTY_ID}`, { pollIntervalMs: 30000 });
+  const jobsState = useApiData<{ jobs: SyncJobRow[] }>(`/channel-manager/sync-jobs?propertyId=${PROPERTY_ID}`, { pollIntervalMs: 30000 });
+  const alertsState = useApiData<{ alerts: ParityAlertRow[] }>(`/channel-manager/parity/alerts?propertyId=${PROPERTY_ID}&status=open`, { pollIntervalMs: 30000 });
 
   // The legacy list route returns every row of the property, archived ones
   // included (aggregator.service.listChannels filters by `active` only): hide
   // them here, as the v2 panel and the editor do.
-  const channels = (channelsState.data?.channels ?? []).filter((c) => c.status?.toLowerCase() !== "archived");
-  const jobs = jobsState.data?.jobs ?? [];
-  const openAlerts = alertsState.data?.alerts ?? [];
+  const channels = useMemo(() => (channelsState.data?.channels ?? []).filter((c) => c.status?.toLowerCase() !== "archived"), [channelsState.data]);
+  const jobs = useMemo(() => jobsState.data?.jobs ?? [], [jobsState.data]);
+  const openAlerts = useMemo(() => alertsState.data?.alerts ?? [], [alertsState.data]);
 
   // Push panel state.
   const [fromDate, setFromDate] = useState<string>(todayIso());
@@ -1127,6 +1404,8 @@ export function ChannelAggregatorHub() {
   // readiness panel after a mapping changes (mappings feed the readiness check).
   const [expandedMappings, setExpandedMappings] = useState<Record<string, boolean>>({});
   const [readinessNonce, setReadinessNonce] = useState(0);
+  // «Actualizar» of the page also reloads the v2 layer.
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const kpis = useMemo(() => {
     const activeChannels = channels.filter((c) => c.status.toLowerCase() === "active").length;
@@ -1140,12 +1419,12 @@ export function ChannelAggregatorHub() {
     }
     const pendingAlerts = openAlerts.length;
     const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
-    const reservations24h = jobs.filter(
-      (j) => j.syncType === "ingest_reservations" && new Date(j.createdAt).getTime() >= dayAgo
-    ).reduce((sum, j) => {
-      const payload = j.responsePayloadJson as { imported?: number } | null;
-      return sum + (typeof payload?.imported === "number" ? payload.imported : 0);
-    }, 0);
+    const reservations24h = jobs
+      .filter((j) => j.syncType === "ingest_reservations" && new Date(j.createdAt).getTime() >= dayAgo)
+      .reduce((sum, j) => {
+        const payload = j.responsePayloadJson as { imported?: number } | null;
+        return sum + (typeof payload?.imported === "number" ? payload.imported : 0);
+      }, 0);
     return { activeChannels, lastSync, pendingAlerts, reservations24h };
   }, [channels, jobs, openAlerts]);
 
@@ -1154,12 +1433,7 @@ export function ChannelAggregatorHub() {
     setPushError(null);
     setPushResult(null);
     try {
-      const path =
-        kind === "rates"
-          ? "/channel-manager/push-rates"
-          : kind === "availability"
-            ? "/channel-manager/push-availability"
-            : "/channel-manager/push-restrictions";
+      const path = kind === "rates" ? "/channel-manager/push-rates" : kind === "availability" ? "/channel-manager/push-availability" : "/channel-manager/push-restrictions";
       const payload = await apiRequest<PushResult>(path, {
         method: "POST",
         body: { propertyId: PROPERTY_ID, from: fromDate, to: toDate }
@@ -1256,35 +1530,65 @@ export function ChannelAggregatorHub() {
     return m;
   }, [channels]);
 
+  const pushRows = useMemo<PushResultRow[]>(
+    () => (pushResult ? pushResult.payload.results.map((row) => ({ ...row, channelName: channelById.get(row.channelId)?.name ?? row.channelId })) : []),
+    [pushResult, channelById]
+  );
+
+  const jobRows = useMemo<SyncJobView[]>(
+    () =>
+      jobs.slice(0, 50).map((j) => {
+        const start = j.startedAt ? new Date(j.startedAt).getTime() : null;
+        const end = j.finishedAt ? new Date(j.finishedAt).getTime() : null;
+        return {
+          ...j,
+          channelName: (j.channelId ? channelById.get(j.channelId)?.name : null) ?? j.channelId ?? "—",
+          latency: start !== null && end !== null ? `${number(Math.max(0, end - start))} ms` : "—"
+        };
+      }),
+    [jobs, channelById]
+  );
+
+  function refreshAll() {
+    channelsState.refresh();
+    jobsState.refresh();
+    alertsState.refresh();
+    setRefreshNonce((n) => n + 1);
+    setReadinessNonce((n) => n + 1);
+  }
+
+  function openEditor() {
+    navigateTo("RateGridEditorScreen");
+  }
+
+  const header = treeHeaderFor("ChannelAggregatorHub", { eyebrow: "Comercial", title: "Canales de venta" });
+  const initialLoading = channelsState.loading && !channelsState.data;
+  const channelsError = channelsState.error && !channelsState.data ? channelsState.error : null;
+  const jobsReady = jobRows.length > 0;
+  const alertsReady = openAlerts.length > 0;
+
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : (
-            <>
-              <div className="bo-page-eyebrow">Comercial · Canales de venta</div>
-              <h1 className="bo-page-title">Canales de venta</h1>
-            </>
-          )}
-          <p className="bo-page-subtitle">
-            Un único punto para tarifas, disponibilidad y restricciones: cada publicación del editor de tarifas llega a Booking, Expedia, Airbnb,
-            Hotelbeds y Vrbo. Las reservas de los canales entran como reservas externas y la paridad de precios se vigila de forma continua.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <CocoaButton
-            variant="filled"
-            tone="accent"
-            onClick={() => navigateToScreen("RateGridEditorScreen")}
-          >
+    <CocoaPage
+      eyebrow={`${header.eyebrow} · ${getActivePropertyName()}`}
+      title={header.title}
+      subtitle={hosted ? undefined : SUBTITLE}
+      actions={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" onClick={openEditor}>
             Editar tarifas en grid
           </CocoaButton>
-          <button type="button" className="ghost" onClick={() => { channelsState.refresh(); jobsState.refresh(); alertsState.refresh(); }}>
-            ↻ Actualizar
-          </button>
-        </div>
-      </div>
-
+        </>
+      }
+      state={initialLoading ? "loading" : "ready"}
+      skeleton={<HubSkeleton />}
+      commands={[
+        { id: "canales-refresh", label: "Actualizar canales de venta", run: refreshAll },
+        { id: "canales-editar-tarifas", label: "Editar tarifas en grid", run: openEditor }
+      ]}
+    >
       <CocoaScreenInstructionsCard
         title={CHANNELS_INSTRUCTIONS.whatIsThis}
         description="Conecta y monitoriza tus canales OTA desde un único punto."
@@ -1295,317 +1599,139 @@ export function ChannelAggregatorHub() {
       />
 
       {pushError ? (
-        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
+        <CocoaCallout tone="danger" role="alert" icon={<ExclamationCircleIcon size={16} />}>
           {pushError}
-        </section>
+        </CocoaCallout>
       ) : null}
 
-      <ChannelV2Panel propertyId={PROPERTY_ID} onChanged={() => { channelsState.refresh(); setReadinessNonce((n) => n + 1); }} />
+      <CocoaKpiStrip stagger aria-label="Indicadores de los canales">
+        <CocoaKpi label="Canales activos" value={number(kpis.activeChannels)} caption="con estado «activo»" polarity="neutral" status={kpis.activeChannels > 0 ? "ok" : "warning"} />
+        <CocoaKpi
+          label="Última sincronización correcta"
+          value={kpis.lastSync ? date(kpis.lastSync, "dayMonth") : "—"}
+          caption={kpis.lastSync ? `a las ${time(kpis.lastSync)} · la más reciente entre todos los canales` : "Ninguna registrada todavía"}
+          polarity="neutral"
+          status={kpis.lastSync ? "ok" : undefined}
+        />
+        <CocoaKpi
+          label="Alertas de paridad abiertas"
+          value={alertsState.loading && !alertsState.data ? "…" : number(kpis.pendingAlerts)}
+          caption="diferencias de precio sin resolver"
+          polarity="neutral"
+          status={kpis.pendingAlerts === 0 ? "ok" : kpis.pendingAlerts <= 2 ? "warning" : "critical"}
+        />
+        <CocoaKpi
+          label="Reservas importadas (24 h)"
+          value={jobsState.loading && !jobsState.data ? "…" : number(kpis.reservations24h)}
+          caption="recibidas de los canales en las últimas 24 horas"
+          polarity="neutral"
+          status="ok"
+        />
+      </CocoaKpiStrip>
 
-      <section className="rev-kpi-grid">
-        <article className={`rev-kpi rev-kpi-${kpis.activeChannels > 0 ? "ok" : "warn"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Canales activos</span></div>
-          <div className="rev-kpi-value">{channelsState.loading && !channelsState.data ? "…" : kpis.activeChannels}</div>
-          <div className="rev-kpi-delta">Canales con estado «activo»</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Última sincronización correcta</span></div>
-          <div className="rev-kpi-value" style={{ fontSize: 22 }}>{fmtTime(kpis.lastSync)}</div>
-          <div className="rev-kpi-delta">Más reciente entre todos los canales</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${kpis.pendingAlerts === 0 ? "ok" : kpis.pendingAlerts <= 2 ? "warn" : "error"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Alertas de paridad abiertas</span></div>
-          <div className="rev-kpi-value">{alertsState.loading && !alertsState.data ? "…" : kpis.pendingAlerts}</div>
-          <div className="rev-kpi-delta">Diferencias de precio sin resolver</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Reservas importadas (24 h)</span></div>
-          <div className="rev-kpi-value">{jobsState.loading && !jobsState.data ? "…" : kpis.reservations24h}</div>
-          <div className="rev-kpi-delta">Recibidas de los canales en las últimas 24 horas</div>
-        </article>
-      </section>
+      <ChannelV2Panel
+        propertyId={PROPERTY_ID}
+        refreshKey={refreshNonce}
+        onChanged={() => {
+          channelsState.refresh();
+          setReadinessNonce((n) => n + 1);
+        }}
+      />
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Canales</p>
-            <h3>Canales conectados (agregador)</h3>
-          </div>
-          <span className="bo-chip">{channels.length} canales</span>
-        </div>
-        {channels.length === 0 ? (
-          <p className="bo-muted">No hay canales conectados todavía.</p>
+      <CocoaSection variant="plain" padding="none" title="Canales conectados (agregador)" meta={plural(channels.length, "canal", "canales")}>
+        {channelsError ? (
+          <CocoaState kind="error" title="No se pudieron cargar los canales" message={channelsError} onRetry={channelsState.refresh} />
+        ) : channels.length === 0 ? (
+          <CocoaState kind="empty" illustration="connection" title="No hay canales conectados todavía." message="Da de alta un canal en el editor de tarifas para verlo aquí." />
         ) : (
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-              gap: 12
-            }}
-          >
-            {channels.map((c) => {
-              const initial = (c.providerCode?.[0] ?? "?").toUpperCase();
-              return (
-                <article key={c.id} className="bo-card" style={{ padding: 14 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                    <div
-                      aria-hidden
-                      style={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: "50%",
-                        background: "var(--accent-ink, #2f6feb)",
-                        color: "#fff",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontWeight: 700,
-                        fontSize: 18
-                      }}
-                    >
-                      {initial}
-                    </div>
-                    <div style={{ flex: 1 }}>
-                      <strong>{c.name}</strong>
-                      {/* Labelled and without .bo-muted's uppercase: «AIRBNB · VACATION_RENTAL» read as a raw enum (browser-ux-final#12). */}
-                      <div className="bo-muted" style={{ fontSize: 12, textTransform: "none" }} title={`${c.providerCode} · ${c.channelType}`}>
-                        {providerLabel(c.providerCode)} · {channelTypeLabel(c.channelType)}
-                      </div>
-                    </div>
-                    {statusPill(c.status)}
-                  </div>
-                  <div className="bo-muted" style={{ fontSize: 12, marginBottom: 6 }}>
-                    Última sincronización: {fmtTime(c.latestSync?.finishedAt ?? c.latestSync?.createdAt ?? c.lastSyncAt)}
-                  </div>
-                  <div className="bo-muted" style={{ fontSize: 12, marginBottom: 10 }}>
-                    Mapeos: {c.roomMappingsCount} habitaciones · {c.rateMappingsCount} tarifas
-                  </div>
-                  {c.latestSync?.errorMessage ? (
-                    <div className="bo-muted" style={{ fontSize: 12, marginBottom: 8, color: "var(--danger-ink, #b3261e)" }}>
-                      {/^No (room|rate) mappings configured/i.test(c.latestSync.errorMessage) ? (
-                        <>
-                          ⚠ {c.latestSync.errorMessage}. Configura los mapeos más abajo.
-                        </>
-                      ) : (
-                        c.latestSync.errorMessage
-                      )}
-                    </div>
-                  ) : null}
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    <button
-                      type="button"
-                      className="ghost"
-                      disabled={testingChannel === c.id}
-                      onClick={() => handleTestChannel(c.id)}
-                    >
-                      {testingChannel === c.id ? "…" : "Probar"}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      disabled={syncingChannel === c.id}
-                      onClick={() => handleSyncChannel(c.id)}
-                    >
-                      {syncingChannel === c.id ? "…" : "Sincronizar ahora"}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost"
-                      onClick={() => setExpandedMappings((prev) => ({ ...prev, [c.id]: !prev[c.id] }))}
-                    >
-                      {expandedMappings[c.id] ? "Ocultar mapeos" : "Mapeos"}
-                    </button>
-                  </div>
-                  <ChannelReadinessPanel channelId={c.id} refreshKey={readinessNonce} />
-                  {expandedMappings[c.id] ? (
-                    <ChannelMappingsPanel
-                      channelId={c.id}
-                      onChanged={() => {
-                        setReadinessNonce((n) => n + 1);
-                        channelsState.refresh();
-                      }}
-                    />
-                  ) : null}
-                </article>
-              );
-            })}
-          </div>
+          <CocoaGrid align="start" stagger aria-label="Canales conectados">
+            {channels.map((c) => (
+              <CocoaSpan key={c.id} cols={4} min={320}>
+                <ChannelCard
+                  channel={c}
+                  readinessNonce={readinessNonce}
+                  testing={testingChannel === c.id}
+                  syncing={syncingChannel === c.id}
+                  expanded={Boolean(expandedMappings[c.id])}
+                  onTest={() => void handleTestChannel(c.id)}
+                  onSync={() => void handleSyncChannel(c.id)}
+                  onToggleMappings={() => setExpandedMappings((prev) => ({ ...prev, [c.id]: !prev[c.id] }))}
+                  onMappingsChanged={() => {
+                    setReadinessNonce((n) => n + 1);
+                    channelsState.refresh();
+                  }}
+                />
+              </CocoaSpan>
+            ))}
+          </CocoaGrid>
         )}
-      </section>
+      </CocoaSection>
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Envío unificado (agregador)</p>
-            <h3>Enviar a todos los canales</h3>
+      <CocoaSection title="Enviar a todos los canales" meta="Envío unificado (agregador)">
+        <div className="cocoa-stack" data-gap="3">
+          <Note>Para cambiar tarifas o restricciones antes de enviarlas, usa el editor de tarifas.</Note>
+          <CocoaFormRow columns={2} min={160}>
+            <CocoaField label="Desde">
+              <CocoaDatePicker value={fromDate} onChange={setFromDate} />
+            </CocoaField>
+            <CocoaField label="Hasta">
+              <CocoaDatePicker value={toDate} onChange={setToDate} />
+            </CocoaField>
+          </CocoaFormRow>
+          <div className="cocoa-row" data-gap="2">
+            <CocoaButton variant="filled" tone="accent" size="small" loading={pushBusy === "rates"} disabled={pushBusy !== null} onClick={() => void pushAction("rates")}>
+              Enviar tarifas
+            </CocoaButton>
+            <CocoaButton variant="tinted" tone="accent" size="small" loading={pushBusy === "availability"} disabled={pushBusy !== null} onClick={() => void pushAction("availability")}>
+              Enviar disponibilidad
+            </CocoaButton>
+            <CocoaButton variant="tinted" tone="accent" size="small" loading={pushBusy === "restrictions"} disabled={pushBusy !== null} onClick={() => void pushAction("restrictions")}>
+              Enviar restricciones
+            </CocoaButton>
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void handleParityCheck()}>
+              Comprobar paridad
+            </CocoaButton>
           </div>
+          {pushResult ? (
+            <>
+              <Note>
+                Último envío: <strong>{DELIVERY_KIND_LABELS[pushResult.label] ?? pushResult.label}</strong> · {dateRange(pushResult.payload.dateRange.from, pushResult.payload.dateRange.to)}
+              </Note>
+              <CocoaTable columns={PUSH_RESULT_COLUMNS} rows={pushRows} rowKey="channelId" density="compact" caption="Resultado del último envío" />
+            </>
+          ) : null}
         </div>
-        <p className="bo-muted" style={{ marginTop: 0, marginBottom: 12, textTransform: "none" }}>
-          Para cambiar tarifas o restricciones antes de enviarlas, usa el editor de tarifas.
-        </p>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-end", marginBottom: 12 }}>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span className="bo-muted" style={{ fontSize: 12 }}>Desde</span>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </label>
-          <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-            <span className="bo-muted" style={{ fontSize: 12 }}>Hasta</span>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </label>
-          <button type="button" className="primary" disabled={pushBusy !== null} onClick={() => pushAction("rates")}>
-            {pushBusy === "rates" ? "Enviando…" : "Enviar tarifas"}
-          </button>
-          <button type="button" className="primary" disabled={pushBusy !== null} onClick={() => pushAction("availability")}>
-            {pushBusy === "availability" ? "Enviando…" : "Enviar disponibilidad"}
-          </button>
-          <button type="button" className="primary" disabled={pushBusy !== null} onClick={() => pushAction("restrictions")}>
-            {pushBusy === "restrictions" ? "Enviando…" : "Enviar restricciones"}
-          </button>
-          <button type="button" className="ghost" onClick={handleParityCheck}>
-            Comprobar paridad
-          </button>
-        </div>
-        {pushResult ? (
-          <div className="rev-report-wrap">
-            <div className="bo-muted" style={{ fontSize: 12, marginBottom: 6 }}>
-              Último envío: <strong>{DELIVERY_KIND_LABELS[pushResult.label] ?? pushResult.label}</strong> · {fmtDate(pushResult.payload.dateRange.from)} → {fmtDate(pushResult.payload.dateRange.to)}
-            </div>
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Canal</th>
-                  <th>Proveedor</th>
-                  <th>Estado</th>
-                  <th style={{ textAlign: "right" }}>Enviados</th>
-                  <th style={{ textAlign: "right" }}>Latencia</th>
-                  <th>Errores</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pushResult.payload.results.map((row) => {
-                  const ch = channelById.get(row.channelId);
-                  const errText = row.errors?.join("; ") ?? "";
-                  const mappingMissing = /No (room|rate) mappings configured/i.test(errText);
-                  return (
-                    <tr key={row.channelId}>
-                      <td>{ch?.name ?? row.channelId}</td>
-                      <td>{row.providerCode}</td>
-                      <td>{row.ok ? statusPill("success") : statusPill("failed")}</td>
-                      <td style={{ textAlign: "right" }}>{row.pushed ?? 0}</td>
-                      <td style={{ textAlign: "right" }}>{row.latencyMs ? `${row.latencyMs} ms` : "—"}</td>
-                      <td
-                        className="bo-muted"
-                        style={{ fontSize: 12, color: mappingMissing ? "var(--danger-ink, #b3261e)" : undefined }}
-                      >
-                        {mappingMissing
-                          ? `⚠ ${errText} — abre «Mapeos» en la tarjeta del canal para corregirlo.`
-                          : errText || "—"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </section>
+      </CocoaSection>
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Actividad</p>
-            <h3>Sincronizaciones recientes</h3>
-          </div>
-          <span className="bo-chip">{jobs.length}</span>
-        </div>
-        {jobs.length === 0 ? (
-          <p className="bo-muted">Todavía no hay sincronizaciones registradas.</p>
+      <CocoaSection title="Sincronizaciones recientes" meta={plural(jobs.length, "tarea", "tareas")} padding={jobsReady ? "none" : "md"} style={clipStyle}>
+        {jobsState.error && !jobsState.data ? (
+          <CocoaState kind="error" inline title="No se pudieron cargar las sincronizaciones" message={jobsState.error} onRetry={jobsState.refresh} />
+        ) : !jobsReady ? (
+          <CocoaState kind="empty" inline title="Todavía no hay sincronizaciones registradas." />
         ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Cuándo</th>
-                  <th>Canal</th>
-                  <th>Tarea</th>
-                  <th>Estado</th>
-                  <th style={{ textAlign: "right" }}>Latencia</th>
-                  <th>Error</th>
-                </tr>
-              </thead>
-              <tbody>
-                {jobs.slice(0, 50).map((j) => {
-                  const ch = j.channelId ? channelById.get(j.channelId) : null;
-                  const start = j.startedAt ? new Date(j.startedAt).getTime() : null;
-                  const end = j.finishedAt ? new Date(j.finishedAt).getTime() : null;
-                  const latency = start !== null && end !== null ? `${Math.max(0, end - start)} ms` : "—";
-                  return (
-                    <tr key={j.id}>
-                      <td>{fmtTime(j.createdAt)}</td>
-                      <td>{ch?.name ?? j.channelId ?? "—"}</td>
-                      <td title={j.syncType}>{SYNC_TYPE_LABELS[j.syncType] ?? j.syncType}</td>
-                      <td>{statusPill(j.status)}</td>
-                      <td style={{ textAlign: "right" }}>{latency}</td>
-                      <td className="bo-muted" style={{ fontSize: 12 }}>{j.errorMessage ?? "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <CocoaTable columns={SYNC_JOB_COLUMNS} rows={jobRows} rowKey="id" density="compact" caption="Sincronizaciones recientes" />
         )}
-      </section>
+      </CocoaSection>
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Paridad de precios</p>
-            <h3>Alertas de paridad abiertas</h3>
-          </div>
-          <span className="bo-chip">{openAlerts.length}</span>
-        </div>
-        {openAlerts.length === 0 ? (
-          <p className="bo-muted">No hay alertas de paridad abiertas.</p>
+      <CocoaSection title="Alertas de paridad abiertas" meta={plural(openAlerts.length, "alerta", "alertas")} padding={alertsReady ? "none" : "md"} style={clipStyle}>
+        {alertsState.error && !alertsState.data ? (
+          <CocoaState kind="error" inline title="No se pudieron cargar las alertas de paridad" message={alertsState.error} onRetry={alertsState.refresh} />
+        ) : !alertsReady ? (
+          <CocoaState kind="empty" inline title="No hay alertas de paridad abiertas." />
         ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Noche</th>
-                  <th>Canal</th>
-                  <th>Gravedad</th>
-                  <th style={{ textAlign: "right" }}>Nuestro precio</th>
-                  <th style={{ textAlign: "right" }}>Precio en el canal</th>
-                  <th>Mensaje</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {openAlerts.map((a) => (
-                  <tr key={a.id}>
-                    <td>{fmtDate(a.stayDate)}</td>
-                    <td>{a.sourceChannel ?? "—"}</td>
-                    <td>{severityPill(a.severity)}</td>
-                    <td style={{ textAlign: "right" }}>{money(a.directRate)}</td>
-                    <td style={{ textAlign: "right" }}>{money(a.channelRate)}</td>
-                    <td className="bo-muted" style={{ fontSize: 12 }}>{a.message}</td>
-                    <td>
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={resolvingAlert === a.id}
-                        onClick={() => handleResolveAlert(a.id)}
-                      >
-                        {resolvingAlert === a.id ? "…" : "Resolver"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <CocoaTable
+            columns={PARITY_COLUMNS}
+            rows={openAlerts}
+            rowKey="id"
+            caption="Alertas de paridad abiertas"
+            rowActions={(a) => (
+              <CocoaButton variant="plain" tone="accent" size="small" loading={resolvingAlert === a.id} disabled={resolvingAlert === a.id} onClick={() => void handleResolveAlert(a.id)}>
+                Resolver
+              </CocoaButton>
+            )}
+          />
         )}
-      </section>
-    </>
+      </CocoaSection>
+    </CocoaPage>
   );
 }

@@ -79,16 +79,19 @@
 .c22-page[data-gap="4"] { gap: var(--cocoa-space-4); }
 .c22-page[data-gap="5"] { gap: var(--cocoa-space-5); }
 
-/* Full bleed (rate grids, calendars, timelines): cancel the content gutter
-   horizontally; the header keeps it so the title stays aligned. */
-.c22-page--full-bleed,
-.c22-page[data-full-bleed="true"] {
+/* Full bleed (rate grids, calendars, timelines): the page KEEPS the content
+   gutter — header, toolbar, filter chips, callouts and states stay aligned at
+   24 / 16 px (§5.1) — and only the wide scroller bleeds into it: a
+   CocoaScrollArea, or the rate grid `.crg` (R29), that is a direct child of
+   the body widens by both gutters (negative inline margins; the flex column
+   stretches it, so its max-width cap grows by the same amount). Measured at
+   390 before this (qa#19, /recepcion/reservas/cronograma): the whole page
+   carried the negative margin and the chip row «Estado · Confirmada» started
+   at x = 0. A scroller nested in a CocoaSection is not touched. */
+.c22-page--full-bleed > .c22-page__body > :is([data-cocoa="scroll-area"], .crg),
+.c22-page[data-full-bleed="true"] > .c22-page__body > :is([data-cocoa="scroll-area"], .crg) {
   margin-inline: calc(var(--cocoa-content-padding) * -1);
-  width: auto;
-}
-.c22-page--full-bleed > .c22-page__header,
-.c22-page[data-full-bleed="true"] > .c22-page__header {
-  padding-inline: var(--cocoa-content-padding);
+  max-width: calc(100% + 2 * var(--cocoa-content-padding));
 }
 
 .c22-page__header {
@@ -233,6 +236,37 @@
 }
 @media (min-width: 940px) and (max-width: 1072px) {
   .c22-grid:has(> .c22-min-320.c22-span-5) > :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11) { grid-column: 1 / -1; }
+}
+
+/* ---- lone halves ----------------------------------------------------------
+   The rules above widen the 7…11 beside a promoted half; that half can still
+   end up alone when both its neighbours are full rows (measured on Recorrido
+   del huésped at 1024 × 768, grid 736 px: the 4/8 pair painted the list at 6
+   columns with a 362 px hole beside it and the detail at full width
+   underneath — qa#10). A half that was PROMOTED (never an authored 6: 6/6
+   still pairs) and has no other half next to it — its neighbours are full
+   rows, or it is alone in the grid — takes the full row too: 4/8 → 12/12
+   (Workspace), 8/4 → 12/12 (Detalle), 2/8/2 → 12/12/12; 8/2/2 → 12/6/6 and
+   4/4/2/2 → 6/6/6/6 keep pairing. `.c22-span-N` is the effective span
+   (`spanClassNames`), so a 7…12 neighbour is a full row whenever a promoted
+   sibling exists. Same two flavours as above: measured (data-span, any width)
+   and laptop class pairs (900–1199, where `.c22-min-480` ≤ 6 is full too). */
+.c22-grid > [data-cocoa="span"][data-span="6"]:is([data-cols="1"], [data-cols="2"], [data-cols="3"], [data-cols="4"], [data-cols="5"]):is(:first-child, :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12) + *):is(:last-child, :has(+ :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12))) {
+  grid-column: 1 / -1;
+}
+@media (min-width: 900px) and (max-width: 1199px) {
+  .c22-grid > :is(:is(.c22-min-200, .c22-min-240):is(.c22-span-1, .c22-span-2, .c22-span-3), .c22-min-320:is(.c22-span-1, .c22-span-2, .c22-span-3, .c22-span-4)):is(:first-child, :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12, .c22-min-480) + *):is(:last-child, :has(+ :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12, .c22-min-480))) {
+    grid-column: 1 / -1;
+  }
+}
+@media (min-width: 900px) and (max-width: 911px) {
+  .c22-grid > .c22-min-200.c22-span-4:is(:first-child, :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12, .c22-min-480) + *):is(:last-child, :has(+ :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12, .c22-min-480))) { grid-column: 1 / -1; }
+}
+@media (min-width: 900px) and (max-width: 1031px) {
+  .c22-grid > .c22-min-240.c22-span-4:is(:first-child, :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12, .c22-min-480) + *):is(:last-child, :has(+ :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12, .c22-min-480))) { grid-column: 1 / -1; }
+}
+@media (min-width: 940px) and (max-width: 1072px) {
+  .c22-grid > .c22-min-320.c22-span-5:is(:first-child, :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12, .c22-min-480) + *):is(:last-child, :has(+ :is(.c22-span-7, .c22-span-8, .c22-span-9, .c22-span-10, .c22-span-11, .c22-span-12, .c22-min-480))) { grid-column: 1 / -1; }
 }
 
 /* ---- tablet 600–899: two columns (spans < 6 → 6, spans ≥ 6 → 12) ---------- */
@@ -554,6 +588,13 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* `wrap` (CocoaActionBar): a composed status — badge + text + «celdas guardadas
+   sin enviar» chip + meta — breaks onto several lines instead of the ellipsis. */
+.c22-action-bar[data-wrap="true"] .c22-action-bar__status {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
 .c22-action-bar__extra {
   display: inline-flex;
   align-items: center;
@@ -622,6 +663,20 @@
 .c22-scroll-area[data-axis="y"] { overflow-x: hidden; }
 .c22-scroll-area > table {
   min-width: max-content;
+}
+/* Raw grid tables (`data-cocoa-grid-table`, §9 rule 3 — the timeline, the
+   room-block grid): cell defaults so a calendar only sets what differs (lead
+   width, today / weekend wash); the sticky head keeps its sidebar background. */
+.c22-scroll-area [data-cocoa-grid-table] :is(th, td) {
+  padding: var(--cocoa-space-2) var(--cocoa-space-3);
+  border-bottom: 1px solid var(--cocoa-separator);
+  border-right: 1px solid var(--cocoa-separator);
+  text-align: left;
+  vertical-align: middle;
+}
+.c22-scroll-area [data-cocoa-grid-table] thead th[aria-current="date"] {
+  background: var(--cocoa-accent-bg);
+  color: var(--cocoa-tone-accent-text);
 }
 .c22-scroll-area thead th,
 .c22-scroll-area [data-sticky-head] {
@@ -735,4 +790,11 @@
   .c22-action-bar, .cocoa-action-bar, .c22-toolbar, .cocoa-toolbar[data-variant="content"], .c22-tablist { display: none !important; }
   .c22-section, .cocoa-section { box-shadow: none; break-inside: avoid; }
   .c22-grid, .cocoa-grid { display: block; }
+  /* Tables print whole: no own scroller, no sticky head / column (the sticky
+     geometry is inline on the primitive, hence !important). Replaces the print
+     block of the <style> the daily revenue report used to inject. */
+  .c22-table-wrap { max-height: none !important; overflow: visible !important; }
+  .c22-table thead th,
+  .c22-table tfoot td,
+  .c22-table[data-sticky-first-column] :is(th, td):first-child { position: static !important; }
 }

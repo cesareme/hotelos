@@ -32,7 +32,8 @@ import { DEGRADED_HINT } from "../cocoa-extras/DegradedValue";
 import { CocoaSparkline } from "./CocoaChart";
 import { toneColor, toneInk, type CocoaSentiment, type CocoaTone } from "./cocoa-tones";
 
-export type CocoaKpiDeltaUnit = "%" | "pp" | "€" | "pts";
+/** Unit of the delta chip: the four usual ones keep autocomplete; any other short unit («hab», «noches») is accepted (`(string & {})`). */
+export type CocoaKpiDeltaUnit = "%" | "pp" | "€" | "pts" | (string & {});
 export type CocoaKpiPolarity = "positive-good" | "negative-good" | "neutral";
 export type CocoaKpiStatus = "ok" | "warning" | "critical";
 export type CocoaKpiSize = "regular" | "compact";

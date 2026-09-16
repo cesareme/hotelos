@@ -1,9 +1,33 @@
-import { useCallback, useEffect, useState } from "react";
+// Period comparison — /revenue/comparativa (standalone).
+//
+// Compares the KPIs of a period (GET /revenue/properties/:id/period-metrics)
+// with the previous period, the same period last year or a custom window.
+//
+// Cocoa 22 (ola 5 · lote 5-B): standalone dashboard (DashboardStandalone).
+// The period toolbar stays visible in every state (as the list pilot does),
+// so the body section holds the skeleton, the error, the empty state or the
+// KPI strip with the deltas. Same endpoint, same actions.
+import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { fetchPeriodMetrics, type PeriodMetrics } from "../../services/revenueApi";
-import { LoadingBlock, ErrorState, EmptyState } from "../../components/States";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { ACTIONS } from "../../content/actions";
-import { money, number, percent } from "../../lib/format";
+import { getActiveProperty } from "../../services/activeProperty";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { date, money, number, percent, plural } from "../../lib/format";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaToolbar
+} from "../../components/cocoa";
 
 const MS_DAY = 86_400_000;
 
@@ -49,6 +73,7 @@ const MODE_SHORT: Record<CompareMode, string> = {
   last_year: "año anterior",
   custom: "periodo personalizado"
 };
+const MODE_OPTIONS = (Object.keys(MODE_LABEL) as CompareMode[]).map((m) => ({ value: m, label: MODE_LABEL[m] }));
 
 type MetricDef = { key: keyof PeriodMetrics; label: string; fmt: (n: number) => string };
 const METRICS: MetricDef[] = [
@@ -66,6 +91,7 @@ const PRESETS: { id: string; label: string; range: () => { from: string; to: str
   { id: "90d", label: "Últimos 90 días", range: () => ({ from: addDaysIso(todayIso(), -89), to: todayIso() }) },
   { id: "mtd", label: "Este mes", range: () => ({ from: startOfMonthIso(), to: todayIso() }) }
 ];
+const PRESET_OPTIONS = PRESETS.map((p) => ({ value: p.id, label: p.label }));
 
 function comparisonWindow(mode: CompareMode, from: string, to: string, customFrom: string, customTo: string) {
   if (mode === "none") return null;
@@ -77,7 +103,11 @@ function comparisonWindow(mode: CompareMode, from: string, to: string, customFro
   return { from: addDaysIso(cTo, -(len - 1)), to: cTo };
 }
 
+// Explanatory line (callout size, secondary label; rule 6 named object).
+const noteStyle: CSSProperties = { margin: 0, fontSize: "var(--cocoa-fs-callout)", lineHeight: "var(--cocoa-leading-text)", color: "var(--cocoa-label-secondary)" };
+
 export function RevenueComparisonDashboard() {
+  const header = treeHeaderFor("RevenueComparisonDashboard", { eyebrow: "Revenue", title: "Comparativa" });
   const [preset, setPreset] = useState("30d");
   const [from, setFrom] = useState(() => PRESETS[1].range().from);
   const [to, setTo] = useState(() => PRESETS[1].range().to);
@@ -122,103 +152,106 @@ export function RevenueComparisonDashboard() {
   }, [load]);
 
   const cmpWindow = comparisonWindow(mode, from, to, customFrom, customTo);
+  const hasData = Boolean(current && current.hasData);
 
   return (
-    <section className="bo-card" style={{ display: "grid", gap: 16 }}>
-      <CocoaPageHeader
-        eyebrow="Revenue"
-        title="Comparativa"
-        subtitle="Compara el rendimiento de un periodo con el periodo anterior, el mismo periodo del año pasado o un rango a tu elección."
-        actions={<button type="button" onClick={() => void load()} disabled={loading}>↻ {ACTIONS.refresh}</button>}
+    <CocoaPage
+      eyebrow={`${header.eyebrow} · ${getActiveProperty().propertyName}`}
+      title={header.title}
+      subtitle="Compara el rendimiento de un periodo con el periodo anterior, el mismo periodo del año pasado o un rango a tu elección."
+      actions={
+        <>
+          {loading && current ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void load()} loading={loading} disabled={loading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      commands={[{ id: "comparativa-revenue-refresh", label: "Actualizar la comparativa de revenue", run: () => void load() }]}
+    >
+      <CocoaToolbar
+        variant="content"
+        wrap
+        aria-label="Periodo y comparación"
+        leftSlot={
+          <div className="cocoa-row" data-gap="2" data-align="end">
+            <CocoaField label="Periodo">
+              <CocoaSegmentedControl value={preset} onChange={applyPreset} options={PRESET_OPTIONS} size="small" aria-label="Periodo predefinido" />
+            </CocoaField>
+            <CocoaField label="Desde">
+              <CocoaDatePicker value={from} max={to} size="small" onChange={(v) => { setPreset(""); setFrom(v); }} aria-label="Inicio del periodo" />
+            </CocoaField>
+            <CocoaField label="Hasta">
+              <CocoaDatePicker value={to} min={from} max={todayIso()} size="small" onChange={(v) => { setPreset(""); setTo(v); }} aria-label="Fin del periodo" />
+            </CocoaField>
+          </div>
+        }
+        rightSlot={
+          <div className="cocoa-row" data-gap="2" data-align="end">
+            <CocoaField label="Comparar con">
+              <CocoaSelect value={mode} onChange={(v) => setMode(v as CompareMode)} options={MODE_OPTIONS} size="small" aria-label="Periodo de comparación" />
+            </CocoaField>
+            {mode === "custom" ? (
+              <>
+                <CocoaField label="Desde">
+                  <CocoaDatePicker value={customFrom} max={customTo} size="small" onChange={setCustomFrom} aria-label="Inicio del periodo de comparación" />
+                </CocoaField>
+                <CocoaField label="Hasta">
+                  <CocoaDatePicker value={customTo} min={customFrom} size="small" onChange={setCustomTo} aria-label="Fin del periodo de comparación" />
+                </CocoaField>
+              </>
+            ) : (
+              <p style={noteStyle}>{cmpWindow ? `${date(cmpWindow.from, "short")} → ${date(cmpWindow.to, "short")}` : "Mostrando solo el periodo actual"}</p>
+            )}
+          </div>
+        }
       />
 
-      <div className="bo-row" style={{ gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
-        <div className="bo-stack" style={{ gap: 6 }}>
-          <span className="bo-muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>Periodo</span>
-          <div className="bo-pill-row">
-            {PRESETS.map((p) => (
-              <button key={p.id} type="button" className={`bo-pill${preset === p.id ? " is-active" : ""}`} style={{ cursor: "pointer" }} onClick={() => applyPreset(p.id)}>{p.label}</button>
-            ))}
+      <CocoaSection
+        title="Indicadores del periodo"
+        meta={current ? `${date(current.from, "short")} → ${date(current.to, "short")}` : undefined}
+        aria-label="Indicadores del periodo"
+        footer={
+          hasData && current ? (
+            <span>
+              Periodo actual: {plural(current.days, "día con datos", "días con datos")}
+              {compare ? ` · comparación: ${plural(compare.days, "día con datos", "días con datos")}` : ""}.
+            </span>
+          ) : undefined
+        }
+      >
+        {loading && !current ? (
+          <div aria-hidden="true">
+            <CocoaSkeleton.Strip count={6} min={240} />
           </div>
-          <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-            <input type="date" value={from} max={to} onChange={(e) => { setPreset(""); setFrom(e.target.value); }} />
-            <span className="bo-muted">→</span>
-            <input type="date" value={to} min={from} max={todayIso()} onChange={(e) => { setPreset(""); setTo(e.target.value); }} />
-          </div>
-        </div>
-
-        <div className="bo-stack" style={{ gap: 6 }}>
-          <span className="bo-muted" style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.04em", textTransform: "uppercase" }}>Comparar con</span>
-          <select value={mode} onChange={(e) => setMode(e.target.value as CompareMode)}>
-            {(Object.keys(MODE_LABEL) as CompareMode[]).map((m) => (
-              <option key={m} value={m}>{MODE_LABEL[m]}</option>
-            ))}
-          </select>
-          {mode === "custom" ? (
-            <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-              <input type="date" value={customFrom} max={customTo} onChange={(e) => setCustomFrom(e.target.value)} />
-              <span className="bo-muted">→</span>
-              <input type="date" value={customTo} min={customFrom} onChange={(e) => setCustomTo(e.target.value)} />
-            </div>
-          ) : cmpWindow ? (
-            <span className="bo-muted" style={{ fontSize: 12, textTransform: "none" }}>{cmpWindow.from} → {cmpWindow.to}</span>
-          ) : (
-            <span className="bo-muted" style={{ fontSize: 12, textTransform: "none" }}>Mostrando solo el periodo actual</span>
-          )}
-        </div>
-      </div>
-
-      {loading ? (
-        <LoadingBlock label="Calculando KPIs del periodo…" />
-      ) : error ? (
-        <ErrorState title="No se pudo cargar" message={error} onRetry={() => void load()} />
-      ) : !current || !current.hasData ? (
-        <EmptyState title="Sin datos en el periodo" message="No hay snapshots de revenue en el rango seleccionado. Prueba otro periodo." />
-      ) : (
-        <>
-          <div className="bo-grid three">
+        ) : error ? (
+          <CocoaState kind="error" title={STATUS_LABELS.loadError} message={error} onRetry={() => void load()} />
+        ) : !hasData || !current ? (
+          <CocoaState kind="empty" illustration="search" title="Sin datos en el periodo" message="No hay cierres de revenue en el rango seleccionado. Prueba otro periodo." />
+        ) : (
+          <CocoaKpiStrip min={240} stagger aria-label="Indicadores del periodo frente a la comparación">
             {METRICS.map((m) => {
               const cur = current[m.key] as number;
               const cmpVal = compare && compare.hasData ? (compare[m.key] as number) : null;
               const hasCmp = cmpVal !== null;
               const absDelta = hasCmp ? cur - (cmpVal as number) : 0;
               const pctDelta = hasCmp && (cmpVal as number) !== 0 ? (absDelta / (cmpVal as number)) * 100 : null;
-              const up = absDelta > 0.0001;
-              const down = absDelta < -0.0001;
-              const trendClass = up ? "ok" : down ? "error" : "info";
-              const arrow = up ? "▲" : down ? "▼" : "■";
               return (
-                <article key={String(m.key)} className="bo-card">
-                  <div className="bo-card-head">
-                    <h3 style={{ fontSize: 14 }}>{m.label}</h3>
-                    {hasCmp ? (
-                      <span className={`bo-status ${trendClass}`} style={{ textTransform: "none" }}>
-                        {arrow} {pctDelta !== null ? percent(pctDelta, { signDisplay: "exceptZero", minimumFractionDigits: 1, maximumFractionDigits: 1 }) : "—"}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="bo-metric" style={{ fontVariantNumeric: "tabular-nums" }}>{m.fmt(cur)}</div>
-                  {hasCmp ? (
-                    <p className="bo-muted" style={{ textTransform: "none", fontSize: 12.5 }}>
-                      vs {m.fmt(cmpVal as number)} ({MODE_SHORT[mode]})
-                      {" · "}
-                      <span style={{ color: up ? "var(--accent-strong)" : down ? "#c2413a" : "var(--ink-muted)", fontWeight: 600 }}>
-                        {absDelta > 0 ? "+" : ""}{m.fmt(absDelta)}
-                      </span>
-                    </p>
-                  ) : (
-                    <p className="bo-muted" style={{ textTransform: "none", fontSize: 12.5 }}>Sin periodo de comparación</p>
-                  )}
-                </article>
+                <CocoaKpi
+                  key={String(m.key)}
+                  label={m.label}
+                  value={m.fmt(cur)}
+                  caption={hasCmp ? `Antes: ${m.fmt(cmpVal as number)} · ${absDelta > 0 ? "+" : ""}${m.fmt(absDelta)}` : "Sin periodo de comparación"}
+                  delta={pctDelta ?? undefined}
+                  deltaUnit="%"
+                  deltaLabel={hasCmp ? `vs ${MODE_SHORT[mode]}` : undefined}
+                  polarity="positive-good"
+                />
               );
             })}
-          </div>
-          <p className="bo-muted" style={{ fontSize: 12, textTransform: "none" }}>
-            Periodo actual: {current.days} día(s) con datos
-            {compare ? ` · comparación: ${compare.days} día(s) con datos` : ""}.
-          </p>
-        </>
-      )}
-    </section>
+          </CocoaKpiStrip>
+        )}
+      </CocoaSection>
+    </CocoaPage>
   );
 }

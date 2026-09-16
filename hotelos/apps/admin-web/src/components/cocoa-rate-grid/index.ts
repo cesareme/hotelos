@@ -12,7 +12,7 @@ export { QuickEditPopover, buildRestrictionsPatch } from "./QuickEditPopover";
 export { BulkEditSheet } from "./BulkEditSheet";
 export { ReviewPublishDrawer } from "./ReviewPublishDrawer";
 export { SyncStatusPanel, toSyncMatrixCells, keyToLabel } from "./SyncStatusPanel";
-export { HistoryDrawer } from "./HistoryDrawer";
+export { HistoryDrawer, HistoryList, historySummary, journalBadgeText } from "./HistoryDrawer";
 export { RecommendationPopover } from "./RecommendationPopover";
 export { RateGridStatusBar } from "./RateGridStatusBar";
 export { RateGridSidePanel, RateGridPopover, TriStateChip, NumericTriChip, WeekdayPicker, Tabs, Field, nextTriState, type AnchorRect } from "./shared-ui";

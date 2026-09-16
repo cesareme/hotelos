@@ -9,7 +9,8 @@
   --crg-head-h: 44px;
   --crg-demand-h: 34px;
   --crg-price-fs: 14px;
-  --crg-rec: #7c5cff;
+  /* Recommendations of the revenue engine: the «ai» tone (no second accent, no literal). */
+  --crg-rec: var(--cocoa-tone-ai);
   position: relative;
   overflow: auto;
   background: var(--cocoa-background-content);
@@ -23,7 +24,7 @@
   contain: strict;
 }
 .crg:focus-visible {
-  box-shadow: 0 0 0 2px var(--cocoa-focus-ring, rgba(0, 100, 225, 0.45));
+  box-shadow: 0 0 0 2px var(--cocoa-focus-ring);
 }
 .crg--compact {
   --crg-cell-w: 68px;
@@ -109,7 +110,7 @@
 }
 .crg__colhead-month {
   font-size: 11px;
-  color: var(--cocoa-label-tertiary);
+  color: var(--cocoa-label-secondary);
   line-height: 1;
   text-transform: capitalize;
 }
@@ -357,7 +358,7 @@
 .crg__price--empty {
   font-size: 11px;
   font-weight: var(--cocoa-fw-regular);
-  color: var(--cocoa-label-tertiary);
+  color: var(--cocoa-label-secondary);
   font-style: italic;
 }
 .crg__price--avail {
@@ -385,7 +386,7 @@
   font-size: 11px;
   line-height: 1;
   white-space: nowrap;
-  color: var(--cocoa-label-tertiary);
+  color: var(--cocoa-label-secondary);
   font-weight: var(--cocoa-fw-medium);
 }
 .crg__rec-hold:hover,
@@ -405,7 +406,7 @@
 .crg__cell--restr .crg__price {
   font-size: 11px;
   font-weight: var(--cocoa-fw-regular);
-  color: var(--cocoa-label-tertiary);
+  color: var(--cocoa-label-secondary);
   line-height: 1;
 }
 .crg__restr {
@@ -445,7 +446,7 @@
   font-weight: 700;
   letter-spacing: 0.2px;
   white-space: nowrap;
-  color: var(--cocoa-accent-contrast, #fff);
+  color: var(--cocoa-accent-contrast);
 }
 .crg__chip--danger {
   background: var(--cocoa-danger);
@@ -654,7 +655,7 @@
   white-space: nowrap;
 }
 .crg-tri:focus-visible {
-  box-shadow: 0 0 0 2px var(--cocoa-focus-ring, rgba(0, 100, 225, 0.45));
+  box-shadow: 0 0 0 2px var(--cocoa-focus-ring);
   outline: none;
 }
 .crg-tri--on {
@@ -680,7 +681,7 @@
   padding: 0 4px;
 }
 .crg-tri--on .crg-tri__num {
-  background: color-mix(in srgb, #fff 25%, transparent);
+  background: color-mix(in srgb, var(--cocoa-accent-contrast) 25%, transparent);
 }
 
 /* ---------- shared: inputs & fields ---------- */
@@ -709,7 +710,7 @@
 }
 .crg-input:focus-visible {
   outline: none;
-  box-shadow: 0 0 0 2px var(--cocoa-focus-ring, rgba(0, 100, 225, 0.45));
+  box-shadow: 0 0 0 2px var(--cocoa-focus-ring);
 }
 .crg-input--invalid {
   border-color: var(--cocoa-danger);
@@ -838,17 +839,6 @@ select.crg-input {
   font-size: var(--cocoa-fs-caption);
   color: var(--cocoa-label-secondary);
 }
-.crg-sheet__close {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  border: 0;
-  background: color-mix(in srgb, var(--cocoa-label) 8%, transparent);
-  color: var(--cocoa-label-secondary);
-  font-size: 14px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
 .crg-sheet__body {
   flex: 1;
   overflow: auto;
@@ -960,6 +950,44 @@ select.crg-input {
   justify-content: space-between;
   gap: 8px;
 }
+.crg-list__main {
+  min-width: 0;
+}
+.crg-list__title {
+  font-size: var(--cocoa-fs-subheadline);
+  font-weight: var(--cocoa-fw-semibold);
+}
+.crg-list__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+.crg-list__detail {
+  margin-top: 8px;
+}
+.crg-list__more {
+  margin-top: 12px;
+  text-align: center;
+}
+.crg-list__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.crg-list--scroll {
+  max-height: 220px;
+  overflow: auto;
+  font-size: var(--cocoa-fs-body);
+}
+.crg-list__item--tight {
+  padding: 4px 0;
+}
+.crg-note--block {
+  margin: 8px 0 0;
+}
 .crg-badge {
   display: inline-flex;
   align-items: center;
@@ -990,8 +1018,8 @@ select.crg-input {
   color: var(--cocoa-accent);
 }
 .crg-badge--rec {
-  background: color-mix(in srgb, var(--crg-rec, #7c5cff) 14%, transparent);
-  color: var(--crg-rec, #7c5cff);
+  background: color-mix(in srgb, var(--crg-rec) 14%, transparent);
+  color: var(--crg-rec);
 }
 .crg-progress {
   height: 6px;
@@ -1119,7 +1147,7 @@ select.crg-input {
 .crg-factor__bar > i {
   display: block;
   height: 100%;
-  background: var(--crg-rec, #7c5cff);
+  background: var(--crg-rec);
 }
 .crg-factor__bar--neg > i {
   background: var(--cocoa-danger);
@@ -1136,86 +1164,63 @@ select.crg-input {
   margin: 2px 4px 2px 0;
 }
 
-/* ---------- status bar ---------- */
-/* Sticky to the bottom of the scrolling content so the primary actions stay
-   reachable at 1024×768, where the toolbar + grid overflow the viewport. */
-.crg-status {
-  position: sticky;
-  bottom: 0;
-  z-index: var(--cocoa-z-sticky, 100);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 44px;
-  padding: 6px 14px;
-  background: var(--cocoa-background-toolbar);
-  backdrop-filter: var(--cocoa-material-toolbar-blur);
-  -webkit-backdrop-filter: var(--cocoa-material-toolbar-blur);
-  border-top: 1px solid var(--cocoa-separator);
-  font-family: var(--cocoa-font);
+/* ---------- editor toolbar: multi-select filter popover (RateGridEditorScreen) ---------- */
+.crg-filter__pop {
+  padding: var(--cocoa-space-2);
+  width: 260px;
+  max-width: calc(100vw - 2 * var(--cocoa-space-4));
   box-sizing: border-box;
-  flex-wrap: wrap;
 }
-.crg-status__info {
-  display: flex;
+.crg-filter__list {
+  max-height: 240px;
+  overflow: auto;
+}
+.crg-filter__hint {
+  margin-left: var(--cocoa-space-2);
+}
+
+/* ---------- status bar ---------- */
+/* The bar itself is CocoaActionBar (RateGridStatusBar.tsx): sticky/fixed
+   placement, safe-area and toast clearance are the primitive's. These are the
+   parts of its `status` slot (they wrap inside the bar's ellipsis box) and the
+   in-flow row that replaces the status on phones. */
+.crg-bar {
+  display: inline-flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
-  flex: 1;
   flex-wrap: wrap;
+  white-space: normal;
 }
-.crg-status__count {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 20px;
-  height: 20px;
-  padding: 0 6px;
-  border-radius: 10px;
-  background: var(--cocoa-warning);
-  color: #1a1a1a;
-  font-size: var(--cocoa-fs-caption);
-  font-weight: var(--cocoa-fw-semibold);
-}
-.crg-status__text {
+.crg-bar__text {
   font-size: var(--cocoa-fs-subheadline);
   font-weight: var(--cocoa-fw-medium);
-  white-space: nowrap;
+  color: var(--cocoa-label);
 }
-.crg-status__meta {
+.crg-bar__meta {
   font-size: var(--cocoa-fs-caption);
   color: var(--cocoa-label-secondary);
-  white-space: nowrap;
 }
-.crg-status__pending {
+.crg-bar__pending {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
   padding: 2px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--cocoa-warning) 14%, transparent);
+  border-radius: var(--cocoa-radius-full);
+  background: var(--cocoa-tone-warning-bg);
   font-size: var(--cocoa-fs-caption);
   color: var(--cocoa-label);
 }
-.crg-status__actions {
+.crg-bar__phone {
   display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-shrink: 0;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: var(--cocoa-space-2);
 }
-.crg-status__restore {
+.crg-bar__history {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 6px 10px;
-  border-radius: var(--cocoa-radius-sm);
-  background: var(--cocoa-warning-bg, color-mix(in srgb, var(--cocoa-warning) 12%, transparent));
-  font-size: var(--cocoa-fs-caption);
   flex-wrap: wrap;
+  gap: var(--cocoa-space-2);
 }
 .crg-sr {
   position: absolute;

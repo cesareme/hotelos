@@ -41,8 +41,11 @@
 // Hooks for the css lot: wrapper `c22-table-wrap`, table `c22-table` +
 // data-zebra/density/sticky-first-column, cells `data-align`, rows
 // `data-interactive`/`aria-selected`, actions `c22-table__actions` (shown on
-// hover/focus, always on touch), empty `data-empty`, tfoot on the inverse
-// surface (stylesheet-owned).
+// hover/focus, always on touch, and always when the table carries
+// `data-actions="always"` — `rowActionsVisible`), empty `data-empty`, tfoot on
+// the inverse surface (stylesheet-owned). With `stickyFirstColumn` the first
+// cell of every section takes its opaque background from the stylesheet too
+// (content / sidebar / inverse surface): the component never paints it inline.
 
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { CocoaButton } from "./CocoaButton";
@@ -100,6 +103,13 @@ export interface CocoaTableProps<Row> {
   stickyFirstColumn?: boolean;
   /** Trailing actions cell per row (CocoaButton plain/small). */
   rowActions?: (row: Row) => ReactNode;
+  /**
+   * When the row actions show on a fine pointer: `hover` (default: hover, focus
+   * and selection; always on touch and in the phone cards) or `always` — for
+   * tables whose actions ARE the interaction (channels: probar · mapeos ·
+   * desactivar · archivar) and must be discoverable without a mouse move.
+   */
+  rowActionsVisible?: "hover" | "always";
   /** Tone wash of a row (`data-tone` on the <tr>, tone-bg on the phone card; hover and selection still win): low stock, overdue… */
   rowTone?: (row: Row) => CocoaTone | undefined;
   /** Native tooltip of a row («Abrir el detalle de la propiedad»). */
@@ -232,6 +242,7 @@ export function CocoaTable<Row>({
   density,
   stickyFirstColumn = false,
   rowActions,
+  rowActionsVisible = "hover",
   rowTone,
   rowTitle,
   footer,
@@ -374,8 +385,14 @@ export function CocoaTable<Row>({
     );
   }
 
+  // The sticky cell's background is stylesheet-owned per section (content in
+  // the body, sidebar in the head, inverse surface in the foot:
+  // `.c22-table[data-sticky-first-column="true"] …:first-child`). An inline
+  // `background: inherit` used to win over those rules and resolved to the
+  // row's (absent) background, so the sticky «Total» cell painted transparent
+  // over the page (qa#3).
   const stickyFirst = (index: number, extra: CSSProperties = {}): CSSProperties =>
-    stickyFirstColumn && index === 0 ? { position: "sticky", left: 0, zIndex: 1, background: "inherit", boxShadow: "1px 0 0 var(--cocoa-separator)", ...extra } : extra;
+    stickyFirstColumn && index === 0 ? { position: "sticky", left: 0, zIndex: 1, boxShadow: "1px 0 0 var(--cocoa-separator)", ...extra } : extra;
 
   const colSpanAll = visibleColumns.length + (rowActions ? 1 : 0);
 
@@ -397,6 +414,7 @@ export function CocoaTable<Row>({
         data-zebra="true"
         data-density={density}
         data-sticky-first-column={stickyFirstColumn ? "true" : undefined}
+        data-actions={rowActionsVisible === "always" ? "always" : undefined}
       >
         {caption ? <caption style={srOnly}>{caption}</caption> : null}
         <thead style={{ position: "sticky", top: 0, background: "var(--cocoa-background-sidebar)", zIndex: 2, boxShadow: "var(--cocoa-shadow-sticky)" }}>

@@ -47,17 +47,7 @@
 // sheets, drawers and pure helpers live in components/cocoa-rate-grid (core lot)
 // and are consumed through the props contract in cocoa-rate-grid/types.ts.
 
-import { useTabHost } from "../tabs/TabHost";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useReducer,
-  useRef,
-  useState,
-  type CSSProperties,
-  type ReactNode
-} from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from "react";
 import type {
   RateGridBulkUpdateRequest,
   RateGridCell,
@@ -91,16 +81,26 @@ import {
 } from "../../services/rateGridApi";
 import { listChannels, listProductMappings } from "../../services/channelsApi";
 import { applyRecommendations, fetchRecommendations, type ApplyRecommendationCell } from "../../services/recommendationsApi";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaDatePicker } from "../../components/cocoa/CocoaDatePicker";
-import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
-import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedControl";
-import { CocoaSwitch } from "../../components/cocoa/CocoaSwitch";
-import { CocoaPopover } from "../../components/cocoa/CocoaPopover";
-import { CocoaSheet } from "../../components/cocoa/CocoaSheet";
-import { CocoaInput } from "../../components/cocoa/CocoaInput";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaDialog,
+  CocoaField,
+  CocoaInput,
+  CocoaPage,
+  CocoaPopover,
+  CocoaSegmentedControl,
+  CocoaSelect,
+  CocoaSheet,
+  CocoaState,
+  CocoaSwitch,
+  CocoaToolbar
+} from "../../components/cocoa";
+import { CheckIcon, FilterIcon, XmarkIcon } from "../../components/cocoa-icons/ActionIcons";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
 import { useToast } from "../../components/Toast";
 import { CocoaRateGrid } from "../../components/cocoa-rate-grid/CocoaRateGrid";
 import { QuickEditPopover } from "../../components/cocoa-rate-grid/QuickEditPopover";
@@ -442,65 +442,38 @@ function channelMarkupLabel(channels: RateGridChannel[], channelId: string): str
 
 type NoticeTone = "info" | "warning" | "danger" | "success";
 
-const NOTICE_COLORS: Record<NoticeTone, { border: string; fg: string }> = {
-  info: { border: "var(--cocoa-accent)", fg: "var(--cocoa-label)" },
-  warning: { border: "var(--cocoa-warning, #b8860b)", fg: "var(--cocoa-label)" },
-  danger: { border: "var(--cocoa-danger)", fg: "var(--cocoa-label)" },
-  success: { border: "var(--cocoa-success)", fg: "var(--cocoa-label)" }
-};
-
+/**
+ * Notice of the editor: a CocoaCallout that may carry an action and a close
+ * button. Failures are `alert`; the rest change while mounted (`status`).
+ */
 function InlineNotice(props: { tone: NoticeTone; title?: string; children: ReactNode; action?: ReactNode; onDismiss?: () => void }) {
-  const colors = NOTICE_COLORS[props.tone];
-  const style: CSSProperties = {
-    display: "flex",
-    alignItems: "flex-start",
-    gap: "var(--cocoa-space-3)",
-    padding: "var(--cocoa-space-3)",
-    borderRadius: "var(--cocoa-radius-md)",
-    border: "1px solid var(--cocoa-separator)",
-    borderLeft: `4px solid ${colors.border}`,
-    background: "var(--cocoa-background-content)",
-    color: colors.fg,
-    fontFamily: "var(--cocoa-font)",
-    fontSize: "var(--cocoa-fs-body)"
-  };
+  const actions =
+    props.action || props.onDismiss ? (
+      <>
+        {props.action}
+        {props.onDismiss ? <CocoaButton variant="plain" size="small" tone="neutral" onClick={props.onDismiss} aria-label="Cerrar aviso" icon={<XmarkIcon size={14} />} /> : null}
+      </>
+    ) : undefined;
   return (
-    <div role={props.tone === "danger" ? "alert" : "status"} style={style}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {props.title ? <strong style={{ display: "block", marginBottom: 2 }}>{props.title}</strong> : null}
-        <div>{props.children}</div>
+    <CocoaCallout tone={props.tone} role={props.tone === "danger" ? "alert" : "status"} title={props.title} actions={actions}>
+      {props.children}
+    </CocoaCallout>
+  );
+}
+
+/** Caption + controls of one toolbar group («Rango», «Vista», «Capas»). */
+function ToolbarGroup(props: { label: string; title?: string; children: ReactNode }) {
+  return (
+    <div className="cocoa-stack" data-gap="1" title={props.title}>
+      <span className="cocoa-caption">{props.label}</span>
+      <div className="cocoa-row" data-gap="2">
+        {props.children}
       </div>
-      {props.action}
-      {props.onDismiss ? (
-        <CocoaButton variant="plain" size="small" tone="neutral" onClick={props.onDismiss} aria-label="Cerrar aviso">
-          ✕
-        </CocoaButton>
-      ) : null}
     </div>
   );
 }
 
-const chipStyle = (active: boolean): CSSProperties => ({
-  padding: "3px 10px",
-  borderRadius: "var(--cocoa-radius-full)",
-  border: `1px solid ${active ? "var(--cocoa-accent)" : "var(--cocoa-separator)"}`,
-  background: active ? "var(--cocoa-accent)" : "var(--cocoa-background-control)",
-  color: active ? "var(--cocoa-accent-contrast, #fff)" : "var(--cocoa-label)",
-  fontFamily: "var(--cocoa-font)",
-  fontSize: "var(--cocoa-fs-subheadline)",
-  cursor: "pointer",
-  lineHeight: 1.4
-});
-
-const fieldLabelStyle: CSSProperties = {
-  fontSize: "var(--cocoa-fs-caption)",
-  fontWeight: 600,
-  color: "var(--cocoa-label-secondary)",
-  textTransform: "uppercase",
-  letterSpacing: "var(--cocoa-tracking-wide)"
-};
-
-/** Multi-select with search (room types / rate plans filters). */
+/** Multi-select with search (room types / rate plans filters): a listbox of option rows inside a CocoaPopover. */
 function MultiSelectFilter(props: {
   label: string;
   options: Array<{ id: string; label: string; hint?: string }>;
@@ -510,7 +483,7 @@ function MultiSelectFilter(props: {
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const anchorRef = useRef<HTMLButtonElement>(null);
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
   const selectedSet = useMemo(() => new Set(props.value), [props.value]);
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -529,57 +502,57 @@ function MultiSelectFilter(props: {
     props.onChange(selectedSet.has(id) ? props.value.filter((v) => v !== id) : [...props.value, id]);
   }
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 160 }}>
-      <span style={fieldLabelStyle}>{props.label}</span>
-      <button
+    <ToolbarGroup label={props.label}>
+      <CocoaButton
         ref={anchorRef}
-        type="button"
+        variant="bordered"
+        size="small"
+        tone={props.value.length > 0 ? "accent" : "neutral"}
         onClick={() => setOpen((v) => !v)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        style={{
-          height: 28,
-          padding: "0 10px",
-          textAlign: "left",
-          borderRadius: "var(--cocoa-radius-md)",
-          border: "1px solid var(--cocoa-separator)",
-          background: "var(--cocoa-background-control)",
-          color: "var(--cocoa-label)",
-          fontFamily: "var(--cocoa-font)",
-          fontSize: "var(--cocoa-fs-body)",
-          cursor: "pointer",
-          maxWidth: 240,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap"
-        }}
+        title={summary}
+        style={{ maxWidth: 240 }}
       >
-        {summary} ▾
-      </button>
-      <CocoaPopover open={open} anchorEl={anchorRef.current} placement="bottom" onClose={() => setOpen(false)}>
-        <div style={{ padding: 8, width: 260, display: "flex", flexDirection: "column", gap: 6 }}>
-          <CocoaInput value={query} onChange={setQuery} placeholder="Buscar…" size="small" />
-          <div role="listbox" aria-multiselectable style={{ maxHeight: 240, overflow: "auto", display: "flex", flexDirection: "column" }}>
+        {summary}
+      </CocoaButton>
+      <CocoaPopover open={open} anchorEl={anchorRef.current} placement="bottom" onClose={() => setOpen(false)} aria-label={props.label}>
+        <div className="cocoa-stack crg-filter__pop" data-gap="2">
+          <CocoaInput value={query} onChange={setQuery} placeholder="Buscar…" size="small" aria-label={`Buscar en ${props.label.toLowerCase()}`} />
+          <div role="listbox" aria-multiselectable aria-label={props.label} className="cocoa-stack crg-filter__list" data-gap="1">
             {visible.length === 0 ? (
-              <span style={{ padding: 6, color: "var(--cocoa-label-tertiary)", fontSize: "var(--cocoa-fs-callout)" }}>Sin resultados</span>
+              <CocoaState kind="empty" inline title={STATUS_LABELS.noResults} />
             ) : (
-              visible.map((o) => (
-                <label
-                  key={o.id}
-                  role="option"
-                  aria-selected={selectedSet.has(o.id)}
-                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 6px", cursor: "pointer", fontSize: "var(--cocoa-fs-body)" }}
-                >
-                  <input type="checkbox" checked={selectedSet.has(o.id)} onChange={() => toggle(o.id)} />
-                  <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{o.label}</span>
-                  {o.hint ? <span style={{ color: "var(--cocoa-label-tertiary)", fontSize: "var(--cocoa-fs-caption)" }}>{o.hint}</span> : null}
-                </label>
-              ))
+              visible.map((o) => {
+                const selected = selectedSet.has(o.id);
+                return (
+                  <CocoaButton
+                    key={o.id}
+                    role="option"
+                    aria-selected={selected}
+                    variant={selected ? "tinted" : "plain"}
+                    tone={selected ? "accent" : "neutral"}
+                    size="small"
+                    wrap
+                    icon={selected ? <CheckIcon size={14} /> : undefined}
+                    iconPosition="right"
+                    onClick={() => toggle(o.id)}
+                    style={{ width: "100%", justifyContent: "space-between" }}
+                  >
+                    {o.label}
+                    {o.hint ? (
+                      <CocoaBadge tone="neutral" size="small" uppercase={false} className="crg-filter__hint">
+                        {o.hint}
+                      </CocoaBadge>
+                    ) : null}
+                  </CocoaButton>
+                );
+              })
             )}
           </div>
-          <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <div className="cocoa-row" data-justify="between" data-gap="2">
             <CocoaButton variant="plain" size="small" tone="neutral" onClick={() => props.onChange([])}>
-              Todos
+              {STATUS_LABELS.all}
             </CocoaButton>
             <CocoaButton variant="tinted" size="small" tone="accent" onClick={() => setOpen(false)}>
               Listo
@@ -587,7 +560,7 @@ function MultiSelectFilter(props: {
           </div>
         </div>
       </CocoaPopover>
-    </div>
+    </ToolbarGroup>
   );
 }
 
@@ -605,9 +578,9 @@ function ReasonSheet(props: { open: boolean; initial: string; onConfirm: (reason
       title={props.title}
       size="sm"
       footer={
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        <div className="cocoa-row" data-justify="end" data-gap="2">
           <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose}>
-            Cancelar
+            {ACTIONS.cancel}
           </CocoaButton>
           <CocoaButton variant="filled" tone="accent" disabled={value.length === 0} onClick={() => props.onConfirm(value)}>
             Continuar
@@ -615,21 +588,27 @@ function ReasonSheet(props: { open: boolean; initial: string; onConfirm: (reason
         </div>
       }
     >
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        <p style={{ margin: 0, color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)" }}>
-          El motivo queda en el historial junto al diff de cada celda. Elige uno o escribe el tuyo.
-        </p>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      <div className="cocoa-stack" data-gap="3">
+        <div className="cocoa-cluster" role="group" aria-label="Motivos habituales">
           {REASON_PRESETS.map((preset) => (
-            <button key={preset} type="button" style={chipStyle(text === preset)} onClick={() => setText(preset)}>
+            <CocoaButton key={preset} variant={text === preset ? "tinted" : "bordered"} tone={text === preset ? "accent" : "neutral"} size="small" aria-pressed={text === preset} onClick={() => setText(preset)}>
               {preset}
-            </button>
+            </CocoaButton>
           ))}
         </div>
-        <label style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span style={fieldLabelStyle}>Motivo</span>
-          <CocoaInput value={text} onChange={setText} placeholder="Motivo del cambio…" />
-        </label>
+        <CocoaField label="Motivo" required help="El motivo queda en el historial junto al detalle de cada celda modificada. Elige uno o escribe el tuyo.">
+          <CocoaInput
+            value={text}
+            onChange={setText}
+            placeholder="Motivo del cambio…"
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && value.length > 0) {
+                event.preventDefault();
+                props.onConfirm(value);
+              }
+            }}
+          />
+        </CocoaField>
       </div>
     </CocoaSheet>
   );
@@ -660,8 +639,6 @@ function NoChannelsPanel(props: { compact?: boolean }) {
 type LoadNotice = { tone: NoticeTone; title?: string; text: string; conflicts?: RateGridConflictDetail[]; id: number };
 
 export function RateGridEditorScreen() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
   const { showToast } = useToast();
   const [propertyId, setPropertyId] = useState(() => getActivePropertyId());
   const propertyName = getActivePropertyName();
@@ -1845,182 +1822,159 @@ export function RateGridEditorScreen() {
   const noChannels = !loading && response !== null && !response.legacyShape && effectiveChannels.length === 0;
 
   // --- render ---
-  const screenStyle: CSSProperties = { display: "flex", flexDirection: "column", gap: "var(--cocoa-space-3)", fontFamily: "var(--cocoa-font)", minHeight: 0 };
-  const toolbarStyle: CSSProperties = {
-    display: "flex",
-    flexWrap: "wrap",
-    alignItems: "flex-end",
-    gap: "var(--cocoa-space-3)",
-    padding: "var(--cocoa-space-3)",
-    border: "1px solid var(--cocoa-separator)",
-    borderRadius: "var(--cocoa-radius-md)",
-    background: "var(--cocoa-background-content)"
+  // Standalone: eyebrow «Revenue · propiedad» + h1 from the tree; hosted as the
+  // base tab of Parrilla de tarifas the container paints them and CocoaPage
+  // keeps the range line and the actions (HostedHead).
+  const head = treeHeaderFor("RateGridEditorScreen", { eyebrow: "Revenue", title: "Parrilla de tarifas" });
+  const gridSubtitle = `${propertyName} · ${formatDateRange(from, to)} · ${pluralize(rangeDays, "noche", "noches")}${response?.legacyShape ? " · solo lectura" : ""}`;
+  const reload = () => {
+    void loadGrid();
+    void loadProductMappings();
+    journal.refresh();
   };
-
-  // Embedded as the base tab of Parrilla de tarifas (Tanda 5) the container
-  // paints the page header: only the range line and the actions stay, in a row.
-  const gridSubtitle = `${propertyName} · ${formatDateRange(from, to)} · ${rangeDays} noches${response?.legacyShape ? " · solo lectura" : ""}`;
   const headerActions = (
     <>
       <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => setHistoryOpen(true)}>
         Historial
       </CocoaButton>
-      <CocoaButton
-        variant="bordered"
-        size="small"
-        tone="neutral"
-        onClick={() => {
-          void loadGrid();
-          void loadProductMappings();
-          journal.refresh();
-        }}
-        loading={loading}
-        disabled={loading}
-      >
+      <CocoaButton variant="bordered" size="small" tone="neutral" onClick={reload} loading={loading} disabled={loading}>
         Recargar
       </CocoaButton>
     </>
   );
-  const embeddedBarStyle: CSSProperties = {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: "var(--cocoa-space-3)",
-    flexWrap: "wrap"
+  const clearFilters = () => {
+    setRoomTypeIds([]);
+    setPlanIds([]);
+    setChannelIdForView("");
   };
 
   return (
-    <section style={screenStyle} aria-busy={loading}>
-      {embedded ? (
-        <div style={embeddedBarStyle}>
-          <span style={{ color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)" }}>{gridSubtitle}</span>
-          <span style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", flexShrink: 0 }}>{headerActions}</span>
-        </div>
-      ) : (
-        <CocoaPageHeader eyebrow="Revenue · Parrilla de tarifas" title="Parrilla de tarifas" subtitle={gridSubtitle} actions={headerActions} />
-      )}
-
-      <div style={toolbarStyle} role="toolbar" aria-label="Rango, vista y filtros">
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span style={fieldLabelStyle}>Rango</span>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-            {RANGE_PRESETS.map((p) => (
-              <button
-                key={p.id}
-                type="button"
-                style={chipStyle(activePreset === p.id)}
-                onClick={() => applyPreset(p.id)}
-                aria-pressed={activePreset === p.id}
-                title={p.days === "quarter" ? "Trimestre natural de la fecha inicial" : `${p.days} noches desde la fecha inicial`}
-              >
-                {p.label}
-              </button>
-            ))}
-            <span title="Rango anterior" style={{ display: "inline-flex" }}>
-              <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => shiftRange(-1)} aria-label="Rango anterior">
+    <CocoaPage
+      eyebrow={`${head.eyebrow} · ${propertyName}`}
+      title={head.title}
+      subtitle={gridSubtitle}
+      actions={headerActions}
+      density="compact"
+      gap={3}
+      aria-label="Editor de tarifas"
+      commands={[
+        { id: "rate-grid-history", label: "Historial de cambios de tarifas", run: () => setHistoryOpen(true) },
+        { id: "rate-grid-reload", label: `${ACTIONS.refresh}: parrilla de tarifas`, run: reload },
+        { id: "rate-grid-bulk", label: "Edición masiva de tarifas", run: () => handleOpenBulkEdit(), shortcut: "⌘ B" },
+        { id: "rate-grid-review", label: "Revisar y publicar tarifas", run: requestReview, shortcut: "⌘ Enter" },
+        { id: "rate-grid-today", label: "Parrilla: empezar el rango hoy", run: goToday }
+      ]}
+    >
+      <CocoaToolbar
+        variant="content"
+        aria-label="Rango, vista y filtros"
+        leftSlot={
+          <>
+            <ToolbarGroup label="Rango">
+              {RANGE_PRESETS.map((p) => (
+                <CocoaButton
+                  key={p.id}
+                  variant={activePreset === p.id ? "tinted" : "plain"}
+                  tone={activePreset === p.id ? "accent" : "neutral"}
+                  size="small"
+                  aria-pressed={activePreset === p.id}
+                  onClick={() => applyPreset(p.id)}
+                  title={p.days === "quarter" ? "Trimestre natural de la fecha inicial" : `${p.days} noches desde la fecha inicial`}
+                >
+                  {p.label}
+                </CocoaButton>
+              ))}
+              <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => shiftRange(-1)} aria-label="Rango anterior" title="Rango anterior">
                 ‹
               </CocoaButton>
-            </span>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }} title="Primera noche del rango">
-              <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Desde</span>
-              <CocoaDatePicker value={from} onChange={(v) => v && setRange(v, addDays(v, rangeDays - 1))} size="small" />
-            </label>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 4 }} title="Última noche del rango (hasta 365 noches)">
-              <span style={{ fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>Hasta</span>
-              <CocoaDatePicker
-                value={to}
-                min={from}
-                max={addDays(from, MAX_RANGE_DAYS - 1)}
-                onChange={(v) => {
-                  if (!v || v < from || diffDays(from, v) >= MAX_RANGE_DAYS) return;
-                  setRange(from, v);
-                }}
-                size="small"
-              />
-            </label>
-            <span title="Rango siguiente" style={{ display: "inline-flex" }}>
-              <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => shiftRange(1)} aria-label="Rango siguiente">
+              <CocoaField label="Desde" inline>
+                <CocoaDatePicker value={from} onChange={(v) => v && setRange(v, addDays(v, rangeDays - 1))} size="small" />
+              </CocoaField>
+              <CocoaField label="Hasta" inline hint="hasta 365 noches">
+                <CocoaDatePicker
+                  value={to}
+                  min={from}
+                  max={addDays(from, MAX_RANGE_DAYS - 1)}
+                  onChange={(v) => {
+                    if (!v || v < from || diffDays(from, v) >= MAX_RANGE_DAYS) return;
+                    setRange(from, v);
+                  }}
+                  size="small"
+                />
+              </CocoaField>
+              <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => shiftRange(1)} aria-label="Rango siguiente" title="Rango siguiente">
                 ›
               </CocoaButton>
-            </span>
-            <span title="Empezar el rango hoy" style={{ display: "inline-flex" }}>
-              <CocoaButton variant="plain" size="small" tone="accent" onClick={goToday}>
+              <CocoaButton variant="plain" size="small" tone="accent" onClick={goToday} title="Empezar el rango hoy">
                 Hoy
               </CocoaButton>
-            </span>
-          </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }} title={VIEW_HELP[view]}>
-          <span style={fieldLabelStyle}>Vista</span>
-          <CocoaSegmentedControl value={view} onChange={(v) => setView(v as RateGridView)} options={VIEW_OPTIONS.map((o) => ({ value: o.value, label: o.label }))} size="small" aria-label="Vista de la parrilla" />
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span style={fieldLabelStyle}>Filtros</span>
-          <span title="Tipos de habitación, planes y precio visto por canal" style={{ display: "inline-flex" }}>
-            <CocoaButton
-              variant={activeFilterCount > 0 ? "tinted" : "bordered"}
-              size="small"
-              tone={activeFilterCount > 0 ? "accent" : "neutral"}
-              onClick={() => setFiltersOpen((v) => !v)}
-              aria-label={`${filtersOpen ? "Ocultar" : "Mostrar"} filtros de tipos, planes y precio visto por`}
-            >
-              {activeFilterCount > 0 ? `Filtros (${activeFilterCount})` : "Filtros"} {filtersOpen ? "▴" : "▾"}
-            </CocoaButton>
-          </span>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-          <span style={fieldLabelStyle}>Capas</span>
-          <div style={{ display: "flex", gap: 12, alignItems: "center", height: 28 }}>
-            <span title="Capa Demanda: ocupación en libros, previsión y pickup por día bajo las fechas">
-              <CocoaSwitch size="small" label="Demanda" checked={layers.demand} onChange={(v) => setLayers((l) => ({ ...l, demand: v }))} />
-            </span>
-            <span title="Capa Recomendaciones: sugerencias de subida o bajada del motor de revenue en cada celda">
-              <CocoaSwitch size="small" label="Recomendaciones" checked={layers.recommendations} onChange={(v) => setLayers((l) => ({ ...l, recommendations: v }))} />
-            </span>
-            <span title="Capa Estado de envío: punto por celda con el estado de la última entrega a cada canal">
-              <CocoaSwitch size="small" label="Estado de envío" checked={layers.sync} onChange={(v) => setLayers((l) => ({ ...l, sync: v }))} />
-            </span>
-          </div>
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginLeft: "auto" }}>
-          {layers.recommendations && recommendationByKey.size > 0 ? (
-            <span title={recSummary.actionable === 0 ? "No hay recomendaciones de subida o bajada en el rango visible" : "Añade al borrador todas las recomendaciones de subida o bajada del rango visible"} style={{ display: "inline-flex" }}>
-              <CocoaButton variant="tinted" size="small" tone="accent" onClick={acceptAllVisibleRecommendations} disabled={readOnly || recSummary.actionable === 0}>
+            </ToolbarGroup>
+            <ToolbarGroup label="Vista" title={VIEW_HELP[view]}>
+              <CocoaSegmentedControl value={view} onChange={(v) => setView(v as RateGridView)} options={VIEW_OPTIONS.map((o) => ({ value: o.value, label: o.label }))} size="small" aria-label="Vista de la parrilla" />
+            </ToolbarGroup>
+            <ToolbarGroup label="Filtros">
+              <CocoaButton
+                variant={activeFilterCount > 0 ? "tinted" : "bordered"}
+                size="small"
+                tone={activeFilterCount > 0 ? "accent" : "neutral"}
+                onClick={() => setFiltersOpen((v) => !v)}
+                aria-expanded={filtersOpen}
+                aria-controls={filtersOpen ? "crg-filters-row" : undefined}
+                icon={<FilterIcon size={14} />}
+                title="Tipos de habitación, planes y precio visto por canal"
+              >
+                {activeFilterCount > 0 ? `Filtros (${activeFilterCount})` : "Filtros"}
+              </CocoaButton>
+            </ToolbarGroup>
+            <ToolbarGroup label="Capas">
+              <span title="Capa Demanda: ocupación en libros, previsión y pickup por día bajo las fechas">
+                <CocoaSwitch size="small" label="Demanda" checked={layers.demand} onChange={(v) => setLayers((l) => ({ ...l, demand: v }))} />
+              </span>
+              <span title="Capa Recomendaciones: sugerencias de subida o bajada del motor de revenue en cada celda">
+                <CocoaSwitch size="small" label="Recomendaciones" checked={layers.recommendations} onChange={(v) => setLayers((l) => ({ ...l, recommendations: v }))} />
+              </span>
+              <span title="Capa Estado de envío: punto por celda con el estado de la última entrega a cada canal">
+                <CocoaSwitch size="small" label="Estado de envío" checked={layers.sync} onChange={(v) => setLayers((l) => ({ ...l, sync: v }))} />
+              </span>
+            </ToolbarGroup>
+          </>
+        }
+        rightSlot={
+          <>
+            {layers.recommendations && recommendationByKey.size > 0 ? (
+              <CocoaButton
+                variant="tinted"
+                size="small"
+                tone="accent"
+                onClick={acceptAllVisibleRecommendations}
+                disabled={readOnly || recSummary.actionable === 0}
+                title={recSummary.actionable === 0 ? "No hay recomendaciones de subida o bajada en el rango visible" : "Añade al borrador todas las recomendaciones de subida o bajada del rango visible"}
+              >
                 Aceptar todas las recomendaciones visibles{recSummary.actionable > 0 ? ` (${recSummary.actionable})` : ""}
               </CocoaButton>
-            </span>
-          ) : null}
-          {layers.sync ? (
-            <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => setSyncPanelOpen(true)}>
-              Ver estado por canal
+            ) : null}
+            {layers.sync ? (
+              <CocoaButton variant="bordered" size="small" tone="neutral" onClick={() => setSyncPanelOpen(true)}>
+                Ver estado por canal
+              </CocoaButton>
+            ) : null}
+            <CocoaButton variant="bordered" size="small" tone="accent" onClick={() => handleOpenBulkEdit()} disabled={readOnly || !response} title="Edición masiva (Ctrl/Cmd+B)">
+              Edición masiva…
             </CocoaButton>
-          ) : null}
-          <CocoaButton variant="bordered" size="small" tone="accent" onClick={() => handleOpenBulkEdit()} disabled={readOnly || !response}>
-            Edición masiva…
-          </CocoaButton>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {filtersOpen ? (
-        <div id="crg-filters-row" style={{ ...toolbarStyle, alignItems: "flex-end" }} role="group" aria-label="Filtros de la parrilla">
+        <div id="crg-filters-row" className="cocoa-row" data-gap="3" data-align="end" role="group" aria-label="Filtros de la parrilla">
           <MultiSelectFilter label="Tipos de habitación" options={roomTypeOptions} value={roomTypeIds} onChange={setRoomTypeIds} emptyLabel="Todos los tipos" />
           <MultiSelectFilter label="Planes" options={planOptions} value={planIds} onChange={setPlanIds} emptyLabel="Todos los planes" />
-          <div style={{ display: "flex", flexDirection: "column", gap: 4, minWidth: 180 }} title="Precio base, o el precio que ve cada canal con su recargo (base + recargo)">
-            <span style={fieldLabelStyle}>Precio visto por</span>
-            <CocoaSelect value={channelIdForView} onChange={setChannelIdForView} options={channelOptions} size="small" />
-          </div>
+          <ToolbarGroup label="Precio visto por" title="Precio base, o el precio que ve cada canal con su recargo (base + recargo)">
+            <CocoaSelect value={channelIdForView} onChange={setChannelIdForView} options={channelOptions} size="small" aria-label="Precio visto por" style={{ minWidth: 180 }} />
+          </ToolbarGroup>
           {activeFilterCount > 0 ? (
-            <CocoaButton
-              variant="plain"
-              size="small"
-              tone="neutral"
-              onClick={() => {
-                setRoomTypeIds([]);
-                setPlanIds([]);
-                setChannelIdForView("");
-              }}
-            >
-              Quitar filtros
+            <CocoaButton variant="plain" size="small" tone="neutral" onClick={clearFilters}>
+              {ACTIONS.clearFilters}
             </CocoaButton>
           ) : null}
         </div>
@@ -2081,17 +2035,17 @@ export function RateGridEditorScreen() {
         <InlineNotice key={n.id} tone={n.tone} title={n.title} onDismiss={() => dismissNotice(n.id)}>
           {n.text}
           {n.conflicts && n.conflicts.length > 0 ? (
-            <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: "var(--cocoa-fs-callout)" }}>
+            <ul className="crg-list" aria-label="Celdas en conflicto">
               {n.conflicts.slice(0, 12).map((c, i) => {
                 const rt = response?.roomTypes.find((r) => r.id === c.roomTypeId)?.name ?? c.roomTypeId;
                 const plan = response?.ratePlans.find((p) => p.id === c.ratePlanId)?.code ?? c.ratePlanId;
                 return (
-                  <li key={`${c.ratePlanId}-${c.roomTypeId}-${c.date}-${i}`}>
+                  <li key={`${c.ratePlanId}-${c.roomTypeId}-${c.date}-${i}`} className="crg-list__item crg-list__item--tight">
                     {plan} · {rt} · {formatDateLong(c.date)}: {c.reason}
                   </li>
                 );
               })}
-              {n.conflicts.length > 12 ? <li>… y {n.conflicts.length - 12} más</li> : null}
+              {n.conflicts.length > 12 ? <li className="crg-list__item crg-list__item--tight">… y {n.conflicts.length - 12} más</li> : null}
             </ul>
           ) : null}
         </InlineNotice>
@@ -2164,21 +2118,15 @@ export function RateGridEditorScreen() {
           onEditRefused={handleEditRefused}
           syncUnavailable={syncUnavailable}
         />
+      ) : loading ? (
+        <CocoaState kind="loading" title="Cargando parrilla…" />
       ) : (
-        <div
-          style={{
-            minHeight: 240,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            border: "1px dashed var(--cocoa-separator)",
-            borderRadius: "var(--cocoa-radius-md)",
-            color: "var(--cocoa-label-secondary)",
-            fontSize: "var(--cocoa-fs-body)"
-          }}
-        >
-          {loading ? "Cargando parrilla…" : "La parrilla no se ha podido cargar. Revisa el aviso de arriba y vuelve a intentarlo."}
-        </div>
+        <CocoaState
+          kind="error"
+          title="La parrilla no se ha podido cargar"
+          message="Revisa el aviso de arriba y vuelve a intentarlo."
+          onRetry={() => void loadGrid()}
+        />
       )}
 
       <RateGridStatusBar
@@ -2322,15 +2270,16 @@ export function RateGridEditorScreen() {
         onClose={() => setReasonSheet((s) => ({ ...s, open: false }))}
       />
 
-      <ConfirmDialog
+      <CocoaDialog
         open={journal.pendingRevertId !== null}
+        onClose={journal.cancelRevert}
+        tone="destructive"
         title="Revertir este cambio"
         description="Se crea una entrada nueva que restaura en Anfitorio los valores anteriores de todas las celdas de este cambio. Los canales no se tocan: al terminar podrás enviarles las celdas revertidas desde el aviso «Enviar a canales»."
-        confirmLabel={journal.reverting ? "Revirtiendo…" : "Revertir"}
-        cancelLabel="Cancelar"
-        variant="danger"
+        confirmLabel={journal.reverting ? "Revirtiendo…" : ACTIONS.revert}
+        cancelLabel={ACTIONS.cancel}
+        busy={journal.reverting}
         onConfirm={() => void journal.confirmRevert()}
-        onCancel={journal.cancelRevert}
       />
 
       <JournalStaleDialog
@@ -2345,20 +2294,20 @@ export function RateGridEditorScreen() {
         onCancel={journal.cancelStaleRevert}
       />
 
-      <ConfirmDialog
+      <CocoaDialog
         open={pendingNav !== null || pendingTabNav !== null}
+        onClose={() => {
+          setPendingNav(null);
+          setPendingTabNav(null);
+        }}
+        tone="destructive"
         title="Tienes cambios sin guardar"
         description={`Hay ${pluralize(draftChangeCount(draft), "celda editada", "celdas editadas")} sin guardar. Se conservarán en esta pestaña para que puedas recuperarlas al volver, pero no se guardarán en Anfitorio.`}
         confirmLabel="Salir igualmente"
         cancelLabel="Seguir editando"
-        variant="danger"
         onConfirm={confirmLeave}
-        onCancel={() => {
-          setPendingNav(null);
-          setPendingTabNav(null);
-        }}
       />
-    </section>
+    </CocoaPage>
   );
 }
 

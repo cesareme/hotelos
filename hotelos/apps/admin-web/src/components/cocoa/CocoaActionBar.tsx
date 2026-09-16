@@ -7,7 +7,12 @@
 //            the content scroller pads itself above it (`.cocoa-content:has(…)`)
 //   status   left («3 celdas sin guardar»), extra nodes, secondary (bordered
 //            neutral) and primary (filled accent) on the right
-//   keyboard Ctrl/⌘ + Enter triggers the primary action (unless disabled/loading)
+//   keyboard Ctrl/⌘ + Enter triggers the primary action (unless disabled/loading);
+//            ignored while the key lands inside an open dialog / drawer / sheet
+//            (`role="dialog"`), which owns Enter there (rate grid: the «Motivo»
+//            sheet used to fire «Revisar y publicar»)
+//   wrap     `wrap` lets a composed status (badge + text + chip + meta) break
+//            onto several lines instead of the one-line ellipsis
 //   toast    `publishToastOffset` writes `--hotelos-toast-offset` (bar height +
 //            24) on <html> so toasts clear the bar (the rate grid contract).
 //
@@ -33,6 +38,8 @@ export interface CocoaActionBarProps {
   sticky?: boolean;
   /** Render only below 600 px (the desktop keeps its header actions). */
   mobileOnly?: boolean;
+  /** Let the status wrap onto several lines (composed status: badge + text + chip); default one line with ellipsis. */
+  wrap?: boolean;
   publishToastOffset?: boolean;
   className?: string;
   /** Layout escape hatch only. */
@@ -45,6 +52,17 @@ export function isPrimaryShortcut(event: { key: string; metaKey: boolean; ctrlKe
   return event.key === "Enter" && (event.metaKey || event.ctrlKey) && !event.altKey;
 }
 
+/**
+ * True when the shortcut's target sits inside an open overlay (dialog, drawer,
+ * sheet: `role="dialog"` / `"alertdialog"`), which owns Enter there (pure; takes
+ * anything with a `closest()` so tests need no DOM).
+ */
+export function shortcutInsideOverlay(target: unknown): boolean {
+  const closest = (target as { closest?: (selector: string) => unknown } | null | undefined)?.closest;
+  if (typeof closest !== "function") return false;
+  return Boolean(closest.call(target, '[role="dialog"], [role="alertdialog"]'));
+}
+
 /** Placement of the bar by tier (pure; informational `data-placement`, the stylesheet decides). */
 export function actionBarPlacement(input: { isNarrow: boolean; sticky: boolean }): "fixed" | "sticky" | "static" {
   if (input.isNarrow) return "fixed";
@@ -53,7 +71,7 @@ export function actionBarPlacement(input: { isNarrow: boolean; sticky: boolean }
 
 const TOAST_OFFSET_VAR = "--hotelos-toast-offset";
 
-export function CocoaActionBar({ primary, secondary, extra, status, sticky = true, mobileOnly = false, publishToastOffset = false, className, style, "aria-label": ariaLabel }: CocoaActionBarProps) {
+export function CocoaActionBar({ primary, secondary, extra, status, sticky = true, mobileOnly = false, wrap = false, publishToastOffset = false, className, style, "aria-label": ariaLabel }: CocoaActionBarProps) {
   const barRef = useRef<HTMLDivElement | null>(null);
   const primaryRef = useRef<HTMLButtonElement | null>(null);
   const isNarrow = useIsNarrow();
@@ -64,7 +82,7 @@ export function CocoaActionBar({ primary, secondary, extra, status, sticky = tru
   useEffect(() => {
     if (hidden || !primary || primary.disabled || primary.loading) return undefined;
     const handler = (event: globalThis.KeyboardEvent) => {
-      if (!isPrimaryShortcut(event)) return;
+      if (!isPrimaryShortcut(event) || shortcutInsideOverlay(event.target)) return;
       event.preventDefault();
       primaryRef.current?.click();
     };
@@ -101,6 +119,7 @@ export function CocoaActionBar({ primary, secondary, extra, status, sticky = tru
       data-placement={placement}
       data-sticky={sticky ? undefined : "false"}
       data-mobile-only={mobileOnly ? "true" : undefined}
+      data-wrap={wrap ? "true" : undefined}
     >
       {status ? <div className="c22-action-bar__status">{status}</div> : null}
       {extra ? <div className="c22-action-bar__extra">{extra}</div> : null}

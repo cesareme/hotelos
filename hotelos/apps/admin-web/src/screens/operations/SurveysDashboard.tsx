@@ -1,308 +1,322 @@
-import { useTabHost } from "../tabs/TabHost";
+// Encuestas — Comercial › Reputación y calidad › Encuestas
+// (/comercial/reputacion/encuestas, hosted inside ReputacionTabs).
+//
+// Cocoa 22 · ola 7 · lote 7-B (docs/design/COCOA-22.md §4, archetype
+// «dashboard alojado»): CocoaPage → CocoaKpiStrip (NPS, response rate,
+// responses, detractors) → CocoaGrid 6/6 (promoters · passives · detractors
+// as CocoaChart.Progress rows · 0–10 score distribution as CocoaChart.Bars)
+// → CocoaGrid 6/6 (recent responses as a section list · top themes as a
+// CocoaTable). Read-only.
+//
+// Data: GET /dashboards/surveys, polled every 5 minutes — only once the
+// reputation_quality module is known to be enabled (qa#14): while the module
+// list loads the page keeps its skeleton, and with the module off it paints
+// «Módulo no activado» (+ «Activar módulo» for users with modules.enable).
+
+import type { CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { EmptyState } from "../../components/States";
-import { dateTime, percent } from "../../lib/format";
+import { getActiveProperty } from "../../services/activeProperty";
+import { toArray } from "../../utils/toArray";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import { dateTime, number, percent, plural } from "../../lib/format";
+import { moduleDisabledCopy } from "./module-gate";
+import { useScreenModuleGate } from "./useScreenModuleGate";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaBarsDatum,
+  type CocoaKpiStatus,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
+// Menu labels of the tree (Comercial › Reputación y calidad › Encuestas), never retyped here.
+const HEADER = treeHeaderFor("SurveysDashboard", { eyebrow: "Comercial · Reputación y calidad", title: "Encuestas" });
+
+type SurveyResponse = {
+  id: string;
+  surveyName: string;
+  score?: number;
+  sentiment?: string;
+  comment?: string;
+  submittedAt: string;
+};
+type ScoreBucket = { score: number; count: number };
+type Theme = { theme: string; count: number };
+type Kpis = {
+  nps90d: number;
+  responseRatePct: number;
+  totalResponses90d: number;
+  promoters: number;
+  passives: number;
+  detractors: number;
+};
 type SurveysDashboardData = {
-  kpis: {
-    nps90d: number;
-    responseRatePct: number;
-    totalResponses90d: number;
-    promoters: number;
-    passives: number;
-    detractors: number;
-  };
-  scoreDistribution: Array<{ score: number; count: number }>;
-  recentResponses: Array<{
-    id: string;
-    surveyName: string;
-    score?: number;
-    sentiment?: string;
-    comment?: string;
-    submittedAt: string;
-  }>;
-  topThemes: Array<{ theme: string; count: number }>;
+  kpis: Kpis;
+  scoreDistribution: ScoreBucket[];
+  recentResponses: SurveyResponse[];
+  topThemes: Theme[];
 };
 
-const EMPTY: SurveysDashboardData = {
-  kpis: { nps90d: 0, responseRatePct: 0, totalResponses90d: 0, promoters: 0, passives: 0, detractors: 0 },
-  scoreDistribution: Array.from({ length: 11 }, (_, score) => ({ score, count: 0 })),
-  recentResponses: [],
-  topThemes: []
-};
+const EMPTY_KPIS: Kpis = { nps90d: 0, responseRatePct: 0, totalResponses90d: 0, promoters: 0, passives: 0, detractors: 0 };
+const MAX_ROWS = 12;
 
-function formatDate(iso: string): string {
-  return dateTime(iso);
+function npsStatus(nps: number): CocoaKpiStatus {
+  if (nps >= 50) return "ok";
+  if (nps >= 0) return "warning";
+  return "critical";
 }
 
-function npsKpiClass(nps: number): string {
-  if (nps >= 50) return "rev-kpi rev-kpi-ok";
-  if (nps >= 0) return "rev-kpi rev-kpi-warn";
-  return "rev-kpi rev-kpi-error";
+function responseRateStatus(pct: number): CocoaKpiStatus {
+  if (pct >= 25) return "ok";
+  if (pct >= 10) return "warning";
+  return "critical";
 }
 
-function scoreBarClass(score: number): string {
-  if (score >= 9) return "cm-pill-ok";
-  if (score >= 7) return "cm-pill";
-  return "cm-pill-error";
+/** Promoters (9–10) success · passives (7–8) neutral · detractors (0–6) danger. */
+function scoreTone(score: number): CocoaTone {
+  if (score >= 9) return "success";
+  if (score >= 7) return "neutral";
+  return "danger";
 }
 
-function scorePillClass(score?: number): string {
-  if (score === undefined || score === null) return "cm-pill";
-  if (score >= 9) return "cm-pill cm-pill-ok";
-  if (score >= 7) return "cm-pill";
-  return "cm-pill cm-pill-error";
+function sentimentLabel(sentiment: string): { label: string; tone: CocoaTone } {
+  const s = sentiment.toLowerCase();
+  if (s.includes("pos") || s.includes("happy")) return { label: "positivo", tone: "success" };
+  if (s.includes("neg") || s.includes("angry")) return { label: "negativo", tone: "danger" };
+  if (s.includes("mix") || s.includes("warn")) return { label: "mixto", tone: "warning" };
+  if (s.includes("neu")) return { label: "neutro", tone: "neutral" };
+  return { label: sentiment, tone: "neutral" };
 }
 
-function sentimentPillClass(sentiment?: string): string {
-  if (!sentiment) return "cm-pill";
-  const normalized = sentiment.toLowerCase();
-  if (normalized.includes("pos") || normalized.includes("happy") || normalized === "positive") return "cm-pill cm-pill-ok";
-  if (normalized.includes("neg") || normalized.includes("angry") || normalized === "negative") return "cm-pill cm-pill-error";
-  if (normalized.includes("mix") || normalized.includes("warn")) return "cm-pill cm-pill-warn";
-  return "cm-pill";
+function fmtScore(score: number): string {
+  return number(score, { maximumFractionDigits: 1 });
+}
+
+function fmtPct(pct: number): string {
+  return percent(pct, { maximumFractionDigits: 0 });
+}
+
+// Footnote text (date of a response) in the secondary ink; outside a literal `style={{…}}` (rule 6).
+const footnoteStyle: CSSProperties = { fontSize: "var(--cocoa-fs-footnote)", color: "var(--cocoa-label-secondary)" };
+const bodyStyle: CSSProperties = { margin: 0, fontSize: "var(--cocoa-fs-body)", lineHeight: "var(--cocoa-lh-body)", color: "var(--cocoa-label)" };
+
+const THEME_COLUMNS: CocoaTableColumn<Theme>[] = [
+  { key: "theme", label: "Tema", render: (row) => <strong>{row.theme}</strong> },
+  { key: "count", label: "Menciones", align: "right", fit: true, render: (row) => number(row.count) }
+];
+
+// Mirror skeleton: the KPI strip and the two 6/6 rows.
+function SurveysSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton.Grid rows={[[6, 6], [6, 6]]} height={220} />
+    </div>
+  );
 }
 
 export function SurveysDashboard() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
-  const { data, loading, error, refresh } = useApiData<SurveysDashboardData>(
-    "/dashboards/surveys",
-    { pollIntervalMs: 300000 }
-  );
+  // Hosted inside ReputacionTabs the container paints eyebrow + H1; CocoaPage adds the subtitle and actions row.
+  const propertyName = getActiveProperty().propertyName;
+  // Module gate (qa#14): no request (and no 5-minute poll) until reputation_quality is known to be enabled.
+  const moduleGate = useScreenModuleGate("SurveysDashboard");
+  const { data, loading, error, refresh } = useApiData<SurveysDashboardData>(moduleGate.ready ? "/dashboards/surveys" : null, { pollIntervalMs: 300000 });
 
-  const view = data ?? EMPTY;
-  const { kpis, scoreDistribution, recentResponses, topThemes } = view;
+  const kpis = data?.kpis ?? EMPTY_KPIS;
+  const scoreDistribution = toArray<ScoreBucket>(data?.scoreDistribution);
+  const recentResponses = toArray<SurveyResponse>(data?.recentResponses);
+  const topThemes = toArray<Theme>(data?.topThemes);
 
   const totalScored = kpis.promoters + kpis.passives + kpis.detractors;
   const promoterPct = totalScored > 0 ? Math.round((kpis.promoters / totalScored) * 100) : 0;
   const passivePct = totalScored > 0 ? Math.round((kpis.passives / totalScored) * 100) : 0;
   const detractorPct = totalScored > 0 ? Math.max(0, 100 - promoterPct - passivePct) : 0;
+  const breakdown: Array<{ key: string; label: string; count: number; pct: number; tone: CocoaTone }> = [
+    { key: "promoters", label: "Promotores (9–10)", count: kpis.promoters, pct: promoterPct, tone: "success" },
+    { key: "passives", label: "Pasivos (7–8)", count: kpis.passives, pct: passivePct, tone: "warning" },
+    { key: "detractors", label: "Detractores (0–6)", count: kpis.detractors, pct: detractorPct, tone: "danger" }
+  ];
 
-  const maxDistributionCount = scoreDistribution.reduce(
-    (max: number, row: { score: number; count: number }) => (row.count > max ? row.count : max),
-    0
-  );
+  const distributionTotal = scoreDistribution.reduce((total, row) => total + row.count, 0);
+  const distributionPeak = scoreDistribution.reduce((max, row) => Math.max(max, row.count), 0);
+  const distributionBars: CocoaBarsDatum[] = scoreDistribution.map((row) => ({
+    label: String(row.score),
+    value: row.count,
+    tone: scoreTone(row.score),
+    hint: plural(row.count, "respuesta", "respuestas")
+  }));
+
+  // Module not active → the whole body is the «Módulo no activado» state (§3.10).
+  const moduleDisabled = moduleGate.status === "disabled";
+  const disabledCopy = moduleDisabledCopy(moduleGate.canEnable);
+  const state =
+    moduleGate.status === "loading" ? "loading" : moduleDisabled ? "empty" : loading && !data ? "loading" : error && !data ? "error" : "ready";
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : (
-            <>
-              <div className="bo-page-eyebrow">Comercial · Reputación y calidad</div>
-              <h1 className="bo-page-title">Encuestas</h1>
-            </>
-          )}
-          <p className="bo-page-subtitle">
-            Métricas de las encuestas post-estancia: NPS de los últimos 90 días, tasa de respuesta,
-            distribución de puntuaciones, comentarios recientes y temas más mencionados.
-            Actualización automática cada 5 minutos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => refresh()}>↻ Actualizar</button>
-        </div>
-      </div>
+    <CocoaPage
+      eyebrow={`${HEADER.eyebrow} · ${propertyName}`}
+      title={HEADER.title}
+      subtitle="Encuestas tras la estancia: NPS de los últimos 90 días, tasa de respuesta, distribución de puntuaciones, comentarios recientes y temas más mencionados. Se actualiza cada 5 minutos."
+      actions={
+        moduleGate.ready ? (
+          <>
+            {loading && data ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+            {error && data ? (
+              <CocoaBadge tone="danger" title={error}>
+                {STATUS_LABELS.loadError}
+              </CocoaBadge>
+            ) : null}
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={loading}>
+              {ACTIONS.refresh}
+            </CocoaButton>
+          </>
+        ) : null
+      }
+      state={state}
+      skeleton={<SurveysSkeleton />}
+      empty={{
+        title: disabledCopy.title,
+        message: disabledCopy.message,
+        primaryAction: disabledCopy.cta ? { label: disabledCopy.cta, onClick: moduleGate.enable } : undefined
+      }}
+      error={{ title: "No se pudieron cargar las encuestas", message: error ?? undefined, onRetry: refresh }}
+      commands={
+        moduleGate.ready
+          ? [{ id: "surveys-refresh", label: "Actualizar encuestas", run: refresh }]
+          : moduleDisabled && disabledCopy.cta
+            ? [{ id: "surveys-enable-module", label: `${disabledCopy.cta} · ${HEADER.title}`, run: moduleGate.enable }]
+            : []
+      }
+    >
+      <CocoaKpiStrip stagger aria-label="Indicadores de encuestas">
+        <CocoaKpi label="NPS · 90 días" value={fmtScore(kpis.nps90d)} caption="promotores menos detractores" polarity="neutral" status={npsStatus(kpis.nps90d)} />
+        <CocoaKpi
+          label="Tasa de respuesta"
+          value={percent(kpis.responseRatePct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+          caption="respuestas entre salidas del periodo"
+          polarity="neutral"
+          status={responseRateStatus(kpis.responseRatePct)}
+        />
+        <CocoaKpi label="Respuestas · 90 días" value={number(kpis.totalResponses90d)} caption="recibidas en el periodo" polarity="neutral" status="ok" />
+        <CocoaKpi
+          label="Detractores"
+          value={number(kpis.detractors)}
+          caption="puntuación de 6 o menos · requieren seguimiento"
+          polarity="neutral"
+          status={kpis.detractors > kpis.promoters ? "critical" : "ok"}
+        />
+      </CocoaKpiStrip>
 
-      {error ? (
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <h3>Error loading surveys data</h3>
-            <span className="cm-pill cm-pill-error">error</span>
-          </div>
-          <p>{error}</p>
-        </section>
-      ) : null}
-
-      <section className="rev-kpi-grid">
-        <article className={npsKpiClass(kpis.nps90d)}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">NPS · 90d</span></div>
-          <div className="rev-kpi-value">{kpis.nps90d.toFixed(1)}</div>
-          <div className="rev-kpi-delta">Promotores - Detractores · % sobre respuestas con score</div>
-        </article>
-        <article className={`rev-kpi ${kpis.responseRatePct >= 25 ? "rev-kpi-ok" : kpis.responseRatePct >= 10 ? "rev-kpi-warn" : "rev-kpi-error"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Response rate</span></div>
-          <div className="rev-kpi-value">{percent(kpis.responseRatePct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</div>
-          <div className="rev-kpi-delta">respuestas / salidas en ventana</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Respuestas · 90d</span></div>
-          <div className="rev-kpi-value">{kpis.totalResponses90d}</div>
-          <div className="rev-kpi-delta">total recibidas en el periodo</div>
-        </article>
-        <article className={`rev-kpi ${kpis.detractors > kpis.promoters ? "rev-kpi-error" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Detractores</span></div>
-          <div className="rev-kpi-value">{kpis.detractors}</div>
-          <div className="rev-kpi-delta">score ≤ 6 · requiere seguimiento</div>
-        </article>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Breakdown</p>
-              <h3>Promotores / Pasivos / Detractores</h3>
-            </div>
-            <span className="bo-chip">{totalScored} con score</span>
-          </div>
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th style={{ width: 130 }}>Categoría</th>
-                <th>Distribución</th>
-                <th style={{ width: 90, textAlign: "right" }}>Número</th>
-                <th style={{ width: 70, textAlign: "right" }}>%</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td><strong>Promotores</strong><br /><small className="bo-muted">9-10</small></td>
-                <td>
-                  <div style={{ background: "var(--bo-track, #eee)", borderRadius: 4, height: 10, width: "100%", overflow: "hidden" }}>
-                    <div className="cm-pill-ok" style={{ width: `${promoterPct}%`, height: "100%", display: "block", borderRadius: 4 }} />
-                  </div>
-                </td>
-                <td style={{ textAlign: "right" }}>{kpis.promoters}</td>
-                <td style={{ textAlign: "right" }}>{promoterPct}%</td>
-              </tr>
-              <tr>
-                <td><strong>Pasivos</strong><br /><small className="bo-muted">7-8</small></td>
-                <td>
-                  <div style={{ background: "var(--bo-track, #eee)", borderRadius: 4, height: 10, width: "100%", overflow: "hidden" }}>
-                    <div className="cm-pill-warn" style={{ width: `${passivePct}%`, height: "100%", display: "block", borderRadius: 4 }} />
-                  </div>
-                </td>
-                <td style={{ textAlign: "right" }}>{kpis.passives}</td>
-                <td style={{ textAlign: "right" }}>{passivePct}%</td>
-              </tr>
-              <tr>
-                <td><strong>Detractores</strong><br /><small className="bo-muted">0-6</small></td>
-                <td>
-                  <div style={{ background: "var(--bo-track, #eee)", borderRadius: 4, height: 10, width: "100%", overflow: "hidden" }}>
-                    <div className="cm-pill-error" style={{ width: `${detractorPct}%`, height: "100%", display: "block", borderRadius: 4 }} />
-                  </div>
-                </td>
-                <td style={{ textAlign: "right" }}>{kpis.detractors}</td>
-                <td style={{ textAlign: "right" }}>{detractorPct}%</td>
-              </tr>
-            </tbody>
-          </table>
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Distribución 0-10</p>
-              <h3>Score distribution</h3>
-            </div>
-            <span className="bo-chip">{maxDistributionCount} pico</span>
-          </div>
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th style={{ width: 60 }}>Score</th>
-                <th>Volumen</th>
-                <th style={{ width: 90, textAlign: "right" }}>Número</th>
-              </tr>
-            </thead>
-            <tbody>
-              {scoreDistribution.map((row) => {
-                const widthPct = maxDistributionCount > 0 ? Math.round((row.count / maxDistributionCount) * 100) : 0;
-                return (
-                  <tr key={row.score}>
-                    <td><strong>{row.score}</strong></td>
-                    <td>
-                      <div style={{ background: "var(--bo-track, #eee)", borderRadius: 4, height: 10, width: "100%", overflow: "hidden" }}>
-                        <div
-                          className={scoreBarClass(row.score)}
-                          style={{ width: `${widthPct}%`, height: "100%", display: "block", borderRadius: 4 }}
-                        />
-                      </div>
-                    </td>
-                    <td style={{ textAlign: "right" }}>{row.count}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </article>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Comentarios recientes</p>
-              <h3>Recent responses</h3>
-            </div>
-            <span className="bo-chip">{recentResponses.length} · {loading ? "cargando…" : "actualizado"}</span>
-          </div>
-          {recentResponses.length === 0 ? (
-            <EmptyState
-              title="No hay respuestas recientes"
-              message="Cuando los huéspedes contesten las encuestas, sus comentarios aparecerán aquí con score y sentimiento."
-            />
-          ) : (
-            <ul className="bo-list">
-              {recentResponses.map((response) => (
-                <li key={response.id} style={{ marginBottom: 12 }}>
-                  <div className="bo-card-head" style={{ marginBottom: 4 }}>
-                    <div>
-                      <strong>{response.surveyName}</strong>
-                      {response.sentiment ? (
-                        <>
-                          {" "}
-                          <span className={sentimentPillClass(response.sentiment)}>{response.sentiment}</span>
-                        </>
-                      ) : null}
-                    </div>
-                    <span className={scorePillClass(response.score)}>
-                      {response.score !== undefined ? `${response.score.toFixed(1)}` : "sin score"}
-                    </span>
-                  </div>
-                  {response.comment ? <p style={{ margin: "4px 0" }}>{response.comment}</p> : null}
-                  <small className="bo-muted">{formatDate(response.submittedAt)}</small>
-                </li>
-              ))}
-            </ul>
-          )}
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Temas mencionados</p>
-              <h3>Top themes</h3>
-            </div>
-            <span className="bo-chip">{topThemes.length} temas</span>
-          </div>
-          {topThemes.length === 0 ? (
-            <EmptyState
-              title="No hay temas categorizados"
-              message="Cuando haya respuestas con texto suficiente, la IA agrupará los temas y los mostrará aquí ordenados por menciones."
-            />
-          ) : (
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Tema</th>
-                  <th style={{ width: 90, textAlign: "right" }}>Menciones</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topThemes.map((row) => (
-                  <tr key={row.theme}>
-                    <td><strong>{row.theme}</strong></td>
-                    <td style={{ textAlign: "right" }}>{row.count}</td>
-                  </tr>
+      <CocoaGrid align="start" aria-label="Reparto y distribución de puntuaciones">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Promotores, pasivos y detractores" meta={`${number(totalScored)} con puntuación`}>
+            {totalScored === 0 ? (
+              <CocoaState kind="empty" inline title="Sin respuestas con puntuación en el periodo." />
+            ) : (
+              <div className="cocoa-stack" data-gap="3">
+                {breakdown.map((row) => (
+                  <CocoaChart.Progress
+                    key={row.key}
+                    value={row.pct}
+                    tone={row.tone}
+                    label={row.label}
+                    valueLabel={`${number(row.count)} · ${fmtPct(row.pct)}`}
+                    aria-label={`${row.label}: ${plural(row.count, "respuesta", "respuestas")} (${fmtPct(row.pct)})`}
+                  />
                 ))}
-              </tbody>
-            </table>
-          )}
-        </article>
-      </section>
-    </>
+              </div>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Distribución de puntuaciones" meta={distributionPeak > 0 ? `pico de ${number(distributionPeak)} · escala de 0 a 10` : "escala de 0 a 10"}>
+            {distributionTotal === 0 ? (
+              <CocoaState kind="empty" inline title="Sin puntuaciones que representar." />
+            ) : (
+              <CocoaChart.Bars data={distributionBars} height={160} valueFormat={(value) => number(value)} aria-label="Número de respuestas por puntuación de 0 a 10" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+
+      <CocoaGrid align="start" aria-label="Comentarios y temas">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Respuestas recientes" meta={plural(recentResponses.length, "comentario", "comentarios")}>
+            {recentResponses.length === 0 ? (
+              <CocoaState
+                kind="empty"
+                title="No hay respuestas recientes"
+                message="Cuando los huéspedes contesten las encuestas, sus comentarios aparecerán aquí con puntuación y sentimiento."
+              />
+            ) : (
+              <ul className="c22-section__list" aria-label="Respuestas recientes">
+                {recentResponses.slice(0, MAX_ROWS).map((response) => {
+                  const sentiment = response.sentiment ? sentimentLabel(response.sentiment) : null;
+                  return (
+                    <li key={response.id}>
+                      <div className="cocoa-stack" data-gap="1" style={{ flex: "1 1 auto", minWidth: 0 }}>
+                        <div className="cocoa-row" data-gap="2" data-justify="between">
+                          <strong>{response.surveyName}</strong>
+                          <span className="cocoa-cluster">
+                            {sentiment ? (
+                              <CocoaBadge tone={sentiment.tone} variant="tinted" size="small">
+                                {sentiment.label}
+                              </CocoaBadge>
+                            ) : null}
+                            {response.score !== undefined ? (
+                              <CocoaBadge tone={scoreTone(response.score)} size="small" uppercase={false}>
+                                {fmtScore(response.score)} / 10
+                              </CocoaBadge>
+                            ) : (
+                              <CocoaBadge tone="neutral" size="small">
+                                sin puntuación
+                              </CocoaBadge>
+                            )}
+                          </span>
+                        </div>
+                        {response.comment ? <p style={bodyStyle}>{response.comment}</p> : null}
+                        <span style={footnoteStyle}>{dateTime(response.submittedAt)}</span>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Temas más mencionados"
+            meta={plural(topThemes.length, "tema", "temas")}
+            padding={topThemes.length === 0 ? "md" : "none"}
+            style={{ overflow: "clip" }}
+          >
+            {topThemes.length === 0 ? (
+              <CocoaState
+                kind="empty"
+                title="No hay temas categorizados"
+                message="Cuando haya respuestas con texto suficiente, la IA agrupará los temas y los mostrará aquí ordenados por menciones."
+              />
+            ) : (
+              <CocoaTable columns={THEME_COLUMNS} rows={topThemes.slice(0, MAX_ROWS)} rowKey="theme" caption="Temas más mencionados" aria-label="Temas más mencionados" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+    </CocoaPage>
   );
 }
