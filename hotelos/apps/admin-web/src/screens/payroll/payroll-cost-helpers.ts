@@ -208,9 +208,10 @@ export function formatHeadcount(value: string | number | null | undefined): stri
   return number(value, { maximumFractionDigits: 2 });
 }
 
-/** «35,1 %» of a RatioString («0.3512»); «—» when null. */
+/** «35,1 %» de un porcentaje en puntos («35.12», como lo entrega el API); «—» when null. */
 export function formatLaborPct(value: string | null | undefined): string {
-  return percent(value, { ratio: true, maximumFractionDigits: 1 });
+  // El API entrega puntos porcentuales con dos decimales («56.34»), no un ratio 0-1.
+  return percent(value, { maximumFractionDigits: 1 });
 }
 
 export function salesSourceLabel(source: PayrollCostSalesSource | null | undefined): string {

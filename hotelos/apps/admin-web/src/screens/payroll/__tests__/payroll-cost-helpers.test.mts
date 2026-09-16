@@ -78,8 +78,8 @@ function metrics(over: Partial<PayrollCostReportMetrics> = {}): PayrollCostRepor
     costPerEmployee: "3250.00",
     ledgerNetSales: "40000.00",
     netSalesReported: "42000.00",
-    laborPctLedger: "0.3250",
-    laborPctReference: "0.3095",
+    laborPctLedger: "32.50",
+    laborPctReference: "30.95",
     roomsInventory: 40,
     roomsInventoryReported: 40,
     roomsAvailable: 1120,
@@ -252,20 +252,20 @@ describe("coste de personal · formato de cifras", () => {
   });
 
   it("labor % reads a ratio string and marks the reference source", () => {
-    assert.equal(plain(formatLaborPct("0.3512")), "35,1 %");
+    assert.equal(plain(formatLaborPct("35.12")), "35,1 %");
     assert.equal(formatLaborPct(null), "—");
-    assert.deepEqual(laborPctOf({ laborPctLedger: "0.30", laborPctReference: "0.31" }), { value: "0.30", source: "ledger" }, "sin salesSource (API anterior): libro si lo hay");
-    assert.deepEqual(laborPctOf({ laborPctLedger: null, laborPctReference: "0.31" }), { value: "0.31", source: "reference" });
+    assert.deepEqual(laborPctOf({ laborPctLedger: "30.00", laborPctReference: "31.00" }), { value: "30.00", source: "ledger" }, "sin salesSource (API anterior): libro si lo hay");
+    assert.deepEqual(laborPctOf({ laborPctLedger: null, laborPctReference: "31.00" }), { value: "31.00", source: "reference" });
     assert.deepEqual(laborPctOf({ laborPctLedger: null, laborPctReference: null }), { value: null, source: null });
-    assert.equal(plain(formatLaborPctCell({ laborPctLedger: null, laborPctReference: "0.31" })), "31 % (ref.)");
+    assert.equal(plain(formatLaborPctCell({ laborPctLedger: null, laborPctReference: "31.00" })), "31 % (ref.)");
     assert.equal(formatLaborPctCell({ laborPctLedger: null, laborPctReference: null }), "—");
   });
 
   it("labor % follows the API's primary sales source (contable-6C-03): a tiny ledger no longer paints millions of %", () => {
-    assert.deepEqual(laborPctOf({ laborPctLedger: "236452.9681", laborPctReference: "0.5634", salesSource: "reference" }), { value: "0.5634", source: "reference" });
-    assert.deepEqual(laborPctOf({ laborPctLedger: "0.30", laborPctReference: "0.31", salesSource: "ledger" }), { value: "0.30", source: "ledger" });
+    assert.deepEqual(laborPctOf({ laborPctLedger: "23645296.81", laborPctReference: "56.34", salesSource: "reference" }), { value: "56.34", source: "reference" });
+    assert.deepEqual(laborPctOf({ laborPctLedger: "30.00", laborPctReference: "31.00", salesSource: "ledger" }), { value: "30.00", source: "ledger" });
     assert.deepEqual(laborPctOf({ laborPctLedger: null, laborPctReference: null, salesSource: null }), { value: null, source: null });
-    assert.equal(plain(formatLaborPctCell({ laborPctLedger: "236452.9681", laborPctReference: "0.5634", salesSource: "reference" })), "56,3 % (ref.)");
+    assert.equal(plain(formatLaborPctCell({ laborPctLedger: "23645296.81", laborPctReference: "56.34", salesSource: "reference" })), "56,3 % (ref.)");
   });
 });
 
