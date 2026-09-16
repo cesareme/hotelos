@@ -90,6 +90,10 @@ import { registerFinancialStatementsRoutes } from "./modules/financial-statement
 // / legalEntityName (design §5.4) with the same fallback to the demo store.
 import { registerStructureRoutes } from "./modules/structure/structure.routes.js";
 import { listSwitchableProperties } from "./modules/structure/legal-entity.service.js";
+// Coste de personal importado (Tanda 6c · L3): /payroll/cost-imports* y
+// /payroll/cost-report (modules/payroll/cost-import.routes.ts; permisos en su
+// route-permissions.partial.ts).
+import { registerPayrollCostRoutes } from "./modules/payroll/cost-import.routes.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
 import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport, parseReportWindow } from "./modules/revenue/forecast.service.js";
 import { getHistoryForecastBoard, parseBoardWindow, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
@@ -2707,6 +2711,10 @@ export async function buildApiServer() {
   // /legal-entities/**, PATCH /properties/:propertyId/establishment and the
   // console route /admin/legal-entities/:legalEntityId/verifactu-scope.
   registerStructureRoutes(app);
+  // Coste de personal importado (Tanda 6c · L3): previsualizar, importar y
+  // contabilizar el informe de RRHH agregado, revertir lotes e informe
+  // centros × meses (GET /payroll/cost-report).
+  registerPayrollCostRoutes(app);
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to

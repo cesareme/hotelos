@@ -15,6 +15,8 @@ import type { UserContext } from "../../lib/demo-store.js";
 export const TREASURY_WRITE_KEYS: PermissionKey[] = ["banking.reconcile", "accounting.journal.post"];
 export const TREASURY_READ_KEYS: PermissionKey[] = ["banking.read", "accounting.read", "accounting.journal.post", "banking.reconcile"];
 export const PAYROLL_WRITE_KEYS: PermissionKey[] = ["payroll.manage", "accounting.journal.post"];
+/** Lecturas del coste de personal importado (Tanda 6c): lotes, detalle e informe `GET /payroll/cost-report`. */
+export const PAYROLL_READ_KEYS: PermissionKey[] = ["payroll.read", "payroll.manage", "accounting.journal.post"];
 export const PAYROLL_EXPORT_KEYS: PermissionKey[] = ["payroll.manage", "accounting.journal.post", "workforce.payroll_export"];
 export const COMMISSION_WRITE_KEYS: PermissionKey[] = ["accounting.journal.post", "banking.reconcile"];
 

@@ -16,6 +16,10 @@ export * from "./financial-statements-types.js";
 // DTOs, enums (PropertyKind, LegalForm, PgcVariant, VerifactuChainScope) and the
 // LegalStructureErrorCode union shared by the API and the front.
 export * from "./legal-structure-types.js";
+// Coste de personal importado (Tanda 6c): lotes agregados centro × mes × grupo ×
+// departamento (nunca personas), previsualización, informe de coste y códigos de
+// error compartidos por el API, el CLI payroll:import-cost y el admin-web.
+export * from "./payroll-cost-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

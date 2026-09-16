@@ -14,12 +14,36 @@
 // mapped by payrollErrorMessage.
 // Data: GET /payroll/contracts · /payroll/periods · /payroll/periods/:id/slips
 // (payroll.read); writes through services/payrollApi.ts (payroll.manage).
+//
+// Tanda 6c (design docs/design/FINANZAS-COSTE-PERSONAL.md §8): a fourth view
+// «Coste de personal» (`view "cost"`) reads GET /payroll/cost-report for the
+// month range and group chosen (the centre comes from the «Ámbito», no centre
+// = the whole sociedad) and paints the KPI strip, the centres × months matrix
+// (Empleados · Coste · Coste por empleado · % s/ ventas; a centre expands into
+// its USALI departments with a Set in state — CocoaTable has no expandable
+// rows), two CocoaChart.Bars (coste vs ventas) and the list of imported lots
+// with «Contabilizar» (draft) and «Revertir» (posted, CocoaDialog destructive
+// with a mandatory reason). The import drawer lives in
+// PayrollCostImportDrawer.tsx; every figure arrives derived from the API and
+// payroll-cost-helpers.ts only formats it. Importar / Contabilizar / Revertir
+// are gated on `payroll.manage` through canDo(useNavGate(), …).
+// Corrector 6c: the reversal dialog offers «Fecha de la anulación» like
+// JournalScreen (FU-06; the API still requires the ORIGINAL month to be open,
+// contable-6C-02), the draft «Contabilizar» dialog offers «Sustituir» (FU-12),
+// the matrix repeats the centre on every phone card and hides the middle
+// months there (FU-05), the range pickers show a loading badge while a new
+// range arrives (FU-07), and the KPI captions say what they measure (FU-03,
+// FU-11).
 
-import { useMemo, useState, type CSSProperties } from "react";
+import { useId, useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import type { PayrollCostGroup } from "@hotelos/shared";
 import { getActiveOrganizationId } from "../../services/activeProperty";
 import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
 import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
+import { payrollCostImportListQuery, payrollCostReportQuery } from "../../services/finance-contracts";
+import { useNavGate } from "../../navigation/useEnabledModules";
+import { canDo } from "../accounting/accounting-ui";
 import {
   PAYROLL_CONTRACT_TYPES,
   PAYROLL_CONTRACT_TYPE_LABELS_ES,
@@ -30,8 +54,13 @@ import {
   exportPayrollPeriod,
   payPayrollPeriod,
   payrollErrorMessage,
+  postPayrollCostImport,
+  reversePayrollCostImport,
   type PayrollContractRecord,
   type PayrollContractType,
+  type PayrollCostImportCreateResult,
+  type PayrollCostImportRecord,
+  type PayrollCostReport,
   type PayrollExportFormat,
   type PayrollExportResult,
   type PayrollPayFrequency,
@@ -41,16 +70,19 @@ import {
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
 import { ACTIONS, STATUS_LABELS, newLabel } from "../../content/actions";
-import { date, dateRange, isoDate, money, number, percent, plural, toNumber } from "../../lib/format";
+import { date, dateRange, dateTime, isoDate, money, number, percent, plural, toNumber } from "../../lib/format";
 import {
   CocoaBadge,
   CocoaButton,
   CocoaCallout,
+  CocoaChart,
+  CocoaDatePicker,
   CocoaDialog,
   CocoaDrawer,
   CocoaField,
   CocoaFormRow,
   CocoaFormSection,
+  CocoaGrid,
   CocoaInput,
   CocoaKpi,
   CocoaKpiStrip,
@@ -58,14 +90,42 @@ import {
   CocoaSection,
   CocoaSelect,
   CocoaSkeleton,
+  CocoaSpan,
   CocoaState,
+  CocoaSwitch,
   CocoaTable,
   toneInk,
+  useViewportTier,
   type CocoaTableColumn,
   type CocoaTone
 } from "../../components/cocoa";
+import { PayrollCostImportDrawer } from "./PayrollCostImportDrawer";
+import {
+  ALL_GROUPS_VALUE,
+  PAYROLL_COST_PICKER_MONTHS,
+  PAYROLL_COST_SOURCE_LABELS,
+  clampCostRange,
+  costBars,
+  costGroupOptions,
+  costMatrixRows,
+  defaultCostRange,
+  formatHeadcount,
+  formatLaborPct,
+  importFileLabel,
+  importResultTitle,
+  importStatusBadge,
+  laborPctOf,
+  monthLabel,
+  monthPickerOptions,
+  monthRangeLabel,
+  payrollCostErrorMessage,
+  reverseReasonError,
+  salesBars,
+  toggleExpanded,
+  type CostMatrixRow
+} from "./payroll-cost-helpers";
 
-type View = "contracts" | "periods" | "slips";
+type View = "contracts" | "periods" | "slips" | "cost";
 
 const PERIOD_STATUS_LABEL: Record<PayrollPeriodRecord["status"], string> = { open: "Abierto", calculated: "Calculado", exported: "Exportado", closed: "Cerrado" };
 const PERIOD_STATUS_TONE: Record<PayrollPeriodRecord["status"], CocoaTone> = { open: "warning", calculated: "info", exported: "success", closed: "neutral" };
@@ -197,6 +257,49 @@ const SLIP_COLUMNS: CocoaTableColumn<PayrollSlipRecord>[] = [
   }
 ];
 
+// ---- Coste de personal (Tanda 6c) ----
+
+const GROUP_OPTIONS = costGroupOptions();
+const MANAGE_HINT = "Necesitas el permiso de gestión de nóminas";
+
+const IMPORT_COLUMNS: CocoaTableColumn<PayrollCostImportRecord>[] = [
+  { key: "createdAt", label: "Fecha", fit: true, render: (record) => date(record.createdAt, "short") },
+  {
+    key: "fileName",
+    label: "Fichero",
+    render: (record) => (
+      <span className="cocoa-stack" data-gap="1">
+        <strong>{importFileLabel(record)}</strong>
+        {/* Pasted text has no file name: the label already names the source, so the caption would repeat it (FU-09). */}
+        {record.fileName ? <span className="cocoa-caption">{PAYROLL_COST_SOURCE_LABELS[record.source] ?? record.source}</span> : null}
+      </span>
+    )
+  },
+  { key: "period", label: "Periodo", fit: true, render: (record) => monthRangeLabel(record.periodFrom, record.periodTo) },
+  { key: "rowCount", label: "Filas", align: "right", hideOnNarrow: true, render: (record) => number(record.rowCount) },
+  { key: "totalCost", label: "Coste", align: "right", render: (record) => <strong>{money(record.totalCost)}</strong> },
+  {
+    key: "status",
+    label: "Estado",
+    fit: true,
+    render: (record) => {
+      const badge = importStatusBadge(record.status);
+      return (
+        <CocoaBadge tone={badge.tone} size="small" title={record.status === "reversed" && record.reversalReason ? `Motivo: ${record.reversalReason}` : undefined}>
+          {badge.label}
+        </CocoaBadge>
+      );
+    }
+  },
+  {
+    key: "entries",
+    label: "Asientos",
+    align: "right",
+    hideOnNarrow: true,
+    render: (record) => (record.reversalJournalEntryIds.length > 0 ? `${number(record.journalEntryIds.length)} · ${plural(record.reversalJournalEntryIds.length, "reverso", "reversos")}` : number(record.journalEntryIds.length))
+  }
+];
+
 // Mirror skeleton: KPI strip and one table card.
 function PayrollSkeleton() {
   return (
@@ -235,10 +338,93 @@ export function PayrollScreen() {
   const grossMonth = periods.filter((p) => p.periodCode === monthCode).reduce((sum, p) => sum + (p.totalGross ?? 0), 0);
   const activeContracts = contracts.filter((c) => c.active).length;
 
+  // ---- coste de personal importado (Tanda 6c) ----
+  // The gate reads the real grants of the active property (never the demo union of the login payload).
+  const manage = canDo(useNavGate(), "payroll.manage");
+  const matrixId = useId();
+  const [costRange, setCostRange] = useState(() => defaultCostRange());
+  const [costGroup, setCostGroup] = useState<PayrollCostGroup | "">(ALL_GROUPS_VALUE);
+  const [expandedCentres, setExpandedCentres] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [importOpen, setImportOpen] = useState(false);
+  const [postTarget, setPostTarget] = useState<PayrollCostImportRecord | null>(null);
+  const [postReplace, setPostReplace] = useState(false);
+  const [reverseTarget, setReverseTarget] = useState<PayrollCostImportRecord | null>(null);
+  const [reverseReason, setReverseReason] = useState("");
+  // Empty = each reversal keeps the date of its entry; the API refuses a reversal whose ORIGINAL month is closed whatever the date.
+  const [reverseDate, setReverseDate] = useState("");
+  const costActive = view === "cost";
+  // Below 600 px CocoaTable paints one card per row: every card must carry its centre and only the last month (FU-05).
+  const phone = useViewportTier() === "phone";
+  // Both readers are lazy: they only fire while the tab is open (`null` path otherwise).
+  const reportState = useApiData<PayrollCostReport>(costActive ? "/payroll/cost-report" : null, {
+    query: payrollCostReportQuery({ from: costRange.from, to: costRange.to, propertyId, group: costGroup === "" ? undefined : costGroup })
+  });
+  const importsState = useApiData<PayrollCostImportRecord[]>(costActive ? "/payroll/cost-imports" : null, { query: payrollCostImportListQuery({ organizationId: ORG_ID, limit: 100 }) });
+  const report = reportState.data;
+  const costImports = useMemo(() => toArray<PayrollCostImportRecord>(importsState.data), [importsState.data]);
+  const matrixRows = useMemo(() => (report ? costMatrixRows(report, expandedCentres) : []), [report, expandedCentres]);
+  const monthOptions = useMemo(() => monthPickerOptions(new Date(), PAYROLL_COST_PICKER_MONTHS, [costRange.from, costRange.to]), [costRange.from, costRange.to]);
+  const costBarsData = useMemo(() => (report ? costBars(report) : []), [report]);
+  const salesBarsData = useMemo(() => (report ? salesBars(report) : []), [report]);
+  const laborPct = report ? laborPctOf(report.totals) : null;
+  const matrixColumns = useMemo<CocoaTableColumn<CostMatrixRow>[]>(() => {
+    const months = report?.months ?? [];
+    // Label of each block (centre or sociedad) for the phone cards, where the 2nd-4th rows of a block have no centre of their own.
+    const blockLabels = new Map<string, string>();
+    for (const row of matrixRows) if (row.centreLabel) blockLabels.set(row.propertyId ?? "society", row.centreLabel);
+    return [
+      {
+        key: "centre",
+        label: "Centro",
+        render: (row) => {
+          const label = row.centreLabel ?? (phone ? (blockLabels.get(row.propertyId ?? "society") ?? null) : null);
+          if (!label) return null;
+          const centreId = row.propertyId;
+          const open = centreId !== null && expandedCentres.has(centreId);
+          return (
+            <span className="cocoa-cluster">
+              <strong>{label}</strong>
+              {row.centreLabel && centreId !== null && row.departments.length > 0 ? (
+                <CocoaButton variant="plain" tone="neutral" size="small" aria-expanded={open} aria-controls={matrixId} title="Desglose por departamento USALI" onClick={() => setExpandedCentres((current) => toggleExpanded(current, centreId))}>
+                  {open ? "Ocultar departamentos" : "Departamentos"}
+                </CocoaButton>
+              ) : null}
+            </span>
+          );
+        }
+      },
+      { key: "metric", label: "Indicador", render: (row) => (row.indent ? <span className="cocoa-caption">{row.label}</span> : <span>{row.label}</span>) },
+      ...months.map<CocoaTableColumn<CostMatrixRow>>((month, index) => ({
+        key: month,
+        label: monthLabel(month),
+        align: "right",
+        // On phones only the last month of the range and the total stay (up to 24 month lines per card were unreadable).
+        showFrom: index === months.length - 1 ? undefined : "tablet",
+        render: (row) => (row.emphasis ? <strong className="cocoa-tabular">{row.values[month] ?? "—"}</strong> : <span className="cocoa-tabular">{row.values[month] ?? "—"}</span>)
+      })),
+      { key: "total", label: "Total", align: "right", render: (row) => <strong className="cocoa-tabular">{row.total}</strong> }
+    ];
+  }, [report?.months, matrixRows, expandedCentres, matrixId, phone]);
+
+  function changeRange(part: "from" | "to", value: string) {
+    setCostRange((current) => clampCostRange(part === "from" ? value : current.from, part === "to" ? value : current.to, part));
+  }
+
+  const refreshCost = () => {
+    reportState.refresh();
+    importsState.refresh();
+  };
+
+  function onImported(result: PayrollCostImportCreateResult) {
+    showToast(importResultTitle(result), { variant: "success" });
+    refreshCost();
+  }
+
   const refreshAll = () => {
     contractsState.refresh();
     periodsState.refresh();
     if (selectedPeriodId) slipsState.refresh();
+    if (costActive) refreshCost();
   };
 
   // ---- new contract (drawer) ----
@@ -424,6 +610,39 @@ export function PayrollScreen() {
     setView("slips");
   }
 
+  // ---- contabilizar borrador · revertir lote (coste de personal) ----
+  async function postDraftImport() {
+    if (!postTarget || busy) return;
+    setBusy(true);
+    try {
+      const result = await postPayrollCostImport(postTarget.id, { replace: postReplace });
+      showToast(importResultTitle(result), { variant: "success" });
+      setPostTarget(null);
+      refreshCost();
+    } catch (err) {
+      showToast(payrollCostErrorMessage(err, "No se pudo contabilizar la importación."), { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function reverseImport() {
+    if (!reverseTarget || busy || reverseReasonError(reverseReason)) return;
+    setBusy(true);
+    try {
+      const record = await reversePayrollCostImport(reverseTarget.id, { reason: reverseReason.trim(), entryDate: reverseDate || undefined });
+      showToast(record.alreadyReversed ? "La importación ya estaba revertida: nada que hacer" : `Importación revertida: ${plural(reverseTarget.journalEntryIds.length, "asiento anulado", "asientos anulados")}`, { variant: "success" });
+      setReverseTarget(null);
+      setReverseReason("");
+      setReverseDate("");
+      refreshCost();
+    } catch (err) {
+      showToast(payrollCostErrorMessage(err, "No se pudo revertir la importación."), { variant: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const anyLoading = contractsState.loading || periodsState.loading;
   const nothingLoaded = !contractsState.data && !periodsState.data;
   const state = nothingLoaded ? (anyLoading ? "loading" : "error") : "ready";
@@ -455,7 +674,8 @@ export function PayrollScreen() {
       tabs={[
         { value: "contracts", label: `Contratos (${number(contracts.length)})` },
         { value: "periods", label: `Periodos (${number(periods.length)})` },
-        { value: "slips", label: selectedPeriod ? `Recibos · ${selectedPeriod.periodCode}` : "Recibos" }
+        { value: "slips", label: selectedPeriod ? `Recibos · ${selectedPeriod.periodCode}` : "Recibos" },
+        { value: "cost", label: "Coste de personal" }
       ]}
       activeTab={view}
       onTabChange={(value) => setView(value as View)}
@@ -465,15 +685,26 @@ export function PayrollScreen() {
       commands={[
         { id: "payroll-refresh", label: "Actualizar nóminas", run: refreshAll },
         { id: "payroll-new-contract", label: newContractLabel, run: () => setContractOpen(true) },
-        { id: "payroll-new-period", label: "Abrir periodo de nómina", run: () => setPeriodOpen(true) }
+        { id: "payroll-new-period", label: "Abrir periodo de nómina", run: () => setPeriodOpen(true) },
+        { id: "payroll-cost-tab", label: "Ver el coste de personal", run: () => setView("cost") },
+        ...(manage ? [{ id: "payroll-cost-import", label: "Importar informe de coste de personal", run: () => setImportOpen(true) }] : [])
       ]}
     >
-      <CocoaKpiStrip stagger aria-label="Indicadores de nóminas">
-        <CocoaKpi label="Periodos abiertos" value={number(openPeriods)} polarity="neutral" status={openPeriods > 0 ? "warning" : "ok"} deltaLabel="pendientes de calcular" degraded={!periodsState.data} />
-        <CocoaKpi label="Último calculado" value={lastCalculated?.periodCode ?? "—"} polarity="neutral" deltaLabel={lastCalculated ? `bruto ${money(lastCalculated.totalGross)}` : "sin periodos calculados"} degraded={!periodsState.data} />
-        <CocoaKpi label="Bruto del mes" value={money(grossMonth)} polarity="neutral" deltaLabel={`periodo ${monthCode}`} degraded={!periodsState.data} />
-        <CocoaKpi label="Contratos activos" value={number(activeContracts)} polarity="neutral" deltaLabel={plural(contracts.length, "contrato en total", "contratos en total")} degraded={!contractsState.data} />
-      </CocoaKpiStrip>
+      {costActive ? (
+        <CocoaKpiStrip stagger aria-label="Indicadores de coste de personal">
+          <CocoaKpi label="Coste de personal" value={money(report?.totals.totalCost)} polarity="neutral" deltaLabel={monthRangeLabel(costRange.from, costRange.to)} caption={report ? `bruto ${money(report.totals.gross)} · Seguridad Social ${money(report.totals.employerSs)}` : undefined} degraded={!report} />
+          <CocoaKpi label="Coste por empleado" value={money(report?.totals.costPerEmployeeAverage)} polarity="neutral" deltaLabel="acumulado del rango por empleado medio" caption={report?.totals.headcountAverage ? `${money(report.totals.totalCost)} entre ${formatHeadcount(report.totals.headcountAverage)} empleados medios` : undefined} degraded={!report} />
+          <CocoaKpi label="Personal s/ ventas" value={laborPct ? formatLaborPct(laborPct.value) : "—"} polarity="neutral" deltaLabel={laborPct?.source === "reference" ? "s/ ventas de referencia del informe" : "s/ ventas del libro"} degraded={!report} />
+          <CocoaKpi label="Empleados medios" value={formatHeadcount(report?.totals.headcountAverage)} polarity="neutral" deltaLabel={report?.totals.headcountSource === "lines" ? "suma de las filas importadas" : report?.totals.headcountSource === "reference" ? "según el informe de RRHH" : "sin dato de empleados"} degraded={!report} />
+        </CocoaKpiStrip>
+      ) : (
+        <CocoaKpiStrip stagger aria-label="Indicadores de nóminas">
+          <CocoaKpi label="Periodos abiertos" value={number(openPeriods)} polarity="neutral" status={openPeriods > 0 ? "warning" : "ok"} deltaLabel="pendientes de calcular" degraded={!periodsState.data} />
+          <CocoaKpi label="Último calculado" value={lastCalculated?.periodCode ?? "—"} polarity="neutral" deltaLabel={lastCalculated ? `bruto ${money(lastCalculated.totalGross)}` : "sin periodos calculados"} degraded={!periodsState.data} />
+          <CocoaKpi label="Bruto del mes" value={money(grossMonth)} polarity="neutral" deltaLabel={`periodo ${monthCode}`} degraded={!periodsState.data} />
+          <CocoaKpi label="Contratos activos" value={number(activeContracts)} polarity="neutral" deltaLabel={plural(contracts.length, "contrato en total", "contratos en total")} degraded={!contractsState.data} />
+        </CocoaKpiStrip>
+      )}
 
       {lastExport ? (
         <CocoaCallout
@@ -654,6 +885,131 @@ export function PayrollScreen() {
         </CocoaSection>
       ) : null}
 
+      {costActive ? (
+        <>
+          <div className="cocoa-row" role="group" aria-label="Rango y grupo del coste de personal">
+            <CocoaSelect size="small" inline aria-label="Desde" value={costRange.from} onChange={(value) => changeRange("from", value)} options={monthOptions} />
+            <CocoaSelect size="small" inline aria-label="Hasta" value={costRange.to} onChange={(value) => changeRange("to", value)} options={monthOptions} />
+            <CocoaSelect size="small" inline aria-label="Grupo" value={costGroup} onChange={(value) => setCostGroup(value as PayrollCostGroup | "")} options={GROUP_OPTIONS} />
+            {reportState.loading && report ? (
+              <CocoaBadge tone="info" size="small" aria-live="polite">
+                {STATUS_LABELS.loading}
+              </CocoaBadge>
+            ) : null}
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshCost}>
+              {ACTIONS.refresh}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" size="small" onClick={() => setImportOpen(true)} disabled={!manage} title={manage ? "Importa el informe agregado de RRHH y contabiliza el coste por centro y mes" : MANAGE_HINT}>
+              Importar informe
+            </CocoaButton>
+          </div>
+          {!manage ? <p className="cocoa-note">Necesitas el permiso de gestión de nóminas para importar, contabilizar o revertir un informe de coste de personal. El informe se puede consultar.</p> : null}
+          {report && report.warnings.length > 0 ? (
+            <CocoaCallout tone="warning" title="Avisos del informe">
+              <ul className="c22-section__list">
+                {report.warnings.map((warning, index) => (
+                  <li key={index}>
+                    <span>{warning}</span>
+                  </li>
+                ))}
+              </ul>
+            </CocoaCallout>
+          ) : null}
+
+          <CocoaSection
+            id={matrixId}
+            title="Coste de personal por centro y mes"
+            meta={report ? `${plural(report.centres.length, "centro", "centros")} · ${plural(report.imports.length, "lote contabilizado", "lotes contabilizados")} · generado ${dateTime(report.generatedAt)}` : undefined}
+            headingLevel={2}
+            padding={matrixRows.length > 0 ? "none" : "md"}
+            aria-busy={reportState.loading && Boolean(report)}
+            footer="Empleados: referencia del informe cuando existe; si no, la suma de las filas importadas (sobrecuenta a quien figura en dos grupos). Coste por empleado en «Total»: acumulado del rango entre los empleados medios. % s/ ventas: ventas netas del libro (grupo 70) cuando cubren el mes; «(ref.)» = ventas sin IVA declaradas en el informe."
+          >
+            {reportState.error && !report ? (
+              <CocoaState kind="error" title="No se pudo cargar el coste de personal" message={reportState.error} onRetry={reportState.refresh} />
+            ) : reportState.loading && !report ? (
+              <CocoaTable columns={matrixColumns} rows={[]} loading aria-label="Coste de personal por centro y mes" />
+            ) : !report || report.centres.length === 0 ? (
+              <CocoaState kind="empty" title="Sin coste de personal en el rango" message="Importa el informe agregado de RRHH (centro × mes × grupo × departamento) para contabilizar el coste de personal y verlo aquí." primaryAction={manage ? { label: "Importar informe", onClick: () => setImportOpen(true) } : undefined} />
+            ) : (
+              <CocoaTable columns={matrixColumns} rows={matrixRows} rowKey="key" density="compact" stickyFirstColumn rowTone={(row) => (row.society ? "neutral" : undefined)} caption="Coste de personal por centro y mes" aria-label="Coste de personal por centro y mes" />
+            )}
+          </CocoaSection>
+
+          {report && report.centres.length > 0 ? (
+            <CocoaGrid columns={12} aria-label="Gráficos del coste de personal" align="start">
+              <CocoaSpan cols={6} min={320}>
+                <CocoaSection title="Coste de personal por mes" headingLevel={3}>
+                  <CocoaChart.Bars data={costBarsData} height={160} valueFormat={(value) => money(value, { decimals: "auto" })} aria-label="Coste de personal por mes" />
+                </CocoaSection>
+              </CocoaSpan>
+              <CocoaSpan cols={6} min={320}>
+                <CocoaSection title="Ventas netas por mes (libro o referencia)" headingLevel={3} footer="Libro mayor (grupo 70 del centro y mes) cuando tiene ventas; si no, las ventas sin IVA del informe de RRHH.">
+                  <CocoaChart.Bars data={salesBarsData} height={160} valueFormat={(value) => money(value, { decimals: "auto" })} aria-label="Ventas netas por mes, del libro o de referencia" />
+                </CocoaSection>
+              </CocoaSpan>
+            </CocoaGrid>
+          ) : null}
+
+          <CocoaSection title="Importaciones" meta={plural(costImports.length, "lote", "lotes")} headingLevel={2} padding={costImports.length > 0 ? "none" : "md"} footer="Un lote = un fichero (mismo contenido, mismo lote: no se importa dos veces). Revertir anula los asientos del lote y solo esos; el resto del diario no se toca.">
+            {importsState.error && !importsState.data ? (
+              <CocoaState kind="error" title="No se pudieron cargar las importaciones" message={importsState.error} onRetry={importsState.refresh} />
+            ) : importsState.loading && !importsState.data ? (
+              <CocoaTable columns={IMPORT_COLUMNS} rows={[]} loading aria-label="Importaciones de coste de personal" />
+            ) : costImports.length === 0 ? (
+              <CocoaState kind="empty" inline title="Aún no hay importaciones" message="El primer informe agregado de RRHH aparecerá aquí con su estado y sus asientos." />
+            ) : (
+              <CocoaTable
+                columns={IMPORT_COLUMNS}
+                rows={costImports}
+                rowKey="id"
+                rowTone={(record) => (record.status === "reversed" ? "neutral" : undefined)}
+                rowActions={(record) => (
+                  <span className="cocoa-cluster">
+                    {record.status === "draft" ? (
+                      <CocoaButton
+                        variant="plain"
+                        tone="accent"
+                        size="small"
+                        disabled={!manage}
+                        title={manage ? "Contabiliza el lote: un asiento por centro y mes" : MANAGE_HINT}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setPostReplace(false);
+                          setPostTarget(record);
+                        }}
+                      >
+                        Contabilizar
+                      </CocoaButton>
+                    ) : null}
+                    {record.status === "posted" ? (
+                      <CocoaButton
+                        variant="plain"
+                        tone="destructive"
+                        size="small"
+                        disabled={!manage}
+                        title={manage ? "Anula los asientos del lote con asientos de reverso" : MANAGE_HINT}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setReverseReason("");
+                          setReverseDate("");
+                          setReverseTarget(record);
+                        }}
+                      >
+                        {ACTIONS.revert}
+                      </CocoaButton>
+                    ) : null}
+                    {record.status === "reversed" && record.reversedAt ? <span className="cocoa-caption">revertido el {date(record.reversedAt, "short")}</span> : null}
+                  </span>
+                )}
+                caption="Importaciones de coste de personal"
+                aria-label="Importaciones de coste de personal"
+              />
+            )}
+          </CocoaSection>
+        </>
+      ) : null}
+
       {/* Nuevo contrato */}
       <CocoaDrawer
         open={contractOpen}
@@ -814,6 +1170,53 @@ export function PayrollScreen() {
             <CocoaInput value={payReference} onChange={setPayReference} placeholder="Remesa o transferencia" maxLength={120} />
           </CocoaField>
         </CocoaFormRow>
+      </CocoaDialog>
+
+      {/* Importar informe de coste de personal (Tanda 6c) */}
+      <PayrollCostImportDrawer open={importOpen} onClose={() => setImportOpen(false)} finance={finance} canManage={manage} onPosted={onImported} />
+
+      {/* Contabilizar un lote en borrador */}
+      <CocoaDialog
+        open={postTarget !== null}
+        onClose={() => setPostTarget(null)}
+        title={postTarget ? `Contabilizar la importación ${importFileLabel(postTarget)}` : "Contabilizar la importación"}
+        description={postTarget ? `${plural(postTarget.centreMonths, "asiento", "asientos")} (uno por centro y mes, ${monthRangeLabel(postTarget.periodFrom, postTarget.periodTo)}): D 640 y D 642 por departamento USALI contra H 465 y H 476, ${money(postTarget.totalCost)} en total. Un centro y mes ya contabilizado por otro lote detiene la operación salvo que actives «Sustituir».` : undefined}
+        confirmLabel={postReplace ? "Sustituir y contabilizar" : "Contabilizar"}
+        cancelLabel={ACTIONS.cancel}
+        busy={busy}
+        size="md"
+        onConfirm={postDraftImport}
+      >
+        <CocoaField label="Lotes anteriores" help="Con «Sustituir», los lotes ya contabilizados con el mismo contenido o con algún centro y mes de este lote se revierten ENTEROS en la misma operación (solo los que tengan todos sus centros en tu ámbito). Reimporta siempre el rango completo.">
+          <CocoaSwitch checked={postReplace} onChange={setPostReplace} label="Sustituir los lotes anteriores (reverso + este lote)" size="small" disabled={busy} />
+        </CocoaField>
+      </CocoaDialog>
+
+      {/* Revertir un lote contabilizado */}
+      <CocoaDialog
+        open={reverseTarget !== null}
+        onClose={() => {
+          if (busy) return;
+          setReverseTarget(null);
+        }}
+        tone="destructive"
+        title={reverseTarget ? `Revertir la importación ${importFileLabel(reverseTarget)}` : "Revertir la importación"}
+        description={reverseTarget ? `Se contabiliza un asiento de reverso por cada uno de los ${plural(reverseTarget.journalEntryIds.length, "asiento del lote", "asientos del lote")} (${monthRangeLabel(reverseTarget.periodFrom, reverseTarget.periodTo)}, ${money(reverseTarget.totalCost)}). Los originales se conservan marcados como anulados; ningún otro asiento del diario cambia.` : undefined}
+        confirmLabel="Revertir la importación"
+        cancelLabel={ACTIONS.cancel}
+        busy={busy}
+        confirmDisabled={Boolean(reverseReasonError(reverseReason))}
+        size="md"
+        onConfirm={reverseImport}
+      >
+        <div className="cocoa-stack" data-gap="3">
+          <CocoaField label="Motivo" required error={reverseReason.trim() === "" ? undefined : reverseReasonError(reverseReason)} help="Obligatorio: va a la descripción de cada asiento de reverso.">
+            <CocoaInput value={reverseReason} onChange={setReverseReason} multiline rows={3} placeholder="Informe corregido por RRHH, importe erróneo, meses duplicados…" maxLength={500} />
+          </CocoaField>
+          <CocoaField label="Fecha de la anulación" hint="opcional" help="Vacía: cada reverso lleva la fecha de su asiento (mismo mes). Con la de hoy, todos caen en el periodo actual. Si un mes del lote está cerrado, reábrelo en Contabilidad › Periodos antes de revertir: el reverso no puede fecharse fuera del mes cerrado.">
+            <CocoaDatePicker value={reverseDate} onChange={setReverseDate} aria-label="Fecha de la anulación" />
+          </CocoaField>
+        </div>
       </CocoaDialog>
     </CocoaPage>
   );

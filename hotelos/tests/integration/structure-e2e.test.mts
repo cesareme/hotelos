@@ -882,7 +882,7 @@ describe("F · Permisos por centro y aislamiento entre organizaciones (sesiones 
       assert.equal(establishment.status, 404, establishment.text.slice(0, 300));
       const model = await get<ErrorBody>(`/fiscal/models/303?period=2026-Q3&propertyId=${FARANDA_RA}`, directora);
       assert.equal(model.status, 404, model.text.slice(0, 300));
-      for (const res of [read, series, rename, dry, establishment, model]) assert.doesNotMatch(res.text, /Faranda|B99999997/, "no oracle of the other tenant");
+      for (const res of [read, series, rename, dry, establishment, model]) assert.doesNotMatch(res.text, /Faranda|B99999997|CELUISMA|A33615980/, "no oracle of the other tenant");
     });
     assert.deepEqual(await farandaCounts(), snapshot, "Faranda untouched by the isolation probes");
   });
@@ -974,19 +974,26 @@ describe("H · Backfill idempotente sobre la organización creada por el product
   });
 });
 
+// Oráculo posterior a la migración Faranda → CELUISMA (L8, runbook §17.13, aplicada en la BD local el
+// 2026-09-16): sociedad CEL · A33615980 · CELUISMA S.A. con 7 hoteles (RA, LT, PG, MC, AS, FN, LL) y la
+// oficina central OC. La Tanda 6c añade a Faranda los asientos `payroll_cost_import` (48 en la carga
+// real): el invariante fiscal son los 61 asientos previos, que se cuentan EXCLUYENDO ese sourceType.
 describe("I · Equivalencia de Faranda (solo lectura)", () => {
-  it("estructura: multi_center, sociedad FAR · B99999997, centros RA / LT (hotel), RA con instalación DEV-001", async () => {
+  it("estructura: multi_center, sociedad CEL · A33615980, 7 hoteles + oficina central OC, RA con instalación DEV-001", async () => {
     const structure = await getStructure(farandaCtx);
     assert.equal(structure.mode, "multi_center");
     assert.equal(structure.scope, "entity");
-    assert.deepEqual([structure.legalEntity?.code, structure.legalEntity?.taxId, structure.legalEntity?.siiEnabled, structure.legalEntity?.largeCompany], ["FAR", "B99999997", false, false]);
-    assert.deepEqual(structure.legalEntity?.properties.map((p) => [p.code, p.kind]), [["RA", "hotel"], ["LT", "hotel"]]);
+    assert.deepEqual([structure.legalEntity?.code, structure.legalEntity?.taxId, structure.legalEntity?.siiEnabled, structure.legalEntity?.largeCompany], ["CEL", "A33615980", false, false]);
+    assert.deepEqual(
+      (structure.legalEntity?.properties ?? []).map((p) => [p.code, p.kind]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      [["AS", "hotel"], ["FN", "hotel"], ["LL", "hotel"], ["LT", "hotel"], ["MC", "hotel"], ["OC", "office"], ["PG", "hotel"], ["RA", "hotel"]]
+    );
     assert.equal(structure.legalEntity?.properties.find((p) => p.code === "RA")?.installation?.numeroInstalacion, "DEV-001");
-    assert.deepEqual(structure.counts, { properties: 2, hotels: 2, offices: 0, others: 0, legalEntities: 1 });
+    assert.deepEqual(structure.counts, { properties: 8, hotels: 7, offices: 1, others: 0, legalEntities: 1 });
   });
 
-  it("61 asientos; 4300 = 379,00; 303 2026-Q3: bases 423,62 + 155,04 = 578,66 · 27 = 71 = 74,94 · 37 registros · declarante FAR", async () => {
-    assert.equal(await prisma.journalEntry.count({ where: { organizationId: FARANDA_ORG } }), 61);
+  it("61 asientos previos (sin payroll_cost_import); 4300 = 379,00; 303 2026-Q3: bases 423,62 + 155,04 = 578,66 · 27 = 71 = 74,94 · 37 registros · declarante CEL", async () => {
+    assert.equal(await prisma.journalEntry.count({ where: { organizationId: FARANDA_ORG, sourceType: { not: "payroll_cost_import" } } }), 61);
     const entryIds = (await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG }, select: { id: true } })).map((e) => e.id);
     const lines = await prisma.journalLine.findMany({ where: { accountCode: "4300", journalEntryId: { in: entryIds } }, select: { debit: true, credit: true } });
     const balance = lines.reduce((sum, line) => sum + Number(line.debit) - Number(line.credit), 0);
@@ -996,7 +1003,7 @@ describe("I · Equivalencia de Faranda (solo lectura)", () => {
     assert.deepEqual([casilla("04"), casilla("07")], [423.62, 155.04]);
     assert.equal(Number((casilla("04") + casilla("07")).toFixed(2)), 578.66);
     assert.deepEqual([casilla("27"), casilla("71"), report.fuentes.registros], [74.94, 74.94, 37]);
-    assert.deepEqual(report.declarante, { nif: "B99999997", nombre: "Faranda Hotels & Resorts" });
-    assert.deepEqual([report.sociedad.code, report.sociedad.source, report.sociedad.regimen.periodicity], ["FAR", "legal_entity", "quarterly"]);
+    assert.deepEqual(report.declarante, { nif: "A33615980", nombre: "CELUISMA S.A." });
+    assert.deepEqual([report.sociedad.code, report.sociedad.source, report.sociedad.regimen.periodicity], ["CEL", "legal_entity", "quarterly"]);
   });
 });

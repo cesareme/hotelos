@@ -11,13 +11,55 @@
 //   POST /payroll/periods/:id/export { format }   exportPayrollPeriod (audited, marks exported)   payroll.manage
 //   GET  /payroll/periods/:id/export?format=       previewPayrollExport (read-only)
 //   POST /payroll/periods/:id/pay { paidAt, bankLedgerCode, reference }   payPayrollPeriod (D 465 / H 572; crítico)
+//
+// Tanda 6c · coste de personal importado (apps/api/src/modules/payroll/cost-import.routes.ts;
+// contract packages/shared/src/payroll-cost-types.ts; design docs/design/FINANZAS-COSTE-PERSONAL.md §5):
+//   POST /payroll/cost-imports/preview { format, content, mapping?, replace? }   previewPayrollCostImport (never writes)   payroll.manage
+//   POST /payroll/cost-imports { …preview, fileName?, source?, post?, notes? }    createPayrollCostImport (201; posts unless post=false)
+//   GET  /payroll/cost-imports?status&from&to&limit                                listPayrollCostImports   payroll.read
+//   GET  /payroll/cost-imports/:id                                                 getPayrollCostImport (líneas, referencias, asientos)
+//   POST /payroll/cost-imports/:id/post { replace? }                               postPayrollCostImport (draft → posted)
+//   POST /payroll/cost-imports/:id/reverse { reason, entryDate? }                  reversePayrollCostImport (crítico; idempotente)
+//   GET  /payroll/cost-report?from&to[&propertyId][&group]                         getPayrollCostReport   payroll.read
+// Errors arrive as details.code (PAYROLL_IMPORT_DUPLICATE · PAYROLL_IMPORT_OVERLAP ·
+// PAYROLL_IMPORT_CENTRE_UNMAPPED …) mapped by payrollErrorMessage through finance-contracts.
 
-import type { PayrollExportFormat, PayrollExportResult, PayrollPeriodRecord } from "@hotelos/shared";
+import type {
+  PayrollCostImportCreateBody,
+  PayrollCostImportCreateResult,
+  PayrollCostImportDetail,
+  PayrollCostImportListQuery,
+  PayrollCostImportPostBody,
+  PayrollCostImportPreview,
+  PayrollCostImportPreviewBody,
+  PayrollCostImportRecord,
+  PayrollCostImportReverseBody,
+  PayrollCostReport,
+  PayrollCostReportQuery,
+  PayrollExportFormat,
+  PayrollExportResult,
+  PayrollPeriodRecord
+} from "@hotelos/shared";
 import { apiRequest } from "./api-client";
 import { getActiveOrganizationId, getActivePropertyId } from "./activeProperty";
-import { compactQuery, financeErrorMessage } from "./finance-contracts";
+import { compactQuery, financeErrorMessage, payrollCostImportListQuery, payrollCostReportQuery } from "./finance-contracts";
 
-export type { PayrollExportFormat, PayrollExportResult, PayrollPeriodRecord } from "@hotelos/shared";
+export type {
+  PayrollCostImportCreateBody,
+  PayrollCostImportCreateResult,
+  PayrollCostImportDetail,
+  PayrollCostImportListQuery,
+  PayrollCostImportPostBody,
+  PayrollCostImportPreview,
+  PayrollCostImportPreviewBody,
+  PayrollCostImportRecord,
+  PayrollCostImportReverseBody,
+  PayrollCostReport,
+  PayrollCostReportQuery,
+  PayrollExportFormat,
+  PayrollExportResult,
+  PayrollPeriodRecord
+} from "@hotelos/shared";
 
 const enc = encodeURIComponent;
 
@@ -146,6 +188,43 @@ export type PayPayrollPeriodRequest = { paidAt?: string; bankLedgerCode?: string
 /** Payment entry D 465 / H 572 (or `bankLedgerCode`). Critical; PAYROLL_PERIOD_NOT_CALCULATED · PAYROLL_PERIOD_PAID · PAYROLL_NOTHING_TO_PAY. */
 export function payPayrollPeriod(periodId: string, body: PayPayrollPeriodRequest = {}): Promise<PayrollPeriodRecord> {
   return apiRequest<PayrollPeriodRecord>(`/payroll/periods/${enc(periodId)}/pay`, { method: "POST", body });
+}
+
+// ---- Coste de personal importado (Tanda 6c) ------------------------------------------
+
+/** Parses and maps the file without writing anything: rows, totals by centre × month, unmapped labels with suggestions, duplicate / overlaps, `canPost`. */
+export function previewPayrollCostImport(body: PayrollCostImportPreviewBody): Promise<PayrollCostImportPreview> {
+  return apiRequest<PayrollCostImportPreview>("/payroll/cost-imports/preview", { method: "POST", body: { ...body, organizationId: body.organizationId ?? getActiveOrganizationId() } });
+}
+
+/** Creates the lot and (unless `post: false`) posts one entry per centre × month in the same transaction; `replace: true` reverses the overlapping lots ENTIRELY first. 409 PAYROLL_IMPORT_DUPLICATE · PAYROLL_IMPORT_OVERLAP without `replace`. */
+export function createPayrollCostImport(body: PayrollCostImportCreateBody): Promise<PayrollCostImportCreateResult> {
+  return apiRequest<PayrollCostImportCreateResult>("/payroll/cost-imports", { method: "POST", body: { ...body, organizationId: body.organizationId ?? getActiveOrganizationId() } });
+}
+
+/** Lots whose centres are all within the caller's scope, newest first (no lines). */
+export function listPayrollCostImports(query: PayrollCostImportListQuery = {}): Promise<PayrollCostImportRecord[]> {
+  return apiRequest<PayrollCostImportRecord[]>("/payroll/cost-imports", { query: payrollCostImportListQuery({ ...query, organizationId: query.organizationId ?? getActiveOrganizationId() }) });
+}
+
+/** The lot with its aggregated lines, references, entries and reversals (opaque 404 outside the organisation or the scope). */
+export function getPayrollCostImport(importId: string): Promise<PayrollCostImportDetail> {
+  return apiRequest<PayrollCostImportDetail>(`/payroll/cost-imports/${enc(importId)}`);
+}
+
+/** Posts a draft lot (409 PAYROLL_IMPORT_ALREADY_POSTED · PAYROLL_IMPORT_REVERSED). */
+export function postPayrollCostImport(importId: string, body: PayrollCostImportPostBody = {}): Promise<PayrollCostImportCreateResult> {
+  return apiRequest<PayrollCostImportCreateResult>(`/payroll/cost-imports/${enc(importId)}/post`, { method: "POST", body });
+}
+
+/** Reverses every entry of the lot (only those; the rest of the journal is never touched). Critical; idempotent (`alreadyReversed`). */
+export function reversePayrollCostImport(importId: string, body: PayrollCostImportReverseBody): Promise<PayrollCostImportRecord> {
+  return apiRequest<PayrollCostImportRecord>(`/payroll/cost-imports/${enc(importId)}/reverse`, { method: "POST", body });
+}
+
+/** Centres × months report: gross, employer SS, total, headcount, cost per employee, labor % over ledger and reference sales, cost per available room, by group and USALI department. */
+export function getPayrollCostReport(query: PayrollCostReportQuery): Promise<PayrollCostReport> {
+  return apiRequest<PayrollCostReport>("/payroll/cost-report", { query: payrollCostReportQuery(query) });
 }
 
 export function payrollErrorMessage(error: unknown, fallback = "No se pudo completar la operación de nóminas."): string {

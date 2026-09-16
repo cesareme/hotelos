@@ -56,6 +56,7 @@ export const SOURCE_TYPE_LABELS: Readonly<Record<string, string>> = Object.freez
   expense: "Gasto",
   payroll_slip: "Nómina",
   payroll_payment: "Pago de nómina",
+  payroll_cost_import: "Coste de personal importado",
   commission: "Comisión",
   commission_settlement: "Liquidación de comisión",
   depreciation: "Amortización",

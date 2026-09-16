@@ -12,7 +12,7 @@
  *     coded `hotel` centre linked to it; Organization.legalName/taxId untouched;
  *   · GET structure → single_hotel, then multi_center after an office is added;
  *     POST /legal-entities → 409 MULTI_ENTITY_NOT_ENABLED;
- *   · PATCH sociedad → 400 TAX_ID_INVALID, 409 TAX_ID_IN_USE (Faranda's NIF, read
+ *   · PATCH sociedad → 400 TAX_ID_INVALID, 409 TAX_ID_IN_USE (Faranda's NIF — A33615980 since the CELUISMA migration —, read
  *     only), 409 HIGH_RISK_CONFIRMATION_REQUIRED, 403 without ai.high_risk.confirm,
  *     200 + LEGAL_ENTITY_UPDATED audit with confirmation;
  *   · alta de centro: dryRun writes nothing; an office has no rooms, is excluded
@@ -65,7 +65,8 @@ type ApiApp = Awaited<ReturnType<typeof buildApiServer>>;
 
 const RUN = Date.now().toString(36);
 const FARANDA_ORG = "cmrhw9jy30002fyvb6tsdiugt";
-const FARANDA_TAX_ID = "B99999997";
+/** NIF de la sociedad de Faranda tras la migración a CELUISMA (runbook §17.13; solo en la demo local). */
+const FARANDA_TAX_ID = "A33615980";
 /** Checksum-valid CIF no demo tenant uses (A58818501: sum 29 → control 1). */
 const NEW_TAX_ID = "A58818501";
 const YEAR = backoffice.madridYear();
@@ -253,13 +254,14 @@ describe("createTenant · sociedad implícita y primer centro", () => {
     assert.equal(await prisma.legalEntity.count({ where: { organizationId: ORG } }), 1);
   });
 
-  it("Faranda (read only) resolves to multi_center with RA / LT under FAR", async () => {
+  it("Faranda (read only) resolves to multi_center with the 7 hotels and the office under CEL (post-migration oracle, runbook §17.13)", async () => {
     const structure = await legal.getStructure({ ...ownerContext(), organizationId: FARANDA_ORG });
     assert.equal(structure.mode, "multi_center");
-    assert.equal(structure.legalEntity?.code, "FAR");
+    assert.equal(structure.legalEntity?.code, "CEL");
     assert.equal(structure.legalEntity?.taxId, FARANDA_TAX_ID);
-    assert.deepEqual(structure.legalEntity?.properties.map((p) => p.code).sort(), ["LT", "RA"]);
-    assert.equal(structure.counts.hotels, 2);
+    assert.deepEqual(structure.legalEntity?.properties.map((p) => p.code).sort(), ["AS", "FN", "LL", "LT", "MC", "OC", "PG", "RA"]);
+    assert.equal(structure.counts.hotels, 7);
+    assert.equal(structure.counts.offices, 1);
   });
 });
 

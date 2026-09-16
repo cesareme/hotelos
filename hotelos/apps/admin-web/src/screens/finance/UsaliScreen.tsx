@@ -765,8 +765,16 @@ function OperatingStatementView({ pnl, coverage, onOpenMapping }: { pnl: UsaliPn
           <ul className="c22-section__list">
             {detail.accounts.map((account) => (
               <li key={`${account.code}-${account.line}`}>
-                <span>
-                  <span className="cocoa-mono">{account.code}</span> {account.name} · {LINE_LABELS[account.line] ?? account.line}
+                <span className="cocoa-cluster">
+                  <span>
+                    <span className="cocoa-mono">{account.code}</span> {account.name} · {LINE_LABELS[account.line] ?? account.line}
+                  </span>
+                  {/* Tanda 6c: the amount reached the department through the cost centre of the entry (coste de personal importado), not through the account mapping. */}
+                  {account.source === "cost_center" ? (
+                    <CocoaBadge tone="info" size="small" title="Importe enrutado por el centro de coste del apunte, no por el mapeo de la cuenta">
+                      Centro de coste
+                    </CocoaBadge>
+                  ) : null}
                 </span>
                 <strong>{money(account.amount, currency)}</strong>
               </li>

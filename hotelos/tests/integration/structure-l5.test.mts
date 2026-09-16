@@ -785,10 +785,10 @@ describe("C7 · escrituras y artefactos de sociedad (fix:L5 t6b#4 · t6b#5)", ()
 });
 
 describe("C9 · equivalencia (solo lectura): Faranda y org_123 tras L1-L5", () => {
-  it("el 303 de Faranda 2026-Q3 conserva 27 = 71 = 74,94 (runbook §14/§16), 37 registros, y el declarante es la sociedad FAR · B99999997", async () => {
+  it("el 303 de Faranda 2026-Q3 conserva 27 = 71 = 74,94 (runbook §14/§16), 37 registros, y el declarante es la sociedad CEL · A33615980 (tras la migración a CELUISMA, §17.13)", async () => {
     const report = await buildModelo303({ context: farandaCtx, period: "2026-Q3" });
-    assert.deepEqual(report.declarante, { nif: "B99999997", nombre: "Faranda Hotels & Resorts" });
-    assert.deepEqual([report.sociedad.code, report.sociedad.source, report.sociedad.regimen.periodicity], ["FAR", "legal_entity", "quarterly"]);
+    assert.deepEqual(report.declarante, { nif: "A33615980", nombre: "CELUISMA S.A." });
+    assert.deepEqual([report.sociedad.code, report.sociedad.source, report.sociedad.regimen.periodicity], ["CEL", "legal_entity", "quarterly"]);
     assert.deepEqual([casilla(report, "27"), casilla(report, "45"), casilla(report, "71"), report.fuentes.registros, report.fuentes.origen], [74.94, 0, 74.94, 37, "documentos"]);
     const m390 = await buildModelo390({ context: farandaCtx, year: 2026 });
     assert.deepEqual([m390.totales.volumenOperaciones, m390.totales.resultadoLiquidaciones, m390.presentacion.noSePresenta], [805.76, 74.94, undefined]);

@@ -11,11 +11,13 @@ import { Prisma } from "@prisma/client";
 import { accountGroup, isPostableCode, templateAccount, templateUsaliFor, type AccountKind } from "../../accounting/chart-of-accounts.service.js";
 import type { LegalIdentityDto } from "@hotelos/shared";
 import {
+  compareAccountBalanceRows,
   ledgerEntryCounts,
   ledgerEntryIsBooked,
   sortWorkCentres,
   type AccountBalanceRow,
   type ChartAccountLite,
+  type CostCentreRef,
   type DocumentRef,
   type FinancialStatementsSource,
   type FixedAssetLite,
@@ -87,7 +89,8 @@ export type MemoryEntry = {
   /** Reversal links, same contract as JournalEntry.reversalOfId / reversedById. */
   reversalOfId?: string | null;
   reversedById?: string | null;
-  lines: Array<{ code: string; debit?: string; credit?: string; description?: string; taxRateCode?: string; taxBase?: string }>;
+  /** `costCenterId` (Tanda 6c): id registered with `costCentre()`; an unknown id behaves like the SQL LEFT JOIN (no centre). */
+  lines: Array<{ code: string; debit?: string; credit?: string; description?: string; taxRateCode?: string; taxBase?: string; costCenterId?: string | null }>;
 };
 
 export type ReverseOptions = { date?: string; sourceType?: string; sourceId?: string | null; description?: string };
@@ -118,7 +121,10 @@ export class MemorySource implements FinancialStatementsSource {
   vat: VatTotalsRow[] = [];
   vatRows: VatBookExportRow[] = [];
   people: number | null = null;
+  /** Rows of `headcountByProperty`; `source` optional (Tanda 6c: `payroll_slips` · `payroll_cost_import`). */
   peopleByProperty: HeadcountByProperty = [];
+  /** Cost centres of the ledger (Tanda 6c), by id: `{ type: "usali" | "operating" | "cost", code: "ROOMS" | … }`. */
+  readonly costCentres = new Map<string, CostCentreRef>();
   /** Raw AccountingSetting.configurationJson of the organisation (corporateAllocation lives here). */
   configuration: unknown = null;
   refs: Record<string, Map<string, DocumentRef>> = { invoice: new Map(), supplier_bill: new Map(), expense: new Map() };
@@ -140,6 +146,12 @@ export class MemorySource implements FinancialStatementsSource {
     };
     this.accounts.set(code, row);
     return row;
+  }
+
+  /** Registers a cost centre (Tanda 6c) so `accountBalances({ byCostCentre: true })` can partition the lines that reference it. */
+  costCentre(id: string, ref: CostCentreRef): CostCentreRef {
+    this.costCentres.set(id, ref);
+    return ref;
   }
 
   post(entry: MemoryEntry): MemoryEntry {
@@ -213,12 +225,15 @@ export class MemorySource implements FinancialStatementsSource {
   }
 
   async accountBalances(query: LedgerQuery): Promise<AccountBalanceRow[]> {
-    const byCode = new Map<string, AccountBalanceRow>();
+    const byKey = new Map<string, AccountBalanceRow>();
     for (const entry of this.select(query)) {
       for (const line of entry.lines) {
         const account = this.account(line.code);
         if (query.groups && !query.groups.includes(accountGroup(line.code))) continue;
-        const row = byCode.get(line.code) ?? {
+        // Tanda 6c: with the flag one row per (account, cost centre type, code) as the SQL LEFT JOIN cost_centers; without it, by account only (no `costCentre` key).
+        const costCentre: CostCentreRef | null = line.costCenterId ? (this.costCentres.get(line.costCenterId) ?? null) : null;
+        const key = query.byCostCentre && costCentre ? `${line.code}|${costCentre.type}|${costCentre.code}` : line.code;
+        const row = byKey.get(key) ?? {
           code: line.code,
           name: account.name,
           kind: account.kind,
@@ -226,14 +241,15 @@ export class MemorySource implements FinancialStatementsSource {
           usaliDepartment: account.usaliDepartment ?? null,
           usaliLine: account.usaliLine ?? null,
           debit: D(0),
-          credit: D(0)
+          credit: D(0),
+          ...(query.byCostCentre ? { costCentre } : {})
         };
         row.debit = row.debit.plus(D(line.debit ?? 0));
         row.credit = row.credit.plus(D(line.credit ?? 0));
-        byCode.set(line.code, row);
+        byKey.set(key, row);
       }
     }
-    return Array.from(byCode.values()).sort((a, b) => a.code.localeCompare(b.code));
+    return Array.from(byKey.values()).sort(compareAccountBalanceRows);
   }
 
   async plAccounts(): Promise<ChartAccountLite[]> {

@@ -169,6 +169,16 @@ export type UsaliUndistributedDepartmentKey = "admin_general" | "it" | "sales_ma
 /** Where the effective USALI mapping of an account came from (runbook §4 order). */
 export type UsaliMappingSource = "mapping" | "account" | "template" | "none";
 
+/**
+ * Origen del importe de una cuenta en el USALI (Tanda 6c · coste de personal por
+ * centro de coste): el mapeo cuenta → línea (`UsaliMappingSource`) o `cost_center`
+ * cuando la línea `labor` / `other_expense` se enruta al departamento del centro de
+ * coste USALI del apunte (`cost_centers.type = "usali"`, `code` = departamento en
+ * mayúsculas). NO amplía `UsaliMappingSource`: `buildCoverage.bySource` y el
+ * `SOURCE_LABELS` del front indexan por ese tipo.
+ */
+export type UsaliAmountSource = UsaliMappingSource | "cost_center";
+
 // ---------------------------------------------------------------------------
 // USALI mapping (editor)
 // ---------------------------------------------------------------------------
@@ -244,7 +254,8 @@ export type UsaliAccountAmount = {
   name: string;
   line: UsaliLineKey;
   amount: MoneyString;
-  source: UsaliMappingSource;
+  /** Tanda 6c: `cost_center` cuando el importe llegó al departamento por el centro de coste del apunte, no por el mapeo de la cuenta. */
+  source: UsaliAmountSource;
 };
 
 export type UsaliOperatingDepartment = {
@@ -279,6 +290,13 @@ export type UsaliStatistics = {
   roomsOccupied: number;
   occupancyPct: RatioString | null;
   source: "pms_stays";
+  /**
+   * Tanda 6c: empleados medios del periodo (entero; null sin datos, nunca 0):
+   * recibos de nómina por centro (`payroll_slips`) o, en su defecto, referencia /
+   * headcount de los lotes de coste de personal contabilizados (`payroll_cost_import`).
+   */
+  headcount?: number | null;
+  headcountSource?: "payroll_slips" | "payroll_cost_import" | null;
 };
 
 export type UsaliRatios = {
@@ -294,6 +312,8 @@ export type UsaliRatios = {
   gopPOR: RatioString | null;
   ebitdaPAR: RatioString | null;
   undistributedPAR: RatioString | null;
+  /** Tanda 6c: Σ labor (todos los departamentos) / statistics.headcount; null si el headcount es nulo o 0. */
+  laborPerEmployee?: RatioString | null;
   perDepartment: Array<{
     department: UsaliDepartmentKey;
     revenuePAR: RatioString | null;

@@ -11,17 +11,17 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 222,
-    "lines": 89457,
+    "files": 223,
+    "lines": 90339,
     "boClasses": 78,
     "boCard": 26,
     "boPageTitle": 3,
     "rawButtons": 12,
-    "cocoaButtons": 1032,
+    "cocoaButtons": 1041,
     "rawTables": 3,
-    "cocoaTables": 280,
+    "cocoaTables": 285,
     "rawInputs": 4,
-    "cocoaInputs": 1038,
+    "cocoaInputs": 1048,
     "inlineStyles": 801,
     "cocoaCards": 35,
     "colourLiterals": 2,
@@ -34,7 +34,7 @@
   },
   "bySize": {
     "S": 95,
-    "M": 104,
+    "M": 105,
     "L": 20,
     "XL": 3
   },
@@ -47,7 +47,7 @@
     "workspace": 5,
     "calendario": 6,
     "chat": 1,
-    "dialogo": 14,
+    "dialogo": 15,
     "contenedor": 41,
     "otro": 14
   },
@@ -71,19 +71,19 @@
     },
     "compartido": {
       "label": "Compartido / sin entrada de menú",
-      "files": 7,
-      "lines": 1730,
+      "files": 8,
+      "lines": 2201,
       "debtPoints": 26,
       "sizes": {
         "S": 5,
-        "M": 2,
+        "M": 3,
         "L": 0,
         "XL": 0
       },
       "archetypes": {
         "formulario": 1,
+        "dialogo": 3,
         "otro": 1,
-        "dialogo": 2,
         "contenedor": 3
       }
     },
@@ -147,7 +147,7 @@
     "finanzas": {
       "label": "Finanzas",
       "files": 33,
-      "lines": 17217,
+      "lines": 17628,
       "debtPoints": 36,
       "sizes": {
         "S": 9,
@@ -2827,9 +2827,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 1380,
+      "lines": 1388,
       "metrics": {
-        "lines": 1380,
+        "lines": 1388,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5959,6 +5959,41 @@
       "size": "S"
     },
     {
+      "path": "apps/admin-web/src/screens/payroll/PayrollCostImportDrawer.tsx",
+      "name": "PayrollCostImportDrawer",
+      "screenKeys": [],
+      "category": "compartido",
+      "categories": [],
+      "archetype": "dialogo",
+      "lines": 471,
+      "metrics": {
+        "lines": 471,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 4,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 4,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
       "path": "apps/admin-web/src/screens/payroll/PayrollScreen.tsx",
       "name": "PayrollScreen",
       "screenKeys": [
@@ -5969,18 +6004,18 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 823,
+      "lines": 1226,
       "metrics": {
-        "lines": 823,
+        "lines": 1226,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 15,
+        "cocoaButtons": 20,
         "rawTables": 0,
-        "cocoaTables": 6,
+        "cocoaTables": 10,
         "rawInputs": 0,
-        "cocoaInputs": 14,
+        "cocoaInputs": 20,
         "inlineStyles": 9,
         "cocoaCards": 0,
         "colourLiterals": 0,

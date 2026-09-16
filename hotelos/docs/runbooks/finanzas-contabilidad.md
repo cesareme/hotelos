@@ -44,6 +44,7 @@ campos marcados «heredado» existían antes y se mantienen por compatibilidad.
 | `ExpensePaidWith` | `cash` · `card` · `bank` | Con qué se pagó el ticket (570 · 5721 [572 si es tarjeta de débito de empresa] · 572). |
 | `FixedAssetStatus` | `active` · `fully_depreciated` · `disposed` | Ciclo del elemento de inmovilizado. |
 | `DepreciationRunStatus` | `draft` · `posted` · `reversed` | Corrida mensual de amortización. |
+| `PayrollCostImportStatus` | `draft` · `posted` · `reversed` | Lote de coste de personal importado (`PayrollCostImport.status`, Tanda 6c, §18): borrador sin asientos → contabilizado (un asiento por centro × mes) → revertido (todos sus asientos reversados; el hash del fichero queda libre). |
 | `CashClosureStatus` | `open` · `closed` · `approved` | Arqueo: abierto (turno) → cerrado (recuento) → aprobado (dirección). |
 | `VatBook` | `emitidas` · `recibidas` · `bienes_inversion` | Libros registro de IVA (RD 1619/2012). |
 | `VatBookSourceType` | `invoice` · `rectification` · `simplified` · `supplier_bill` · `expense` | Documento origen de una fila del libro. |
@@ -59,7 +60,9 @@ valores):
 - `JournalEntry.sourceType`: `folio_line` · `payment` · `payment_refund` ·
   `invoice` · `invoice_rectification` · `invoice_cancellation` · `pos_ticket` ·
   `supplier_bill` · `supplier_bill_payment` · `expense` · `payroll_slip` ·
-  `payroll_payment` · `commission` · `depreciation` · `vat_settlement` ·
+  `payroll_payment` · `payroll_cost_import` (coste de personal importado, Tanda 6c,
+  §18: D 640 / D 642 por centro de coste USALI, H 465 / H 476) · `commission` ·
+  `depreciation` · `vat_settlement` ·
   `cash_closure` · `card_settlement` · `tourist_tax` · `manual` ·
   `regularization` · `closing` · `opening` · `reversal` · `fixed_asset_disposal`
   (baja de inmovilizado: D 28xx / D 671 / [D 572|570|4300] / H 21x / [H 771],
@@ -76,7 +79,11 @@ valores):
   recibida → `supplier_bill_cancel:<billId>`; reverso de gasto →
   `expense_reversal:<expenseId>`; corrida de amortización → `<runId>` (y
   `<runId>#n` al recontabilizar una anulada); reverso de corrida →
-  `depreciation_reversal:<runId>`; reapertura de ejercicio → `year-reopen:*`.
+  `depreciation_reversal:<runId>`; reapertura de ejercicio → `year-reopen:*`;
+  coste de personal importado → `payroll_cost_import` /
+  `<importId>:<propertyId>:<periodCode>` (un asiento por centro y mes; nunca el
+  sufijo `#n`: cada lote lleva un `importId` nuevo, y el reverso del lote reversa
+  por asiento con `reverseJournalEntry`).
   Tras un reverso, el mismo documento vuelve a contabilizarse con
   `sourceId#n` (`treasury/ledger-bridge.ts`: volver a pagar una nómina tras
   desconciliar).
@@ -90,6 +97,14 @@ valores):
   `informatica` (25 %) · `construcciones` (3 %) · `vehiculos` (16 %) ·
   `intangible` · `otro` — coeficientes máximos de tablas art. 12 LIS.
 - `CommissionAccrual.status`: `accrued` · `settled` · `reversed`.
+- `PayrollCostImport.source`: `csv` · `json` · `informe_rrhh` (origen del lote de coste
+  de personal importado, Tanda 6c, §18.2).
+- `PayrollCostLine.costGroup`: `operaciones` · `extras` · `estructura` ·
+  `mantenimiento_obra` · `familia` (`PAYROLL_COST_GROUPS` en
+  `packages/shared/src/payroll-cost-types.ts`).
+- `PayrollCostLine.usaliDepartment`: `rooms` · `fnb` · `other_operated` ·
+  `admin_general` · `it` · `sales_marketing` · `pom` (solo los departamentos que
+  admiten la línea `labor`; §4 paso 0 y §18.2).
 - `UsaliMapping.usaliDepartment` / `usaliLine`: ver §4.
 
 ### 1.2 Plan de cuentas
@@ -310,6 +325,33 @@ inversos al recalcular: recalcular NUNCA deja asientos huérfanos ni duplica
 gasto), `postedAt`, `reversedAt`, `paymentJournalEntryId` (D 465 / H 572),
 `paidAt`.
 
+**`PayrollCostImport`** (`payroll_cost_imports`, Tanda 6c, §18.2): un lote por fichero
+de coste de personal AGREGADO (nunca por persona): `organizationId`, `legalEntityId?`
+(de `resolveLedgerScope`), `source` (`csv` · `json` · `informe_rrhh`), `fileName?`,
+`contentHash` (sha256 del contenido normalizado: idempotencia, 409
+`PAYROLL_IMPORT_DUPLICATE` mientras exista un lote no revertido con el mismo hash),
+`periodFrom`/`periodTo` (`YYYY-MM`), `status` (`PayrollCostImportStatus`), `rowCount`,
+`totalGross`/`totalEmployerSs`/`totalCost` (= Σ bruto + SS empresa, lo contabilizado),
+`reportedTotalCost?` (Σ `coste_total` del fichero, informativo), `headcountAverage?`,
+`mappingJson` (mapeo aplicado), `journalEntryIds[]` (un asiento por centro × mes,
+`sourceType = payroll_cost_import`), `reversalJournalEntryIds[]`, `notes?`,
+`createdBy?`, `postedAt?`, `reversedAt?`, `reversedBy?`, `reversalReason?`.
+
+**`PayrollCostLine`** (`payroll_cost_lines`, FK al lote con `onDelete: Cascade`):
+fila agregada centro × mes × grupo × departamento: `organizationId` (desnormalizado,
+sin FK), `propertyId`, `workCenterLabel` (etiqueta ORIGINAL del informe: varias
+etiquetas pueden ir al mismo centro), `costGroup`, `departmentLabel` (original),
+`usaliDepartment`, `costCenterId?` (se rellena al contabilizar), `periodCode`,
+`gross`/`employerSs`/`totalCost`/`reportedTotalCost?`, `headcount` (decimal, admite
+jornadas parciales); única por `(importId, workCenterLabel, periodCode, costGroup,
+departmentLabel)`.
+
+**`PayrollCostReference`** (`payroll_cost_references`, FK Cascade): referencia del
+informe por centro × mes para los ratios y el headcount USALI de respaldo:
+`organizationId`, `propertyId`, `workCenterLabel?`, `periodCode`, `employeesReported?`,
+`roomsAvailableReported?` (inventario de habitaciones, no habitaciones-noche),
+`netSalesReported?`; única por `(importId, propertyId, periodCode)`.
+
 **`CommissionAccrual`** (heredada + nuevos): `journalEntryId` (D 629.1 / H 410,
 devengo en check-out o factura según la regla), `reversalJournalEntryId`,
 `settledAt`/`settlementJournalEntryId` (liquidación al canal: D 410 / H 572),
@@ -441,6 +483,8 @@ AUDIT sin categoría fiscal), 705.1 −218,18, 705.2 −56,81, 705.3 −184,71.
 | `suppliers` (nuevos campos), `supplier_bills`, `supplier_bill_lines`, `expenses` | lote proveedores y gastos | 303 (soportado), 347, 111/115, tesorería (pagos pendientes), amortizaciones (`investmentGood`) |
 | `fixed_assets` (nuevos campos), `depreciation_runs`, `depreciation_lines` | lote amortizaciones | balance, PyG, memoria (cuadro de inmovilizado) |
 | `payroll_periods` (nuevos campos) | lote nóminas | PyG, 111/190, USALI (personal por departamento vía `costCenterId`) |
+| `payroll_cost_imports`, `payroll_cost_lines`, `payroll_cost_references` (Tanda 6c, §18) | lote coste de personal importado (`payroll/cost-import.service.ts`: la previsualización nunca escribe; crear / contabilizar / revertir en una transacción bajo advisory lock; CLI `payroll:import-cost`) | informe `GET /payroll/cost-report` (líneas de lotes `posted` + referencias), USALI y PyG por centro / reparto (headcount de respaldo cuando no hay recibos: `employeesReported` o Σ `headcount`), front Nóminas › Coste de personal |
+| `cost_centers` (`type = usali`, `code` = departamento USALI en mayúsculas) y `journal_lines.cost_center_id` | lote coste de personal importado (`upsert` por `(propertyId, code)` al contabilizar), nóminas reales con contrato con centro de coste, asientos manuales | USALI por centro de coste (`accountBalances({ byCostCentre: true })`, §4 paso 0); el resto de estados ignora el centro de coste |
 | `commission_accruals` (nuevos campos) | lote comisiones | PyG, USALI (Habitaciones · otros gastos), pagos a canales |
 | `financial_statement_snapshots` | lote cuentas anuales / USALI | front (histórico de estados), exportación |
 | `gestoria_exports` | lote exportación | front (descargas) |
@@ -457,6 +501,29 @@ departamento están en `USALI_DEPARTMENT_LINES` (`chart-of-accounts.service.ts`)
 
 Orden de resolución para una línea de asiento con `accountCode`:
 
+0. **Centro de coste `usali`** (Tanda 6c, §18.6). Si la línea lleva `costCenterId` y ese
+   `CostCenter` tiene `type = "usali"` y `code` = departamento USALI en mayúsculas
+   (`ROOMS`, `FNB`, `POM`, `SALES_MARKETING`, `ADMIN_GENERAL`, `OTHER_OPERATED`, `IT`),
+   la línea `labor` / `other_expense` resuelta por los pasos 1-3 se **enruta al
+   departamento del centro de coste** (`routeByCostCentre` en `usali.service.ts`;
+   la cuenta aparece con `source: "cost_center"` en el detalle por departamento).
+   Solo se mueven `labor` y `other_expense` y solo si `USALI_DEPARTMENT_LINES` admite
+   la combinación (`utilities.labor` no está admitida → no se mueve); `revenue`,
+   `cost_of_sales`, honorarios, no operativos y bajo EBITDA nunca cambian de
+   departamento; los centros `operating` / `cost` de los seeds y los códigos
+   desconocidos se ignoran; una cuenta sin mapeo sigue en «Sin asignar». Invariantes:
+   los totales PGC (`pgcRevenue` / `pgcExpense`) se acumulan ANTES del enrutado, así
+   que `reconciliation`, GOP, EBITDA y resultado son idénticos con y sin centros de
+   coste (solo cambia el reparto de la línea entre departamentos); el lector agrupa
+   por `(cost_centers.type, code)` —nunca por `id`—, la partición suma exactamente el
+   total de la cuenta y el consolidado funde `RA/ROOMS` con `LT/ROOMS`; sumas y
+   saldos, balance, PyG, ECPN, memoria, PyG por centro y gestoría siguen leyendo por
+   cuenta. **Advertencia de alcance:** el enrutado afecta a CUALQUIER apunte con
+   `cost_center_id` de tipo `usali` — el coste de personal importado (§18), las
+   nóminas reales cuyo contrato tenga centro de coste (`contract.costCenterId`,
+   `posting-rules.ts`) y los asientos manuales con centro de coste —. Es la capacidad
+   buscada (un solo origen de verdad del departamento), pero un centro de coste
+   `usali` mal asignado mueve gasto entre departamentos del USALI sin tocar el PGC.
 1. `UsaliMapping` activo de la organización cuyo `accountPrefix` sea prefijo del
    código: mayor `priority`; a igualdad, prefijo más largo.
 2. `Account.usaliDepartment/usaliLine` de la cuenta.
@@ -469,7 +536,8 @@ Defaults relevantes de la plantilla: `705.1` Habitaciones · ingresos; `705.2` y
 van en Habitaciones); `623.1` honorarios de gestión; `621` alquiler; `631`
 impuestos sobre la propiedad; `625` seguros; `628.x` suministros salvo `628.4`
 telecomunicaciones (Tecnología); `640.x`/`642.x` personal por departamento
-(`640`/`642` sin desglosar → Administración y general); `68x` amortización;
+(`640`/`642` sin desglosar → Administración y general, salvo que el apunte lleve
+centro de coste `usali`: paso 0); `68x` amortización;
 `66x`/`76x` intereses; `630` impuesto sobre beneficios. Ratios (PAR/POR, RevPAR,
 TRevPAR, GOPPAR) los calcula el lote USALI con habitaciones disponibles y
 ocupadas del PMS por `propertyId` y periodo.
@@ -604,6 +672,24 @@ PAR/POR por departamento. Comparaciones: `GET /accounting/usali/compare?from&to[
 comparan todas, suma por cuenta si es un subconjunto; una propiedad ajena →
 404) y `GET /accounting/usali/periods?periods=2026-01-01..2026-03-31,2025-01-01..2025-03-31[&propertyId]`
 (2-6 periodos; deltas absolutos y en % respecto al primero).
+
+Coste de personal por centro de coste (Tanda 6c, §18.6): las cuatro lecturas que
+alimentan `computeUsaliPnl` (`buildUsaliPnl` y las tres de `compareUsaliProperties`)
+piden `accountBalances({ byCostCentre: true })` y cada fila `labor` / `other_expense`
+con centro de coste `usali` se enruta al departamento del centro (§4 paso 0); en
+`accountsByDepartment[].accounts[]` esa cuenta lleva `source: "cost_center"`
+(`UsaliAmountSource = UsaliMappingSource | "cost_center"`; `UsaliMappingSource` no
+cambia, así que `buildCoverage` y las etiquetas del front siguen igual) y el front la
+marca con el badge «Centro de coste». `statistics.headcount` /
+`statistics.headcountSource` (`payroll_slips` · `payroll_cost_import` · `null`):
+recibos de nómina del periodo por centro como hasta ahora; si no hay, media mensual
+de los empleados de los lotes de coste importado `posted` (`employeesReported` de la
+referencia del informe por centro × mes o, en su defecto, Σ `headcount` de las
+celdas; media solo de los meses con dato, 2 decimales; redondeo de la suma de
+centros a personas enteras); sin datos → `null`, nunca 0. `ratios.laborPerEmployee`
+= Σ línea `labor` de todos los departamentos / `headcount` (`null` si el headcount es
+nulo o 0). La SQL sin flag (balance, PyG, ECPN, memoria, PyG por centro, gestoría) es
+byte-idéntica a la anterior.
 
 ## 9. Cuentas anuales PGC Pymes (lote usali-cuentas)
 
@@ -837,7 +923,8 @@ ruta (nunca `high`/`critical`). Las claves de lectura con importes que los
 partials escriben como `accounting.read` se remapean a `accounting.reports.read`
 en `security/route-permissions.ts` (`requireAccountingReportsKey`); en la tabla
 figura la clave EFECTIVA en el borde. 118 entradas de Finanzas + 9 del módulo
-`structure` (Tanda 6b, §17.8) = 127.
+`structure` (Tanda 6b, §17.8) + 7 del partial `payroll` (coste de personal importado,
+Tanda 6c, §18.7): 118 + 9 + 7 = 134.
 
 | Módulo (partial) | Ruta | Clave efectiva | Riesgo |
 | --- | --- | --- | --- |
@@ -885,6 +972,13 @@ figura la clave EFECTIVA en el borde. 118 entradas de Finanzas + 9 del módulo
 | | `GET /legal-entities/:legalEntityId/verifactu/installations` | `accounting.configure` | medium |
 | | `POST /legal-entities` (409 `MULTI_ENTITY_NOT_ENABLED` con sociedad existente), `PATCH /legal-entities/:legalEntityId` (+ `ai.high_risk.confirm` y `confirmHighRisk` en NIF, razón social, SII, gran empresa, PGC y ejercicio; régimen además `accounting.configure`), `POST /legal-entities/:legalEntityId/properties`, `PATCH /properties/:propertyId/establishment` | `organization.structure.manage` | high |
 | | `POST /admin/legal-entities/:legalEntityId/verifactu-scope` (consola de plataforma) | `admin.tenants.manage` | critical |
+| payroll (Tanda 6c · coste de personal importado, `modules/payroll/route-permissions.partial.ts`) | `POST /payroll/cost-imports/preview` (nunca escribe) | `payroll.manage` (servicio: o `accounting.journal.post`) | medium |
+| | `POST /payroll/cost-imports` (crear + contabilizar; `post: false` deja borrador) | `payroll.manage` (servicio: o `accounting.journal.post`) | high |
+| | `GET /payroll/cost-imports` (solo lotes con TODOS sus centros en ámbito) | `payroll.read` (servicio: o `payroll.manage` / `accounting.journal.post`) | medium |
+| | `GET /payroll/cost-imports/:id` (tenencia: 404 opaco `PAYROLL_IMPORT_NOT_FOUND`) | `payroll.read` | medium |
+| | `POST /payroll/cost-imports/:id/post` (borrador → contabilizado) | `payroll.manage` (servicio: o `accounting.journal.post`) | high |
+| | `POST /payroll/cost-imports/:id/reverse` (espejo de `POST /payroll/periods/:id/pay`; idempotente) | `payroll.manage` (servicio: o `accounting.journal.post`) | critical |
+| | `GET /payroll/cost-report` (sin `propertyId` = toda la sociedad → `accounting.entity.read`; nunca `accounting.read` ni `analytics.read`) | `payroll.read` | medium |
 
 Rutas heredadas de `server.ts` que siguen vivas y numeran por el motor:
 `GET /organizations/:organizationId/accounts` (409 `CHART_NOT_PROVISIONED` sin
@@ -944,6 +1038,12 @@ corepack pnpm --filter @hotelos/api accounting:relabel-customer-account -- --org
 # 4. Propagar la clave accounting.reports.read (y las claves ERP de Contabilidad) a los roles existentes
 corepack pnpm --filter @hotelos/api rbac:sync -- --dry-run     # esperado hoy: +0 claves, 8 roles topped up (Faranda Owner +1, Dirección +1, Contabilidad +6, Cumplimiento +1; org_123 ídem), Local Super Admin +1
 corepack pnpm --filter @hotelos/api rbac:sync                  # (o reiniciar el API: el arranque hace el mismo top-up)
+
+# 5. Coste de personal importado (Tanda 6c, §18.9): informe de RRHH AGREGADO (CSV o JSON, nunca por persona) → un asiento por centro y mes
+corepack pnpm --filter @hotelos/api payroll:import-cost -- --file <ruta.json|ruta.csv> --organization <orgId>                 # dry-run (por defecto): nada escrito
+corepack pnpm --filter @hotelos/api payroll:import-cost -- --file <ruta> --organization <orgId> --apply --confirm <orgId> [--replace] [--json]
+#   Faranda: dry-run → 363 filas · 48 celdas centro × mes · 40 referencias · 0 sin mapear · 1 aviso de coste_total; apply UNA vez → 48 asientos (62..109).
+#   --replace reversa ENTEROS los lotes que dupliquen o solapen: nunca sobre Faranda salvo para sustituir el rango completo.
 ```
 
 Operaciones por API (todas con zod estricto; importes como cadenas `"121.00"`):
@@ -1733,3 +1833,572 @@ literal). Pendiente fuera de este lote, en `resolveVerifactuSoftware` /
 `resolveSoftwareForSend`: rechazar un `numeroInstalacion` que empiece por
 `SANDBOX_INSTALL_NUMBER` cuando `mode ≠ sandbox` (código nuevo, p. ej.
 `INSTALLATION_SANDBOX_FILLER`, mismo backoff de configuración).
+
+## 18. Coste de personal importado (Tanda 6c · 2026-09-16)
+
+Diseño: `docs/design/FINANZAS-COSTE-PERSONAL.md` (§1 motivación y alternativas
+descartadas, §2 modelo, §3 contabilización, §4 USALI, §5 API, §6 formato, §7 CLI, §8
+front, §9 lotes, §10 riesgos y decisiones abiertas). Rutas: `docs/api-contracts.md`
+«Coste de personal importado». Código: `apps/api/src/modules/payroll/{cost-import.parser,
+cost-import.posting, cost-import.service, cost-report.service, cost-import.routes,
+route-permissions.partial}.ts`, esquemas `apps/api/src/schemas/payroll-cost.schemas.ts`,
+tipos wire `packages/shared/src/payroll-cost-types.ts`, CLI
+`apps/api/src/scripts/import-payroll-cost.ts`, lector USALI
+`modules/financial-statements/{source,usali.service}.ts`, front
+`apps/admin-web/src/screens/payroll/{PayrollScreen,PayrollCostImportDrawer}.tsx`.
+
+### 18.1 Objetivo, alcance y GDPR
+
+Faranda (CELUISMA S.A., 8 centros bajo un NIF) no calcula las nóminas en el ERP: la
+gestoría las hace fuera y RRHH entrega un informe mensual de coste. Hasta esta tanda el
+diario de la sociedad no tenía ningún coste de personal (la partida mayor del PyG) y el
+USALI cargaba todo el 640/642 en Administración y general. Esta tanda **devenga el coste
+de empresa** (D 640 sueldos y salarios / D 642 Seguridad Social a cargo de la empresa) por
+centro de trabajo y mes a partir de un informe **agregado**, y enruta la línea `labor`
+del USALI por el **centro de coste** del apunte (§4 paso 0). No sustituye a la nómina real
+de Anfitorio (`PayrollPeriod` → recibos → `payroll_slip`): cuando un centro y mes ya
+tenga nómina real contabilizada, la previsualización lo avisa (`payrollPeriodsPosted`) y el
+resultado de create / post repite el aviso en `warnings` —el cajón y el CLI `--apply` lo
+muestran— (corrector 6c, contable-6C-08) para no devengar dos veces; no bloquea porque el lote
+importado puede ser la única nómina del centro.
+
+**GDPR — agregar antes de importar, nunca nombres.** El formato de importación es
+agregado por construcción (centro × mes × grupo × departamento) y no admite columnas de
+persona; las tres tablas nuevas guardan solo agregados; el fichero real de Faranda se
+agrega FUERA del repositorio (`<raíz git>/pilots/faranda-celuisma/nomina-2026-ene-ago.json`,
+carpeta git-ignored) y ningún fichero del repo, de la documentación ni de los tests
+contiene nombres, DNI, retribuciones individuales ni categorías por persona: los tests
+usan cifras sintéticas. El desglose por persona sigue en la gestoría; el ERP no lo
+necesita para el PGC ni para el USALI.
+
+### 18.2 Modelo de datos (§1.8) y catálogo
+
+Tres tablas aditivas (migración `20260916120000_coste_personal_importado`, SQL de
+`prisma migrate diff` verbatim con cabecera «reviewed by hand»; 3 `CREATE TABLE`, 1
+`CREATE TYPE`, 2 `FOREIGN KEY`, 9 índices más `journal_lines_cost_center_id_idx`; `db:migrate:status`
+9/9, `db:drift:check` «No difference detected.»):
+
+| Tabla | Qué es | Clave |
+| --- | --- | --- |
+| `payroll_cost_imports` (**`PayrollCostImport`**) | UN lote por fichero importado: `source`, `fileName`, `contentHash` (sha256 del contenido normalizado), `periodFrom`/`periodTo`, `status` (`PayrollCostImportStatus`), totales (`totalGross`, `totalEmployerSs`, `totalCost = Σ(gross + employerSs)`, `reportedTotalCost` = Σ `coste_total` del fichero, informativo), `headcountAverage`, `mappingJson` (mapeo aplicado), `journalEntryIds[]`, `reversalJournalEntryIds[]`, `createdBy`, `postedAt`, `reversedAt`, `reversedBy`, `reversalReason` | `@@index([organizationId, status, periodFrom, periodTo])` · `@@index([organizationId, contentHash])` |
+| `payroll_cost_lines` (**`PayrollCostLine`**) | Filas AGREGADAS del informe con la etiqueta ORIGINAL del centro (`workCenterLabel`) y del departamento (`departmentLabel`), el centro del ERP (`propertyId`), el grupo (`costGroup`), el departamento USALI (`usaliDepartment`), el mes (`periodCode`), `gross` / `employerSs` / `totalCost` / `reportedTotalCost`, `headcount` (decimal: jornadas parciales) y el `costCenterId` que se rellena al contabilizar | `@@unique([importId, workCenterLabel, periodCode, costGroup, departmentLabel])` (con `propertyId` en vez de la etiqueta habría 30 colisiones en OC: tres etiquetas van al mismo centro) |
+| `payroll_cost_references` (**`PayrollCostReference`**) | Referencia del informe por centro × mes: `employeesReported`, `roomsAvailableReported` (INVENTARIO de habitaciones, no habitaciones-noche), `netSalesReported` | `@@unique([importId, propertyId, periodCode])` |
+
+`CostCenter` no cambia: la importación hace `upsert` por `(propertyId, code)` de filas
+`{ code: "ROOMS" | "FNB" | "POM" | "SALES_MARKETING" | "ADMIN_GENERAL" | "OTHER_OPERATED" | "IT", name: USALI_DEPARTMENTS[dept], type: "usali", active: true }`
+en la misma transacción del asiento. `JournalEntry` y `JournalLine` tampoco añaden
+columnas: solo `payroll_cost_import` en el catálogo de `sourceType` (§1.1) y el índice
+`@@index([costCenterId])` para el lector USALI.
+
+Catálogo (texto en BD, enums documentales de §1.1): `PayrollCostImport.source` ∈ `csv` ·
+`json` · `informe_rrhh`; `PayrollCostLine.costGroup` ∈ `operaciones` (personal de hotel)
+· `extras` (refuerzos) · `estructura` (oficinas) · `mantenimiento_obra` (equipo de
+mantenimiento/obra) · `familia` (administradores / propiedad); `PayrollCostLine.usaliDepartment`
+∈ `rooms` · `fnb` · `other_operated` · `admin_general` · `it` · `sales_marketing` · `pom`
+(los que admiten la línea `labor`; `utilities`, `misc_income`, `management_fees`,
+`non_operating` y `below_ebitda` → 400 `USALI_LINE_NOT_ADMITTED`). Estados:
+`draft` (sin asientos) → `posted` (un asiento por centro × mes) → `reversed` (todos sus
+asientos reversados; el hash queda libre para reimportar).
+
+### 18.3 Formato de importación (CSV y JSON), normalización y mapeo
+
+**CSV** — cabecera obligatoria con nombres de columna en minúsculas y sin acentos;
+separador `;` (o `,` si la cabecera no contiene `;`); decimales con coma o punto y miles
+opcionales («1.234,56»); mes `YYYY-MM` o `MM/YYYY`; BOM admitido; UTF-8 (desde el
+navegador el fichero debe guardarse como UTF-8; latin1 solo por el CLI, que decodifica);
+columnas desconocidas → aviso; fila con error → `errors[{ line, message }]` con número
+de línea 1-based; filas con la misma clave se fusionan sumando importes y empleados (con
+aviso «filas N y M fusionadas»). **Topes por valor** (corrector 6c, SEC-6C-02: lo que
+pasa el parser cabe en las columnas, nunca un 500 de Prisma dentro de la transacción):
+importes < 10^12 (`Decimal(14,2)`), `empleados` / `empleadosInforme` < 10^6
+(`Decimal(8,2)`), `hab_disponibles` ≤ 2.147.483.647, etiquetas de centro / grupo /
+departamento ≤ 200 caracteres y sin caracteres de control (NUL…); fuera de tope → error
+con nº de línea. **Importes ambiguos** (contable-6C-07): «1.234» (un solo punto y tres
+cifras detrás) se lee como 1,23 —la regla es «un solo punto = decimal»— y el fichero lo
+avisa UNA vez listando las líneas; si son miles, escribir «1.234,00» o «1234». **Topes
+por lote** (SEC-6C-03, `PAYROLL_COST_IMPORT_MAX_*` en `payroll-cost-types.ts`): ≤ 24
+meses distintos, ≤ 240 celdas (centro, mes) = asientos y ≤ 5.000 filas; superarlos es
+400 `PAYROLL_IMPORT_INVALID { errors }` (la preview los lista en `errors`), porque la
+transacción del lote retiene el lock de numeración del diario del ejercicio hasta el
+commit (≈ 100 ms por asiento) y el resto de asientos de la organización espera. Las tres
+columnas opcionales alimentan `PayrollCostReference` por (centro, mes) y `usali` fija el
+departamento sin diccionario:
+
+```
+centro;mes;grupo;departamento;salario_bruto;coste_ss;coste_total;empleados[;ventas_sin_iva;hab_disponibles;usali]
+```
+
+Ejemplo sintético (dos centros, un mes):
+
+```
+centro;mes;grupo;departamento;salario_bruto;coste_ss;coste_total;empleados;ventas_sin_iva;hab_disponibles;usali
+HOTEL DEMO;2026-02;operaciones;3 RECEPCIO;6.000,00;1.800,00;7.800,00;3;42.000,00;40;rooms
+HOTEL DEMO;2026-02;operaciones;6 PISOS;4.000,00;1.200,00;5.200,00;4;42.000,00;40;rooms
+HOTEL DEMO;2026-02;operaciones;5 COCINA;5.000,00;1.500,00;6.500,00;2;42.000,00;40;fnb
+OFICINA DEMO;02/2026;estructura;ADMINISTRACION;3.500,00;1.050,00;4.550,00;2;;;admin_general
+```
+
+**JSON** — el agregado del informe de RRHH (`{ fuente, organizationId, periodo, mapping:
+{ centros, grupos }, lineas: [{ centro, centroCode, mes, grupo, departamento,
+usaliDepartment, salarioBruto, costeSs, costeTotal, empleados }], referencia:
+[{ centroCode, mes, empleadosInforme, habitacionesDisponibles, ventasSinIva }] }`) o
+`{ rows: PayrollCostRowDto[] }`. Si el JSON declara `organizationId` debe coincidir con
+la organización destino (400 `PAYROLL_IMPORT_ORGANIZATION_MISMATCH`).
+
+**Normalización y hash.** Etiquetas `trim` + espacios colapsados + mayúsculas (acentos
+conservados); importes a 2 decimales; `contentHash` = sha256 del JSON canónico de filas y
+referencias ordenadas por `(workCenterLabel, periodCode, costGroup, departmentLabel)`: el
+CSV y el JSON equivalentes producen el mismo hash, independiente del formato, los
+espacios y el BOM.
+
+**Mapeo** (`applyPayrollCostMapping`, puro; el mapeo aplicado se guarda en `mappingJson`):
+
+| Dimensión | 1.º | 2.º | 3.º | Sin mapear |
+| --- | --- | --- | --- | --- |
+| Centro | `mapping.centres[etiqueta]` → `propertyId` | `centroCode` del fichero ≡ `Property.code` | etiqueta ≡ `code` / `name` / `tradeName` normalizados | preview: `unmappedCentres[].suggestions`; crear: 400 `PAYROLL_IMPORT_CENTRE_UNMAPPED` |
+| Departamento | `mapping.departments[etiqueta]` | columna `usali` / `usaliDepartment` del fichero | diccionario: `RECEP*` / `PISOS` / `SIN DEPARTAMENTO` → `rooms`; `CAF*` / `REST*` / `COCINA` → `fnb`; `MANTENIM*` → `pom`; `DIRECCI*` / `ADMINISTRACION` / `PROPIEDAD` → `admin_general`; `COMERCIAL` → `sales_marketing` | preview: `unmappedDepartments`; crear: 400 `PAYROLL_IMPORT_DEPARTMENT_UNMAPPED` |
+
+Un centro `kind = office` cuyo departamento resuelve a `rooms` / `fnb` / `other_operated`
+(«OFICINA ASTURIAS · RECEPCION → rooms», 34.236,25 € en el dataset de Faranda) se
+respeta pero se AVISA por (centro, departamento) (contable-6C-06): el personal de una
+oficina suele ir a `admin_general`; corregirlo es `mapping.departments` o la columna
+`usali` y, si ya está contabilizado, reimportar con `replace`.
+| Grupo | `mapping.groups[etiqueta]` | `mapping.grupos` del JSON (`mant-obra` → `mantenimiento_obra`) | valor canónico | 400 `PAYROLL_IMPORT_GROUP_INVALID` |
+
+Los `propertyId` del mapeo llegan anidados en el cuerpo (el hook global de tenencia no
+los concede): el servicio comprueba que pertenecen a la organización y al ámbito del
+usuario (`assertFinanceReadScopeMany`) → 404 opaco `PROPERTY_NOT_FOUND` /
+`ENTITY_SCOPE_REQUIRED`.
+
+### 18.4 El asiento: regla, ejemplo sintético y simplificaciones
+
+Regla pura en `cost-import.posting.ts` con las mismas piezas que el resto de reglas
+canónicas (§2): `signedLine` / `assertBalanced` y las constantes `SALARIES_ACCOUNT = "640"`,
+`EMPLOYER_SS_ACCOUNT = "642"`, `WAGES_PAYABLE_ACCOUNT = "465"`, `SOCIAL_SECURITY_ACCOUNT = "476"`.
+**Un asiento por (centro, mes)**, nunca por grupo (el grupo vive en las líneas del lote y
+en el informe; el diario distingue por centro de coste = departamento):
+
+| Campo | Valor |
+| --- | --- |
+| `sourceType` / `sourceId` | `payroll_cost_import` / `<importId>:<propertyId>:<periodCode>` (§1.1; cada lote lleva un `importId` nuevo, nunca el sufijo `#n` del puente) |
+| `propertyId` / `entryDate` | el centro (todas las líneas 6 llevan centro: el 400 `WORK_CENTER_REQUIRED` de la Tanda 6b es inalcanzable) / último día del mes en UTC (`2028-02` → 29) |
+| `description` / `reference` | «Coste de personal MM/AAAA · <código o nombre del centro> (importado)» / `periodCode` |
+| Líneas | por departamento USALI ordenado por clave: D `640` bruto «Sueldos y salarios · <departamento>» y D `642` SS empresa «Seguridad Social empresa · <departamento>», ambas con `costCenterId` del `CostCenter` `usali` del centro; al final H `465` Σ bruto «Remuneraciones pendientes de pago · coste importado» y H `476` Σ SS empresa «Seguridad Social acreedora · coste importado» |
+| Casos límite | importe 0 → sin línea; celda toda a 0 → sin asiento + aviso; plan sin celdas → 400 `PAYROLL_IMPORT_EMPTY`; el parser rechaza importes y empleados negativos |
+
+Ejemplo **sintético** (centro `HD`, febrero 2026, las cuatro filas del CSV de §18.3 para
+HOTEL DEMO; Habitaciones bruto 10.000,00 / SS 3.000,00; A&B bruto 5.000,00 / SS 1.500,00):
+
+| Cuenta | Centro de coste | Debe | Haber |
+| --- | --- | ---: | ---: |
+| 640 Sueldos y salarios · Habitaciones | `HD/ROOMS` | 10.000,00 | |
+| 640 Sueldos y salarios · Alimentos y bebidas | `HD/FNB` | 5.000,00 | |
+| 642 Seguridad Social empresa · Habitaciones | `HD/ROOMS` | 3.000,00 | |
+| 642 Seguridad Social empresa · Alimentos y bebidas | `HD/FNB` | 1.500,00 | |
+| 465 Remuneraciones pendientes de pago · coste importado | — | | 15.000,00 |
+| 476 Seguridad Social acreedora · coste importado | — | | 4.500,00 |
+| **Total** (`entryDate` 2026-02-28, `sourceId` `imp_1:HD:2026-02`) | | **19.500,00** | **19.500,00** |
+
+La oficina del mismo ejemplo produce su propio asiento (640 3.500,00 · 642 1.050,00 con
+centro de coste `ADMIN_GENERAL`; 465 3.500,00 · 476 1.050,00).
+
+**Simplificaciones documentadas** (diseño §3.4 y §10.1):
+
+- **Devengo del coste de empresa, sin IRPF ni SS del trabajador.** El informe trae bruto
+  y SS empresa; no se conoce el líquido. Por eso 465 recoge el BRUTO (no el líquido) y
+  476 solo la SS a cargo de la empresa; no hay 4751 ni desglose de 476 por
+  trabajador/empresa. El pago de la nómina (D 465 / H 572), el pago a la TGSS (D 476 /
+  H 572) y las retenciones se registran aparte por tesorería cuando lleguen los
+  extractos; el Modelo 111 NO se alimenta de estos asientos. Si César quiere el líquido y
+  el 111 desde el ERP, hacen falta dos columnas más (IRPF retenido y SS del trabajador)
+  y una regla D 465 / H 4751 · H 476: extensión aditiva del formato.
+- **Sin IVA.** Ninguna cuenta 47x de IVA → los libros y el Modelo 303 son invariantes.
+- **`coste_total` es informativo.** Se contabiliza SIEMPRE bruto + SS empresa; si
+  `coste_total` difiere más de 0,01 se avisa (línea y diferencia) y se conserva en
+  `reportedTotalCost` para conciliar con el Excel; nunca bloquea.
+
+### 18.5 Flujo: previsualizar → contabilizar → revertir
+
+1. **Previsualizar** (`POST /payroll/cost-imports/preview`, nunca escribe): filas
+   normalizadas, `byCentreMonth`, `unmappedCentres[].suggestions`, `unmappedDepartments`,
+   `warnings`, `duplicateOf`, `overlaps`, `payrollPeriodsPosted` y `canPost` (= sin
+   errores ∧ sin pendientes de mapeo ∧ (sin duplicado ∧ sin solapes, o `replace`)).
+2. **Crear y contabilizar** (`POST /payroll/cost-imports`, `post` por defecto `true`;
+   `post: false` deja un `draft` que se contabiliza después con `POST …/:id/post`;
+   `replace: true` exige `post: true` —400 `VALIDATION_ERROR` en el esquema y en el
+   servicio, contable-6C-01: un borrador revertiría los lotes anteriores y dejaría el
+   diario sin el coste; el borrador se sustituye al contabilizarlo con `POST …/:id/post
+   { replace: true }`). Todo
+   en UNA transacción interactiva propia (`maxWait` 15 s, `timeout` 180 s) que empieza
+   con `SELECT pg_advisory_xact_lock(hashtext('payroll_cost_import:<organizationId>'))`
+   (orden de locks constante importación → numeración del motor, sin interbloqueos):
+   duplicado → solape → `payrollCostImport.create` + `createMany` de líneas y
+   referencias → `upsert` de los centros de coste → un `ledger().postJournalEntry({ …,
+   db: tx })` por celda (`created === false` → 409 `PAYROLL_IMPORT_ENTRY_EXISTS`) →
+   lote `posted` con `journalEntryIds`, `postedAt`, `headcountAverage` y `costCenterId`
+   en cada línea. El motor aplica 404 `PROPERTY_NOT_FOUND` y 409 `FISCAL_PERIOD_CLOSED`
+   / `FISCAL_YEAR_CLOSED`: ante cualquier fallo TODO (lote, líneas, referencias, centros
+   de coste, asientos) hace rollback, nada queda a medias. La auditoría
+   (`PAYROLL_COST_IMPORTED` / `PAYROLL_COST_IMPORT_POSTED`, `entityType
+   payroll_cost_import`, before/after con hash, fichero, periodo, totales, asientos,
+   `replacedImportIds` y mapeo) se escribe fuera de la transacción.
+3. **Revertir** (`POST /payroll/cost-imports/:id/reverse { reason, entryDate? }`): por
+   cada `journalEntryId` del lote, `ledger().reverseJournalEntry` (descripción «Reverso
+   coste de personal <mes> · <centro> — <motivo>», referencia `periodCode`; el reverso
+   conserva `costCenterId`); si un asiento ya tiene `reversedById` se reutiliza y si su
+   estado no es `posted` se salta. Un `draft` pasa a `reversed` sin asientos; un lote ya
+   `reversed` devuelve `alreadyReversed: true` (idempotente). **Solo se reversan los
+   asientos cuyos ids están en `journalEntryIds` del lote: los asientos previos de la
+   organización no se tocan nunca.** **Mes cerrado a posteriori → 409
+   `FISCAL_PERIOD_CLOSED` (o `FISCAL_YEAR_CLOSED`) AUNQUE el cuerpo traiga una
+   `entryDate` abierta** (corrector 6c, contable-6C-02): el servicio comprueba el periodo
+   del asiento ORIGINAL (`assertOriginalPeriodOpen`) porque la regla única de lectura de
+   los estados excluye la pareja marcada entera (`reversed_by_id IS NULL AND
+   reversal_of_id IS NULL`), así que un reverso fechado en un periodo abierto haría
+   desaparecer el 640/642 del mes cerrado del balance, PyG, USALI y ECPN sin que el mes
+   abierto recibiera el abono (deuda 14(d)). Procedimiento: reabrir el periodo
+   (Contabilidad › Periodos, `reopenFiscalPeriod`), revertir y volver a cerrar; `entryDate`
+   solo cambia la fecha del reverso entre periodos abiertos. Lo mismo vale para `replace`
+   (revierte lotes enteros con la misma guarda). Auditoría `PAYROLL_COST_IMPORT_REVERSED`.
+
+**Idempotencia en tres capas:**
+
+| Capa | Comprobación | Sin `replace` | Con `replace: true` |
+| --- | --- | --- | --- |
+| Contenido | mismo `contentHash` en un lote `status ≠ reversed` de la organización | 409 `PAYROLL_IMPORT_DUPLICATE { importId, status, fileName, postedAt }` | el lote anterior se revierte entero y se crea el nuevo en la misma transacción |
+| Celdas | alguna (centro, mes) del fichero ya está en un lote `posted` | 409 `PAYROLL_IMPORT_OVERLAP { overlaps[{ importId, fileName, periodFrom, periodTo, propertyId, periodCode }] }` | todos los lotes afectados se revierten enteros (`replacedImportIds`) y se crea el nuevo |
+| Asiento | el puente devuelve `created: false` para un `sourceId` | 409 `PAYROLL_IMPORT_ENTRY_EXISTS { sourceId }` (defensivo: imposible en la práctica, el `importId` es nuevo) | ídem |
+
+**`replace` solo revierte lotes cuyos centros están TODOS en el ámbito R11 del usuario**
+(SEC-6C-01): un CSV solo de HA no puede revertir un lote HA+HB; el servicio responde el
+mismo 404 opaco que el reverso directo y el lote nuevo hace rollback. La preview y los
+409 de duplicado / solape enmascaran `fileName` y `postedAt` de los lotes con centros
+fuera del ámbito (SEC-6C-04) y con `replace` la preview responde `canPost: false` con
+aviso. Cubierto en `tests/integration/payroll-cost-import.test.mts`.
+
+**`replace` reversa lotes ENTEROS: reimportar siempre el rango completo.** Si un lote
+cubre 2026-01 → 2026-08 y se reimporta solo 2026-06 con `replace: true`, el lote de ocho
+meses se revierte completo y solo queda contabilizado junio: los otros siete meses
+desaparecen del diario. La previsualización y el drawer listan los lotes que se
+revertirían con su rango; la regla operativa es reimportar el fichero del rango completo
+(o revertir a mano y volver a importar). Tras un reverso el hash queda libre y el
+`importId` (y por tanto los `sourceId`) del nuevo lote son nuevos.
+
+### 18.6 USALI por centro de coste y headcount
+
+El lector `accountBalances({ byCostCentre: true })` (§4 paso 0, §8) hace `LEFT JOIN
+cost_centers` y agrupa por `(cost_centers.type, code)` —nunca por `id`: el consolidado
+funde `RA/ROOMS` con `LT/ROOMS`—; la SQL sin flag (balance, PyG, ECPN, memoria, PyG por
+centro y gestoría) es byte-idéntica a la anterior. `routeByCostCentre` mueve la línea
+`labor` / `other_expense` al departamento del centro de coste `usali` cuando
+`USALI_DEPARTMENT_LINES` lo admite y marca la cuenta con `source: "cost_center"`; GOP,
+EBITDA, resultado y `reconciliation` no cambian (los totales PGC se acumulan antes del
+enrutado). **Advertencia de alcance:** afecta a cualquier apunte con `cost_center_id`
+de tipo `usali` — nóminas reales cuyo contrato tenga centro de coste y asientos manuales
+incluidos — porque el objetivo es un solo origen de verdad del departamento; un centro de
+coste `usali` mal asignado mueve gasto entre departamentos del USALI sin tocar el PGC.
+
+Headcount (`statistics.headcount` / `headcountSource`): recibos de nómina por centro
+(`payroll_slips`) como antes; si no hay, lotes `posted` (`payroll_cost_import`):
+`employeesReported` de la referencia por (centro, mes) o, en su defecto, Σ `headcount`
+de las celdas; media de los meses CON dato (2 decimales) y `Math.round` de la suma de
+centros; sin datos → `null`, nunca 0. `ratios.laborPerEmployee` = Σ `labor` / headcount
+(`null` si el headcount es nulo o 0). Prioridad de la referencia: Σ `empleados` por celda
+sobrecuenta a quien figura en dos grupos (§18.12). `pnl-by-property` y `allocation`
+reciben el mismo headcount para la clave de reparto.
+
+### 18.7 Rutas, permisos y ámbito (R11)
+
+Partial `modules/payroll/route-permissions.partial.ts` (7 entradas; tabla completa en
+§13): lectura `payroll.read` (`GET /payroll/cost-imports`, `GET …/:id`, `GET
+/payroll/cost-report`; nunca `accounting.read` ni `analytics.read`: invariantes
+`finance-report-keys` / `route-read-keys`), escritura `payroll.manage` (`POST …/preview`
+medium, `POST /payroll/cost-imports` y `POST …/:id/post` high, `POST …/:id/reverse`
+critical — espejo de `POST /payroll/periods/:id/pay`). El manifiesto exige TODAS las
+claves de la entrada y por eso la ruta pide solo `payroll.manage`: con `["payroll.manage",
+"accounting.journal.post"]` la plantilla de Dirección (que tiene `payroll.manage` sin
+`accounting.journal.post`) recibiría 403. En el servicio las escrituras aceptan cualquiera
+de `PAYROLL_WRITE_KEYS` (`payroll.manage` o `accounting.journal.post`) y las lecturas
+`PAYROLL_READ_KEYS = ["payroll.read", "payroll.manage", "accounting.journal.post"]`
+(`treasury/permissions.ts`). Las rutas high/critical rechazan el fallback demo sin token.
+
+Ámbito (R11 de la Tanda 6b): un lote es visible y actuable solo cuando TODOS los centros
+que toca están en el ámbito del usuario (`assertFinanceReadScopeMany`; el listado filtra
+con `propertyWithinScope`); `GET /payroll/cost-imports/:id` resuelve la tenencia con
+`assertEntityAccess(request, { entity: "payrollCostImport", id })` (404 opaco
+`PAYROLL_IMPORT_NOT_FOUND`); `GET /payroll/cost-report` sin `propertyId` = toda la
+sociedad → exige `accounting.entity.read` o un contexto sin asignaciones, si no 404
+`ENTITY_SCOPE_REQUIRED`. Cuerpos zod `.strict()` con mensajes en español (`content` ≤
+1.000.000 caracteres —el JSON de Faranda pesa 103 KB—, `fileName` ≤ 200, `notes` ≤ 2000,
+`reason` 3..500, `from`/`to` `YYYY-MM` con `to ≥ from` y ≤ 24 meses).
+
+Informe (`GET /payroll/cost-report?from&to[&propertyId][&group]`): líneas de lotes
+`posted`, referencias (la del último `postedAt` gana), ventas netas del libro por centro
+× mes en una sola `$queryRaw` sobre cuentas `70%` (misma regla de exclusión que los
+estados: sin borradores, sin parejas de reverso marcadas, sin regularización / cierre /
+apertura) e inventario `room.count({ propertyId, active: true })`. Por celda:
+`headcount = employeesReported ?? Σ headcount` (`headcountSource` `reference` | `lines`;
+con filtro de grupo siempre Σ de las filas del grupo), `costPerEmployee`,
+`roomsAvailable = (roomsInventoryReported ?? roomsInventory) × días del mes`,
+`costPerAvailableRoom`, `laborPctLedger = 100 × totalCost / ledgerNetSales`,
+`laborPctReference = 100 × totalCost / netSalesReported`, `byGroup`, `byDepartment`;
+`null` con denominador 0; `group` filtra solo las líneas de coste (ventas y referencia
+no); `salesSource` en cada celda, centro, mes y sociedad = fuente PRINCIPAL de ventas
+por la **regla de cobertura del libro** (corrector 6c, contable-6C-03,
+`PAYROLL_COST_LEDGER_COVERAGE_MIN = 0,9`): `ledger` solo cuando el libro tiene ventas y,
+si hay referencia, alcanza al menos el 90 % de ella; si no, `reference` cuando la hay;
+`null` sin ventas. Ambos `laborPct*` se calculan siempre; el front pinta el de
+`salesSource` (en Faranda, 10,33 € en el libro frente a 837.898,72 de referencia en
+julio daban un «Personal s/ ventas» de 23.645.296,81 %: ahora el KPI y la barra usan la
+referencia, 56,34 %). En `totals`, `headcountAverage` y `costPerEmployeeAverage` (=
+coste ACUMULADO del rango entre los empleados medios, no una media mensual).
+
+### 18.8 Códigos de error
+
+| Código | Status | `details` | Cuándo |
+| --- | --- | --- | --- |
+| `VALIDATION_ERROR` | 400 | issues zod (español) | clave desconocida, formato inválido, rango > 24 meses, motivo corto, `replace: true` con `post: false` |
+| `PAYROLL_IMPORT_INVALID` | 400 | `{ errors: [{ line, message }] }` | cabecera, mes no `YYYY-MM`/`MM/YYYY`, importes o empleados negativos, no numéricos o fuera de tope (importes ≥ 10^12, empleados ≥ 10^6, inventario > 2^31-1, etiquetas > 200 caracteres o con caracteres de control), lote > 24 meses / 240 celdas / 5.000 filas |
+| `PAYROLL_IMPORT_EMPTY` | 400 | — | sin líneas de coste (o todas a 0) |
+| `PAYROLL_IMPORT_GROUP_INVALID` | 400 | `{ labels }` | grupo fuera de los 5 canónicos y sin mapeo |
+| `PAYROLL_IMPORT_ORGANIZATION_MISMATCH` | 400 | `{ sourceOrganizationId }` | `organizationId` del JSON ≠ organización destino |
+| `PAYROLL_IMPORT_CENTRE_UNMAPPED` | 400 | `{ labels, rows }` | etiqueta de centro sin `Property` (la preview no lanza: `unmappedCentres`) |
+| `PAYROLL_IMPORT_DEPARTMENT_UNMAPPED` | 400 | `{ labels }` | etiqueta de departamento sin USALI |
+| `USALI_LINE_NOT_ADMITTED` | 400 | `{ department, labels }` | departamento que no admite `labor` |
+| `JOURNAL_REVERSAL_REASON_REQUIRED` | 400 | — | reverso sin motivo |
+| `PROPERTY_NOT_FOUND` / `ENTITY_SCOPE_REQUIRED` | 404 (opaco) | — | centro de otra organización / centro fuera de ámbito o informe de toda la sociedad sin `accounting.entity.read` |
+| `PAYROLL_IMPORT_NOT_FOUND` | 404 (opaco) | — | lote inexistente o de otra organización («Importación de coste de personal no encontrada.») |
+| `PAYROLL_IMPORT_DUPLICATE` | 409 | `{ importId, status, fileName, postedAt }` | mismo hash vivo sin `replace` |
+| `PAYROLL_IMPORT_OVERLAP` | 409 | `{ overlaps: [{ importId, fileName, periodFrom, periodTo, propertyId, periodCode }] }` | celda (centro, mes) ya contabilizada sin `replace` |
+| `PAYROLL_IMPORT_ALREADY_POSTED` / `PAYROLL_IMPORT_REVERSED` | 409 | `{ importId }` | `post` sobre un lote que no está en borrador |
+| `PAYROLL_IMPORT_ENTRY_EXISTS` | 409 | `{ sourceId, journalEntryId }` | el puente devolvió `created: false` (defensivo) |
+| `FISCAL_PERIOD_CLOSED` / `FISCAL_YEAR_CLOSED` | 409 | del motor o `{ periodCode | yearCode, entryDate, journalEntryId }` del servicio | mes o ejercicio cerrado (rollback completo del lote); en el reverso, el periodo del asiento ORIGINAL cerrado aunque `entryDate` sea abierta → reabrir el periodo antes |
+
+El front traduce cada código por `details.code` (`FINANCE_ERROR_MESSAGES` de
+`services/finance-contracts.ts`). Catálogo en `PAYROLL_COST_ERROR_CODES`
+(`packages/shared/src/payroll-cost-types.ts`).
+
+### 18.9 CLI `payroll:import-cost`
+
+`apps/api/src/scripts/import-payroll-cost.ts` (estilo `migrate-faranda-celuisma.ts`;
+salida 0 ok · 1 fallo · 2 uso); script npm `payroll:import-cost` en `apps/api/package.json`:
+
+```bash
+corepack pnpm --filter @hotelos/api payroll:import-cost -- --file <ruta.json|ruta.csv> --organization <orgId>            # dry-run (por defecto)
+corepack pnpm --filter @hotelos/api payroll:import-cost -- --file <ruta> --organization <orgId> --apply --confirm <orgId> [--replace] [--json]
+# equivalente: cd apps/api && node --env-file-if-exists=../../.env --import tsx src/scripts/import-payroll-cost.ts --file … --organization …
+```
+
+- Lectura del fichero: `Buffer` → UTF-8 estricto y, si falla, latin1; quita el BOM;
+  formato por extensión o por el primer carácter `{` / `[`.
+- Contexto de sistema: `userId usr_system_payroll_cost_import`, `deviceId
+  cli:import-payroll-cost`, permisos `payroll.manage`, `payroll.read`,
+  `accounting.journal.post`, `accounting.read`, `accounting.entity.read`, sin
+  `assignedPropertyIds` (toda la sociedad); `createdBy "cli:import-payroll-cost"`,
+  `correlationId "corr_payroll_cost_import"`; `source informe_rrhh` cuando el JSON trae
+  `fuente`.
+- **Dry-run (por defecto)**: cabecera (organización, sociedad vía `resolveLedgerScope`,
+  fichero, hash, periodo), tabla centro × mes (código, mes, líneas, bruto, SS, total,
+  empleados, empleados del informe), totales por grupo, avisos (discrepancias de
+  `coste_total` con número de línea), etiquetas sin mapear, `duplicateOf` / `overlaps` /
+  `payrollPeriodsPosted`, `canPost` y «Nada escrito»; salida 1 si hay errores, centros
+  sin mapear o duplicado / solape sin `--replace`.
+- **`--apply --confirm <orgId>`** (el `--confirm` debe repetir exactamente el
+  `--organization`): `hydrateAuditChainFromPostgres`, `createPayrollCostImport`, flush
+  de auditoría y de las proyecciones antes de `$disconnect`; imprime `importId`, número
+  de asientos, primer y último número y ejercicio, totales 640/642/465/476,
+  `reportedTotalCost` y diferencia, `replacedImportIds`; `--json` vuelca el resultado.
+  Como el resto de CLI contables: backup previo y API parados (cadena de auditoría en
+  memoria, deuda 12(c)).
+- **`--replace`** reversa ENTEROS los lotes que dupliquen o solapen (§18.5): nunca sobre
+  un lote real cargado salvo para sustituir el rango completo.
+
+### 18.10 Carga de Faranda (L6): dataset, discrepancia verificada, invariantes y SQL de comprobación
+
+Dataset agregado (fuera del repo, sin datos personales): 363 líneas · 6 centros del ERP
+(AS, LT, MC, OC, PG, RA; las etiquetas OFICINA ASTURIAS, OFICINA MADRID y REG. CORUÑA
+van a OC conservando la etiqueta original) · 48 celdas centro × mes (2026-01 → 2026-08)
+· 40 referencias · 5 grupos. Verificado sobre el fichero el 2026-09-16:
+
+| Magnitud | Importe |
+| --- | ---: |
+| Σ `salarioBruto` (→ 640) | 1.891.222,19 |
+| Σ `costeSs` (→ 642) | 551.336,97 |
+| **Total contabilizado** (640 + 642 = 465 + 476) | **2.442.559,16** |
+| Σ `costeTotal` del informe (→ `reportedTotalCost`) | 2.442.027,24 |
+| Diferencia | −531,92 |
+| Por grupo (Σ `costeTotal`): operaciones · extras · estructura · mantenimiento_obra · familia | 1.450.402,34 · 35.608,45 · 384.693,04 · 142.931,02 · 428.392,39 |
+
+**Discrepancia verificada — pregunta abierta para César.** Una sola fila descuadra:
+`RA · 2026-04 · extras · «4 CAF/REST»` trae `coste_total` 1.047,75 frente a bruto + SS
+1.579,67 (−531,92); el resto de las 362 filas cumple `coste_total = bruto + SS` al
+céntimo. La regla de §18.4 contabiliza bruto + SS (1.579,67) y guarda 1.047,75 en
+`reportedTotalCost`; por eso el diario de Faranda sumará **2.442.559,16** (640
+1.891.222,19 + 642 551.336,97) y no los 2.442.027,24 del brief, que es la Σ `coste_total`
+del informe y se conserva en `PayrollCostImport.reportedTotalCost`. El dry-run y la
+previsualización lo avisan con el número de línea. ¿Tiene razón el Excel (p. ej. una
+regularización de abril en esa celda) o la fila viene mal sumada? Si el Excel tiene razón, corregir el agregado y reimportar el rango completo con
+`replace`; si es un error del informe, nada que hacer.
+
+Procedimiento (integrador de L6; puertas completas en verde antes): dry-run → apply
+**una vez** (`--apply --confirm cmrhw9jy30002fyvb6tsdiugt`, nunca `--replace`) →
+comprobaciones SQL → segundo apply → 409 `PAYROLL_IMPORT_DUPLICATE` sin escrituras →
+`db:drift:check` y `db:migrate:status`. Estado a la escritura de esta sección (BD local):
+0 lotes, 0 líneas, 0 referencias, 0 `cost_centers` `usali`; Faranda con 61 asientos /
+150 líneas / Σ 2.595,00, `entry_number` máximo 61, 25 facturas, 33 envíos VeriFactu, 0
+`payroll_periods`, 0 `fiscal_periods`. Esperado tras el apply: 48 asientos nuevos
+numerados 62..109 en el ejercicio 2026 y 21 centros de coste `usali` (AS 4 · LT 3 · MC 4
+· OC 4 · PG 3 · RA 3).
+
+**Resultado (2026-09-16).** Apply único a las 19:20 CEST (17:20 UTC en `posted_at`) por el integrador
+de L6: lote `cmu4d93ri0000fyajr2krjs55` `posted` (`informe_rrhh`, hash `e4ed6a76d1c7d50c…`, 363 filas,
+40 referencias, `headcount_average` 128,75, `created_by cli:import-payroll-cost`, evento
+`aud_43788d08`); 48 asientos 2026/62 → 2026/109 (RA, LT, OC, PG, MC, AS por mes, último día del mes)
+con 640 D 1.891.222,19 · 642 D 551.336,97 · 465 H 1.891.222,19 · 476 H 551.336,97; 21 centros de coste
+`usali`. Re-verificación del integrador final a las 21:20 CEST: todas las consultas de abajo con el
+valor esperado (61 / 150 / 2.595,00 previos intactos; 0 líneas 640 / 642 sin centro ni centro de
+coste; 25 facturas · 33 envíos · 0 `payroll_periods`; Modelo 303 2026-Q3 27 = 71 = 74,94) y el
+**dry-run repetido devuelve duplicado + 48 solapes con `canPost: no` y 0 escrituras** (salida en
+`<raíz git>/pilots/faranda-celuisma/NOMINA-DRY-RUN-2026-09-16.md`). Ni segundo apply ni `--replace`.
+Informe: `docs/audits/TANDA-6C-COSTE-PERSONAL-2026-09-16.md` §4.
+
+```sql
+-- Sustituir <orgId> por cmrhw9jy30002fyvb6tsdiugt (Faranda). Todo solo lectura.
+-- 1. Lote: 1 fila posted · 2026-01 → 2026-08 · 363 filas · 1891222.19 · 551336.97 · 2442559.16 · 2442027.24 · 48 asientos
+SELECT id, status, source, period_from, period_to, row_count, total_gross, total_employer_ss, total_cost,
+       reported_total_cost, headcount_average, array_length(journal_entry_ids, 1) AS asientos,
+       array_length(reversal_journal_entry_ids, 1) AS reversos, posted_at
+FROM payroll_cost_imports WHERE organization_id = '<orgId>';
+SELECT count(*) FROM payroll_cost_lines WHERE organization_id = '<orgId>';        -- 363
+SELECT count(*) FROM payroll_cost_references WHERE organization_id = '<orgId>';   -- 40
+SELECT count(*) FROM payroll_cost_lines WHERE organization_id = '<orgId>' AND cost_center_id IS NULL;  -- 0
+
+-- 2. Asientos nuevos: 48, uno por (centro, mes), último día del mes, ejercicio 2026, numerados 62..109, 6 centros
+SELECT count(*) AS asientos, min(entry_number), max(entry_number), count(DISTINCT property_id) AS centros,
+       count(DISTINCT fiscal_year_code) AS ejercicios,
+       bool_and(entry_date = (date_trunc('month', entry_date) + interval '1 month - 1 day')::date) AS ultimo_dia,
+       count(DISTINCT source_id) = count(*) AS source_id_unicos
+FROM journal_entries
+WHERE organization_id = '<orgId>' AND source_type = 'payroll_cost_import' AND status = 'posted';
+
+-- 3. Cuadre: 640 D 1891222.19 · 642 D 551336.97 · 465 H 1891222.19 · 476 H 551336.97 (Σ debe = Σ haber = 2442559.16)
+SELECT jl.account_code, sum(jl.debit) AS debe, sum(jl.credit) AS haber
+FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_entry_id
+WHERE je.organization_id = '<orgId>' AND je.source_type = 'payroll_cost_import' AND je.status = 'posted'
+GROUP BY jl.account_code ORDER BY jl.account_code;
+
+-- 4. Toda línea 640/642 lleva centro de coste usali (0 filas) y solo cuentas 640/642/465/476 (4 filas)
+SELECT count(*) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_entry_id
+WHERE je.source_type = 'payroll_cost_import' AND jl.account_code IN ('640', '642') AND jl.cost_center_id IS NULL;
+SELECT DISTINCT jl.account_code FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_entry_id
+WHERE je.organization_id = '<orgId>' AND je.source_type = 'payroll_cost_import' ORDER BY 1;
+
+-- 5. Centros de coste usali: 21 (AS 4 · LT 3 · MC 4 · OC 4 · PG 3 · RA 3), códigos = departamento USALI en mayúsculas
+SELECT p.code AS centro, count(*) AS centros_de_coste, string_agg(cc.code, ',' ORDER BY cc.code) AS codigos
+FROM cost_centers cc JOIN properties p ON p.id = cc.property_id
+WHERE cc.type = 'usali' AND p.organization_id = '<orgId>' GROUP BY p.code ORDER BY p.code;
+
+-- 6. Invariantes: los 61 asientos previos intactos (61 / 150 líneas / Σ 2595.00, ninguno reversado), 25 facturas,
+--    33 envíos VeriFactu, 0 payroll_periods, 0 líneas nuevas en cuentas 47x de IVA (472/477)
+SELECT count(*) FROM journal_entries WHERE organization_id = '<orgId>' AND source_type <> 'payroll_cost_import';   -- 61
+SELECT count(*), sum(jl.debit) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_entry_id
+WHERE je.organization_id = '<orgId>' AND je.source_type <> 'payroll_cost_import';                                    -- 150 | 2595.00
+SELECT count(*) FROM journal_entries WHERE organization_id = '<orgId>' AND entry_number <= 61 AND reversed_by_id IS NOT NULL; -- 0
+SELECT count(*) FROM invoices i JOIN properties p ON p.id = i.property_id WHERE p.organization_id = '<orgId>';      -- 25
+SELECT count(*) FROM verifactu_submissions s JOIN invoices i ON i.id = s.invoice_id
+JOIN properties p ON p.id = i.property_id WHERE p.organization_id = '<orgId>';                                        -- 33
+SELECT count(*) FROM payroll_periods WHERE organization_id = '<orgId>';                                              -- 0
+SELECT count(*) FROM journal_lines jl JOIN journal_entries je ON je.id = jl.journal_entry_id
+WHERE je.source_type = 'payroll_cost_import' AND (jl.account_code LIKE '472%' OR jl.account_code LIKE '477%');       -- 0
+```
+
+Por API tras el reinicio de :3000: `GET /fiscal/models/303?period=2026-Q3` (la forma
+`?year=&period=Q3` responde 400) con las
+MISMAS cifras del cierre de la Tanda 6 (27 = 71 = 74,94: la nómina no lleva IVA); `GET
+/accounting/usali/pnl?from=2026-01-01&to=2026-08-31` con la línea `labor` repartida
+entre Habitaciones, A&B, POM, Ventas y marketing y A&G (antes todo en A&G) y GOP / EBITDA
+/ resultado idénticos a `GET /accounting/reports/pnl` del mismo rango; `GET
+/payroll/cost-report?from=2026-01&to=2026-08` → `totals.totalCost "2442559.16"`. Informe
+de cierre de la tanda: `docs/audits/TANDA-6C-COSTE-PERSONAL-2026-09-16.md`.
+
+### 18.11 Front (Nóminas › Coste de personal)
+
+`PayrollScreen.tsx` añade la pestaña «Coste de personal» (`view "cost"`, Cocoa 22, sin
+`.bo-*` ni estilos inline): KPIs (coste total del rango, coste por empleado, personal
+sobre ventas con la fuente de las ventas, empleados medios), selectores «Desde» /
+«Hasta» (meses) y «Grupo» (Todos + 5 grupos), centro desde el `FinanceScopeSelector`
+(sin centro = toda la sociedad), matriz centros × meses con filas Empleados / Coste /
+Coste por empleado / % s/ ventas y desglose por departamento USALI al expandir un centro,
+dos gráficos de barras (coste por mes; ventas netas por mes, libro o referencia), lista
+de importaciones (estado Borrador / Contabilizado / Revertido, asientos) con acciones
+«Contabilizar» (borrador) y «Revertir» (diálogo destructivo con motivo obligatorio) solo
+con `payroll.manage`. Drawer «Importar informe» (`PayrollCostImportDrawer.tsx`): fichero
+CSV/JSON (`CocoaFileInput`, ≤ 1 MB) o texto pegado → previsualización con mapeo de los
+centros no reconocidos a centros del ERP y de los departamentos a USALI → avisos de
+duplicado / solapes (lista de lotes que se revertirían ENTEROS con su rango) / nóminas
+reales contabilizadas + interruptor «Sustituir los lotes anteriores» → «Contabilizar» →
+resultado con los asientos («2026/62 · RA · ene 2026 · …»). Corrector 6c: la primera
+sugerencia de centro se aplica y la previsualización se repite con ella (el select queda
+listado para confirmar o cambiar: FU-01); el cajón se reinicia en cada apertura (FU-04);
+sin `payroll.manage` explica que tampoco puede previsualizar (FU-10); el diálogo
+«Revertir» ofrece «Fecha de la anulación» como el diario, con la nota de reabrir el mes
+cerrado (FU-06); «Contabilizar» un borrador ofrece «Sustituir los lotes anteriores»
+(FU-12); en móvil cada tarjeta lleva su centro y solo el último mes + Total (FU-05);
+insignia «Cargando» al cambiar rango o grupo (FU-07); el KPI «Coste por empleado» se
+rotula «acumulado del rango por empleado medio» (FU-03) y «Empleados medios» dice «sin
+dato de empleados» cuando no hay ninguno (FU-11). `UsaliScreen.tsx` muestra el
+badge «Centro de coste» en el detalle de cuentas cuando `account.source === "cost_center"`;
+`accounting-ui.ts` etiqueta `payroll_cost_import` como «Coste de personal importado» en
+el diario. Clientes tipados en `services/payrollApi.ts`; mensajes por código en
+`services/finance-contracts.ts`.
+
+### 18.12 Límites y decisiones abiertas para César
+
+- **Headcount por celda sobrecuenta.** Σ `empleados` de las celdas cuenta dos veces a
+  quien figura en dos grupos (en el dataset de Faranda, en un centro y mes la suma de
+  celdas da 25 frente a 16 en el resumen del informe). Por eso el coste por empleado y
+  el headcount USALI priman `employeesReported` de la referencia (`headcountSource`
+  explícito); con filtro de grupo el informe usa la Σ del grupo.
+- **OFICINA MADRID y REG. CORUÑA** no existen como centros del ERP y van a OC con la
+  etiqueta original en `workCenterLabel`. Si César quiere centros propios: alta de dos
+  `Property kind = office` (o `other`) con `code` (p. ej. `OM`, `RC`) desde Estructura
+  societaria y reimportación del rango completo con `replace`.
+- **Grupo `familia`** (PROPIEDAD, administradores; 428.392,39 € en ocho meses) va a
+  640/642 en `admin_general` como el resto. Si son retribuciones de administradores el
+  PGC también las presenta en 640 (con nota en la memoria); separarlas es un mapeo
+  `groups` a otro departamento admitido o una cuenta distinta en una tanda posterior.
+- **Subcuentas 640.x / 642.x** descartadas (diseño §1.1): el departamento vive en
+  `CostCenter`. Si la gestoría exige subcuentas en sumas y saldos, se añade un mapeo
+  cuenta ← (640, centro de coste) en la exportación a gestoría sin tocar los asientos.
+- **Pago y retenciones** fuera de estos asientos (§18.4): el 111 y el líquido exigen
+  importar además IRPF retenido y SS del trabajador por celda.
+- **Ventas del libro** (grupo 70 por centro y mes) solo existen en Faranda desde julio
+  2026 (10,33 €): la regla de cobertura del libro (§18.7) deja la referencia del informe
+  como fuente principal en todo el rango (`salesSource: "reference"`, 56,34 %). Cargar la
+  facturación histórica o aceptar la referencia como cifra de gestión.
+- **Un lote por ejercicio como máximo** (transacción larga bajo dos advisory locks,
+  `timeout` 180 s) y topes por lote (≤ 24 meses · ≤ 240 celdas · ≤ 5.000 filas, §18.3);
+  informes mayores de 1.000.000 caracteres o en latin1 → CLI.
+- **Personal de la oficina central en departamentos operativos** (OFICINA ASTURIAS ·
+  RECEPCION → `rooms`, 34.236,25 €): el lote cargado lo conserva tal como lo mapeó el
+  informe; el parser avisa (§18.3) y corregirlo es un `mapping.departments` o la columna
+  `usali` + reimportación con `replace`. Decisión de César.
+- **`coste_total` del informe frente a bruto + SS**: el lote de Faranda contabiliza
+  2.442.559,16 € (Σ 640 + 642) frente a los 2.442.027,24 € declarados (+531,92 €): una
+  línea del grupo `extras` con `costeTotal ≠ salarioBruto + costeSs` (35.608,45 frente a
+  36.140,37). El asiento sigue la regla §1.7 (bruto + SS, lo que el PGC devenga en 640 y
+  642); el lote guarda `reportedTotalCost` y la discrepancia queda avisada. Si RRHH
+  confirma que el `costeTotal` es el bueno, corregir el fichero y reimportar con
+  `replace`.
+- **La carga real añade 48 asientos de 2026 a Faranda**: cualquier pin futuro sobre
+  cifras USALI / PyG de Faranda 2026 cambia; documentado en el informe de cierre de L6.
+- **Nómina real y coste importado en el mismo centro y mes** no se bloquean (solo
+  aviso `payrollPeriodsPosted`): cuando Faranda calcule nóminas en el ERP, revertir el
+  lote importado de esos meses antes de contabilizar la nómina real.
+- **Importación directa de `.xlsx`**: no construida a propósito. El Excel de RRHH es por
+  persona y no debe entrar en el ERP (§18.1); el ERP acepta el agregado en CSV `;` o JSON
+  (drawer o CLI). Camino recomendado: RRHH exporta su tabla dinámica agregada (centro × mes ×
+  grupo × departamento) como CSV UTF-8 y la sube en Nóminas › Coste de personal. Un lector
+  `.xlsx` en el API exigiría una librería (hoy ninguna en `node_modules`, regla de §9) y
+  garantizar que solo se persisten agregados: solo si el CSV falla en la práctica. Decisión
+  de César (informe de cierre §6).

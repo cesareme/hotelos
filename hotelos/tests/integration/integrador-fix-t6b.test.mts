@@ -58,7 +58,7 @@ const PROP_NEW_OFFICE = `prop_t6bfix_office_${RUN}`;
 const PROP_LEGACY = `prop_t6bfix_legacy_${RUN}`;
 const PROP_HN = `prop_t6bfix_hn_${RUN}`;
 const PROP_HS = `prop_t6bfix_hs_${RUN}`;
-/** Checksum-valid CIFs that no demo tenant uses (org_123 holds B12345674, Faranda B99999997, L2 / backfill tests A58818501). */
+/** Checksum-valid CIFs that no demo tenant uses (org_123 holds B12345674, Faranda A33615980 since the CELUISMA migration, L2 / backfill tests A58818501). */
 const NIF_NEW = "B76543214";
 const NIF_LEGACY = "B45678901";
 const NIF_STRUCT = "A12345674";

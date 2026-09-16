@@ -150,8 +150,28 @@ const SURFACE: Surface[] = [
   },
   {
     file: "payrollApi.ts",
-    routes: ["/payroll/contracts", "/deactivate", "/payroll/periods", "/calculate", "/slips", "/export", "/pay"],
-    functions: ["listPayrollContracts", "createPayrollContract", "deactivatePayrollContract", "listPayrollPeriods", "createPayrollPeriod", "calculatePayrollPeriod", "getPayrollPeriod", "listPayrollSlips", "previewPayrollExport", "exportPayrollPeriod", "payPayrollPeriod"],
+    // Tanda 6c: the seven routes of the imported labour cost (preview · create · list · detail · post · reverse · report).
+    routes: ["/payroll/contracts", "/deactivate", "/payroll/periods", "/calculate", "/slips", "/export", "/pay", "/payroll/cost-imports/preview", "/payroll/cost-imports", "/post", "/reverse", "/payroll/cost-report"],
+    functions: [
+      "listPayrollContracts",
+      "createPayrollContract",
+      "deactivatePayrollContract",
+      "listPayrollPeriods",
+      "createPayrollPeriod",
+      "calculatePayrollPeriod",
+      "getPayrollPeriod",
+      "listPayrollSlips",
+      "previewPayrollExport",
+      "exportPayrollPeriod",
+      "payPayrollPeriod",
+      "previewPayrollCostImport",
+      "createPayrollCostImport",
+      "listPayrollCostImports",
+      "getPayrollCostImport",
+      "postPayrollCostImport",
+      "reversePayrollCostImport",
+      "getPayrollCostReport"
+    ],
     errorHelper: "payrollErrorMessage"
   },
   {
@@ -182,6 +202,30 @@ describe("servicios de finanzas · superficie tipada (Tanda 6)", () => {
     assert.doesNotMatch(source, /from "\.\/api-client"|from "react"|import\.meta/);
     assert.match(source, /^import type \{[^}]+\} from "@hotelos\/shared";/m);
     assert.equal((source.match(/^import /gm) ?? []).length, 1, "finance-contracts.ts has one (type-only) import");
+  });
+
+  it("payrollApi builds the cost-report and cost-imports queries with finance-contracts (strict query schemas) and re-exports the Tanda 6c contracts", () => {
+    const source = code(read("payrollApi.ts"));
+    assert.match(source, /payrollCostReportQuery\(query\)/);
+    assert.match(source, /payrollCostImportListQuery\(/);
+    for (const name of ["PayrollCostImportPreview", "PayrollCostImportCreateResult", "PayrollCostImportDetail", "PayrollCostImportRecord", "PayrollCostReport", "PayrollCostReportQuery"]) {
+      assert.match(source, new RegExp(`export type \\{[\\s\\S]*?\\b${name}\\b[\\s\\S]*?\\} from "@hotelos/shared"`), `payrollApi.ts re-exports ${name}`);
+    }
+    const contracts = code(read("finance-contracts.ts"));
+    assert.match(contracts, /export function payrollCostReportQuery\(/);
+    assert.match(contracts, /export function payrollCostImportListQuery\(/);
+  });
+
+  it("finance-contracts carries a Spanish sentence for every PAYROLL_COST_ERROR_CODES entry of the shared contract", async () => {
+    const shared = readFileSync(new URL("../../../../../packages/shared/src/payroll-cost-types.ts", import.meta.url), "utf8");
+    const block = shared.match(/PAYROLL_COST_ERROR_CODES\s*=\s*\[([\s\S]*?)\]\s*as const/);
+    assert.ok(block, "PAYROLL_COST_ERROR_CODES not found");
+    const codes = [...block[1].matchAll(/"([A-Z0-9_]+)"/g)].map((m) => m[1]);
+    assert.ok(codes.length >= 19, `expected the shared contract to declare at least 19 codes, parsed ${codes.length}`);
+    const { FINANCE_ERROR_MESSAGES } = await import("../finance-contracts.ts");
+    const missing = codes.filter((code) => !FINANCE_ERROR_MESSAGES[code]);
+    assert.deepEqual(missing, [], `codes without a Spanish message: ${missing.join(", ")}`);
+    for (const code of codes) assert.match(FINANCE_ERROR_MESSAGES[code], /[.]$/, `${code}: full sentence`);
   });
 
   it("pmsCommerceApi sends the Tanda 6 payment fields and downloads the invoice PDF as a Blob", () => {

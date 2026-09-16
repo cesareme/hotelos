@@ -53,7 +53,18 @@ export type LedgerQuery = {
   to: string;
   /** Restrict to PGC groups (first digit). */
   groups?: number[];
+  /**
+   * Tanda 6c: also partition every account by the cost centre of its lines
+   * (`cost_centers.type` / `code` — never by id: the consolidated statement
+   * merges RA/ROOMS and LT/ROOMS). Only the USALI reader asks for it; every
+   * other statement indexes its rows by account code and keeps the plain
+   * query, whose SQL does not change.
+   */
+  byCostCentre?: boolean;
 };
+
+/** Cost centre of a partitioned balance row (Tanda 6c): `type` (`usali` · `operating` · `cost`) and `code` (ROOMS, FNB…). */
+export type CostCentreRef = { type: string; code: string };
 
 export type AccountBalanceRow = {
   code: string;
@@ -64,7 +75,20 @@ export type AccountBalanceRow = {
   usaliLine: string | null;
   debit: Dec;
   credit: Dec;
+  /**
+   * Tanda 6c: present only in `byCostCentre` queries — the cost centre of the
+   * lines summed in this row, null for the lines booked without one. The rows
+   * of one account add up exactly to its plain balance.
+   */
+  costCentre?: CostCentreRef | null;
 };
+
+/** Sort order of the balance rows: account code, then the row without cost centre first, then cost-centre code (the SQL `ORDER BY a.code, cost_centre_code NULLS FIRST`). */
+export function compareAccountBalanceRows(a: Pick<AccountBalanceRow, "code" | "costCentre">, b: Pick<AccountBalanceRow, "code" | "costCentre">): number {
+  if (a.code !== b.code) return a.code.localeCompare(b.code);
+  if (!a.costCentre || !b.costCentre) return Number(Boolean(a.costCentre)) - Number(Boolean(b.costCentre));
+  return a.costCentre.code.localeCompare(b.costCentre.code) || a.costCentre.type.localeCompare(b.costCentre.type);
+}
 
 export type ChartAccountLite = {
   id: string;
@@ -115,8 +139,16 @@ export type OccupancyFacts = {
   roomsOccupied: number;
 };
 
-/** Distinct staff with a payslip in the window, per work centre (`propertyId` null = payroll periods without centre). */
-export type HeadcountByProperty = Array<{ propertyId: string | null; headcount: number }>;
+/** Where a headcount comes from: distinct staff with a payslip, or the monthly average of the posted payroll-cost imports (Tanda 6c). */
+export type HeadcountSource = "payroll_slips" | "payroll_cost_import";
+
+/**
+ * Headcount per work centre (`propertyId` null = payroll periods without
+ * centre): distinct staff with a payslip in the window or, when no payslip
+ * exists, the average monthly headcount of the posted payroll-cost imports
+ * (`source` says which; absent = payslips, the pre-6c rows).
+ */
+export type HeadcountByProperty = Array<{ propertyId: string | null; headcount: number; source?: HeadcountSource }>;
 
 export type FixedAssetLite = {
   id: string;
@@ -279,6 +311,77 @@ export function entityLabelOf(entity: Pick<FinanceEntityBadge, "legalName" | "ta
 }
 
 // ---------------------------------------------------------------------------
+// Headcount (Tanda 6c): payslips first, imported payroll cost as fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * Average of the monthly headcounts that HAVE a figure: 10 and 12 → 11. Two
+ * decimals, half-up; null when no month has data (never 0: the memoria and
+ * the allocation warning distinguish «sin datos» from «cero empleados»).
+ */
+export function averageMonthlyHeadcount(monthly: readonly Prisma.Decimal.Value[]): number | null {
+  if (monthly.length === 0) return null;
+  let total = new Prisma.Decimal(0);
+  for (const value of monthly) total = total.plus(value);
+  return total.div(monthly.length).toDecimalPlaces(2, Prisma.Decimal.ROUND_HALF_UP).toNumber();
+}
+
+const MONTH_CODE = /^\d{4}-\d{2}$/;
+
+/** Payroll periods of the organisation whose "YYYY-MM" code falls in [fromMonth, toMonth] (anything else is skipped). */
+async function payrollPeriodsIn(organizationId: string, fromMonth: string, toMonth: string): Promise<Array<{ id: string; periodCode: string; propertyId: string | null }>> {
+  const periods = await prisma.payrollPeriod.findMany({ where: { organizationId }, select: { id: true, periodCode: true, propertyId: true } });
+  return periods.filter((p) => MONTH_CODE.test(p.periodCode) && p.periodCode >= fromMonth && p.periodCode <= toMonth);
+}
+
+/**
+ * Fallback of `headcount` / `headcountByProperty` when no payslip exists:
+ * the posted payroll-cost imports (`payroll_cost_import`, Tanda 6c). For
+ * every (centre, month) the `employeesReported` of the report's reference
+ * wins — Σ headcount of the cells over-counts a person that appears in two
+ * groups —, else Σ `PayrollCostLine.headcount` of the cells; then the
+ * average of the months WITH data per centre (`averageMonthlyHeadcount`).
+ * Empty when nothing posted covers the window (never 0). Drafts and
+ * reversed imports never count.
+ */
+async function importedHeadcountByProperty(organizationId: string, fromMonth: string, toMonth: string): Promise<HeadcountByProperty> {
+  const imports = await prisma.payrollCostImport.findMany({ where: { organizationId, status: "posted" }, select: { id: true }, orderBy: [{ postedAt: "asc" }, { id: "asc" }] });
+  if (imports.length === 0) return [];
+  const importIds = imports.map((row) => row.id);
+  const periodCode = { gte: fromMonth, lte: toMonth };
+  const [cells, references] = await Promise.all([
+    prisma.payrollCostLine.groupBy({ by: ["propertyId", "periodCode"], where: { organizationId, importId: { in: importIds }, periodCode }, _sum: { headcount: true } }),
+    prisma.payrollCostReference.findMany({
+      where: { organizationId, importId: { in: importIds }, periodCode, employeesReported: { not: null } },
+      select: { importId: true, propertyId: true, periodCode: true, employeesReported: true }
+    })
+  ]);
+  const monthsByProperty = new Map<string, Map<string, Prisma.Decimal>>();
+  const monthsOf = (propertyId: string): Map<string, Prisma.Decimal> => {
+    let months = monthsByProperty.get(propertyId);
+    if (!months) {
+      months = new Map<string, Prisma.Decimal>();
+      monthsByProperty.set(propertyId, months);
+    }
+    return months;
+  };
+  for (const cell of cells) monthsOf(cell.propertyId).set(cell.periodCode, toDec(cell._sum.headcount));
+  // The reference of the last posted import wins (same rule as the cost report).
+  const rank = new Map(importIds.map((id, index) => [id, index]));
+  references.sort((a, b) => (rank.get(a.importId) ?? 0) - (rank.get(b.importId) ?? 0));
+  for (const reference of references) {
+    if (reference.employeesReported === null) continue;
+    monthsOf(reference.propertyId).set(reference.periodCode, toDec(reference.employeesReported));
+  }
+  const rows: HeadcountByProperty = [];
+  for (const [propertyId, months] of monthsByProperty) {
+    const average = averageMonthlyHeadcount(Array.from(months.values()));
+    if (average !== null) rows.push({ propertyId, headcount: average, source: "payroll_cost_import" });
+  }
+  return rows.sort((a, b) => (a.propertyId ?? "").localeCompare(b.propertyId ?? ""));
+}
+
+// ---------------------------------------------------------------------------
 // Prisma implementation
 // ---------------------------------------------------------------------------
 
@@ -292,6 +395,9 @@ type RawBalanceRow = {
   usali_line: string | null;
   debit: Prisma.Decimal | string | number | null;
   credit: Prisma.Decimal | string | number | null;
+  /** Only in the `byCostCentre` query (LEFT JOIN cost_centers): both null for the lines without cost centre. */
+  cost_centre_type?: string | null;
+  cost_centre_code?: string | null;
 };
 
 /**
@@ -333,6 +439,31 @@ function ledgerWhere(query: LedgerQuery): Prisma.Sql {
 
 export const prismaFinancialStatementsSource: FinancialStatementsSource = {
   async accountBalances(query) {
+    if (query.byCostCentre) {
+      // Tanda 6c: one row per (account, cost centre type, cost centre code); the rows of an account add up to its plain balance.
+      const rows = await prisma.$queryRaw<RawBalanceRow[]>(Prisma.sql`
+        SELECT a.code, a.name, a.kind::text AS kind, a.account_type, a.is_postable, a.usali_department, a.usali_line,
+               cc.type AS cost_centre_type, cc.code AS cost_centre_code,
+               COALESCE(SUM(jl.debit), 0) AS debit, COALESCE(SUM(jl.credit), 0) AS credit
+        FROM journal_lines jl
+        JOIN journal_entries je ON je.id = jl.journal_entry_id
+        JOIN accounts a ON a.id = jl.account_id
+        LEFT JOIN cost_centers cc ON cc.id = jl.cost_center_id
+        WHERE ${ledgerWhere(query)}
+        GROUP BY a.code, a.name, a.kind, a.account_type, a.is_postable, a.usali_department, a.usali_line, cc.type, cc.code
+        ORDER BY a.code, cost_centre_code NULLS FIRST`);
+      return rows.map((row) => ({
+        code: row.code,
+        name: row.name,
+        kind: (row.kind as AccountKind) ?? kindFromLegacyType(row.account_type),
+        isPostable: row.is_postable,
+        usaliDepartment: row.usali_department,
+        usaliLine: row.usali_line,
+        debit: toDec(row.debit),
+        credit: toDec(row.credit),
+        costCentre: row.cost_centre_type && row.cost_centre_code ? { type: row.cost_centre_type, code: row.cost_centre_code } : null
+      }));
+    }
     const rows = await prisma.$queryRaw<RawBalanceRow[]>(Prisma.sql`
       SELECT a.code, a.name, a.kind::text AS kind, a.account_type, a.is_postable, a.usali_department, a.usali_line,
              COALESCE(SUM(jl.debit), 0) AS debit, COALESCE(SUM(jl.credit), 0) AS credit
@@ -456,32 +587,40 @@ export const prismaFinancialStatementsSource: FinancialStatementsSource = {
 
   async headcount(organizationId, from, to) {
     // PayrollPeriod.periodCode is "YYYY-MM" for the monthly runs; anything else is skipped (null = unknown, never 0).
-    const periods = await prisma.payrollPeriod.findMany({ where: { organizationId }, select: { id: true, periodCode: true } });
     const fromMonth = from.slice(0, 7);
     const toMonth = to.slice(0, 7);
-    const ids = periods.filter((p) => /^\d{4}-\d{2}$/.test(p.periodCode) && p.periodCode >= fromMonth && p.periodCode <= toMonth).map((p) => p.id);
-    if (ids.length === 0) return null;
-    const slips = await prisma.payrollSlip.findMany({ where: { periodId: { in: ids } }, select: { staffProfileId: true }, distinct: ["staffProfileId"] });
-    return slips.length;
+    const ids = (await payrollPeriodsIn(organizationId, fromMonth, toMonth)).map((p) => p.id);
+    if (ids.length > 0) {
+      const slips = await prisma.payrollSlip.findMany({ where: { periodId: { in: ids } }, select: { staffProfileId: true }, distinct: ["staffProfileId"] });
+      if (slips.length > 0) return slips.length;
+    }
+    // Tanda 6c: no payslip → the posted payroll-cost imports (Σ of the per-centre monthly averages, whole people).
+    const imported = await importedHeadcountByProperty(organizationId, fromMonth, toMonth);
+    if (imported.length === 0) return null;
+    let total = new Prisma.Decimal(0);
+    for (const row of imported) total = total.plus(row.headcount);
+    const rounded = total.toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
+    return rounded > 0 ? rounded : null;
   },
 
   async headcountByProperty(organizationId, from, to) {
     const fromMonth = from.slice(0, 7);
     const toMonth = to.slice(0, 7);
-    const periods = (await prisma.payrollPeriod.findMany({ where: { organizationId }, select: { id: true, periodCode: true, propertyId: true } })).filter(
-      (p) => /^\d{4}-\d{2}$/.test(p.periodCode) && p.periodCode >= fromMonth && p.periodCode <= toMonth
-    );
-    if (periods.length === 0) return [];
-    const slips = await prisma.payrollSlip.findMany({ where: { periodId: { in: periods.map((p) => p.id) } }, select: { periodId: true, staffProfileId: true } });
-    const propertyOfPeriod = new Map(periods.map((p) => [p.id, p.propertyId]));
-    const staffByProperty = new Map<string | null, Set<string>>();
-    for (const slip of slips) {
-      const propertyId = propertyOfPeriod.get(slip.periodId) ?? null;
-      const set = staffByProperty.get(propertyId) ?? new Set<string>();
-      set.add(slip.staffProfileId);
-      staffByProperty.set(propertyId, set);
+    const periods = await payrollPeriodsIn(organizationId, fromMonth, toMonth);
+    if (periods.length > 0) {
+      const slips = await prisma.payrollSlip.findMany({ where: { periodId: { in: periods.map((p) => p.id) } }, select: { periodId: true, staffProfileId: true } });
+      const propertyOfPeriod = new Map(periods.map((p) => [p.id, p.propertyId]));
+      const staffByProperty = new Map<string | null, Set<string>>();
+      for (const slip of slips) {
+        const propertyId = propertyOfPeriod.get(slip.periodId) ?? null;
+        const set = staffByProperty.get(propertyId) ?? new Set<string>();
+        set.add(slip.staffProfileId);
+        staffByProperty.set(propertyId, set);
+      }
+      if (staffByProperty.size > 0) return Array.from(staffByProperty.entries()).map(([propertyId, staff]) => ({ propertyId, headcount: staff.size, source: "payroll_slips" as const }));
     }
-    return Array.from(staffByProperty.entries()).map(([propertyId, staff]) => ({ propertyId, headcount: staff.size }));
+    // Tanda 6c: no payslip → the posted payroll-cost imports (average of the months with data per centre).
+    return importedHeadcountByProperty(organizationId, fromMonth, toMonth);
   },
 
   async accountingConfiguration(organizationId) {

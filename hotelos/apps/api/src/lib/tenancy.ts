@@ -649,6 +649,12 @@ const RESOLVERS = {
   payrollPeriod: byOrganization("Periodo de nómina no encontrado.", (id) =>
     prisma.payrollPeriod.findUnique({ where: { id }, select: selectOrganization })
   ),
+  // Coste de personal importado (Tanda 6c · L3): lote agregado por organización
+  // (GET /payroll/cost-imports/:id, POST …/:id/post, POST …/:id/reverse); el
+  // ámbito por centro (R11) lo aplica el servicio con assertFinanceReadScopeMany.
+  payrollCostImport: byOrganization("Importación de coste de personal no encontrada.", (id) =>
+    prisma.payrollCostImport.findUnique({ where: { id }, select: selectOrganization })
+  ),
   developerApp: byOrganization("Aplicación no encontrada.", (id) =>
     prisma.developerApp.findUnique({ where: { id }, select: selectOrganization })
   ),

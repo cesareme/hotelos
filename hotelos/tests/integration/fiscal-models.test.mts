@@ -580,7 +580,8 @@ describe("fiscal · libros de IVA, modelos AEAT y liquidación (org de test)", (
     const report = await buildModelo303({ context: farandaCtx, period: "2026-Q3" });
     assert.equal(report.modelo, "303");
     assert.equal(report.periodo.code, "2026-Q3");
-    assert.equal(report.declarante.nif, "B99999997");
+    // Tras la migración Faranda → CELUISMA (runbook §17.13) la sociedad declarante es CEL · A33615980 (NIF real solo en la demo local).
+    assert.equal(report.declarante.nif, "A33615980");
     assert.ok(report.casillas.some((box) => box.casilla === "71"));
     assert.equal(report.fuentes.origen, "documentos");
     const annual = await buildModelo390({ context: farandaCtx, year: 2026 });

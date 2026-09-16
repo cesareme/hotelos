@@ -29,6 +29,8 @@ export const JOURNAL_SOURCE_TYPES = [
   "expense",
   "payroll_slip",
   "payroll_payment",
+  /** Tanda 6c: devengo del coste de personal importado (agregado), un asiento por (centro, mes); sourceId `<importId>:<propertyId>:<periodCode>`. */
+  "payroll_cost_import",
   "commission",
   "commission_settlement",
   "depreciation",

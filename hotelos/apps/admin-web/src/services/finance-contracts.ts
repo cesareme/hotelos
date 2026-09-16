@@ -18,7 +18,7 @@
 // No network, no React, no import.meta: services/__tests__/finance-contracts.test.mts
 // runs this module under `node --test` (api-client.ts cannot load there).
 
-import type { FiscalModelCode, JournalListQuery, PaymentLinkResponse, CapturedPaymentResponse } from "@hotelos/shared";
+import type { FiscalModelCode, JournalListQuery, PaymentLinkResponse, CapturedPaymentResponse, PayrollCostImportListQuery, PayrollCostReportQuery } from "@hotelos/shared";
 
 /** Query string shape accepted by apiRequest / apiRequestBlob. */
 export type FinanceQuery = Record<string, string | number | undefined>;
@@ -176,7 +176,20 @@ export const FINANCE_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.f
   LEGAL_ENTITY_REQUIRED: "La organización tiene varias sociedades: elige la sociedad activa antes de continuar.",
   LEGAL_ENTITY_NOT_FOUND: "La sociedad no existe en tu organización.",
   ISSUER_TAX_ID_MISSING: "La sociedad no tiene NIF válido: complétalo en Configuración › Estructura societaria › Datos fiscales antes de emitir.",
-  INSTALLATION_NOT_DECLARED: "El centro no tiene una instalación VeriFactu declarada: el envío queda en espera hasta que exista."
+  INSTALLATION_NOT_DECLARED: "El centro no tiene una instalación VeriFactu declarada: el envío queda en espera hasta que exista.",
+  // --- coste de personal importado (Tanda 6c: PAYROLL_COST_ERROR_CODES de payroll-cost-types.ts; diseño §5.1) ---
+  PAYROLL_IMPORT_INVALID: "El fichero tiene filas que no se pueden leer: revisa la cabecera, los meses (AAAA-MM) y los importes, que no admiten valores negativos.",
+  PAYROLL_IMPORT_EMPTY: "El fichero no tiene líneas de coste con importe: no hay nada que contabilizar.",
+  PAYROLL_IMPORT_GROUP_INVALID: "Hay grupos de coste que el ERP no reconoce: usa operaciones, extras, estructura, mantenimiento_obra o familia, o indica su equivalencia en el fichero.",
+  PAYROLL_IMPORT_ORGANIZATION_MISMATCH: "El fichero pertenece a otra organización: comprueba que el informe sea el de esta sociedad.",
+  PAYROLL_IMPORT_CENTRE_UNMAPPED: "Hay centros del informe sin equivalencia en el ERP: asigna cada etiqueta a un centro de trabajo antes de contabilizar.",
+  PAYROLL_IMPORT_DEPARTMENT_UNMAPPED: "Hay departamentos del informe sin equivalencia USALI: asigna cada etiqueta a un departamento antes de contabilizar.",
+  PAYROLL_IMPORT_NOT_FOUND: "La importación de coste de personal no existe o no pertenece a tu organización.",
+  PAYROLL_IMPORT_DUPLICATE: "Ese informe ya está importado con el mismo contenido: revierte el lote anterior o marca «Sustituir los lotes anteriores» para reemplazarlo.",
+  PAYROLL_IMPORT_OVERLAP: "Algún centro y mes del informe ya está contabilizado por otro lote: marca «Sustituir los lotes anteriores» para revertirlos enteros y volver a importar el rango completo.",
+  PAYROLL_IMPORT_ALREADY_POSTED: "La importación ya está contabilizada: no se contabiliza dos veces.",
+  PAYROLL_IMPORT_REVERSED: "La importación está revertida: vuelve a importar el informe para contabilizarlo de nuevo.",
+  PAYROLL_IMPORT_ENTRY_EXISTS: "Ya existe un asiento con el mismo origen para ese centro y mes: no se ha contabilizado nada."
 });
 
 export const FINANCE_ERROR_FALLBACK = "No se pudo completar la operación. Inténtalo de nuevo.";
@@ -500,6 +513,18 @@ export function treasuryScopeQuery(scope: TreasuryScope = {}): FinanceQuery {
   // The sociedad scope never sends a propertyId (the route would read the centre first).
   if (scope.scope === "entity") return compactQuery({ scope: "entity", asOf: scope.asOf });
   return compactQuery({ propertyId: scope.propertyId, asOf: scope.asOf });
+}
+
+// ---- nóminas · coste de personal importado (Tanda 6c) ------------------------
+
+/** GET /payroll/cost-report — `from` / `to` are «AAAA-MM» (≤ 24 meses); sin `propertyId` = toda la sociedad; `group` filtra solo las líneas de coste. */
+export function payrollCostReportQuery(query: PayrollCostReportQuery): FinanceQuery {
+  return compactQuery({ from: query.from, to: query.to, propertyId: query.propertyId, group: query.group });
+}
+
+/** GET /payroll/cost-imports — `from` / `to` solapan con el periodo del lote; `limit` 1..200. */
+export function payrollCostImportListQuery(query: PayrollCostImportListQuery = {}): FinanceQuery {
+  return compactQuery({ organizationId: query.organizationId, status: query.status, from: query.from, to: query.to, limit: query.limit });
 }
 
 // ---- TPV y arqueo -----------------------------------------------------------

@@ -181,7 +181,7 @@ describe("L6 · Configuración › Estructura societaria: lo que lee la pantalla
         assert.equal(foreign.body.organizationId, "cmrhw9jy30002fyvb6tsdiugt", "the platform admin reads the other tenant's sociedad as that tenant");
       } else {
         assert.equal(foreign.status, 404, foreign.text.slice(0, 200));
-        assert.doesNotMatch(foreign.text, /Faranda|B99999997/, "no oracle of the other tenant");
+        assert.doesNotMatch(foreign.text, /Faranda|B99999997|CELUISMA|A33615980/, "no oracle of the other tenant");
       }
     }
     const before = await prisma.legalEntity.findUniqueOrThrow({ where: { id: entityId } });

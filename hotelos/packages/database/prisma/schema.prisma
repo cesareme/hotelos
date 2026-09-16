@@ -100,6 +100,13 @@ enum DepreciationRunStatus {
   reversed
 }
 
+/// Lote de coste de personal importado (Tanda 6c): draft → posted (asientos) → reversed (reverso completo).
+enum PayrollCostImportStatus {
+  draft
+  posted
+  reversed
+}
+
 enum CashClosureStatus {
   open
   closed
@@ -3616,8 +3623,8 @@ model Account {
 
 /// Asiento del libro diario. `sourceType` (String, contrato en docs/runbooks/finanzas-contabilidad.md): folio_line · payment ·
 /// payment_refund · invoice · invoice_rectification · invoice_cancellation · pos_ticket · supplier_bill · supplier_bill_payment ·
-/// expense · payroll_slip · payroll_payment · commission · depreciation · vat_settlement · cash_closure · card_settlement ·
-/// tourist_tax · manual · regularization · closing · opening · reversal. (Sigue siendo texto: los escritores heredados lo tipan como string.)
+/// expense · payroll_slip · payroll_payment · payroll_cost_import · commission · depreciation · vat_settlement · cash_closure ·
+/// card_settlement · tourist_tax · manual · regularization · closing · opening · reversal. (Sigue siendo texto: los escritores heredados lo tipan como string.)
 model JournalEntry {
   id             String        @id @default(cuid())
   organizationId String        @map("organization_id")
@@ -3674,6 +3681,7 @@ model JournalLine {
 
   @@index([journalEntryId])
   @@index([accountCode])
+  @@index([costCenterId])
   @@map("journal_lines")
 }
 
@@ -5150,6 +5158,119 @@ model PayrollLine {
 
   @@index([slipId, lineType])
   @@map("payroll_lines")
+}
+
+// ---- Coste de personal importado (Tanda 6c · 2026-09-16) ----
+// Contrato: docs/runbooks/finanzas-contabilidad.md §18 · diseño docs/design/FINANZAS-COSTE-PERSONAL.md §2.
+// Agregado centro × mes × grupo × departamento: NUNCA datos por persona (GDPR). Un lote = un fichero
+// (csv | json | informe_rrhh); contabilización = un asiento por (centro, mes) con sourceType
+// payroll_cost_import y sourceId <importId>:<propertyId>:<periodCode>; reverso completo del lote
+// (reverseJournalEntry por asiento). Sin relaciones a properties / cost_centers (misma convención que
+// PayrollPeriod); organizationId desnormalizado en líneas y referencias para filtrar sin join.
+
+/// Lote de importación del informe de coste de personal (agregado, sin nombres).
+model PayrollCostImport {
+  id                      String                  @id @default(cuid())
+  organizationId          String                  @map("organization_id")
+  /// Sociedad empleadora (LegalEntity de la organización, vía resolveLedgerScope) si se conoce; informativo.
+  legalEntityId           String?                 @map("legal_entity_id")
+  /// csv · json · informe_rrhh (texto: catálogo en el runbook §18).
+  source                  String
+  fileName                String?                 @map("file_name")
+  /// sha256 hex del contenido normalizado (filas + referencias): idempotencia (409 PAYROLL_IMPORT_DUPLICATE mientras exista un lote no revertido con el mismo hash).
+  contentHash             String                  @map("content_hash")
+  /// Primer y último mes del lote ("YYYY-MM", inclusivo).
+  periodFrom              String                  @map("period_from")
+  periodTo                String                  @map("period_to")
+  status                  PayrollCostImportStatus @default(draft)
+  rowCount                Int                     @default(0) @map("row_count")
+  totalGross              Decimal                 @default(0) @db.Decimal(14, 2) @map("total_gross")
+  totalEmployerSs         Decimal                 @default(0) @db.Decimal(14, 2) @map("total_employer_ss")
+  /// Σ(gross + employerSs): lo que se contabiliza (640 + 642).
+  totalCost               Decimal                 @default(0) @db.Decimal(14, 2) @map("total_cost")
+  /// Σ coste_total del fichero (informativo; puede diferir de totalCost, se avisa al importar).
+  reportedTotalCost       Decimal?                @db.Decimal(14, 2) @map("reported_total_cost")
+  /// Media mensual de empleados del lote (referencia del informe o Σ headcount de las celdas), 2 decimales.
+  headcountAverage        Decimal?                @db.Decimal(8, 2) @map("headcount_average")
+  /// Mapeo aplicado al importar: { centres: {etiqueta→propertyId}, departments: {etiqueta→usaliDepartment}, groups? }.
+  mappingJson             Json                    @default("{}") @map("mapping_json")
+  /// Asientos de devengo (uno por centro × mes) y sus reversos.
+  journalEntryIds         String[]                @default([]) @map("journal_entry_ids")
+  reversalJournalEntryIds String[]                @default([]) @map("reversal_journal_entry_ids")
+  notes                   String?
+  createdBy               String?                 @map("created_by")
+  createdAt               DateTime                @default(now()) @map("created_at")
+  postedAt                DateTime?               @map("posted_at")
+  reversedAt              DateTime?               @map("reversed_at")
+  reversedBy              String?                 @map("reversed_by")
+  reversalReason          String?                 @map("reversal_reason")
+
+  lines                   PayrollCostLine[]
+  references              PayrollCostReference[]
+
+  @@index([organizationId, status, periodFrom, periodTo])
+  @@index([organizationId, contentHash])
+  @@map("payroll_cost_imports")
+}
+
+/// Fila agregada del informe: centro × mes × grupo × departamento (sin personas).
+model PayrollCostLine {
+  id                String   @id @default(cuid())
+  importId          String   @map("import_id")
+  /// Desnormalizado del lote (sin FK): filtros de solape y del informe por organización sin join.
+  organizationId    String   @map("organization_id")
+  /// Centro de trabajo del ERP (Property de la organización) al que se asignó la etiqueta original.
+  propertyId        String   @map("property_id")
+  /// Etiqueta de centro tal como viene en el informe ("OFICINA MADRID", "REG. CORUÑA"…): varias etiquetas pueden ir al mismo centro.
+  workCenterLabel   String   @map("work_center_label")
+  /// operaciones · extras · estructura · mantenimiento_obra · familia (texto; catálogo en el runbook §18).
+  costGroup         String   @map("cost_group")
+  /// Departamento tal como viene en el informe ("3 RECEPCIO", "6 PISOS"…).
+  departmentLabel   String   @map("department_label")
+  /// Departamento USALI resuelto que admite la línea labor (rooms · fnb · other_operated · admin_general · it · sales_marketing · pom).
+  usaliDepartment   String   @map("usali_department")
+  /// CostCenter (propertyId, code = USALI en mayúsculas, type "usali") al que se imputan las líneas 640/642; se rellena al contabilizar.
+  costCenterId      String?  @map("cost_center_id")
+  /// "YYYY-MM".
+  periodCode        String   @map("period_code")
+  gross             Decimal  @db.Decimal(14, 2)
+  employerSs        Decimal  @db.Decimal(14, 2) @map("employer_ss")
+  /// = gross + employerSs (lo contabilizado).
+  totalCost         Decimal  @db.Decimal(14, 2) @map("total_cost")
+  /// coste_total del fichero (informativo; null si no viene).
+  reportedTotalCost Decimal? @db.Decimal(14, 2) @map("reported_total_cost")
+  /// Empleados (o FTE) de la celda en el mes; decimal para admitir jornadas parciales.
+  headcount         Decimal  @default(0) @db.Decimal(8, 2)
+
+  import            PayrollCostImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, workCenterLabel, periodCode, costGroup, departmentLabel])
+  @@index([importId, propertyId, periodCode])
+  @@index([propertyId, periodCode])
+  @@index([organizationId, periodCode])
+  @@map("payroll_cost_lines")
+}
+
+/// Referencia del informe por centro × mes (empleados, inventario de habitaciones, ventas sin IVA) para los ratios.
+model PayrollCostReference {
+  id                     String   @id @default(cuid())
+  importId               String   @map("import_id")
+  /// Desnormalizado del lote (sin FK): headcount USALI e informe por organización sin join.
+  organizationId         String   @map("organization_id")
+  propertyId             String   @map("property_id")
+  workCenterLabel        String?  @map("work_center_label")
+  periodCode             String   @map("period_code")
+  employeesReported      Decimal? @db.Decimal(8, 2) @map("employees_reported")
+  /// Inventario de habitaciones del informe (no habitaciones-noche).
+  roomsAvailableReported Int?     @map("rooms_available_reported")
+  netSalesReported       Decimal? @db.Decimal(14, 2) @map("net_sales_reported")
+
+  import                 PayrollCostImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, propertyId, periodCode])
+  @@index([propertyId, periodCode])
+  @@index([organizationId, periodCode])
+  @@map("payroll_cost_references")
 }
 
 // ---- Multi-currency (Sprint 24) ----

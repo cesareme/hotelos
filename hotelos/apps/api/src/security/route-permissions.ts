@@ -21,6 +21,10 @@ import { FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS as FINANCIAL_STATEMENTS_ROUTE_PE
 // `accounting.read` ON PURPOSE (design §5.4: structure is configuration, not
 // amounts) so they stay out of the accounting.reports.read remap below.
 import { structureRoutePermissions } from "../modules/structure/route-permissions.partial.js";
+// Coste de personal importado (Tanda 6c · L3): /payroll/cost-imports* y
+// /payroll/cost-report (modules/payroll/cost-import.routes.ts). payroll.read /
+// payroll.manage only (never accounting.read), so the remap below is a no-op.
+import { payrollRoutePermissions } from "../modules/payroll/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -117,6 +121,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS,
   // Estructura societaria (Tanda 6b · L2): 9 entries, see modules/structure/route-permissions.partial.ts.
   ...structureRoutePermissions,
+  // Coste de personal importado (Tanda 6c): 7 entries, see modules/payroll/route-permissions.partial.ts.
+  ...payrollRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },

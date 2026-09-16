@@ -13,6 +13,7 @@
 // occupied room (room-nights of real stays: reservations checked_in /
 // checked_out). null when the denominator is 0.
 
+import { Prisma } from "@prisma/client";
 import type { UserContext } from "../../lib/demo-store.js";
 import { NotFoundError } from "../../lib/http-error.js";
 import { requirePermissions } from "../auth/auth.service.js";
@@ -21,6 +22,7 @@ import type { CorporateAllocationMethod, PropertyKind } from "@hotelos/shared";
 import type {
   CorporateAllocationResult,
   UsaliAccountAmount,
+  UsaliAmountSource,
   UsaliOperatingDepartment,
   UsaliOperatingDepartmentKey,
   UsaliPeriodComparison,
@@ -35,6 +37,7 @@ import type {
 import { ALLOCATION_LABEL, computeCorporateAllocation, corporateBaseWarnings, corporateCostFromGop, getCorporateAllocation, type AllocationFacts } from "./allocation.service.js";
 import { D, ZERO, fromMoney, money, pct, ratio, sameCents, sumDec, type Dec } from "./money.js";
 import {
+  compareAccountBalanceRows,
   entityBadgeOf,
   isHotelCentre,
   nightsBetween,
@@ -42,11 +45,13 @@ import {
   toWorkCentre,
   type AccountBalanceRow,
   type FinancialStatementsSource,
+  type HeadcountByProperty,
+  type HeadcountSource,
   type OccupancyFacts,
   type PropertyLite,
   type UsaliMappingSourceRow
 } from "./source.js";
-import { resolveUsaliForCode } from "./usali-mapping.service.js";
+import { isAdmittedUsali, resolveUsaliForCode, type ResolvedUsali } from "./usali-mapping.service.js";
 
 const OPERATING: UsaliOperatingDepartmentKey[] = ["rooms", "fnb", "other_operated", "misc_income"];
 const UNDISTRIBUTED: UsaliUndistributedDepartmentKey[] = ["admin_general", "it", "sales_marketing", "pom", "utilities"];
@@ -66,16 +71,67 @@ export type UsaliComputeInput = {
   mappings: UsaliMappingSourceRow[];
   occupancy: OccupancyFacts;
   generatedAt?: string;
+  /** Tanda 6c: headcount of the statement (`usaliHeadcountOf` over `source.headcountByProperty`); absent / null = sin datos. */
+  headcount?: UsaliHeadcountInput | null;
 };
 
 function bucketGet(bucket: Bucket, line: UsaliLine): Dec {
   return bucket.get(line) ?? ZERO;
 }
 
+/** Resolution of a balance row after the cost-centre routing: the mapping sources plus `cost_center`. */
+export type RoutedUsali = Omit<ResolvedUsali, "source"> & { source: UsaliAmountSource };
+
+/**
+ * Tanda 6c: routes the `labor` / `other_expense` amount of a partitioned row
+ * (`accountBalances({ byCostCentre: true })`) to the department of its cost
+ * centre — a `usali` centre whose code (upper case ROOMS, FNB…) names a
+ * USALI department that admits the line. Anything else returns `resolved`
+ * untouched: revenue, cost of sales, fees, non-operating and below-EBITDA
+ * lines never move; `utilities.labor` is not an admitted schedule; the
+ * `operating` / `cost` centres and unknown codes are ignored; an unmapped
+ * account stays «Sin asignar». When the centre agrees with the mapping the
+ * original source is kept (nothing was re-routed).
+ */
+export function routeByCostCentre(row: Pick<AccountBalanceRow, "costCentre">, resolved: ResolvedUsali | RoutedUsali): RoutedUsali {
+  const centre = row.costCentre;
+  if (!centre || centre.type !== "usali") return resolved;
+  const department = centre.code.toLowerCase();
+  if (!Object.prototype.hasOwnProperty.call(USALI_DEPARTMENTS, department)) return resolved;
+  const line = resolved.usaliLine;
+  if (line !== "labor" && line !== "other_expense") return resolved;
+  if (!isAdmittedUsali(department, line)) return resolved;
+  if (department === resolved.usaliDepartment) return resolved;
+  return { ...resolved, usaliDepartment: department, source: "cost_center" };
+}
+
+/** Tanda 6c: the headcount a statement shows (`statistics.headcount`) and where it came from. */
+export type UsaliHeadcountInput = { value: number; source: HeadcountSource };
+
+/**
+ * Pure (Tanda 6c): the headcount of one statement from the per-centre rows
+ * of `source.headcountByProperty`, read ONCE per request and reused for the
+ * `headcount` allocation key. `propertyIds` null = the whole sociedad (rows
+ * without centre included); a null inside the list selects the rows booked
+ * without centre («Sociedad (sin centro)»). Σ of the selected rows rounded
+ * to whole people; null when no selected centre has data (never 0).
+ */
+export function usaliHeadcountOf(rows: HeadcountByProperty, propertyIds: readonly (string | null)[] | null): UsaliHeadcountInput | null {
+  const selected = propertyIds === null ? rows : rows.filter((row) => propertyIds.includes(row.propertyId));
+  if (selected.length === 0) return null;
+  const total = sumDec(selected.map((row) => D(row.headcount))).toDecimalPlaces(0, Prisma.Decimal.ROUND_HALF_UP).toNumber();
+  if (total <= 0) return null;
+  return { value: total, source: selected.every((row) => row.source === "payroll_cost_import") ? "payroll_cost_import" : "payroll_slips" };
+}
+
+type AccountAccumulator = { code: string; name: string; line: UsaliLine; amount: Dec; source: UsaliAmountSource };
+type UnassignedAccumulator = { code: string; name: string; kind: "income" | "expense"; amount: Dec };
+
 export function computeUsaliPnl(input: UsaliComputeInput): UsaliPnl {
   const buckets = new Map<UsaliDepartment, Bucket>();
-  const accountsByDepartment = new Map<UsaliDepartment, UsaliAccountAmount[]>();
-  const unassignedAccounts: UsaliPnl["unassigned"]["accounts"] = [];
+  // Tanda 6c: a partitioned ledger brings one row per (account, cost centre); the drawer shows ONE line per account and USALI line.
+  const accountsByDepartment = new Map<UsaliDepartment, Map<string, AccountAccumulator>>();
+  const unassignedAccounts = new Map<string, UnassignedAccumulator>();
   let unassignedRevenue = ZERO;
   let unassignedExpense = ZERO;
   let pgcRevenue = ZERO;
@@ -87,25 +143,38 @@ export function computeUsaliPnl(input: UsaliComputeInput): UsaliPnl {
     if (row.kind === "income") pgcRevenue = pgcRevenue.plus(row.credit.minus(row.debit));
     else pgcExpense = pgcExpense.plus(row.debit.minus(row.credit));
 
-    const resolved = resolveUsaliForCode(row.code, row, input.mappings);
+    // The PGC totals above are accumulated BEFORE the routing: reconciliation, GOP, EBITDA and net income never depend on it.
+    const resolved = routeByCostCentre(row, resolveUsaliForCode(row.code, row, input.mappings));
     if (!resolved.usaliDepartment || !resolved.usaliLine) {
       const amount = row.kind === "income" ? row.credit.minus(row.debit) : row.debit.minus(row.credit);
       if (row.kind === "income") unassignedRevenue = unassignedRevenue.plus(amount);
       else unassignedExpense = unassignedExpense.plus(amount);
-      unassignedAccounts.push({ code: row.code, name: row.name, kind: row.kind, amount: money(amount) });
+      const existing = unassignedAccounts.get(row.code);
+      if (existing) existing.amount = existing.amount.plus(amount);
+      else unassignedAccounts.set(row.code, { code: row.code, name: row.name, kind: row.kind, amount });
       continue;
     }
     const amount = resolved.usaliLine === "revenue" ? row.credit.minus(row.debit) : row.debit.minus(row.credit);
     const bucket = buckets.get(resolved.usaliDepartment) ?? new Map<UsaliLine, Dec>();
     bucket.set(resolved.usaliLine, bucketGet(bucket, resolved.usaliLine).plus(amount));
     buckets.set(resolved.usaliDepartment, bucket);
-    const list = accountsByDepartment.get(resolved.usaliDepartment) ?? [];
-    list.push({ code: row.code, name: row.name, line: resolved.usaliLine, amount: money(amount), source: resolved.source });
-    accountsByDepartment.set(resolved.usaliDepartment, list);
+    const accounts = accountsByDepartment.get(resolved.usaliDepartment) ?? new Map<string, AccountAccumulator>();
+    const key = `${row.code}|${resolved.usaliLine}`;
+    const existing = accounts.get(key);
+    if (existing) {
+      existing.amount = existing.amount.plus(amount);
+      if (resolved.source === "cost_center") existing.source = "cost_center";
+    } else {
+      accounts.set(key, { code: row.code, name: row.name, line: resolved.usaliLine, amount, source: resolved.source });
+    }
+    accountsByDepartment.set(resolved.usaliDepartment, accounts);
   }
 
   const dept = (key: UsaliDepartment): Bucket => buckets.get(key) ?? new Map<UsaliLine, Dec>();
-  const accountsOf = (key: UsaliDepartment): UsaliAccountAmount[] => (accountsByDepartment.get(key) ?? []).sort((a, b) => a.code.localeCompare(b.code));
+  const accountsOf = (key: UsaliDepartment): UsaliAccountAmount[] =>
+    Array.from((accountsByDepartment.get(key) ?? new Map<string, AccountAccumulator>()).values())
+      .map((a) => ({ code: a.code, name: a.name, line: a.line, amount: money(a.amount), source: a.source }))
+      .sort((a, b) => a.code.localeCompare(b.code) || a.line.localeCompare(b.line));
 
   const operating: UsaliOperatingDepartment[] = OPERATING.map((key) => {
     const b = dept(key);
@@ -140,6 +209,8 @@ export function computeUsaliPnl(input: UsaliComputeInput): UsaliPnl {
     return { department: key, label: USALI_DEPARTMENTS[key], labor: money(labor), otherExpense: money(otherExpense), total: money(labor.plus(otherExpense)), accounts: accountsOf(key) };
   });
   const totalUndistributed = UNDISTRIBUTED.reduce((sum, key) => sum.plus(bucketGet(dept(key), "labor")).plus(bucketGet(dept(key), "other_expense")), ZERO);
+  // Tanda 6c: Σ labor of every department — the numerator of «coste de personal por empleado».
+  const totalLabor = [...OPERATING, ...UNDISTRIBUTED].reduce((sum, key) => sum.plus(bucketGet(dept(key), "labor")), ZERO);
   const gop = totalDepartmentalProfit.minus(totalUndistributed);
   const managementFees = bucketGet(dept("management_fees"), "management_fee");
   const incomeBeforeNonOperating = gop.minus(managementFees);
@@ -227,7 +298,9 @@ export function computeUsaliPnl(input: UsaliComputeInput): UsaliPnl {
       revenue: money(unassignedRevenue),
       expense: money(unassignedExpense),
       net: money(unassignedNet),
-      accounts: unassignedAccounts.sort((a, b) => a.code.localeCompare(b.code))
+      accounts: Array.from(unassignedAccounts.values())
+        .map((a) => ({ code: a.code, name: a.name, kind: a.kind, amount: money(a.amount) }))
+        .sort((a, b) => a.code.localeCompare(b.code))
     },
     reconciliation: {
       pgcRevenue: money(pgcRevenue),
@@ -242,7 +315,9 @@ export function computeUsaliPnl(input: UsaliComputeInput): UsaliPnl {
       roomsAvailable,
       roomsOccupied,
       occupancyPct: pct(D(roomsOccupied), roomsAvailable),
-      source: "pms_stays"
+      source: "pms_stays",
+      headcount: input.headcount?.value ?? null,
+      headcountSource: input.headcount?.source ?? null
     },
     ratios: {
       revpar: ratio(roomsRevenue, roomsAvailable),
@@ -253,6 +328,7 @@ export function computeUsaliPnl(input: UsaliComputeInput): UsaliPnl {
       gopPOR: ratio(gop, roomsOccupied),
       ebitdaPAR: ratio(ebitda, roomsAvailable),
       undistributedPAR: ratio(totalUndistributed, roomsAvailable),
+      laborPerEmployee: ratio(totalLabor, input.headcount?.value ?? 0),
       perDepartment
     }
   };
@@ -315,10 +391,11 @@ export async function buildUsaliPnl(input: {
   const organizationId = input.context.organizationId;
   const { properties, property } = await resolveProperty(source, organizationId, input.propertyId);
   const propertyIds = property ? [property.id] : properties.map((p) => p.id);
-  const [rows, mappings, occupancy] = await Promise.all([
-    source.accountBalances({ organizationId, propertyId: property?.id ?? null, mode: "movements", from: input.from, to: input.to, groups: [6, 7] }),
+  const [rows, mappings, occupancy, headcountRows] = await Promise.all([
+    source.accountBalances({ organizationId, propertyId: property?.id ?? null, mode: "movements", from: input.from, to: input.to, groups: [6, 7], byCostCentre: true }),
     source.usaliMappings(organizationId),
-    source.occupancy(propertyIds, input.from, input.to)
+    source.occupancy(propertyIds, input.from, input.to),
+    source.headcountByProperty(organizationId, input.from, input.to)
   ]);
   return computeUsaliPnl({
     organizationId,
@@ -330,7 +407,8 @@ export async function buildUsaliPnl(input: {
     currency: property?.currency ?? properties[0]?.currency ?? "EUR",
     rows,
     mappings,
-    occupancy
+    occupancy,
+    headcount: usaliHeadcountOf(headcountRows, property ? [property.id] : null)
   });
 }
 
@@ -422,19 +500,20 @@ export async function compareUsaliProperties(input: {
   const unknown = wanted.filter((id) => !all.some((p) => p.id === id));
   if (unknown.length > 0) throw new NotFoundError("Propiedad no encontrada.");
   const selected = all.filter((p) => wanted.includes(p.id));
-  const [mappings, identity] = await Promise.all([source.usaliMappings(organizationId), source.legalIdentity(organizationId)]);
+  // Tanda 6c: the headcount rows are read ONCE and serve every statement of the response and the allocation key.
+  const [mappings, identity, headcountRows] = await Promise.all([source.usaliMappings(organizationId), source.legalIdentity(organizationId), source.headcountByProperty(organizationId, input.from, input.to)]);
   const period = { from: input.from, to: input.to };
   const generatedAt = new Date().toISOString();
   const centres: CentrePnl[] = [];
   for (const property of selected) {
     const [rows, occupancy] = await Promise.all([
-      source.accountBalances({ organizationId, propertyId: property.id, mode: "movements", from: input.from, to: input.to, groups: [6, 7] }),
+      source.accountBalances({ organizationId, propertyId: property.id, mode: "movements", from: input.from, to: input.to, groups: [6, 7], byCostCentre: true }),
       source.occupancy([property.id], input.from, input.to)
     ]);
     centres.push({
       property,
       rows,
-      pnl: computeUsaliPnl({ organizationId, propertyId: property.id, propertyName: property.name, propertyKind: property.kind, propertyCode: property.code, period, currency: property.currency, rows, mappings, occupancy, generatedAt })
+      pnl: computeUsaliPnl({ organizationId, propertyId: property.id, propertyName: property.name, propertyKind: property.kind, propertyCode: property.code, period, currency: property.currency, rows, mappings, occupancy, generatedAt, headcount: usaliHeadcountOf(headcountRows, [property.id]) })
     });
   }
   // Consolidated = the whole organisation ledger (entries without propertyId included) when every property is
@@ -442,7 +521,7 @@ export async function compareUsaliProperties(input: {
   const everyProperty = selected.length === all.length;
   const [consolidatedRows, occupancy] = await Promise.all([
     everyProperty
-      ? source.accountBalances({ organizationId, propertyId: null, mode: "movements", from: input.from, to: input.to, groups: [6, 7] })
+      ? source.accountBalances({ organizationId, propertyId: null, mode: "movements", from: input.from, to: input.to, groups: [6, 7], byCostCentre: true })
       : Promise.resolve(mergeRows(centres.map((c) => c.rows))),
     source.occupancy(selected.map((p) => p.id), input.from, input.to)
   ]);
@@ -455,7 +534,8 @@ export async function compareUsaliProperties(input: {
     rows: consolidatedRows,
     mappings,
     occupancy,
-    generatedAt
+    generatedAt,
+    headcount: usaliHeadcountOf(headcountRows, everyProperty ? null : selected.map((p) => p.id))
   });
   const entity = entityBadgeOf(identity);
   const entry = (centre: CentrePnl): UsaliPropertyComparison["properties"][number] => ({ propertyId: centre.property.id, propertyName: centre.property.name, propertyKind: centre.property.kind, propertyCode: centre.property.code, pnl: centre.pnl });
@@ -481,14 +561,15 @@ export async function compareUsaliProperties(input: {
         rows: mergeRows(corporateCentres.map((c) => c.rows)),
         mappings,
         occupancy: corporateOccupancy,
-        generatedAt
+        generatedAt,
+        headcount: usaliHeadcountOf(headcountRows, corporateCentres.map((c) => c.property.id))
       })
     };
   }
   let unassigned: UsaliPnl | undefined;
   if (everyProperty) {
-    const unassignedRows = await source.accountBalances({ organizationId, propertyId: null, unassignedOnly: true, mode: "movements", from: input.from, to: input.to, groups: [6, 7] });
-    unassigned = computeUsaliPnl({ organizationId, propertyId: null, propertyName: UNASSIGNED_COLUMN_LABEL, period, currency: consolidated.currency, rows: unassignedRows, mappings, occupancy: { roomsInventory: 0, roomsOccupied: 0 }, generatedAt });
+    const unassignedRows = await source.accountBalances({ organizationId, propertyId: null, unassignedOnly: true, mode: "movements", from: input.from, to: input.to, groups: [6, 7], byCostCentre: true });
+    unassigned = computeUsaliPnl({ organizationId, propertyId: null, propertyName: UNASSIGNED_COLUMN_LABEL, period, currency: consolidated.currency, rows: unassignedRows, mappings, occupancy: { roomsInventory: 0, roomsOccupied: 0 }, generatedAt, headcount: usaliHeadcountOf(headcountRows, [null]) });
   }
   const rollup = usaliRollup(hotels.map((h) => h.pnl), corporate?.pnl ?? null, unassigned ?? null, consolidated);
 
@@ -498,7 +579,7 @@ export async function compareUsaliProperties(input: {
   const properties: UsaliPropertyComparison["properties"] = hotels.map(entry);
   if (method !== "none") {
     const headcount = new Map<string, number>();
-    for (const row of await source.headcountByProperty(organizationId, input.from, input.to)) if (row.propertyId) headcount.set(row.propertyId, row.headcount);
+    for (const row of headcountRows) if (row.propertyId) headcount.set(row.propertyId, row.headcount);
     const result = usaliCorporateAllocation({ method, hotels: hotels.map((h) => h.pnl), corporate: corporate?.pnl ?? null, headcount, manualWeights: stored.allocation.method === "manual" ? stored.allocation.weights : undefined });
     allocation = result.allocation;
     for (const property of properties) {
@@ -512,21 +593,27 @@ export async function compareUsaliProperties(input: {
 /** Label of the informative allocation row (re-exported for renderers and tests). */
 export { ALLOCATION_LABEL };
 
-/** Sums row sets by account code (a subset of properties consolidated). */
+/**
+ * Sums row sets by account code (a subset of properties consolidated) — and,
+ * for the partitioned rows of Tanda 6c, by `code|cost centre type|cost centre
+ * code`, keeping `costCentre` so the routing still applies to the merge
+ * (RA/ROOMS and LT/ROOMS fuse into one ROOMS row of the consolidated).
+ */
 export function mergeRows(rowSets: AccountBalanceRow[][]): AccountBalanceRow[] {
-  const byCode = new Map<string, AccountBalanceRow>();
+  const byKey = new Map<string, AccountBalanceRow>();
   for (const rows of rowSets) {
     for (const row of rows) {
-      const existing = byCode.get(row.code);
+      const key = row.costCentre ? `${row.code}|${row.costCentre.type}|${row.costCentre.code}` : row.code;
+      const existing = byKey.get(key);
       if (existing) {
         existing.debit = existing.debit.plus(row.debit);
         existing.credit = existing.credit.plus(row.credit);
       } else {
-        byCode.set(row.code, { ...row });
+        byKey.set(key, { ...row });
       }
     }
   }
-  return Array.from(byCode.values()).sort((a, b) => a.code.localeCompare(b.code));
+  return Array.from(byKey.values()).sort(compareAccountBalanceRows);
 }
 
 export async function compareUsaliPeriods(input: {

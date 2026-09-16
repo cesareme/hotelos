@@ -29,7 +29,9 @@ export const SYSTEM_ACTOR_LABELS: Readonly<Record<string, string>> = Object.free
   usr_system_channels_seed: "carga de canales de prueba",
   // Tanda 6b: backfill of the sociedad, centre codes and VeriFactu installations, and the Faranda → CELUISMA migration CLI (L8).
   usr_system_legal_structure: "alta de la estructura societaria",
-  usr_system_faranda_celuisma: "migración de Faranda a CELUISMA"
+  usr_system_faranda_celuisma: "migración de Faranda a CELUISMA",
+  // Tanda 6c: CLI payroll:import-cost (apps/api/src/scripts/import-payroll-cost.ts): los asientos 640/642 del coste de personal agregado.
+  usr_system_payroll_cost_import: "importación del coste de personal"
 });
 
 export const SYSTEM_ACTOR_FALLBACK_LABEL = "Sistema";
