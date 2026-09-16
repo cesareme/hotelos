@@ -63,6 +63,13 @@ import {
 
 export type TenantRequest = { userContext: UserContext };
 
+// Tanda 6b (L2 · estructura societaria, design §5.2 R6): the ONLY `kind = hotel`
+// filter for night audit, portfolio, occupancy, tourist tax, SES and per-room
+// KPIs lives in lib/finance-scope.ts (no import cycle: finance-scope never
+// imports tenancy) and is re-exported from here as the design names this file.
+export { filterOperationalProperties, isOperationalKind, listOperationalProperties } from "./finance-scope.js";
+export type { OperationalProperty } from "./finance-scope.js";
+
 /** Where a row hangs from. `inMemory` rows get the strict (no re-pointing) check. */
 type Owner =
   | { propertyId: string; inMemory?: boolean }
@@ -531,7 +538,23 @@ const RESOLVERS = {
     return rows[0] ? { propertyId: rows[0].property_id } : null;
   }),
 
+  // Tanda 6b (L2): a Property addressed by its own id (PATCH /properties/:propertyId/establishment).
+  // Owner = itself → grantPropertyAccess (same org + a role in the property; platform admins re-pointed).
+  property: {
+    notFound: PROPERTY_NOT_FOUND,
+    resolve: async (id) => {
+      const row = await prisma.property.findUnique({ where: { id }, select: { id: true } });
+      if (row) return { propertyId: row.id };
+      const mirror = demoStore.properties.find((candidate) => candidate.id === id);
+      return mirror ? { propertyId: mirror.id, inMemory: true } : null;
+    }
+  } satisfies Resolver,
+
   // ─ Organization-owned rows (Prisma, direct column) ─
+  // Tanda 6b (L2): the legal entity (sociedad) hangs from its organization.
+  legalEntity: byOrganization("Sociedad no encontrada.", (id) =>
+    prisma.legalEntity.findUnique({ where: { id }, select: selectOrganization })
+  ),
   organization: {
     notFound: ORGANIZATION_NOT_FOUND,
     resolve: async (id) => {

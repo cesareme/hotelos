@@ -222,6 +222,12 @@ export const PERMISSIONS: Record<PermissionKey, string> = {
   "onboarding.view_sensitive": "View sensitive onboarding previews and source records",
   "onboarding.manage_cutover": "Manage cutover plan, freeze window and delta import",
   "audit.read": "Read audit logs",
+  // Tanda 6b (L1 · estructura societaria, 2026-09-16): whole-entity finance
+  // reads (every work centre of the sociedad, not only the assigned properties)
+  // and the management of the legal entity and its centres (NIF, razón social,
+  // series, establishments — riskLevel "high" on its routes, L2).
+  "accounting.entity.read": "Read the finances of the whole legal entity (every work centre, not only the assigned properties)",
+  "organization.structure.manage": "Manage the legal entity and its work centres (NIF, razón social, series, establishments)",
   "admin.tenants.manage": "Manage platform tenants (HotelOS staff console; never granted to hotel roles)"
 };
 
@@ -438,7 +444,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "safety_checks.read",
     "workforce.read",
     "events.read",
-    "ai_incidents.read"
+    "ai_incidents.read",
+    // Tanda 6b (L1): Finanzas de toda la sociedad (design §5.2 R11: Owner, Dirección, Finanzas).
+    "accounting.entity.read"
   ],
   receptionist: [
     "pms.reservation.read",
@@ -574,7 +582,9 @@ export const ROLE_PERMISSION_MAP: Record<RoleKey, PermissionKey[]> = {
     "procurement.manage",
     "assets.read",
     "assets.manage",
-    "analytics.export"
+    "analytics.export",
+    // Tanda 6b (L1): Finanzas de toda la sociedad (design §5.2 R11: Owner, Dirección, Finanzas).
+    "accounting.entity.read"
   ],
   compliance: [
     "pms.reservation.read",

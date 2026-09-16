@@ -1,6 +1,9 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
+// Tanda 6b (R2, fix t6b#12): the razón social shown for a centre is the sociedad's
+// (single reader); Property.legalName is the deprecated trade name.
+import { resolveLegalIdentity } from "../../lib/finance-scope.js";
 
 /**
  * Property overview — single-property drill-down for the Portfolio dashboard.
@@ -44,7 +47,12 @@ export type PropertyOverview = {
   property: {
     id: string;
     name: string;
+    /** Razón social of the sociedad that operates the centre (LegalEntity.legalName), never Property.legalName. */
     legalName?: string;
+    /** Nombre comercial of the centre (Property.tradeName) when it differs from the name. */
+    tradeName?: string;
+    /** Property.code (RA, LT, OC…) once the centre is coded. */
+    code?: string;
     address?: string;
     city?: string;
     region?: string;
@@ -167,8 +175,10 @@ export async function buildPropertyOverview(
     where: { id: propertyId },
     select: {
       id: true,
+      organizationId: true,
       name: true,
-      legalName: true,
+      tradeName: true,
+      code: true,
       address: true,
       municipality: true,
       province: true,
@@ -180,6 +190,7 @@ export async function buildPropertyOverview(
       verifactuEnabled: true
     }
   });
+  const legalIdentity = property ? await resolveLegalIdentity(property.organizationId) : null;
 
   // Fire all independent counts/queries in parallel.
   const [
@@ -401,7 +412,9 @@ export async function buildPropertyOverview(
     property: {
       id: property?.id ?? propertyId,
       name: property?.name ?? "(unknown property)",
-      legalName: property?.legalName ?? undefined,
+      legalName: legalIdentity?.legalName ?? undefined,
+      tradeName: property?.tradeName && property.tradeName !== property.name ? property.tradeName : undefined,
+      code: property?.code ?? undefined,
       address: property?.address ?? undefined,
       city: property?.municipality ?? undefined,
       region: property?.taxRegion ?? property?.province ?? undefined,

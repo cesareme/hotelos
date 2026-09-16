@@ -180,6 +180,20 @@ Estado verificado (cierre Tanda 6 · Finanzas front / Cocoa 22 ola 6 + 8-B,
 - integración NO repetida (escribe en org_123/prop_123 y los API sirven el
   código anterior): pendiente tras el reinicio, como la verificación visual §5
 
+Estado verificado (cierre Tanda 6b · Estructura societaria backend, 2026-09-16,
+integrador final; working tree sin commit, :3000/:5173 sin reiniciar):
+- 216 screens alcanzables · 183/183 URLs · 0 broken links · placeholders 16/20
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · `.husky/pre-commit` OK
+- contratos 431/431 · unitarios api 1.456 (1.455 pass · 1 skipped) · integración
+  294 (289 pass · 5 skipped preexistentes · 0 fail; 7 suites de la tanda con 99 casos) · env 137/137 · validate-env OK
+- migraciones 8/8 aplicadas (`migrate status` al día, drift 0, migrations↔schema
+  266 tablas / 30 enums) · fresh-install OK (266 tablas, 79 permisos, 4 funciones /
+  4 triggers declarados, 4 s) · `install --frozen-lockfile --offline` al día
+- `rbac:sync -- --dry-run`: catálogo 223 · +0 · 6 roles por completar + Local Super
+  Admin +2 (no aplicado: escribe `role_permissions` de Faranda)
+- Faranda solo lectura: 25 facturas · 61 asientos / 150 líneas / Σ 2.595,00 · 33 envíos
+  (idéntico antes y después de todas las suites)
+
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).
@@ -228,6 +242,11 @@ pnpm db:seed:commercial     # añade room types, rooms, tarifas sobre prop_123
 # Contrato de entorno (Tanda 4): validar un .env y regenerar .env.example tras añadir variables
 node scripts/validate-env.mjs .env --role app
 node scripts/env-census.mjs --write
+
+# Estructura societaria (Tanda 6b): sociedad implícita, códigos de centro e instalaciones VeriFactu
+# (dry-run por defecto; idempotente; una transacción + evento LEGAL_STRUCTURE_BACKFILLED por organización)
+(cd apps/api && node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-legal-structure.ts --dry-run)
+(cd apps/api && node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-legal-structure.ts --apply --confirm <orgId|all>)
 
 # Verificación completa antes de commit
 bash .husky/pre-commit
@@ -682,6 +701,59 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     visual §5 de las 36 URL y la integración tras el reinicio quedan
     pendientes (informe §6-§7); `test:integration` no repetido.
 
+15. **Tanda 6b · Estructura societaria backend (2026-09-16):** modelo Grupo
+    (`Organization`) → **una** Sociedad (`LegalEntity`: NIF único, razón social,
+    domicilio fiscal, régimen SII / gran empresa, `pgcVariant`, política de cadena
+    VeriFactu) → Centro de trabajo (`Property.kind` hotel · office · other, `code`,
+    `tradeName`, columnas censales) + `VerifactuInstallation` (número inmutable por
+    trigger). Diseño `docs/design/FINANZAS-ESTRUCTURA-SOCIETARIA.md`; runbook
+    `docs/runbooks/finanzas-contabilidad.md` §17; cierre
+    `docs/audits/TANDA-6B-ESTRUCTURA-BACKEND-2026-09-16.md`. Tres migraciones
+    (`20260916100000/101000/102000`, aditivas, 4 triggers: emisor e instalación
+    inmutables, centro pinado a su sociedad R10.1/R10.5, sociedad pinada a su
+    organización) y backfill idempotente (`backfill-legal-structure.ts`, ejecutado
+    en local: `FAR`/B99999997 con RA + LT e instalación `DEV-001`; `HD`/B12345674
+    con AMC + ATS). Módulo nuevo `apps/api/src/modules/structure` (9 rutas,
+    `organization.structure.manage`; PATCH de NIF / razón social / SII / gran
+    empresa / PGC / ejercicio = alto riesgo con `confirmHighRisk`). **Reglas:**
+    emisor SIEMPRE la sociedad + bloque establecimiento (`resolveIssuerIdentity`;
+    `Property.legalName` y `Organization.taxId/legalName` deprecados y sin lectores
+    — contrato C8 con lista vacía); series únicas por sociedad (prefijo R3
+    condicional `FAC-2026-` / `FAC-RA-2026-`, 409 `SERIES_PREFIX_CLASH`, dos
+    advisory locks en la numeración: 409 `INVOICE_NUMBER_DUPLICATE` /
+    `WORK_CENTER_CODE_REQUIRED` / `SERIES_CLOSED`); cadena VeriFactu por
+    instalación (`NumeroInstalacion` de `verifactu_installations`, env solo
+    sandbox, `INSTALLATION_NOT_DECLARED` en modos reales); sociedad en SII → sin
+    huella ni envío con motivo (`VERIFACTU_EXCLUDED_BY_SII`); centro obligatorio en
+    líneas 6/7 (400 `WORK_CENTER_REQUIRED`, exentos liquidación / cierre / apertura /
+    reverso / `societyLevel`); retenciones y nóminas sin centro → 409 en vez de
+    descarte; ejercicios solo de sociedad; declarante = sociedad con badge y
+    régimen único (303 mensual forzado, 347/390 «no se presenta», propuesta RIVA
+    71.3 en `GET /fiscal/regime`); USALI y PyG por centro con «Oficina central»,
+    «Sociedad (sin centro)» y reparto SOLO informativo (base única −GOP USALI);
+    permisos `accounting.entity.read` (toda la sociedad, 404 opaco
+    `ENTITY_SCOPE_REQUIRED`; guardias en `lib/finance-scope.ts`) y
+    `organization.structure.manage`; `listOperationalProperties` único filtro
+    `kind = hotel`; `STRUCTURE_ENABLED` como interruptor. Revisión adversarial: 17
+    hallazgos (3 alta · 7 media · 7 baja), 17 corregidos y pinados (runbook §17.6).
+    Hotel individual: sin cambio visible salvo el bloque establecimiento del PDF.
+    **Deuda:** (a) DDL aplazado — `prefix` / `legal_entity_id` `SET NOT NULL` (tras
+    el backfill del VPS), índices únicos de prefijo y número por sociedad (L8: org_123
+    sucio: `FAC-2026-` en prop_123 y prop_canary, `FAC-2026-000001` × 2),
+    `bank_accounts.property_id DROP NOT NULL` (≈ 50 referencias en banking),
+    `TbaiSubmission.installationId`, `GestoriaExport.propertyId`, FK de
+    `JournalEntry.propertyId`; (b) `rbac:sync` pendiente (escribe `role_permissions`
+    de Faranda: 6 roles + Local Super Admin); (c) la activación de VeriFactu en un
+    centro no abre todavía su `verifactu_installations` (backfill / consola / SQL);
+    (d) front L6 (Configuración › Estructura societaria, perfil sin NIF, consola) y
+    L7 (ámbito único en Finanzas y Cumplimiento) sin construir: `grep
+    legal-entities apps/admin-web/src` = 0; (e) L8 (Faranda → CELUISMA, 5 hoteles +
+    oficina, specs parametrizados, cierre de `FAC-2026-` en RA, `sii_enabled` de RA,
+    índices únicos) bloqueado por los datos que solo César puede aportar (informe
+    §8); el NIF real A33615980 no entra en ningún entorno sin consentimiento; (f)
+    la probe org_123 de C9 (`structure-l5.test.mts`) solo compara cifras con la BD
+    en reposo (las suites hermanas escriben org_123 en paralelo).
+
 ## Docs prioritarios
 
 Antes de tomar decisiones de producto, lee:
@@ -696,7 +768,9 @@ Antes de tomar decisiones de producto, lee:
 - `docs/audits/RATE-GRID-V2-CIERRE-2026-09-15.md` — cierre de la verificación adversarial de Rate Grid v2: qué se construyó, cómo se verificó, límites y lo que solo César puede aportar
 - `docs/audits/TANDA-6-FINANZAS-BACKEND-2026-09-15.md` — cierre de la Tanda 6 · Finanzas backend: qué era mock y qué es real, cifras de Faranda tras el replay, los 15 hallazgos de la revisión y su estado, lo que el front debe consumir y lo que solo César puede aportar
 - `docs/audits/TANDA-6-FINANZAS-FRONT-2026-09-16.md` — cierre de la Tanda 6 · Finanzas front (Cocoa 22): las 36 URL nuevas y migradas, qué puede hacer ya un contable paso a paso, los 11 hallazgos de QA y su estado, puertas y pendientes (reinicio, verificación visual, `InvoiceLine.id`)
-- `docs/runbooks/finanzas-contabilidad.md` — contrato de datos PGC/USALI, reglas canónicas con ejemplos de asiento, rutas y permisos por módulo, comandos (plan, replay, cierre, amortización, IVA, exportaciones) y límites
+- `docs/audits/TANDA-6B-ESTRUCTURA-BACKEND-2026-09-16.md` — cierre de la Tanda 6b · Estructura societaria backend: qué cambia para Faranda/Celuisma y qué no para un hotel individual, los 17 hallazgos y su estado, lo que necesita el front (L6/L7) y la lista exacta de datos que César debe aportar para la migración (L8)
+- `docs/design/FINANZAS-ESTRUCTURA-SOCIETARIA.md` — diseño de la estructura societaria (Grupo → Sociedad → Centro): normativa, comparativa de ERP, modelo, reglas R1-R11, API, migración de Faranda, lotes L1-L10 y decisiones que solo César puede tomar
+- `docs/runbooks/finanzas-contabilidad.md` — contrato de datos PGC/USALI, reglas canónicas con ejemplos de asiento, rutas y permisos por módulo, comandos (plan, replay, cierre, amortización, IVA, exportaciones), límites y §17 estructura societaria (modelo, migraciones, backfill, reglas, rutas, comandos, aplazados, puertas)
 - `docs/director-dashboard/DESIGN-PROPOSAL.md`
 - `deploy/README-HOSTINGER.md` — playbook deploy producción
 - `deploy/README-REMOTE-DEV.md` — workflow remoto desde el Mac Pro (cliente único)

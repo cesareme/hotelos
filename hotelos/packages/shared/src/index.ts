@@ -12,6 +12,10 @@ export * from "./pos-types.js";
 export * from "./payables-types.js";
 export * from "./treasury-types.js";
 export * from "./financial-statements-types.js";
+// Estructura societaria (Tanda 6b · L1, integración): LegalEntity / work-centre
+// DTOs, enums (PropertyKind, LegalForm, PgcVariant, VerifactuChainScope) and the
+// LegalStructureErrorCode union shared by the API and the front.
+export * from "./legal-structure-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

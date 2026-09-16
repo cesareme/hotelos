@@ -77,10 +77,20 @@ export type TbaiXmlInput = TbaiHashInput & {
     developerName: string;
     softwareName: string;
     version: string;
+    /**
+     * NumSerieDispositivo (≤30): the declared installation of the billing
+     * centre (Tanda 6b: VerifactuInstallation with route `tbai`, else
+     * TBAI_DEVICE_SERIAL / VERIFACTU_INSTALL_NUMBER). Optional so older
+     * callers keep the historical literal.
+     */
+    deviceSerial?: string;
   };
   currentHash: string;
   territory: TbaiTerritory;
 };
+
+/** Historical literal emitted before the device serial was wired (kept for callers that do not pass one). */
+export const TBAI_LEGACY_DEVICE_SERIAL = "HOTELOS-DEV";
 
 function xmlEscape(value: string): string {
   return value
@@ -159,7 +169,7 @@ ${encadenamiento}
       <Nombre>${xmlEscape(input.software.softwareName)}</Nombre>
       <Version>${xmlEscape(input.software.version)}</Version>
     </Software>
-    <NumSerieDispositivo>HOTELOS-DEV</NumSerieDispositivo>
+    <NumSerieDispositivo>${xmlEscape(input.software.deviceSerial?.trim() || TBAI_LEGACY_DEVICE_SERIAL)}</NumSerieDispositivo>
   </HuellaTBAI>
 </T:TicketBAI>`;
 }

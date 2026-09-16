@@ -9,12 +9,29 @@
 // so in `avisos` («validar la numeración con la gestoría»). Nothing invented.
 // Read-only.
 
-import type { FiscalBox, FiscalModelReport, FiscalPeriodDto, VatBookName, VatSettingsDto } from "@hotelos/shared/src/fiscal-types.js";
+import { Prisma } from "@prisma/client";
+import type { FiscalBox, FiscalDeclaranteBadge, FiscalModelReport, FiscalPeriodDto, FiscalRegimeProposal, FiscalRegimeReport, VatBookName, VatSettingsDto } from "@hotelos/shared/src/fiscal-types.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { requireYear } from "../../lib/query-dates.js";
-import { PRESENTACION_MANUAL_NOTA, compute303, declaranteOf, existingSettlement, pendingVatCompensation, type Modelo303Computation } from "./modelo-303.service.js";
-import { ZERO, annualPeriod, getVatSettings, loadVatBookRows, periodsOfYear, round2, summarizeVatRows, toWire, type Money, type VatBookRow } from "./vat-books.service.js";
+import { assertFinanceReadScope } from "../../lib/finance-scope.js";
+import { PRESENTACION_MANUAL_NOTA, compute303, existingSettlement, pendingVatCompensation, type Modelo303Computation } from "./modelo-303.service.js";
+import {
+  LARGE_COMPANY_THRESHOLD,
+  ZERO,
+  annualPeriod,
+  declarantePair,
+  getVatSettings,
+  loadVatBookRows,
+  periodsOfYear,
+  regimeAvisos,
+  round2,
+  siiModelNotFiledMotivo,
+  summarizeVatRows,
+  toWire,
+  type Money,
+  type VatBookRow
+} from "./vat-books.service.js";
 
 export const MODELO_390_TITLE = "Modelo 390 · Impuesto sobre el Valor Añadido · Declaración-resumen anual";
 
@@ -133,13 +150,16 @@ export async function modelo303PeriodsOfYear(input: { organizationId: string; ye
 
 export async function buildModelo390(input: { context: UserContext; propertyId?: string | null; year: number }): Promise<FiscalModelReport> {
   requirePermissions(input.context, ["accounting.read"]);
+  assertFinanceReadScope(input.context, input.propertyId ?? null);
   const year = requireYear(input.year);
   const organizationId = input.context.organizationId;
   const settings = await getVatSettings(organizationId);
   const loaded = await modelo303PeriodsOfYear({ organizationId, year, settings, propertyId: input.propertyId ?? null });
   const aggregated = aggregate390({ year, periods: loaded.periods, rows: loaded.rows });
-  const avisos = Array.from(new Set([...aggregated.avisos, ...loaded.avisos, ...loaded.periods.flatMap((period) => period.computation.avisos)]));
-  if (input.propertyId) avisos.push("Vista parcial por establecimiento: el Modelo 390 se presenta por NIF (organización).");
+  const regimen = settings.sociedad.regimen;
+  const noSePresenta = regimen.modelosNoPresentados.includes("390") ? { motivo: siiModelNotFiledMotivo("390") } : undefined;
+  const avisos = Array.from(new Set([...(noSePresenta ? [noSePresenta.motivo] : []), ...aggregated.avisos, ...loaded.avisos, ...loaded.periods.flatMap((period) => period.computation.avisos), ...regimeAvisos(regimen, "390")]));
+  if (input.propertyId) avisos.push("Vista parcial por establecimiento (no liquidable): el Modelo 390 se presenta por NIF de la sociedad.");
   const summary = (book: VatBookName) => summarizeVatRows(loaded.rows.filter((row) => row.book === book));
   return {
     modelo: "390",
@@ -147,7 +167,8 @@ export async function buildModelo390(input: { context: UserContext; propertyId?:
     organizationId,
     propertyId: input.propertyId ?? null,
     periodo: annualPeriod(year),
-    declarante: await declaranteOf(organizationId),
+    declarante: declarantePair(settings.sociedad),
+    sociedad: settings.sociedad,
     casillas: aggregated.casillas,
     totales: aggregated.totales,
     avisos,
@@ -166,7 +187,81 @@ export async function buildModelo390(input: { context: UserContext; propertyId?:
       resultado: toWire(period.computation.resultado71),
       liquidado: period.liquidado ? "sí" : "no"
     })),
-    presentacion: { modo: "manual", ficheroOficial: false, nota: PRESENTACION_MANUAL_NOTA },
+    presentacion: { modo: "manual", ficheroOficial: false, nota: PRESENTACION_MANUAL_NOTA, ...(noSePresenta ? { noSePresenta } : {}) },
+    generatedAt: new Date().toISOString()
+  };
+}
+
+// ── Régimen: propuesta al cierre del ejercicio (Tanda 6b · R8) ──────────────
+
+const EUR = new Intl.NumberFormat("es-ES", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/**
+ * Pure (RIVA art. 71.3): the volumen de operaciones of a year above
+ * 6.010.121,04 € makes the sujeto pasivo «gran empresa» from the following
+ * year (303/111/115 monthly, SII compulsory — which exonerates 347/390 and
+ * excludes VeriFactu). The proposal compares the figure with the flags of the
+ * legal entity and NEVER writes: the change is confirmed in Estructura
+ * societaria › Datos fiscales. `volumen = null` (empty books) proposes nothing.
+ * The fiscal-year close (L4) calls this to show the proposal in its preview.
+ */
+export function proposeRegime(input: { year: number; volumen: Money | null; sociedad: Pick<FiscalDeclaranteBadge, "regimen"> }): FiscalRegimeProposal {
+  const current: FiscalRegimeProposal["regimen"] = input.sociedad.regimen.largeCompany || input.sociedad.regimen.siiEnabled ? "gran_empresa" : "general";
+  const threshold = `${EUR.format(toWire(LARGE_COMPANY_THRESHOLD))} €`;
+  if (input.volumen === null) {
+    return { regimen: current, cambia: false, motivo: `Sin operaciones registradas en ${input.year}: no hay base para proponer un cambio de régimen (umbral de gran empresa ${threshold}, RIVA art. 71.3).` };
+  }
+  const volumen = `${EUR.format(toWire(input.volumen))} €`;
+  const exceeds = input.volumen.greaterThan(LARGE_COMPANY_THRESHOLD);
+  if (exceeds && current === "general") {
+    return {
+      regimen: "gran_empresa",
+      cambia: true,
+      motivo: `Volumen de operaciones ${input.year}: ${volumen} > ${threshold} (RIVA art. 71.3). Desde el 1 de enero de ${input.year + 1} la sociedad es gran empresa: Modelos 303/111/115 mensuales, SII obligatorio (exonera 347 y 390) y fuera del RRSIF (VeriFactu no aplica, RD 1007/2023 art. 3.3). Confirmar con la gestoría y marcar «Gran empresa / SII» en Estructura societaria › Datos fiscales.`
+    };
+  }
+  if (!exceeds && current === "gran_empresa") {
+    return {
+      regimen: "general",
+      cambia: true,
+      motivo: `Volumen de operaciones ${input.year}: ${volumen} ≤ ${threshold} (RIVA art. 71.3). La sociedad está marcada como gran empresa / SII: revisar con la gestoría si mantiene el régimen (mensual, SII) o vuelve al régimen general desde el 1 de enero de ${input.year + 1}.`
+    };
+  }
+  return {
+    regimen: current,
+    cambia: false,
+    motivo: exceeds
+      ? `Volumen de operaciones ${input.year}: ${volumen} > ${threshold}: la sociedad ya tributa como gran empresa (mensual${input.sociedad.regimen.siiEnabled ? ", SII" : ""}).`
+      : `Volumen de operaciones ${input.year}: ${volumen} ≤ ${threshold}: la sociedad sigue en régimen general (${input.sociedad.regimen.persistedPeriodicity === "monthly" ? "mensual" : "trimestral"}).`
+  };
+}
+
+/**
+ * `GET /fiscal/regime?year=`: the sociedad's regime (R8) and the proposal for
+ * the following year from the volumen de operaciones of the 390. Read-only.
+ */
+export async function buildFiscalRegimeReport(input: { context: UserContext; year: number }): Promise<FiscalRegimeReport> {
+  requirePermissions(input.context, ["accounting.read"]);
+  // The volumen de operaciones is a whole-sociedad amount (R11).
+  assertFinanceReadScope(input.context, null);
+  const year = requireYear(input.year);
+  const organizationId = input.context.organizationId;
+  const settings = await getVatSettings(organizationId);
+  const loaded = await modelo303PeriodsOfYear({ organizationId, year, settings, propertyId: null });
+  const aggregated = aggregate390({ year, periods: loaded.periods, rows: loaded.rows });
+  const volumen = loaded.rows.length === 0 ? null : new Prisma.Decimal(aggregated.totales.volumenOperaciones ?? 0);
+  const propuesta = proposeRegime({ year, volumen, sociedad: settings.sociedad });
+  const avisos = [...regimeAvisos(settings.sociedad.regimen, "303"), ...loaded.avisos];
+  if (settings.sociedad.source === "organization_fallback") avisos.push("Sociedad pendiente de alta (sin backfill de estructura societaria): el régimen se lee de los valores por defecto.");
+  return {
+    organizationId,
+    year,
+    sociedad: settings.sociedad,
+    vatSettings: settings,
+    volumenOperaciones: volumen === null ? null : toWire(volumen),
+    umbralGranEmpresa: toWire(LARGE_COMPANY_THRESHOLD),
+    propuesta,
+    avisos: Array.from(new Set(avisos)),
     generatedAt: new Date().toISOString()
   };
 }

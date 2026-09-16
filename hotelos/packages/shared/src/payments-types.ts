@@ -25,6 +25,9 @@
  * the API computes with Decimal and rounds per line, squaring to the cent.
  */
 
+// Tanda 6b (L3): work-centre kind of the establishment block frozen in InvoiceSnapshotV1.
+import type { PropertyKind } from "./legal-structure-types.js";
+
 export const PAYMENT_METHODS = ["cash", "card_terminal", "card_online", "bank_transfer", "payment_link", "other"] as const;
 export type PaymentMethodCode = (typeof PAYMENT_METHODS)[number];
 
@@ -205,6 +208,27 @@ export type InvoiceSnapshotV1 = {
   folioLineIds: string[];
   issuer: { taxId: string; legalName: string };
   customer: { type: string; taxId: string | null; name: string | null };
+  // Tanda 6b (L3): structure block frozen at issuance (absent on documents
+  // issued before the sociedad layer; parseInvoiceSnapshot ignores it).
+  /** Establecimiento (work centre) that issued the document: code, nombre comercial, dirección. */
+  establishment?: {
+    propertyId: string;
+    code: string | null;
+    name: string;
+    tradeName: string;
+    kind: PropertyKind;
+    address: string | null;
+    postalCode: string | null;
+    municipality: string | null;
+    province: string | null;
+    country: string;
+    addressLine: string | null;
+  };
+  /** Domicilio fiscal of the sociedad at issuance. */
+  issuerFiscalAddress?: string | null;
+  legalEntityId?: string | null;
+  installationId?: string | null;
+  numeroInstalacion?: string | null;
 };
 
 /** Draft-time snapshot: the folio lines the draft was built from (checked again at issuance). */

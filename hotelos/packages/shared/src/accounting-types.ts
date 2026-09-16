@@ -82,7 +82,15 @@ export const LEDGER_ERROR_CODES = [
   "JOURNAL_DRAFT_NOT_REVERSIBLE",
   "JOURNAL_REVERSAL_OF_REVERSAL",
   "JOURNAL_REVERSAL_REASON_REQUIRED",
-  "CHART_NOT_PROVISIONED"
+  "CHART_NOT_PROVISIONED",
+  /** Tanda 6b (R4): a line of groups 6/7 without a work centre (`propertyId`) and the entry is not exempt nor `societyLevel`. */
+  "WORK_CENTER_REQUIRED",
+  /** Tanda 6b (R4): `propertyId` sent to GET/POST /accounting/fiscal-years or POST /accounting/fiscal-periods — fiscal years belong to the sociedad. */
+  "FISCAL_YEAR_IS_ENTITY_SCOPED",
+  /** Tanda 6b (R10.1, fix t6b#6): the `propertyId` of an asiento is not a work centre of the caller's organisation — opaque 404, never 403/409 (`requireJournalWorkCenter`). */
+  "PROPERTY_NOT_FOUND",
+  /** Tanda 6b (fix t6b#6): `POST /journal-entries/:id/post` on a draft of another organisation — opaque 404. */
+  "JOURNAL_ENTRY_NOT_FOUND"
 ] as const;
 export type LedgerErrorCode = (typeof LEDGER_ERROR_CODES)[number];
 
@@ -166,6 +174,12 @@ export type ManualJournalEntryInput = {
   description: string;
   reference?: string;
   propertyId?: string;
+  /**
+   * Tanda 6b (R4): `true` marks a manual entry of the sociedad (no work centre)
+   * so lines of groups 6/7 without `propertyId` are accepted instead of 400
+   * WORK_CENTER_REQUIRED. Only valid on manual entries.
+   */
+  societyLevel?: boolean;
   lines: ManualJournalLineInput[];
 };
 

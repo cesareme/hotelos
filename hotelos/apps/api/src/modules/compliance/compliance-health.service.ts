@@ -18,7 +18,8 @@ import { existsSync } from "node:fs";
 import { normalizeTaxRegion, resolveVerifactuSoftware, TAX_REGIONS } from "@hotelos/compliance";
 import { prisma } from "@hotelos/database";
 import { createDegradedCollector } from "../../lib/degraded.js";
-import { resolveIssuerIdentity } from "../invoicing/issuer-identity.service.js";
+import { filterOperationalProperties, isOperationalKind } from "../../lib/tenancy.js";
+import { resolveIssuerIdentity, type VerifactuExclusion } from "../invoicing/issuer-identity.service.js";
 import { resolveSesEstablishment } from "./ses-submission.service.js";
 
 type IntegrationMode = "sandbox" | "preproduction" | "production";
@@ -184,15 +185,30 @@ export type OrganizationComplianceHealth = {
   /** Properties whose SES.HOSPEDAJES establishment block cannot be built (FISC-08). */
   sesEstablishmentIncomplete: { count: number; propertyIds: string[]; missing: Record<string, string[]> };
   /** Issuer NIF validity per property (FISC-03). */
-  issuers: Array<{ propertyId: string; taxIdValid: boolean; taxIdSource: "organization" | "missing" }>;
+  // Tanda 6b (L3): "legal_entity" once the sociedad carries the NIF; "organization" is the pre-backfill fallback.
+  // `verifactuExclusion` (fix t6b#2): non-null when the sociedad is in the SII — VeriFactu does not apply
+  // (RD 1007/2023 art. 3.3) and the Compliance Center shows the motivo instead of a readiness failure.
+  issuers: Array<{ propertyId: string; taxIdValid: boolean; taxIdSource: "legal_entity" | "organization" | "missing"; verifactuExclusion: VerifactuExclusion | null }>;
   /** Properties whose Property.taxRegion is not one of TAX_REGIONS (legacy 'canary', 'Madrid', null…). */
   nonCanonicalTaxRegion: Array<{ propertyId: string; taxRegion: string | null; province: string | null; normalized: string | null }>;
   /** Properties with a foral territory (TicketBAI). */
   foralPropertyIds: string[];
 };
 
+/**
+ * Pure (Tanda 6b · R6, t6b#17): the centres that are issuers for the health
+ * report — every hotel, plus a non-lodging centre (office · other) only once it
+ * bills, i.e. has an ACTIVE invoice series. The head office of a sociedad has
+ * the sociedad's identity like every centre, but it is not an issuer until a
+ * series is opened for it (design §5.2 R6: «verifactuEnabled a false salvo que
+ * se active explícitamente una serie»).
+ */
+export function selectIssuerProperties<T extends { id: string; kind?: string | null }>(properties: readonly T[], billingPropertyIds: ReadonlySet<string>): T[] {
+  return properties.filter((property) => isOperationalKind(property.kind) || billingPropertyIds.has(property.id));
+}
+
 async function collectOrganizationHealth(
-  properties: Array<{ id: string; taxRegion: string | null; province: string | null; fiscalTerritory: string | null }>,
+  properties: Array<{ id: string; taxRegion: string | null; province: string | null; fiscalTerritory: string | null; kind?: string | null }>,
   safe: <T>(label: string, promise: Promise<T>, fallback: T) => Promise<T>
 ): Promise<OrganizationComplianceHealth> {
   const canonical = new Set<string>(TAX_REGIONS as readonly string[]);
@@ -208,8 +224,10 @@ async function collectOrganizationHealth(
     .filter((property) => property.fiscalTerritory && FORAL_TERRITORIES.has(property.fiscalTerritory))
     .map((property) => property.id);
 
+  // Tanda 6b (R6): the SES establishment block is a lodging obligation — the head
+  // office and other non-lodging centres never send partes and are not "incomplete".
   const establishments = await Promise.all(
-    properties.map((property) =>
+    filterOperationalProperties(properties).map((property) =>
       safe(
         `sesEstablishment:${property.id}`,
         resolveSesEstablishment(property.id).then((result) => ({ propertyId: property.id, ok: result.ok, missing: result.missing as string[] })),
@@ -221,16 +239,29 @@ async function collectOrganizationHealth(
   const missing: Record<string, string[]> = {};
   for (const entry of incomplete) missing[entry.propertyId] = entry.missing;
 
+  // Tanda 6b (R6): the head office is an issuer only once it bills (an active
+  // series); otherwise it would show as an issuer that never invoices.
+  const nonOperationalIds = properties.filter((property) => !isOperationalKind(property.kind)).map((property) => property.id);
+  const billingRows =
+    nonOperationalIds.length === 0
+      ? []
+      : await safe(
+          "billingCentres",
+          prisma.invoiceSequence.findMany({ where: { propertyId: { in: nonOperationalIds }, active: true }, select: { propertyId: true }, distinct: ["propertyId"] }),
+          [] as Array<{ propertyId: string }>
+        );
+  const issuerProperties = selectIssuerProperties(properties, new Set(billingRows.map((row) => row.propertyId)));
   const issuers = await Promise.all(
-    properties.map((property) =>
+    issuerProperties.map((property) =>
       safe(
         `issuer:${property.id}`,
         resolveIssuerIdentity(property.id).then((identity) => ({
           propertyId: property.id,
           taxIdValid: identity?.taxIdValid ?? false,
-          taxIdSource: (identity?.taxIdSource ?? "missing") as "organization" | "missing"
+          taxIdSource: identity?.taxIdSource ?? "missing",
+          verifactuExclusion: identity?.verifactuExclusion ?? null
         })),
-        { propertyId: property.id, taxIdValid: false, taxIdSource: "missing" as const }
+        { propertyId: property.id, taxIdValid: false, taxIdSource: "missing" as const, verifactuExclusion: null }
       )
     )
   );
@@ -279,9 +310,9 @@ export async function getComplianceHealth(organizationId?: string): Promise<Comp
     "properties",
     prisma.property.findMany({
       where: organizationId ? { organizationId } : {},
-      select: { id: true, taxRegion: true, province: true, fiscalTerritory: true }
+      select: { id: true, taxRegion: true, province: true, fiscalTerritory: true, kind: true }
     }),
-    [] as Array<{ id: string; taxRegion: string | null; province: string | null; fiscalTerritory: string | null }>
+    [] as Array<{ id: string; taxRegion: string | null; province: string | null; fiscalTerritory: string | null; kind: string }>
   );
   const tenantScope = organizationId ? { propertyId: { in: properties.map((p) => p.id) } } : {};
 

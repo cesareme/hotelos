@@ -199,10 +199,64 @@ enum ActorType {
   system
 }
 
+// ---- Finanzas · estructura societaria (Tanda 6b · L1, 2026-09-16) ----
+// Grupo (Organization) → Sociedad (LegalEntity = NIF) → Centro de trabajo
+// (Property.kind). Design: docs/design/FINANZAS-ESTRUCTURA-SOCIETARIA.md §5.1;
+// data contract: docs/runbooks/finanzas-contabilidad.md §17.
+
+/// Work-centre type of a Property: `hotel` runs rooms/rates/POS/tourist tax/SES;
+/// `office` (head office) and `other` only carry finance rows (payroll, bills,
+/// banks, assets, withholdings). listOperationalProperties() filters on it.
+enum PropertyKind {
+  hotel
+  office
+  other
+}
+
+/// Legal form of the legal entity (LSC / persona física).
+enum LegalForm {
+  sa
+  sl
+  slu
+  coop
+  persona_fisica
+  otra
+}
+
+/// PGC template the annual accounts are produced with (LSC arts. 257-258).
+enum PgcVariant {
+  pymes
+  general
+}
+
+/// VeriFactu chain cardinality per legal entity: one installation (chain) per
+/// billing centre, or a single one for the whole NIF (Orden HAC/1177/2024 7.c).
+enum VerifactuChainScope {
+  per_center
+  per_entity
+}
+
+enum LegalEntityStatus {
+  active
+  dormant
+}
+
+/// Reporting route of a VeriFactu installation.
+enum VerifactuRoute {
+  verifactu
+  tbai
+  igic
+}
+
 model Organization {
   id        String   @id @default(cuid())
   name      String
+  /// deprecated (Tanda 6b): the legal name lives in LegalEntity.legalName. Kept for the
+  /// backfill and for tenants without a legal entity yet; Finanzas reads it ONLY through
+  /// resolveLegalIdentity (apps/api/src/lib/finance-scope.ts). Contract test:
+  /// tests/legal-identity-readers-contract.test.mjs.
   legalName String?  @map("legal_name")
+  /// deprecated (Tanda 6b): the NIF lives in LegalEntity.taxId (same rule as legalName).
   taxId     String?  @map("tax_id")
   country   String   @default("ES")
   createdAt DateTime @default(now()) @map("created_at")
@@ -210,10 +264,91 @@ model Organization {
   @@map("organizations")
 }
 
+/// Sociedad (sujeto pasivo = NIF). Exactly ONE per organization in Tanda 6b
+/// (isDefault = true; POST /legal-entities → 409 MULTI_ENTITY_NOT_ENABLED). Single
+/// source of the issuer identity (invoices, XML, PDF, AEAT declarant, SEPA debtor,
+/// payroll employer). Created by the backfill (apps/api/src/scripts/backfill-legal-structure.ts)
+/// or by createTenant (L2). The ledger (chart, journal, VAT books, models, fiscal
+/// years, annual accounts) stays keyed by organizationId and is reached through
+/// resolveLedgerScope, which resolves to this row.
+model LegalEntity {
+  id                            String              @id @default(cuid())
+  /// Immutable (trigger legal_entities_organizacion_inmutable, migration 20260916102000):
+  /// a sociedad never changes organisation (R10.1); a sociedad of another grupo is a new row.
+  organizationId                String              @map("organization_id")
+  /// 2-6 upper-case letters/digits; unique inside the organization.
+  code                          String
+  legalName                     String              @map("legal_name")
+  /// Normalised NIF with a valid checksum, or null while pending (the backfill leaves it
+  /// null with a warning for an invalid or duplicated value). Unique when set (20260916101000).
+  taxId                         String?             @unique @map("tax_id")
+  legalForm                     LegalForm?          @map("legal_form")
+  fiscalAddress                 String?             @map("fiscal_address")
+  fiscalPostalCode              String?             @map("fiscal_postal_code")
+  fiscalMunicipality            String?             @map("fiscal_municipality")
+  fiscalIneCode                 String?             @map("fiscal_ine_code")
+  fiscalProvince                String?             @map("fiscal_province")
+  /// Domicilio social when it differs from the fiscal address.
+  registeredOfficeAddress       String?             @map("registered_office_address")
+  registeredOfficePostalCode    String?             @map("registered_office_postal_code")
+  registeredOfficeMunicipality  String?             @map("registered_office_municipality")
+  registeredOfficeProvince      String?             @map("registered_office_province")
+  mercantileRegistry            String?             @map("mercantile_registry")
+  cnae                          String?
+  pgcVariant                    PgcVariant          @default(pymes) @map("pgc_variant")
+  fiscalYearStartMonth          Int                 @default(1) @map("fiscal_year_start_month")
+  /// Gran empresa / SII regime (RIVA 62.6, 71.3): governs monthly VAT, 347/390 "no se presenta"
+  /// and VeriFactu exclusion (R8). PropertyComplianceSetting.siiEnabled is deprecated in its favour.
+  largeCompany                  Boolean             @default(false) @map("large_company")
+  siiEnabled                    Boolean             @default(false) @map("sii_enabled")
+  verifactuChainScope           VerifactuChainScope @default(per_center) @map("verifactu_chain_scope")
+  /// Código de cuenta de cotización principal (RD 84/1996 13.3); provincial CCCs live on the centre.
+  cccPrincipal                  String?             @map("ccc_principal")
+  isDefault                     Boolean             @default(true) @map("is_default")
+  status                        LegalEntityStatus   @default(active)
+  createdAt                     DateTime            @default(now()) @map("created_at")
+  updatedAt                     DateTime            @default(now()) @updatedAt @map("updated_at")
+
+  properties                    Property[]
+  verifactuInstallations        VerifactuInstallation[]
+
+  @@unique([organizationId, code])
+  @@index([organizationId, isDefault])
+  @@map("legal_entities")
+}
+
+/// One "facturación" (SIF installation) of a legal entity: the VeriFactu chain is
+/// per pair (obligado; instalación). `numeroInstalacion` is IMMUTABLE (trigger
+/// verifactu_installations_numero_inmutable, migration 20260916100000) and never
+/// reused: changing scope retires the row (retiredAt) and opens a new number.
+/// Replaces the global VERIFACTU_INSTALL_NUMBER (env = sandbox fallback only).
+model VerifactuInstallation {
+  id                String         @id @default(cuid())
+  legalEntityId     String         @map("legal_entity_id")
+  /// Billing centre with `per_center`; null with `per_entity` (one chain per NIF).
+  propertyId        String?        @map("property_id")
+  numeroInstalacion String         @map("numero_instalacion")
+  route             VerifactuRoute @default(verifactu)
+  /// Foral territory for TBAI (bizkaia · gipuzkoa · araba) or null.
+  territory         String?
+  active            Boolean        @default(true)
+  createdAt         DateTime       @default(now()) @map("created_at")
+  retiredAt         DateTime?      @map("retired_at")
+
+  legalEntity       LegalEntity    @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
+
+  @@unique([legalEntityId, numeroInstalacion])
+  @@index([propertyId, active])
+  @@map("verifactu_installations")
+}
+
 model Property {
   id                    String   @id @default(cuid())
   organizationId        String   @map("organization_id")
   name                  String
+  /// deprecated (Tanda 6b): never the issuer's legal name (that is LegalEntity.legalName).
+  /// The backfill copied it to `tradeName` when it differed from the razón social; no
+  /// finance module reads it (tests/legal-identity-readers-contract.test.mjs).
   legalName             String?  @map("legal_name")
   address               String?
   municipality          String?
@@ -238,9 +373,39 @@ model Property {
   invoiceLegalFooter    String?  @map("invoice_legal_footer")
   createdAt             DateTime @default(now()) @map("created_at")
 
+  // Tanda 6b (L1): work centre of a legal entity. Nullable until every Property
+  // writer (createTenant, provisioning — L2) sets it; the backfill fills existing rows
+  // and the NOT NULL step is deferred (see migration 20260916101000 header).
+  /// Sociedad the centre belongs to (same organization; invariant R10.1). Never changes once
+  /// invoices or an installation exist (R10.5). Both enforced by trigger
+  /// properties_sociedad_inmutable (migration 20260916102000): a NULL may still be filled.
+  legalEntityId         String?  @map("legal_entity_id")
+  kind                  PropertyKind @default(hotel)
+  /// 2-6 upper-case code (RA, LT, OC…) used in series prefixes when the entity has several
+  /// billing centres; unique inside the legal entity.
+  code                  String?
+  /// Nombre comercial printed in the establishment block of the invoice (never as razón social).
+  tradeName             String?  @map("trade_name")
+  // Census / local data (036, IAE, registro turístico, SES, TGSS, centro de trabajo):
+  // stored and exported for the gestoría, never self-assessed by Anfitorio.
+  cadastralReference    String?  @map("cadastral_reference")
+  surfaceM2             Decimal? @db.Decimal(10, 2) @map("surface_m2")
+  iaeEpigraph           String?  @map("iae_epigraph")
+  bedCapacity           Int?     @map("bed_capacity")
+  starRating            Int?     @map("star_rating")
+  openingMonths         Int?     @map("opening_months")
+  tourismRegistryNumber String?  @map("tourism_registry_number")
+  sesEstablishmentCode  String?  @map("ses_establishment_code")
+  /// Código de cuenta de cotización secundario (provincial) of this centre.
+  socialSecurityCcc     String?  @map("social_security_ccc")
+  laborCenterCode       String?  @map("labor_center_code")
+
+  legalEntity           LegalEntity? @relation(fields: [legalEntityId], references: [id], onDelete: Restrict)
   rateChangeJournals    RateChangeJournal[]
 
+  @@unique([legalEntityId, code])
   @@index([organizationId])
+  @@index([legalEntityId, kind])
   @@map("properties")
 }
 
@@ -560,6 +725,8 @@ model PropertyComplianceSetting {
   sesHospedajesEnabled    Boolean  @default(false) @map("ses_hospedajes_enabled")
   verifactuEnabled        Boolean  @default(false) @map("verifactu_enabled")
   ticketbaiEnabled        Boolean  @default(false) @map("ticketbai_enabled")
+  /// deprecated (Tanda 6b): the SII regime belongs to the sujeto pasivo → LegalEntity.siiEnabled
+  /// (RIVA 62.6). Kept for the L5 migration of the flag; no new reader.
   siiEnabled              Boolean  @default(false) @map("sii_enabled")
   b2bEinvoiceEnabled      Boolean  @default(false) @map("b2b_einvoice_enabled")
   /// Tanda 3: SES.HOSPEDAJES establishment registry number (per property, not per process).
@@ -578,6 +745,11 @@ model InvoiceSequence {
   id           String  @id @default(cuid())
   propertyId   String  @map("property_id")
   sequenceCode String  @map("sequence_code")
+  /// Series prefix as printed (FAC-2026- · FAC-LT-2026-). Tanda 6b: unique per legal entity and
+  /// year (case-insensitive) — guarded by assertSeriesPrefixFree (409 SERIES_PREFIX_CLASH); the
+  /// unique index (legal_entity_id, upper(prefix), year) is created once the collision report is clean.
+  /// Still nullable: patchBillingSettings (L2) writes null to reset a series; NOT NULL lands with L2
+  /// (legacy NULLs are already filled as `<code>-<year>-` by migration 20260916101000).
   prefix       String?
   nextNumber   Int     @default(1) @map("next_number")
   padding      Int     @default(6)
@@ -585,9 +757,12 @@ model InvoiceSequence {
   active       Boolean @default(true)
   /// Tanda 3 (FISC-09): fiscal year of the series (FAC-2027-000001 starts a new row); null only for legacy rows before backfill.
   year         Int?
+  /// Tanda 6b (L1): issuing legal entity (backfilled from the property; NOT NULL deferred to L2 writers).
+  legalEntityId String? @map("legal_entity_id")
 
   @@unique([propertyId, sequenceCode, year])
   @@index([propertyId, sequenceCode])
+  @@index([legalEntityId, year])
   @@map("invoice_sequences")
 }
 
@@ -597,6 +772,9 @@ model AccountingSetting {
   propertyId            String?  @map("property_id")
   chartTemplate         String?  @map("chart_template")
   fiscalYearStartMonth  Int      @default(1) @map("fiscal_year_start_month")
+  /// Tanda 6b: may carry `corporateAllocation = { method: none|revenue|rooms_available|headcount|manual,
+  /// weights?: [{ propertyId, weight }] }` — head-office cost split used ONLY in USALI/PyG reporting
+  /// (informative, never posted). Shape: CorporateAllocation in packages/shared/src/legal-structure-types.ts.
   configurationJson     Json     @default("{}") @map("configuration_json")
   updatedAt             DateTime @updatedAt @map("updated_at")
 
@@ -3365,11 +3543,20 @@ model Invoice {
   simplified          Boolean       @default(false)
   /// false solo en simplificadas dentro de límite: el emisor no exige identificar al cliente.
   customerRequired    Boolean       @default(true) @map("customer_required")
+  // Tanda 6b (L1): issuing legal entity and VeriFactu installation of the record. Backfilled;
+  // NOT NULL and the unique (legal_entity_id, invoice_number) WHERE deleted_at IS NULL AND
+  // status <> 'draft' are deferred until the duplicate report is clean (org_123 demo reuses
+  // FAC-2026-000001 in two properties). issuerTaxId / issuerLegalName of an issued invoice are
+  // immutable by trigger invoices_issuer_inmutable (migration 20260916100000).
+  legalEntityId       String?       @map("legal_entity_id")
+  installationId      String?       @map("installation_id")
 
   folio               Folio?        @relation("FolioInvoices", fields: [folioId], references: [id], onDelete: SetNull)
   payments            Payment[]     @relation("InvoicePayments")
 
   @@unique([propertyId, invoiceNumber])
+  @@index([legalEntityId, invoiceNumber])
+  @@index([installationId])
   @@index([propertyId, status])
   @@index([propertyId, issuedAt])
   @@index([propertyId, createdAt])
@@ -4659,12 +4846,15 @@ model VerifactuSubmission {
   mode            String?
   /// Snapshot of the SistemaInformatico block used in the XML.
   softwareJson    Json?     @map("software_json")
+  /// Tanda 6b (L1): VerifactuInstallation whose chain this record belongs to (backfilled from the property).
+  installationId  String?   @map("installation_id")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
   @@unique([invoiceId, registroType])
   @@index([propertyId, status])
   @@index([status, nextRetryAt])
+  @@index([installationId])
   @@map("verifactu_submissions")
 }
 
@@ -4755,8 +4945,12 @@ model WithholdingTaxRecord {
 
 model BankAccount {
   id                String   @id @default(cuid())
+  /// Tanda 6b: the account belongs to the legal entity; `propertyId` becomes optional in L4
+  /// (treasury/banking readers, ~100 references) — until then a bank stays attached to a centre.
   propertyId        String   @map("property_id")
   organizationId    String   @map("organization_id")
+  /// Tanda 6b (L1): owning legal entity (backfilled from the organization's default entity).
+  legalEntityId     String?  @map("legal_entity_id")
   name              String
   bankName          String?  @map("bank_name")
   iban              String?
@@ -4770,6 +4964,7 @@ model BankAccount {
 
   @@index([propertyId, active])
   @@index([organizationId])
+  @@index([legalEntityId, active])
   @@map("bank_accounts")
 }
 

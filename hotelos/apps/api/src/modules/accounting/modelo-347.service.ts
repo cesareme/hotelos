@@ -18,8 +18,9 @@ import type { FiscalBox, FiscalModelReport, VatBookName } from "@hotelos/shared/
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { requireYear } from "../../lib/query-dates.js";
-import { PRESENTACION_MANUAL_NOTA, declaranteOf } from "./modelo-303.service.js";
-import { ZERO, annualPeriod, getVatSettings, loadVatBookRows, quarterOfDay, round2, summarizeVatRows, toWire, type Money, type VatBookRow } from "./vat-books.service.js";
+import { assertFinanceReadScope } from "../../lib/finance-scope.js";
+import { PRESENTACION_MANUAL_NOTA } from "./modelo-303.service.js";
+import { ZERO, annualPeriod, declarantePair, getVatSettings, loadVatBookRows, quarterOfDay, regimeAvisos, round2, siiModelNotFiledMotivo, summarizeVatRows, toWire, type Money, type VatBookRow } from "./vat-books.service.js";
 
 export const MODELO_347_TITLE = "Modelo 347 · Declaración anual de operaciones con terceras personas";
 
@@ -116,14 +117,17 @@ export function compute347(rows: readonly VatBookRow[]): Modelo347Computation {
 
 export async function buildModelo347(input: { context: UserContext; propertyId?: string | null; year: number }): Promise<FiscalModelReport> {
   requirePermissions(input.context, ["accounting.read"]);
+  assertFinanceReadScope(input.context, input.propertyId ?? null);
   const year = requireYear(input.year);
   const organizationId = input.context.organizationId;
   const settings = await getVatSettings(organizationId);
   const periodo = annualPeriod(year);
   const loaded = await loadVatBookRows({ organizationId, from: periodo.from, to: periodo.to, propertyId: input.propertyId, periodicity: settings.periodicity, taxFigure: settings.taxFigure });
   const computation = compute347(loaded.rows);
-  const avisos = [...loaded.avisos, ...computation.avisos];
-  if (input.propertyId) avisos.push("Vista parcial por establecimiento: el Modelo 347 se presenta por NIF (organización) y el umbral se evalúa sobre todas las propiedades.");
+  const regimen = settings.sociedad.regimen;
+  const noSePresenta = regimen.modelosNoPresentados.includes("347") ? { motivo: siiModelNotFiledMotivo("347") } : undefined;
+  const avisos = [...(noSePresenta ? [noSePresenta.motivo] : []), ...loaded.avisos, ...computation.avisos, ...regimeAvisos(regimen, "347")];
+  if (input.propertyId) avisos.push("Vista parcial por establecimiento (no liquidable): el Modelo 347 se presenta por NIF de la sociedad y el umbral se evalúa sobre todos sus centros.");
   const summary = (book: VatBookName) => summarizeVatRows(loaded.rows.filter((row) => row.book === book));
   const anyDerived = (Object.values(loaded.origen) as Array<"libros" | "documentos">).some((origen) => origen === "documentos");
   return {
@@ -132,7 +136,8 @@ export async function buildModelo347(input: { context: UserContext; propertyId?:
     organizationId,
     propertyId: input.propertyId ?? null,
     periodo,
-    declarante: await declaranteOf(organizationId),
+    declarante: declarantePair(settings.sociedad),
+    sociedad: settings.sociedad,
     casillas: computation.casillas,
     totales: computation.totales,
     avisos,
@@ -152,7 +157,7 @@ export async function buildModelo347(input: { context: UserContext; propertyId?:
       t4: toWire(declarado.trimestres[3]),
       filas: declarado.filas
     })),
-    presentacion: { modo: "manual", ficheroOficial: false, nota: PRESENTACION_MANUAL_NOTA },
+    presentacion: { modo: "manual", ficheroOficial: false, nota: PRESENTACION_MANUAL_NOTA, ...(noSePresenta ? { noSePresenta } : {}) },
     generatedAt: new Date().toISOString()
   };
 }

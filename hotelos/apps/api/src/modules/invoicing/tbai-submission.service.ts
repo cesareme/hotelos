@@ -3,14 +3,20 @@ import { prisma } from "@hotelos/database";
 import type { EventEnvelope } from "@hotelos/shared";
 import { signSubmissionXml } from "../../lib/compliance-signing.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
-import { issuerForInvoice } from "./issuer-identity.service.js";
+import { issuerForInvoice, resolveVerifactuChainScope, type VerifactuChainScope } from "./issuer-identity.service.js";
 
 // TicketBAI <Software> block. The producer identity (NIF, razón social,
 // product name, version) is the SAME declared for VeriFactu — one
 // resolveVerifactuSoftware() for both (contract E) — plus the two TBAI-only
 // values, validated against the TicketBAI XSD lengths:
 //   TBAI_LICENSE_KEY     LicenciaTBAI granted by the diputación foral (≤20)   required in TBAI_MODE=production
-//   TBAI_DEVICE_SERIAL   NumSerieDispositivo of this installation (≤30)      defaults to VERIFACTU_INSTALL_NUMBER
+//   TBAI_DEVICE_SERIAL   NumSerieDispositivo of this installation (≤30)      env fallback
+// NumSerieDispositivo (Tanda 6b · L3, design §5.2 R7): the declared
+// VerifactuInstallation of the billing centre with route `tbai` — one per
+// hotel with `per_center`, one per sociedad with `per_entity` — supplies the
+// serial; TBAI_DEVICE_SERIAL / VERIFACTU_INSTALL_NUMBER are the fallback for a
+// centre without one (an error in TBAI_MODE=production, tolerated in sandbox).
+// <Emisor> is the SOCIEDAD (issuerForInvoice → snapshot of the razón social).
 // Blank values count as absent. In production a missing/invalid value blocks
 // the send (row parked as rejected with SOFTWARE_NOT_CONFIGURED); sandbox
 // tolerates the labelled defaults so the stub pipeline keeps working.
@@ -25,8 +31,15 @@ export type TbaiSoftwareBlock = {
   developerName: string;
   softwareName: string;
   version: string;
-  /** NumSerieDispositivo — needs buildTbaiXml support (today the compliance builder emits a literal). */
+  /** NumSerieDispositivo: the declared TBAI installation of the centre, else TBAI_DEVICE_SERIAL / VERIFACTU_INSTALL_NUMBER. */
   deviceSerial: string;
+};
+
+export type TbaiSoftwareOptions = {
+  /** Declared installation (route `tbai`) of the chain; `null` = none declared. `undefined` keeps the env-only behaviour. */
+  installation?: Pick<NonNullable<VerifactuChainScope["installation"]>, "id" | "numeroInstalacion"> | null;
+  /** TBAI_MODE=production: a missing installation is an error, never a fallback to the env. */
+  requireInstallation?: boolean;
 };
 
 function readEnv(env: NodeJS.ProcessEnv, name: string): string | null {
@@ -36,15 +49,17 @@ function readEnv(env: NodeJS.ProcessEnv, name: string): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
-export function resolveTbaiSoftware(env: NodeJS.ProcessEnv = process.env): { ok: boolean; errors: string[]; software: TbaiSoftwareBlock } {
-  const base = resolveVerifactuSoftware(env);
+export function resolveTbaiSoftware(env: NodeJS.ProcessEnv = process.env, options: TbaiSoftwareOptions = {}): { ok: boolean; errors: string[]; software: TbaiSoftwareBlock } {
+  // The producer block is shared with VeriFactu; the installation (if any) decides the serial.
+  const base = resolveVerifactuSoftware(env, options.installation === undefined ? {} : { installation: options.installation, requireInstallation: options.requireInstallation });
   const errors = [...base.errors];
   const licenseKey = readEnv(env, "TBAI_LICENSE_KEY");
   if (!licenseKey) errors.push("Falta TBAI_LICENSE_KEY (licencia TicketBAI concedida por la diputación foral).");
   else if (licenseKey.length > TBAI_LICENSE_MAX) errors.push(`TBAI_LICENSE_KEY supera los ${TBAI_LICENSE_MAX} caracteres del XSD (${licenseKey.length}).`);
-  const deviceSerial = readEnv(env, "TBAI_DEVICE_SERIAL") ?? base.software.numeroInstalacion;
+  // Declared installation first (its number IS the device serial); the env only when none is declared.
+  const deviceSerial = options.installation ? options.installation.numeroInstalacion : (readEnv(env, "TBAI_DEVICE_SERIAL") ?? base.software.numeroInstalacion);
   if (deviceSerial.length > TBAI_DEVICE_SERIAL_MAX) {
-    errors.push(`TBAI_DEVICE_SERIAL (NumSerieDispositivo) supera los ${TBAI_DEVICE_SERIAL_MAX} caracteres del XSD (${deviceSerial.length}).`);
+    errors.push(`${options.installation ? "La instalación TicketBAI declarada" : "TBAI_DEVICE_SERIAL"} (NumSerieDispositivo) supera los ${TBAI_DEVICE_SERIAL_MAX} caracteres del XSD (${deviceSerial.length}).`);
   }
   return {
     ok: errors.length === 0,
@@ -122,7 +137,9 @@ export async function submitTbaiForInvoice(invoiceId: string, organizationId: st
   });
 
   const tbaiMode = process.env.TBAI_MODE === "production" ? "production" : "sandbox";
-  const tbaiSoftware = resolveTbaiSoftware();
+  // R7: the declared TBAI installation of the centre (per centre or per sociedad) is the NumSerieDispositivo.
+  const chain = await resolveVerifactuChainScope(prisma, invoice.propertyId, "tbai");
+  const tbaiSoftware = resolveTbaiSoftware(process.env, { installation: chain.installation, requireInstallation: tbaiMode === "production" });
 
   const xml = buildTbaiXml({
     territory,
@@ -195,7 +212,17 @@ export async function submitTbaiForInvoice(invoiceId: string, organizationId: st
     action: "TBAI_SUBMISSION",
     entityType: "invoice",
     entityId: invoiceId,
-    afterJson: { submissionId: submission.id, territory, status: finalStatus, tbaiCode: response.tbaiCode, errorCode: response.errorCode }
+    afterJson: {
+      submissionId: submission.id,
+      territory,
+      status: finalStatus,
+      tbaiCode: response.tbaiCode,
+      errorCode: response.errorCode,
+      installationId: chain.installation?.id ?? null,
+      deviceSerial: tbaiSoftware.software.deviceSerial,
+      emitterTaxId,
+      emitterName
+    }
   });
 }
 

@@ -34,11 +34,14 @@ import { requirePermissions } from "../auth/auth.service.js";
 import { accountDigits } from "../accounting/chart-of-accounts.service.js";
 import type {
   AnnualAccounts,
+  AnnualAccountsFormat,
   EcpnColumnKey,
   EcpnRow,
+  FinanceEntityBadge,
   FinancialStatementKindKey,
   FinancialStatementSnapshotDetail,
   FinancialStatementSnapshotRow,
+  MemoriaEstablishment,
   MemoriaNote,
   PgcBalanceSheet,
   PgcEquityChanges,
@@ -47,19 +50,66 @@ import type {
   StatementAccountAmount,
   StatementLine
 } from "../../../../../packages/shared/src/financial-statements-types.js";
+import type { LegalIdentityDto } from "@hotelos/shared";
 import { D, ZERO, money, round2, sameCents, sumDec, type Dec } from "./money.js";
 import {
+  WORK_CENTRE_KIND_LABELS_ES,
   addDays,
+  entityBadgeOf,
+  entityLabelOf,
+  isHotelCentre,
   isoDay,
   prismaFinancialStatementsSource,
   type AccountBalanceRow,
   type FinancialStatementsSource,
   type FixedAssetLite,
-  type OrganizationLite,
   type PropertyLite,
   type VatTotalsRow
 } from "./source.js";
 import { buildUsaliPnl } from "./usali.service.js";
+
+// ---------------------------------------------------------------------------
+// Sociedad y formato (Tanda 6b · R1 / R9)
+// ---------------------------------------------------------------------------
+
+export const PGC_PYMES_TEMPLATE = "pgc_pymes_hotelero_v1" as const;
+
+export const PYMES_NOT_DEPOSITABLE_LARGE_COMPANY =
+  "Formato Pymes no depositable para esta sociedad (LSC arts. 257-258): está calificada como gran empresa y supera los umbrales del PGC de Pymes. Las cuentas se generan a título informativo hasta que exista la plantilla «PGC general hotelero» (lote L10).";
+export const PYMES_NOT_DEPOSITABLE_GENERAL_VARIANT =
+  "Formato Pymes no depositable para esta sociedad (LSC arts. 257-258): su plantilla contable es el PGC general. Las cuentas se generan a título informativo hasta que exista la plantilla «PGC general hotelero» (lote L10).";
+
+/**
+ * Pure (R9): a sociedad marked `largeCompany` or on the general PGC cannot
+ * deposit the Pymes format. The statements are still produced; every one of
+ * them carries `format` and the reason in its warnings — never an error.
+ */
+export function assessAnnualAccountsFormat(entity: Pick<FinanceEntityBadge, "pgcVariant" | "largeCompany">): AnnualAccountsFormat {
+  const reason = entity.largeCompany ? PYMES_NOT_DEPOSITABLE_LARGE_COMPANY : entity.pgcVariant === "general" ? PYMES_NOT_DEPOSITABLE_GENERAL_VARIANT : null;
+  return { template: PGC_PYMES_TEMPLATE, pgcVariant: entity.pgcVariant, depositable: reason === null, reason };
+}
+
+type EntityBlock = { entity: FinanceEntityBadge; format: AnnualAccountsFormat };
+
+function entityBlockOf(identity: LegalIdentityDto | null): EntityBlock {
+  const entity = entityBadgeOf(identity);
+  return { entity, format: assessAnnualAccountsFormat(entity) };
+}
+
+/** Attaches the sociedad and the format verdict to a statement (the reason joins its warnings). */
+function withEntity<T extends { warnings: string[] }>(statement: T, block: EntityBlock): T & EntityBlock {
+  const warnings = block.format.reason && !statement.warnings.includes(block.format.reason) ? [...statement.warnings, block.format.reason] : statement.warnings;
+  return { ...statement, warnings, entity: block.entity, format: block.format };
+}
+
+/** Establishments of the memoria (nota 1): code · name · kind · address. */
+export function memoriaEstablishments(properties: readonly PropertyLite[]): MemoriaEstablishment[] {
+  return properties.map((p) => ({ id: p.id, code: p.code, name: p.tradeName ?? p.name, kind: p.kind, address: [p.address, p.municipality, p.province].filter(Boolean).join(", ") || null }));
+}
+
+function describeEstablishment(p: MemoriaEstablishment): string {
+  return `${p.code ? `${p.code} · ` : ""}${p.name} (${WORK_CENTRE_KIND_LABELS_ES[p.kind]}${p.address ? `, ${p.address}` : ""})`;
+}
 
 // ---------------------------------------------------------------------------
 // Prefix tables
@@ -514,7 +564,10 @@ export type MemoriaInput = {
   organizationId: string;
   propertyId: string | null;
   period: { from: string; to: string };
-  organization: OrganizationLite | null;
+  /** The sociedad (`source.legalIdentity`); null renders «Sociedad pendiente». */
+  identity: LegalIdentityDto | null;
+  /** R9 verdict; computed from `identity` when omitted. */
+  format?: AnnualAccountsFormat;
   properties: PropertyLite[];
   balance: PgcBalanceSheet;
   pyg: PgcProfitAndLoss;
@@ -535,9 +588,12 @@ const startsWithAny = (prefixes: string[]) => (code: string): boolean => prefixe
 
 export function computeMemoria(input: MemoriaInput): PgcMemoria {
   const warnings: string[] = [];
-  const org = input.organization;
-  const name = org?.legalName ?? org?.name ?? input.organizationId;
-  const props = input.properties.map((p) => ({ id: p.id, name: p.name, address: [p.address, p.municipality, p.province].filter(Boolean).join(", ") || null }));
+  const entity = entityBadgeOf(input.identity);
+  const format = input.format ?? assessAnnualAccountsFormat(entity);
+  const name = entity.legalName;
+  const props = memoriaEstablishments(input.properties);
+  const hotels = props.filter((p) => p.kind === "hotel").length;
+  const offices = props.filter((p) => p.kind === "office").length;
   const period = `${input.period.from} a ${input.period.to}`;
 
   const assetGroups = [
@@ -628,15 +684,15 @@ export function computeMemoria(input: MemoriaInput): PgcMemoria {
     {
       number: 1,
       title: "Actividad de la empresa",
-      text: `${name}${org?.taxId ? ` (NIF ${org.taxId})` : ""} tiene por actividad la explotación de establecimientos de alojamiento turístico. Establecimientos registrados en el sistema: ${props.map((p) => `${p.name}${p.address ? ` (${p.address})` : ""}`).join("; ") || "ninguno"}. Completar con el domicilio social, el objeto social según los estatutos y la moneda funcional (euro).`,
-      figures: { organization: org, properties: props },
+      text: `${name} (${entity.taxId ? `NIF ${entity.taxId}` : "NIF pendiente"}${entity.legalForm ? `, ${entity.legalForm.toUpperCase().replace("_", " ")}` : ""}) tiene por actividad la explotación de establecimientos de alojamiento turístico. Centros de trabajo de la sociedad registrados en el sistema (${props.length}: ${hotels} hotel(es), ${offices} oficina(s), ${props.length - hotels - offices} otro(s)): ${props.map(describeEstablishment).join("; ") || "ninguno"}. Completar con el domicilio social, el objeto social según los estatutos y la moneda funcional (euro).`,
+      figures: { entity, properties: props },
       status: "requires_input"
     },
     {
       number: 2,
       title: "Bases de presentación de las cuentas anuales",
-      text: `Las cuentas anuales del periodo ${period} se han formulado a partir de los registros contables de la sociedad con arreglo al Plan General de Contabilidad de Pequeñas y Medianas Empresas (RD 1515/2007 y modificaciones posteriores), mostrando la imagen fiel del patrimonio, de la situación financiera y de los resultados. Principios aplicados: empresa en funcionamiento, devengo, uniformidad, prudencia, no compensación e importancia relativa. Los importes se expresan en euros con dos decimales.${input.balance.balanced ? " El balance cuadra (activo = patrimonio neto + pasivo)." : " ATENCIÓN: el balance generado no cuadra; revisar antes de formular."}`,
-      figures: { balanced: input.balance.balanced, totalAssets: input.balance.totalAssets, netResult: input.pyg.netResult },
+      text: `Las cuentas anuales del periodo ${period} se han formulado a partir de los registros contables de la sociedad con arreglo al Plan General de Contabilidad de Pequeñas y Medianas Empresas (RD 1515/2007 y modificaciones posteriores), mostrando la imagen fiel del patrimonio, de la situación financiera y de los resultados. Principios aplicados: empresa en funcionamiento, devengo, uniformidad, prudencia, no compensación e importancia relativa. Los importes se expresan en euros con dos decimales.${input.balance.balanced ? " El balance cuadra (activo = patrimonio neto + pasivo)." : " ATENCIÓN: el balance generado no cuadra; revisar antes de formular."}${format.reason ? ` ATENCIÓN: ${format.reason}` : ""}`,
+      figures: { balanced: input.balance.balanced, totalAssets: input.balance.totalAssets, netResult: input.pyg.netResult, format },
       status: "auto"
     },
     {
@@ -731,6 +787,8 @@ export function computeMemoria(input: MemoriaInput): PgcMemoria {
     }
   ];
   if (!input.balance.balanced) warnings.push("El balance no cuadra: la memoria no debe formularse hasta corregirlo.");
+  if (format.reason) warnings.push(format.reason);
+  if (entity.source === "organization_fallback") warnings.push("Sociedad pendiente de alta (sin backfill de estructura societaria): razón social y NIF leídos de los valores heredados de la organización.");
 
   return {
     kind: "memoria",
@@ -738,7 +796,8 @@ export function computeMemoria(input: MemoriaInput): PgcMemoria {
     propertyId: input.propertyId,
     period: input.period,
     generatedAt: input.generatedAt ?? new Date().toISOString(),
-    entity: { name: org?.name ?? input.organizationId, legalName: org?.legalName ?? null, taxId: org?.taxId ?? null, properties: props },
+    entity: { name: entity.legalName, legalName: entity.legalName, taxId: entity.taxId, legalEntityId: entity.legalEntityId, code: entity.code, pgcVariant: entity.pgcVariant, largeCompany: entity.largeCompany, properties: props },
+    format,
     notes,
     warnings
   };
@@ -801,13 +860,13 @@ export async function buildBalanceSheet(input: AnnualAccountsRequest): Promise<P
   await ensureProperty(source, organizationId, input.propertyId);
   const period = await resolvePeriod({ organizationId, fiscalYearId: input.fiscalYearId, from: input.from, to: input.to });
   const propertyId = input.propertyId ?? null;
-  const ledger = await readLedgerSet(source, organizationId, propertyId, period.from, period.to);
+  const [ledger, identity] = await Promise.all([readLedgerSet(source, organizationId, propertyId, period.from, period.to), source.legalIdentity(organizationId)]);
   let previous: LedgerSet | null = null;
   if (input.comparative) {
     const prev = previousPeriodOf(period.from, period.to);
     previous = await readLedgerSet(source, organizationId, propertyId, prev.from, prev.to);
   }
-  return computeBalance({ organizationId, propertyId, period: { from: period.from, to: period.to }, ...ledger, previous });
+  return withEntity(computeBalance({ organizationId, propertyId, period: { from: period.from, to: period.to }, ...ledger, previous }), entityBlockOf(identity));
 }
 
 export async function buildProfitAndLoss(input: AnnualAccountsRequest): Promise<PgcProfitAndLoss> {
@@ -817,13 +876,16 @@ export async function buildProfitAndLoss(input: AnnualAccountsRequest): Promise<
   await ensureProperty(source, organizationId, input.propertyId);
   const period = await resolvePeriod({ organizationId, fiscalYearId: input.fiscalYearId, from: input.from, to: input.to });
   const propertyId = input.propertyId ?? null;
-  const rowsMovements = await source.accountBalances({ organizationId, propertyId, mode: "movements", from: period.from, to: period.to, groups: [6, 7] });
+  const [rowsMovements, identity] = await Promise.all([
+    source.accountBalances({ organizationId, propertyId, mode: "movements", from: period.from, to: period.to, groups: [6, 7] }),
+    source.legalIdentity(organizationId)
+  ]);
   let previousMovements: AccountBalanceRow[] | null = null;
   if (input.comparative) {
     const prev = previousPeriodOf(period.from, period.to);
     previousMovements = await source.accountBalances({ organizationId, propertyId, mode: "movements", from: prev.from, to: prev.to, groups: [6, 7] });
   }
-  return computePyg({ organizationId, propertyId, period: { from: period.from, to: period.to }, rowsMovements, previousMovements });
+  return withEntity(computePyg({ organizationId, propertyId, period: { from: period.from, to: period.to }, rowsMovements, previousMovements }), entityBlockOf(identity));
 }
 
 export async function buildEquityChanges(input: AnnualAccountsRequest): Promise<PgcEquityChanges> {
@@ -833,8 +895,8 @@ export async function buildEquityChanges(input: AnnualAccountsRequest): Promise<
   await ensureProperty(source, organizationId, input.propertyId);
   const period = await resolvePeriod({ organizationId, fiscalYearId: input.fiscalYearId, from: input.from, to: input.to });
   const propertyId = input.propertyId ?? null;
-  const ledger = await readLedgerSet(source, organizationId, propertyId, period.from, period.to);
-  return computeEcpn({ organizationId, propertyId, period: { from: period.from, to: period.to }, ...ledger });
+  const [ledger, identity] = await Promise.all([readLedgerSet(source, organizationId, propertyId, period.from, period.to), source.legalIdentity(organizationId)]);
+  return withEntity(computeEcpn({ organizationId, propertyId, period: { from: period.from, to: period.to }, ...ledger }), entityBlockOf(identity));
 }
 
 export async function buildMemoria(input: AnnualAccountsRequest): Promise<PgcMemoria> {
@@ -856,20 +918,23 @@ export async function buildAnnualAccounts(input: AnnualAccountsRequest): Promise
     previous = await readLedgerSet(source, organizationId, propertyId, prev.from, prev.to);
   }
   const range = { from: period.from, to: period.to };
-  const balance = computeBalance({ organizationId, propertyId, period: range, ...ledger, previous, generatedAt });
-  const pyg = computePyg({ organizationId, propertyId, period: range, rowsMovements: ledger.rowsMovements, previousMovements: previous?.rowsMovements ?? null, generatedAt });
-  const ecpn = computeEcpn({ organizationId, propertyId, period: range, ...ledger, generatedAt });
-  const [organization, fixedAssets, vatTotals, headcount] = await Promise.all([
-    source.organization(organizationId),
+  const [identity, fixedAssets, vatTotals, headcount] = await Promise.all([
+    source.legalIdentity(organizationId),
     source.fixedAssets(organizationId, propertyId),
     source.vatTotals(organizationId, period.from, period.to),
     source.headcount(organizationId, period.from, period.to)
   ]);
+  // One set of accounts per sociedad (R1): the entity badge and the R9 format verdict travel with every statement.
+  const block = entityBlockOf(identity);
+  const balance = withEntity(computeBalance({ organizationId, propertyId, period: range, ...ledger, previous, generatedAt }), block);
+  const pyg = withEntity(computePyg({ organizationId, propertyId, period: range, rowsMovements: ledger.rowsMovements, previousMovements: previous?.rowsMovements ?? null, generatedAt }), block);
+  const ecpn = withEntity(computeEcpn({ organizationId, propertyId, period: range, ...ledger, generatedAt }), block);
   const memoria = computeMemoria({
     organizationId,
     propertyId,
     period: range,
-    organization,
+    identity,
+    format: block.format,
     properties: propertyId ? properties.filter((p) => p.id === propertyId) : properties,
     balance,
     pyg,
@@ -879,6 +944,9 @@ export async function buildAnnualAccounts(input: AnnualAccountsRequest): Promise
     headcount,
     generatedAt
   });
+  if (propertyId && !properties.filter((p) => p.id === propertyId).every(isHotelCentre)) {
+    memoria.warnings.push("Vista por centro no alojativo: las cuentas anuales son de la sociedad; este desglose es informativo.");
+  }
   const resultMatches = sameCents(D(balance.periodResult), D(pyg.netResult));
   return {
     kind: "annual_accounts",
@@ -887,6 +955,9 @@ export async function buildAnnualAccounts(input: AnnualAccountsRequest): Promise
     fiscalYear: period.fiscalYear,
     period: range,
     generatedAt,
+    entityLabel: entityLabelOf(block.entity),
+    entity: block.entity,
+    format: block.format,
     balance,
     pyg,
     ecpn,

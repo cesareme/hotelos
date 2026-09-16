@@ -11,7 +11,8 @@ import {
   maxIssuedNumber,
   resolveSequenceYear,
   sequenceYearFromPrefix,
-  seriesInvoiceType
+  seriesInvoiceType,
+  seriesPrefixToCheck
 } from "../backoffice.service.js";
 import { BadRequestError } from "../../../lib/http-error.js";
 
@@ -114,5 +115,33 @@ describe("invoiceSequencePatchViolations — a live series is frozen where the c
   it("a null prefix on a locked series counts as a change", () => {
     const violations = invoiceSequencePatchViolations({ existing, patch: { prefix: null }, issued: live });
     assert.equal(violations[0]?.code, "SERIES_PREFIX_LOCKED");
+  });
+});
+
+describe("seriesPrefixToCheck — when patchBillingSettings must ask the sister centres (Tanda 6b · R3)", () => {
+  const closed = { prefix: "REC-2026-", active: false };
+  const open = { prefix: "REC-2026-", active: true };
+
+  it("a new series is always checked with the prefix it will be created with", () => {
+    assert.equal(seriesPrefixToCheck({ existing: null, effectivePrefix: "FAC-2026-", patchActive: undefined }), "FAC-2026-");
+    assert.equal(seriesPrefixToCheck({ existing: null, effectivePrefix: "FAC-2026-", patchActive: false }), null, "created closed: nothing to clash with");
+  });
+
+  it("re-activating a closed series is checked with its stored prefix (t6b#3)", () => {
+    assert.equal(seriesPrefixToCheck({ existing: closed, effectivePrefix: undefined, patchActive: true }), "REC-2026-");
+    assert.equal(seriesPrefixToCheck({ existing: closed, effectivePrefix: "REC-RA-2026-", patchActive: true }), "REC-RA-2026-", "a new prefix on re-opening is the one checked");
+  });
+
+  it("a patch that leaves the series closed, or only edits numbering of an open one, needs no check", () => {
+    assert.equal(seriesPrefixToCheck({ existing: closed, effectivePrefix: undefined, patchActive: undefined }), null, "still closed");
+    assert.equal(seriesPrefixToCheck({ existing: closed, effectivePrefix: "REC-RA-2026-", patchActive: undefined }), null, "closed rows never clash, whatever their prefix");
+    assert.equal(seriesPrefixToCheck({ existing: open, effectivePrefix: undefined, patchActive: undefined }), null, "nextNumber / padding only");
+    assert.equal(seriesPrefixToCheck({ existing: open, effectivePrefix: "REC-2026-", patchActive: true }), null, "idempotent re-save of an open series");
+    assert.equal(seriesPrefixToCheck({ existing: open, effectivePrefix: undefined, patchActive: false }), null, "closing a series");
+  });
+
+  it("changing the prefix of an open series is checked; a legacy row without prefix has nothing to check", () => {
+    assert.equal(seriesPrefixToCheck({ existing: open, effectivePrefix: "REC-LT-2026-", patchActive: undefined }), "REC-LT-2026-");
+    assert.equal(seriesPrefixToCheck({ existing: { prefix: null, active: false }, effectivePrefix: undefined, patchActive: true }), null);
   });
 });

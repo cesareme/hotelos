@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { csvDocument, csvLine } from "../csv.js";
-import { buildContaplusDiario, buildCsvUniversal, buildVatBooksCsv, contaplusSubaccount, csvUniversalRow, entryNumberLabel, exportFileName, GESTORIA_FORMATS } from "../gestoria-export.service.js";
+import type { UserContext } from "../../../lib/demo-store.js";
+import { assertGestoriaExportScope, buildContaplusDiario, buildCsvUniversal, buildVatBooksCsv, contaplusSubaccount, createGestoriaExport, csvUniversalRow, entryNumberLabel, exportFileName, GESTORIA_FORMATS, getGestoriaExport, listGestoriaExports } from "../gestoria-export.service.js";
 import { D, decimalComma, money, pct, ratio, sameCents, spanishDate } from "../money.js";
 import { PdfDocument, pdfFit, pdfTextWidth, renderPdfReport } from "../pdf-writer.js";
 import { documentToCsv, documentToPdf, documentToXlsx, renderStatementFile, statementDocument } from "../statement-render.js";
@@ -218,5 +219,44 @@ describe("gestoría export builders", () => {
       ["contaplus_diario", true, true],
       ["a3", false, true]
     ]);
+  });
+});
+
+/**
+ * Fix t6b#4 (R11): a stored export has no centre, so the whole family is a
+ * whole-sociedad artefact. A centre-scoped user (roles in one hotel, no
+ * accounting.entity.read) gets the opaque 404 BEFORE any database access; the
+ * entity-scoped user and an organization-wide context pass.
+ */
+describe("gestoría exports · ámbito de toda la sociedad (t6b#4)", () => {
+  const base = { organizationId: "org_t", propertyId: "prop_lt", userId: "usr_t", fullName: "Director", deviceId: "test" };
+  const director: UserContext = { ...base, permissions: ["analytics.export"] as UserContext["permissions"], assignedPropertyIds: ["prop_lt"] };
+  const directora: UserContext = { ...director, permissions: ["analytics.export", "accounting.entity.read"] as UserContext["permissions"] };
+  const orgWide: UserContext = { ...director, assignedPropertyIds: undefined };
+  const scopeDenied = (error: unknown): boolean => {
+    const e = error as { statusCode?: number; details?: { code?: string }; message: string };
+    return e.statusCode === 404 && e.details?.code === "ENTITY_SCOPE_REQUIRED" && !/prop_/.test(e.message);
+  };
+
+  it("list, get and create are an opaque 404 ENTITY_SCOPE_REQUIRED for the centre-scoped user, with or without a propertyId", async () => {
+    await assert.rejects(listGestoriaExports({ context: director }), scopeDenied);
+    await assert.rejects(getGestoriaExport({ context: director, exportId: "exp_x" }), scopeDenied);
+    await assert.rejects(createGestoriaExport({ context: director, format: "csv_universal", from: "2031-02-01", to: "2031-02-28", correlationId: "t" }), scopeDenied);
+    await assert.rejects(createGestoriaExport({ context: director, format: "csv_universal", from: "2031-02-01", to: "2031-02-28", propertyId: "prop_lt", correlationId: "t" }), scopeDenied);
+    assert.throws(() => assertGestoriaExportScope(director), scopeDenied);
+    assert.throws(() => assertGestoriaExportScope(director, "prop_lt"), scopeDenied);
+  });
+
+  it("the entity-scoped user and an organization-wide context pass; a sister centre is still «Propiedad no encontrada»", () => {
+    assert.doesNotThrow(() => assertGestoriaExportScope(directora));
+    assert.doesNotThrow(() => assertGestoriaExportScope(directora, "prop_lt"));
+    assert.doesNotThrow(() => assertGestoriaExportScope(orgWide));
+    assert.doesNotThrow(() => assertGestoriaExportScope(orgWide, "prop_ra"));
+    assert.throws(() => assertGestoriaExportScope(directora, "prop_ra"), (error: unknown) => (error as { statusCode?: number }).statusCode === 404 && (error as Error).message === "Propiedad no encontrada.");
+  });
+
+  it("the permission check comes first: without analytics.export the answer is 403, not the scope 404", async () => {
+    const noKey: UserContext = { ...director, permissions: [] as unknown as UserContext["permissions"] };
+    await assert.rejects(listGestoriaExports({ context: noKey }), (error: unknown) => (error as { statusCode?: number }).statusCode === 403);
   });
 });

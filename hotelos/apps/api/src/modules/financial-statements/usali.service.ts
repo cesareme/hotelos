@@ -17,7 +17,9 @@ import type { UserContext } from "../../lib/demo-store.js";
 import { NotFoundError } from "../../lib/http-error.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { USALI_DEPARTMENTS, type UsaliDepartment, type UsaliLine } from "../accounting/chart-of-accounts.service.js";
+import type { CorporateAllocationMethod, PropertyKind } from "@hotelos/shared";
 import type {
+  CorporateAllocationResult,
   UsaliAccountAmount,
   UsaliOperatingDepartment,
   UsaliOperatingDepartmentKey,
@@ -26,11 +28,24 @@ import type {
   UsaliPnl,
   UsaliPropertyComparison,
   UsaliRatios,
+  UsaliRollupLine,
   UsaliUndistributedDepartment,
   UsaliUndistributedDepartmentKey
 } from "../../../../../packages/shared/src/financial-statements-types.js";
-import { D, ZERO, fromMoney, money, pct, ratio, sameCents, type Dec } from "./money.js";
-import { nightsBetween, prismaFinancialStatementsSource, type AccountBalanceRow, type FinancialStatementsSource, type OccupancyFacts, type UsaliMappingSourceRow } from "./source.js";
+import { ALLOCATION_LABEL, computeCorporateAllocation, corporateBaseWarnings, corporateCostFromGop, getCorporateAllocation, type AllocationFacts } from "./allocation.service.js";
+import { D, ZERO, fromMoney, money, pct, ratio, sameCents, sumDec, type Dec } from "./money.js";
+import {
+  entityBadgeOf,
+  isHotelCentre,
+  nightsBetween,
+  prismaFinancialStatementsSource,
+  toWorkCentre,
+  type AccountBalanceRow,
+  type FinancialStatementsSource,
+  type OccupancyFacts,
+  type PropertyLite,
+  type UsaliMappingSourceRow
+} from "./source.js";
 import { resolveUsaliForCode } from "./usali-mapping.service.js";
 
 const OPERATING: UsaliOperatingDepartmentKey[] = ["rooms", "fnb", "other_operated", "misc_income"];
@@ -42,6 +57,9 @@ export type UsaliComputeInput = {
   organizationId: string;
   propertyId: string | null;
   propertyName: string | null;
+  /** Tanda 6b: kind / code of the centre (null for the sociedad or a subset). */
+  propertyKind?: PropertyKind | null;
+  propertyCode?: string | null;
   period: { from: string; to: string };
   currency: string;
   rows: AccountBalanceRow[];
@@ -179,6 +197,8 @@ export function computeUsaliPnl(input: UsaliComputeInput): UsaliPnl {
     organizationId: input.organizationId,
     propertyId: input.propertyId,
     propertyName: input.propertyName,
+    propertyKind: input.propertyKind ?? null,
+    propertyCode: input.propertyCode ?? null,
     period: input.period,
     currency: input.currency,
     generatedAt: input.generatedAt ?? new Date().toISOString(),
@@ -304,6 +324,8 @@ export async function buildUsaliPnl(input: {
     organizationId,
     propertyId: property?.id ?? null,
     propertyName: property?.name ?? null,
+    propertyKind: property?.kind ?? null,
+    propertyCode: property?.code ?? null,
     period: { from: input.from, to: input.to },
     currency: property?.currency ?? properties[0]?.currency ?? "EUR",
     rows,
@@ -312,11 +334,84 @@ export async function buildUsaliPnl(input: {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Comparison by work centre (+ Oficina central · Sin asignar · reparto, Tanda 6b)
+// ---------------------------------------------------------------------------
+
+type CentrePnl = { property: PropertyLite; rows: AccountBalanceRow[]; pnl: UsaliPnl };
+
+const ROLLUP_METRICS: Array<{ metric: UsaliRollupLine["metric"]; label: string }> = [
+  { metric: "totalOperatingRevenue", label: "Ingresos operativos totales" },
+  { metric: "totalDepartmentalProfit", label: "Beneficio departamental total" },
+  { metric: "totalUndistributed", label: "Gastos no distribuidos" },
+  { metric: "gop", label: "GOP" },
+  { metric: "ebitda", label: "EBITDA" },
+  { metric: "netIncome", label: "Resultado neto" }
+];
+
+/**
+ * Pure: «Total sociedad = Σ hoteles + Oficina central + Sin asignar» per
+ * metric. `total` is the consolidated statement (the whole ledger), so the
+ * identity holds by construction when the ledger is consistent; `ok` proves it.
+ */
+export function usaliRollup(hotels: readonly UsaliPnl[], corporate: UsaliPnl | null, unassigned: UsaliPnl | null, total: UsaliPnl): UsaliRollupLine[] {
+  return ROLLUP_METRICS.map(({ metric, label }) => {
+    const hotelsSum = sumDec(hotels.map((pnl) => fromMoney(pnl[metric])));
+    const corporateValue = corporate ? fromMoney(corporate[metric]) : ZERO;
+    const unassignedValue = unassigned ? fromMoney(unassigned[metric]) : ZERO;
+    const totalValue = fromMoney(total[metric]);
+    return { metric, label, hotels: money(hotelsSum), corporate: money(corporateValue), unassigned: money(unassignedValue), total: money(totalValue), ok: sameCents(hotelsSum.plus(corporateValue).plus(unassignedValue), totalValue) };
+  });
+}
+
+export const CORPORATE_COLUMN_LABEL = "Oficina central";
+export const UNASSIGNED_COLUMN_LABEL = "Sociedad (sin centro)";
+
+/**
+ * Pure: the informative allocation of the corporate GOP-level cost over the
+ * hotels (R5). The cost split is −GOP of the corporate statement (departmental
+ * expenses + undistributed − revenue): USALI's «Cluster Services / Corporate
+ * Office» sits above the GOP line of each hotel. Below-GOP items of the office
+ * (rent, insurance, depreciation, financial income) are not allocated; the
+ * SAME base feeds the PyG por centro (`corporateCostFromGop`, fix t6b#16), and
+ * a corporate GOP ≥ 0 allocates nothing. Never posted.
+ */
+export function usaliCorporateAllocation(input: { method: CorporateAllocationMethod; hotels: readonly UsaliPnl[]; corporate: UsaliPnl | null; headcount: ReadonlyMap<string, number>; manualWeights?: Array<{ propertyId: string; weight: number }> }): { allocation: CorporateAllocationResult; perHotel: Map<string, { allocated: string; gopAfterAllocation: string; ebitdaAfterAllocation: string }> } {
+  const hotelIds = input.hotels.map((pnl) => pnl.propertyId ?? "");
+  const facts: AllocationFacts = {
+    revenue: new Map(input.hotels.map((pnl) => [pnl.propertyId ?? "", fromMoney(pnl.totalOperatingRevenue)])),
+    roomsAvailable: new Map(input.hotels.map((pnl) => [pnl.propertyId ?? "", pnl.statistics.roomsAvailable])),
+    headcount: input.headcount
+  };
+  const corporateCost = input.corporate ? corporateCostFromGop(fromMoney(input.corporate.gop)) : ZERO;
+  const allocation = computeCorporateAllocation({ method: input.method, corporateCost, hotelIds, facts, manualWeights: input.manualWeights });
+  if (input.method !== "none") allocation.warnings.push(...corporateBaseWarnings(input.corporate));
+  if (!input.corporate && input.method !== "none") {
+    allocation.warnings.push("La sociedad no tiene oficina central ni centros no alojativos: no hay coste corporativo que repartir.");
+    allocation.applied = false;
+  }
+  const perHotel = new Map<string, { allocated: string; gopAfterAllocation: string; ebitdaAfterAllocation: string }>();
+  for (const pnl of input.hotels) {
+    const share = allocation.applied ? fromMoney(allocation.shares.find((s) => s.propertyId === pnl.propertyId)?.amount ?? "0.00") : ZERO;
+    perHotel.set(pnl.propertyId ?? "", { allocated: money(share), gopAfterAllocation: money(fromMoney(pnl.gop).minus(share)), ebitdaAfterAllocation: money(fromMoney(pnl.ebitda).minus(share)) });
+  }
+  return { allocation, perHotel };
+}
+
 export async function compareUsaliProperties(input: {
   context: UserContext;
   from: string;
   to: string;
   propertyIds?: string[] | null;
+  /**
+   * Tanda 6b (design §5.4): `properties` = hotels only; the office / other
+   * centres go to `corporate`, the society-level entries to `unassigned`,
+   * plus the rollup and the informative allocation. Without the flag the
+   * response is exactly the pre-6b one (every selected centre + consolidated).
+   */
+  includeCorporate?: boolean;
+  /** Allocation key of this response; omitted → the stored key (`none` disables). Only with `includeCorporate`. */
+  allocation?: CorporateAllocationMethod | null;
   source?: FinancialStatementsSource;
 }): Promise<UsaliPropertyComparison> {
   requirePermissions(input.context, ["accounting.read"]);
@@ -327,21 +422,19 @@ export async function compareUsaliProperties(input: {
   const unknown = wanted.filter((id) => !all.some((p) => p.id === id));
   if (unknown.length > 0) throw new NotFoundError("Propiedad no encontrada.");
   const selected = all.filter((p) => wanted.includes(p.id));
-  const mappings = await source.usaliMappings(organizationId);
+  const [mappings, identity] = await Promise.all([source.usaliMappings(organizationId), source.legalIdentity(organizationId)]);
   const period = { from: input.from, to: input.to };
   const generatedAt = new Date().toISOString();
-  const properties: UsaliPropertyComparison["properties"] = [];
-  const rowsByProperty: AccountBalanceRow[][] = [];
+  const centres: CentrePnl[] = [];
   for (const property of selected) {
     const [rows, occupancy] = await Promise.all([
       source.accountBalances({ organizationId, propertyId: property.id, mode: "movements", from: input.from, to: input.to, groups: [6, 7] }),
       source.occupancy([property.id], input.from, input.to)
     ]);
-    rowsByProperty.push(rows);
-    properties.push({
-      propertyId: property.id,
-      propertyName: property.name,
-      pnl: computeUsaliPnl({ organizationId, propertyId: property.id, propertyName: property.name, period, currency: property.currency, rows, mappings, occupancy, generatedAt })
+    centres.push({
+      property,
+      rows,
+      pnl: computeUsaliPnl({ organizationId, propertyId: property.id, propertyName: property.name, propertyKind: property.kind, propertyCode: property.code, period, currency: property.currency, rows, mappings, occupancy, generatedAt })
     });
   }
   // Consolidated = the whole organisation ledger (entries without propertyId included) when every property is
@@ -350,7 +443,7 @@ export async function compareUsaliProperties(input: {
   const [consolidatedRows, occupancy] = await Promise.all([
     everyProperty
       ? source.accountBalances({ organizationId, propertyId: null, mode: "movements", from: input.from, to: input.to, groups: [6, 7] })
-      : Promise.resolve(mergeRows(rowsByProperty)),
+      : Promise.resolve(mergeRows(centres.map((c) => c.rows))),
     source.occupancy(selected.map((p) => p.id), input.from, input.to)
   ]);
   const consolidated = computeUsaliPnl({
@@ -364,8 +457,60 @@ export async function compareUsaliProperties(input: {
     occupancy,
     generatedAt
   });
-  return { kind: "usali_compare_properties", organizationId, period, generatedAt, properties, consolidated };
+  const entity = entityBadgeOf(identity);
+  const entry = (centre: CentrePnl): UsaliPropertyComparison["properties"][number] => ({ propertyId: centre.property.id, propertyName: centre.property.name, propertyKind: centre.property.kind, propertyCode: centre.property.code, pnl: centre.pnl });
+  if (!input.includeCorporate) {
+    return { kind: "usali_compare_properties", organizationId, period, generatedAt, properties: centres.map(entry), consolidated, entity };
+  }
+
+  const hotels = centres.filter((c) => isHotelCentre(c.property));
+  const corporateCentres = centres.filter((c) => !isHotelCentre(c.property));
+  let corporate: UsaliPropertyComparison["corporate"] = null;
+  if (corporateCentres.length > 0) {
+    const corporateOccupancy = await source.occupancy(corporateCentres.map((c) => c.property.id), input.from, input.to);
+    corporate = {
+      centres: corporateCentres.map((c) => toWorkCentre(c.property)),
+      pnl: computeUsaliPnl({
+        organizationId,
+        propertyId: corporateCentres.length === 1 ? corporateCentres[0]!.property.id : null,
+        propertyName: corporateCentres.length === 1 ? corporateCentres[0]!.property.name : CORPORATE_COLUMN_LABEL,
+        propertyKind: corporateCentres.length === 1 ? corporateCentres[0]!.property.kind : "office",
+        propertyCode: corporateCentres.length === 1 ? corporateCentres[0]!.property.code : null,
+        period,
+        currency: corporateCentres[0]!.property.currency,
+        rows: mergeRows(corporateCentres.map((c) => c.rows)),
+        mappings,
+        occupancy: corporateOccupancy,
+        generatedAt
+      })
+    };
+  }
+  let unassigned: UsaliPnl | undefined;
+  if (everyProperty) {
+    const unassignedRows = await source.accountBalances({ organizationId, propertyId: null, unassignedOnly: true, mode: "movements", from: input.from, to: input.to, groups: [6, 7] });
+    unassigned = computeUsaliPnl({ organizationId, propertyId: null, propertyName: UNASSIGNED_COLUMN_LABEL, period, currency: consolidated.currency, rows: unassignedRows, mappings, occupancy: { roomsInventory: 0, roomsOccupied: 0 }, generatedAt });
+  }
+  const rollup = usaliRollup(hotels.map((h) => h.pnl), corporate?.pnl ?? null, unassigned ?? null, consolidated);
+
+  const stored = await getCorporateAllocation(organizationId, source);
+  const method = input.allocation ?? stored.allocation.method;
+  let allocation: CorporateAllocationResult | null = null;
+  const properties: UsaliPropertyComparison["properties"] = hotels.map(entry);
+  if (method !== "none") {
+    const headcount = new Map<string, number>();
+    for (const row of await source.headcountByProperty(organizationId, input.from, input.to)) if (row.propertyId) headcount.set(row.propertyId, row.headcount);
+    const result = usaliCorporateAllocation({ method, hotels: hotels.map((h) => h.pnl), corporate: corporate?.pnl ?? null, headcount, manualWeights: stored.allocation.method === "manual" ? stored.allocation.weights : undefined });
+    allocation = result.allocation;
+    for (const property of properties) {
+      const lines = result.perHotel.get(property.propertyId);
+      if (lines) property.allocation = lines;
+    }
+  }
+  return { kind: "usali_compare_properties", organizationId, period, generatedAt, properties, consolidated, entity, corporate, ...(unassigned ? { unassigned } : {}), rollup, allocation };
 }
+
+/** Label of the informative allocation row (re-exported for renderers and tests). */
+export { ALLOCATION_LABEL };
 
 /** Sums row sets by account code (a subset of properties consolidated). */
 export function mergeRows(rowSets: AccountBalanceRow[][]): AccountBalanceRow[] {

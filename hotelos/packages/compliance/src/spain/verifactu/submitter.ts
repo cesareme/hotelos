@@ -9,11 +9,16 @@ import { VERIFACTU_XML_NAMESPACES } from "./xml.js";
 // once spain/index.ts points at it this re-export is redundant but harmless
 // (same binding, no duplicate-export conflict).
 export {
+  resolveNumeroInstalacion,
   resolveVerifactuSoftware,
+  VERIFACTU_INSTALLATION_NOT_DECLARED_CODE,
   VERIFACTU_SOFTWARE_DEFAULTS,
   VERIFACTU_SOFTWARE_LIMITS,
+  type VerifactuInstallationRef,
+  type VerifactuInstallationSource,
   type VerifactuSoftwareBlock,
   type VerifactuSoftwareFlag,
+  type VerifactuSoftwareOptions,
   type VerifactuSoftwareResolution
 } from "./software.js";
 
@@ -78,8 +83,28 @@ export const VERIFACTU_ENDPOINTS: Record<VerifactuSubmissionMode, string> = {
 const SOAP_ENVELOPE_NS = "http://schemas.xmlsoap.org/soap/envelope/";
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/** Error codes the queue treats as transient (retrying) rather than as an AEAT rejection. */
-export const VERIFACTU_TRANSIENT_ERROR_CODES: readonly string[] = Object.freeze(["CERT_NOT_CONFIGURED", "SOFTWARE_NOT_CONFIGURED"]);
+/**
+ * Error codes the queue treats as transient (retrying) rather than as an AEAT
+ * rejection: configuration the operator must complete — certificate, producer
+ * block, or (Tanda 6b) the declared VerifactuInstallation of the centre.
+ */
+export const VERIFACTU_TRANSIENT_ERROR_CODES: readonly string[] = Object.freeze(["CERT_NOT_CONFIGURED", "SOFTWARE_NOT_CONFIGURED", "INSTALLATION_NOT_DECLARED"]);
+
+/**
+ * Tanda 6b (design §5.2 R7 / R8): a sujeto pasivo in the SII (RIVA art. 62.6)
+ * is outside the Reglamento de sistemas informáticos de facturación (RD
+ * 1007/2023 art. 3.3): its invoices carry no huella, no RegistroAnterior and
+ * no QR tributario, and no registro is ever queued or sent. The code is the
+ * `details.code` of the 409 on a manual retry, the `errorCode` of a
+ * submission row retired because the sociedad joined the SII after the record
+ * was hashed, and the prefix of the warning persisted in Invoice.warningsJson.
+ * The motivo text is the single sentence every layer shows (fiscal models,
+ * invoices, PDF); `resolveFiscalRegime` (accounting/vat-books.service.ts)
+ * prints the same sentence.
+ */
+export const VERIFACTU_EXCLUDED_BY_SII_CODE = "VERIFACTU_EXCLUDED_BY_SII" as const;
+export const VERIFACTU_EXCLUDED_BY_SII_MOTIVO =
+  "Sociedad acogida al SII: excluida del Reglamento de sistemas informáticos de facturación (RD 1007/2023 art. 3.3), VeriFactu no aplica.";
 
 export function isTransientVerifactuError(errorCode: string | null | undefined): boolean {
   if (!errorCode) return false;

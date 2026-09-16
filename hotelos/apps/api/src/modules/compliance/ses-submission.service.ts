@@ -244,7 +244,6 @@ export async function resolveSesEstablishment(propertyId: string): Promise<SesEs
       where: { id: propertyId },
       select: {
         id: true,
-        legalName: true,
         address: true,
         municipality: true,
         province: true,
@@ -259,7 +258,9 @@ export async function resolveSesEstablishment(propertyId: string): Promise<SesEs
 
   const warnings: string[] = [];
   let taxId: string | null = null;
-  let legalName: string | null = property.legalName?.trim() || null;
+  // Tanda 6b (C8): the razón social comes from the sociedad via resolveIssuerIdentity
+  // below; Property.legalName is deprecated (a hotel's trade name, never the issuer).
+  let legalName: string | null = null;
   try {
     const issuer = await requireIssuerIdentity(propertyId);
     taxId = issuer.taxId;

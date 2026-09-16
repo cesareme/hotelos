@@ -20,6 +20,11 @@ import { assertPasswordPolicy } from "../auth/auth-pilot.service.js";
 import { applyRoleTemplate, syncPermissionCatalog } from "../../lib/rbac-catalog.js";
 import { ensurePropertySettings, ensurePropertyTaxes, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
 import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
+// Tanda 6b (L2, integración): the pilot bootstrap creates the implicit sociedad
+// like createTenant does (one LegalEntity per organization, the first Property
+// coded and linked to it); the deprecated Organization.legalName / taxId and
+// Property.legalName columns are no longer written (design §5.1 · R2).
+import { createImplicitLegalEntity, planPropertyCode } from "../structure/legal-entity.service.js";
 
 // ───────────────────────────────────────────────── permisos del piloto
 // Tanda 1: la lista copiada a mano (79 claves, 4 de ellas fuera del catálogo)
@@ -152,17 +157,32 @@ export async function bootstrapPilot(input: BootstrapInput): Promise<BootstrapRe
     const org = await tx.organization.create({
       data: {
         name: input.organization.name.trim(),
-        legalName: input.organization.legalName?.trim(),
-        taxId: organizationTaxId,
         country: input.organization.country?.trim() || "ES"
       }
     });
 
+    // Tanda 6b (R2 · R10.7): the razón social and the NIF live in the implicit
+    // sociedad (validated NIF: 400 TAX_ID_INVALID · 409 TAX_ID_IN_USE), never
+    // in the deprecated Organization columns. `property.legalName` of the
+    // pilot payload was the hotel's trade name: kept as Property.tradeName
+    // only when it differs from the razón social.
+    const legalEntity = await createImplicitLegalEntity(tx, {
+      organizationId: org.id,
+      organizationName: org.name,
+      legalName: input.organization.legalName?.trim() || null,
+      taxId: organizationTaxId ?? null
+    });
+    const propertyName = input.property.name.trim();
+    const propertyTradeName = input.property.legalName?.trim() || null;
+
     const property = await tx.property.create({
       data: {
         organizationId: org.id,
-        name: input.property.name.trim(),
-        legalName: input.property.legalName?.trim(),
+        legalEntityId: legalEntity.id,
+        kind: "hotel",
+        code: planPropertyCode(propertyName, { name: org.name, legalName: legalEntity.legalName }, new Set()),
+        name: propertyName,
+        tradeName: propertyTradeName && propertyTradeName !== legalEntity.legalName ? propertyTradeName : null,
         address: input.property.address?.trim(),
         municipality: input.property.municipality?.trim(),
         province: province ?? undefined,

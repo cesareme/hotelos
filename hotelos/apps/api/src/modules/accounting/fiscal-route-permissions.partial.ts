@@ -13,12 +13,20 @@
 // and the books rebuild (derived data, re-runnable); `accounting.journal.post`
 // for posting / reversing the settlement entry (riskLevel critical: it writes
 // the ledger, so the demo fallback without a session gets 401).
+//
+// Tanda 6b · L5 (estructura societaria, design §5.2 R11): the whole-sociedad
+// scope of the reads with amounts (books, models, settlement preview, regime)
+// is enforced at runtime by `assertFinanceReadScope` (lib/finance-scope.ts) —
+// without `accounting.entity.read` a centre-scoped user must name an assigned
+// `propertyId` (opaque 404 otherwise). The manifest keys stay as they were: the
+// entity key is an ADDITIONAL scope, not a replacement.
 
 import type { ApiRoutePermission } from "../../security/route-permissions.js";
 
 export const fiscalRoutePermissions: ApiRoutePermission[] = [
   { method: "GET", path: "/fiscal/vat-settings", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "PUT", path: "/fiscal/vat-settings", permissions: ["accounting.configure"], riskLevel: "high" },
+  { method: "GET", path: "/fiscal/regime", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "GET", path: "/fiscal/vat-books", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "POST", path: "/fiscal/vat-books/rebuild", permissions: ["accounting.configure"], riskLevel: "high" },
   { method: "GET", path: "/fiscal/models/:modelo", permissions: ["accounting.read"], riskLevel: "medium" },

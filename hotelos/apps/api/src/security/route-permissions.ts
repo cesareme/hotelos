@@ -16,6 +16,11 @@ import { payablesRoutePermissions as payablesRoutePermissionsAsWritten } from ".
 import { fixedAssetsRoutePermissions as fixedAssetsRoutePermissionsAsWritten } from "../modules/fixed-assets/route-permissions.partial.js";
 import { treasuryRoutePermissions } from "../modules/treasury/route-permissions.partial.js";
 import { FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS as FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS_AS_WRITTEN } from "../modules/financial-statements/route-permissions.partial.js";
+// Estructura societaria (Tanda 6b · L2, integración): sociedad + centros
+// (modules/structure/structure.routes.ts). Its GET entries carry
+// `accounting.read` ON PURPOSE (design §5.4: structure is configuration, not
+// amounts) so they stay out of the accounting.reports.read remap below.
+import { structureRoutePermissions } from "../modules/structure/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -81,7 +86,14 @@ export const ACCOUNTING_CALENDAR_GET_PATHS: readonly string[] = [
   "/accounting/fiscal-years",
   "/accounting/fiscal-years/:id/status",
   "/accounting/fiscal-periods",
-  "/finance/exchange-rates"
+  "/finance/exchange-rates",
+  // Tanda 6b (L2): the structure is configuration (códigos, tipo de centro,
+  // modo), never amounts — design §5.4 gates it with accounting.read ∨
+  // organization.structure.manage. Fix t6b#9: with the calendar key alone the
+  // service answers a REDACTED view (assigned centres only; no series,
+  // installations, VAT settings or fiscal data of the sociedad), and the full
+  // DTO of GET /legal-entities/:id moved to accounting.entity.read.
+  "/organizations/me/structure"
 ];
 
 export const routePermissionManifest: ApiRoutePermission[] = [
@@ -103,6 +115,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...fixedAssetsRoutePermissions,
   ...treasuryRoutePermissions,
   ...FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS,
+  // Estructura societaria (Tanda 6b · L2): 9 entries, see modules/structure/route-permissions.partial.ts.
+  ...structureRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },

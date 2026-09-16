@@ -23,7 +23,14 @@ import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-er
 import type { UserContext } from "../../lib/demo-store.js";
 import { applyRoleTemplate, provisionDefaultTemplateRoles, type ProvisionedTemplateRole } from "../../lib/rbac-catalog.js";
 import { ensurePropertySettings, ensurePropertyTaxes, mirrorOrganization, mirrorProperty } from "../../lib/tenant-hydration.js";
+import { findDefaultLegalEntity, resolveLegalIdentity } from "../../lib/finance-scope.js";
 import { listPropertyModules } from "../product-modules/product-modules.service.js";
+// Tanda 6b (L2 · estructura societaria): a tenant is born with its implicit
+// legal entity (sociedad) and its first work centre coded and typed; the NIF,
+// when the console sends one, is validated and claimed by the legal entity —
+// never written to the deprecated Organization.taxId / legalName columns.
+import { assertTaxIdUsable, createImplicitLegalEntity, planPropertyCode, prismaTaxIdReader } from "../structure/legal-entity.service.js";
+import type { LegalForm, PropertyKind } from "@hotelos/shared";
 
 // ────────────────────────────────────────────────────────────── permissions
 
@@ -60,6 +67,7 @@ export type TenantSummary = {
 export type TenantPropertySummary = {
   id: string;
   name: string;
+  /** deprecated (Tanda 6b): the old per-property legal name; use `tradeName` (establishment block) — the razón social is the legal entity's. */
   legalName?: string;
   municipality?: string;
   province?: string;
@@ -67,6 +75,24 @@ export type TenantPropertySummary = {
   status: string;
   createdAt: string;
   modulesEnabled: number;
+  /** Tanda 6b: work-centre type and code inside the legal entity. */
+  kind: PropertyKind;
+  code: string | null;
+  tradeName: string | null;
+  legalEntityId: string | null;
+};
+
+/** Tanda 6b: the tenant's (single) legal entity as the console sees it. */
+export type TenantLegalEntitySummary = {
+  id: string;
+  code: string;
+  legalName: string;
+  taxId: string | null;
+  taxIdValid: boolean;
+  verifactuChainScope: "per_center" | "per_entity";
+  pgcVariant: "pymes" | "general";
+  siiEnabled: boolean;
+  largeCompany: boolean;
 };
 
 export type TenantUserSummary = {
@@ -83,8 +109,12 @@ export type TenantUserSummary = {
 export type TenantDetail = {
   organizationId: string;
   name: string;
+  /** Razón social of the legal entity (resolveLegalIdentity), never Organization.legalName. */
   legalName?: string;
+  /** NIF of the legal entity (resolveLegalIdentity), never Organization.taxId. */
   taxId?: string;
+  /** Tanda 6b: the tenant's single legal entity; null only for a tenant created before the backfill. */
+  legalEntity: TenantLegalEntitySummary | null;
   country: string;
   createdAt: string;
   status: TenantStatus;
@@ -125,6 +155,10 @@ export type CreateTenantInput = {
     ineMunicipalityCode?: string;
     /** Reporting territory: common (VeriFactu) · bizkaia · gipuzkoa · araba · navarra. */
     fiscalTerritory?: string;
+    /** Tanda 6b: work-centre type of the first centre (defaults to hotel; `type: "office"` also maps to office). */
+    kind?: PropertyKind;
+    /** Tanda 6b: 2-6 upper-case code of the first centre; derived from its name when omitted. */
+    code?: string;
   };
   ownerUser: {
     email: string;
@@ -133,6 +167,18 @@ export type CreateTenantInput = {
   };
   modulesEnabled: string[];
   plan: TenantPlan;
+  /**
+   * Tanda 6b: the implicit legal entity (sociedad). Everything optional: the
+   * razón social defaults to the organization name, the NIF stays pending («NIF
+   * pendiente», same semantics as the 409 ISSUER_TAX_ID_MISSING on issuance)
+   * until Configuración › Estructura societaria › Datos fiscales sets it.
+   */
+  legalEntity?: {
+    legalName?: string;
+    taxId?: string;
+    code?: string;
+    legalForm?: LegalForm;
+  };
 };
 
 export type InvitationDelivery = {
@@ -154,6 +200,8 @@ export type TenantInvitationResult = {
 
 export type CreateTenantResult = TenantInvitationResult & {
   organizationId: string;
+  /** Tanda 6b: the implicit legal entity created with the tenant (isDefault). */
+  legalEntityId: string;
   propertyId: string;
   ownerUserId: string;
   /** role_permissions rows granted to the Owner role from the shared "owner" template. */
@@ -363,6 +411,9 @@ export async function listTenants(input: { context: UserContext }): Promise<Tena
 
   // Hydrate lastActivityAt in parallel so the list view shows freshness data.
   const lastActivities = await Promise.all(organizations.map((org) => computeLastActivity(org.id)));
+  // Tanda 6b: the razón social shown is the legal entity's (fallback: the deprecated column of a tenant without backfill).
+  const legalEntities = await prisma.legalEntity.findMany({ where: { organizationId: { in: orgIds }, isDefault: true, status: "active" }, select: { organizationId: true, legalName: true } });
+  const legalNameByOrg = new Map(legalEntities.map((row) => [row.organizationId, row.legalName]));
 
   return organizations.map((org, index) => {
     const meta = ensureMetadata(org.id);
@@ -370,7 +421,7 @@ export async function listTenants(input: { context: UserContext }): Promise<Tena
       meta.lastActivityAt = lastActivities[index];
     }
     return mapTenantSummary({
-      organization: org,
+      organization: { ...org, legalName: legalNameByOrg.get(org.id) ?? org.legalName },
       propertyCount: propertyCountById.get(org.id) ?? 0,
       userCount: userCountById.get(org.id) ?? 0,
       meta
@@ -453,11 +504,28 @@ export async function getTenantDetail(input: { context: UserContext; orgId: stri
   const lastActivityAt = await computeLastActivity(orgId);
   if (lastActivityAt) meta.lastActivityAt = lastActivityAt;
 
+  // Tanda 6b: razón social and NIF come from the legal entity (single reader);
+  // the deprecated Organization columns are only its backfill fallback.
+  const [identity, legalEntityRow] = await Promise.all([resolveLegalIdentity(orgId), findDefaultLegalEntity(orgId)]);
+
   return {
     organizationId: organization.id,
     name: organization.name,
-    legalName: organization.legalName ?? undefined,
-    taxId: organization.taxId ?? undefined,
+    legalName: identity?.legalName ?? undefined,
+    taxId: identity?.taxId ?? undefined,
+    legalEntity: legalEntityRow
+      ? {
+          id: legalEntityRow.id,
+          code: legalEntityRow.code,
+          legalName: legalEntityRow.legalName,
+          taxId: legalEntityRow.taxId ?? null,
+          taxIdValid: identity?.taxIdValid ?? false,
+          verifactuChainScope: legalEntityRow.verifactuChainScope,
+          pgcVariant: legalEntityRow.pgcVariant,
+          siiEnabled: legalEntityRow.siiEnabled,
+          largeCompany: legalEntityRow.largeCompany
+        }
+      : null,
     country: organization.country,
     createdAt: organization.createdAt.toISOString(),
     status: meta.status,
@@ -471,7 +539,11 @@ export async function getTenantDetail(input: { context: UserContext; orgId: stri
       country: property.country,
       status: property.status,
       createdAt: property.createdAt.toISOString(),
-      modulesEnabled: modulesByProperty.get(property.id) ?? 0
+      modulesEnabled: modulesByProperty.get(property.id) ?? 0,
+      kind: property.kind,
+      code: property.code ?? null,
+      tradeName: property.tradeName ?? null,
+      legalEntityId: property.legalEntityId ?? null
     })),
     users: users.map((user) => ({
       id: user.id,
@@ -538,6 +610,11 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
   const passwordHash = tempPassword ? hashPassword(tempPassword) : null;
   const country = input.organizationCountry?.trim() || "ES";
 
+  // Tanda 6b: the NIF of the implicit legal entity is validated (400 TAX_ID_INVALID)
+  // and checked for uniqueness (409 TAX_ID_IN_USE) BEFORE any write; omitted → pending.
+  const legalEntityTaxId = input.legalEntity?.taxId?.trim() ? await assertTaxIdUsable(input.legalEntity.taxId, { reader: prismaTaxIdReader(prisma) }) : null;
+  const propertyKind: PropertyKind = input.property.kind ?? (input.property.type?.trim().toLowerCase() === "office" ? "office" : "hotel");
+
   const persisted = await prisma.$transaction(async (tx) => {
     const organization = await tx.organization.create({
       data: {
@@ -546,9 +623,25 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       }
     });
 
+    // Implicit legal entity (sociedad): exactly one per organization (R10.7).
+    // The razón social defaults to the organization name; the NIF lives HERE,
+    // never in the deprecated Organization.taxId / legalName columns (R2).
+    const legalEntity = await createImplicitLegalEntity(tx, {
+      organizationId: organization.id,
+      organizationName,
+      legalName: input.legalEntity?.legalName ?? null,
+      taxId: legalEntityTaxId,
+      code: input.legalEntity?.code ?? null,
+      legalForm: input.legalEntity?.legalForm ?? null
+    });
+    const propertyCode = planPropertyCode(propertyName, { name: organizationName, legalName: legalEntity.legalName }, new Set(), input.property.code ?? null);
+
     const property = await tx.property.create({
       data: {
         organizationId: organization.id,
+        legalEntityId: legalEntity.id,
+        kind: propertyKind,
+        code: propertyCode,
         name: propertyName,
         municipality: input.property.municipality?.trim() || null,
         province,
@@ -620,7 +713,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       create: { userId: user.id, departmentId: department.id, roleLabel: "owner", active: true }
     });
 
-    return { organization, property, user, ownerRole, ownerPermissionsGranted: ownerTemplate.granted, templateRoles };
+    return { organization, legalEntity, property, user, ownerRole, ownerPermissionsGranted: ownerTemplate.granted, templateRoles };
   });
 
   // Seed module entitlements (best-effort: any unknown moduleCode is skipped
@@ -726,6 +819,9 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
       plan: input.plan,
       modulesEnabled: input.modulesEnabled,
       ownerRoleTemplate: "owner",
+      // Tanda 6b: the implicit legal entity and the coded first centre.
+      legalEntity: { id: persisted.legalEntity.id, code: persisted.legalEntity.code, legalName: persisted.legalEntity.legalName, taxIdSet: persisted.legalEntity.taxId !== null },
+      property: { id: persisted.property.id, kind: persisted.property.kind, code: persisted.property.code },
       ownerPermissionsGranted: persisted.ownerPermissionsGranted,
       templateRoles: persisted.templateRoles.map((role) => ({ name: role.name, templateKey: role.templateKey, permissionsCount: role.permissionsCount })),
       fiscal: {
@@ -745,6 +841,7 @@ export async function createTenant(input: CreateTenantInput): Promise<CreateTena
 
   return {
     organizationId: persisted.organization.id,
+    legalEntityId: persisted.legalEntity.id,
     propertyId: persisted.property.id,
     ownerUserId: persisted.user.id,
     ownerPermissionsGranted: persisted.ownerPermissionsGranted,

@@ -23,8 +23,9 @@ import { prisma } from "@hotelos/database";
 import type { FiscalBox, FiscalModelReport, FiscalPeriodDto } from "@hotelos/shared/src/fiscal-types.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { assertFinanceReadScope } from "../../lib/finance-scope.js";
 import { PRESENTACION_MANUAL_NOTA, declaranteOf, resolveSettlementPeriod } from "./modelo-303.service.js";
-import { ZERO, dateColumn, money, round2, toWire, type Money } from "./vat-books.service.js";
+import { ZERO, dateColumn, money, regimeAvisos, round2, toWire, type Money } from "./vat-books.service.js";
 
 export const MODELO_111_TITLE = "Modelo 111 · Retenciones e ingresos a cuenta del IRPF · Autoliquidación";
 
@@ -157,18 +158,24 @@ export async function loadWithholdingRecords(input: { organizationId: string; pr
 }
 
 export async function modelo111ForPeriod(input: { organizationId: string; periodo: FiscalPeriodDto; propertyId?: string | null }): Promise<FiscalModelReport> {
-  const records = await loadWithholdingRecords({ organizationId: input.organizationId, propertyId: input.propertyId, from: input.periodo.from, to: input.periodo.to, excludePrefix: MODELO_115_ROW_PREFIX });
+  const [records, { declarante, sociedad }] = await Promise.all([
+    loadWithholdingRecords({ organizationId: input.organizationId, propertyId: input.propertyId, from: input.periodo.from, to: input.periodo.to, excludePrefix: MODELO_115_ROW_PREFIX }),
+    declaranteOf(input.organizationId)
+  ]);
   const computation = compute111(records);
+  const avisos = [...computation.avisos, ...regimeAvisos(sociedad.regimen, "111")];
+  if (input.propertyId) avisos.push("Vista parcial por establecimiento (no liquidable): el Modelo 111 se presenta por NIF de la sociedad (retenedor).");
   return {
     modelo: "111",
     titulo: MODELO_111_TITLE,
     organizationId: input.organizationId,
     propertyId: input.propertyId ?? null,
     periodo: input.periodo,
-    declarante: await declaranteOf(input.organizationId),
+    declarante,
+    sociedad,
     casillas: computation.casillas,
     totales: computation.totales,
-    avisos: computation.avisos,
+    avisos,
     fuentes: { origen: "retenciones", registros: computation.registros },
     detalle: computation.rows.filter((row) => row.registros > 0).map((row) => ({ clave: row.code, concepto: row.label, perceptores: row.perceptores, base: toWire(row.base), retenciones: toWire(row.retenciones), registros: row.registros })),
     presentacion: { modo: "manual", ficheroOficial: false, nota: PRESENTACION_MANUAL_NOTA },
@@ -179,6 +186,9 @@ export async function modelo111ForPeriod(input: { organizationId: string; period
 /** Public entry point (route + legacy server.ts handler): `period` (2026-Q3 · 2026-09) or fromDate/toDate of a natural quarter/month. */
 export async function buildModelo111(input: { context: UserContext; propertyId?: string | null; period?: string; fromDate?: string; toDate?: string; periodType?: "monthly" | "quarterly" }): Promise<FiscalModelReport> {
   requirePermissions(input.context, ["accounting.read"]);
-  const periodo = resolveSettlementPeriod(input);
+  assertFinanceReadScope(input.context, input.propertyId ?? null);
+  // R8: a gran empresa (volumen > 6.010.121,04 €) files the 111 monthly (RIRPF art. 108.1); otherwise month or quarter as requested.
+  const { sociedad } = await declaranteOf(input.context.organizationId);
+  const periodo = resolveSettlementPeriod(input, sociedad.regimen.periodicityForcedBy ? "monthly" : undefined, sociedad.regimen);
   return modelo111ForPeriod({ organizationId: input.context.organizationId, periodo, propertyId: input.propertyId ?? null });
 }

@@ -28,13 +28,25 @@ import { getPropertyTaxProfile, resolveTaxRate, type PropertyTaxProfileRateSourc
 import { getExchangeRate } from "../accounting/currency.service.js";
 import {
   ISSUER_TAX_ID_PLACEHOLDER,
+  LEGAL_IDENTITY_SCREEN,
+  SERIES_SCREEN,
+  WORK_CENTERS_SCREEN,
+  adoptOrphanChainRecords,
+  chainInvoiceWhere,
+  lockVerifactuChainScope,
   previewIssuerTaxId,
   requireIssuerIdentity,
   resolveFiscalMode,
   resolveIssuerIdentity,
+  resolveVerifactuChainScope,
   taxIdFromQrPayload,
-  type IssuerIdentity
+  verifactuExclusionWarning,
+  type IssuerEstablishment,
+  type IssuerIdentity,
+  type VerifactuChainScope,
+  type VerifactuExclusion
 } from "./issuer-identity.service.js";
+import { defaultSeriesPrefix, findPrefixClash, normalizeSeriesPrefix, seriesPrefixClashError, type SeriesPrefixRow } from "./series-prefix.service.js";
 import { prepareVerifactuAnulacion, queueVerifactuAnulacion } from "./verifactu-submission.service.js";
 import type { InvoiceCancellationPayments, InvoiceDraftSnapshot, InvoiceSnapshotV1 } from "../../../../../packages/shared/src/payments-types.js";
 import { PAYMENT_ERROR_CODES } from "../../../../../packages/shared/src/payments-types.js";
@@ -175,9 +187,24 @@ export type InvoiceIssuer = {
   taxIdConfigured: string | null;
   // Human-readable issuer problems (missing / invalid NIF, placeholder issuance). Empty when fine.
   warnings: string[];
+  /** Address line of the ESTABLISHMENT (kept for older clients; same as establishment.addressLine). */
   address?: string;
   logoUrl?: string;
   legalFooter?: string;
+  // Tanda 6b (L3, design §5.2 R2): the issuer is the sociedad; the property is
+  // the establishment block. Additive so older clients keep working.
+  /** LegalEntity that issues (null for a tenant whose implicit sociedad is not backfilled yet). */
+  legalEntityId?: string | null;
+  /** Domicilio fiscal of the sociedad on one line. */
+  fiscalAddress?: string;
+  /** Establishment (centro de trabajo) that issued / will issue the document. */
+  establishment?: IssuerEstablishment;
+  /**
+   * Why the document carries (or, for a draft, will carry) no VeriFactu record —
+   * the sociedad is in the SII (R7/R8, fix t6b#2); null when VeriFactu applies.
+   * Issued documents answer with the exclusion frozen in their snapshot.
+   */
+  verifactuExclusion?: VerifactuExclusion | null;
 };
 
 export type ListInvoicesOptions = {
@@ -299,7 +326,7 @@ export function fiscalYearInMadrid(date: Date): number {
   return Number(year);
 }
 
-// ── Invoice numbering (FISC-09: one series per year) ─────────────────────────
+// ── Invoice numbering (FISC-09: one series per year · R3: unique per sociedad) ──
 
 export type InvoiceSeries = "FAC" | "SIM" | "REC";
 
@@ -313,58 +340,344 @@ export function seriesForInvoiceType(invoiceType: string): InvoiceSeries {
 const SERIES_INVOICE_TYPE: Record<InvoiceSeries, string> = { FAC: "F1", SIM: "F2", REC: "R1" };
 const SERIES_PADDING = 6;
 
-/** The slice of a transaction client allocateInvoiceNumber needs (tests pass a mock). */
-export type InvoiceSequenceTx = Pick<Prisma.TransactionClient, "invoiceSequence">;
+/** 409 when the allocated number is already used by a sister centre of the same sociedad (stand-in for the deferred unique index). */
+export const INVOICE_NUMBER_DUPLICATE_CODE = "INVOICE_NUMBER_DUPLICATE" as const;
+
+/** The slice of a transaction client allocateInvoiceNumber needs (tests pass a mock); `$executeRaw` takes the series-opening advisory lock. */
+export type InvoiceSequenceTx = Pick<Prisma.TransactionClient, "invoiceSequence" | "property" | "$executeRaw">;
+
+/**
+ * Series context of a billing centre inside its sociedad (design §5.2 R3):
+ * who the sister centres are (same LegalEntity; same organization while the
+ * tenant is not backfilled) and how many centres issue invoices, which decides
+ * the default prefix (`FAC-2026-` with one, `FAC-RA-2026-` with several).
+ */
+export type SeriesScope = {
+  propertyId: string;
+  organizationId: string;
+  legalEntityId: string | null;
+  /** Property.code (RA, LT…); null until the centre is coded. */
+  propertyCode: string | null;
+  /** Sister centres of the same sociedad. */
+  siblingPropertyIds: string[];
+  /** Centres that issue invoices, this one included: hotels and `other`; an office only when it has an active series. */
+  billingCentres: number;
+};
+
+type SeriesScopeRow = { id: string; kind: string };
+
+/** Pure: billing centres = this centre + sister hotels/others + sister offices with an active series. */
+export function countBillingCentres(siblings: readonly SeriesScopeRow[], officesWithActiveSeries: ReadonlySet<string>): number {
+  let count = 1;
+  for (const sibling of siblings) {
+    if (sibling.kind !== "office" || officesWithActiveSeries.has(sibling.id)) count += 1;
+  }
+  return count;
+}
+
+/** Resolve the series scope of a property inside the transaction (one or two small queries). */
+export async function resolveSeriesScope(tx: InvoiceSequenceTx, propertyId: string): Promise<SeriesScope> {
+  const property = await tx.property.findUnique({
+    where: { id: propertyId },
+    select: { id: true, organizationId: true, legalEntityId: true, code: true, kind: true }
+  });
+  if (!property) throw new NotFoundError("Propiedad no encontrada.");
+  const siblings = await tx.property.findMany({
+    where: property.legalEntityId
+      ? { legalEntityId: property.legalEntityId, id: { not: property.id } }
+      : { organizationId: property.organizationId, id: { not: property.id } },
+    select: { id: true, kind: true }
+  });
+  const offices = siblings.filter((row) => row.kind === "office").map((row) => row.id);
+  const officesWithSeries = new Set<string>();
+  if (offices.length > 0) {
+    const active = await tx.invoiceSequence.findMany({ where: { propertyId: { in: offices }, active: true }, select: { propertyId: true } });
+    for (const row of active) officesWithSeries.add(row.propertyId);
+  }
+  return {
+    propertyId: property.id,
+    organizationId: property.organizationId,
+    legalEntityId: property.legalEntityId,
+    propertyCode: property.code?.trim() ? property.code.trim().toUpperCase() : null,
+    siblingPropertyIds: siblings.map((row) => row.id),
+    billingCentres: countBillingCentres(siblings, officesWithSeries)
+  };
+}
+
+/** Active series of the sister centres (the rows the clash guard compares against). */
+async function loadSiblingSeries(tx: InvoiceSequenceTx, scope: SeriesScope): Promise<SeriesPrefixRow[]> {
+  if (scope.siblingPropertyIds.length === 0) return [];
+  return tx.invoiceSequence.findMany({
+    where: { propertyId: { in: scope.siblingPropertyIds }, active: true },
+    select: { id: true, propertyId: true, prefix: true, year: true, active: true }
+  });
+}
+
+/** Warning (never a 409) for a series that ALREADY exists in two centres: the fix is to close one, never to renumber. Pure. */
+export function legacySeriesClashWarning(prefix: string, year: number, clash: Pick<SeriesPrefixRow, "propertyId">): string {
+  return `La serie ${prefix} (${year}) también está activa en otro centro de la misma sociedad (${clash.propertyId}): bajo un mismo NIF la numeración debe ser única. Cierra una de las dos series en Configuración › Estructura societaria › Series y VeriFactu; nunca se renumera una serie emitida.`;
+}
+
+// ── Series-opening lock and typed refusals (fix t6b#1) ───────────────────────
+
+/** 409 when a series would be opened for an uncoded centre of a multi-centre sociedad (R3: the prefix needs the centre code). */
+export const WORK_CENTER_CODE_REQUIRED_CODE = "WORK_CENTER_CODE_REQUIRED" as const;
+/** 409 when the series of the year is closed (`active = false`): a closed series never numbers again (R3: never renumbered). */
+export const SERIES_CLOSED_CODE = "SERIES_CLOSED" as const;
+
+const SERIES_LOCK_PREFIX = "series-open:";
+const INVOICE_NUMBER_LOCK_PREFIX = "invoice-number:";
+
+/** Key of the sociedad a series scope belongs to (the organization while the tenant has no backfilled legal entity). Pure. */
+export function seriesScopeKey(scope: Pick<SeriesScope, "legalEntityId" | "organizationId">): string {
+  return scope.legalEntityId ? `entity:${scope.legalEntityId}` : `org:${scope.organizationId}`;
+}
+
+/** Advisory-lock key serialising the opening of series rows of one sociedad in one year. Pure. */
+export function seriesOpeningLockKey(scope: Pick<SeriesScope, "legalEntityId" | "organizationId">, year: number): string {
+  return `${SERIES_LOCK_PREFIX}${seriesScopeKey(scope)}:${year}`;
+}
+
+/** Advisory-lock key serialising the issuance of one invoice number under one sociedad (case-insensitive). Pure. */
+export function invoiceNumberLockKey(scope: Pick<SeriesScope, "legalEntityId" | "organizationId">, invoiceNumber: string): string {
+  return `${INVOICE_NUMBER_LOCK_PREFIX}${seriesScopeKey(scope)}:${invoiceNumber.trim().toUpperCase()}`;
+}
+
+/**
+ * Serialise the OPENING of a series row across the centres of a sociedad
+ * (pg_advisory_xact_lock, released with the transaction). The chain lock is
+ * per installation / centre, so without this two hotels of one NIF could pass
+ * `findPrefixClash` at the same time and both open the same prefix (t6b#1).
+ * Taken after the chain lock and before the sister lookup: the loser waits
+ * for the winner's commit and then sees its row. Exported for
+ * patchBillingSettings (L2), which opens series outside the chain lock.
+ */
+export async function lockSeriesOpening(tx: Pick<Prisma.TransactionClient, "$executeRaw">, scope: Pick<SeriesScope, "legalEntityId" | "organizationId">, year: number): Promise<void> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${seriesOpeningLockKey(scope, year)}))`;
+}
+
+/** Pure: 409 WORK_CENTER_CODE_REQUIRED for an uncoded centre of a sociedad with several billing centres. */
+export function workCenterCodeRequiredError(input: { propertyId: string; series: InvoiceSeries; year: number; billingCentres: number }): ConflictError {
+  return new ConflictError(
+    `No se puede abrir la serie ${input.series} de ${input.year}: la sociedad tiene ${input.billingCentres} centros que facturan y este centro no tiene código. Bajo un mismo NIF cada serie lleva el código del centro (${input.series}-<código>-${input.year}-) para que la numeración sea única (RD 1619/2012 art. 6.1.a). Asigna el código del centro en ${WORK_CENTERS_SCREEN} o define el prefijo de la serie en ${SERIES_SCREEN}.`,
+    { code: WORK_CENTER_CODE_REQUIRED_CODE, propertyId: input.propertyId, series: input.series, year: input.year, billingCentres: input.billingCentres, screen: WORK_CENTERS_SCREEN }
+  );
+}
+
+/** Pure: 409 SERIES_CLOSED when the series of the year exists but is closed. */
+export function seriesClosedError(input: { propertyId: string; series: InvoiceSeries; year: number; prefix: string; sequenceId: string }): ConflictError {
+  return new ConflictError(
+    `La serie ${input.prefix} del ejercicio ${input.year} está cerrada: una serie cerrada no vuelve a numerar (nunca se renumera una serie emitida). Reábrela en ${SERIES_SCREEN} si el emisor no ha cambiado; si la sociedad cambió de NIF, la serie del nuevo emisor debe llevar otro prefijo.`,
+    { code: SERIES_CLOSED_CODE, propertyId: input.propertyId, series: input.series, year: input.year, prefix: input.prefix, sequenceId: input.sequenceId, screen: SERIES_SCREEN }
+  );
+}
+
+export type AllocatedInvoiceNumber = {
+  invoiceNumber: string;
+  year: number;
+  sequenceId: string;
+  /** Prefix as printed (FAC-2026- · FAC-RA-2026-). */
+  prefix: string;
+  /** True when this allocation opened the series row (first number of the year). */
+  created: boolean;
+  legalEntityId: string | null;
+  scope: SeriesScope;
+  /** Non-blocking findings (a pre-existing prefix collision with a sister centre). Persisted in Invoice.warningsJson by the callers. */
+  warnings: string[];
+};
 
 /**
  * Allocate the next number of a series for the fiscal year of `issuedAt`
  * (Europe/Madrid): "FAC-2027-000001" on the first issuance of 2027, whatever
  * 2026 reached. One InvoiceSequence row per (property, series, year); the
- * upsert's increment holds the row lock for the transaction.
+ * increment holds the row lock for the transaction and every caller runs
+ * under the chain advisory lock, so two allocations never race.
+ *
+ * Estructura societaria (design §5.2 R3): when the allocation OPENS a series
+ * row its prefix is `${series}-${year}-` if the sociedad has one billing
+ * centre and `${series}-${code}-${year}-` if it has several, and an active
+ * series of a sister centre with the same prefix in that year is refused with
+ * 409 SERIES_PREFIX_CLASH { conflictingPropertyId } — the same rule as
+ * patchBillingSettings (L2), so two hotels under one NIF can never both open
+ * FAC-2026-. A pre-existing collision (both rows already open, e.g. the
+ * org_123 sandbox) is reported as a warning: an issued series is closed by
+ * the operator, never renumbered (the number index of L8 is the safety net).
  *
  * Legacy tolerance: a row with year NULL (created before the column existed)
  * whose prefix ends in "-<year>-" for the requested year is adopted (year is
  * stamped on it) instead of starting a parallel series — so 2026 keeps
  * running on FAC-2026-000014 after the deploy without any backfill.
  *
- * Callers pass the SAME `issuedAt` that enters the huella.
+ * Callers pass the SAME `issuedAt` that enters the huella. `scope` may be
+ * pre-resolved (tests, callers that already hold it).
  */
 export async function allocateInvoiceNumber(
   tx: InvoiceSequenceTx,
-  input: { propertyId: string; series: InvoiceSeries; issuedAt: Date }
-): Promise<{ invoiceNumber: string; year: number; sequenceId: string }> {
+  input: { propertyId: string; series: InvoiceSeries; issuedAt: Date; scope?: SeriesScope }
+): Promise<AllocatedInvoiceNumber> {
   const year = fiscalYearInMadrid(input.issuedAt);
-  const prefix = `${input.series}-${year}-`;
+  const scope = input.scope ?? (await resolveSeriesScope(tx, input.propertyId));
+  const warnings: string[] = [];
+
   const legacy = await tx.invoiceSequence.findFirst({
     where: { propertyId: input.propertyId, sequenceCode: input.series, year: null },
     orderBy: { nextNumber: "desc" }
   });
-  const sequence =
-    legacy && typeof legacy.prefix === "string" && legacy.prefix.endsWith(`-${year}-`)
-      ? await tx.invoiceSequence.update({ where: { id: legacy.id }, data: { year, nextNumber: { increment: 1 } } })
-      : await tx.invoiceSequence.upsert({
-          where: { propertyId_sequenceCode_year: { propertyId: input.propertyId, sequenceCode: input.series, year } },
-          update: { nextNumber: { increment: 1 } },
-          create: {
-            propertyId: input.propertyId,
-            sequenceCode: input.series,
-            year,
-            prefix,
-            nextNumber: 2,
-            padding: SERIES_PADDING,
-            invoiceType: SERIES_INVOICE_TYPE[input.series]
-          }
-        });
+  let sequence: { id: string; prefix: string | null; nextNumber: number; padding: number };
+  let created = false;
+  if (legacy && typeof legacy.prefix === "string" && legacy.prefix.endsWith(`-${year}-`)) {
+    // A closed series never numbers again (R3): the operator reopens it or opens another prefix.
+    if (!legacy.active) throw seriesClosedError({ propertyId: input.propertyId, series: input.series, year, prefix: legacy.prefix, sequenceId: legacy.id });
+    sequence = await tx.invoiceSequence.update({
+      where: { id: legacy.id },
+      data: { year, nextNumber: { increment: 1 }, ...(legacy.legalEntityId === null && scope.legalEntityId ? { legalEntityId: scope.legalEntityId } : {}) }
+    });
+  } else {
+    const existing = await tx.invoiceSequence.findUnique({
+      where: { propertyId_sequenceCode_year: { propertyId: input.propertyId, sequenceCode: input.series, year } }
+    });
+    if (existing) {
+      if (!existing.active) {
+        throw seriesClosedError({ propertyId: input.propertyId, series: input.series, year, prefix: existing.prefix ?? `${input.series}-${year}-`, sequenceId: existing.id });
+      }
+      sequence = await tx.invoiceSequence.update({
+        where: { id: existing.id },
+        data: { nextNumber: { increment: 1 }, ...(existing.legalEntityId === null && scope.legalEntityId ? { legalEntityId: scope.legalEntityId } : {}) }
+      });
+    } else {
+      // Opening a row: serialise against the sister centres of the sociedad
+      // (t6b#1), refuse an uncoded centre when several centres bill under the
+      // NIF (the plain FAC-<año>- would collide), then check the sisters.
+      await lockSeriesOpening(tx, scope, year);
+      if (scope.billingCentres > 1 && !scope.propertyCode) {
+        throw workCenterCodeRequiredError({ propertyId: input.propertyId, series: input.series, year, billingCentres: scope.billingCentres });
+      }
+      const prefix = defaultSeriesPrefix({ series: input.series, year, propertyCode: scope.propertyCode, billingCentres: scope.billingCentres });
+      const clash = findPrefixClash(await loadSiblingSeries(tx, scope), { propertyId: input.propertyId, prefix, year });
+      if (clash) throw seriesPrefixClashError(clash, { propertyId: input.propertyId, prefix, year });
+      sequence = await tx.invoiceSequence.create({
+        data: {
+          propertyId: input.propertyId,
+          sequenceCode: input.series,
+          year,
+          prefix,
+          nextNumber: 2,
+          padding: SERIES_PADDING,
+          invoiceType: SERIES_INVOICE_TYPE[input.series],
+          legalEntityId: scope.legalEntityId
+        }
+      });
+      created = true;
+    }
+  }
+
+  const prefix = sequence.prefix ?? `${input.series}-${year}-`;
+  if (!created) {
+    // Pre-existing collision: report, never renumber (R3).
+    const clash = findPrefixClash(await loadSiblingSeries(tx, scope), { propertyId: input.propertyId, prefix, year, excludeSequenceId: sequence.id });
+    if (clash) warnings.push(legacySeriesClashWarning(normalizeSeriesPrefix(prefix), year, clash));
+  }
   const number = sequence.nextNumber - 1;
   const padding = sequence.padding > 0 ? sequence.padding : SERIES_PADDING;
   return {
-    invoiceNumber: `${sequence.prefix ?? prefix}${String(number).padStart(padding, "0")}`,
+    invoiceNumber: `${prefix}${String(number).padStart(padding, "0")}`,
     year,
-    sequenceId: sequence.id
+    sequenceId: sequence.id,
+    prefix,
+    created,
+    legalEntityId: scope.legalEntityId,
+    scope,
+    warnings
   };
 }
 
-// ── VeriFactu chain (altas + anulaciones of a property, under one lock) ──────
+/**
+ * Safety net under the prefix rule (design §5.1: the pair NIF + serie +
+ * número is unique per obligado): 409 INVOICE_NUMBER_DUPLICATE when a sister
+ * centre of the same sociedad already issued that number. Stands in for the
+ * partial unique index (legal_entity_id, invoice_number) deferred to L8.
+ * The number is locked under the sociedad first (pg_advisory_xact_lock): two
+ * centres numbering a shared legacy prefix (org_123: FAC-2026- in both) at
+ * the same instant are serialised, so the second one reads the first one's
+ * committed row instead of passing in READ COMMITTED (t6b#1).
+ */
+export async function assertInvoiceNumberFreeInEntity(
+  tx: Pick<Prisma.TransactionClient, "invoice" | "$executeRaw">,
+  scope: Pick<SeriesScope, "propertyId" | "siblingPropertyIds" | "legalEntityId" | "organizationId">,
+  invoiceNumber: string
+): Promise<void> {
+  if (scope.siblingPropertyIds.length === 0) return;
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${invoiceNumberLockKey(scope, invoiceNumber)}))`;
+  const duplicate = await tx.invoice.findFirst({
+    where: { propertyId: { in: scope.siblingPropertyIds }, invoiceNumber, deletedAt: null, status: { not: "draft" } },
+    select: { id: true, propertyId: true }
+  });
+  if (!duplicate) return;
+  throw new ConflictError(
+    `El número ${invoiceNumber} ya existe en otro centro de la misma sociedad: bajo un mismo NIF cada número de factura es único. Cierra la serie duplicada y abre otra con el código del centro (nunca se renumera).`,
+    { code: INVOICE_NUMBER_DUPLICATE_CODE, invoiceNumber, propertyId: scope.propertyId, conflictingPropertyId: duplicate.propertyId, conflictingInvoiceId: duplicate.id }
+  );
+}
+
+// ── Structure snapshot (frozen with the document) ────────────────────────────
+
+/**
+ * Establishment and sociedad data frozen inside Invoice.snapshotJson at
+ * issuance (design §5.2 R2: PDF shows sociedad + establecimiento as they were
+ * when the document was expedited). Additive keys next to InvoiceSnapshotV1;
+ * parseInvoiceSnapshot ignores them, structureFromSnapshotJson reads them.
+ */
+export type InvoiceSnapshotStructure = {
+  establishment: IssuerEstablishment;
+  /** Domicilio fiscal of the sociedad at issuance. */
+  issuerFiscalAddress: string | null;
+  legalEntityId: string | null;
+  installationId: string | null;
+  numeroInstalacion: string | null;
+  /** Why the document carries no VeriFactu record (SII, R7/R8); null when it does. Frozen so the PDF and the cancel path never depend on the live flag. */
+  verifactuExclusion: VerifactuExclusion | null;
+};
+
+export function structureSnapshot(
+  issuer: Pick<IssuerIdentity, "establishment" | "fiscalAddress" | "legalEntityId" | "verifactuExclusion">,
+  chain: Pick<VerifactuChainScope, "legalEntityId" | "installation">
+): InvoiceSnapshotStructure {
+  const excluded = issuer.verifactuExclusion !== null;
+  return {
+    establishment: issuer.establishment,
+    issuerFiscalAddress: issuer.fiscalAddress,
+    legalEntityId: chain.legalEntityId ?? issuer.legalEntityId,
+    // No record, no chain: an excluded document is not linked to an installation.
+    installationId: excluded ? null : chain.installation?.id ?? null,
+    numeroInstalacion: excluded ? null : chain.installation?.numeroInstalacion ?? null,
+    verifactuExclusion: issuer.verifactuExclusion
+  };
+}
+
+/** Pure: the exclusion frozen in a snapshotJson value, or null / undefined (legacy snapshot without the key). */
+function exclusionFromSnapshotValue(value: unknown): VerifactuExclusion | null | undefined {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as { code?: unknown; motivo?: unknown };
+  return v.code === "VERIFACTU_EXCLUDED_BY_SII" && typeof v.motivo === "string" ? { code: v.code, motivo: v.motivo } : undefined;
+}
+
+/** The structure keys of a stored snapshotJson (empty object on legacy snapshots). Pure. */
+export function structureFromSnapshotJson(value: unknown): Partial<InvoiceSnapshotStructure> {
+  if (!value || typeof value !== "object") return {};
+  const v = value as Partial<InvoiceSnapshotStructure>;
+  const establishment = v.establishment && typeof v.establishment === "object" && typeof (v.establishment as IssuerEstablishment).propertyId === "string" ? (v.establishment as IssuerEstablishment) : undefined;
+  return {
+    ...(establishment ? { establishment } : {}),
+    ...(typeof v.issuerFiscalAddress === "string" || v.issuerFiscalAddress === null ? { issuerFiscalAddress: v.issuerFiscalAddress } : {}),
+    ...(typeof v.legalEntityId === "string" || v.legalEntityId === null ? { legalEntityId: v.legalEntityId } : {}),
+    ...(typeof v.installationId === "string" || v.installationId === null ? { installationId: v.installationId } : {}),
+    ...(typeof v.numeroInstalacion === "string" || v.numeroInstalacion === null ? { numeroInstalacion: v.numeroInstalacion } : {}),
+    ...(exclusionFromSnapshotValue(v.verifactuExclusion) !== undefined ? { verifactuExclusion: exclusionFromSnapshotValue(v.verifactuExclusion) as VerifactuExclusion | null } : {})
+  };
+}
+
+// ── VeriFactu chain (altas + anulaciones of an installation, under one lock) ──
 
 export type ChainLinkKind = "alta" | "anulacion";
 
@@ -379,13 +692,23 @@ export type ChainLink = {
   emitterTaxId: string | null;
 };
 
+/** Transaction slice the chain helpers need (a full TransactionClient satisfies it). */
+export type ChainTx = Pick<Prisma.TransactionClient, "$executeRaw" | "invoice" | "verifactuSubmission" | "property" | "organization" | "legalEntity" | "verifactuInstallation">;
+
 /**
- * Serialise every chain mutation (issue / rectify / cancel) of a property for
- * the rest of the transaction: number allocation, previous-link lookup and
- * the write happen with no interleaving, so the chain cannot fork.
+ * Serialise every chain mutation (issue / rectify / cancel) for the rest of
+ * the transaction: number allocation, previous-link lookup and the write
+ * happen with no interleaving, so the chain cannot fork. Design §5.2 R7: the
+ * chain — and therefore the lock — belongs to the (obligado; instalación):
+ * `target` may be a propertyId (resolved to its installation here) or a scope
+ * already resolved. Records of the chain's centres that predate the
+ * installation are linked to it under the lock (adoptOrphanChainRecords).
  */
-export async function lockVerifactuChain(tx: Prisma.TransactionClient, propertyId: string): Promise<void> {
-  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${propertyId}::text || ':verifactu-chain'))`;
+export async function lockVerifactuChain(tx: ChainTx, target: string | VerifactuChainScope): Promise<VerifactuChainScope> {
+  const scope = typeof target === "string" ? await resolveVerifactuChainScope(tx, target) : target;
+  await lockVerifactuChainScope(tx, scope);
+  await adoptOrphanChainRecords(tx, scope);
+  return scope;
 }
 
 /**
@@ -413,14 +736,17 @@ const CHAIN_LINK_SELECT = {
   qrPayload: true
 } as const;
 
-export async function findPreviousChainLink(tx: Pick<Prisma.TransactionClient, "invoice">, propertyId: string): Promise<ChainLink | null> {
+/** Previous link of the chain of `target` (a propertyId, resolved to its installation, or a resolved scope). */
+export async function findPreviousChainLink(tx: Omit<ChainTx, "$executeRaw" | "verifactuSubmission">, target: string | VerifactuChainScope): Promise<ChainLink | null> {
+  const scope = typeof target === "string" ? await resolveVerifactuChainScope(tx, target) : target;
+  const chain = chainInvoiceWhere(scope);
   const lastAlta = await tx.invoice.findFirst({
-    where: { propertyId, deletedAt: null, verifactuHash: { not: null }, issuedAt: { not: null } },
+    where: { AND: [chain, { deletedAt: null, verifactuHash: { not: null }, issuedAt: { not: null } }] },
     orderBy: [{ issuedAt: "desc" }, { id: "desc" }],
     select: CHAIN_LINK_SELECT
   });
   const lastAnulacion = await tx.invoice.findFirst({
-    where: { propertyId, deletedAt: null, cancellationHash: { not: null }, cancelledAt: { not: null } },
+    where: { AND: [chain, { deletedAt: null, cancellationHash: { not: null }, cancelledAt: { not: null } }] },
     orderBy: [{ cancelledAt: "desc" }, { id: "desc" }],
     select: CHAIN_LINK_SELECT
   });
@@ -603,8 +929,13 @@ function toListItem(row: InvoiceRow, paid: PaidSummary | undefined): InvoiceList
 export const ISSUED_WITH_PLACEHOLDER_WARNING =
   `Factura emitida en sandbox con el NIF de relleno ${ISSUER_TAX_ID_PLACEHOLDER}: no es un documento fiscal válido.`;
 
-function issuerBlock(identity: IssuerIdentity | null, row: Pick<InvoiceRow, "issuerTaxId" | "issuerLegalName" | "issuerTaxIdPlaceholder" | "qrPayload">): InvoiceIssuer | undefined {
+function issuerBlock(identity: IssuerIdentity | null, row: Pick<InvoiceRow, "issuerTaxId" | "issuerLegalName" | "issuerTaxIdPlaceholder" | "qrPayload" | "status" | "verifactuHash" | "snapshotJson">): InvoiceIssuer | undefined {
   if (!identity && !row.issuerTaxId) return undefined;
+  // Frozen exclusion of an issued document; the live sociedad for drafts and
+  // for documents issued before the snapshot key (only when they have no huella).
+  const frozenExclusion = row.status === "draft" ? undefined : structureFromSnapshotJson(row.snapshotJson).verifactuExclusion;
+  const verifactuExclusion: VerifactuExclusion | null =
+    frozenExclusion !== undefined ? frozenExclusion : row.status !== "draft" && row.verifactuHash ? null : (identity?.verifactuExclusion ?? null);
   // An issued invoice shows the identity it was issued with: the snapshot, or
   // for invoices issued before the snapshot columns the NIF inside their own
   // QR (same rule as issuerForInvoice, so document, QR and XML agree). A draft
@@ -635,7 +966,11 @@ function issuerBlock(identity: IssuerIdentity | null, row: Pick<InvoiceRow, "iss
     warnings,
     address: identity?.address ?? undefined,
     logoUrl: identity?.logoUrl ?? undefined,
-    legalFooter: identity?.legalFooter ?? undefined
+    legalFooter: identity?.legalFooter ?? undefined,
+    legalEntityId: identity?.legalEntityId ?? null,
+    fiscalAddress: identity?.fiscalAddress ?? undefined,
+    establishment: identity?.establishment,
+    verifactuExclusion
   };
 }
 
@@ -875,7 +1210,10 @@ function identityToIssuer(identity: IssuerIdentity | null): InvoiceIssuer {
     warnings: preview.warnings,
     address: identity.address ?? undefined,
     logoUrl: identity.logoUrl ?? undefined,
-    legalFooter: identity.legalFooter ?? undefined
+    legalFooter: identity.legalFooter ?? undefined,
+    legalEntityId: identity.legalEntityId,
+    fiscalAddress: identity.fiscalAddress ?? undefined,
+    establishment: identity.establishment
   };
 }
 
@@ -1547,38 +1885,130 @@ export function simplifiedLimitExceededError(input: { total: number; limit: numb
   );
 }
 
+export type IssuerSeriesMismatch = {
+  series: string;
+  year: number;
+  /** Prefix that identifies the series (FAC-RA-2026-): the unit the one-issuer rule applies to. */
+  prefix: string;
+  seriesTaxId: string;
+  currentTaxId: string;
+  lastInvoiceNumber: string | null;
+};
+
 /**
  * 409 when the series already carries invoices of another issuer NIF
  * (details.code = ISSUER_TAX_ID_SERIES_MISMATCH). A series belongs to ONE
- * issuer; a change of NIF opens a new series. Pure.
+ * issuer (RD 1619/2012 art. 6.1.a) and issued invoices keep their NIF
+ * snapshot, so the message states the two real remedies (fix t6b#11): a
+ * wrong NIF is corrected with rectificativas and in the sociedad's fiscal
+ * data; a real change of issuer closes the series and opens another prefix.
+ * Pure.
  */
-export function issuerSeriesMismatchError(input: { series: string; year: number; seriesTaxId: string; currentTaxId: string; lastInvoiceNumber: string | null }): ConflictError {
+export function issuerSeriesMismatchError(input: IssuerSeriesMismatch): ConflictError {
   return new ConflictError(
-    `La serie ${input.series}-${input.year} ya tiene facturas emitidas con el NIF ${input.seriesTaxId} (última: ${input.lastInvoiceNumber ?? "—"}) y el emisor configurado es ${input.currentTaxId}: una serie pertenece a un único emisor. Revisa el NIF en Configuración › Perfil del establecimiento o abre una serie nueva.`,
-    { code: PAYMENT_ERROR_CODES.ISSUER_TAX_ID_SERIES_MISMATCH, ...input }
+    `La serie ${input.prefix} ya tiene facturas emitidas con el NIF ${input.seriesTaxId} (última: ${input.lastInvoiceNumber ?? "—"}) y el emisor configurado es ${input.currentTaxId}: una serie pertenece a un único emisor (RD 1619/2012 art. 6.1.a) y las facturas emitidas conservan su NIF. ` +
+      `Si el NIF anterior era erróneo, corrige esas facturas con rectificativas (art. 15) y revisa el NIF en ${LEGAL_IDENTITY_SCREEN}. ` +
+      `Si la sociedad ha cambiado de NIF, cierra la serie ${input.prefix} y abre la del nuevo emisor con otro prefijo en ${SERIES_SCREEN}; nunca se renumera una serie emitida.`,
+    { code: PAYMENT_ERROR_CODES.ISSUER_TAX_ID_SERIES_MISMATCH, ...input, legalIdentityScreen: LEGAL_IDENTITY_SCREEN, seriesScreen: SERIES_SCREEN }
   );
 }
 
+/** Pure: true when `invoiceNumber` belongs to the series `prefix` (prefix + digits only, so FAC-2026- never claims FAC-2026-B-000001). */
+export function invoiceNumberBelongsToPrefix(invoiceNumber: string | null | undefined, prefix: string): boolean {
+  if (!invoiceNumber || !invoiceNumber.startsWith(prefix)) return false;
+  return /^\d+$/.test(invoiceNumber.slice(prefix.length));
+}
+
 /**
- * Most recent invoice of the (property, series, year) issued with a real NIF
- * (placeholder rows of the sandbox era are ignored), to enforce one issuer
- * per series.
+ * Most recent invoice of the series identified by `prefix` (FAC-RA-2026-)
+ * issued with a real NIF (placeholder rows of the sandbox era are ignored),
+ * to enforce one issuer per series. Keyed by the printed prefix — the series
+ * itself — and not by `${series}-…-${year}-`, so a series opened with another
+ * prefix after a change of NIF is not blocked by the old series' invoices.
  */
-async function findSeriesIssuerTaxId(tx: Pick<Prisma.TransactionClient, "invoice">, propertyId: string, series: InvoiceSeries, year: number): Promise<{ taxId: string; invoiceNumber: string | null } | null> {
-  const row = await tx.invoice.findFirst({
+export async function findSeriesIssuerTaxId(db: Pick<Prisma.TransactionClient, "invoice">, propertyId: string, prefix: string): Promise<{ taxId: string; invoiceNumber: string | null } | null> {
+  if (!prefix) return null;
+  const rows = await db.invoice.findMany({
     where: {
       propertyId,
       deletedAt: null,
       issuedAt: { not: null },
       issuerTaxId: { not: null },
       issuerTaxIdPlaceholder: false,
-      invoiceNumber: { startsWith: `${series}-` },
-      OR: [{ invoiceNumber: { contains: `-${year}-` } }]
+      invoiceNumber: { startsWith: prefix }
     },
     orderBy: [{ issuedAt: "desc" }, { id: "desc" }],
-    select: { issuerTaxId: true, invoiceNumber: true }
+    select: { issuerTaxId: true, invoiceNumber: true },
+    take: 10
   });
+  const row = rows.find((candidate) => invoiceNumberBelongsToPrefix(candidate.invoiceNumber, prefix));
   return row?.issuerTaxId ? { taxId: row.issuerTaxId, invoiceNumber: row.invoiceNumber } : null;
+}
+
+export type SeriesBlockedByIssuerChange = {
+  propertyId: string;
+  sequenceId: string;
+  series: string;
+  prefix: string;
+  year: number | null;
+  /** NIF the series' invoices were issued with. */
+  seriesTaxId: string;
+  lastInvoiceNumber: string | null;
+};
+
+/**
+ * Active series of a sociedad whose issued invoices carry a NIF other than
+ * `nextTaxId`: after the PATCH of the sociedad's NIF each of them answers 409
+ * ISSUER_TAX_ID_SERIES_MISMATCH on the next issuance. patchLegalEntity (L2)
+ * calls this to warn in its own 200 (fix t6b#11). Read-only; a tenant
+ * without a backfilled legal entity is scoped by organization.
+ */
+export async function findSeriesBlockedByTaxIdChange(
+  input: { organizationId: string; legalEntityId?: string | null; nextTaxId: string | null },
+  db: Pick<Prisma.TransactionClient, "invoice" | "invoiceSequence" | "property"> = prisma
+): Promise<SeriesBlockedByIssuerChange[]> {
+  const nextTaxId = normalizeTaxId(input.nextTaxId);
+  const properties = await db.property.findMany({
+    where: input.legalEntityId ? { legalEntityId: input.legalEntityId } : { organizationId: input.organizationId },
+    select: { id: true }
+  });
+  if (properties.length === 0) return [];
+  const sequences = await db.invoiceSequence.findMany({
+    where: { propertyId: { in: properties.map((row) => row.id) }, active: true, prefix: { not: null } },
+    select: { id: true, propertyId: true, sequenceCode: true, prefix: true, year: true },
+    orderBy: [{ propertyId: "asc" }, { sequenceCode: "asc" }, { year: "asc" }]
+  });
+  const blocked: SeriesBlockedByIssuerChange[] = [];
+  for (const sequence of sequences) {
+    if (!sequence.prefix) continue;
+    const issuer = await findSeriesIssuerTaxId(db, sequence.propertyId, sequence.prefix);
+    if (!issuer || issuer.taxId === nextTaxId) continue;
+    blocked.push({ propertyId: sequence.propertyId, sequenceId: sequence.id, series: sequence.sequenceCode, prefix: sequence.prefix, year: sequence.year, seriesTaxId: issuer.taxId, lastInvoiceNumber: issuer.invoiceNumber });
+  }
+  return blocked;
+}
+
+/** Pure: Spanish warning for one blocked series (the PATCH of the NIF returns one per row). */
+export function seriesBlockedByTaxIdChangeWarning(row: SeriesBlockedByIssuerChange, nextTaxId: string | null): string {
+  return `La serie ${row.prefix}${row.year ? ` (${row.year})` : ""} tiene facturas emitidas con el NIF ${row.seriesTaxId} (última: ${row.lastInvoiceNumber ?? "—"}): con el emisor ${nextTaxId ?? "sin NIF"} no admite más facturas (ISSUER_TAX_ID_SERIES_MISMATCH). Cierra la serie y abre la del nuevo emisor con otro prefijo en ${SERIES_SCREEN}; las emitidas conservan su NIF y, si era erróneo, se corrigen con rectificativas.`;
+}
+
+/**
+ * Audit trail of a document expedited or cancelled WITHOUT a VeriFactu record
+ * because the sociedad is outside the RRSIF (R7: «desactivación con motivo»).
+ */
+function recordVerifactuExclusionAudit(input: { context: UserContext; invoice: Pick<InvoiceRecord, "id" | "propertyId" | "invoiceNumber">; exclusion: VerifactuExclusion; correlationId: string; action: "INVOICE_ISSUED" | "INVOICE_CANCELLED" }): void {
+  recordAuditEvent({
+    organizationId: input.context.organizationId,
+    propertyId: input.invoice.propertyId,
+    actorUserId: input.context.userId,
+    actorType: "system",
+    action: "VERIFACTU_EXCLUDED_BY_SII",
+    entityType: "invoice",
+    entityId: input.invoice.id,
+    afterJson: { invoiceNumber: input.invoice.invoiceNumber ?? null, trigger: input.action, code: input.exclusion.code, motivo: input.exclusion.motivo },
+    correlationId: input.correlationId
+  });
 }
 
 export async function issueInvoice(input: {
@@ -1608,6 +2038,9 @@ export async function issueInvoice(input: {
   const issuer = await requireIssuerIdentity(existing.propertyId);
   const emitterTaxId = issuer.taxId;
   const fiscalMode = resolveFiscalMode();
+  // R7 / R8 (t6b#2): a sociedad in the SII is outside the RRSIF — the document
+  // is expedited without huella, RegistroAnterior or QR, and nothing is queued.
+  const exclusion = issuer.verifactuExclusion;
 
   // Tanda 3: tax readiness. Production → 409 TAX_NOT_CONFIGURED; sandbox →
   // issue with the problems recorded as warnings + a dedicated audit event.
@@ -1616,7 +2049,8 @@ export async function issueInvoice(input: {
   const issueWarnings = uniqueStrings([
     ...parseInvoiceWarnings(existing.warningsJson),
     ...readiness.warnings,
-    ...(readiness.ok ? [] : readiness.blocking.map((problem) => `Emitida en sandbox con impuestos sin configurar: ${problem}`))
+    ...(readiness.ok ? [] : readiness.blocking.map((problem) => `Emitida en sandbox con impuestos sin configurar: ${problem}`)),
+    ...(exclusion ? [verifactuExclusionWarning(exclusion)] : [])
   ]);
 
   // Header totals and desglose from the SAME grouping (contract B), so the
@@ -1646,7 +2080,7 @@ export async function issueInvoice(input: {
   const issued = await prisma.$transaction(async (tx) => {
     // Chain lock: number allocation + previous link + write are serialised per
     // property (no fork under concurrent issue / rectify / cancel).
-    await lockVerifactuChain(tx, existing.propertyId);
+    const chain = await lockVerifactuChain(tx, existing.propertyId);
     const fresh = await tx.invoice.findUnique({ where: { id: existing.id }, select: { status: true } });
     if (!fresh || fresh.status !== "draft") {
       throw new ConflictError("Las facturas emitidas son inmutables: usa anulación, abono o rectificativa.");
@@ -1667,30 +2101,39 @@ export async function issueInvoice(input: {
     const issuedAt = new Date();
     const allocated = await allocateInvoiceNumber(tx, { propertyId: existing.propertyId, series, issuedAt });
     const invoiceNumber = allocated.invoiceNumber;
+    // R3 safety net: the number must be unique under the sociedad's NIF.
+    await assertInvoiceNumberFreeInEntity(tx, allocated.scope, invoiceNumber);
+    const documentWarnings = uniqueStrings([...issueWarnings, ...allocated.warnings]);
 
-    // One issuer per series: the series may not mix NIFs.
-    const seriesIssuer = await findSeriesIssuerTaxId(tx, existing.propertyId, series, allocated.year);
+    // One issuer per series (the printed prefix): the series may not mix NIFs.
+    const seriesIssuer = await findSeriesIssuerTaxId(tx, existing.propertyId, allocated.prefix);
     if (seriesIssuer && seriesIssuer.taxId !== emitterTaxId) {
-      throw issuerSeriesMismatchError({ series, year: allocated.year, seriesTaxId: seriesIssuer.taxId, currentTaxId: emitterTaxId, lastInvoiceNumber: seriesIssuer.invoiceNumber });
+      throw issuerSeriesMismatchError({ series, year: allocated.year, prefix: allocated.prefix, seriesTaxId: seriesIssuer.taxId, currentTaxId: emitterTaxId, lastInvoiceNumber: seriesIssuer.invoiceNumber });
     }
 
-    const previous = await findPreviousChainLink(tx, existing.propertyId);
-    const { canonical, hash } = computeVerifactuHash({
-      emitterTaxId,
-      invoiceNumber,
-      issuedAt: issuedAt.toISOString(),
-      invoiceType: existing.invoiceType as VerifactuInvoiceType,
-      vatTotal: taxTotal,
-      invoiceTotal: total,
-      previousHash: previous?.hash ?? null
-    });
-    const qrUrl = buildVerifactuQrUrl({
-      emitterTaxId,
-      invoiceNumber,
-      issuedAt: issuedAt.toISOString(),
-      invoiceTotal: total,
-      preProduction: issuer.fiscalMode !== "production"
-    });
+    // Chain: previous record of the (obligado; instalación), never of another
+    // centre's installation. A SII sociedad generates no record at all (R7/R8).
+    const previous = exclusion ? null : await findPreviousChainLink(tx, chain);
+    const record = exclusion
+      ? null
+      : computeVerifactuHash({
+          emitterTaxId,
+          invoiceNumber,
+          issuedAt: issuedAt.toISOString(),
+          invoiceType: existing.invoiceType as VerifactuInvoiceType,
+          vatTotal: taxTotal,
+          invoiceTotal: total,
+          previousHash: previous?.hash ?? null
+        });
+    const qrUrl = exclusion
+      ? null
+      : buildVerifactuQrUrl({
+          emitterTaxId,
+          invoiceNumber,
+          issuedAt: issuedAt.toISOString(),
+          invoiceTotal: total,
+          preProduction: issuer.fiscalMode !== "production"
+        });
 
     // The frozen document: lines (with their folio line ids), totals and the
     // group breakdown. PDF, VAT books and the journal read this, never the folio.
@@ -1727,14 +2170,20 @@ export async function issueInvoice(input: {
         total,
         taxTotal,
         taxBreakdownJson: breakdownJson(lineRows.length > 0 ? totals.breakdown : parseTaxBreakdown(existing.taxBreakdownJson)),
-        warningsJson: issueWarnings,
-        verifactuHash: hash,
+        warningsJson: documentWarnings,
+        verifactuHash: record?.hash ?? null,
         previousInvoiceHash: previous?.hash ?? null,
         qrPayload: qrUrl,
         issuerTaxId: emitterTaxId,
         issuerLegalName: issuer.legalName,
         issuerTaxIdPlaceholder: issuer.placeholder,
-        snapshotJson: snapshot as unknown as Prisma.InputJsonValue,
+        // Estructura societaria: the frozen document also carries the sociedad
+        // and the establishment as expedited (R2), and the record is linked to
+        // its sociedad and VeriFactu installation (R7) — no installation when
+        // the sociedad is excluded from the RRSIF (no record, no chain).
+        snapshotJson: { ...snapshot, ...structureSnapshot(issuer, chain) } as unknown as Prisma.InputJsonValue,
+        legalEntityId: chain.legalEntityId ?? issuer.legalEntityId,
+        installationId: exclusion ? null : chain.installation?.id ?? null,
         seriesCode: series,
         simplified: existing.invoiceType === "F2",
         customerRequired: requirement.required
@@ -1771,7 +2220,7 @@ export async function issueInvoice(input: {
       },
       tx
     );
-    return { invoice: updated, canonical, hash, previous, year: allocated.year, sequenceId: allocated.sequenceId, journalEntryId: posted.journalEntryId, snapshot };
+    return { invoice: updated, canonical: record?.canonical ?? null, hash: record?.hash ?? null, previous, year: allocated.year, sequenceId: allocated.sequenceId, journalEntryId: posted.journalEntryId, snapshot, chain, allocated, documentWarnings };
   });
 
   const after = await loadInvoice(issued.invoice.id);
@@ -1799,9 +2248,17 @@ export async function issueInvoice(input: {
       issuerTaxId: emitterTaxId,
       issuerLegalName: issuer.legalName,
       issuerTaxIdPlaceholder: issuer.placeholder,
+      legalEntityId: issued.chain.legalEntityId ?? issuer.legalEntityId,
+      installationId: exclusion ? null : issued.chain.installation?.id ?? null,
+      numeroInstalacion: exclusion ? null : issued.chain.installation?.numeroInstalacion ?? null,
+      chainScope: issued.chain.policy,
+      verifactuExclusion: exclusion,
+      establishmentCode: issuer.establishment.code,
+      seriesPrefix: issued.allocated.prefix,
+      seriesOpened: issued.allocated.created,
       customerName,
       fiscalMode: issuer.fiscalMode,
-      taxWarnings: issueWarnings,
+      taxWarnings: issued.documentWarnings,
       journalEntryId: issued.journalEntryId,
       folioLineIds: issued.snapshot.folioLineIds,
       simplified: after.simplified,
@@ -1809,6 +2266,8 @@ export async function issueInvoice(input: {
     },
     correlationId: input.correlationId
   });
+
+  if (exclusion) recordVerifactuExclusionAudit({ context: input.context, invoice: after, exclusion, correlationId: input.correlationId, action: "INVOICE_ISSUED" });
 
   if (!readiness.ok) {
     recordAuditEvent({
@@ -1832,7 +2291,9 @@ export async function issueInvoice(input: {
     eventType: "InvoiceIssued",
     payload: {
       invoiceNumber: after.invoiceNumber!,
-      verifactuHash: after.verifactuHash!,
+      // Null for a document of a SII sociedad: the VeriFactu hook sees no record to queue.
+      verifactuHash: after.verifactuHash ?? null,
+      verifactuExclusion: exclusion?.code ?? null,
       total: after.total,
       taxTotal: after.taxTotal,
       reservationId: after.reservationId,
@@ -1869,8 +2330,20 @@ export async function cancelInvoice(input: {
   if (existing.status !== "issued") {
     throw new ConflictError("Solo las facturas emitidas admiten anulación.");
   }
-  if (!existing.invoiceNumber || !existing.issuedAt || !existing.verifactuHash) {
-    throw new ConflictError("La factura no tiene número, fecha de expedición o huella de alta; no se puede generar el registro de anulación.");
+  if (!existing.invoiceNumber || !existing.issuedAt) {
+    throw new ConflictError("La factura no tiene número o fecha de expedición; no se puede anular.");
+  }
+  // A document expedited without a VeriFactu record (sociedad in the SII, R7/R8)
+  // is cancelled without a RegistroAnulacion: the exclusion frozen in its
+  // snapshot decides, the live flag only for documents issued before the key.
+  const frozenExclusion = structureFromSnapshotJson(existing.snapshotJson).verifactuExclusion;
+  const exclusion: VerifactuExclusion | null = existing.verifactuHash
+    ? null
+    : frozenExclusion !== undefined
+      ? frozenExclusion
+      : ((await resolveIssuerIdentity(existing.propertyId))?.verifactuExclusion ?? null);
+  if (!existing.verifactuHash && !exclusion) {
+    throw new ConflictError("La factura no tiene huella de alta; no se puede generar el registro de anulación.");
   }
   const before = await loadInvoice(existing.id);
   const invoiceNumber = existing.invoiceNumber;
@@ -1892,8 +2365,8 @@ export async function cancelInvoice(input: {
     if (!fresh || fresh.status !== "issued") throw new ConflictError("Solo las facturas emitidas admiten anulación.");
     const cancelledAt = new Date();
     await tx.invoice.update({ where: { id: existing.id }, data: { status: "cancelled", cancelledAt } });
-    const prepared = await prepareVerifactuAnulacion(tx, existing.id);
-    if (!prepared) {
+    const prepared = exclusion ? null : await prepareVerifactuAnulacion(tx, existing.id);
+    if (!exclusion && !prepared) {
       throw new ConflictError("No se pudo generar el registro de anulación VeriFactu de la factura; revisa que esté emitida con número y huella.");
     }
 
@@ -1936,11 +2409,11 @@ export async function cancelInvoice(input: {
       tx
     );
     return {
-      hash: prepared.hash,
-      canonical: prepared.canonical,
+      hash: prepared?.hash ?? null,
+      canonical: prepared?.canonical ?? null,
       cancelledAt,
-      previous: prepared.previous,
-      emitterTaxId: prepared.emitterTaxId,
+      previous: prepared?.previous ?? null,
+      emitterTaxId: prepared?.emitterTaxId ?? existing.issuerTaxId ?? null,
       unlinkedPaymentIds: linked.map((p) => p.id),
       capturedPaymentIds: linked.filter((p) => p.status === "captured").map((p) => p.id),
       reversal
@@ -2065,7 +2538,12 @@ export async function cancelInvoice(input: {
   // queue (contract E), which sends it after the alta of the same invoice —
   // a pending alta is never abandoned because the invoice was cancelled. The
   // cancellation itself is already committed: a queue failure is logged with
-  // correlation (QC-06) and recovered by the submission sweep.
+  // correlation (QC-06) and recovered by the submission sweep. A document of a
+  // SII sociedad has no record to cancel: audited, never queued (R7/R8).
+  if (exclusion) {
+    recordVerifactuExclusionAudit({ context: input.context, invoice: after, exclusion, correlationId: input.correlationId, action: "INVOICE_CANCELLED" });
+    return { ...after, cancellation };
+  }
   try {
     await queueVerifactuAnulacion(existing.id);
   } catch (error) {
@@ -2334,6 +2812,9 @@ export async function createRectifyingInvoice(input: {
   // (verifactu-submission reads it from the original row).
   const issuer = await requireIssuerIdentity(original.propertyId);
   const emitterTaxId = issuer.taxId;
+  // R7 / R8 (t6b#2): no VeriFactu record for a sociedad in the SII.
+  const exclusion = issuer.verifactuExclusion;
+  if (exclusion) warnings = uniqueStrings([...warnings, verifactuExclusionWarning(exclusion)]);
 
   // Folio reflection of the rectificativa (finanzas 2026-09-15):
   //   · "I" with line adjustments → an `invoice_adjustment` folio line for the
@@ -2351,35 +2832,42 @@ export async function createRectifyingInvoice(input: {
   const folioDelta = rectificationType === "S" ? round(total - dec(original.total)) : fullReversal ? 0 : total;
 
   const created = await prisma.$transaction(async (tx) => {
-    await lockVerifactuChain(tx, original.propertyId);
+    const chain = await lockVerifactuChain(tx, original.propertyId);
     const fresh = await tx.invoice.findUnique({ where: { id: original.id }, select: { status: true } });
     if (!fresh || fresh.status !== "issued") throw new ConflictError("Solo las facturas emitidas admiten rectificación.");
     const issuedAt = new Date();
     const allocated = await allocateInvoiceNumber(tx, { propertyId: original.propertyId, series: "REC", issuedAt });
     const invoiceNumber = allocated.invoiceNumber;
-    const seriesIssuer = await findSeriesIssuerTaxId(tx, original.propertyId, "REC", allocated.year);
+    await assertInvoiceNumberFreeInEntity(tx, allocated.scope, invoiceNumber);
+    const documentWarnings = uniqueStrings([...warnings, ...allocated.warnings]);
+    const seriesIssuer = await findSeriesIssuerTaxId(tx, original.propertyId, allocated.prefix);
     if (seriesIssuer && seriesIssuer.taxId !== emitterTaxId) {
-      throw issuerSeriesMismatchError({ series: "REC", year: allocated.year, seriesTaxId: seriesIssuer.taxId, currentTaxId: emitterTaxId, lastInvoiceNumber: seriesIssuer.invoiceNumber });
+      throw issuerSeriesMismatchError({ series: "REC", year: allocated.year, prefix: allocated.prefix, seriesTaxId: seriesIssuer.taxId, currentTaxId: emitterTaxId, lastInvoiceNumber: seriesIssuer.invoiceNumber });
     }
 
-    // Hash chain: link to the most recent record (alta or anulación) of the property.
-    const previous = await findPreviousChainLink(tx, original.propertyId);
-    const { canonical, hash } = computeVerifactuHash({
-      emitterTaxId,
-      invoiceNumber,
-      issuedAt: issuedAt.toISOString(),
-      invoiceType: input.reasonCode as VerifactuInvoiceType,
-      vatTotal: taxTotal,
-      invoiceTotal: total,
-      previousHash: previous?.hash ?? null
-    });
-    const qrUrl = buildVerifactuQrUrl({
-      emitterTaxId,
-      invoiceNumber,
-      issuedAt: issuedAt.toISOString(),
-      invoiceTotal: total,
-      preProduction: issuer.fiscalMode !== "production"
-    });
+    // Hash chain: link to the most recent record (alta or anulación) of the
+    // installation — none for a sociedad outside the RRSIF (SII).
+    const previous = exclusion ? null : await findPreviousChainLink(tx, chain);
+    const record = exclusion
+      ? null
+      : computeVerifactuHash({
+          emitterTaxId,
+          invoiceNumber,
+          issuedAt: issuedAt.toISOString(),
+          invoiceType: input.reasonCode as VerifactuInvoiceType,
+          vatTotal: taxTotal,
+          invoiceTotal: total,
+          previousHash: previous?.hash ?? null
+        });
+    const qrUrl = exclusion
+      ? null
+      : buildVerifactuQrUrl({
+          emitterTaxId,
+          invoiceNumber,
+          issuedAt: issuedAt.toISOString(),
+          invoiceTotal: total,
+          preProduction: issuer.fiscalMode !== "production"
+        });
 
     const snapshot = buildInvoiceSnapshot({
       issuedAt,
@@ -2407,11 +2895,11 @@ export async function createRectifyingInvoice(input: {
         total,
         taxTotal,
         taxBreakdownJson: breakdownJson(totals.breakdown),
-        warningsJson: warnings,
+        warningsJson: documentWarnings,
         rectifyingForId: original.id,
         rectifyingReasonCode: input.reasonCode,
         rectificationType,
-        verifactuHash: hash,
+        verifactuHash: record?.hash ?? null,
         previousInvoiceHash: previous?.hash ?? null,
         qrPayload: qrUrl,
         // Same folio / reservation as the original so payments and reports
@@ -2421,7 +2909,9 @@ export async function createRectifyingInvoice(input: {
         issuerTaxId: emitterTaxId,
         issuerLegalName: issuer.legalName,
         issuerTaxIdPlaceholder: issuer.placeholder,
-        snapshotJson: snapshot as unknown as Prisma.InputJsonValue,
+        snapshotJson: { ...snapshot, ...structureSnapshot(issuer, chain) } as unknown as Prisma.InputJsonValue,
+        legalEntityId: chain.legalEntityId ?? issuer.legalEntityId,
+        installationId: exclusion ? null : chain.installation?.id ?? null,
         seriesCode: "REC",
         simplified: false,
         customerRequired: true
@@ -2537,7 +3027,7 @@ export async function createRectifyingInvoice(input: {
       }
     }
 
-    return { invoice, canonical, hash, previous, year: allocated.year, sequenceId: allocated.sequenceId, journalEntryId: posted.journalEntryId, folioAdjustmentLineId, relinkedPaymentIds, unlinkedPaymentIds };
+    return { invoice, canonical: record?.canonical ?? null, hash: record?.hash ?? null, previous, year: allocated.year, sequenceId: allocated.sequenceId, journalEntryId: posted.journalEntryId, folioAdjustmentLineId, relinkedPaymentIds, unlinkedPaymentIds, chain, allocated, documentWarnings };
   });
 
   const after = await loadInvoice(created.invoice.id);
@@ -2569,8 +3059,16 @@ export async function createRectifyingInvoice(input: {
       issuerTaxId: emitterTaxId,
       issuerLegalName: issuer.legalName,
       issuerTaxIdPlaceholder: issuer.placeholder,
+      legalEntityId: created.chain.legalEntityId ?? issuer.legalEntityId,
+      installationId: exclusion ? null : created.chain.installation?.id ?? null,
+      numeroInstalacion: exclusion ? null : created.chain.installation?.numeroInstalacion ?? null,
+      chainScope: created.chain.policy,
+      verifactuExclusion: exclusion,
+      establishmentCode: issuer.establishment.code,
+      seriesPrefix: created.allocated.prefix,
+      seriesOpened: created.allocated.created,
       fiscalMode: issuer.fiscalMode,
-      taxWarnings: warnings,
+      taxWarnings: created.documentWarnings,
       journalEntryId: created.journalEntryId,
       folioDelta,
       folioAdjustmentLineId: created.folioAdjustmentLineId,
@@ -2579,10 +3077,12 @@ export async function createRectifyingInvoice(input: {
     },
     correlationId: input.correlationId
   });
+  if (exclusion) recordVerifactuExclusionAudit({ context: input.context, invoice: after, exclusion, correlationId: input.correlationId, action: "INVOICE_ISSUED" });
 
   // Emit InvoiceIssued so VeriFactu submission picks the rectificativa up
   // and propagates it through the same submission pipeline. The payload
-  // carries the rectifying linkage so downstream consumers can audit it.
+  // carries the rectifying linkage so downstream consumers can audit it
+  // (no record to queue for a sociedad in the SII: verifactuHash null).
   recordDomainEvent({
     organizationId: input.context.organizationId,
     propertyId: original.propertyId,
@@ -2591,7 +3091,8 @@ export async function createRectifyingInvoice(input: {
     eventType: "InvoiceIssued",
     payload: {
       invoiceNumber: after.invoiceNumber!,
-      verifactuHash: after.verifactuHash!,
+      verifactuHash: after.verifactuHash ?? null,
+      verifactuExclusion: exclusion?.code ?? null,
       total: after.total,
       taxTotal: after.taxTotal,
       rectifyingForId: original.id,

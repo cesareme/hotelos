@@ -12,6 +12,14 @@ import { createId, nowIso } from "../../lib/ids.js";
 import { BadRequestError, ConflictError, ForbiddenError, NotFoundError } from "../../lib/http-error.js";
 import { ensureRoleHasPermissions } from "../../lib/rbac-catalog.js";
 import { ensurePropertyTaxes } from "../../lib/tenant-hydration.js";
+// Tanda 6b (L2 · estructura societaria): the issuer identity (NIF, razón social)
+// is read from the legal entity only; the property profile keeps the trade name
+// and the centre code; series prefixes follow R3 and are unique per legal entity.
+import { resolveLegalIdentity } from "../../lib/finance-scope.js";
+import { assertSeriesPrefixFree, defaultSeriesPrefix } from "../invoicing/series-prefix.service.js";
+import { lockSeriesOpening } from "../invoicing/invoice.service.js";
+import { assertProfileDoesNotWriteLegalIdentity, codeInUse } from "../structure/legal-entity.service.js";
+import { STRUCTURE_CODE_PATTERN } from "@hotelos/shared";
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import {
@@ -1394,8 +1402,11 @@ export const PROPERTY_SETUP_FORM_DEFINITIONS: PropertySetupFormDefinition[] = [
     inputCategories: ["Property profile", "Legal profile", "Business date rules"],
     fields: [
       { key: "name", label: "Property name", inputType: "text", required: true, mapsTo: "properties.name" },
-      { key: "legalName", label: "Legal name", inputType: "text", required: true, mapsTo: "properties.legal_name" },
-      { key: "taxId", label: "Tax ID", inputType: "text", required: true, mapsTo: "organizations.tax_id" },
+      // Tanda 6b (L2): the profile no longer carries the NIF nor the razón social — they belong to
+      // the legal entity (Configuración › Estructura societaria › Datos fiscales). The establishment
+      // keeps its trade name (invoice establishment block) and its centre code (series prefixes).
+      { key: "tradeName", label: "Trade name (on invoice)", inputType: "text", mapsTo: "properties.trade_name" },
+      { key: "code", label: "Centre code", inputType: "text", mapsTo: "properties.code" },
       { key: "address", label: "Address", inputType: "textarea", required: true, mapsTo: "properties.address" },
       { key: "country", label: "Country", inputType: "select", required: true, options: ["ES", "PT", "FR", "IT"], mapsTo: "properties.country" },
       { key: "province", label: "Province", inputType: "text", mapsTo: "properties.province" },
@@ -2011,15 +2022,26 @@ async function propertyFiscalColumns(propertyId: string): Promise<{
   postalCode: string | null;
   ineMunicipalityCode: string | null;
   fiscalTerritory: string | null;
+  /** Tanda 6b: establishment columns of the structure (trade name, centre code, kind, legal entity). */
+  tradeName: string | null;
+  code: string | null;
+  kind: string | null;
+  legalEntityId: string | null;
 }> {
   const row = await prisma.property.findUnique({
     where: { id: propertyId },
-    select: { taxRegion: true, province: true, postalCode: true, ineMunicipalityCode: true, fiscalTerritory: true }
+    select: { taxRegion: true, province: true, postalCode: true, ineMunicipalityCode: true, fiscalTerritory: true, tradeName: true, code: true, kind: true, legalEntityId: true }
   });
-  return row ?? { taxRegion: null, province: null, postalCode: null, ineMunicipalityCode: null, fiscalTerritory: null };
+  return row ?? { taxRegion: null, province: null, postalCode: null, ineMunicipalityCode: null, fiscalTerritory: null, tradeName: null, code: null, kind: null, legalEntityId: null };
 }
 
-/** Current values of the property_profile form keyed by field key (canonical codes; "" when unset). */
+/**
+ * Current values of the property_profile form keyed by field key (canonical
+ * codes; "" when unset). Tanda 6b: `legalName` / `taxId` are READ-ONLY mirrors
+ * of the legal entity (resolveLegalIdentity) so an older form preloads the
+ * sociedad's identity; the writable identity fields of the establishment are
+ * `tradeName` and `code`.
+ */
 async function propertyProfileFormValues(
   propertyId: string,
   property: PropertyRecord,
@@ -2027,12 +2049,17 @@ async function propertyProfileFormValues(
   compliance: PropertyComplianceSettingsRecord
 ): Promise<Record<string, string>> {
   const fiscal = await propertyFiscalColumns(propertyId);
+  const identity = await resolveLegalIdentity(organization.id);
   const taxRegion = normalizeTaxRegion(fiscal.taxRegion ?? property.taxRegion ?? null, fiscal.province ?? property.province ?? null);
   const tourismTaxRegion = normalizeTourismTaxRegion(compliance.tourismTaxRegion);
   return {
     name: property.name,
-    legalName: property.legalName ?? "",
-    taxId: organization.taxId ?? "",
+    tradeName: fiscal.tradeName ?? "",
+    code: fiscal.code ?? "",
+    kind: fiscal.kind ?? "hotel",
+    legalEntityId: fiscal.legalEntityId ?? identity?.legalEntityId ?? "",
+    legalName: identity?.legalName ?? "",
+    taxId: identity?.taxId ?? "",
     address: property.address ?? "",
     country: property.country,
     province: property.province ?? "",
@@ -2134,7 +2161,6 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
       const nextProperty: PropertyRecord = {
         ...property,
         name: payloadText(payload, "name", property.name),
-        legalName: payloadText(payload, "legalName", property.legalName ?? property.name),
         address: payloadText(payload, "address", property.address ?? ""),
         country: payloadText(payload, "country", property.country),
         municipality: payloadText(payload, "city", property.municipality ?? ""),
@@ -2142,28 +2168,34 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
         timezone: payloadText(payload, "timezone", property.timezone),
         taxRegion: fiscal.taxRegionToPersist ?? undefined
       };
-      const legalNameInput = payloadText(payload, "legalName");
-      // FISC-03: the profile form is the ONLY writer of Organization.taxId, the
-      // issuer NIF of every invoice / registro. Reject anything that is not a
-      // checksum-valid DNI / NIE / CIF (400) and store it normalised.
-      const rawTaxIdInput = payloadText(payload, "taxId");
-      const taxIdProblem = rawTaxIdInput ? spanishTaxIdValidationMessage(rawTaxIdInput) : null;
-      if (taxIdProblem) {
-        throw new BadRequestError(`NIF/CIF del emisor no válido («${rawTaxIdInput}»): ${taxIdProblem}`);
+      // Tanda 6b (L2, design §5.4 / §4 #16): the profile NEVER writes the NIF nor the
+      // razón social — they belong to the legal entity (Configuración › Estructura
+      // societaria › Datos fiscales). A body that tries to CHANGE them is a 409
+      // LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY (values equal to the sociedad's are
+      // tolerated: an older form still preloads them). Property.legalName is deprecated
+      // and no longer written; the establishment keeps its trade name and centre code.
+      await assertProfileDoesNotWriteLegalIdentity(property.organizationId, { legalName: payloadText(payload, "legalName"), taxId: payloadText(payload, "taxId") });
+      const tradeNameInput = payloadText(payload, "tradeName");
+      const codeInput = payloadText(payload, "code").toUpperCase();
+      if (codeInput && !STRUCTURE_CODE_PATTERN.test(codeInput)) {
+        throw new BadRequestError(`Código de centro no válido («${codeInput}»): usa de 2 a 6 letras o dígitos en mayúsculas (p. ej. RA, LT, OC).`);
       }
-      const taxIdInput = rawTaxIdInput ? normalizeTaxId(rawTaxIdInput) ?? "" : "";
-      const nextOrganization: OrganizationRecord = {
-        ...organization,
-        legalName: legalNameInput || organization.legalName,
-        taxId: taxIdInput || organization.taxId
-      };
-      // Only the fields the form actually supplied reach Prisma; unspecified columns are left untouched.
-      const organizationData: Prisma.OrganizationUncheckedUpdateInput = {};
-      if (legalNameInput) organizationData.legalName = legalNameInput;
-      if (taxIdInput) organizationData.taxId = taxIdInput;
+      if (codeInput && codeInput !== currentFiscal.code) {
+        const codeClash = await prisma.property.findFirst({
+          where: {
+            code: codeInput,
+            id: { not: property.id },
+            ...(currentFiscal.legalEntityId
+              ? { OR: [{ legalEntityId: currentFiscal.legalEntityId }, { legalEntityId: null, organizationId: property.organizationId }] }
+              : { organizationId: property.organizationId })
+          },
+          select: { id: true }
+        });
+        if (codeClash) throw codeInUse("property", codeInput);
+      }
+      const identity = await resolveLegalIdentity(property.organizationId);
       const propertyData = {
         name: nextProperty.name,
-        legalName: nextProperty.legalName ?? null,
         address: nextProperty.address ?? null,
         municipality: nextProperty.municipality ?? null,
         province: nextProperty.province || null,
@@ -2172,7 +2204,9 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
         postalCode: fiscal.postalCode,
         ineMunicipalityCode: fiscal.ineMunicipalityCode,
         fiscalTerritory: fiscal.fiscalTerritory,
-        timezone: nextProperty.timezone
+        timezone: nextProperty.timezone,
+        ...(tradeNameInput ? { tradeName: tradeNameInput } : {}),
+        ...(codeInput ? { code: codeInput } : {})
       };
       // upsert: tolera properties que solo existen en el seed in-memory (p.ej. prop_456).
       await prisma.property.upsert({
@@ -2182,20 +2216,19 @@ async function applyPropertySetupForm(input: BackOfficeMutationInput, definition
           id: property.id,
           organizationId: property.organizationId,
           ...propertyData,
+          // Property.legalName is deprecated (design §5.1 · R2): the razón social is the
+          // sociedad's and the trade name travels in `tradeName`; nothing writes it any more.
           sesHospedajesEnabled: property.sesHospedajesEnabled,
           verifactuEnabled: property.verifactuEnabled
         }
       });
-      // upsert on the property's own organization id: create only covers the seed-only demo
-      // organization (requireOrganization already 404s for any other missing organization).
-      await prisma.organization.upsert({
-        where: { id: organization.id },
-        update: organizationData,
-        create: { id: organization.id, name: organization.name, legalName: nextOrganization.legalName || null, taxId: nextOrganization.taxId || null }
-      });
       Object.assign(property, nextProperty);
       if (demoStore.property.id === property.id) Object.assign(demoStore.property, property);
-      if (demoStore.organization.id === organization.id) Object.assign(demoStore.organization, nextOrganization);
+      // The in-memory demo organization mirrors the sociedad's identity (read-only, design §5.6).
+      const nextOrganization: OrganizationRecord = identity
+        ? { ...organization, legalName: identity.legalName, taxId: identity.taxId ?? "" }
+        : { ...organization };
+      if (demoStore.organization.id === organization.id && identity) Object.assign(demoStore.organization, nextOrganization);
       // Compliance is only re-aligned when the property already has settings (persisted or
       // seed): the profile form never provisions compliance on its own.
       const existingCompliance = await findComplianceSettings(input.propertyId);
@@ -3330,9 +3363,10 @@ async function computeReadiness(input: BackOfficeMutationInput) {
   // environment — no in-memory mirrors, no flags nobody writes. Each check carries a
   // relatedEntityType/Id so the UI can deep-link to the form that fixes it.
   const sesUsageSince = new Date(Date.now() - SES_USAGE_WINDOW_DAYS * 24 * 60 * 60 * 1000);
-  const [organizationRow, fiscalColumns, complianceRow, activeSequences, connectedIntegrations, sesSubmissionCount, issuedInvoiceCount] =
+  const [legalIdentity, fiscalColumns, complianceRow, activeSequences, connectedIntegrations, sesSubmissionCount, issuedInvoiceCount] =
     await Promise.all([
-      prisma.organization.findUnique({ where: { id: property.organizationId }, select: { legalName: true, taxId: true, name: true } }),
+      // Tanda 6b (R2): the issuer identity is the legal entity's (single reader), never Property.legalName.
+      resolveLegalIdentity(property.organizationId),
       propertyFiscalColumns(input.propertyId),
       prisma.propertyComplianceSetting.findUnique({
         where: { propertyId: input.propertyId },
@@ -3381,10 +3415,15 @@ async function computeReadiness(input: BackOfficeMutationInput) {
   const verifactuCert = certificateEnvStatus(process.env.VERIFACTU_CERT_PATH, process.env.VERIFACTU_CERT_PASSPHRASE);
   const sesCert = certificateEnvStatus(process.env.SES_HOSPEDAJES_CERT_PATH, process.env.SES_HOSPEDAJES_CERT_PASSPHRASE);
 
-  // Issuer identity (Organization is the single writer of the NIF — issuer-identity.service).
-  const issuerTaxId = normalizeTaxId(organizationRow?.taxId);
+  // Issuer identity (Tanda 6b, R2): the legal entity is the single source of the NIF and the razón
+  // social; a tenant without backfilled entity resolves to the deprecated Organization columns
+  // through resolveLegalIdentity (source organization_fallback). Property.legalName is never read.
+  const issuerTaxId = normalizeTaxId(legalIdentity?.taxId);
   const issuerTaxIdValid = isValidSpanishTaxId(issuerTaxId);
-  const issuerLegalName = (organizationRow?.legalName ?? "").trim() || (property.legalName ?? "").trim();
+  const issuerLegalName = (legalIdentity?.legalName ?? "").trim();
+  const legalEntityRef = legalIdentity?.legalEntityId
+    ? ({ relatedEntityType: "legal_entity", relatedEntityId: legalIdentity.legalEntityId } as const)
+    : ({ relatedEntityType: "organization", relatedEntityId: property.organizationId } as const);
 
   // Fiscal address (SES establishment block + invoice header).
   const addressMissing = (
@@ -3451,20 +3490,20 @@ async function computeReadiness(input: BackOfficeMutationInput) {
       status: issuerLegalName ? "pass" : "fail",
       severity: "blocking",
       message: issuerLegalName
-        ? `Razón social del emisor: ${issuerLegalName}.`
-        : "Falta la razón social del emisor (Organización › razón social o Perfil del establecimiento › nombre legal).",
-      ...organizationRef
+        ? `Razón social del emisor (sociedad): ${issuerLegalName}.`
+        : "Falta la razón social de la sociedad emisora (Configuración › Estructura societaria › Datos fiscales).",
+      ...legalEntityRef
     },
     {
       checkCode: "issuer_tax_id_valid",
       status: issuerTaxIdValid ? "pass" : "fail",
       severity: "blocking",
       message: issuerTaxIdValid
-        ? `NIF/CIF del emisor válido (${issuerTaxId}).`
+        ? `NIF/CIF de la sociedad emisora válido (${issuerTaxId}).`
         : issuerTaxId
-          ? `El NIF/CIF del emisor (${issuerTaxId}) no supera la validación (letra/dígito de control): ${spanishTaxIdValidationMessage(issuerTaxId) ?? ""}`.trim()
-          : "Falta el NIF/CIF del emisor: sin él las facturas salen con NIF de relleno (sandbox) o se bloquean (producción).",
-      ...organizationRef
+          ? `El NIF/CIF de la sociedad emisora (${issuerTaxId}) no supera la validación (letra/dígito de control): ${spanishTaxIdValidationMessage(issuerTaxId) ?? ""}`.trim()
+          : "Falta el NIF/CIF de la sociedad emisora (Configuración › Estructura societaria › Datos fiscales): sin él las facturas salen con NIF de relleno (sandbox) o se bloquean (producción).",
+      ...legalEntityRef
     },
     {
       checkCode: "property_fiscal_address_complete",
@@ -5453,6 +5492,34 @@ export type InvoiceSequencePatch = Partial<Omit<InvoiceSequenceRecord, "invoiceT
 };
 
 /**
+ * Pure (Tanda 6b · R3): the prefix that patchBillingSettings must check against the
+ * sister centres of the same legal entity, or null when this patch cannot open a
+ * clash. Only three writes can put two ACTIVE series of the same NIF on one prefix:
+ *   (a) creating an active series,
+ *   (b) setting or changing the prefix of an active series,
+ *   (c) re-activating a closed series (active false → true) — closed series never
+ *       clash (a prefix is closed, never renumbered), so a sister centre may have
+ *       taken the prefix meanwhile and the re-opening must be checked as if new.
+ * A patch that leaves the series closed, or that touches neither the prefix nor
+ * the activation of an already-active series, needs no check.
+ */
+export function seriesPrefixToCheck(input: {
+  existing: { prefix: string | null; active: boolean } | null;
+  /** Prefix the patch writes (undefined = untouched on an existing row). */
+  effectivePrefix: string | undefined;
+  patchActive: boolean | undefined;
+}): string | null {
+  const willBeActive = input.patchActive ?? input.existing?.active ?? true;
+  if (!willBeActive) return null;
+  const prefix = input.effectivePrefix ?? input.existing?.prefix ?? null;
+  if (!prefix) return null;
+  if (!input.existing) return prefix;
+  const reactivating = input.patchActive === true && !input.existing.active;
+  const prefixChanged = input.effectivePrefix !== undefined && input.effectivePrefix !== input.existing.prefix;
+  return reactivating || prefixChanged ? prefix : null;
+}
+
+/**
  * Tanda 3 (FISC-09): series are keyed by (propertyId, sequenceCode, year). Editing a
  * series that already has invoices cannot change prefix/padding nor lower nextNumber
  * below the highest issued number (409 SERIES_* with details); invoiceType is stored
@@ -5493,11 +5560,41 @@ export async function patchBillingSettings(input: BackOfficeMutationInput & { in
   const existingRow = await prisma.invoiceSequence.findUnique({ where });
   const before = existingRow ? mapInvoiceSequenceRow(existingRow) : undefined;
 
+  // Tanda 6b (L2, design §5.2 R3): the prefix is never NULL. An omitted prefix on a
+  // new series — or an explicit reset (`prefix: null`) — takes the R3 default:
+  // `${serie}-${año}-` when the legal entity has ONE billing centre (single hotels and
+  // new tenants keep FAC-2026-) and `${serie}-${código}-${año}-` when it has several.
+  // A prefix that is set or changed is checked against the sister centres of the
+  // same legal entity (409 SERIES_PREFIX_CLASH { conflictingPropertyId }): two hotels
+  // under one NIF must never both open FAC-2026-.
+  const structureRow = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { legalEntityId: true, code: true, kind: true, organizationId: true } });
+  const siblingRows = structureRow
+    ? await prisma.property.findMany({
+        where: {
+          id: { not: input.propertyId },
+          ...(structureRow.legalEntityId
+            ? { OR: [{ legalEntityId: structureRow.legalEntityId }, { legalEntityId: null, organizationId: structureRow.organizationId }] }
+            : { organizationId: structureRow.organizationId })
+        },
+        select: { id: true, kind: true }
+      })
+    : [];
+  const siblingsWithSeries = new Set(
+    siblingRows.length === 0
+      ? []
+      : (await prisma.invoiceSequence.findMany({ where: { propertyId: { in: siblingRows.map((row) => row.id) }, active: true }, select: { propertyId: true } })).map((row) => row.propertyId)
+  );
+  // An office counts as a billing centre only once it bills (has an active series).
+  const billingCentres = 1 + siblingRows.filter((row) => row.kind !== "office" || siblingsWithSeries.has(row.id)).length;
+  const defaultPrefix = defaultSeriesPrefix({ series: sequenceCode, year, propertyCode: structureRow?.code ?? null, billingCentres });
+  const effectivePrefix: string | undefined =
+    prefixInput === null ? defaultPrefix : prefixInput !== undefined ? prefixInput : existingRow ? undefined : defaultPrefix;
+
   if (existingRow) {
     const issued = await issuedNumbersForPrefix(input.propertyId, existingRow.prefix ?? "");
     const violations = invoiceSequencePatchViolations({
       existing: { prefix: existingRow.prefix, padding: existingRow.padding, nextNumber: existingRow.nextNumber },
-      patch: { prefix: prefixInput, padding: patch.padding, nextNumber: patch.nextNumber },
+      patch: { prefix: effectivePrefix, padding: patch.padding, nextNumber: patch.nextNumber },
       issued
     });
     if (violations.length > 0) {
@@ -5509,29 +5606,49 @@ export async function patchBillingSettings(input: BackOfficeMutationInput & { in
       });
     }
   }
-
+  // R3: a closed series never clashes, so RE-OPENING one (active false → true)
+  // is checked like a brand-new prefix — a sister centre may have taken it while
+  // it was closed (t6b#3).
+  const prefixToCheck = seriesPrefixToCheck({
+    existing: existingRow ? { prefix: existingRow.prefix, active: existingRow.active } : null,
+    effectivePrefix,
+    patchActive: patch.active
+  });
   const update: Prisma.InvoiceSequenceUncheckedUpdateInput = { invoiceType };
-  if (prefixInput !== undefined) update.prefix = prefixInput;
+  if (effectivePrefix !== undefined) update.prefix = effectivePrefix;
   if (patch.nextNumber !== undefined) update.nextNumber = patch.nextNumber;
   if (patch.padding !== undefined) update.padding = patch.padding;
   if (patch.active !== undefined) update.active = patch.active;
+  if (existingRow && existingRow.legalEntityId === null && structureRow?.legalEntityId) update.legalEntityId = structureRow.legalEntityId;
   const seedOnly = demoStore.invoiceSequences.find(
     (candidate) => candidate.propertyId === input.propertyId && candidate.sequenceCode === sequenceCode
   );
-  const row = await prisma.invoiceSequence.upsert({
-    where,
-    update,
-    create: {
-      id: existingRow?.id ?? seedOnly?.id ?? createId("seq"),
-      propertyId: input.propertyId,
-      sequenceCode,
-      prefix: prefixInput ?? `${sequenceCode}-${year}-`,
-      nextNumber: patch.nextNumber ?? 1,
-      padding: patch.padding ?? 6,
-      invoiceType,
-      active: patch.active ?? true,
-      year
+  // t6b#1: the sister check and the upsert run under the SAME advisory lock the
+  // allocator takes when it opens a series row (`lockSeriesOpening`, keyed by
+  // sociedad + year), so two centres of one NIF cannot both open the same prefix
+  // from the backoffice under READ COMMITTED; the check itself reads through the
+  // transaction client so it sees what the previous holder committed.
+  const row = await prisma.$transaction(async (tx) => {
+    if (structureRow) await lockSeriesOpening(tx, { legalEntityId: structureRow.legalEntityId, organizationId: structureRow.organizationId }, year);
+    if (prefixToCheck !== null) {
+      await assertSeriesPrefixFree({ propertyId: input.propertyId, prefix: prefixToCheck, year, excludeSequenceId: existingRow?.id }, tx);
     }
+    return tx.invoiceSequence.upsert({
+      where,
+      update,
+      create: {
+        id: existingRow?.id ?? seedOnly?.id ?? createId("seq"),
+        propertyId: input.propertyId,
+        legalEntityId: structureRow?.legalEntityId ?? null,
+        sequenceCode,
+        prefix: effectivePrefix ?? defaultPrefix,
+        nextNumber: patch.nextNumber ?? 1,
+        padding: patch.padding ?? 6,
+        invoiceType,
+        active: patch.active ?? true,
+        year
+      }
+    });
   });
   const sequence = mirrorRecord(demoStore.invoiceSequences, mapInvoiceSequenceRow(row), (candidate) => candidate.id === row.id);
   audit({

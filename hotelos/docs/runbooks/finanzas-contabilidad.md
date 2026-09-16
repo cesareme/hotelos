@@ -836,7 +836,8 @@ requeridas»; el nivel de riesgo decide si el fallback demo sin token alcanza la
 ruta (nunca `high`/`critical`). Las claves de lectura con importes que los
 partials escriben como `accounting.read` se remapean a `accounting.reports.read`
 en `security/route-permissions.ts` (`requireAccountingReportsKey`); en la tabla
-figura la clave EFECTIVA en el borde. 114 entradas.
+figura la clave EFECTIVA en el borde. 118 entradas de Finanzas + 9 del módulo
+`structure` (Tanda 6b, §17.8) = 127.
 
 | Módulo (partial) | Ruta | Clave efectiva | Riesgo |
 | --- | --- | --- | --- |
@@ -844,7 +845,7 @@ figura la clave EFECTIVA en el borde. 114 entradas.
 | | `POST /accounting/journal` | `accounting.journal.post` | high |
 | | `POST /accounting/journal/:id/reverse`, `POST /accounting/replay` | `accounting.journal.post` + `ai.high_risk.confirm` | critical |
 | | `POST /accounting/chart`, `PATCH /accounting/chart/:code`, `PATCH /accounting/settings` | `accounting.configure` | high |
-| accounting (fiscal) | `GET /fiscal/vat-settings`, `GET /fiscal/vat-books`, `GET /fiscal/models/:modelo`, `GET …/:modelo/pdf`, `GET /fiscal/vat-settlement` | `accounting.reports.read` | medium |
+| accounting (fiscal) | `GET /fiscal/vat-settings`, `GET /fiscal/regime` (Tanda 6b), `GET /fiscal/vat-books`, `GET /fiscal/models/:modelo`, `GET …/:modelo/pdf`, `GET /fiscal/vat-settlement` | `accounting.reports.read` | medium |
 | | `PUT /fiscal/vat-settings`, `POST /fiscal/vat-books/rebuild` | `accounting.configure` | high |
 | | `POST /fiscal/vat-settlement`, `POST /fiscal/vat-settlement/reverse` | `accounting.journal.post` | critical |
 | invoicing | `GET /invoices/:id/pdf` | `invoice.read` | medium |
@@ -875,9 +876,15 @@ figura la clave EFECTIVA en el borde. 114 entradas.
 | | `GET /payroll/periods/:id` | `payroll.read` | medium |
 | | `POST /payroll/periods/:id/export` | `payroll.manage` (servicio: o `accounting.journal.post` / `workforce.payroll_export`) | high |
 | | `POST /payroll/periods/:id/pay` | `payroll.manage` (servicio: o `accounting.journal.post`) | critical |
-| financial-statements | `GET /accounting/usali/mappings|coverage|pnl|compare|periods`, `GET /accounting/annual-accounts[/balance|/pyg|/ecpn|/memoria]`, `GET …/annual-accounts/snapshots[/:snapshotId[/download]]` | `accounting.reports.read` | medium |
-| | `PATCH /accounting/usali/mappings`, `DELETE …/mappings/:mappingId`, `POST …/annual-accounts/snapshots` | `accounting.configure` | high |
+| financial-statements | `GET /accounting/usali/mappings|coverage|pnl|compare|periods`, `GET /accounting/annual-accounts[/balance|/pyg|/ecpn|/memoria]`, `GET …/annual-accounts/snapshots[/:snapshotId[/download]]`, `GET /accounting/pnl/by-property` y `GET /accounting/allocation` (Tanda 6b) | `accounting.reports.read` | medium |
+| | `PATCH /accounting/usali/mappings`, `DELETE …/mappings/:mappingId`, `POST …/annual-accounts/snapshots`, `PUT /accounting/allocation` (Tanda 6b) | `accounting.configure` | high |
 | | `GET /accounting/gestoria-exports/formats` (low), `GET …/gestoria-exports[/:exportId[/download]]`, `POST /accounting/gestoria-exports` (high) | `analytics.export` | low · medium · high |
+| structure (Tanda 6b) | `GET /organizations/me/structure` (redactada sin `accounting.entity.read` ∨ `organization.structure.manage`) | `accounting.read` | medium |
+| | `GET /legal-entities/:legalEntityId` | `accounting.entity.read` | medium |
+| | `GET /legal-entities/:legalEntityId/series` | `billing.configure` | medium |
+| | `GET /legal-entities/:legalEntityId/verifactu/installations` | `accounting.configure` | medium |
+| | `POST /legal-entities` (409 `MULTI_ENTITY_NOT_ENABLED` con sociedad existente), `PATCH /legal-entities/:legalEntityId` (+ `ai.high_risk.confirm` y `confirmHighRisk` en NIF, razón social, SII, gran empresa, PGC y ejercicio; régimen además `accounting.configure`), `POST /legal-entities/:legalEntityId/properties`, `PATCH /properties/:propertyId/establishment` | `organization.structure.manage` | high |
+| | `POST /admin/legal-entities/:legalEntityId/verifactu-scope` (consola de plataforma) | `admin.tenants.manage` | critical |
 
 Rutas heredadas de `server.ts` que siguen vivas y numeran por el motor:
 `GET /organizations/:organizationId/accounts` (409 `CHART_NOT_PROVISIONED` sin
@@ -1038,3 +1045,445 @@ Faranda (solo lectura): 61 asientos / 150 líneas / Σ 2.595,00 = 2.595,00 (sin
 cambios respecto a §11); 0 `vat_settings`, 0 `vat_book_entries`, 0
 `pos_orders`, 0 `cash_closures`, 0 `night_audit_runs`, 0 `supplier_bills`, 0
 `fixed_assets`; roles sin `accounting.reports.read` hasta `rbac:sync`.
+
+## 17. Estructura societaria (Tanda 6b · 2026-09-16)
+
+Diseño: `docs/design/FINANZAS-ESTRUCTURA-SOCIETARIA.md` (§5.1 modelo, §5.2 reglas
+R1-R11, §5.4 API, §5.5 migración, §6 lotes). Informe de cierre para César:
+`docs/audits/TANDA-6B-ESTRUCTURA-BACKEND-2026-09-16.md`. Esta sección es la
+operativa completa del **backend** de la tanda: L1 (schema, migraciones, backfill y
+helpers, §17.1-17.5), las reglas y rutas de L2-L5 (§17.7-17.8), las 17 correcciones
+de la revisión adversarial (§17.6), los comandos (§17.9), los límites y aplazados
+(§17.10) y las puertas del cierre (§17.11). Ningún cálculo de la Tanda 6 cambia de
+ámbito: plan, diario, libros, modelos, ejercicios, cuentas anuales y USALI siguen
+por `organizationId` = la sociedad única, resuelto por `resolveLedgerScope`; lo que
+cambia son la identidad emisora, las series, la cadena VeriFactu, las guardias
+(centro obligatorio en 6/7, permisos por centro, alto riesgo en la sociedad) y las
+etiquetas. El front (L6/L7) y la migración de Faranda a CELUISMA (L8) quedan fuera.
+
+### 17.1 Modelo: Grupo → Sociedad → Centro de trabajo
+
+```
+Organization (grupo · tenant: usuarios, roles, proveedores, mapeo USALI, módulos)
+ └── LegalEntity (sociedad = NIF · exactamente UNA por organización en esta tanda, isDefault)
+      ├── Property kind=hotel  (RA, LT…)  series · instalación VeriFactu · habitaciones, TPV, tasa, SES
+      └── Property kind=office (OC)       sin habitaciones · nóminas, gastos, bancos, inmovilizado, retenciones
+```
+
+- **`LegalEntity`** (`legal_entities`): `organizationId`, `code` (2-6 mayúsculas,
+  `@@unique(organizationId, code)`), `legalName`, `taxId` (normalizado, checksum
+  válido o `null` = «NIF pendiente»; **único** cuando existe), `legalForm`
+  (`LegalForm`: sa · sl · slu · coop · persona_fisica · otra), domicilio fiscal
+  (`fiscalAddress/PostalCode/Municipality/IneCode/Province`), domicilio social
+  (`registeredOffice*`), `mercantileRegistry`, `cnae`, `pgcVariant` (`PgcVariant`:
+  pymes · general), `fiscalYearStartMonth`, `largeCompany`, `siiEnabled`,
+  `verifactuChainScope` (`VerifactuChainScope`: per_center · per_entity, defecto
+  per_center), `cccPrincipal`, `isDefault`, `status` (`LegalEntityStatus`).
+- **`VerifactuInstallation`** (`verifactu_installations`): una «facturación» por
+  centro (`per_center`) o por sociedad (`per_entity`): `legalEntityId`, `propertyId?`,
+  `numeroInstalacion` (**inmutable por trigger**, `@@unique(legalEntityId,
+  numeroInstalacion)`), `route` (`VerifactuRoute`: verifactu · tbai · igic),
+  `territory?`, `active`, `retiredAt?`. Cambiar de ámbito nunca re-encadena: se
+  retira la fila y se abre otra con número nuevo. Sustituye a
+  `VERIFACTU_INSTALL_NUMBER` (env = fallback solo sandbox, L3 lo cablea).
+- **`Property`** gana `legalEntityId` (FK `Restrict`), `kind` (`PropertyKind`: hotel ·
+  office · other, defecto hotel), `code` (`@@unique(legalEntityId, code)`),
+  `tradeName` (nombre comercial en el bloque establecimiento de la factura) y las
+  columnas censales `cadastralReference`, `surfaceM2` (Decimal 10,2), `iaeEpigraph`,
+  `bedCapacity`, `starRating`, `openingMonths`, `tourismRegistryNumber`,
+  `sesEstablishmentCode`, `socialSecurityCcc`, `laborCenterCode` (se informan y
+  exportan a la gestoría; Anfitorio no liquida IAE ni TGSS).
+- **`InvoiceSequence.legalEntityId`**, **`Invoice.legalEntityId` /
+  `installationId`**, **`VerifactuSubmission.installationId`**,
+  **`BankAccount.legalEntityId`**: nulables, rellenados por el backfill.
+- **`AccountingSetting.configurationJson.corporateAllocation`** (solo contrato, sin
+  columna): `{ method: none|revenue|rooms_available|headcount|manual, weights? }`,
+  reparto de la oficina central **solo en informes** (L5).
+
+Dónde vive cada dato (contrato): NIF, razón social, domicilios, RM, CNAE, forma,
+CCC principal, gran empresa/SII, plantilla PGC, inicio de ejercicio y política de
+cadena → **sociedad** (única fuente). Nombre comercial, código, dirección, INE,
+territorio, censales, series y prefijos, `verifactuEnabled`, instalación y cadena,
+tasa turística, `PropertyComplianceSetting`, facturas recibidas, gastos,
+inmovilizado, arqueos, retenciones → **centro** (la oficina incluida). Bancos →
+sociedad por defecto (centro opcional). Plan, numeración, ejercicios, libros IVA,
+modelos, cuentas anuales → sociedad, con ámbito `organizationId` resuelto por
+`resolveLedgerScope`. Proveedores, usuarios, roles, `UsaliMapping`, módulos → grupo.
+
+**Deprecados (columnas conservadas, marcadas `/// deprecated` en el schema):**
+`Organization.legalName`, `Organization.taxId` (solo los lee `resolveLegalIdentity`
+como fallback de un tenant sin backfill), `Property.legalName` (copiado a
+`tradeName` cuando difería de la razón social; nadie lo lee como emisor),
+`PropertyComplianceSetting.siiEnabled` (el régimen es de la sociedad). El contract
+test `tests/legal-identity-readers-contract.test.mjs` hace `grep` de los módulos de
+Finanzas y `packages/compliance`: los siete lectores heredados (`modelo-303`,
+`issuer-identity`, `annual-accounts`, `financial-statements/source` y `.routes`,
+`sepa-remittance`, `payroll/export`) están en una lista que **solo puede encoger**
+(L3/L4/L5 la vacían; C8 es este test con la lista vacía).
+
+### 17.2 Migraciones (dos pasos, drift 0)
+
+- `20260916100000_estructura_societaria` (paso 1, aditivo y nulable): 6 enums, 2
+  tablas, columnas nuevas, 2 FK (`properties` y `verifactu_installations` →
+  `legal_entities`, `ON DELETE RESTRICT`) y dos triggers escritos a mano (Prisma no
+  los declara y `migrate diff --from-schema-datasource` los ignora, verificado en
+  una BD de prueba):
+  - `verifactu_installations_numero_inmutable`: `numero_instalacion` y
+    `legal_entity_id` no cambian nunca (excepción `integrity_constraint_violation`).
+  - `invoices_issuer_inmutable` (`BEFORE UPDATE OF issuer_tax_id, issuer_legal_name`):
+    en una factura que ya no es borrador el snapshot del emisor no se reescribe; un
+    snapshot `NULL` sí puede **rellenarse** (`backfillInvoiceIssuerSnapshots`).
+- `20260916101000_estructura_societaria_harden` (paso 2): informe de duplicados en
+  la BD local (2026-09-16) → **NIF limpio** (2 organizaciones, 2 NIF válidos y
+  distintos) → se crea `legal_entities_tax_id_key` (índice único simple = parcial
+  `WHERE tax_id IS NOT NULL`, porque Postgres trata los NULL como distintos y así
+  Prisma lo declara con `@unique`). Rellena `invoice_sequences.prefix` heredados
+  nulos (`<code>-<year>-`; en local 8/8 ya lo tenían). **Aplazado y documentado en
+  la cabecera**: `prefix NOT NULL` (`patchBillingSettings`, fichero de L2, aún
+  escribe `null` para «prefijo por defecto» y el typecheck del API rompe con la
+  columna no nulable → cae con L2 mapeando vacío al prefijo R3);
+  `properties/invoice_sequences/invoices.legal_entity_id NOT NULL` (tras L2/L3, que
+  hacen que todo escritor lo rellene); el índice único `(legal_entity_id,
+  upper(prefix), year)` y el parcial `(legal_entity_id, invoice_number) WHERE
+  deleted_at IS NULL AND status <> 'draft'` — **org_123 no está limpio**: `FAC-2026-`
+  activo en `prop_123` y `prop_canary` y `FAC-2026-000001` emitido en ambos
+  (sandbox con NIF de relleno); L8 cierra la serie de `prop_canary` (nunca
+  renumera) y decide sobre la factura duplicada; mientras tanto la unicidad la
+  garantiza `assertSeriesPrefixFree`. `bank_accounts.property_id DROP NOT NULL`
+  → L4 (≈100 referencias en tesorería/banca).
+- `20260916102000_estructura_societaria_property_immutable` (corrección t6b#10; solo
+  funciones y triggers, sin DDL de tablas ni paso de datos, drift 0):
+  - `properties_sociedad_inmutable` (`BEFORE INSERT OR UPDATE OF legal_entity_id,
+    organization_id`): **R10.1** — una `legal_entity_id` no nula debe ser de una
+    sociedad de la misma organización (en alta y en edición; la sociedad inexistente
+    la rechaza la FK); **R10.5** — si el centro tiene alguna factura con `status <>
+    'draft'` (borradas lógicamente incluidas: una factura emitida es un registro
+    fiscal, RD 1619/2012 art. 6 y 19) o alguna fila en `verifactu_installations`
+    (activa o retirada: el número no se reutiliza nunca, Orden HAC/1177/2024 7.c),
+    no puede cambiar de sociedad (a otra ni a `NULL`) ni de organización. Sigue
+    permitido rellenar una `legal_entity_id` nula (backfill en el VPS, relleno de L2)
+    y editar cualquier otra columna. El traspaso de un establecimiento es un centro
+    nuevo y una instalación retirada.
+  - `legal_entities_organizacion_inmutable` (`BEFORE UPDATE OF organization_id`): una
+    sociedad no cambia de organización (otro lado de R10.1).
+- `scripts/check-fresh-install.sh` paso 6 ahora admite exactamente las funciones y
+  triggers que declaran las migraciones (`CREATE FUNCTION` / `CREATE TRIGGER`
+  contados en `prisma/migrations/*/migration.sql`; 4 y 4 tras la corrección); vistas
+  siguen prohibidas.
+
+### 17.3 Backfill
+
+`apps/api/src/scripts/backfill-legal-structure.ts` (dry-run por defecto,
+`--apply --confirm <orgId|all>` repetible, `--org <id>` para limitar, `--install-number
+<n>`, `--json`, `--help`; una transacción y un evento de auditoría
+`LEGAL_STRUCTURE_BACKFILLED` por organización vía `audit.service`; idempotente:
+la segunda pasada planifica 0 escrituras). Por organización: sociedad implícita
+(`legalName ?? name`, NIF solo si es válido, no es el relleno `B00000000` y no lo
+tiene otra sociedad → si no, `null` + aviso `TAX_ID_*`), `code` derivado (iniciales
+sin palabras genéricas ni de marca: Rías Altas → RA, Los Tilos → LT, Anfitorio
+Madrid Centro → AMC, Anfitorio Tenerife Sur → ATS; sufijo numérico si colisiona),
+`kind` hotel (defecto), `tradeName` desde el `legalName` antiguo cuando difiere de la
+razón social, una `VerifactuInstallation` solo para propiedades **con envíos**
+(número = el `NumeroInstalacion` declarado en su `software_json` si es único, si
+no `--install-number` / `VERIFACTU_INSTALL_NUMBER`, si no `DEV-001` con aviso;
+segunda propiedad con el mismo número → `<número>-<code>` con aviso
+`INSTALLATION_NUMBER_SUFFIXED`), enlace de facturas encadenadas y envíos a la
+instalación, `legalEntityId` en series, facturas y bancos. Avisos de informe:
+`SERIES_PREFIX_CLASH`, `INVOICE_NUMBER_DUPLICATE`, `SII_FLAG_ON_PROPERTY` (el flag
+de propiedad no se migra aquí: L8 lo revisa con César).
+
+Ejecutado en la BD local el 2026-09-16 (`--apply --confirm all`, 213 ms; segunda
+pasada 0 escrituras):
+
+| Organización | Sociedad | Centros | Instalaciones | Series | Facturas | Envíos | Bancos | Avisos |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| org_123 «HotelOS Demo SL» | `HD` · B12345674 | AMC (prop_123, tradeName «Anfitorio Madrid Centro SL»), ATS (prop_canary, tradeName «Anfitorio Tenerife Sur SL») | `DEV-001` → prop_123 (7 facturas, 7 envíos) · `DEV-001-ATS` → prop_canary (1, 1) | 4/4 | 8/8 | 8/8 | 0 | INSTALLATION_NUMBER_SUFFIXED · SERIES_PREFIX_CLASH (FAC-2026-/2026) · INVOICE_NUMBER_DUPLICATE (FAC-2026-000001) |
+| Faranda `cmrhw9jy30002fyvb6tsdiugt` | `FAR` «Faranda Hotels & Resorts» · B99999997 (ficticio, checksum ✔) | RA (Rías Altas, tradeName «Hotel Faranda Rías Altas by Ascend Collection»), LT (Los Tilos) | `DEV-001` → RA (25 facturas encadenadas, 33 envíos) | 4/4 | 25/25 | 33/33 | 0 | SII_FLAG_ON_PROPERTY (RA) |
+
+Faranda tras el backfill (solo lectura): 25 facturas con sus tres NIF históricos
+intactos (B00000000 · B12345678 · B99999997), 61 asientos / 150 líneas / Σ 2.595,00
+sin cambios; 2 eventos `LEGAL_STRUCTURE_BACKFILLED` encadenados en `audit_events`.
+Reversión: `DELETE` de `verifactu_installations` y `legal_entities` tras poner a
+`NULL` `legal_entity_id` / `installation_id` en `properties`, `invoice_sequences`,
+`invoices`, `verifactu_submissions` y `bank_accounts` (todo columnas nuevas). Desde
+`20260916102000`, poner a `NULL` la sociedad de un centro con facturas emitidas o
+instalación exige, en la misma transacción, `ALTER TABLE properties DISABLE TRIGGER
+properties_sociedad_inmutable` … `ENABLE TRIGGER` (R10.5 no se salta con un `UPDATE`
+ordinario). La verificación de post-condiciones informa además
+`propertiesInForeignEntity` (R10.1; debe ser 0).
+
+### 17.4 Helpers y contratos compartidos
+
+- `apps/api/src/lib/finance-scope.ts`: `resolveLegalIdentity(organizationId)`
+  (lector único; `source: legal_entity | organization_fallback`, `taxIdValid`),
+  `requireLegalIdentity`, `resolveLedgerScope(context, { legalEntityId?, propertyId? })`
+  (en esta tanda siempre la sociedad única; otro `legalEntityId` o una propiedad de
+  otra organización / no asignada / de otra sociedad → 404 opaco),
+  `listOperationalProperties(organizationId)` (**único** filtro `kind = hotel`;
+  `isOperationalKind`, `filterOperationalProperties` para espejos in-memory),
+  `deriveStructureMode`, `isStructureEnabled` (`STRUCTURE_ENABLED`, defecto true).
+  Desde la integración final viven aquí también las guardias de ámbito de sociedad
+  (R11): `ENTITY_READ_PERMISSION`, `FinanceScopeContext`, `hasEntityReadScope`
+  (admin de plataforma ∨ `accounting.entity.read` ∨ contexto sin asignaciones),
+  `assertFinanceReadScope` (con `propertyId`: centro dentro del ámbito o 404
+  «Propiedad no encontrada.»; sin él: ámbito de toda la sociedad o 404 opaco
+  `ENTITY_SCOPE_REQUIRED { requiredPermission }`), `assertFinanceWriteScope` (misma
+  regla para `POST /accounting/journal` y `/reverse`) y `assertFinanceReadScopeMany`;
+  `modules/accounting/ledger.routes.ts` los reexporta y ningún servicio importa ya
+  un módulo de rutas.
+- `apps/api/src/modules/invoicing/series-prefix.service.ts`:
+  `assertSeriesPrefixFree({ propertyId, prefix, year, excludeSequenceId? })` → 409
+  `SERIES_PREFIX_CLASH { conflictingPropertyId, conflictingSequenceId, prefix, year }`
+  entre centros de la misma sociedad (misma organización si aún no hay backfill;
+  case-insensitive; series cerradas no colisionan); `defaultSeriesPrefix` (R3:
+  `FAC-2026-` con un centro facturador, `FAC-RA-2026-` con varios).
+- `packages/shared/src/legal-structure-types.ts`: `PropertyKind`, `LegalForm`,
+  `PgcVariant`, `VerifactuChainScope`, `LegalEntityDto`, `PropertyEstablishmentDto`,
+  `VerifactuInstallationDto`, `LegalIdentityDto`, `FinanceScope`, `StructureMode`,
+  `CorporateAllocation`, `LegalStructureErrorCode` (unión completa en §17.8),
+  `LegalEntityPatchResponse`, `SeriesPrefixClashDetails`; reexportado por
+  `@hotelos/shared` (`packages/shared/src/index.ts`), la única forma de importarlo
+  (`tests/estructura-integrador-fix-contract.test.mjs`: la lista de imports
+  relativos a `packages/shared/src` solo encoge).
+- Permisos (`packages/shared/src/permissions.ts` + `types.ts`):
+  `accounting.entity.read` («Finanzas de toda la sociedad»: owner/admin por
+  catálogo, `manager` y `accountant` por plantilla) y
+  `organization.structure.manage` (alta/edición de sociedad y centros; owner/admin;
+  `riskLevel high` en sus rutas, L2). Requiere `rbac:sync` (no ejecutado: escribe
+  `role_permissions` de Faranda).
+- `STRUCTURE_ENABLED` (env, sección Proceso, `true` por defecto): interruptor de la
+  estructura para L2-L7; las tablas, el backfill y `resolveLegalIdentity` no
+  dependen de él. `VERIFACTU_INSTALL_NUMBER` documentado como fallback sandbox.
+
+### 17.5 Tests y puertas del lote
+
+Unitarios (`apps/api/src/**/__tests__`): `backfill-legal-structure.test.mts`
+(flags, códigos, NIF, informes, instalaciones, plan Faranda/org_123 e
+**idempotencia** sobre el post-estado), `finance-scope.test.mts` (identidad,
+fallback, ámbito, 404 opacos, paridad con `isPropertyAssigned`, filtro operativo),
+`series-prefix.test.mts`, `legal-structure-migrations.test.mts` (contrato del SQL de
+`20260916102000`: disparadores, ramas R10.1/R10.5, censo funciones == triggers).
+Integración in-process
+(`tests/integration/legal-structure-backfill.test.mts`, organización aislada
+`org_lsb_*`): dry-run → apply → apply (0 escrituras), triggers, unique de NIF,
+helpers y guardia sobre filas reales, y (integración final) los 8 casos de
+`properties_sociedad_inmutable` / `legal_entities_organizacion_inmutable` sobre
+organizaciones propias `org_lsbp_*` (centro con factura emitida o instalación
+retirada no cambia de sociedad ni de organización, ni a `NULL`; borrador sí;
+relleno `NULL → sociedad` permitido y pinado desde entonces; alta en sociedad
+foránea rechazada; una sociedad no cambia de organización). Contratos: `tests/legal-identity-readers-contract.test.mjs`
+(lectores + schema + migraciones + tipos + permisos + este runbook),
+`migrations-squash-contract`, `check-migrations-vs-schema`, `env-contract`.
+
+Lo que L1 dejó a otros quedó cerrado en la misma tanda: L2 (sociedad implícita en
+`createTenant`, onboarding y provisioning; `patchBillingSettings` con prefijo R3 y
+`assertSeriesPrefixFree`; `listOperationalProperties` reexportado desde
+`lib/tenancy.ts`), L3 (emisor desde la sociedad + bloque establecimiento; lock y
+`RegistroAnterior` por instalación; `software.ts` con instalación), L4 (SEPA y
+nóminas desde la sociedad; `WORK_CENTER_REQUIRED`), L5 (`declaranteOf` →
+`resolveLegalIdentity`; régimen SII de la sociedad) e integración (`export *` en
+`@hotelos/shared`, lista de lectores heredados vacía = C8). Siguen abiertos:
+`rbac:sync` (escribe `role_permissions` de Faranda: solo con consentimiento), los
+DDL aplazados de §17.2 y todo L8 (§17.10).
+
+### 17.6 Correcciones de la revisión adversarial de la Tanda 6b (17 hallazgos · 17 corregidos, 2026-09-16)
+
+Revisión adversarial sobre el working tree de L1-L5 (3 alta · 7 media · 7 baja),
+seis lotes de corrección (fix:L1, fix:L2, fix:L3, fix:L4, fix:L5, fix:integrador)
+y la integración final. Todo pinado con test; ninguna escritura en Faranda.
+
+| Id | Sev. | Hallazgo | Corrección y decisión | Pina |
+| --- | --- | --- | --- | --- |
+| t6b#1 | alta | Dos hoteles sin código de centro emitían a la vez el MISMO número (`FAC-2026-000001` × 2) bajo un NIF: la red R3/R10.3 no existía en concurrencia. | `allocateInvoiceNumber` toma `pg_advisory_xact_lock` de apertura de serie por sociedad + año (`lockSeriesOpening`, clave `series-open:<entity|org>:<año>`) antes de abrir una fila, y `assertInvoiceNumberFreeInEntity` toma `invoice-number:<sociedad>:<número>` antes de leer a las hermanas (dos centros con prefijo heredado común, caso org_123: exactamente uno emite, el otro 409 `INVOICE_NUMBER_DUPLICATE`). Con varios centros facturadores y sin `Property.code` → 409 `WORK_CENTER_CODE_REQUIRED` (nunca cae al prefijo plano); serie con `active = false` → 409 `SERIES_CLOSED` (una serie cerrada no vuelve a numerar). `patchBillingSettings` (integración final) abre o reabre la serie bajo el mismo lock y comprueba a las hermanas dentro de la transacción. Los índices únicos aplazados siguen siendo de L8 (org_123 sucio): los dos locks son la red hasta entonces. | `structure-l3-invoicing`, `structure-l3-fixes` (unitario e integración) |
+| t6b#2 | alta | Sociedad con `siiEnabled`: las facturas se seguían encadenando (huella, `RegistroAnterior`) y enviando a VeriFactu; R7/R8 exigen desactivación con motivo. | `resolveIssuerIdentity` expone `verifactuExclusion` (`VERIFACTU_EXCLUDED_BY_SII` + motivo «RD 1007/2023 art. 3.3», frase única en `@hotelos/compliance`); emisión y rectificativa sin huella, sin `previousInvoiceHash`, sin QR ni `installationId`, aviso `VERIFACTU_EXCLUDED_BY_SII: …` en `warningsJson`, exclusión congelada en `snapshotJson.verifactuExclusion`, evento de auditoría `VERIFACTU_EXCLUDED_BY_SII`; la anulación no genera `RegistroAnulacion`; el submitter retira con ese `errorCode` los registros ya hasheados si la sociedad entra en el SII después; el health de cumplimiento muestra `issuers[].verifactuExclusion`. Aplica en todos los modos (sandbox incluido); TicketBAI sigue enviando (huella propia). | `structure-l3-fixes` (unitario e integración) |
+| t6b#3 | media | Reactivar una serie cerrada (`PATCH billing-settings { active: true }`) no pasaba por `assertSeriesPrefixFree`: dos centros de la misma sociedad quedaban con el mismo prefijo activo. | `seriesPrefixToCheck` (puro): serie nueva activa → su prefijo; prefijo cambiado en serie activa → el nuevo; reactivación (`false → true`) → `effectivePrefix ?? existing.prefix`; cierre o solo numeración → `null`. `patchBillingSettings` lo usa con `excludeSequenceId`. | `invoice-series-policy.test.mts`, `structure-l2.test.mts` |
+| t6b#4 | media | R11: las exportaciones a gestoría de TODA la sociedad las listaba y descargaba un usuario de un solo centro sin `accounting.entity.read`. | `GestoriaExport` no tiene columna de centro y su contenido son los libros del NIF: toda la familia (create, list, get, download; `/formats` no) es artefacto de sociedad → `assertGestoriaExportScope` (404 opaco `ENTITY_SCOPE_REQUIRED`), como los snapshots de cuentas anuales. Ámbito por fila cuando exista `GestoriaExport.propertyId` (§17.10). | `structure-l5.test.mts` |
+| t6b#5 | media | R4/R11: un usuario con rol en un solo centro contabilizaba asientos de sociedad (sin centro) con `societyLevel: true`. | `assertFinanceWriteScope` (= regla de lectura) en `POST /accounting/journal` (`body.propertyId ?? null`) y en `POST /accounting/journal/:id/reverse` (centro del asiento objetivo): sin centro exige `accounting.entity.read` (o contexto sin asignaciones). No existe clave `accounting.entity.post`: decisión deliberada de reutilizar la de lectura de sociedad. | `structure-l5.test.mts`, `fiscal-regime.test.mts` |
+| t6b#6 | media | `createManualJournalEntry` / `postJournalEntry` aceptaban un `propertyId` de OTRA organización: la única guardia era el hook HTTP. | `requireJournalWorkCenter(db, organizationId, propertyId)` dentro de la transacción del motor (tras la búsqueda idempotente, antes de `assertWorkCenter`): centro inexistente o ajeno → 404 opaco `PROPERTY_NOT_FOUND { propertyId }` (nunca 403/409); también en `createJournalEntryDraft` y `postDraftJournalEntry` (borrador de otra organización → 404 `JOURNAL_ENTRY_NOT_FOUND`). Ambos códigos en `LEDGER_ERROR_CODES`. `JournalEntry.propertyId` sigue sin FK (§17.10). | `structure-l4-ledger.test.mts`, `structure-l4.test.mts` |
+| t6b#7 | media | El go-live de onboarding (`materialiseOnboardingProject`) creaba la `Property` sin `legalEntityId`/`kind`/`code` y escribía `Organization.legalName/taxId` y `Property.legalName` (columnas deprecadas): tenants nuevos caían en `organization_fallback`. | `materialiseOnboardingStructure` (exportada) en una transacción: organización solo con `name`; sociedad implícita con `createImplicitLegalEntity` (400 `TAX_ID_INVALID` / 409 `TAX_ID_IN_USE`) o, si la organización ya existe, `ensureDefaultLegalEntity` (conserva su NIF; un tenant pre-backfill lo toma de las columnas deprecadas como el backfill); `Property` con `legalEntityId`, `kind` (payload `kind`, defecto `hotel`), `code` único en la sociedad (`planPropertyCode`, 409 `CODE_IN_USE`) y `tradeName` (el `legalName` heredado del payload si difiere de la razón social). Idempotente; un `id` de propiedad de otra organización → 404 opaco (R10.5). La respuesta añade `structure { legalEntityId, legalEntityCode, propertyCode, kind }`. Contrato de escritores: ningún módulo escribe `Organization.taxId/legalName`; `Property.legalName` solo en la lista heredada (`backoffice.service.ts`, L2). | `estructura-integrador-fix-contract`, `integrador-fix-t6b.test.mts` |
+| t6b#8 | media | `PATCH /legal-entities` cambiaba `siiEnabled` / `largeCompany` / `pgcVariant` / `legalName` sin confirmación de alto riesgo ni `accounting.configure`: forzaba 303 mensual, 347/390 «no se presenta» y la razón social de todas las facturas futuras. | `HIGH_RISK_LEGAL_ENTITY_FIELDS = [taxId, legalName, siiEnabled, largeCompany, pgcVariant, fiscalYearStartMonth]` y `REGIME_LEGAL_ENTITY_FIELDS = [siiEnabled, largeCompany, pgcVariant, fiscalYearStartMonth]` (`fiscalYearStartMonth` entra por LSC art. 26). Orden en `patchLegalEntity`: `organization.structure.manage` → régimen exige `accounting.configure` (403) → alto riesgo exige `ai.high_risk.confirm` (403) → `siiEnabled: true` con registros VeriFactu REALES sin `accepted` / `rejected` → 409 `VERIFACTU_SUBMISSIONS_PENDING { unresolvedSubmissions }` → sin `confirmHighRisk: true` → 409 `HIGH_RISK_CONFIRMATION_REQUIRED { field, fields, changes }` (mensaje con la base legal por campo) → NIF (checksum, unicidad) → código. Mismo valor no es cambio. Auditoría `LEGAL_ENTITY_UPDATED` con `highRiskFields` / `regimeFields`. | `legal-entity.service.test.mts`, `structure-l2.test.mts` |
+| t6b#9 | baja | `GET /organizations/me/structure` y `GET /legal-entities/:id` con `accounting.read`: recepción leía NIF, domicilio fiscal, series (`nextNumber`) e instalaciones de centros no asignados. | Lectura de sociedad = `ENTITY_WIDE_READ` (`accounting.entity.read` ∨ `organization.structure.manage` ∨ admin de plataforma). `getStructure` conserva `accounting.read` en la ruta (el front necesita `mode`) pero sin lectura de sociedad **redacta**: solo centros asignados (`propertyWithinScope`), sin series, instalación ni `vatSettings`, `LegalEntityDto` sin NIF/domicilios/RM/CNAE/CCC (`redactLegalEntityDto`), avisos de configuración omitidos y `scope: "assigned_properties"`; `mode` y `counts` siguen siendo de toda la organización. `GET /legal-entities/:id` pasa a `accounting.entity.read` (manifiesto + `requireEntityWideRead`) y sale de `ACCOUNTING_CALENDAR_GET_PATHS`. §5.3: el director de hotel no ve Datos fiscales ni Series. | `integrador-fix-t6b.test.mts`, `finance-report-keys.test.mts`, contrato |
+| t6b#10 | baja | R10.5 (una Property con facturas emitidas no cambia de sociedad ni de organización) no estaba protegida en BD: solo había triggers para `numero_instalacion` y el emisor. | Migración `20260916102000_estructura_societaria_property_immutable` (§17.2): `properties_sociedad_inmutable` (R10.1 en alta y edición; R10.5 con toda factura `status <> 'draft'` — borradas lógicamente incluidas — o cualquier instalación, activa o retirada; relleno `NULL → sociedad` permitido) y `legal_entities_organizacion_inmutable`; post-condición `propertiesInForeignEntity` en el backfill. | `legal-structure-migrations.test.mts` (contrato del SQL), `legal-structure-backfill.test.mts` (8 casos sobre Postgres) |
+| t6b#11 | baja | Tras cambiar el NIF de la sociedad, la serie del año quedaba bloqueada con un mensaje que remitía a la pantalla antigua («Perfil del establecimiento»). | `findSeriesIssuerTaxId` se clava por el prefijo IMPRESO (una serie sucesora con otro prefijo no queda bloqueada por las facturas de la antigua); `issuerSeriesMismatchError` nombra el prefijo, cita RD 1619/2012 art. 6.1.a y 15 y da los dos caminos (NIF erróneo → rectificativas + «Datos fiscales»; cambio de emisor → cerrar la serie y abrir otra con otro prefijo en «Series y VeriFactu»; nunca renumerar) con `details.legalIdentityScreen` / `seriesScreen`. `PATCH /legal-entities/:id` (integración final) devuelve `warnings[]` (`findSeriesBlockedByTaxIdChange`, una frase por serie bloqueada) en su 200 y los audita (`blockedSeries`). | `structure-l3-fixes` (unitario e integración), `structure-l2.test.mts` |
+| t6b#12 | baja | La carpeta de inspección imprimía `Property.legalName` (nombre comercial deprecado) como razón social; `search.service.ts` y `property-overview.service.ts` también lo leían. | Titular = `resolveIssuerIdentity(propertyId)` (razón social + NIF + domicilio fiscal de la sociedad, `establishment.tradeName` del centro; línea «Titular: … · NIF …» en el HTML); el buscador busca/muestra `tradeName` y `code`; el resumen de propiedad devuelve `legalName` de la sociedad (`resolveLegalIdentity`) más `tradeName`/`code`. `FINANCE_ROOTS` del contrato C8 incluye ahora `compliance`, `search` y `dashboards`. | `legal-identity-readers-contract`, `integrador-fix-t6b.test.mts` |
+| t6b#13 | baja | Los schedulers de liberación de cupos y cut-off de grupos iteraban todas las propiedades (oficina incluida) con `property.findMany`. | `listSchedulerHotels()` en `server.ts`: por organización, `listOperationalProperties(orgId, prisma, { includeClosed: true })` (único filtro `kind = hotel`, R6) descartando `archived` como antes. | contrato (`server.ts`) |
+| t6b#14 | baja | Tres ficheros de L5 importaban `packages/shared/src/financial-statements-types.js` por ruta relativa. | `allocation.service.ts`, `pnl-by-property.service.ts` y `financial-statements.routes.ts` importan de `@hotelos/shared`; contrato con lista cerrada (22 ficheros heredados de L3/L4/L5/payments/folio/schemas/scripts) que **solo encoge**: cualquier import relativo nuevo falla. | `estructura-integrador-fix-contract` |
+| t6b#15 | baja | Tesorería `?scope=entity` respondía 403 y exigía la clave explícita, mientras las demás lecturas de sociedad responden 404 `ENTITY_SCOPE_REQUIRED` y admiten el contexto sin asignaciones. | `assertTreasuryEntityScope` = `assertFinanceReadScope(context, null)`: admin de plataforma, `accounting.entity.read` o contexto sin asignaciones pasan; usuario de centro → 404 opaco `ENTITY_SCOPE_REQUIRED { requiredPermission }`, idéntico al resto de lecturas de sociedad. | `structure-l4-treasury.test.mts`, `structure-l4.test.mts` |
+| t6b#16 | baja | USALI y PyG por centro repartían importes corporativos distintos para el mismo mes y el PyG repartía un «coste» negativo como ingreso a los hoteles. | Base única `basis: "usali_corporate_gop"`: coste corporativo = −GOP USALI de los centros `office` / `other` (gastos departamentales y no distribuidos menos ingresos operativos, sobre las mismas filas y mapeos; nunca el resultado neto PGC); GOP corporativo ≥ 0 → `applied: false`, 0,00 repartido y aviso «resultado operativo positivo»; cuentas de la oficina sin mapeo USALI fuera de la base con aviso; `basis` / `basisLabel` en `CorporateAllocationResult`. Las partidas bajo el GOP de la oficina (76x/66x, 68x, 621/625/631) se quedan en la oficina. | `allocation.test.mts`, `usali-corporate.test.mts`, `structure-l5.test.mts` |
+| t6b#17 | baja | El bloque `issuers` del health de cumplimiento incluía la oficina central (R6: solo filtraba el bloque SES). | `selectIssuerProperties` (puro): hoteles siempre + oficina / otro solo con serie ACTIVA (`isOperationalKind`); `nonCanonicalTaxRegion` y `foralPropertyIds` siguen incluyendo la oficina a propósito (región fiscal de sus facturas recibidas, TBAI del obligado foral). | `compliance-health.test.mts` |
+| integración final | — | Handoffs abiertos por los lotes de corrección. | `LegalStructureErrorCode` += `WORK_CENTER_CODE_REQUIRED`, `SERIES_CLOSED`, `VERIFACTU_EXCLUDED_BY_SII`, `VERIFACTU_SUBMISSIONS_PENDING` (+ doc de los seis campos de alto riesgo) y tipo `LegalEntityPatchResponse`; `LEDGER_ERROR_CODES` += `PROPERTY_NOT_FOUND`, `JOURNAL_ENTRY_NOT_FOUND`; guardias R11 movidas a `lib/finance-scope.ts` (reexportadas desde `ledger.routes.ts`); `VERIFACTU_EXCLUDED_BY_SII_MOTIVO` con fuente única en `@hotelos/compliance`; `backoffice.service.ts` deja de escribir `Property.legalName` (lista de escritores heredados vacía) y `ses-submission.service.ts` deja de seleccionarla; `patchBillingSettings` bajo `lockSeriesOpening`; `PATCH /legal-entities` con `warnings`; `issuers[].verifactuExclusion`; el guard de solo lectura de `structure-l3-fixes` se acota a Faranda y el probe org_123 de C9 (`structure-l5`) solo compara cifras con la BD en reposo (las suites hermanas escriben y limpian org_123 en paralelo). | `estructura-integrador-fix-contract`, `legal-identity-readers-contract`, `legal-structure-backfill`, `structure-l2/l3-fixes/l4/l5`, `integrador-fix-t6b` |
+
+### 17.7 Reglas de negocio (diseño §5.2) y dónde viven
+
+| Regla | Implementación (fichero → función) | Códigos 4xx |
+| --- | --- | --- |
+| **R1 · Qué se agrega dónde** | Plan, diario, libros, modelos, ejercicios, cuentas anuales, USALI por `organizationId` = sociedad única (`lib/finance-scope.ts` `resolveLedgerScope`); `propertyId` = filtro informativo («vista parcial, no liquidable» en 303/111/115: `modelo-*.service.ts`); tesorería con `?scope=entity` (`treasury.service.ts` `resolveTreasuryScope`: suma todas las cuentas de la organización, `banks[].propertyId` null = «Sociedad · sin centro»). | `ENTITY_SCOPE_REQUIRED` (404) |
+| **R2 · Identidad emisora** | `invoicing/issuer-identity.service.ts` `resolveIssuerIdentity` = `resolveLegalIdentity` (NIF, razón social, domicilio fiscal) + `establishment { code, name, tradeName ?? name, kind, addressLine }` de la Property; `Property.legalName` no se lee en ningún módulo de Finanzas, compliance, search ni dashboards (C8: `tests/legal-identity-readers-contract.test.mjs` con lista vacía). PDF (`invoice-pdf.service.ts`): cabecera sociedad · NIF · «Domicilio fiscal» y línea «Establecimiento: <nombre comercial> (<código>) · <dirección>» desde el snapshot congelado (`snapshotJson.establishment / issuerFiscalAddress / legalEntityId / installationId / numeroInstalacion`). XML VeriFactu / TBAI: `NombreRazon` = razón social de la sociedad. SES: A.1 titular = sociedad (`ses-submission.service.ts` vía `requireIssuerIdentity`). Trigger `invoices_issuer_inmutable`. Perfil del establecimiento (`backoffice.service.ts` `savePropertySetupForm property_profile`): campos `tradeName` («Nombre comercial en factura») y `code`; `legalName` / `taxId` en solo lectura → 409 si intenta cambiarlos (`assertProfileDoesNotWriteLegalIdentity`). | `ISSUER_TAX_ID_MISSING` (409, apunta a «Configuración › Estructura societaria › Datos fiscales»), `LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY` (409 `{ fields, legalEntityId, route }`) |
+| **R3 · Series y numeración** | `invoicing/series-prefix.service.ts` `defaultSeriesPrefix` (`FAC-2026-` con UN centro facturador, `FAC-RA-2026-` con varios; centro facturador = hotel / otro + oficina con serie activa), `assertSeriesPrefixFree` / `findPrefixClash` (case-insensitive, series cerradas no colisionan); `invoice.service.ts` `allocateInvoiceNumber` (`resolveSeriesScope`, `lockSeriesOpening`, `assertInvoiceNumberFreeInEntity`; colisión PREEXISTENTE = aviso en `warningsJson`, nunca renumera), `backoffice.service.ts` `patchBillingSettings` (prefijo nunca `NULL`; `seriesPrefixToCheck`; upsert bajo `lockSeriesOpening`), `structure/property-provisioning.service.ts` `resolveSeriesPrefixes` (alta de centro), `legal-entity.service.ts` `listLegalEntitySeries` / `markSeriesClashes`. `Invoice.legalEntityId` en toda emisión. | `SERIES_PREFIX_CLASH` (409 `{ conflictingPropertyId, conflictingSequenceId, prefix, year }`), `INVOICE_NUMBER_DUPLICATE` (409 `{ conflictingPropertyId, conflictingInvoiceId }`), `WORK_CENTER_CODE_REQUIRED` (409), `SERIES_CLOSED` (409), `ISSUER_TAX_ID_SERIES_MISMATCH` (409 `{ prefix, seriesTaxId, currentTaxId, legalIdentityScreen, seriesScreen }`) |
+| **R4 · Centro en el diario** | `accounting/accounting.service.ts` `assertWorkCenter` (líneas de grupos 6/7 sin `propertyId`; exentos `regularization`, `closing`, `opening`, `reversal`, `sourceType vat_settlement`, `manual` con `societyLevel: true`; gateado por `isStructureEnabled()`); dentro de la transacción tras la búsqueda idempotente; `requireJournalWorkCenter` (R10.1). `ledger.routes.ts` `ManualEntrySchema.societyLevel`; `ManualJournalEntryInput.societyLevel` en `@hotelos/shared`. Retenciones: `posting-rules/withholding-tax.ts` `draftFromEvent` (con retención y sin centro → 409 en vez de descarte; en la proyección asíncrona → `ACCOUNTING_PROJECTION_FAILED` con `details.code`), `requireWithholdingWorkCenter`; nóminas: `payroll/periods.service.ts` `resolvePayrollWorkCenter` (periodo > contrato > perfil) → asiento y `WithholdingTaxRecord`, sin centro → auditoría `PAYROLL_WORK_CENTER_REQUIRED` + 409 con rollback. Ejercicios: `fiscal-year.service.ts` y `fiscal-period.service.ts` `assertEntityScopedFiscalInput` (GET/POST `/accounting/fiscal-years` y POST `/accounting/fiscal-periods` con `propertyId` → 400; el listado de periodos no se guarda a propósito, `rbac-scope.test.mts:189`). | `WORK_CENTER_REQUIRED` (400 en el diario `{ lines, entryKind, sourceType }`; 409 en retenciones / nóminas), `FISCAL_YEAR_IS_ENTITY_SCOPED` (400 `{ subject, propertyId }`), `PROPERTY_NOT_FOUND` (404) |
+| **R5 · Oficina central y reparto** | `financial-statements/allocation.service.ts` (`parseCorporateAllocation`, `allocateAmount` al céntimo con resto al mayor peso, `weightsFor` revenue · rooms_available · headcount · manual, `computeCorporateAllocation` etiqueta fija «Reparto corporativo (informativo · no contabilizado)», `posted: false`, `basis: usali_corporate_gop`; `getCorporateAllocationView` / `putCorporateAllocation` escriben SOLO `AccountingSetting.configurationJson.corporateAllocation`, auditoría `CORPORATE_ALLOCATION_UPDATED`); `usali.service.ts` `compareUsaliProperties` (`includeCorporate=1` → `properties` = hoteles, `corporate` = office/other «Oficina central», `unassigned` = «Sociedad (sin centro)», `rollup`, fila `allocation`); `pnl-by-property.service.ts` (matriz cuenta × centro, columnas «Sin asignar» y total sociedad, `reconciliation` por fila). Cero asientos de reparto. | `ALLOCATION_WEIGHTS_REQUIRED`, `ALLOCATION_DUPLICATE_PROPERTY`, `ALLOCATION_UNKNOWN_PROPERTY`, `ALLOCATION_TARGET_NOT_HOTEL`, `ALLOCATION_WEIGHT_INVALID`, `ALLOCATION_WEIGHTS_SUM`, `ALLOCATION_WEIGHTS_NOT_ALLOWED` (400) |
+| **R6 · Centro `office` / `other`** | `lib/finance-scope.ts` `listOperationalProperties` (ÚNICO filtro `kind = hotel`; reexportado por `lib/tenancy.ts` con `isOperationalKind` / `filterOperationalProperties`): night audit (`night-audit.service.ts`, guard 409 en la oficina), portfolio (`dashboards/portfolio.service.ts`), pace y HF board (`revenue/*`), health de cumplimiento (`compliance-health.service.ts`: SES e `issuers`), schedulers de cupos y cut-off (`server.ts` `listSchedulerHotels`). Alta de oficina sin edificio, habitaciones, tipos, tarifas ni SES (`property-provisioning.service.ts` `validateCentreSpec`); un hotel con habitaciones no pasa a oficina (`patchEstablishment`). Switcher: `GET /users/me/properties` con `kind`, `code`, `legalEntityId`, `legalEntityName`. Tasa turística y SES no tienen bucle por propiedad (por folio / reserva / envío): la oficina queda fuera por construcción. | `WORK_CENTER_NOT_OPERATIONAL` (409), `PROPERTY_KIND_CHANGE_BLOCKED` (409) |
+| **R7 · Cadena VeriFactu por (obligado; instalación)** | `issuer-identity.service.ts` `resolveVerifactuChainScope` (política de la sociedad; instalación activa del centro con `per_center`, de la sociedad — `propertyId null` — con `per_entity`; `lockKey` `installation:<id>` · `entity:<id>` · `propertyId` heredado sin instalación), `chainInvoiceWhere`, `lockVerifactuChainScope` (`pg_advisory_xact_lock`), `adoptOrphanChainRecords` (relleno `NULL → valor` de `installation_id` / `legal_entity_id` bajo el lock); `invoice.service.ts` `lockVerifactuChain` / `findPreviousChainLink` por instalación; `verifactu-submission.service.ts` `resolveSoftwareForSend` (`NumeroInstalacion` de la instalación; env solo sandbox; fuera de sandbox sin instalación → fila `retrying` con `INSTALLATION_NOT_DECLARED` sin consumir intentos), `verifactu_submissions.installation_id`; `packages/compliance` `resolveVerifactuSoftware(env, { installation, requireInstallation })`; TBAI `NumSerieDispositivo` desde la instalación `route = tbai`. Política: `legal-entity.service.ts` `setVerifactuChainScope` (consola; no-op si igual; 409 si hay envíos `preproduction` / `production`; evento `VERIFACTU_CHAIN_SCOPE_CHANGED`; nunca re-encadena); `listInstallations`. Trigger `verifactu_installations_numero_inmutable`. | `CHAIN_ALREADY_STARTED` (409), `INSTALLATION_NOT_DECLARED` (`errorCode`), `VERIFACTU_EXCLUDED_BY_SII` |
+| **R8 · Gran empresa / SII (una sola fuente)** | `accounting/vat-books.service.ts` `resolveFiscalRegime(identity, persistedPeriodicity)` (mensual forzado por `sii` / `large_company`; `modelosNoPresentados [347, 390]` con SII; `verifactu { aplica: false, motivo }`), `declaranteBadge` / `regimeAvisos` / `siiModelNotFiledMotivo`, `LARGE_COMPANY_THRESHOLD` 6.010.121,04; `getVatSettings` devuelve `periodicity` EFECTIVA + `sociedad`; `updateVatSettings` nunca escribe la forzada; `modelo-303/111/115.service.ts` `resolveSettlementPeriod` (mensual forzado, `details.forcedBy`), `modelo-347/390` `presentacion.noSePresenta`; `modelo-390.service.ts` `proposeRegime` (RIVA 71.3, puro, nunca escribe) y `buildFiscalRegimeReport` (`GET /fiscal/regime?year=`). Emisión: exclusión VeriFactu con motivo (t6b#2). `PropertyComplianceSetting.siiEnabled` deprecado y nunca leído. | `PERIODICITY_FORCED_BY_REGIME` (409), `PERIOD_MISMATCH.details.forcedBy` |
+| **R9 · Cuentas anuales y plantilla PGC** | `financial-statements/annual-accounts.service.ts`: `entityLabel` = razón social · NIF, `entity` desde `resolveLegalIdentity`, `format { template, pgcVariant, depositable, reason }` (`largeCompany` o `pgcVariant = general` con plantilla Pymes → `depositable: false`, «Formato Pymes no depositable para esta sociedad (LSC 257-258)» hasta L10), memoria nota 1 con los establecimientos (código, tipo, municipio). | — (bloqueo informado en `format.reason`) |
+| **R10 · Invariantes** | (1) trigger `properties_sociedad_inmutable` R10.1 + `requireJournalWorkCenter`; (2) `requireIssuerIdentity` 409 `ISSUER_TAX_ID_MISSING`; (3) `assertSeriesPrefixFree` + locks (índice aplazado); (4) trigger `verifactu_installations_numero_inmutable`; (5) trigger R10.5 + 404 opaco en onboarding / provisioning; (6) `validateCentreSpec` / `patchEstablishment`; (7) `createLegalEntity` 409 `MULTI_ENTITY_NOT_ENABLED` (regla de servicio; en BD la segunda sociedad es posible: la usa el test de R10.5). | `MULTI_ENTITY_NOT_ENABLED`, `CODE_IN_USE`, `PROPERTY_NAME_IN_USE`, `TAX_ID_INVALID` (400), `TAX_ID_IN_USE` (409) |
+| **R11 · Permisos** | `accounting.entity.read` («Finanzas de toda la sociedad»: owner/admin por catálogo; `manager` y `accountant` por plantilla) y `organization.structure.manage` (owner/admin; rutas `high`). `lib/finance-scope.ts` `assertFinanceReadScope` en libros, modelos, liquidación, régimen, diario (sin `propertyId`), mayor, USALI compare / pnl, PyG por centro, cuentas anuales, snapshots, gestoría, tesorería `scope=entity`; `assertFinanceWriteScope` en `POST /accounting/journal` y `/reverse`; `getStructure` REDACTA sin lectura de sociedad (`scope: "assigned_properties"`, `redactLegalEntityDto`); `GET /legal-entities/:id` exige `accounting.entity.read`; cambio de NIF / razón social / régimen: `organization.structure.manage` + `ai.high_risk.confirm` + `confirmHighRisk` (+ `accounting.configure` en régimen). Requiere `rbac:sync` para roles creados antes de la tanda. | `ENTITY_SCOPE_REQUIRED` (404 `{ requiredPermission }`), `HIGH_RISK_CONFIRMATION_REQUIRED` (409), `VERIFACTU_SUBMISSIONS_PENDING` (409) |
+
+### 17.8 Rutas, contratos y códigos de la estructura
+
+Rutas nuevas (`apps/api/src/modules/structure/structure.routes.ts`, registradas en
+`server.ts` tras `registerFinancialStatementsRoutes`; manifiesto
+`modules/structure/route-permissions.partial.ts`, 9 entradas; todo cuerpo con zod
+`.strict()` en `structure.schemas.ts`):
+
+| Ruta | Contrato | Clave · riesgo |
+| --- | --- | --- |
+| `GET /organizations/me/structure` | `{ organization, legalEntity: { …LegalEntityDto, vatSettings, properties: [{ id, code, name, tradeName, kind, municipality, series[], installation }] }, mode: single_hotel · multi_center · group, counts, warnings: [LEGAL_ENTITY_PENDING · TAX_ID_PENDING · PROPERTIES_UNLINKED], scope: "entity" · "assigned_properties" }`. Sin `accounting.entity.read` ∨ `organization.structure.manage`: solo centros asignados, `series: []`, `installation: null`, `vatSettings: null`, DTO sin NIF / domicilios / RM / CNAE / CCC, avisos de configuración omitidos; `mode` y `counts` describen toda la organización. Con `STRUCTURE_ENABLED=false` → 404 `STRUCTURE_DISABLED` (todas las rutas de structure). | `accounting.read` · medium |
+| `POST /legal-entities` | `legalEntityCreateSchema` (`legalName` obligatorio; `taxId` con checksum → 400 `TAX_ID_INVALID`, 409 `TAX_ID_IN_USE` sin oráculo del otro tenant); primera sociedad → 201 (`isDefault`); segunda → 409 `MULTI_ENTITY_NOT_ENABLED { legalEntityId }`. Tras el backfill y `createTenant` siempre existe: en la práctica responde 409. | `organization.structure.manage` · high |
+| `GET /legal-entities/:legalEntityId` | `LegalEntityDto` completo (NIF, domicilios, RM, CNAE, régimen, CCC). | `accounting.entity.read` · medium |
+| `PATCH /legal-entities/:legalEntityId` | `legalEntityPatchSchema` (al menos un campo; nunca `verifactuChainScope`; `confirmHighRisk`; `taxId: null` = retirar). Alto riesgo y régimen: §17.6 t6b#8. Respuesta `LegalEntityPatchResponse = LegalEntityDto & { warnings: string[] }` (t6b#11). Mismo valor no es cambio; `code` único por organización (409 `CODE_IN_USE`). `demoStore.organization` solo LEE la sociedad (nunca se escriben las columnas deprecadas). | `organization.structure.manage` · high (+ `ai.high_risk.confirm`, `accounting.configure`) |
+| `POST /legal-entities/:legalEntityId/properties` | `propertyCreateBodySchema` = spec de centro compartido con el CLI `provision-pilot-property.ts` (`kind` hotel · office · other, `code`, `tradeName`, `census`, secciones hoteleras opcionales, `prefix` de serie opcional) + `dryRun`. `dryRun: true` → `{ plan: { writes, skips, conflicts }, series[], prefixClash[], property: { code } }` sin escrituras (validación en vivo del asistente). Apply: sociedad por defecto (o implícita), `code` (spec · existente · derivado), `kind` / `tradeName` / `census`, oficina sin edificio / habitaciones / tipos / tarifas / SES, prefijos R3 (`FAC-<COD>-<año>-`, `FS-`, `R-`), `legalEntityId` en Property e InvoiceSequence, departamento MGMT y roles del llamante por defecto, evento `PROPERTY_PROVISIONED`. | `organization.structure.manage` · high |
+| `GET /legal-entities/:legalEntityId/series` | `{ legalEntityId, series: [{ …serie, propertyCode, propertyName, propertyKind, clash: { propertyId, sequenceId } · null }], clashCount }` sociedad-wide. Cerrar / reabrir series: `PATCH /backoffice/properties/:propertyId/billing-settings` (`active`); nunca renumerar. | `billing.configure` · medium |
+| `GET /legal-entities/:legalEntityId/verifactu/installations` | `{ legalEntityId, chainScope, installations: [{ …VerifactuInstallationDto, propertyCode, propertyName, submissions, lastInvoice }] }`. Al crear una instalación para un centro con facturas ya hasheadas, la siguiente emisión / anulación las enlaza (`adoptOrphanChainRecords`). | `accounting.configure` · medium |
+| `PATCH /properties/:propertyId/establishment` | `establishmentPatchSchema`: `kind`, `code`, `tradeName`, censales (nunca NIF / razón social); hotel con habitaciones → office/other = 409 `PROPERTY_KIND_CHANGE_BLOCKED`; `sesHospedajesEnabled = false` al pasar a no alojativo; evento `ESTABLISHMENT_UPDATED`. | `organization.structure.manage` · high |
+| `POST /admin/legal-entities/:legalEntityId/verifactu-scope` | `{ scope: per_center · per_entity, confirm: true }` (consola de plataforma, `isPlatformAdmin`); no-op si igual; 409 `CHAIN_ALREADY_STARTED` con envíos `preproduction` / `production` (sandbox y legacy `mode NULL` no bloquean); evento `VERIFACTU_CHAIN_SCOPE_CHANGED`; nunca re-encadena. | `admin.tenants.manage` · critical |
+
+Rutas existentes con contrato ampliado (todo aditivo):
+
+- `GET /users/me/properties` y `GET /properties`: `+ kind, code, legalEntityId, legalEntityName` (`listSwitchableProperties` en `modules/structure/legal-entity.service.ts`).
+- `POST /admin/tenants` (consola, `createTenant`): admite `legalEntity { legalName?, taxId?, code?, legalForm? }` y `property.kind?` / `property.code?`; crea la sociedad implícita (`isDefault`, NIF pendiente si no se envía) y el primer centro codificado. Onboarding (`POST /onboarding/projects/:id/migration/apply`, `materialiseOnboardingStructure`) y `bootstrap.service.ts` igual: nunca escriben `Organization.legalName/taxId` ni `Property.legalName`; la respuesta añade `structure { legalEntityId, legalEntityCode, legalEntityCreated, propertyCode, kind }`.
+- Perfil del establecimiento (`property_profile`): campos `tradeName`, `code`; `legalName` / `taxId` en solo lectura → 409 `LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY { fields, legalEntityId, route: "/configuracion/estructura" }` si intenta cambiarlos (valores iguales tolerados hasta que L6 deje de enviarlos).
+- `GET|PATCH /backoffice/properties/:propertyId/billing-settings`: prefijo nunca `NULL` (vacío → R3), 409 `SERIES_PREFIX_CLASH` (también al reactivar), upsert bajo `lockSeriesOpening`.
+- `GET /invoices/:id` → `issuer { legalEntityId, fiscalAddress, establishment { code, tradeName, addressLine }, verifactuExclusion }`; `warnings` con prefijo `VERIFACTU_EXCLUDED_BY_SII:` cuando aplica; `GET /invoices/:id/pdf` imprime sociedad + «Establecimiento». `GET /properties/:propertyId/verifactu/submissions` y `/verifactu/submissions/:id` → `+ installationId`, `software.numeroInstalacion`.
+- `POST /accounting/journal` → `+ societyLevel`; 400 `WORK_CENTER_REQUIRED`; 404 `PROPERTY_NOT_FOUND` / `ENTITY_SCOPE_REQUIRED`. `POST /accounting/journal/:id/reverse` → 404 `ENTITY_SCOPE_REQUIRED` sin ámbito del centro del asiento. `POST /journal-entries/:id/post` → 404 `JOURNAL_ENTRY_NOT_FOUND` (borrador de otra organización).
+- `GET|POST /accounting/fiscal-years`, `POST /accounting/fiscal-periods` con `propertyId` → 400 `FISCAL_YEAR_IS_ENTITY_SCOPED`.
+- `GET|PUT /fiscal/vat-settings` → `+ sociedad` (`FiscalDeclaranteBadge`), `periodicity` efectiva, `persisted`; PUT trimestral bajo SII / gran empresa → 409 `PERIODICITY_FORCED_BY_REGIME`. `GET /fiscal/regime?year=AAAA` (nueva, `FiscalRegimeReport`: volumen, umbral, `propuesta`). `GET /fiscal/models/:modelo` → `+ sociedad`, `presentacion.noSePresenta { motivo }` (347 / 390 en SII), avisos de régimen y «Vista parcial por establecimiento (no liquidable)» con `propertyId`; el PDF imprime «Sociedad: código · razón social · régimen · periodicidad» y «NO SE PRESENTA: motivo». Sin `accounting.entity.read` y sin `propertyId` → 404 `ENTITY_SCOPE_REQUIRED` (también en los handlers heredados `GET /accounting/reports/modelo-*`, porque la guardia vive en los servicios).
+- `GET /accounting/usali/compare` → `+ includeCorporate=1[&allocation=]` (columnas `corporate`, `unassigned`, `rollup`, fila `allocation`); `GET /accounting/pnl/by-property?from&to[&allocation]` (nueva, `PnlByProperty`); `GET|PUT /accounting/allocation` (nueva, `CorporateAllocationView` / `CorporateAllocationPutBody`; alias `/legal-entities/:id/allocation` del diseño no registrado para no colisionar con el parámetro de ruta de structure). `GET /accounting/annual-accounts*` → `+ entityLabel, entity, format { depositable, reason }, memoria.entity.properties[]`. Familia `/accounting/gestoria-exports` (salvo `/formats`): ámbito de toda la sociedad.
+- `GET /treasury/position|receivables|payables|forecast?scope=entity` → `scope`, `propertyId: string | null`, `legalEntityId`, `entityLabel`, `banks[].propertyId`. `POST /payroll/periods/:id/export` → `+ employer { legalEntityId, legalName, taxId, taxIdValid, identitySource, workCenterId, ccc, cccSource }`; CSV universal `+ ;nif_empresa;ccc` al final; A3 con el NIF de la sociedad. Remesas SEPA: ordenante = sociedad (409 `ISSUER_TAX_ID_MISSING` sin NIF válido; sustituye a `ORGANIZATION_WITHOUT_TAX_ID`).
+- `GET /properties/:propertyId/ses/establishment` → `legalName` = razón social de la sociedad. Health de cumplimiento → `issuers[] { taxIdSource: legal_entity · organization · missing, verifactuExclusion }` solo de centros emisores.
+
+`LegalStructureErrorCode` (`packages/shared/src/legal-structure-types.ts`, `details.code`):
+`MULTI_ENTITY_NOT_ENABLED`, `SERIES_PREFIX_CLASH`, `WORK_CENTER_REQUIRED`,
+`FISCAL_YEAR_IS_ENTITY_SCOPED`, `CHAIN_ALREADY_STARTED`, `TAX_ID_INVALID`,
+`TAX_ID_IN_USE`, `LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY`, `LEGAL_ENTITY_REQUIRED`
+(fase grupo), `LEGAL_ENTITY_NOT_FOUND`, `ISSUER_TAX_ID_MISSING`,
+`HIGH_RISK_CONFIRMATION_REQUIRED`, `VERIFACTU_SUBMISSIONS_PENDING`, `CODE_IN_USE`,
+`PROPERTY_KIND_CHANGE_BLOCKED`, `PROPERTY_NAME_IN_USE`, `WORK_CENTER_NOT_OPERATIONAL`,
+`STRUCTURE_DISABLED`, `INVOICE_NUMBER_DUPLICATE`, `INSTALLATION_NOT_DECLARED`,
+`WORK_CENTER_CODE_REQUIRED`, `SERIES_CLOSED`, `VERIFACTU_EXCLUDED_BY_SII`. Fuera de la
+unión pero de esta tanda: `ENTITY_SCOPE_REQUIRED` (404, `lib/finance-scope.ts`),
+`PROPERTY_NOT_FOUND` y `JOURNAL_ENTRY_NOT_FOUND` (`LEDGER_ERROR_CODES`),
+`PERIODICITY_FORCED_BY_REGIME` y `ALLOCATION_*` (`fiscal-types.ts` /
+`financial-statements-types.ts`), `ISSUER_TAX_ID_SERIES_MISMATCH` (facturación).
+Eventos de auditoría nuevos: `LEGAL_STRUCTURE_BACKFILLED`, `LEGAL_ENTITY_UPDATED`,
+`VERIFACTU_CHAIN_SCOPE_CHANGED`, `PROPERTY_PROVISIONED`, `ESTABLISHMENT_UPDATED`,
+`CORPORATE_ALLOCATION_UPDATED`, `PAYROLL_WORK_CENTER_REQUIRED`,
+`VERIFACTU_EXCLUDED_BY_SII`.
+
+### 17.9 Comandos: backfill, instalaciones, series y régimen
+
+```bash
+# Desde apps/api (DATABASE_URL en el entorno o ../../.env). Dry-run por defecto; SOLO
+# las organizaciones nombradas con --confirm se escriben; idempotente (segunda pasada = 0 escrituras);
+# una transacción y un evento LEGAL_STRUCTURE_BACKFILLED por organización.
+node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-legal-structure.ts --dry-run [--org <orgId>] [--json]
+node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-legal-structure.ts --apply --confirm <orgId|all> [--install-number <n>]
+#   Salida: sociedad implícita (code, NIF o «pendiente» + aviso TAX_ID_*), códigos de centro, instalaciones
+#   (solo centros con envíos; número heredado del software_json, si no --install-number / VERIFACTU_INSTALL_NUMBER,
+#   si no DEV-001 con aviso), avisos SERIES_PREFIX_CLASH / INVOICE_NUMBER_DUPLICATE / SII_FLAG_ON_PROPERTY,
+#   post-condiciones (propertiesInForeignEntity debe ser 0). Exit 0 ok · 1 fallo · 2 uso.
+
+# Alta de centro desde el CLI (spec = centreSpecSchema + organizationId; delega en modules/structure/property-provisioning.service.ts)
+node --env-file-if-exists=../../.env --import tsx src/scripts/provision-pilot-property.ts --spec src/scripts/specs/<centro>.json --dry-run
+node --env-file-if-exists=../../.env --import tsx src/scripts/provision-pilot-property.ts --spec src/scripts/specs/<centro>.json --apply --confirm <orgId>
+
+# Propagar accounting.entity.read / organization.structure.manage a los roles existentes (escribe role_permissions: con consentimiento)
+corepack pnpm --filter @hotelos/api rbac:sync -- --dry-run      # hoy: 223 claves · 6 roles por completar (Owner +2, Dirección +1, Contabilidad +1 en Faranda y org_123) · Local Super Admin +2
+corepack pnpm --filter @hotelos/api rbac:sync
+```
+
+Comprobaciones SQL (solo lectura) antes de crear los índices únicos aplazados:
+
+```sql
+-- colisiones de prefijo por sociedad y año (debe devolver 0 filas)
+SELECT legal_entity_id, upper(prefix) AS prefix, year, count(*) FROM invoice_sequences
+ WHERE active AND legal_entity_id IS NOT NULL GROUP BY 1, 2, 3 HAVING count(*) > 1;
+-- números repetidos bajo un NIF (0 filas)
+SELECT legal_entity_id, invoice_number, count(*) FROM invoices
+ WHERE deleted_at IS NULL AND status <> 'draft' AND legal_entity_id IS NOT NULL GROUP BY 1, 2 HAVING count(*) > 1;
+-- centros cuya sociedad es de otra organización (R10.1; 0 filas)
+SELECT count(*) FROM properties p JOIN legal_entities le ON le.id = p.legal_entity_id WHERE le.organization_id <> p.organization_id;
+-- NULL pendientes antes de los SET NOT NULL
+SELECT (SELECT count(*) FROM properties WHERE legal_entity_id IS NULL), (SELECT count(*) FROM invoice_sequences WHERE legal_entity_id IS NULL OR prefix IS NULL), (SELECT count(*) FROM invoices WHERE legal_entity_id IS NULL);
+```
+
+Operaciones por API (zod estricto; alto riesgo con `confirmHighRisk: true`):
+
+- **Sociedad**: `GET /organizations/me/structure` → `PATCH /legal-entities/:id { legalName, taxId, legalForm, cnae, fiscalAddress…, confirmHighRisk: true }` (NIF / razón social: `ai.high_risk.confirm`; el 200 trae `warnings[]` con las series que quedan bloqueadas por el cambio de NIF) → `PATCH /legal-entities/:id { siiEnabled, largeCompany, pgcVariant, fiscalYearStartMonth, confirmHighRisk: true }` (+ `accounting.configure`; 409 `VERIFACTU_SUBMISSIONS_PENDING` si hay registros reales sin resolver).
+- **Centro**: `POST /legal-entities/:id/properties { …spec, dryRun: true }` (plan, series propuestas, `prefixClash[]`) → sin `dryRun` (crea) → `PATCH /properties/:propertyId/establishment { code, tradeName, kind, census }`.
+- **Series**: `GET /legal-entities/:id/series` (colisiones) → cerrar `PATCH /backoffice/properties/:propertyId/billing-settings { invoiceSequence: { sequenceCode, invoiceType, active: false } }` → abrir la sucesora con otro prefijo (`prefix` explícito o vacío = R3). Nunca `nextNumber` hacia atrás con facturas emitidas (`invoiceSequencePatchViolations`).
+- **VeriFactu**: `GET /legal-entities/:id/verifactu/installations`; política solo desde la consola `POST /admin/legal-entities/:id/verifactu-scope { scope, confirm: true }` antes de la primera emisión real. La fila `verifactu_installations` de un centro nuevo se crea hoy por el backfill (centros con envíos) o a mano (SQL / consola): la apertura automática al activar `verifactuEnabled` es un pendiente (§17.10). En `preproduction` / `production` un centro sin instalación activa deja sus envíos en `retrying` con `INSTALLATION_NOT_DECLARED`.
+- **Régimen**: `GET /fiscal/regime?year=2026` (propuesta RIVA 71.3) → `PATCH /legal-entities/:id { largeCompany | siiEnabled }` → `GET /fiscal/vat-settings` (periodicidad efectiva) → 303 mensual, 347 / 390 «no se presenta», VeriFactu excluido con motivo.
+- **Reparto informativo**: `PUT /accounting/allocation { method, weights? }` → `GET /accounting/usali/compare?includeCorporate=1&allocation=<method>` y `GET /accounting/pnl/by-property?from&to&allocation=<method>` (misma base `usali_corporate_gop`; cero asientos).
+
+Orden en el VPS (fuera de este workflow, con backup y API parado): `db:migrate:deploy`
+(aplica `20260916100000`, `20260916101000`, `20260916102000`) → `db:drift:check` (0) →
+`db:generate` → comprobación R10.1 (SQL de arriba = 0) → `backfill-legal-structure.ts
+--dry-run` → `--apply --confirm all` → reiniciar el API con UNA instancia (la clave del
+advisory lock de un centro con instalación pasa de `<propertyId>` a `installation:<id>`
+y dos versiones en paralelo no se serializarían entre sí) → `rbac:sync` → en sandbox
+nada más cambia (Rías Altas emite con la instalación `DEV-001` del backfill). ANTES de
+`VERIFACTU_MODE=preproduction`: retirar las instalaciones de relleno (`active = false`,
+`retired_at`) y abrir por hotel una instalación con el número real del registro del
+productor (la cadena nueva empieza en `PrimerRegistro`; los registros sandbox nunca
+llegaron a la AEAT).
+
+### 17.10 Límites, aplazados y lo que solo puede aportar César
+
+| Tema | Estado del código | Qué falta y quién |
+| --- | --- | --- |
+| DDL aplazado (cabecera de `20260916101000`) | `invoice_sequences.prefix` sigue `String?` (ningún escritor guarda `NULL` desde L2: 0 filas `NULL` en local); `properties / invoice_sequences / invoices.legal_entity_id` nulables (0 `NULL` en local; onboarding, provisioning, `createTenant` y la emisión los rellenan); índices únicos `(legal_entity_id, upper(prefix), year)` y parcial `(legal_entity_id, invoice_number)` no creados; `bank_accounts.property_id` NOT NULL. | `SET NOT NULL` de `prefix` y de los tres `legal_entity_id`: migración nueva + `schema.prisma` cuando el VPS haya pasado el backfill (comprobar 0 `NULL`). Índices únicos: L8, tras limpiar org_123 (`prop_canary` `FAC-2026-` → `active = false`, nunca renumerar; decidir la factura `FAC-2026-000001` duplicada). `bank_accounts.property_id DROP NOT NULL`: exige adaptar `modules/banking/{bank-account,bank-statement,reconciliation}.service.ts` y `server.ts` `/banking/accounts` (≈ 50 referencias); alternativa provisional del diseño §8.2: el banco de la sociedad colgado de la oficina. Hasta entonces los advisory locks son la unicidad. |
+| Instalación VeriFactu al activar un centro | `listInstallations` muestra las filas del backfill; `POST …/properties` y `verifactuEnabled = true` NO crean `verifactu_installations`. | L2 / L8: crear la fila (route `verifactu` o `tbai` si foral; `propertyId` con `per_center`, `null` con `per_entity`) con el número del registro del productor. |
+| `TbaiSubmission.installationId` | No existe: la cadena TicketBAI sigue por `(propertyId, territory)` (`tbai-submission.service.ts`, `tbai/tbai.service.ts` `fetchPreviousHash`); solo `<Software>/<NumSerieDispositivo>` y `<Emisor>` siguen a la instalación y la sociedad. | Schema (L1/L8) si se quiere `per_entity` en TBAI. IGIC legacy sin instalación (la ruta real de Canarias es VeriFactu Impuesto 03). |
+| `GestoriaExport.propertyId` | No existe: toda la familia es artefacto de sociedad (t6b#4). | Schema (L1/L8) + rellenar en `createGestoriaExport` + relajar `assertGestoriaExportScope` → ámbito por fila. |
+| `JournalEntry.propertyId` | `String?` sin FK; la tenencia la garantiza `requireJournalWorkCenter` (0 asientos con centro ajeno o inexistente en local). | FK `Restrict` hacia `properties` como red estructural (schema). |
+| Escritores interinos del diario | `vat-settlement.service.ts` (motor interino), `invoicing/ledger.port.ts`, `payables/ledger-port.ts` insertan `journal_entries` sin `postJournalEntry`: R4 no se evalúa ahí (hoy irrelevante: `vat_settlement` es exento y `SupplierBill.propertyId` / `Invoice.propertyId` son NOT NULL). | Llamar a `assertWorkCenter` al converger al motor único. |
+| Guardia del perfil | `LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY` tolera valores IGUALES a los de la sociedad (el front actual sigue enviando `legalName` / `taxId` prefijados). | Endurecer `assertProfileDoesNotWriteLegalIdentity` cuando L6 deje de enviarlos. |
+| `CHAIN_ALREADY_STARTED` | Solo cuenta envíos `preproduction` / `production`: los 19 envíos legacy de Faranda con `mode NULL` y los 22 sandbox no congelan la política. | L3 escribe `mode` en todo envío nuevo (hecho); decisión documentada en `REAL_VERIFACTU_MODES`. |
+| `STRUCTURE_ENABLED` | Interruptor de rollback: `false` → rutas de structure 404 `STRUCTURE_DISABLED`, `assertWorkCenter` desactivado, sin ámbito «Sociedad» en el switcher. La identidad va siempre por `resolveLegalIdentity` (fallback a las columnas deprecadas para tenants sin backfill), las guardias R11 no dependen de él. | — |
+| Reparto corporativo | −GOP USALI de los centros office/other; partidas bajo el GOP de la oficina no se reparten; clave `headcount` depende de `PayrollPeriod.propertyId`. | El asesor puede pedir otro nivel de reparto (decisión de producto). |
+| Periodicidad forzada | No se escribe en `VatSettings` (efectiva en lectura); las filas de `vat_book_entries` materializadas antes de un cambio de régimen conservan su `period` trimestral (los modelos filtran por fecha). | — |
+| C9 equivalencia en paralelo | `structure-l5.test.mts` compara las cifras de org_123 solo con la BD en reposo (las suites hermanas escriben y limpian org_123 en paralelo: `t.skip` con diagnóstico si los recuentos cambian); Faranda se compara siempre (nunca se escribe). | Ejecutar el fichero solo para la equivalencia numérica de org_123. |
+| Roles | `accounting.entity.read` y `organization.structure.manage` existen en el catálogo y en las plantillas; los roles creados antes de la tanda no las tienen hasta `rbac:sync`. En dev la unión demo las concede a toda sesión real (`demo-store.ts` baseline). | César: autorizar `rbac:sync` (escribe `role_permissions` de Faranda). |
+| Faranda → CELUISMA (L8) | Sociedad `FAR` con el NIF ficticio B99999997; centros RA (`FAC-2026-` con tres NIF históricos, 25 facturas, instalación `DEV-001`) y LT; `sii_enabled = true` de RA sigue en `property_compliance_settings` (aviso `SII_FLAG_ON_PROPERTY`); oficina central y 5 hoteles inexistentes; códigos RA / LT / FAR derivados por heurística. | Lista exacta de datos en el informe de cierre §8 (`docs/audits/TANDA-6B-ESTRUCTURA-BACKEND-2026-09-16.md`): hoteles y oficina, cifras 2024-25, otras sociedades, clave de reparto, decisión del asesor sobre la cadena, consentimiento para el NIF real, régimen de IVA y ejercicio, CCC, numeración de instalaciones reales. El NIF real A33615980 solo entra en L8 con consentimiento y nunca se remite a la AEAT sin mandato. |
+| Front | Ninguna pantalla consume las rutas de structure ni los campos aditivos (`grep legal-entities apps/admin-web/src` = 0). | L6 (Estructura societaria, perfil sin NIF, consola) y L7 (ámbito único, badge de declarante, aviso SII, vistas por centro): contratos en §17.8 y en el informe §7. |
+
+### 17.11 Puertas del cierre de la Tanda 6b (2026-09-16, integración final)
+
+Working tree completo, sin commit, servidores :3000 / :5173 sin reiniciar (sirven el
+código anterior; verificación con unitarios e integración in-process):
+
+| Puerta | Resultado |
+| --- | --- |
+| `node scripts/typecheck-all.mjs --parallel 2` | 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · 22,3 s |
+| `node scripts/check-discoverability.mjs` | 216 screens alcanzables · 183/183 URLs · 0 broken links · placeholders 16/20 |
+| `corepack pnpm test` (contratos, sin BD) | 431 tests · 431 pass · 0 fail (+2 contratos nuevos de la tanda: `legal-identity-readers-contract` 10, `estructura-integrador-fix-contract` 11) |
+| `corepack pnpm --filter @hotelos/api test` (unitarios) | 1.456 tests · 1.455 pass · 0 fail · 1 skipped (preexistente); 216 casos nuevos en 17 ficheros de la tanda |
+| `test:integration` (`tests/integration/*.test.mts`, 21 ficheros — 7 de la tanda con 99 casos —, in-process sobre Postgres local) | 294 tests · 289 pass · 0 fail · 5 skipped (preexistentes, los mismos del cierre de la Tanda 6: H2 sin folio abierto en el demo y los 4 casos de sesión limitada sin `INTEGRATION_RECEPTION_EMAIL/_PASSWORD`); la probe org_123 de C9 se ejecutó con la BD en reposo (se salta con diagnóstico si una suite hermana está escribiendo org_123); Faranda idéntica antes y después; 0 organizaciones de prueba residuales |
+| `node scripts/env-census.mjs` · `validate-env.mjs .env --role app` | 137 variables leídas · 137 documentadas · ficheros generados en sincronía · contrato OK (14 avisos de valores de ejemplo) |
+| `db:migrate:status` · `db:drift:check` · `check-migrations-vs-schema.mjs` | 8 migraciones aplicadas, «Database schema is up to date!» · «No difference detected.» · 266 tablas / 30 enums en sincronía |
+| `bash scripts/check-fresh-install.sh` | OK: 8 migraciones → 266 tablas, 1 organización, 79 permisos, sin drift, 4 funciones / 4 triggers declarados por las migraciones (4 s) |
+| `corepack pnpm install --frozen-lockfile --offline` | «Lockfile is up to date» · «Already up to date» |
+| `rbac:sync -- --dry-run` | catálogo 223 claves (222 org + 1 plataforma) · +0 · 6 roles por completar (Owner +2, Dirección +1, Contabilidad +1 en Faranda y en org_123) · Local Super Admin +2 (no aplicado) |
+| `bash .husky/pre-commit` | discoverability + typecheck-all OK |
+
+Faranda (solo lectura, idéntico antes y después de todas las suites): 25 facturas
+(NIF históricos B00000000 × 16 · B12345678 × 5 · B99999997 × 4), 61 asientos / 150
+líneas / Σ 2.595,00 = 2.595,00, 33 envíos sandbox, 0 `vat_settings`, 0
+`vat_book_entries`; sociedad `FAR` «Faranda Hotels & Resorts» B99999997 (`pymes`,
+`per_center`, SII y gran empresa `false`); centros RA (`hotel`, instalación `DEV-001`
+activa) y LT (`hotel`); series `FAC-2026-` (siguiente 23) y `REC-2026-` (4) en RA,
+`FAC-LT-2026-` y `REC-LT-2026-` (1) en LT, todas activas y con `legal_entity_id`. org_123:
+sociedad `HD` B12345674, AMC / ATS, instalaciones `DEV-001` y `DEV-001-ATS`, 8 facturas,
+8 envíos. 2 organizaciones en la BD: ninguna organización de prueba queda tras las
+suites.

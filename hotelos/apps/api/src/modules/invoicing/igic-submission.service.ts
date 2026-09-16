@@ -22,7 +22,11 @@ export async function submitIgicForInvoice(invoiceId: string, organizationId: st
   const existing = await prisma.igicSubmission.findUnique({ where: { invoiceId } });
   if (existing && existing.status === "accepted") return;
 
-  // FISC-03: issuer identity from the invoice snapshot (see issuer-identity.service.ts).
+  // FISC-03 / Tanda 6b R2: issuer identity from the invoice snapshot (the
+  // sociedad's NIF and razón social, see issuer-identity.service.ts). This
+  // legacy route has no SistemaInformatico block, so no installation applies:
+  // Canarias reports through VeriFactu (Impuesto 03) with the centre's
+  // installation, like any common-territory property.
   const issuer = await issuerForInvoice(invoice);
   const emitterTaxId = issuer.taxId;
   const emitterName = issuer.legalName;

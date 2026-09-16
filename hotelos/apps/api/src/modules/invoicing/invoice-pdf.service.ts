@@ -1,13 +1,18 @@
-// Invoice PDF (finanzas · lote facturación-cobros, 2026-09-15).
+// Invoice PDF (finanzas · lote facturación-cobros, 2026-09-15; estructura
+// societaria · L3, 2026-09-16).
 //
 // GET /invoices/:id/pdf renders the fiscal document from the issuance
 // snapshot (Invoice.snapshotJson — never from the live folio): issuer block
-// with NIF and address, recipient, lines, VAT breakdown per rate, totals,
-// series/number, the VeriFactu QR (Invoice.qrPayload, the exact URL that was
-// hashed) and the legal texts of simplified / rectifying / cancelled
-// invoices. Drafts render as "BORRADOR — sin validez fiscal" without number
-// or QR. Invoices issued before the snapshot column existed fall back to
-// their InvoiceLine rows and persisted breakdown.
+// with the SOCIEDAD (razón social, NIF, domicilio fiscal — RD 1619/2012
+// 6.1.c-d) and the ESTABLISHMENT that expedited it (nombre comercial, código,
+// dirección — art. 6.1.e; design §5.2 R2), recipient, lines, VAT breakdown
+// per rate, totals, series/number, the VeriFactu QR (Invoice.qrPayload, the
+// exact URL that was hashed) and the legal texts of simplified / rectifying /
+// cancelled invoices. Drafts render as "BORRADOR — sin validez fiscal" without
+// number or QR. Invoices issued before the snapshot column existed fall back
+// to their InvoiceLine rows and persisted breakdown; the establishment block
+// comes from the snapshot when frozen there (issued after L3) and from the
+// live property otherwise.
 //
 // `buildInvoicePdf` is pure (model → Buffer) and unit-tested;
 // `renderInvoicePdf` loads the model.
@@ -15,8 +20,8 @@
 import { prisma } from "@hotelos/database";
 import { NotFoundError } from "../../lib/http-error.js";
 import { parseInvoiceSnapshot } from "./invoice-snapshot.js";
-import { getInvoice, RECTIFYING_REASON_LABELS, type InvoiceRecord, type RectifyingReasonCode } from "./invoice.service.js";
-import { ISSUER_TAX_ID_PLACEHOLDER, resolveIssuerIdentity } from "./issuer-identity.service.js";
+import { getInvoice, RECTIFYING_REASON_LABELS, structureFromSnapshotJson, type InvoiceRecord, type RectifyingReasonCode } from "./invoice.service.js";
+import { ISSUER_TAX_ID_PLACEHOLDER, resolveIssuerIdentity, type IssuerEstablishment } from "./issuer-identity.service.js";
 import { encodeQr } from "./pdf/qr-encoder.js";
 import { A4, PdfDocument, type PdfPage, textWidth } from "./pdf/pdf-writer.js";
 
@@ -29,6 +34,14 @@ export type InvoicePdfLine = {
   total: number;
 };
 
+export type InvoicePdfEstablishment = Pick<IssuerEstablishment, "code" | "tradeName" | "addressLine">;
+
+/** «Establecimiento: Hotel Faranda Rías Altas (RA) · Paseo Marítimo 1, Perillo (Oleiros), A Coruña». Pure. */
+export function establishmentLine(establishment: InvoicePdfEstablishment): string {
+  const name = establishment.code ? `${establishment.tradeName} (${establishment.code})` : establishment.tradeName;
+  return establishment.addressLine ? `Establecimiento: ${name} · ${establishment.addressLine}` : `Establecimiento: ${name}`;
+}
+
 export type InvoicePdfModel = {
   invoiceId: string;
   invoiceNumber: string | null;
@@ -38,7 +51,20 @@ export type InvoicePdfModel = {
   cancelledAt: string | null;
   simplified: boolean;
   currencyCode: string;
-  issuer: { legalName: string; taxId: string | null; address: string | null; propertyName: string; placeholder: boolean; legalFooter: string | null };
+  issuer: {
+    /** Razón social of the sociedad (issuer snapshot). */
+    legalName: string;
+    taxId: string | null;
+    /** Printed under the NIF: the domicilio fiscal of the sociedad when known, else the establishment address (legacy). */
+    address: string | null;
+    propertyName: string;
+    placeholder: boolean;
+    legalFooter: string | null;
+    /** Domicilio fiscal of the sociedad (null while it has none configured). Optional for older callers. */
+    fiscalAddress?: string | null;
+    /** Establishment block (art. 6.1.e RD 1619/2012): «Establecimiento: <nombre comercial> (<código>) · <dirección>». */
+    establishment?: InvoicePdfEstablishment | null;
+  };
   customer: { type: string; name: string | null; taxId: string | null };
   lines: InvoicePdfLine[];
   breakdown: Array<{ figure: string; calificacion: string; ratePercent: number; base: number; quota: number }>;
@@ -48,6 +74,8 @@ export type InvoicePdfModel = {
   /** VeriFactu QR URL (Invoice.qrPayload); null on drafts. */
   qrUrl: string | null;
   verifactuHash: string | null;
+  /** Why the document carries no VeriFactu record (sociedad in the SII, RD 1007/2023 art. 3.3); null / absent when it does. Frozen in the snapshot at issuance. */
+  verifactuExclusion?: { code: string; motivo: string } | null;
   stay: { reservationCode: string | null; arrivalDate: string | null; departureDate: string | null } | null;
   warnings: string[];
 };
@@ -103,21 +131,33 @@ export function buildInvoicePdf(model: InvoicePdfModel): Buffer {
   const drawHeader = (): void => {
     const page = cursor.page;
     let y = MARGIN;
+    // Sociedad first (razón social · NIF · domicilio fiscal), then the
+    // establishment that expedited the document (R2). Without an
+    // establishment block (legacy callers) the property name is printed as before.
     page.text(MARGIN, y + 12, model.issuer.legalName, { font: "bold", size: 14 });
     page.text(A4.width - MARGIN, y + 12, title, { font: "bold", size: 16, align: "right" });
     y += 18;
-    if (model.issuer.propertyName && model.issuer.propertyName !== model.issuer.legalName) {
+    if (!model.issuer.establishment && model.issuer.propertyName && model.issuer.propertyName !== model.issuer.legalName) {
       page.text(MARGIN, y + 10, model.issuer.propertyName, { size: 10 });
       y += LINE_HEIGHT;
     }
     page.text(MARGIN, y + 10, `NIF: ${model.issuer.taxId ?? "— sin NIF —"}`, { size: 10 });
     page.text(A4.width - MARGIN, y + 10, isDraft ? "BORRADOR — sin validez fiscal" : `Nº ${model.invoiceNumber ?? "—"}`, { font: "bold", size: 11, align: "right" });
     y += LINE_HEIGHT;
-    if (model.issuer.address) {
-      page.text(MARGIN, y + 10, model.issuer.address, { size: 9, gray: 0.25 });
+    // With an establishment block the address under the NIF is the sociedad's
+    // domicilio fiscal only (the centre's address goes in its own line).
+    const fiscalLine = model.issuer.fiscalAddress ?? (model.issuer.establishment ? null : model.issuer.address);
+    if (fiscalLine) {
+      page.text(MARGIN, y + 10, model.issuer.fiscalAddress ? `Domicilio fiscal: ${fiscalLine}` : fiscalLine, { size: 9, gray: 0.25 });
     }
     page.text(A4.width - MARGIN, y + 10, `Fecha de expedición: ${isDraft ? "—" : formatSpanishDate(model.issuedAt)}`, { size: 10, align: "right" });
     y += LINE_HEIGHT;
+    if (model.issuer.establishment) {
+      let line = establishmentLine(model.issuer.establishment);
+      while (textWidth(line, 9) > CONTENT_WIDTH - 200 && line.length > 8) line = `${line.slice(0, -2).trimEnd()}…`;
+      page.text(MARGIN, y + 10, line, { size: 9 });
+      y += LINE_HEIGHT;
+    }
     if (model.status === "cancelled") {
       page.text(A4.width - MARGIN, y + 10, `ANULADA el ${formatSpanishDate(model.cancelledAt)}`, { font: "bold", size: 11, align: "right" });
       y += LINE_HEIGHT;
@@ -265,6 +305,10 @@ export function buildInvoicePdf(model: InvoicePdfModel): Buffer {
       cursor.page.text(MARGIN + qrSize + 10, qrY + qrSize - 2, `Huella: ${model.verifactuHash.slice(0, 32)}…`, { size: 6.5, gray: 0.45 });
     }
     cursor.y = qrY + qrSize + 10;
+  } else if (!isDraft && model.verifactuExclusion) {
+    // Sociedad outside the RRSIF: no huella, no QR, no VERI*FACTU legend — the reason is printed instead.
+    const drawn = cursor.page.paragraph(MARGIN, qrY + 10, `Sin QR tributario: ${model.verifactuExclusion.motivo}`, CONTENT_WIDTH, { size: 8.5, gray: 0.3, lineHeight: 11 });
+    cursor.y = qrY + drawn * 11 + 6;
   } else {
     cursor.page.text(MARGIN, qrY + 10, isDraft ? "Documento borrador: sin número, sin huella ni código QR hasta su emisión." : "Sin QR tributario (factura emitida sin registro VeriFactu).", { size: 8.5, gray: 0.3 });
     cursor.y = qrY + LINE_HEIGHT + 4;
@@ -277,7 +321,13 @@ export function buildInvoicePdf(model: InvoicePdfModel): Buffer {
   if (model.invoiceType.startsWith("R")) {
     legal.push(`Factura rectificativa (art. 15 RD 1619/2012) — causa ${model.rectification?.reasonLabel ?? model.invoiceType}.`);
   }
-  if (model.status === "cancelled") legal.push("Este documento ha sido ANULADO: no produce efectos fiscales. Registro de anulación comunicado según el sistema VeriFactu.");
+  if (model.status === "cancelled") {
+    legal.push(
+      model.verifactuExclusion
+        ? "Este documento ha sido ANULADO: no produce efectos fiscales."
+        : "Este documento ha sido ANULADO: no produce efectos fiscales. Registro de anulación comunicado según el sistema VeriFactu."
+    );
+  }
   if (model.issuer.placeholder) legal.push(`Emitida en sandbox con el NIF de relleno ${ISSUER_TAX_ID_PLACEHOLDER}: no es un documento fiscal válido.`);
   if (model.issuer.legalFooter) legal.push(model.issuer.legalFooter);
   for (const paragraph of legal) {
@@ -296,7 +346,11 @@ export async function loadInvoicePdfModel(invoiceId: string): Promise<InvoicePdf
   const row = await prisma.invoice.findUnique({ where: { id: invoiceId }, select: { snapshotJson: true, simplified: true, reservationId: true, invoiceType: true } });
   if (!row) throw new NotFoundError("Factura no encontrada.");
   const snapshot = parseInvoiceSnapshot(row.snapshotJson);
+  // Sociedad + establishment as frozen at issuance (L3); live property for older documents.
+  const structure = structureFromSnapshotJson(row.snapshotJson);
   const identity = await resolveIssuerIdentity(record.propertyId);
+  const establishment = structure.establishment ?? identity?.establishment ?? null;
+  const fiscalAddress = structure.issuerFiscalAddress !== undefined ? structure.issuerFiscalAddress : (identity?.fiscalAddress ?? null);
   const original = record.rectifyingForId ? await prisma.invoice.findUnique({ where: { id: record.rectifyingForId }, select: { invoiceNumber: true } }) : null;
   const reservation = row.reservationId
     ? await prisma.reservation.findUnique({ where: { id: row.reservationId }, select: { code: true, arrivalDate: true, departureDate: true } })
@@ -331,10 +385,12 @@ export async function loadInvoicePdfModel(invoiceId: string): Promise<InvoicePdf
     issuer: {
       legalName: record.issuer?.legalName ?? identity?.legalName ?? "",
       taxId: record.issuer?.taxId ?? null,
-      address: identity?.address ?? null,
+      address: fiscalAddress ?? establishment?.addressLine ?? identity?.address ?? null,
       propertyName: identity?.propertyName ?? "",
       placeholder: record.issuerTaxIdPlaceholder || record.issuer?.taxIdPlaceholder === true,
-      legalFooter: identity?.legalFooter ?? null
+      legalFooter: identity?.legalFooter ?? null,
+      fiscalAddress,
+      establishment: establishment ? { code: establishment.code, tradeName: establishment.tradeName, addressLine: establishment.addressLine } : null
     },
     customer: { type: record.customerType, name: record.customerName, taxId: record.customerTaxId ?? null },
     lines,
@@ -351,6 +407,7 @@ export async function loadInvoicePdfModel(invoiceId: string): Promise<InvoicePdf
     payment: record.paymentStatus === "not_applicable" ? null : { paidTotal: record.paidTotal, balanceDue: record.balanceDue, status: record.paymentStatus },
     qrUrl: record.qrPayload ?? null,
     verifactuHash: record.verifactuHash ?? null,
+    verifactuExclusion: structure.verifactuExclusion ?? null,
     stay: reservation
       ? { reservationCode: reservation.code, arrivalDate: reservation.arrivalDate.toISOString(), departureDate: reservation.departureDate.toISOString() }
       : null,

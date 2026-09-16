@@ -232,16 +232,19 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
           prisma.property.findMany({
             where: {
               organizationId: input.organizationId,
+              // Tanda 6b (fix t6b#12): the nombre comercial is Property.tradeName;
+              // Property.legalName is deprecated and never read.
               OR: [
                 { name: { contains: q, mode: "insensitive" } },
-                { legalName: { contains: q, mode: "insensitive" } },
+                { tradeName: { contains: q, mode: "insensitive" } },
+                { code: { equals: q.toUpperCase() } },
                 { municipality: { contains: q, mode: "insensitive" } }
               ]
             },
-            select: { id: true, name: true, legalName: true, municipality: true, province: true },
+            select: { id: true, name: true, tradeName: true, code: true, municipality: true, province: true },
             take: perKind
           }),
-          [] as Array<{ id: string; name: string; legalName: string | null; municipality: string | null; province: string | null }>
+          [] as Array<{ id: string; name: string; tradeName: string | null; code: string | null; municipality: string | null; province: string | null }>
         )
       : Promise.resolve([]),
 
@@ -346,7 +349,7 @@ export async function globalSearch(input: SearchInput): Promise<{ items: SearchH
       kind: "property",
       id: p.id,
       title: p.name,
-      subtitle: [p.legalName, p.municipality, p.province].filter(Boolean).join(" · ") || undefined,
+      subtitle: [p.code, p.tradeName && p.tradeName !== p.name ? p.tradeName : null, p.municipality, p.province].filter(Boolean).join(" · ") || undefined,
       // Must be a key of SCREEN_COMPONENTS (apps/admin-web/src/App.tsx):
       // resolveScreenTarget drops unknown screens silently.
       screen: "PropertyDetailScreen",

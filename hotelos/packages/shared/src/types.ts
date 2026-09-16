@@ -263,6 +263,11 @@ export type PermissionKey =
   | "onboarding.view_sensitive"
   | "onboarding.manage_cutover"
   | "audit.read"
+  // Tanda 6b (L1 · estructura societaria): finances of the whole legal entity
+  // and management of the sociedad / work centres (owner; Dirección and Finanzas
+  // hold the read key).
+  | "accounting.entity.read"
+  | "organization.structure.manage"
   // Platform scope (HotelOS staff). Listed in PLATFORM_PERMISSION_KEYS and
   // excluded from every organization role template.
   | "admin.tenants.manage";

@@ -18,6 +18,7 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
 import { NotFoundError } from "../../lib/http-error.js";
+import { filterOperationalProperties } from "../../lib/tenancy.js";
 import { expand, type ResRow } from "./pace.service.js";
 import { REALIZED_STATUSES, parseRevenueWindow, realizeDays } from "./actuals.js";
 import { adrSourceFromDrivers, emptyAdrSourceCounts, forecastAdrSourceLabel } from "./forecast.service.js";
@@ -1184,7 +1185,8 @@ export async function writeYesterdayDailySnapshotsForAllProperties(): Promise<{
   skipped: { noReservations: string[]; protected: Array<{ propertyId: string; dataSource: string }> };
   failed: Array<{ propertyId: string; error: string }>;
 }> {
-  const properties = await prisma.property.findMany({ select: { id: true } });
+  // Tanda 6b (R6): the night-audit snapshot writer only visits operational centres (kind = hotel).
+  const properties = filterOperationalProperties(await prisma.property.findMany({ select: { id: true, kind: true } }));
   let written = 0;
   const skipped: { noReservations: string[]; protected: Array<{ propertyId: string; dataSource: string }> } = {
     noReservations: [],

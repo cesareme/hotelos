@@ -29,6 +29,9 @@
 
 import { prisma } from "@hotelos/database";
 import { Prisma } from "@prisma/client";
+import type { FinanceEntityBadge, FinanceWorkCentre } from "../../../../../packages/shared/src/financial-statements-types.js";
+import type { LegalIdentityDto, PropertyKind } from "@hotelos/shared";
+import { resolveLegalIdentity } from "../../lib/finance-scope.js";
 import type { AccountKind } from "../accounting/chart-of-accounts.service.js";
 import { kindFromLegacyType } from "../accounting/chart-of-accounts.service.js";
 import { toDec, type Dec } from "./money.js";
@@ -38,6 +41,12 @@ export type LedgerMode = "balance_at" | "movements";
 export type LedgerQuery = {
   organizationId: string;
   propertyId?: string | null;
+  /**
+   * Tanda 6b: only the entries booked WITHOUT a work centre (society-level:
+   * settlement, close, manual `societyLevel`) — the «Sin asignar» column of
+   * USALI / PyG por centro. Ignored when `propertyId` is set.
+   */
+  unassignedOnly?: boolean;
   mode: LedgerMode;
   /** Required for `movements`; ignored for `balance_at`. */
   from?: string | null;
@@ -80,11 +89,19 @@ export type UsaliMappingSourceRow = {
   updatedAt: Date;
 };
 
+/**
+ * A work centre as the statements see it (Tanda 6b): `kind` tells hotel /
+ * office / other, `code` and `tradeName` label the columns. The deprecated
+ * `Property.legalName` is NOT read: the razón social is the legal entity's.
+ */
 export type PropertyLite = {
   id: string;
   organizationId: string;
+  legalEntityId: string | null;
   name: string;
-  legalName: string | null;
+  code: string | null;
+  tradeName: string | null;
+  kind: PropertyKind;
   address: string | null;
   municipality: string | null;
   province: string | null;
@@ -98,7 +115,8 @@ export type OccupancyFacts = {
   roomsOccupied: number;
 };
 
-export type OrganizationLite = { id: string; name: string; legalName: string | null; taxId: string | null };
+/** Distinct staff with a payslip in the window, per work centre (`propertyId` null = payroll periods without centre). */
+export type HeadcountByProperty = Array<{ propertyId: string | null; headcount: number }>;
 
 export type FixedAssetLite = {
   id: string;
@@ -165,10 +183,23 @@ export interface FinancialStatementsSource {
   usaliMappings(organizationId: string): Promise<UsaliMappingSourceRow[]>;
   properties(organizationId: string): Promise<PropertyLite[]>;
   occupancy(propertyIds: string[], from: string, to: string): Promise<OccupancyFacts>;
-  organization(organizationId: string): Promise<OrganizationLite | null>;
+  /**
+   * The sociedad of the organisation (`resolveLegalIdentity`, lib/finance-scope.ts):
+   * the ONLY reader of the razón social / NIF for the statements. Null when
+   * the organisation does not exist.
+   */
+  legalIdentity(organizationId: string): Promise<LegalIdentityDto | null>;
   fixedAssets(organizationId: string, propertyId?: string | null): Promise<FixedAssetLite[]>;
   vatTotals(organizationId: string, from: string, to: string): Promise<VatTotalsRow[]>;
   headcount(organizationId: string, from: string, to: string): Promise<number | null>;
+  /** Headcount per work centre for the `headcount` allocation key (Tanda 6b · R5). */
+  headcountByProperty(organizationId: string, from: string, to: string): Promise<HeadcountByProperty>;
+  /**
+   * Raw `AccountingSetting.configurationJson` of the organisation-level row
+   * (null when absent). allocation.service.ts parses `corporateAllocation` out
+   * of it; the source stays a plain reader.
+   */
+  accountingConfiguration(organizationId: string): Promise<unknown>;
   journalLines(query: { organizationId: string; propertyId?: string | null; from: string; to: string }): AsyncIterable<JournalLineExportRow[]>;
   documentRefs(kind: "invoice" | "supplier_bill" | "expense", ids: string[]): Promise<Map<string, DocumentRef>>;
   vatBookEntries(query: { organizationId: string; propertyId?: string | null; from: string; to: string }): Promise<VatBookExportRow[]>;
@@ -195,6 +226,56 @@ export function addDays(iso: string, days: number): string {
 /** Calendar days from `from` to `to`, both inclusive. */
 export function nightsBetween(from: string, to: string): number {
   return Math.round((dayUtc(to).getTime() - dayUtc(from).getTime()) / 86_400_000) + 1;
+}
+
+// ---------------------------------------------------------------------------
+// Work centres (Tanda 6b): hotels vs corporate centres
+// ---------------------------------------------------------------------------
+
+/** `hotel` centres run the operation; `office` / `other` are the corporate («Oficina central») centres. */
+export function isHotelCentre(property: Pick<PropertyLite, "kind">): boolean {
+  return property.kind === "hotel";
+}
+
+/** Stable presentation order: hotels by name, then office / other by name. */
+export function sortWorkCentres<T extends Pick<PropertyLite, "kind" | "name">>(rows: readonly T[]): T[] {
+  return [...rows].sort((a, b) => Number(!isHotelCentre(a)) - Number(!isHotelCentre(b)) || a.name.localeCompare(b.name, "es"));
+}
+
+/** Spanish labels of the work-centre kinds (runtime constant kept in the API: the shared package is types-only). */
+export const WORK_CENTRE_KIND_LABELS_ES: Record<PropertyKind, string> = { hotel: "Hotel", office: "Oficina", other: "Otro" };
+
+/** Wire view of a work centre for the statements. */
+export function toWorkCentre(property: PropertyLite): FinanceWorkCentre {
+  return { propertyId: property.id, code: property.code, name: property.name, tradeName: property.tradeName, kind: property.kind };
+}
+
+/**
+ * The sociedad badge of a statement. A missing identity (organisation row
+ * absent: contexts assembled outside Prisma) renders «Sociedad pendiente»
+ * with the default regime instead of failing the whole statement.
+ */
+export function entityBadgeOf(identity: LegalIdentityDto | null): FinanceEntityBadge {
+  if (!identity) {
+    return { legalEntityId: null, code: null, legalName: "Sociedad pendiente", taxId: null, taxIdValid: false, legalForm: null, source: "organization_fallback", pgcVariant: "pymes", largeCompany: false, siiEnabled: false };
+  }
+  return {
+    legalEntityId: identity.legalEntityId,
+    code: identity.code,
+    legalName: identity.legalName,
+    taxId: identity.taxId,
+    taxIdValid: identity.taxIdValid,
+    legalForm: identity.legalForm,
+    source: identity.source,
+    pgcVariant: identity.pgcVariant,
+    largeCompany: identity.largeCompany,
+    siiEnabled: identity.siiEnabled
+  };
+}
+
+/** «<razón social> · NIF <nif>» (or «NIF pendiente») — the header of every rendered statement. */
+export function entityLabelOf(entity: Pick<FinanceEntityBadge, "legalName" | "taxId">): string {
+  return `${entity.legalName} · ${entity.taxId ? `NIF ${entity.taxId}` : "NIF pendiente"}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,6 +315,7 @@ const LEDGER_ENTRY_COUNTS_SQL = Prisma.sql`je.status <> 'draft' AND je.reversed_
 function ledgerWhere(query: LedgerQuery): Prisma.Sql {
   const conditions: Prisma.Sql[] = [Prisma.sql`je.organization_id = ${query.organizationId}`, LEDGER_ENTRY_COUNTS_SQL];
   if (query.propertyId) conditions.push(Prisma.sql`je.property_id = ${query.propertyId}`);
+  else if (query.unassignedOnly) conditions.push(Prisma.sql`je.property_id IS NULL`);
   if (query.mode === "balance_at") {
     conditions.push(Prisma.sql`je.entry_date <= ${query.to}::date`);
     conditions.push(Prisma.sql`NOT (je.entry_kind = 'closing' AND je.entry_date = ${query.to}::date)`);
@@ -286,11 +368,13 @@ export const prismaFinancialStatementsSource: FinancialStatementsSource = {
   },
 
   async properties(organizationId) {
-    return prisma.property.findMany({
+    // Hotels first (by name), then office / other centres: the column order of every per-centre statement.
+    const rows = await prisma.property.findMany({
       where: { organizationId },
-      select: { id: true, organizationId: true, name: true, legalName: true, address: true, municipality: true, province: true, currency: true },
+      select: { id: true, organizationId: true, legalEntityId: true, name: true, code: true, tradeName: true, kind: true, address: true, municipality: true, province: true, currency: true },
       orderBy: { name: "asc" }
     });
+    return sortWorkCentres(rows);
   },
 
   async occupancy(propertyIds, from, to) {
@@ -317,8 +401,8 @@ export const prismaFinancialStatementsSource: FinancialStatementsSource = {
     return { roomsInventory, roomsOccupied };
   },
 
-  async organization(organizationId) {
-    return prisma.organization.findUnique({ where: { id: organizationId }, select: { id: true, name: true, legalName: true, taxId: true } });
+  async legalIdentity(organizationId) {
+    return resolveLegalIdentity(organizationId);
   },
 
   async fixedAssets(organizationId, propertyId) {
@@ -379,6 +463,30 @@ export const prismaFinancialStatementsSource: FinancialStatementsSource = {
     if (ids.length === 0) return null;
     const slips = await prisma.payrollSlip.findMany({ where: { periodId: { in: ids } }, select: { staffProfileId: true }, distinct: ["staffProfileId"] });
     return slips.length;
+  },
+
+  async headcountByProperty(organizationId, from, to) {
+    const fromMonth = from.slice(0, 7);
+    const toMonth = to.slice(0, 7);
+    const periods = (await prisma.payrollPeriod.findMany({ where: { organizationId }, select: { id: true, periodCode: true, propertyId: true } })).filter(
+      (p) => /^\d{4}-\d{2}$/.test(p.periodCode) && p.periodCode >= fromMonth && p.periodCode <= toMonth
+    );
+    if (periods.length === 0) return [];
+    const slips = await prisma.payrollSlip.findMany({ where: { periodId: { in: periods.map((p) => p.id) } }, select: { periodId: true, staffProfileId: true } });
+    const propertyOfPeriod = new Map(periods.map((p) => [p.id, p.propertyId]));
+    const staffByProperty = new Map<string | null, Set<string>>();
+    for (const slip of slips) {
+      const propertyId = propertyOfPeriod.get(slip.periodId) ?? null;
+      const set = staffByProperty.get(propertyId) ?? new Set<string>();
+      set.add(slip.staffProfileId);
+      staffByProperty.set(propertyId, set);
+    }
+    return Array.from(staffByProperty.entries()).map(([propertyId, staff]) => ({ propertyId, headcount: staff.size }));
+  },
+
+  async accountingConfiguration(organizationId) {
+    const setting = await prisma.accountingSetting.findFirst({ where: { organizationId, propertyId: null }, orderBy: { updatedAt: "asc" }, select: { configurationJson: true } });
+    return setting?.configurationJson ?? null;
   },
 
   async *journalLines(query) {

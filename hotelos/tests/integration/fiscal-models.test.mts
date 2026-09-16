@@ -517,7 +517,12 @@ describe("fiscal · libros de IVA, modelos AEAT y liquidación (org de test)", (
 
       const settings = await mini.inject({ method: "GET", url: "/fiscal/vat-settings" });
       assert.equal(settings.statusCode, 200);
-      assert.deepEqual(JSON.parse(settings.body), { organizationId: ORG_ID, periodicity: "quarterly", regime: "general", prorrataPct: null, taxFigure: "IVA", persisted: true });
+      // Tanda 6b (L5, R8): the response gains the additive `sociedad` badge
+      // (declarante + régimen). This org has no LegalEntity (no backfill), so the
+      // badge falls back to the deprecated Organization columns.
+      const { sociedad, ...legacySettings } = JSON.parse(settings.body) as { sociedad: { source: string; taxId: string | null; regimen: { periodicity: string } } } & Record<string, unknown>;
+      assert.deepEqual(legacySettings, { organizationId: ORG_ID, periodicity: "quarterly", regime: "general", prorrataPct: null, taxFigure: "IVA", persisted: true });
+      assert.deepEqual([sociedad.source, sociedad.taxId, sociedad.regimen.periodicity], ["organization_fallback", "B12345674", "quarterly"]);
       assert.equal((await mini.inject({ method: "PUT", url: "/fiscal/vat-settings", payload: { periodicity: "weekly" } })).statusCode, 400);
 
       const preview = await mini.inject({ method: "GET", url: "/fiscal/vat-settlement?period=2026-Q2" });

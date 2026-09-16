@@ -110,6 +110,79 @@ export type FiscalPresentation = {
   modo: "manual";
   ficheroOficial: false;
   nota: string;
+  /**
+   * Tanda 6b (R8): the sujeto pasivo does not have to file this model (a
+   * sociedad in the SII is exonerated from the 347 and the 390). The figures
+   * stay informative; `motivo` is the Spanish reason shown next to the badge.
+   */
+  noSePresenta?: { motivo: string };
+};
+
+/**
+ * Tanda 6b · L5 (design §5.2 R8): the fiscal regime of the sujeto pasivo has ONE
+ * source — `LegalEntity.largeCompany` / `LegalEntity.siiEnabled`
+ * (`resolveLegalIdentity`, apps/api/src/lib/finance-scope.ts). It governs the
+ * effective periodicity of the 303/111/115 (monthly when either flag is set,
+ * RIVA 71.3), which annual models are not filed (SII → no 347, no 390) and
+ * whether VeriFactu applies (RD 1007/2023 art. 3.3 excludes SII taxpayers).
+ */
+export type FiscalRegimeSummary = {
+  siiEnabled: boolean;
+  largeCompany: boolean;
+  /** Effective periodicity of the settlement models (303 · 111 · 115). */
+  periodicity: VatPeriodicityCode;
+  /** Periodicity stored in VatSettings (the effective one wins when the regime forces monthly). */
+  persistedPeriodicity: VatPeriodicityCode;
+  /** null = the stored periodicity applies; otherwise why monthly is forced. */
+  periodicityForcedBy: "sii" | "large_company" | null;
+  /** Models this sujeto pasivo does not file («no se presenta»). */
+  modelosNoPresentados: FiscalModelCode[];
+  verifactu: { aplica: boolean; motivo: string | null };
+};
+
+/**
+ * Badge «Declarante · <razón social> · <NIF>» of every AEAT model and VAT book
+ * (design §5.3): the sociedad behind the NIF, read through `resolveLegalIdentity`.
+ * `source: organization_fallback` → the tenant has no backfilled legal entity yet
+ * (the UI shows «Sociedad pendiente»). `declarante` (nif · nombre) is kept as the
+ * legacy pair; this block is the typed version with the regime.
+ */
+export type FiscalDeclaranteBadge = {
+  legalEntityId: string | null;
+  code: string | null;
+  legalName: string;
+  taxId: string | null;
+  taxIdValid: boolean;
+  source: "legal_entity" | "organization_fallback";
+  regimen: FiscalRegimeSummary;
+};
+
+/**
+ * `GET /fiscal/regime?year=AAAA`: régimen vigente de la sociedad y propuesta al
+ * cierre del ejercicio (RIVA 71.3: volumen de operaciones > 6.010.121,04 € →
+ * gran empresa: 303/111/115 mensuales, SII obligatorio, sin 347/390, fuera del
+ * RRSIF). The proposal never writes: the change is confirmed in Estructura
+ * societaria › Datos fiscales (`organization.structure.manage`).
+ */
+export type FiscalRegimeProposal = {
+  /** Regime the figures point to. */
+  regimen: "general" | "gran_empresa";
+  /** true when it differs from the flags of the legal entity. */
+  cambia: boolean;
+  motivo: string;
+};
+
+export type FiscalRegimeReport = {
+  organizationId: string;
+  year: number;
+  sociedad: FiscalDeclaranteBadge;
+  vatSettings: VatSettingsDto;
+  /** Volumen de operaciones of the year from the 390 (bases + operaciones al 0 %); null when the books are empty. */
+  volumenOperaciones: number | null;
+  umbralGranEmpresa: number;
+  propuesta: FiscalRegimeProposal;
+  avisos: string[];
+  generatedAt: string;
 };
 
 export type FiscalModelReport = {
@@ -118,7 +191,10 @@ export type FiscalModelReport = {
   organizationId: string;
   propertyId: string | null;
   periodo: FiscalPeriodDto;
+  /** Legacy pair (nif · nombre) — always the legal entity's since Tanda 6b; see `sociedad`. */
   declarante: { nif: string | null; nombre: string | null };
+  /** Tanda 6b: typed declarant badge with the fiscal regime (R8). */
+  sociedad: FiscalDeclaranteBadge;
   casillas: FiscalBox[];
   totales: Record<string, number>;
   avisos: string[];
@@ -165,12 +241,15 @@ export type VatBookResponse = {
 
 export type VatSettingsDto = {
   organizationId: string;
+  /** EFFECTIVE periodicity: monthly when the legal entity is gran empresa / SII (R8), else the stored one. */
   periodicity: VatPeriodicityCode;
   regime: VatRegimeCode;
   prorrataPct: number | null;
   taxFigure: "IVA" | "IGIC" | "IPSI";
   /** false when the organisation has no row yet (defaults shown). */
   persisted: boolean;
+  /** Tanda 6b: the sociedad behind the settings and its regime (the badge every fiscal screen shows). */
+  sociedad: FiscalDeclaranteBadge;
 };
 
 export type VatBooksRebuildResponse = {

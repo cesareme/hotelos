@@ -29,12 +29,13 @@ import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { prisma } from "@hotelos/database";
 import { COMMISSION_WRITE_KEYS, PAYROLL_WRITE_KEYS, TREASURY_WRITE_KEYS, requireAnyPermission } from "./permissions.js";
 import { buildSupplierPaymentRemittance, createRemittance, getRemittance, listRemittances, updateRemittanceStatus } from "./sepa-remittance.service.js";
-import { treasuryForecast, treasuryPayables, treasuryPosition, treasuryReceivables } from "./treasury.service.js";
+import { treasuryForecast, treasuryPayables, treasuryPosition, treasuryReceivables, type TreasuryScopeInput } from "./treasury.service.js";
 
 const isoDay = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "fecha YYYY-MM-DD");
 const dateInput = z.union([isoDay, z.string().datetime({ offset: true })]);
 
-const scopeQuerySchema = z.object({ propertyId: z.string().min(1).optional(), asOf: dateInput.optional() }).strict();
+// Tanda 6b · L4: `?scope=entity` = the whole sociedad (accounting.entity.read); default = one centre.
+const scopeQuerySchema = z.object({ propertyId: z.string().min(1).optional(), asOf: dateInput.optional(), scope: z.enum(["property", "entity"]).optional() }).strict();
 const importBodySchema = z.object({ format: z.enum(["csb43", "csv"]), content: z.string().min(1), source: z.string().max(40).optional(), autoMatch: z.boolean().optional(), createMissingAccount: z.boolean().optional() }).strict();
 const reconcileBodySchema = z
   .object({
@@ -60,30 +61,42 @@ async function propertyScope(request: FastifyRequest, requested?: string): Promi
   return propertyId;
 }
 
+/**
+ * Ámbito de tesorería (Tanda 6b · L4): `?scope=entity` → the whole sociedad of
+ * the caller's organisation (the service applies the shared whole-sociedad read
+ * guard: opaque 404 ENTITY_SCOPE_REQUIRED for a centre-bound user, design §5.2
+ * R11); otherwise one centre through grantPropertyAccess (opaque 404).
+ */
+async function treasuryScopeOf(request: FastifyRequest, q: { propertyId?: string; asOf?: string; scope?: "property" | "entity" }): Promise<TreasuryScopeInput> {
+  const asOf = q.asOf ? new Date(q.asOf) : undefined;
+  if (q.scope === "entity") {
+    const organizationId = await resolveOrganizationScope(request);
+    return { scope: "entity", organizationId, asOf, context: request.userContext };
+  }
+  const propertyId = await propertyScope(request, q.propertyId);
+  return { propertyId, asOf };
+}
+
 export function registerTreasuryRoutes(app: FastifyInstance): void {
   // ---- Tesorería (lectura) ----
   app.get("/treasury/position", async (request) => {
     const q = parseOr400(scopeQuerySchema, request.query ?? {}, "query");
-    const propertyId = await propertyScope(request, q.propertyId);
-    return treasuryPosition({ propertyId, asOf: q.asOf ? new Date(q.asOf) : undefined });
+    return treasuryPosition(await treasuryScopeOf(request, q));
   });
 
   app.get("/treasury/receivables", async (request) => {
     const q = parseOr400(scopeQuerySchema, request.query ?? {}, "query");
-    const propertyId = await propertyScope(request, q.propertyId);
-    return treasuryReceivables({ propertyId, asOf: q.asOf ? new Date(q.asOf) : undefined });
+    return treasuryReceivables(await treasuryScopeOf(request, q));
   });
 
   app.get("/treasury/payables", async (request) => {
     const q = parseOr400(scopeQuerySchema, request.query ?? {}, "query");
-    const propertyId = await propertyScope(request, q.propertyId);
-    return treasuryPayables({ propertyId, asOf: q.asOf ? new Date(q.asOf) : undefined });
+    return treasuryPayables(await treasuryScopeOf(request, q));
   });
 
   app.get("/treasury/forecast", async (request) => {
     const q = parseOr400(scopeQuerySchema, request.query ?? {}, "query");
-    const propertyId = await propertyScope(request, q.propertyId);
-    return treasuryForecast({ propertyId, asOf: q.asOf ? new Date(q.asOf) : undefined });
+    return treasuryForecast(await treasuryScopeOf(request, q));
   });
 
   // ---- Banca: importación persistida (CSB43 / CSV) y conciliación ----

@@ -22,9 +22,118 @@
 // Vocabulary (mirrors chart-of-accounts.service.ts)
 // ---------------------------------------------------------------------------
 
+import type { CorporateAllocationMethod, LegalForm, PgcVariant, PropertyKind } from "./legal-structure-types.js";
+
 export type MoneyString = string;
 export type RatioString = string;
 export type IsoDate = string;
+
+// ---------------------------------------------------------------------------
+// Estructura societaria (Tanda 6b · L5): sociedad y centros en los estados
+// ---------------------------------------------------------------------------
+
+/**
+ * The sociedad behind every statement (design §5.2 R1/R9): read through
+ * `resolveLegalIdentity`, never from `Organization.legalName/taxId`.
+ * `source: organization_fallback` → tenant without a backfilled legal entity.
+ */
+export type FinanceEntityBadge = {
+  legalEntityId: string | null;
+  code: string | null;
+  legalName: string;
+  taxId: string | null;
+  taxIdValid: boolean;
+  legalForm: LegalForm | null;
+  source: "legal_entity" | "organization_fallback";
+  pgcVariant: PgcVariant;
+  largeCompany: boolean;
+  siiEnabled: boolean;
+};
+
+/** A work centre (Property) as the statements name it: code · name · Hotel / Oficina / Otro. */
+export type FinanceWorkCentre = {
+  propertyId: string;
+  code: string | null;
+  name: string;
+  tradeName: string | null;
+  kind: PropertyKind;
+};
+
+/**
+ * R9 · Cuentas anuales: the only template built is «PGC Pymes hotelero». A
+ * sociedad marked `largeCompany` or `pgcVariant = general` cannot deposit the
+ * Pymes format (LSC 257-258): the statements are still generated (informative)
+ * with `depositable: false` and the reason in every `warnings[]`.
+ */
+export type AnnualAccountsFormat = {
+  template: "pgc_pymes_hotelero_v1";
+  pgcVariant: PgcVariant;
+  depositable: boolean;
+  /** Spanish reason when not depositable; null otherwise. */
+  reason: string | null;
+};
+
+/**
+ * R5 · Reparto de la oficina central, SOLO en informes: the cost of the
+ * `office` / `other` centres split over the hotels by the configured key.
+ * Never posted (`posted: false` is a constant of the contract) — the journal
+ * and the taxes are untouched; every row carries `label`.
+ */
+export type CorporateAllocationShare = {
+  propertyId: string;
+  /** Basis of the key (revenue, rooms available, headcount or the manual weight). */
+  basis: MoneyString | RatioString;
+  /** Share of the corporate cost as a ratio 0-1 with four decimals. */
+  share: RatioString;
+  /** Amount allocated to the centre (cost-positive). */
+  amount: MoneyString;
+};
+
+/**
+ * The ONE base of the informative allocation, shared by the USALI comparison
+ * and the PyG por centro (fix t6b#16): the operating cost of the corporate
+ * centres = −GOP of their USALI statement (departmental + undistributed
+ * expenses − operating revenue). Financial items, depreciation, rent, insurance
+ * and taxes of the office stay below the line and are never split; a corporate
+ * GOP ≥ 0 means there is no cost to allocate (`applied: false`, warning).
+ */
+export type CorporateAllocationBasis = "usali_corporate_gop";
+
+export type CorporateAllocationResult = {
+  method: CorporateAllocationMethod;
+  /** Cost-positive: −GOP (USALI) of the corporate centres; negative when they have an operating profit (then nothing is allocated). */
+  corporateCost: MoneyString;
+  /** Σ shares (must equal corporateCost when `applied`). */
+  allocated: MoneyString;
+  shares: CorporateAllocationShare[];
+  /** false when the key has no basis (every weight 0), the corporate cost is negative or the method is `none`: nothing allocated. */
+  applied: boolean;
+  label: "Reparto corporativo (informativo · no contabilizado)";
+  /** Same base in every statement (USALI and PyG por centro show the same corporateCost for the same period). */
+  basis: CorporateAllocationBasis;
+  /** Spanish label of the base, for the UI to print next to the amount. */
+  basisLabel: string;
+  posted: false;
+  warnings: string[];
+};
+
+/** GET/PUT /accounting/allocation. */
+export type CorporateAllocationView = {
+  organizationId: string;
+  legalEntityId: string | null;
+  method: CorporateAllocationMethod;
+  /** Manual weights (must add up to 100); empty for the other methods. */
+  weights: Array<{ propertyId: string; weight: number }>;
+  /** Hotels of the sociedad (allocation targets) and corporate centres (allocation sources). */
+  hotels: FinanceWorkCentre[];
+  corporateCentres: FinanceWorkCentre[];
+  persisted: boolean;
+};
+
+export type CorporateAllocationPutBody = {
+  method: CorporateAllocationMethod;
+  weights?: Array<{ propertyId: string; weight: number }>;
+};
 
 export type UsaliDepartmentKey =
   | "rooms"
@@ -201,6 +310,9 @@ export type UsaliPnl = {
   organizationId: string;
   propertyId: string | null;
   propertyName: string | null;
+  /** Tanda 6b: Hotel / Oficina / Otro of the centre (null for the whole sociedad or a subset). */
+  propertyKind?: PropertyKind | null;
+  propertyCode?: string | null;
   period: { from: IsoDate; to: IsoDate };
   currency: string;
   generatedAt: string;
@@ -253,13 +365,86 @@ export type UsaliPnl = {
   ratios: UsaliRatios;
 };
 
+/** Per-hotel effect of the informative allocation (USALI compare with `allocation=`). */
+export type UsaliAllocatedLines = {
+  /** Cost allocated to the hotel (cost-positive). */
+  allocated: MoneyString;
+  gopAfterAllocation: MoneyString;
+  ebitdaAfterAllocation: MoneyString;
+};
+
+/** «Total sociedad = Σ hoteles + Oficina central + Sin asignar» proven per metric. */
+export type UsaliRollupLine = {
+  metric: "totalOperatingRevenue" | "totalDepartmentalProfit" | "totalUndistributed" | "gop" | "ebitda" | "netIncome";
+  label: string;
+  hotels: MoneyString;
+  corporate: MoneyString;
+  unassigned: MoneyString;
+  total: MoneyString;
+  ok: boolean;
+};
+
 export type UsaliPropertyComparison = {
   kind: "usali_compare_properties";
   organizationId: string;
   period: { from: IsoDate; to: IsoDate };
   generatedAt: string;
-  properties: Array<{ propertyId: string; propertyName: string; pnl: UsaliPnl }>;
+  /** Without `includeCorporate` every selected centre (as before); with it only the hotels. */
+  properties: Array<{ propertyId: string; propertyName: string; propertyKind?: PropertyKind; propertyCode?: string | null; pnl: UsaliPnl; allocation?: UsaliAllocatedLines }>;
+  /** The whole sociedad ledger (entries without centre included) when every centre is selected. */
   consolidated: UsaliPnl;
+  /** Tanda 6b (additive, `includeCorporate=true`): the sociedad and the extra columns of design §5.3. */
+  entity?: FinanceEntityBadge;
+  /** «Oficina central» column: the office / other centres combined; null when the sociedad has none. */
+  corporate?: { centres: FinanceWorkCentre[]; pnl: UsaliPnl } | null;
+  /** «Sin asignar»: entries booked without a work centre (society-level). */
+  unassigned?: UsaliPnl;
+  rollup?: UsaliRollupLine[];
+  /** Informative allocation of the corporate cost over the hotels (never posted). */
+  allocation?: CorporateAllocationResult | null;
+};
+
+// ---------------------------------------------------------------------------
+// PyG por centro (GET /accounting/pnl/by-property)
+// ---------------------------------------------------------------------------
+
+/** One PGC account across the centres. PGC presentation sign: income positive, expenses negative. */
+export type PnlByPropertyRow = {
+  accountCode: string;
+  label: string;
+  kind: "income" | "expense";
+  /** propertyId → amount (every centre of `properties`, zeros included). */
+  byProperty: Record<string, MoneyString>;
+  /** Entries without work centre («Sociedad (sin centro)»). */
+  unassigned: MoneyString;
+  /** Whole-sociedad amount of the account (= Σ byProperty + unassigned when `reconciliation.ok`). */
+  total: MoneyString;
+};
+
+export type PnlByPropertyTotals = {
+  byProperty: Record<string, MoneyString>;
+  unassigned: MoneyString;
+  total: MoneyString;
+};
+
+export type PnlByProperty = {
+  kind: "pnl_by_property";
+  organizationId: string;
+  entity: FinanceEntityBadge;
+  period: { from: IsoDate; to: IsoDate };
+  generatedAt: string;
+  /** Hotels first (by name), then «Oficina central» / other centres. */
+  properties: FinanceWorkCentre[];
+  rows: PnlByPropertyRow[];
+  revenue: PnlByPropertyTotals;
+  expense: PnlByPropertyTotals;
+  /** revenue − expense per column. */
+  netResult: PnlByPropertyTotals;
+  /** Every row: Σ byProperty + unassigned = total (cent-exact). */
+  reconciliation: { ok: boolean; rowsOff: string[] };
+  /** Informative split of the corporate centres' net cost over the hotels (never posted). */
+  allocation: (CorporateAllocationResult & { netResultAfterAllocation: Record<string, MoneyString> }) | null;
+  warnings: string[];
 };
 
 export type UsaliPeriodDelta = {
@@ -323,6 +508,9 @@ export type PgcBalanceSheet = {
   /** Income − expense of entries BEFORE the period that were never regularised: shown in its own equity line, never hidden. */
   priorUnregularisedResult: MoneyString;
   warnings: string[];
+  /** Tanda 6b (additive): the sociedad and whether the Pymes format is depositable for it (R9). */
+  entity?: FinanceEntityBadge;
+  format?: AnnualAccountsFormat;
 };
 
 /**
@@ -345,6 +533,9 @@ export type PgcProfitAndLoss = {
   revenueTotal: MoneyString;
   expenseTotal: MoneyString;
   warnings: string[];
+  /** Tanda 6b (additive): the sociedad and whether the Pymes format is depositable for it (R9). */
+  entity?: FinanceEntityBadge;
+  format?: AnnualAccountsFormat;
 };
 
 export type EcpnColumnKey =
@@ -383,6 +574,9 @@ export type PgcEquityChanges = {
   /** closing = opening + rows, per column (|diff| < 0.005). */
   reconciled: boolean;
   warnings: string[];
+  /** Tanda 6b (additive): the sociedad and whether the Pymes format is depositable for it (R9). */
+  entity?: FinanceEntityBadge;
+  format?: AnnualAccountsFormat;
 };
 
 export type MemoriaNoteStatus = "auto" | "requires_input";
@@ -397,13 +591,31 @@ export type MemoriaNote = {
   status: MemoriaNoteStatus;
 };
 
+/** Establishment listed in the memoria (nota 1): code, name, Hotel / Oficina / Otro and address. */
+export type MemoriaEstablishment = { id: string; code: string | null; name: string; kind: PropertyKind; address: string | null };
+
 export type PgcMemoria = {
   kind: "memoria";
   organizationId: string;
   propertyId: string | null;
   period: { from: IsoDate; to: IsoDate };
   generatedAt: string;
-  entity: { name: string; legalName: string | null; taxId: string | null; properties: Array<{ id: string; name: string; address: string | null }> };
+  /**
+   * The sociedad (design R2/R9): `legalName` and `taxId` come from the legal
+   * entity (`name` keeps the legacy fallback for the renderers); `properties`
+   * are the establishments with code and kind (C4).
+   */
+  entity: {
+    name: string;
+    legalName: string | null;
+    taxId: string | null;
+    legalEntityId?: string | null;
+    code?: string | null;
+    pgcVariant?: PgcVariant;
+    largeCompany?: boolean;
+    properties: MemoriaEstablishment[];
+  };
+  format?: AnnualAccountsFormat;
   notes: MemoriaNote[];
   warnings: string[];
 };
@@ -415,6 +627,11 @@ export type AnnualAccounts = {
   fiscalYear: { id: string; code: string; status: string } | null;
   period: { from: IsoDate; to: IsoDate };
   generatedAt: string;
+  /** Tanda 6b: «<razón social> · NIF <nif>» of the sociedad (one set of accounts per legal entity, R1). */
+  entityLabel: string;
+  entity: FinanceEntityBadge;
+  /** R9: Pymes template depositable or not for this sociedad (informative block, never an error). */
+  format: AnnualAccountsFormat;
   balance: PgcBalanceSheet;
   pyg: PgcProfitAndLoss;
   ecpn: PgcEquityChanges;

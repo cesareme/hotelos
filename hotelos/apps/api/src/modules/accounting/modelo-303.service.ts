@@ -30,14 +30,16 @@
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@hotelos/database";
-import type { FiscalBox, FiscalLedgerCrossCheck, FiscalModelReport, FiscalPeriodDto, VatBookName, VatSettingsDto } from "@hotelos/shared/src/fiscal-types.js";
+import type { FiscalBox, FiscalDeclaranteBadge, FiscalLedgerCrossCheck, FiscalModelReport, FiscalPeriodDto, FiscalRegimeSummary, VatBookName, VatSettingsDto } from "@hotelos/shared/src/fiscal-types.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { BadRequestError } from "../../lib/http-error.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { assertFinanceReadScope } from "../../lib/finance-scope.js";
 import {
   ZERO,
   dateColumn,
   dateColumnDay,
+  declarantePair,
   differs,
   getVatSettings,
   isIsoDay,
@@ -45,6 +47,7 @@ import {
   money,
   parseFiscalPeriod,
   periodFromRange,
+  regimeAvisos,
   round2,
   summarizeVatRows,
   toWire,
@@ -261,9 +264,11 @@ export function compute303(input: { rows: readonly VatBookRow[]; settings: Pick<
 /**
  * Period of a 303 / 111 / 115 request: `period` (2026-Q3 · 2026-09) or the
  * legacy `fromDate`/`toDate` pair, which must be a natural quarter or month.
- * When `periodicity` is given the kind must match it (400 PERIOD_MISMATCH).
+ * When `periodicity` is given the kind must match it (400 PERIOD_MISMATCH);
+ * `regimen` (Tanda 6b · R8) names the sociedad's regime in the message when
+ * the monthly periodicity is forced by SII / gran empresa.
  */
-export function resolveSettlementPeriod(input: { period?: string; fromDate?: string; toDate?: string }, periodicity?: "quarterly" | "monthly"): FiscalPeriodDto {
+export function resolveSettlementPeriod(input: { period?: string; fromDate?: string; toDate?: string }, periodicity?: "quarterly" | "monthly", regimen?: Pick<FiscalRegimeSummary, "periodicityForcedBy"> | null): FiscalPeriodDto {
   let periodo: FiscalPeriodDto;
   if (input.period) {
     periodo = parseFiscalPeriod(input.period, ["quarterly", "monthly"]);
@@ -284,12 +289,14 @@ export function resolveSettlementPeriod(input: { period?: string; fromDate?: str
     throw error;
   }
   if (periodicity && periodo.type !== periodicity) {
+    const forcedBy = regimen?.periodicityForcedBy ?? null;
+    const monthlyReason = forcedBy === "sii" ? "sociedad acogida al SII, RIVA art. 71.3" : forcedBy === "large_company" ? "sociedad calificada como gran empresa, RIVA art. 71.3" : "REDEME";
     const error = new BadRequestError(
       periodicity === "quarterly"
-        ? `La organización liquida el IVA trimestralmente: usa un trimestre (${periodo.year}-Q${periodo.quarter ?? 1}), no un mes.`
-        : `La organización liquida el IVA mensualmente (REDEME): usa un mes (${periodo.year}-01), no un trimestre.`
+        ? `La sociedad liquida trimestralmente: usa un trimestre (${periodo.year}-Q${periodo.quarter ?? 1}), no un mes.`
+        : `La sociedad liquida mensualmente (${monthlyReason}): usa un mes (${periodo.year}-01), no un trimestre.`
     );
-    error.details = { code: "PERIOD_MISMATCH", periodicity, requested: periodo.code };
+    error.details = { code: "PERIOD_MISMATCH", periodicity, requested: periodo.code, ...(forcedBy ? { forcedBy } : {}) };
     throw error;
   }
   return periodo;
@@ -447,10 +454,18 @@ export async function existingSettlement(organizationId: string, periodCode: str
   return { journalEntryId: entry.id, entryNumber: entry.entryNumber, fiscalYearCode: entry.fiscalYearCode, entryDate: dateColumnDay(entry.entryDate), reversed: Boolean(entry.reversedById) || entry.status === "reversed" };
 }
 
-export async function declaranteOf(organizationId: string): Promise<{ nif: string | null; nombre: string | null }> {
-  const organization = await prisma.organization.findUnique({ where: { id: organizationId }, select: { legalName: true, name: true, taxId: true } });
-  return { nif: organization?.taxId ?? null, nombre: organization?.legalName ?? organization?.name ?? null };
+/**
+ * Declarant of every AEAT model (Tanda 6b · R2): the sociedad behind the NIF,
+ * read through `resolveLegalIdentity` (getVatSettings carries the badge) —
+ * never `Organization.taxId/legalName`. `declarante` is the legacy pair the
+ * reports and the PDF print; `sociedad` is the typed badge with the regime.
+ */
+export async function declaranteOf(organizationId: string): Promise<{ declarante: { nif: string | null; nombre: string | null }; sociedad: FiscalDeclaranteBadge }> {
+  const settings = await getVatSettings(organizationId);
+  return { declarante: declarantePair(settings.sociedad), sociedad: settings.sociedad };
 }
+
+export const PARTIAL_VIEW_303_AVISO = "Vista parcial por establecimiento (no liquidable): el Modelo 303 se presenta por NIF de la sociedad, que es el declarante; las casillas de esta vista son un desglose informativo.";
 
 // ── Model for a period (shared by the route, the 390 and the settlement) ────
 
@@ -471,7 +486,8 @@ export async function modelo303ForPeriod(input: { organizationId: string; period
   const compensacion = input.propertyId ? ZERO : await pendingVatCompensation(input.organizationId, input.periodo.from);
   const computation = compute303({ rows: ivaRows, settings: input.settings, compensacionPendiente: compensacion });
   avisos.push(...computation.avisos);
-  if (input.propertyId) avisos.push("Vista parcial por establecimiento: el Modelo 303 se presenta por NIF (organización); esta vista no es liquidable.");
+  avisos.push(...regimeAvisos(input.settings.sociedad.regimen, "303"));
+  if (input.propertyId) avisos.push(PARTIAL_VIEW_303_AVISO);
   let diario: FiscalLedgerCrossCheck | undefined;
   if (input.crossCheck !== false) {
     const cross = await ledgerCrossCheck({ organizationId: input.organizationId, periodo: input.periodo, propertyId: input.propertyId, computation });
@@ -488,7 +504,8 @@ export async function modelo303ForPeriod(input: { organizationId: string; period
     organizationId: input.organizationId,
     propertyId: input.propertyId ?? null,
     periodo: input.periodo,
-    declarante: await declaranteOf(input.organizationId),
+    declarante: declarantePair(input.settings.sociedad),
+    sociedad: input.settings.sociedad,
     casillas: computation.casillas,
     totales: computation.totales,
     avisos,
@@ -514,8 +531,11 @@ export async function modelo303ForPeriod(input: { organizationId: string; period
  */
 export async function buildModelo303(input: { context: UserContext; propertyId?: string | null; period?: string; fromDate?: string; toDate?: string; periodType?: "monthly" | "quarterly" }): Promise<FiscalModelReport> {
   requirePermissions(input.context, ["accounting.read"]);
+  // R11 (service level, so the legacy /accounting/reports/modelo-* handlers are covered too).
+  assertFinanceReadScope(input.context, input.propertyId ?? null);
   const settings = await getVatSettings(input.context.organizationId);
-  const periodo = resolveSettlementPeriod(input, settings.periodicity);
+  // `settings.periodicity` is the effective one (monthly under SII / gran empresa, R8).
+  const periodo = resolveSettlementPeriod(input, settings.periodicity, settings.sociedad.regimen);
   const result = await modelo303ForPeriod({ organizationId: input.context.organizationId, periodo, settings, propertyId: input.propertyId ?? null });
   return result.report;
 }

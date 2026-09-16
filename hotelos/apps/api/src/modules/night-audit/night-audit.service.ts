@@ -35,6 +35,7 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { processNoShows } from "../cancellation-policy/cancellation-policy.service.js";
 import { ConflictError, NotFoundError } from "../../lib/http-error.js";
+import { isOperationalKind } from "../../lib/tenancy.js";
 import { postNightlyRoomChargeTx, quoteNightlyRate, type NightlyPriceSource } from "../pms/room-charge.service.js";
 import { resolvePropertyTimeZone, zonedMidnight } from "../pos/pos.service.js";
 
@@ -195,6 +196,17 @@ export async function runNightAudit(input: {
   correlationId: string;
 }): Promise<NightAuditRunRecord> {
   requirePermissions(input.context, ["accounting.journal.post"]);
+
+  // Tanda 6b (R6): the night audit is a lodging routine. The head office and
+  // other non-lodging centres have no rooms, no business date to close and no
+  // nightly charges: refuse with a typed 409 instead of writing an empty run.
+  const centre = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { name: true, kind: true } });
+  if (centre && !isOperationalKind(centre.kind)) {
+    throw new ConflictError(`«${centre.name}» es un centro de tipo ${centre.kind === "office" ? "oficina" : "otro"}: no tiene habitaciones ni cierre del día.`, {
+      code: "WORK_CENTER_NOT_OPERATIONAL",
+      kind: centre.kind
+    });
+  }
 
   const businessDate = await getCurrentBusinessDate(input.propertyId);
   const businessDateOnly = dateOnly(businessDate);

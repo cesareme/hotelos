@@ -8,6 +8,7 @@
 // Routes (all organisation-scoped through request.userContext; `propertyId`
 // in the query is validated by the global tenant hook):
 //   GET  /fiscal/vat-settings                 · PUT /fiscal/vat-settings
+//   GET  /fiscal/regime?year=                  (Tanda 6b · R8: régimen de la sociedad y propuesta al cierre)
 //   GET  /fiscal/vat-books?book=&period=|from=&to=[&propertyId=]
 //   POST /fiscal/vat-books/rebuild            { period | from,to [, propertyId] }
 //   GET  /fiscal/models/:modelo?period=|year=  (303 · 390 · 347 · 111 · 115 · 180)
@@ -38,7 +39,7 @@ import { buildModelo115 } from "./modelo-115.service.js";
 import { buildModelo180 } from "./modelo-180.service.js";
 import { buildModelo303 } from "./modelo-303.service.js";
 import { buildModelo347 } from "./modelo-347.service.js";
-import { buildModelo390 } from "./modelo-390.service.js";
+import { buildFiscalRegimeReport, buildModelo390 } from "./modelo-390.service.js";
 import { getVatSettings, listVatBook, parseFiscalPeriod, rebuildVatBooks, updateVatSettings } from "./vat-books.service.js";
 import { previewVatSettlement, reverseVatSettlement, settleVatPeriod, type LedgerEngine } from "./vat-settlement.service.js";
 
@@ -90,6 +91,8 @@ const modelQuerySchema = z
   })
   .strict();
 
+const regimeQuerySchema = z.object({ year: z.string().regex(/^\d{4}$/, "año de cuatro cifras") }).strict();
+
 const settlementQuerySchema = z.object({ period: z.string().min(6).max(8) }).strict();
 const settlementBodySchema = z.object({ period: z.string().min(6).max(8), entryDate: isoDay.optional() }).strict();
 const reverseBodySchema = z.object({ period: z.string().min(6).max(8), reason: z.string().max(500).optional(), entryDate: isoDay.optional() }).strict();
@@ -112,7 +115,12 @@ function yearOf(query: z.output<typeof modelQuerySchema>): number {
   throw error;
 }
 
-/** One entry point for the JSON and PDF routes. */
+/**
+ * One entry point for the JSON and PDF routes. The whole-sociedad read scope
+ * (Tanda 6b · R11, `assertFinanceReadScope`) is enforced INSIDE every
+ * buildModelo* service, so the legacy /accounting/reports/modelo-* handlers of
+ * server.ts (which call the services directly) are covered as well.
+ */
 export async function buildFiscalModel(modelo: string, query: z.output<typeof modelQuerySchema>, context: UserContext): Promise<FiscalModelReport> {
   const code = modelCodeOf(modelo);
   const propertyId = query.propertyId ?? null;
@@ -143,6 +151,11 @@ export function registerFiscalRoutes(app: FastifyInstance, deps: FiscalRouteDeps
   app.put("/fiscal/vat-settings", async (request) => {
     const patch = parseOr400(vatSettingsPatchSchema, body(request), "body");
     return updateVatSettings({ context: request.userContext, patch, correlationId: createId("corr") });
+  });
+
+  app.get("/fiscal/regime", async (request) => {
+    const q = parseOr400(regimeQuerySchema, query(request), "query");
+    return buildFiscalRegimeReport({ context: request.userContext, year: requireYear(q.year) });
   });
 
   app.get("/fiscal/vat-books", async (request) => {
@@ -364,8 +377,12 @@ export function renderFiscalReportPdf(report: FiscalModelReport): Buffer {
   sheet.line(report.titulo, 13, true);
   sheet.gap(4);
   sheet.line(`Declarante: ${report.declarante.nif ?? "NIF sin configurar"} · ${report.declarante.nombre ?? "—"}`, 9);
+  const regimen = report.sociedad.regimen;
+  const regimenLabel = regimen.siiEnabled ? "gran empresa · SII" : regimen.largeCompany ? "gran empresa" : "general";
+  sheet.line(`Sociedad: ${report.sociedad.code ? `${report.sociedad.code} · ` : ""}${report.sociedad.legalName}${report.sociedad.source === "organization_fallback" ? " (pendiente de alta)" : ""} · régimen ${regimenLabel} · ${regimen.periodicity === "monthly" ? "mensual" : "trimestral"}`, 9);
   const periodo = report.periodo.type === "annual" ? `Ejercicio ${report.periodo.year}` : `Periodo ${report.periodo.code} (${report.periodo.from} a ${report.periodo.to}) · AEAT ${report.periodo.aeatPeriod}/${report.periodo.year}`;
   sheet.line(periodo, 9);
+  if (report.presentacion.noSePresenta) sheet.line(`NO SE PRESENTA: ${report.presentacion.noSePresenta.motivo}`, 9, true);
   if (report.propertyId) sheet.line(`Establecimiento: ${report.propertyId} (vista parcial, no liquidable)`, 9);
   sheet.line(`Generado: ${report.generatedAt.replace("T", " ").slice(0, 19)} UTC · Fuente: ${report.fuentes.origen}`, 8);
   sheet.line(`Presentación: ${report.presentacion.modo} — ${report.presentacion.nota}`, 8);

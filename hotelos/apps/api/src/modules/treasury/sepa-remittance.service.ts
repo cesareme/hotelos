@@ -11,17 +11,27 @@
 // totals, resultJson = { xml }. The store is behind `SepaRemittanceStore` so
 // the integrator can move it to a dedicated table without touching callers
 // (handoff: model `SepaRemittance` in the report).
+//
+// Identity (Tanda 6b · L4, design §5.2 R1/R2): the ordenante of a Norma 34
+// (and the sociedad behind a Norma 19 creditor) is the LEGAL ENTITY —
+// `requireLegalIdentity` (lib/finance-scope.ts), never `Organization.taxId`;
+// 409 ISSUER_TAX_ID_MISSING when the sociedad has no valid NIF. The payer bank
+// account may belong to the centre or to the sociedad (no centre:
+// `bankAccountServesCentre`), and every stored remittance carries the
+// `legalEntityId` it was generated for.
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@prisma/client";
 import { z } from "zod";
 import type { UserContext } from "../../lib/demo-store.js";
+import { requireLegalIdentity } from "../../lib/finance-scope.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { parseOr400 } from "../rate-manager/rate-grid.schemas.js";
 import { generateSepaRemittance, validateCreditorId, validateIban, type SepaRemittance } from "../banking-spain/sepa-norma19.generator.js";
 import { generateSepaTransferRemittance, type SepaTransferRemittance } from "../banking-spain/sepa-norma34.generator.js";
 import { dec, money, round2, sum } from "./money.js";
 import { TREASURY_READ_KEYS, TREASURY_WRITE_KEYS, requireAnyPermission } from "./permissions.js";
+import { bankAccountServesCentre } from "./treasury.service.js";
 
 export const SEPA_JOB_NAME = "treasury.sepa_remittance";
 export const SEPA_QUEUE_NAME = "treasury";
@@ -100,6 +110,8 @@ export type SepaRemittanceRecord = {
   id: string;
   kind: SepaRemittanceKind;
   organizationId: string;
+  /** Sociedad the remittance was generated for (null on rows stored before Tanda 6b). */
+  legalEntityId: string | null;
   propertyId: string;
   bankAccountId: string | null;
   messageId: string;
@@ -119,6 +131,7 @@ export type SepaRemittanceRecord = {
 type StoredPayload = {
   kind: SepaRemittanceKind;
   organizationId: string;
+  legalEntityId?: string | null;
   propertyId: string;
   bankAccountId: string | null;
   messageId: string;
@@ -147,6 +160,7 @@ function rowToRecord(row: JobRow, withXml: boolean): SepaRemittanceRecord {
     id: row.id,
     kind: payload.kind,
     organizationId: payload.organizationId,
+    legalEntityId: payload.legalEntityId ?? null,
     propertyId: payload.propertyId,
     bankAccountId: payload.bankAccountId ?? null,
     messageId: payload.messageId,
@@ -233,6 +247,7 @@ export async function createRemittance(input: CreateRemittanceInput): Promise<Cr
   const property = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } });
   if (!property) throw new NotFoundError("La propiedad no existe.");
   if (property.organizationId !== input.context.organizationId && !input.context.isPlatformAdmin) throw new NotFoundError("La propiedad no existe.");
+  const identity = await requireLegalIdentity(property.organizationId);
   const warnings: string[] = [];
   let bankAccountId: string | null = input.bankAccountId ?? null;
 
@@ -247,7 +262,7 @@ export async function createRemittance(input: CreateRemittanceInput): Promise<Cr
       if (round2(dec(d.amount)).lte(0)) throw new BadRequestError(`Importe no positivo para el deudor «${d.name}».`);
       if (d.mandateSignedAt > request.collectionDate) warnings.push(`El mandato de «${d.name}» está firmado después de la fecha de cargo.`);
     }
-    bankAccountId = bankAccountId ?? (await resolveBankAccountByIban(input.propertyId, request.creditor.iban));
+    bankAccountId = bankAccountId ?? (await resolveBankAccountByIban(property.organizationId, input.propertyId, request.creditor.iban));
     generated = generateSepaRemittance(request);
     executionDate = request.collectionDate;
   } else {
@@ -257,17 +272,18 @@ export async function createRemittance(input: CreateRemittanceInput): Promise<Cr
       if (!validateIban(c.iban)) throw new BadRequestError(`IBAN no válido para el beneficiario «${c.name}».`);
       if (round2(dec(c.amount)).lte(0)) throw new BadRequestError(`Importe no positivo para el beneficiario «${c.name}».`);
     }
-    bankAccountId = bankAccountId ?? (await resolveBankAccountByIban(input.propertyId, request.debtor.iban));
+    bankAccountId = bankAccountId ?? (await resolveBankAccountByIban(property.organizationId, input.propertyId, request.debtor.iban));
     generated = generateSepaTransferRemittance(request);
     executionDate = request.executionDate;
   }
-  if (!bankAccountId) warnings.push("El IBAN de la remesa no corresponde a ninguna cuenta bancaria registrada de la propiedad.");
+  if (!bankAccountId) warnings.push("El IBAN de la remesa no corresponde a ninguna cuenta bancaria registrada de la propiedad ni de la sociedad.");
 
   const now = new Date().toISOString();
   const record = await store.create({
     payload: {
       kind: input.kind,
       organizationId: property.organizationId,
+      legalEntityId: identity.legalEntityId,
       propertyId: input.propertyId,
       bankAccountId,
       messageId: generated.messageId,
@@ -285,10 +301,11 @@ export async function createRemittance(input: CreateRemittanceInput): Promise<Cr
   return { ...record, xml: generated.xml, totalAmount: money(generated.control.totalAmount), warnings };
 }
 
-async function resolveBankAccountByIban(propertyId: string, iban: string): Promise<string | null> {
+/** Active account of the centre — or of the sociedad (no centre) — with that IBAN; null when none. */
+async function resolveBankAccountByIban(organizationId: string, propertyId: string, iban: string): Promise<string | null> {
   const normalised = iban.replace(/\s+/g, "").toUpperCase();
-  const accounts = await prisma.bankAccount.findMany({ where: { propertyId, active: true }, select: { id: true, iban: true } });
-  return accounts.find((a) => (a.iban ?? "").replace(/\s+/g, "").toUpperCase() === normalised)?.id ?? null;
+  const accounts = await prisma.bankAccount.findMany({ where: { organizationId, active: true }, select: { id: true, iban: true, propertyId: true } });
+  return accounts.find((a) => bankAccountServesCentre(a, propertyId) && (a.iban ?? "").replace(/\s+/g, "").toUpperCase() === normalised)?.id ?? null;
 }
 
 export async function listRemittances(input: { context: UserContext; propertyId?: string | null; limit?: number }): Promise<SepaRemittanceRecord[]> {
@@ -321,11 +338,21 @@ export async function updateRemittanceStatus(input: { context: UserContext; id: 
  */
 export async function buildSupplierPaymentRemittance(input: { context: UserContext; propertyId: string; bankAccountId: string; billIds: string[]; executionDate: string }): Promise<{ body: SepaTransferRemittance; skipped: Array<{ billId: string; reason: string }>; totalAmount: string }> {
   requireAnyPermission(input.context, TREASURY_WRITE_KEYS);
-  const account = await prisma.bankAccount.findFirst({ where: { id: input.bankAccountId, propertyId: input.propertyId } });
-  if (!account) throw new NotFoundError("La cuenta bancaria no existe en esta propiedad.");
+  const property = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } });
+  if (!property) throw new NotFoundError("La propiedad no existe.");
+  // The payer account is the centre's or the sociedad's (no centre); another centre's → opaque 404.
+  const account = await prisma.bankAccount.findUnique({ where: { id: input.bankAccountId } });
+  if (!account || account.organizationId !== property.organizationId || !bankAccountServesCentre(account, input.propertyId)) throw new NotFoundError("La cuenta bancaria no existe en esta propiedad.");
   if (!account.iban) throw new ConflictError("La cuenta bancaria ordenante no tiene IBAN.", { code: "BANK_ACCOUNT_WITHOUT_IBAN" });
-  const organization = await prisma.organization.findUnique({ where: { id: account.organizationId }, select: { legalName: true, name: true, taxId: true } });
-  if (!organization?.taxId) throw new ConflictError("La organización no tiene NIF configurado.", { code: "ORGANIZATION_WITHOUT_TAX_ID" });
+  // Ordenante = the sociedad (R2): razón social and NIF from the single identity reader.
+  const identity = await requireLegalIdentity(account.organizationId);
+  if (!identity.taxId || !identity.taxIdValid) {
+    throw new ConflictError("La sociedad no tiene un NIF válido: complétalo en Configuración › Estructura societaria › Datos fiscales antes de generar la remesa.", {
+      code: "ISSUER_TAX_ID_MISSING",
+      legalEntityId: identity.legalEntityId,
+      taxId: identity.taxId
+    });
+  }
   const bills = await prisma.supplierBill.findMany({ where: { id: { in: input.billIds }, OR: [{ propertyId: input.propertyId }, { organizationId: account.organizationId }] } });
   const supplierIds = Array.from(new Set(bills.map((b) => b.supplierId).filter((id): id is string => Boolean(id))));
   const suppliers = supplierIds.length ? await prisma.supplier.findMany({ where: { id: { in: supplierIds } }, select: { id: true, name: true, iban: true } }) : [];
@@ -356,7 +383,7 @@ export async function buildSupplierPaymentRemittance(input: { context: UserConte
   if (creditors.length === 0) throw new ConflictError("Ninguna factura seleccionada se puede pagar por remesa.", { code: "REMITTANCE_EMPTY", skipped });
   const body: SepaTransferRemittance = {
     executionDate: input.executionDate,
-    debtor: { name: organization.legalName ?? organization.name, taxId: organization.taxId, iban: account.iban, ...(account.bic ? { bic: account.bic } : {}) },
+    debtor: { name: identity.legalName.slice(0, 70), taxId: identity.taxId, iban: account.iban, ...(account.bic ? { bic: account.bic } : {}) },
     creditors
   };
   return { body, skipped, totalAmount: money(sum(creditors.map((c) => dec(c.amount)))) };

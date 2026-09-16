@@ -31,12 +31,29 @@
 
 import { Prisma } from "@prisma/client";
 import { prisma } from "@hotelos/database";
-import { parseTaxBreakdown } from "@hotelos/compliance";
-import type { FiscalPeriodDto, FiscalPeriodType, VatBookName, VatBookResponse, VatBookRowDto, VatBookSourceTypeCode, VatBookSummary, VatBooksRebuildResponse, VatPeriodicityCode, VatRegimeCode, VatSettingsDto } from "@hotelos/shared/src/fiscal-types.js";
+import { parseTaxBreakdown, VERIFACTU_EXCLUDED_BY_SII_MOTIVO } from "@hotelos/compliance";
+import type {
+  FiscalDeclaranteBadge,
+  FiscalModelCode,
+  FiscalPeriodDto,
+  FiscalPeriodType,
+  FiscalRegimeSummary,
+  VatBookName,
+  VatBookResponse,
+  VatBookRowDto,
+  VatBookSourceTypeCode,
+  VatBookSummary,
+  VatBooksRebuildResponse,
+  VatPeriodicityCode,
+  VatRegimeCode,
+  VatSettingsDto
+} from "@hotelos/shared/src/fiscal-types.js";
 import type { UserContext } from "../../lib/demo-store.js";
+import { resolveLegalIdentity, type LegalIdentity } from "../../lib/finance-scope.js";
 import { BadRequestError, ConflictError } from "../../lib/http-error.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
+import { assertFinanceReadScope } from "../../lib/finance-scope.js";
 
 // ── Money helpers (Decimal, 2 decimals, half away from zero) ────────────────
 
@@ -236,31 +253,146 @@ type VatSettingsClient = Pick<Prisma.TransactionClient, "vatSettings">;
 
 const DEFAULT_SETTINGS = { periodicity: "quarterly" as VatPeriodicityCode, regime: "general" as VatRegimeCode, prorrataPct: null as number | null, taxFigure: "IVA" as const };
 
-function settingsDto(organizationId: string, row: { periodicity: string; regime: string; prorrataPct: Prisma.Decimal | null; taxFigure: string } | null): VatSettingsDto {
-  if (!row) return { organizationId, ...DEFAULT_SETTINGS, persisted: false };
-  const figure = row.taxFigure === "IGIC" || row.taxFigure === "IPSI" ? row.taxFigure : "IVA";
+// ── Régimen del sujeto pasivo (Tanda 6b · L5 · design §5.2 R8) ──────────────
+//
+// ONE source: `LegalEntity.largeCompany` / `LegalEntity.siiEnabled` read through
+// `resolveLegalIdentity`. Together they force the monthly periodicity of the
+// 303 / 111 / 115 (RIVA 71.3), mark the 347 and the 390 «no se presenta» (a
+// SII taxpayer is exonerated: RIVA 71.1 and RD 1065/2007 art. 32.e) and switch
+// VeriFactu off with the reason (RD 1007/2023 art. 3.3 excludes the SII from
+// the RRSIF). The SII itself (sending the books) is NOT built: the UI says so.
+// `PropertyComplianceSetting.siiEnabled` is deprecated and never read here.
+
+/** RIVA 71.3: volumen de operaciones of the previous year above which the sujeto pasivo is «gran empresa» (mensual, SII). */
+export const LARGE_COMPANY_THRESHOLD: Money = new Prisma.Decimal("6010121.04");
+
+/**
+ * Single source of the sentence: `@hotelos/compliance` (spain/verifactu/submitter.ts),
+ * the same one the invoice warning, the PDF and the retired submission row print.
+ * Re-exported so the fiscal readers keep importing it from here.
+ */
+export { VERIFACTU_EXCLUDED_BY_SII_MOTIVO };
+
+export function siiModelNotFiledMotivo(modelo: FiscalModelCode): string {
+  return `Sociedad acogida al SII: el Modelo ${modelo} no se presenta (RIVA art. 71.1 · RD 1065/2007 art. 32.e). Las cifras se muestran a título informativo.`;
+}
+
+export type RegimeIdentity = Pick<LegalIdentity, "siiEnabled" | "largeCompany">;
+
+/** Pure: the effective regime of a sujeto pasivo from the legal entity flags and the stored periodicity. */
+export function resolveFiscalRegime(identity: RegimeIdentity, persistedPeriodicity: VatPeriodicityCode): FiscalRegimeSummary {
+  const forcedBy: FiscalRegimeSummary["periodicityForcedBy"] = identity.siiEnabled ? "sii" : identity.largeCompany ? "large_company" : null;
   return {
-    organizationId,
-    periodicity: row.periodicity === "monthly" ? "monthly" : "quarterly",
-    regime: row.regime === "redeme" || row.regime === "recargo" ? row.regime : "general",
-    prorrataPct: row.prorrataPct === null ? null : toWire(row.prorrataPct),
-    taxFigure: figure,
-    persisted: true
+    siiEnabled: identity.siiEnabled,
+    largeCompany: identity.largeCompany,
+    periodicity: forcedBy ? "monthly" : persistedPeriodicity,
+    persistedPeriodicity,
+    periodicityForcedBy: forcedBy,
+    modelosNoPresentados: identity.siiEnabled ? ["347", "390"] : [],
+    verifactu: identity.siiEnabled ? { aplica: false, motivo: VERIFACTU_EXCLUDED_BY_SII_MOTIVO } : { aplica: true, motivo: null }
   };
 }
 
-/** Read-only: the organisation's settings or the defaults (quarterly · general · IVA). Never writes. */
+/** Pure: the declarant badge every model / book / settings response carries. */
+export function declaranteBadge(identity: LegalIdentity, persistedPeriodicity: VatPeriodicityCode): FiscalDeclaranteBadge {
+  return {
+    legalEntityId: identity.legalEntityId,
+    code: identity.code,
+    legalName: identity.legalName,
+    taxId: identity.taxId,
+    taxIdValid: identity.taxIdValid,
+    source: identity.source,
+    regimen: resolveFiscalRegime(identity, persistedPeriodicity)
+  };
+}
+
+/** Legacy `declarante` pair of the reports, derived from the badge (never from Organization columns). */
+export function declarantePair(badge: FiscalDeclaranteBadge): { nif: string | null; nombre: string | null } {
+  return { nif: badge.taxId, nombre: badge.legalName || null };
+}
+
+/**
+ * Pure: the Spanish warnings a report carries because of the regime.
+ * `settlement` models (303 · 111 · 115) explain the forced periodicity;
+ * every model of a SII taxpayer states what is not filed and that VeriFactu
+ * does not apply.
+ */
+export function regimeAvisos(regimen: FiscalRegimeSummary, modelo: FiscalModelCode): string[] {
+  const avisos: string[] = [];
+  const settlementModel = modelo === "303" || modelo === "111" || modelo === "115";
+  if (settlementModel && regimen.periodicityForcedBy && regimen.persistedPeriodicity !== "monthly") {
+    avisos.push(
+      regimen.periodicityForcedBy === "sii"
+        ? `Sociedad acogida al SII: el Modelo ${modelo} se autoliquida mensualmente (RIVA art. 71.3); la periodicidad trimestral guardada en los ajustes de IVA no se aplica.`
+        : `Sociedad calificada como gran empresa: el Modelo ${modelo} se autoliquida mensualmente (RIVA art. 71.3); la periodicidad trimestral guardada en los ajustes de IVA no se aplica.`
+    );
+  }
+  if (regimen.siiEnabled) {
+    avisos.push("Sociedad en SII: los Modelos 347 y 390 no se presentan y VeriFactu no aplica (RD 1007/2023 art. 3.3). El envío de los libros al SII no está construido en Anfitorio: se declara en la interfaz.");
+  }
+  return avisos;
+}
+
+/** Badge of a tenant whose organisation row is missing (contexts assembled outside Prisma): never throws. */
+function pendingBadge(persistedPeriodicity: VatPeriodicityCode): FiscalDeclaranteBadge {
+  return declaranteBadge(
+    {
+      legalEntityId: null,
+      organizationId: "",
+      code: null,
+      legalName: "Sociedad pendiente",
+      taxId: null,
+      taxIdValid: false,
+      source: "organization_fallback",
+      legalForm: null,
+      fiscalAddress: null,
+      fiscalPostalCode: null,
+      fiscalMunicipality: null,
+      fiscalIneCode: null,
+      fiscalProvince: null,
+      pgcVariant: "pymes",
+      largeCompany: false,
+      siiEnabled: false,
+      verifactuChainScope: "per_center",
+      cccPrincipal: null
+    },
+    persistedPeriodicity
+  );
+}
+
+function settingsDto(organizationId: string, row: { periodicity: string; regime: string; prorrataPct: Prisma.Decimal | null; taxFigure: string } | null, identity: LegalIdentity | null): VatSettingsDto {
+  const persistedPeriodicity: VatPeriodicityCode = row?.periodicity === "monthly" ? "monthly" : "quarterly";
+  const sociedad = identity ? declaranteBadge(identity, persistedPeriodicity) : pendingBadge(persistedPeriodicity);
+  if (!row) return { organizationId, ...DEFAULT_SETTINGS, periodicity: sociedad.regimen.periodicity, persisted: false, sociedad };
+  const figure = row.taxFigure === "IGIC" || row.taxFigure === "IPSI" ? row.taxFigure : "IVA";
+  return {
+    organizationId,
+    periodicity: sociedad.regimen.periodicity,
+    regime: row.regime === "redeme" || row.regime === "recargo" ? row.regime : "general",
+    prorrataPct: row.prorrataPct === null ? null : toWire(row.prorrataPct),
+    taxFigure: figure,
+    persisted: true,
+    sociedad
+  };
+}
+
+/**
+ * Read-only: the organisation's settings or the defaults (quarterly · general ·
+ * IVA) with the sociedad badge. `periodicity` is the EFFECTIVE one: monthly
+ * when the legal entity is gran empresa / SII (R8), whatever the row says.
+ * Never writes.
+ */
 export async function getVatSettings(organizationId: string, client: VatSettingsClient = prisma): Promise<VatSettingsDto> {
-  const row = await client.vatSettings.findUnique({ where: { organizationId } });
-  return settingsDto(organizationId, row);
+  const [row, identity] = await Promise.all([client.vatSettings.findUnique({ where: { organizationId } }), resolveLegalIdentity(organizationId)]);
+  return settingsDto(organizationId, row, identity);
 }
 
 /** Creates the default row on first use (contract §1.4). Only called by writers (rebuild, settlement, PUT settings). */
 export async function ensureVatSettings(organizationId: string, client: VatSettingsClient = prisma): Promise<VatSettingsDto> {
-  const existing = await client.vatSettings.findUnique({ where: { organizationId } });
-  if (existing) return settingsDto(organizationId, existing);
+  const [existing, identity] = await Promise.all([client.vatSettings.findUnique({ where: { organizationId } }), resolveLegalIdentity(organizationId)]);
+  if (existing) return settingsDto(organizationId, existing, identity);
   const created = await client.vatSettings.create({ data: { organizationId } });
-  return settingsDto(organizationId, created);
+  return settingsDto(organizationId, created, identity);
 }
 
 export type VatSettingsPatch = Partial<Pick<VatSettingsDto, "periodicity" | "regime" | "prorrataPct" | "taxFigure">>;
@@ -269,8 +401,18 @@ export async function updateVatSettings(input: { context: UserContext; patch: Va
   requirePermissions(input.context, ["accounting.configure"]);
   const organizationId = input.context.organizationId;
   const before = await ensureVatSettings(organizationId);
-  const periodicity = input.patch.periodicity ?? before.periodicity;
+  const regimen = before.sociedad.regimen;
+  // The stored periodicity is the default (never the forced effective one: the regime is not written back).
+  const periodicity = input.patch.periodicity ?? regimen.persistedPeriodicity;
   const regime = input.patch.regime ?? before.regime;
+  if (regimen.periodicityForcedBy && periodicity !== "monthly") {
+    throw new ConflictError(
+      regimen.periodicityForcedBy === "sii"
+        ? "Sociedad acogida al SII: la periodicidad del IVA es mensual (RIVA art. 71.3) y se gobierna desde Estructura societaria › Datos fiscales."
+        : "Sociedad calificada como gran empresa: la periodicidad del IVA es mensual (RIVA art. 71.3) y se gobierna desde Estructura societaria › Datos fiscales.",
+      { code: "PERIODICITY_FORCED_BY_REGIME", forcedBy: regimen.periodicityForcedBy, legalEntityId: before.sociedad.legalEntityId }
+    );
+  }
   if (regime === "redeme" && periodicity !== "monthly") {
     throw new ConflictError("El régimen REDEME (devolución mensual) exige periodicidad mensual del Modelo 303.", { code: "REDEME_REQUIRES_MONTHLY" });
   }
@@ -286,7 +428,7 @@ export async function updateVatSettings(input: { context: UserContext; patch: Va
       ...(input.patch.taxFigure ? { taxFigure: input.patch.taxFigure } : {})
     }
   });
-  const after = settingsDto(organizationId, updated);
+  const after = await getVatSettings(organizationId);
   recordAuditEvent({
     organizationId,
     propertyId: input.context.propertyId,
@@ -1093,6 +1235,8 @@ export async function rebuildVatBooks(input: { context: UserContext; from: strin
 
 export async function listVatBook(input: { context: UserContext; book: VatBookName; period?: string; from?: string; to?: string; propertyId?: string | null }): Promise<VatBookResponse> {
   requirePermissions(input.context, ["accounting.read"]);
+  // R11: the whole-sociedad book needs accounting.entity.read; a centre view, that centre.
+  assertFinanceReadScope(input.context, input.propertyId ?? null);
   const organizationId = input.context.organizationId;
   const settings = await getVatSettings(organizationId);
   let periodo: FiscalPeriodDto;

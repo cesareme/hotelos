@@ -20,6 +20,17 @@
 //     (organizationId, fiscalYearCode, entryNumber) never bites;
 //   · is idempotent by (organizationId, sourceType, sourceId): a second post
 //     of the same document returns the existing entry (`created: false`);
+//   · demands a work centre (`propertyId`) when any line hits groups 6/7 —
+//     400 WORK_CENTER_REQUIRED (Tanda 6b · L4, design §5.2 R4) — unless the
+//     asiento is a regularización / cierre / apertura / anulación, a VAT
+//     settlement, or a manual entry flagged `societyLevel: true`; the guard is
+//     switched off with STRUCTURE_ENABLED=false (lib/finance-scope.ts);
+//   · refuses a work centre of ANOTHER organisation (fix:L4 t6b#6, design
+//     §5.2 R10.1): `propertyId` must be a Property of `organizationId`, else
+//     an opaque 404 PROPERTY_NOT_FOUND — the same answer the tenant hook
+//     gives HTTP callers — so event-driven writers, the assistant and scripts
+//     that call the service directly cannot book an asiento on a foreign
+//     centre (`requireJournalWorkCenter`, also applied to drafts);
 //   · writes entryDate (fecha contable), description, reference, accountCode,
 //     taxRateCode / taxBase per line — the contract of
 //     docs/runbooks/finanzas-contabilidad.md §1.3.
@@ -59,6 +70,7 @@ import {
   type UsaliLine
 } from "./chart-of-accounts.service.js";
 import { isPostingAllowed } from "./fiscal-period.service.js";
+import { isStructureEnabled } from "../../lib/finance-scope.js";
 import type {
   AccountLedgerView,
   AccountingSettingsPatchInput,
@@ -166,6 +178,13 @@ export function ledgerBadRequest(code: string, message: string, extra: Record<st
   return error;
 }
 
+/** 404 with details.code (opaque message: never says whether the row exists elsewhere). */
+export function ledgerNotFound(code: string, message: string, extra: Record<string, unknown> = {}): NotFoundError {
+  const error = new NotFoundError(message);
+  error.details = { ...extra, code };
+  return error;
+}
+
 // ---------------------------------------------------------------------------
 // Post input
 // ---------------------------------------------------------------------------
@@ -182,6 +201,7 @@ export type JournalLineInput = {
 
 export type PostJournalEntryInput = {
   organizationId: string;
+  /** Work centre: a Property of `organizationId` (hotel or office); any other id → opaque 404 PROPERTY_NOT_FOUND. */
   propertyId?: string | null;
   /** Fecha contable (devengo), YYYY-MM-DD. */
   entryDate: string;
@@ -203,6 +223,12 @@ export type PostJournalEntryInput = {
   ignoreClosedPeriod?: boolean;
   /** Provision the template chart when the organisation has none (default true). */
   autoProvisionChart?: boolean;
+  /**
+   * Sociedad-level manual asiento (design §5.2 R4): lines of groups 6/7 are
+   * accepted without a work centre. Only meaningful with sourceType "manual";
+   * the diario labels such entries «Sociedad (sin centro)».
+   */
+  societyLevel?: boolean;
   correlationId?: string;
 };
 
@@ -272,6 +298,90 @@ export function assertBalancedJournal(lines: ReadonlyArray<{ accountCode: string
   if (!totalDebit.equals(totalCredit)) {
     throw ledgerBadRequest("JOURNAL_UNBALANCED", `El asiento no cuadra: debe ${totalDebit.toFixed(2)} ≠ haber ${totalCredit.toFixed(2)}.`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Work centre (dimensión «centro») — Tanda 6b · L4, design §5.2 R4
+// ---------------------------------------------------------------------------
+
+/** entryKind values that never carry a centre: the year-end mechanics and marked reversals (they mirror their original). */
+export const WORK_CENTER_EXEMPT_ENTRY_KINDS: readonly string[] = ["regularization", "closing", "opening", "reversal"];
+/** sourceType values posted at sociedad level by design (the VAT settlement nets 472/477 of the whole NIF). */
+export const WORK_CENTER_EXEMPT_SOURCE_TYPES: readonly string[] = ["vat_settlement"];
+
+/** True when any line posts to a PGC group 6 (gastos) or 7 (ingresos) account. Pure. */
+export function linesRequireWorkCenter(lines: ReadonlyArray<{ accountCode: string }>): boolean {
+  return lines.some((line) => {
+    const first = String(line.accountCode).trim().charAt(0);
+    return first === "6" || first === "7";
+  });
+}
+
+export type WorkCenterRuleInput = {
+  propertyId: string | null | undefined;
+  entryKind: string | null | undefined;
+  sourceType: string;
+  societyLevel?: boolean | null;
+  lines: ReadonlyArray<{ accountCode: string }>;
+};
+
+/**
+ * Pure decision of R4: an asiento without `propertyId` whose lines touch
+ * groups 6/7 needs a work centre, except the exempt kinds / sources and a
+ * manual entry explicitly flagged `societyLevel`. Balance-sheet-only entries
+ * (groups 1-5) never need one. Exported for the unit tests.
+ */
+export function workCenterRequired(input: WorkCenterRuleInput): boolean {
+  if (input.propertyId) return false;
+  if (WORK_CENTER_EXEMPT_ENTRY_KINDS.includes(input.entryKind ?? "normal")) return false;
+  if (WORK_CENTER_EXEMPT_SOURCE_TYPES.includes(input.sourceType)) return false;
+  if (input.sourceType === "manual" && input.societyLevel === true) return false;
+  return linesRequireWorkCenter(input.lines);
+}
+
+/** 1-based indexes of the lines that hit groups 6/7 (for the error details). */
+function workCenterLineIndexes(lines: ReadonlyArray<{ accountCode: string }>): number[] {
+  return lines.flatMap((line, index) => (linesRequireWorkCenter([line]) ? [index + 1] : []));
+}
+
+/**
+ * Throws 400 WORK_CENTER_REQUIRED when the rule applies. Gated by
+ * STRUCTURE_ENABLED (default on) so a deployment can fall back to the
+ * pre-Tanda-6b behaviour without a code change (design §8.2).
+ */
+export function assertWorkCenter(input: WorkCenterRuleInput): void {
+  if (!isStructureEnabled()) return;
+  if (!workCenterRequired(input)) return;
+  throw ledgerBadRequest(
+    "WORK_CENTER_REQUIRED",
+    "Las líneas de gastos e ingresos (grupos 6 y 7) exigen un centro de trabajo (propertyId): indica el hotel o la oficina central, o marca el asiento manual como de sociedad (societyLevel).",
+    { lines: workCenterLineIndexes(input.lines), entryKind: input.entryKind ?? "normal", sourceType: input.sourceType }
+  );
+}
+
+/** Subset of the Prisma client the centre check touches (the root client, an interactive transaction, or a unit-test fake). */
+export type JournalWorkCenterDb = Pick<Prisma.TransactionClient, "property">;
+
+export type JournalWorkCenter = { id: string; kind: string };
+
+/**
+ * The work centre of an asiento must be a Property of the organisation that
+ * posts it (invariant R10.1; fix:L4 t6b#6). Until now the only guard was the
+ * HTTP tenant hook, so event-driven writers, the assistant and scripts calling
+ * the service directly could book an asiento of organisation A on a centre of
+ * organisation B. Missing or foreign → opaque 404 PROPERTY_NOT_FOUND (same
+ * status the hook gives, so neither a foreign nor a sister centre is ever
+ * confirmed). `null`/`undefined` → null without touching the database (an
+ * asiento of the sociedad is R4's business, not this guard's). Returns the
+ * centre with its `kind` for callers that label it (hotel / office).
+ */
+export async function requireJournalWorkCenter(db: JournalWorkCenterDb, organizationId: string, propertyId: string | null | undefined): Promise<JournalWorkCenter | null> {
+  if (!propertyId) return null;
+  const property = await db.property.findUnique({ where: { id: propertyId }, select: { id: true, organizationId: true, kind: true } });
+  if (!property || property.organizationId !== organizationId) {
+    throw ledgerNotFound("PROPERTY_NOT_FOUND", "Propiedad no encontrada.", { propertyId });
+  }
+  return { id: property.id, kind: String(property.kind) };
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +626,10 @@ async function postJournalEntryCore(input: PostJournalEntryInput): Promise<Poste
       return { ...view!, created: false };
     }
 
+    // R10.1: the centre must belong to the posting organisation (after the idempotent lookup, like R4: a replay of an existing key is returned as-is).
+    await requireJournalWorkCenter(tx, input.organizationId, propertyId);
+    // R4: groups 6/7 need a centre (after the idempotent lookup, so a legacy entry is still returned as-is).
+    assertWorkCenter({ propertyId, entryKind, sourceType: input.sourceType, societyLevel: input.societyLevel, lines: normalized.lines });
     if (!input.ignoreClosedPeriod) await assertEntryDateOpen(input.organizationId, propertyId, entryDate, fiscalYear);
 
     const accounts = await resolvePostableAccounts(tx, input.organizationId, normalized.lines.map((l) => l.accountCode), input.autoProvisionChart !== false);
@@ -669,7 +783,14 @@ export async function findJournalEntryBySource(client: Client, organizationId: s
 // Manual entries (POST /accounting/journal, POST /accounting/journal/:id/reverse)
 // ---------------------------------------------------------------------------
 
-export async function createManualJournalEntry(input: { context: UserContext; body: ManualJournalEntryInput; correlationId: string }): Promise<PostedJournalEntry> {
+/**
+ * `societyLevel` (Tanda 6b · L4): a manual asiento of the sociedad without a
+ * centre (R4). Until the shared `ManualJournalEntryInput` and the route schema
+ * (ledger.routes.ts, L5) carry the flag it is accepted here as an extension.
+ */
+export type ManualJournalEntryBody = ManualJournalEntryInput & { societyLevel?: boolean };
+
+export async function createManualJournalEntry(input: { context: UserContext; body: ManualJournalEntryBody; correlationId: string }): Promise<PostedJournalEntry> {
   requirePermissions(input.context, ["accounting.journal.post"]);
   const body = input.body;
   const posted = await postJournalEntry({
@@ -681,6 +802,7 @@ export async function createManualJournalEntry(input: { context: UserContext; bo
     description: body.description,
     reference: body.reference ?? null,
     createdBy: input.context.userId,
+    societyLevel: body.societyLevel === true,
     correlationId: input.correlationId,
     lines: body.lines.map((line) => ({
       accountCode: line.accountCode,
@@ -700,7 +822,7 @@ export async function createManualJournalEntry(input: { context: UserContext; bo
     action: "JOURNAL_ENTRY_POSTED",
     entityType: "journal_entry",
     entityId: posted.id,
-    afterJson: { entryNumber: posted.entryNumber, fiscalYearCode: posted.fiscalYearCode, entryDate: posted.entryDate, totalDebit: posted.totalDebit, lines: posted.lines.length },
+    afterJson: { entryNumber: posted.entryNumber, fiscalYearCode: posted.fiscalYearCode, entryDate: posted.entryDate, totalDebit: posted.totalDebit, lines: posted.lines.length, societyLevel: body.societyLevel === true },
     correlationId: input.correlationId
   });
   return posted;
@@ -1367,6 +1489,8 @@ export async function createJournalEntryDraft(input: {
 }): Promise<JournalEntryDraft> {
   const normalized = normalizeJournalLines(input.lines ?? []);
   const entryDate = input.entryDate ? requireEntryDate(input.entryDate) : isoDay(new Date());
+  // R10.1: a draft on a foreign centre could never be posted either — same opaque 404 as the engine.
+  await requireJournalWorkCenter(prisma, input.organizationId, input.propertyId);
   // A draft dated in a closed year / period could never be posted: refuse it up front with the same codes.
   await assertEntryDateOpen(input.organizationId, input.propertyId, entryDate, await resolveFiscalYear(prisma, input.organizationId, input.propertyId, entryDate));
   const accounts = await resolvePostableAccounts(prisma, input.organizationId, normalized.lines.map((l) => l.accountCode));
@@ -1404,13 +1528,18 @@ export async function createJournalEntryDraft(input: {
 async function postDraftJournalEntry(input: LegacyPostDraftInput): Promise<JournalEntryDraft> {
   requirePermissions(input.context, ["accounting.journal.post", "ai.high_risk.confirm"]);
   const entry = await prisma.journalEntry.findUnique({ where: { id: input.journalEntryId } });
-  if (!entry) throw new NotFoundError("Asiento no encontrado.");
+  // Opaque 404 for a draft of another organisation (service-level, like reverseJournalEntry: the route hook is not the only guard).
+  if (!entry || entry.organizationId !== input.context.organizationId) throw ledgerNotFound("JOURNAL_ENTRY_NOT_FOUND", "Asiento no encontrado.", { journalEntryId: input.journalEntryId });
   if (entry.status !== "draft") {
     const view = await loadJournalEntry(prisma, entry.id);
     return toDraftView(view!);
   }
   const lines = await prisma.journalLine.findMany({ where: { journalEntryId: entry.id } });
   assertBalancedJournal(lines.map((l) => ({ accountCode: l.accountCode ?? l.accountId, debit: Number(l.debit), credit: Number(l.credit) })));
+  // R10.1: a draft created before the centre check could still point at a foreign centre.
+  await requireJournalWorkCenter(prisma, entry.organizationId, entry.propertyId);
+  // R4 also applies to the legacy draft flow (a draft carries no societyLevel flag).
+  assertWorkCenter({ propertyId: entry.propertyId, entryKind: entry.entryKind, sourceType: entry.sourceType, lines: lines.map((l) => ({ accountCode: l.accountCode ?? "" })) });
   const entryDate = isoDay(entry.entryDate);
   await assertEntryDateOpen(entry.organizationId, entry.propertyId, entryDate, await resolveFiscalYear(prisma, entry.organizationId, entry.propertyId, entryDate));
   const updated = await prisma.$transaction(async (tx) => {

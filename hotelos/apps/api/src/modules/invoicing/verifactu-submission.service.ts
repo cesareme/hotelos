@@ -16,6 +16,8 @@ import {
   submitVerifactuRegistro,
   sumDesgloseQuotas,
   VERIFACTU_ENDPOINTS,
+  VERIFACTU_EXCLUDED_BY_SII_CODE,
+  VERIFACTU_INSTALLATION_NOT_DECLARED_CODE,
   VERIFACTU_TRANSIENT_ERROR_CODES,
   type TaxFigure,
   type TaxRegion,
@@ -37,7 +39,16 @@ import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-er
 import { buildPage, DEFAULT_PAGE_LIMIT, decodeCursor, MAX_PAGE_LIMIT, type Page } from "../../lib/pagination.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { queueTbaiSubmission } from "./tbai-submission.service.js";
-import { issuerForInvoice } from "./issuer-identity.service.js";
+import {
+  adoptOrphanChainRecords,
+  chainInvoiceWhere,
+  issuerForInvoice,
+  lockVerifactuChainScope,
+  resolveVerifactuChainScope,
+  verifactuExclusionForProperty,
+  type VerifactuChainScope,
+  type VerifactuExclusion
+} from "./issuer-identity.service.js";
 
 // VeriFactu queue (Tanda 3). One row per (invoice, registroType) in
 // verifactu_submissions: the RegistroAlta sent at issuance and, when the
@@ -51,8 +62,25 @@ import { issuerForInvoice } from "./issuer-identity.service.js";
 // Routing: Canarias reports IGIC through VeriFactu (Impuesto 03) like any
 // common-territory property; only the foral territories (Bizkaia, Gipuzkoa,
 // Araba — Property.fiscalTerritory, legacy Property.taxRegion) go to TicketBAI.
+//
+// Estructura societaria (Tanda 6b · L3, design §5.2 R7): the chain belongs to
+// the (obligado; instalación). `resolveVerifactuChainScope` (issuer-identity
+// .service.ts) maps a property to its VerifactuInstallation — per centre or
+// per sociedad — and the RegistroAnterior, the advisory lock and the
+// SistemaInformatico/NumeroInstalacion follow that scope. ObligadoEmision /
+// NombreRazon is the sociedad's razón social (issuerForInvoice → snapshot).
+// In preproduction/production a centre without a declared installation is a
+// readiness error (INSTALLATION_NOT_DECLARED, config backoff), never the env.
+//
+// SII (design §5.2 R7 / R8, fix t6b#2): a sociedad with `siiEnabled` is outside
+// the RRSIF (RD 1007/2023 art. 3.3). Its new documents carry no huella (the
+// issue paths skip the record), so the hook has nothing to queue; a record
+// hashed BEFORE the flag flipped is never sent: the live path, the sweep and
+// the reconciliation retire its row as `abandoned` with errorCode
+// VERIFACTU_EXCLUDED_BY_SII, and a manual retry answers 409 with that code —
+// in every mode, sandbox included.
 
-type ChainDb = Pick<Prisma.TransactionClient, "invoice" | "property" | "organization">;
+type ChainDb = Pick<Prisma.TransactionClient, "invoice" | "property" | "organization" | "legalEntity" | "verifactuInstallation">;
 type InvoiceRow = Prisma.InvoiceGetPayload<Record<string, never>>;
 type InvoiceLineRow = Prisma.InvoiceLineGetPayload<Record<string, never>>;
 type SubmissionRow = Prisma.VerifactuSubmissionGetPayload<Record<string, never>>;
@@ -65,7 +93,6 @@ const TERMINAL_STATUSES: ReadonlySet<string> = new Set(["failed", "abandoned", "
 const TBAI_TERRITORIES: ReadonlySet<string> = new Set<TbaiTerritory>(["bizkaia", "gipuzkoa", "araba"]);
 const IMPUESTO_BY_FIGURE: Record<TaxFigure, VerifactuImpuesto> = { IVA: "01", IPSI: "02", IGIC: "03" };
 // Same key the issuance path must take (see invoice.service.ts): one chain per property.
-const CHAIN_LOCK_SUFFIX = ":verifactu-chain";
 const SWEEP_LOCK_KEY = "verifactu.sweep";
 
 const RETRY_BATCH_SIZE = 25;
@@ -234,6 +261,10 @@ export async function retryVerifactuSubmission(submissionId: string): Promise<vo
   });
   const reason = unsubmittableReason(invoice, registroTypeOf(row));
   if (reason) throw new ConflictError(`No se puede reintentar el envío: ${reason}.`);
+  const exclusion = await verifactuExclusionForProperty(row.propertyId);
+  if (exclusion) {
+    throw new ConflictError(`No se puede reintentar el envío: ${exclusion.motivo}`, { code: exclusion.code, submissionId: row.id, invoiceId: row.invoiceId, motivo: exclusion.motivo });
+  }
 
   const property = await prisma.property.findUnique({ where: { id: row.propertyId }, select: { organizationId: true } });
   await prisma.verifactuSubmission.update({
@@ -324,6 +355,29 @@ async function markTerminal(id: string, status: "abandoned" | "failed", errorMes
   }
 }
 
+/**
+ * A record whose sociedad is outside the RRSIF (SII): nothing is built or
+ * sent. The row is upserted terminal (`abandoned`, errorCode
+ * VERIFACTU_EXCLUDED_BY_SII, attempts untouched) so the sweep's
+ * reconciliation stops re-selecting the invoice and the operator sees why in
+ * the submissions centre; the manual retry answers 409 with the same code.
+ */
+async function retireExcludedRecord(invoice: { id: string; propertyId: string; invoiceNumber: string | null }, registroType: VerifactuRegistroType, exclusion: VerifactuExclusion, mode: VerifactuSubmissionMode): Promise<void> {
+  const data = { status: "abandoned", errorCode: exclusion.code, errorMessage: `Registro no enviado: ${exclusion.motivo}`, nextRetryAt: null, mode };
+  try {
+    await prisma.verifactuSubmission.upsert({
+      where: { invoiceId_registroType: { invoiceId: invoice.id, registroType } },
+      update: data,
+      create: { invoiceId: invoice.id, propertyId: invoice.propertyId, registroType, attempts: 0, ...data }
+    });
+  } catch (error) {
+    // QC-06: without the row the reconciliation re-scans the invoice; say so.
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[verifactu] could not retire the ${registroType} of invoice ${invoice.invoiceNumber ?? invoice.id} as ${exclusion.code}: ${message}`);
+  }
+  console.warn(`[verifactu] invoice ${invoice.invoiceNumber ?? invoice.id} (${registroType}): ${exclusion.code} — ${exclusion.motivo}`);
+}
+
 async function organizationByProperty(propertyIds: string[]): Promise<Map<string, string>> {
   const properties = await prisma.property.findMany({
     where: { id: { in: Array.from(new Set(propertyIds)) } },
@@ -356,22 +410,36 @@ export function finalStatusForResponse(response: Pick<VerifactuSubmissionRespons
 }
 
 /**
- * The SistemaInformatico block for this send. In sandbox an incomplete block
- * (labelled defaults) is tolerated so the stub pipeline keeps working; in
- * preproduction/production nothing is sent until the operator fixes the
- * environment (SOFTWARE_NOT_CONFIGURED, retried with the config backoff).
+ * The SistemaInformatico block for this send. NumeroInstalacion comes from
+ * the declared installation of the chain scope (R7); the env variable is only
+ * the sandbox fallback for a centre without one. In sandbox an incomplete
+ * block (labelled defaults) is tolerated so the stub pipeline keeps working;
+ * in preproduction/production nothing is sent until the operator fixes the
+ * environment (SOFTWARE_NOT_CONFIGURED) or declares the installation
+ * (INSTALLATION_NOT_DECLARED) — both retried with the config backoff, never
+ * counted against MAX_ATTEMPTS. Pure given `env`; exported for unit tests.
  */
-function resolveSoftwareForSend(mode: VerifactuSubmissionMode): { software: VerifactuSoftwareBlock; blocking: VerifactuSubmissionResponse | null } {
-  const resolution = resolveVerifactuSoftware();
+export function resolveSoftwareForSend(
+  mode: VerifactuSubmissionMode,
+  installation: VerifactuChainScope["installation"] | null,
+  env: NodeJS.ProcessEnv = process.env
+): { software: VerifactuSoftwareBlock; blocking: VerifactuSubmissionResponse | null } {
+  const resolution = resolveVerifactuSoftware(env, {
+    installation: installation ? { id: installation.id, numeroInstalacion: installation.numeroInstalacion } : null,
+    requireInstallation: mode !== "sandbox"
+  });
   if (mode !== "sandbox" && !resolution.ok) {
+    const installationMissing = !installation;
     return {
       software: resolution.software,
       blocking: {
         status: "rejected",
         endpoint: VERIFACTU_ENDPOINTS[mode],
         mode,
-        errorCode: "SOFTWARE_NOT_CONFIGURED",
-        errorMessage: `Bloque SistemaInformatico incompleto para el modo '${mode}': ${resolution.errors.join(" ")}`
+        errorCode: installationMissing ? VERIFACTU_INSTALLATION_NOT_DECLARED_CODE : "SOFTWARE_NOT_CONFIGURED",
+        errorMessage: installationMissing
+          ? `Sin instalación VeriFactu declarada para este centro en el modo '${mode}': ${resolution.errors.join(" ")}`
+          : `Bloque SistemaInformatico incompleto para el modo '${mode}': ${resolution.errors.join(" ")}`
       }
     };
   }
@@ -469,10 +537,10 @@ async function recipientForInvoice(invoice: InvoiceRow): Promise<VerifactuRecipi
  * links of the same chain. The IDEmisorFactura of the previous record is ITS
  * NIF snapshot, never the current issuer.
  */
-async function previousRecordByHash(db: ChainDb, propertyId: string, hash: string | null): Promise<VerifactuPreviousRecord | null> {
+async function previousRecordByHash(db: ChainDb, scope: VerifactuChainScope, hash: string | null): Promise<VerifactuPreviousRecord | null> {
   if (!hash) return null;
   const previous = await db.invoice.findFirst({
-    where: { propertyId, OR: [{ verifactuHash: hash }, { cancellationHash: hash }] },
+    where: { AND: [chainInvoiceWhere(scope), { OR: [{ verifactuHash: hash }, { cancellationHash: hash }] }] },
     orderBy: [{ issuedAt: "desc" }, { id: "desc" }]
   });
   if (!previous || !previous.invoiceNumber || !previous.issuedAt) return null;
@@ -495,19 +563,20 @@ export function chainTailIsAnulacion(altaGeneratedAt: number | null, anulacionGe
 }
 
 /**
- * Chain tail of a property at instant `before`: the latest alta (by issuedAt)
- * or anulación (by cancelledAt) generated up to that instant, excluding the
- * anulación of `excludeInvoiceId` itself. Deterministic, so the anulación's
- * RegistroAnterior is rebuilt identically on every retry.
+ * Chain tail of an installation at instant `before`: the latest alta (by
+ * issuedAt) or anulación (by cancelledAt) generated up to that instant,
+ * excluding the anulación of `excludeInvoiceId` itself. Deterministic, so the
+ * anulación's RegistroAnterior is rebuilt identically on every retry.
  */
-async function chainTailBefore(db: ChainDb, propertyId: string, before: Date, excludeInvoiceId: string): Promise<VerifactuPreviousRecord | null> {
+async function chainTailBefore(db: ChainDb, scope: VerifactuChainScope, before: Date, excludeInvoiceId: string): Promise<VerifactuPreviousRecord | null> {
+  const chain = chainInvoiceWhere(scope);
   const [alta, anulacion] = await Promise.all([
     db.invoice.findFirst({
-      where: { propertyId, deletedAt: null, verifactuHash: { not: null }, issuedAt: { lte: before } },
+      where: { AND: [chain, { deletedAt: null, verifactuHash: { not: null }, issuedAt: { lte: before } }] },
       orderBy: [{ issuedAt: "desc" }, { id: "desc" }]
     }),
     db.invoice.findFirst({
-      where: { propertyId, deletedAt: null, cancellationHash: { not: null }, cancelledAt: { lte: before }, id: { not: excludeInvoiceId } },
+      where: { AND: [chain, { deletedAt: null, cancellationHash: { not: null }, cancelledAt: { lte: before }, id: { not: excludeInvoiceId } }] },
       orderBy: [{ cancelledAt: "desc" }, { id: "desc" }]
     })
   ]);
@@ -533,6 +602,8 @@ export type PreparedAnulacion = {
   previous: VerifactuPreviousRecord | null;
   emitterTaxId: string;
   emitterName: string;
+  /** Chain the anulación belongs to (installation → SistemaInformatico/NumeroInstalacion). */
+  chain: VerifactuChainScope;
 };
 
 /**
@@ -547,12 +618,15 @@ export type PreparedAnulacion = {
 export async function prepareVerifactuAnulacion(db: Prisma.TransactionClient, invoiceId: string): Promise<PreparedAnulacion | null> {
   const current = await db.invoice.findUnique({ where: { id: invoiceId }, select: { propertyId: true } });
   if (!current) return null;
-  await db.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${current.propertyId + CHAIN_LOCK_SUFFIX}))`;
+  // Same lock key as issue / rectify (lockVerifactuChain): the installation's chain.
+  const chain = await resolveVerifactuChainScope(db, current.propertyId);
+  await lockVerifactuChainScope(db, chain);
+  await adoptOrphanChainRecords(db, chain);
   const invoice = await db.invoice.findUnique({ where: { id: invoiceId } });
   if (!invoice || !invoice.cancelledAt || !invoice.issuedAt || !invoice.invoiceNumber || !invoice.verifactuHash || invoice.deletedAt) return null;
 
   const issuer = await issuerForInvoice(invoice, db);
-  const previous = await chainTailBefore(db, invoice.propertyId, invoice.cancelledAt, invoice.id);
+  const previous = await chainTailBefore(db, chain, invoice.cancelledAt, invoice.id);
   const computed = computeVerifactuAnulacionHash({
     emitterTaxId: issuer.taxId,
     invoiceNumber: invoice.invoiceNumber,
@@ -560,11 +634,11 @@ export async function prepareVerifactuAnulacion(db: Prisma.TransactionClient, in
     previousHash: previous?.hash ?? null,
     generatedAt: invoice.cancelledAt.toISOString()
   });
-  const base = { canonical: computed.canonical, generatedAt: invoice.cancelledAt, previous, emitterTaxId: issuer.taxId, emitterName: issuer.legalName };
+  const base = { canonical: computed.canonical, generatedAt: invoice.cancelledAt, previous, emitterTaxId: issuer.taxId, emitterName: issuer.legalName, chain };
 
   if (invoice.cancellationHash && invoice.cancellationHash !== computed.hash) {
     const linked = await db.invoice.findFirst({
-      where: { propertyId: invoice.propertyId, previousInvoiceHash: invoice.cancellationHash },
+      where: { AND: [chainInvoiceWhere(chain), { previousInvoiceHash: invoice.cancellationHash }] },
       select: { id: true, invoiceNumber: true }
     });
     if (linked) {
@@ -587,7 +661,8 @@ async function persistAttempt(
   registroType: VerifactuRegistroType,
   signed: { signedXml: string; signatureMode: string; signedAt: string },
   mode: VerifactuSubmissionMode,
-  software: VerifactuSoftwareBlock
+  software: VerifactuSoftwareBlock,
+  installationId: string | null
 ): Promise<SubmissionRow> {
   const now = new Date();
   const softwareJson = software as unknown as Prisma.InputJsonValue;
@@ -601,7 +676,8 @@ async function persistAttempt(
       signatureMode: signed.signatureMode,
       signedAt: new Date(signed.signedAt),
       mode,
-      softwareJson
+      softwareJson,
+      installationId
     },
     create: {
       invoiceId: invoice.id,
@@ -614,7 +690,8 @@ async function persistAttempt(
       signatureMode: signed.signatureMode,
       signedAt: new Date(signed.signedAt),
       mode,
-      softwareJson
+      softwareJson,
+      installationId
     }
   });
 }
@@ -637,6 +714,8 @@ async function sendRegistro(input: {
   organizationId: string;
   actorUserId?: string;
   warnings: string[];
+  /** Installation of the chain (verifactu_submissions.installation_id); null for a sandbox centre without one. */
+  installationId: string | null;
 }): Promise<void> {
   const { invoice, registroType } = input;
   const credentials = resolveVerifactuCredentials();
@@ -645,7 +724,7 @@ async function sendRegistro(input: {
     certPath: credentials.signing?.certPath,
     certPassphrase: credentials.signing?.certPassphrase ?? undefined
   });
-  const submission = await persistAttempt(invoice, registroType, signed, input.mode, input.software);
+  const submission = await persistAttempt(invoice, registroType, signed, input.mode, input.software, input.installationId);
 
   let response: VerifactuSubmissionResponse | undefined;
   let outcome: ReturnType<typeof finalStatusForResponse> = { status: "retrying", nextRetryAt: null };
@@ -714,6 +793,7 @@ async function sendRegistro(input: {
       errorCode: response.errorCode,
       errorMessage: response.errorMessage,
       software: input.software,
+      installationId: input.installationId,
       warnings: input.warnings,
       acknowledgedAt: ACCEPTED_STATUSES.has(outcome.status) ? new Date().toISOString() : undefined
     }
@@ -724,7 +804,7 @@ async function sendRegistro(input: {
 // RegistroAlta
 // ---------------------------------------------------------------------------
 
-type SubmitOutcome = "submitted" | "already_accepted" | "not_submittable" | "alta_pending";
+type SubmitOutcome = "submitted" | "already_accepted" | "not_submittable" | "alta_pending" | "excluded";
 
 // Builds, signs and sends the RegistroAlta for one invoice. Reports what
 // happened so the sweep can retire rows it must not retry.
@@ -746,12 +826,23 @@ async function submitForInvoice(invoiceId: string, organizationId: string, actor
   });
   const route = submissionRouteForProperty(property ?? { taxRegion: null });
   const mode = resolveVerifactuMode();
-  const { software, blocking } = resolveSoftwareForSend(mode);
+  // R7 / R8: a sociedad in the SII sends nothing (record hashed before the flag flipped).
+  const exclusion = await verifactuExclusionForProperty(invoice.propertyId);
+  if (exclusion) {
+    await retireExcludedRecord(invoice, "alta", exclusion, mode);
+    return "excluded";
+  }
+  // R7: the installation whose chain this record belongs to (per centre or per sociedad).
+  const chain = await resolveVerifactuChainScope(prisma, invoice.propertyId);
+  const { software, blocking } = resolveSoftwareForSend(mode, chain.installation);
   const warnings: string[] = [];
+  if (!chain.installation && mode === "sandbox") {
+    warnings.push(`Centro sin instalación VeriFactu declarada: NumeroInstalacion tomado del entorno (${software.numeroInstalacion}); solo válido en sandbox.`);
+  }
 
-  // FISC-03: the identity the invoice was issued with (snapshot; QR nif= for
-  // legacy invoices; live resolver as the last resort). Never a regex over
-  // the property name — the huella must be reproducible.
+  // FISC-03 / R2: the identity the invoice was issued with (snapshot of the
+  // sociedad; QR nif= for legacy invoices; live resolver as the last resort).
+  // Never a regex over the property name — the huella must be reproducible.
   const issuer = await issuerForInvoice(invoice);
   const lines = await prisma.invoiceLine.findMany({ where: { invoiceId } });
   const desglose = desgloseForInvoice(invoice, lines, route.taxRegion);
@@ -760,7 +851,7 @@ async function submitForInvoice(invoiceId: string, organizationId: string, actor
   if (Math.abs(quotaSum - Number(invoice.taxTotal)) > 0.005) {
     warnings.push(`CuotaTotal hasheada (${Number(invoice.taxTotal).toFixed(2)}) difiere de la suma del desglose (${quotaSum.toFixed(2)}).`);
   }
-  const previous = await previousRecordByHash(prisma, invoice.propertyId, invoice.previousInvoiceHash);
+  const previous = await previousRecordByHash(prisma, chain, invoice.previousInvoiceHash);
   if (invoice.previousInvoiceHash && !previous) {
     warnings.push("RegistroAnterior no localizable para previousInvoiceHash; se envía sin el eslabón (AEAT lo marcará).");
   }
@@ -825,7 +916,8 @@ async function submitForInvoice(invoiceId: string, organizationId: string, actor
     emitterTaxId: issuer.taxId,
     organizationId,
     actorUserId,
-    warnings
+    warnings,
+    installationId: chain.installation?.id ?? null
   });
   return "submitted";
 }
@@ -866,6 +958,13 @@ async function submitAnulacionForInvoice(invoiceId: string, organizationId: stri
   });
   if (existing && ACCEPTED_STATUSES.has(existing.status)) return "already_accepted";
 
+  // R7 / R8: a sociedad in the SII sends no anulación either.
+  const exclusion = await verifactuExclusionForProperty(invoice.propertyId);
+  if (exclusion) {
+    await retireExcludedRecord(invoice, "anulacion", exclusion, resolveVerifactuMode());
+    return "excluded";
+  }
+
   const altaRow = () =>
     prisma.verifactuSubmission.findUnique({ where: { invoiceId_registroType: { invoiceId, registroType: "alta" } }, select: { status: true } });
   let alta = await altaRow();
@@ -888,7 +987,6 @@ async function submitAnulacionForInvoice(invoiceId: string, organizationId: stri
   }
 
   const mode = resolveVerifactuMode();
-  const { software, blocking } = resolveSoftwareForSend(mode);
   let prepared: PreparedAnulacion | null;
   try {
     prepared = await prisma.$transaction((tx) => prepareVerifactuAnulacion(tx, invoiceId));
@@ -913,6 +1011,7 @@ async function submitAnulacionForInvoice(invoiceId: string, organizationId: stri
     throw error;
   }
   if (!prepared) return "not_submittable";
+  const { software, blocking } = resolveSoftwareForSend(mode, prepared.chain.installation);
 
   const xmlPayload = buildVerifactuRegistroAnulacion({
     emitterTaxId: prepared.emitterTaxId,
@@ -935,7 +1034,8 @@ async function submitAnulacionForInvoice(invoiceId: string, organizationId: stri
     emitterTaxId: prepared.emitterTaxId,
     organizationId,
     actorUserId,
-    warnings: prepared.previous ? [] : ["RegistroAnulacion enviado como primer registro de la cadena (sin eslabón anterior)."]
+    warnings: prepared.previous ? [] : ["RegistroAnulacion enviado como primer registro de la cadena (sin eslabón anterior)."],
+    installationId: prepared.chain.installation?.id ?? null
   });
   return "submitted";
 }
@@ -1078,6 +1178,11 @@ async function retryDueSubmissions(now: Date, result: VerifactuRetrySweepResult)
           result.abandoned += 1;
           return;
         }
+        if (outcome === "excluded") {
+          // Row already retired by submit* with errorCode VERIFACTU_EXCLUDED_BY_SII.
+          result.abandoned += 1;
+          return;
+        }
         if (outcome === "submitted") result.retried += 1;
       } catch (error) {
         result.failed += 1;
@@ -1171,7 +1276,8 @@ async function reconcileLegacyCancellationHashes(now: Date, result: VerifactuRet
     try {
       const chained = await prisma.$transaction(
         async (tx) => {
-          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${group.propertyId + CHAIN_LOCK_SUFFIX}))`;
+          // Same key as issue / rectify / cancel: the chain of the group's installation.
+          await lockVerifactuChainScope(tx, await resolveVerifactuChainScope(tx, group.propertyId));
           let count = 0;
           for (const row of group.rows) {
             const prepared = await prepareVerifactuAnulacion(tx, row.id);
@@ -1357,6 +1463,8 @@ export type VerifactuSubmissionView = {
   nextRetryAt?: string;
   /** SistemaInformatico block the XML was built with. */
   software: VerifactuSoftwareBlock | null;
+  /** VerifactuInstallation of the chain (null for rows sent before Tanda 6b or by a sandbox centre without one). */
+  installationId: string | null;
   /** Row creation (ISO); the list cursor key. */
   createdAt: string;
 };
@@ -1394,6 +1502,7 @@ function rowToView(row: SubmissionRow, invoiceNumber?: string | null): Verifactu
     acknowledgedAt: row.acknowledgedAt?.toISOString(),
     nextRetryAt: row.nextRetryAt?.toISOString(),
     software: softwareOf(row),
+    installationId: row.installationId ?? null,
     createdAt: row.createdAt.toISOString()
   };
 }

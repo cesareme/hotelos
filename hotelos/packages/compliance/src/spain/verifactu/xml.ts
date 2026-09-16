@@ -7,6 +7,16 @@ import type { VerifactuSoftwareBlock } from "./software.js";
 // AEAT re-hashes, so every value that enters the huella (IDFactura, TipoFactura,
 // CuotaTotal, ImporteTotal, Encadenamiento/Huella, FechaHoraHusoGenRegistro)
 // must be rendered with the same formatters as hash.ts.
+//
+// Estructura societaria (Tanda 6b · L3): the obligado is the SOCIEDAD —
+// `emitterTaxId` / `emitterName` are the LegalEntity's NIF and razón social
+// (ObligadoEmision, IDEmisorFactura, NombreRazonEmisor); the establishment
+// (centro de trabajo) has no element in the registro, it only appears on the
+// PDF. `software.numeroInstalacion` is the declared VerifactuInstallation of
+// the chain (one per billing centre with `per_center`, one per sociedad with
+// `per_entity`), and `RegistroAnterior` is the previous record of THAT
+// installation; `IndicadorMultiplesOT = S` states that the installation
+// serves several obligados (SaaS). The chain never restarts by year or series.
 
 // Local aliases of contract A's types (packages/compliance/src/spain/
 // indirect-tax.ts). Kept private so the package's `export *` never sees the

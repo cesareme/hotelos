@@ -44,6 +44,8 @@ import { isPasswordChangeAllowedRoute, isPublicRoute, passwordChangeRequiredErro
 import { assertEnv, resolveCorsOrigins, validateEnv } from "./lib/env.js";
 import { createRoleFromTemplate } from "./lib/rbac-catalog.js";
 import { ROLE_TEMPLATE_KEYS, type RoleKey } from "@hotelos/shared";
+// Tanda 6b (L2, integración): enums of the sociedad layer for the POST /admin/tenants bridge.
+import { LEGAL_FORMS, PROPERTY_KINDS, type LegalForm, type PropertyKind } from "@hotelos/shared";
 import { isSchedulerLeader } from "./lib/scheduler-leader.js";
 import { BadRequestError, ConflictError, ForbiddenError, HttpError, NotFoundError, UnauthorizedError, statusCodeForError, describePrismaError, describeFastifyContentTypeError } from "./lib/http-error.js";
 import { pageBody, pageHeaders, parsePageQuery } from "./lib/pagination.js";
@@ -51,6 +53,7 @@ import {
   assertEntityAccess,
   assertPropertyEntityAccess,
   grantPropertyAccess,
+  listOperationalProperties,
   resolveOrganizationScope
 } from "./lib/tenancy.js";
 import { isLlmConfigured, llmComplete, llmExtractDocument } from "./lib/llm.js";
@@ -80,6 +83,13 @@ import { registerPayablesRoutes } from "./modules/payables/payables.routes.js";
 import { registerFixedAssetsRoutes } from "./modules/fixed-assets/fixed-assets.routes.js";
 import { registerTreasuryRoutes } from "./modules/treasury/treasury.routes.js";
 import { registerFinancialStatementsRoutes } from "./modules/financial-statements/financial-statements.routes.js";
+// Estructura societaria (Tanda 6b · L2, integración): sociedad + centros. The
+// routes live in modules/structure/structure.routes.ts (permissions in its
+// route-permissions.partial.ts); `listSwitchableProperties` moved there too so
+// GET /users/me/properties and GET /properties gain kind / code / legalEntityId
+// / legalEntityName (design §5.4) with the same fallback to the demo store.
+import { registerStructureRoutes } from "./modules/structure/structure.routes.js";
+import { listSwitchableProperties } from "./modules/structure/legal-entity.service.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
 import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport, parseReportWindow } from "./modules/revenue/forecast.service.js";
 import { getHistoryForecastBoard, parseBoardWindow, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
@@ -310,7 +320,6 @@ import {
   getSecuritySettings,
   listNotifications,
   isPlatformAdmin,
-  listPropertiesForUser,
   listSessions,
   loginWithEmailPassword,
   markNotificationRead,
@@ -1833,39 +1842,9 @@ export async function buildApiServer() {
     });
   });
 
-  async function listSwitchableProperties(userContext: UserContext) {
-    const { prisma } = await import("@hotelos/database");
-    // Tenant isolation: only the platform admin switches across organizations.
-    const platformAdmin = await isPlatformAdmin(userContext);
-    const [properties, organizations] = await Promise.all([
-      prisma.property.findMany({
-        where: platformAdmin ? {} : { organizationId: userContext.organizationId },
-        select: { id: true, name: true, organizationId: true, municipality: true, province: true, status: true },
-        orderBy: { name: "asc" }
-      }),
-      prisma.organization.findMany({
-        where: platformAdmin ? {} : { id: userContext.organizationId },
-        select: { id: true, name: true }
-      })
-    ]);
-    const orgName = new Map(organizations.map((org) => [org.id, org.name]));
-    if (properties.length === 0) {
-      // Fallback to in-memory demo store if the database has not been seeded.
-      return listPropertiesForUser(userContext).map((property) => ({
-        id: property.id,
-        name: property.name,
-        organizationId: property.organizationId,
-        organizationName: orgName.get(property.organizationId) ?? property.organizationId,
-        municipality: null as string | null,
-        province: null as string | null,
-        status: "open"
-      }));
-    }
-    return properties.map((property) => ({
-      ...property,
-      organizationName: orgName.get(property.organizationId) ?? property.organizationId
-    }));
-  }
+  // Tanda 6b (L2, integración): `listSwitchableProperties` lives in
+  // modules/structure/legal-entity.service.ts (tenant isolation unchanged: only
+  // the platform admin switches across organizations; demo-store fallback kept).
 
   // Tanda 5 (L1a · rbac): the signed-in user with the template key of every
   // role they hold, per property — the navigation derives its role tokens
@@ -2724,6 +2703,10 @@ export async function buildApiServer() {
   registerFixedAssetsRoutes(app);
   registerTreasuryRoutes(app);
   registerFinancialStatementsRoutes(app);
+  // Estructura societaria (Tanda 6b · L2): GET /organizations/me/structure,
+  // /legal-entities/**, PATCH /properties/:propertyId/establishment and the
+  // console route /admin/legal-entities/:legalEntityId/verifactu-scope.
+  registerStructureRoutes(app);
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to
@@ -6464,11 +6447,17 @@ export async function buildApiServer() {
       propertyName?: string; propertyType?: string;
       municipality?: string; province?: string;
       organizationName?: string; organizationCountry?: string;
-      property?: { name?: string; type?: string; municipality?: string; province?: string; taxRegion?: string; postalCode?: string; ineMunicipalityCode?: string; fiscalTerritory?: string };
+      property?: { name?: string; type?: string; municipality?: string; province?: string; taxRegion?: string; postalCode?: string; ineMunicipalityCode?: string; fiscalTerritory?: string; kind?: string; code?: string };
       ownerUser?: { email?: string; fullName?: string; phone?: string };
       modulesEnabled?: string[];
+      // Tanda 6b (L2): the implicit sociedad of the new tenant. Everything
+      // optional (NIF pendiente when omitted); the service validates the NIF
+      // (400 TAX_ID_INVALID · 409 TAX_ID_IN_USE) and the code.
+      legalEntity?: { legalName?: string; taxId?: string; code?: string; legalForm?: string };
     };
     const ownerEmail = body.ownerUser?.email ?? body.ownerEmail ?? "";
+    const propertyKind = body.property?.kind;
+    const legalForm = body.legalEntity?.legalForm;
     return createTenant({
       context: request.userContext,
       organizationName: body.organizationName ?? body.name ?? "",
@@ -6482,8 +6471,20 @@ export async function buildApiServer() {
         taxRegion: body.property?.taxRegion,
         postalCode: body.property?.postalCode,
         ineMunicipalityCode: body.property?.ineMunicipalityCode,
-        fiscalTerritory: body.property?.fiscalTerritory
+        fiscalTerritory: body.property?.fiscalTerritory,
+        // Tanda 6b (L2): work-centre kind / code of the first centre (values
+        // outside the enum fall back to the service defaults: hotel, derived code).
+        kind: PROPERTY_KINDS.includes(propertyKind as PropertyKind) ? (propertyKind as PropertyKind) : undefined,
+        code: body.property?.code
       },
+      legalEntity: body.legalEntity
+        ? {
+            legalName: body.legalEntity.legalName,
+            taxId: body.legalEntity.taxId,
+            code: body.legalEntity.code,
+            legalForm: LEGAL_FORMS.includes(legalForm as LegalForm) ? (legalForm as LegalForm) : undefined
+          }
+        : undefined,
       ownerUser: {
         email: ownerEmail,
         // fallback: si no llega nombre, usar el local-part del email (mejor que romper el alta)
@@ -8524,8 +8525,20 @@ if (entryFile === argFile) {
     app.log.info("[pace.scheduler] enabled (daily · pace + night-audit snapshot)");
   }
 
+  // Tanda 6b (R6, fix t6b#13): the End-of-Day schedulers below run over HOTELS
+  // only — an office or another non-lodging centre has no allotments or group
+  // blocks. listOperationalProperties (lib/finance-scope via lib/tenancy) is the
+  // single `kind = hotel` filter; archived centres are skipped as before and
+  // closed ones keep releasing (unchanged behaviour of the legacy query).
+  const listSchedulerHotels = async (): Promise<Array<{ id: string }>> => {
+    const { prisma: prismaClient } = await import("@hotelos/database");
+    const organizations = await prismaClient.organization.findMany({ select: { id: true } });
+    const perOrganization = await Promise.all(organizations.map((organization) => listOperationalProperties(organization.id, prismaClient, { includeClosed: true })));
+    return perOrganization.flat().filter((property) => property.status !== "archived").map((property) => ({ id: property.id }));
+  };
+
   // Allotment release scheduler · industry-standard End-of-Day routine.
-  // Para cada propiedad activa, ejecuta releaseExpired() que devuelve al pool
+  // Para cada hotel activo, ejecuta releaseExpired() que devuelve al pool
   // general las habitaciones cuyo release period haya vencido sin venderse.
   // Idempotente (sólo libera días con releasedRooms = 0 y dentro del threshold).
   // Disable con ALLOTMENT_RELEASE_SCHEDULER_DISABLED=true.
@@ -8533,11 +8546,7 @@ if (entryFile === argFile) {
     const dayMs = 24 * 60 * 60 * 1000;
     const runRelease = async () => {
       try {
-        const { prisma: prismaClient } = await import("@hotelos/database");
-        const properties = await prismaClient.property.findMany({
-          where: { status: { not: "archived" } },
-          select: { id: true }
-        });
+        const properties = await listSchedulerHotels();
         let totalReleasedDays = 0;
         let totalReleasedRooms = 0;
         for (const p of properties) {
@@ -8571,8 +8580,7 @@ if (entryFile === argFile) {
     const dayMs = 24 * 60 * 60 * 1000;
     const runCutoff = async () => {
       try {
-        const { prisma: prismaClient } = await import("@hotelos/database");
-        const properties = await prismaClient.property.findMany({ where: { status: { not: "archived" } }, select: { id: true } });
+        const properties = await listSchedulerHotels();
         let total = 0;
         for (const p of properties) {
           try {

@@ -25,6 +25,16 @@
 // Content is stored inline on GestoriaExport (no object storage exists in the
 // API); exports above MAX_INLINE_BYTES are refused with 413 EXPORT_TOO_LARGE
 // («divide el periodo»).
+//
+// Scope (Tanda 6b · R11, fix t6b#4): a stored export carries no centre
+// (GestoriaExport has no propertyId column) and its content is the diario or
+// the VAT books of the NIF leaving the system, so every export is a
+// whole-sociedad artefact — like the statement snapshots. The whole family
+// (create, list, get, download) needs the whole-sociedad scope
+// (`accounting.entity.read` or an organization-wide context; opaque 404
+// ENTITY_SCOPE_REQUIRED otherwise); a per-centre export also validates its
+// centre. Per-row centre scope (a director downloading only the exports of his
+// hotel) needs the column: see the runbook §17 handoff.
 
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
@@ -32,6 +42,7 @@ import { HttpError, NotFoundError } from "../../lib/http-error.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { accountDigits } from "../accounting/chart-of-accounts.service.js";
+import { assertFinanceReadScope } from "../../lib/finance-scope.js";
 import type { GestoriaExportFormatInfo, GestoriaExportFormatKey, GestoriaExportRow } from "../../../../../packages/shared/src/financial-statements-types.js";
 import { csvDocument, type CsvCell } from "./csv.js";
 import { decimalComma, money, spanishDate } from "./money.js";
@@ -285,6 +296,12 @@ function toWire(row: {
   };
 }
 
+/** Whole-sociedad scope for every export (see header); with a centre, that centre must be within scope too. */
+export function assertGestoriaExportScope(context: UserContext, propertyId?: string | null): void {
+  assertFinanceReadScope(context, null);
+  if (propertyId) assertFinanceReadScope(context, propertyId);
+}
+
 export async function createGestoriaExport(input: {
   context: UserContext;
   format: GestoriaExportFormatKey;
@@ -296,6 +313,7 @@ export async function createGestoriaExport(input: {
   source?: FinancialStatementsSource;
 }): Promise<GestoriaExportRow & { unnumbered: number }> {
   requirePermissions(input.context, ["analytics.export"]);
+  assertGestoriaExportScope(input.context, input.propertyId);
   const source = input.source ?? prismaFinancialStatementsSource;
   const organizationId = input.context.organizationId;
   if (input.propertyId) {
@@ -353,6 +371,7 @@ export async function createGestoriaExport(input: {
 
 export async function listGestoriaExports(input: { context: UserContext; format?: GestoriaExportFormatKey | null; limit?: number }): Promise<GestoriaExportRow[]> {
   requirePermissions(input.context, ["analytics.export"]);
+  assertGestoriaExportScope(input.context);
   const rows = await prisma.gestoriaExport.findMany({
     where: { organizationId: input.context.organizationId, ...(input.format ? { format: input.format } : {}) },
     orderBy: { createdAt: "desc" },
@@ -364,6 +383,7 @@ export async function listGestoriaExports(input: { context: UserContext; format?
 
 export async function getGestoriaExport(input: { context: UserContext; exportId: string }): Promise<{ row: GestoriaExportRow; content: string }> {
   requirePermissions(input.context, ["analytics.export"]);
+  assertGestoriaExportScope(input.context);
   const row = await prisma.gestoriaExport.findFirst({ where: { id: input.exportId, organizationId: input.context.organizationId } });
   if (!row) throw new NotFoundError("Exportación no encontrada.");
   return { row: toWire(row), content: row.inline ?? "" };

@@ -10,6 +10,10 @@ import {
   listComplianceTasks,
   listComplianceDocuments
 } from "./compliance-center.service.js";
+// Tanda 6b (R2, fix t6b#12): the titular of the establishment is the sociedad
+// (razón social + NIF from resolveIssuerIdentity); Property.legalName is the
+// deprecated trade name and is never printed as a razón social.
+import { resolveIssuerIdentity } from "../invoicing/issuer-identity.service.js";
 
 const STATUS_LABEL: Record<string, string> = {
   COMPLIANT: "Cumple", NON_COMPLIANT: "No cumple", PENDING: "Pendiente", EXPIRED: "Vencido",
@@ -34,8 +38,9 @@ function fmtDate(v?: string | Date | null): string {
 }
 
 export async function getInspectionFolderData(propertyId: string, preparedBy?: string) {
-  const [property, center, alertsRes, tasks, documents] = await Promise.all([
-    prisma.property.findUnique({ where: { id: propertyId } }),
+  const [property, issuer, center, alertsRes, tasks, documents] = await Promise.all([
+    prisma.property.findUnique({ where: { id: propertyId }, select: { name: true, address: true, province: true, country: true } }),
+    resolveIssuerIdentity(propertyId),
     getComplianceCenter(propertyId),
     getComplianceAlerts(propertyId),
     listComplianceTasks(propertyId),
@@ -43,9 +48,12 @@ export async function getInspectionFolderData(propertyId: string, preparedBy?: s
   ]);
   return {
     propertyId,
+    // `tradeName` is the nombre comercial of the centre (Property.tradeName ?? name).
     property: property
-      ? { name: property.name, legalName: property.legalName, address: property.address, province: property.province, country: property.country }
-      : { name: propertyId, legalName: null, address: null, province: null, country: null },
+      ? { name: property.name, tradeName: issuer?.establishment.tradeName ?? property.name, address: property.address, province: property.province, country: property.country }
+      : { name: propertyId, tradeName: propertyId, address: null, province: null, country: null },
+    // Titular del establecimiento = the sociedad (razón social, NIF, domicilio fiscal), never a property column.
+    titular: issuer ? { legalName: issuer.legalName, taxId: issuer.taxId, fiscalAddress: issuer.fiscalAddress } : null,
     generatedAt: new Date().toISOString(),
     preparedBy: preparedBy ?? null,
     kpis: center.kpis,
@@ -125,8 +133,9 @@ export function buildInspectionFolderHtml(data: Awaited<ReturnType<typeof getIns
 </style></head><body>
   <header>
     <h1>Carpeta de inspección de cumplimiento</h1>
-    <div class="sub"><strong>${esc(data.property.name)}</strong>${data.property.legalName ? ` · ${esc(data.property.legalName)}` : ""}</div>
+    <div class="sub"><strong>${esc(data.property.name)}</strong>${data.property.tradeName && data.property.tradeName !== data.property.name ? ` · ${esc(data.property.tradeName)}` : ""}</div>
     ${addressLine ? `<div class="sub">${esc(addressLine)}</div>` : ""}
+    ${data.titular ? `<div class="sub">Titular: <strong>${esc(data.titular.legalName)}</strong>${data.titular.taxId ? ` · NIF ${esc(data.titular.taxId)}` : ""}${data.titular.fiscalAddress ? ` · ${esc(data.titular.fiscalAddress)}` : ""}</div>` : ""}
     <div class="sub">Generado el ${esc(fmtDate(data.generatedAt))}${data.preparedBy ? ` · Preparado por ${esc(data.preparedBy)}` : ""}</div>
   </header>
 

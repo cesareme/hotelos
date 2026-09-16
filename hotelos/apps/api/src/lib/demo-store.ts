@@ -2394,6 +2394,10 @@ export const demoStore: DemoStore = {
       "compliance.configure",
       "billing.configure",
       "accounting.configure",
+      // Tanda 6b (L2 · estructura societaria): whole-entity finance reads and
+      // the management of the sociedad and its centres (owner/admin catalogue).
+      "accounting.entity.read",
+      "organization.structure.manage",
       "accounting.journal.post",
       "invoice.issue",
       "invoice.cancel",

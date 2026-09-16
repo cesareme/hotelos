@@ -3,12 +3,16 @@ import { requirePermissions } from "../auth/auth.service.js";
 import { createId, nowIso } from "../../lib/ids.js";
 import { demoStore, type UserContext } from "../../lib/demo-store.js";
 import { prisma } from "@hotelos/database";
+import type { Prisma } from "@hotelos/database";
 import { normalizeTaxId, spanishTaxIdValidationMessage } from "@hotelos/compliance";
-import type { PermissionKey } from "@hotelos/shared";
-import { BadRequestError } from "../../lib/http-error.js";
+import { PROPERTY_KINDS, type PermissionKey, type PropertyKind } from "@hotelos/shared";
+import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
 import { ensurePropertyTaxes } from "../../lib/tenant-hydration.js";
 import { invalidateTaxCache } from "../accounting/tax-rate.service.js";
 import { resolveFiscalLocation } from "../backoffice/backoffice.service.js";
+// Tanda 6b (fix t6b#7): the go-live materialises the implicit sociedad and a
+// coded work centre exactly like bootstrap / createTenant (design §5.1 R10, §5.4).
+import { codeInUse, createImplicitLegalEntity, ensureDefaultLegalEntity, planPropertyCode } from "../structure/legal-entity.service.js";
 import {
   buildHistoryForecastImportPreview,
   buildHumanReviewQueue,
@@ -1053,6 +1057,119 @@ export async function applyMigration(input: { context: UserContext; projectId: s
   return { projectId: project.id, status: "applied", aiAppliedWithoutApproval: false, ...applied };
 }
 
+// ---------------------------------------------------------------------------
+// Go-live · sociedad + centro de trabajo (Tanda 6b · fix t6b#7)
+// ---------------------------------------------------------------------------
+
+/** Property columns the import fills; identity / structure columns are decided here, not by the payload. */
+type OnboardingPropertyColumns = Omit<
+  Prisma.PropertyUncheckedCreateInput,
+  "id" | "organizationId" | "legalEntityId" | "kind" | "code" | "tradeName" | "legalName" | "status"
+> & { name: string };
+
+export type OnboardingStructureInput = {
+  organizationId: string;
+  organizationName: string;
+  /** Razón social of the implicit sociedad when the organization is created here; an existing organization keeps its own. */
+  organizationLegalName: string | null;
+  /** Normalised, checksum-valid NIF (validated by the caller) or null («NIF pendiente»); ignored for an existing organization. */
+  organizationTaxId: string | null;
+  propertyId: string;
+  kind: PropertyKind;
+  /** Explicit Property.code or null → initials of the name without the brand tokens (planPropertyCode). */
+  requestedCode: string | null;
+  /** Nombre comercial of the centre (legacy `targetProperty.legalName`); stored only when it differs from the razón social. */
+  tradeName: string | null;
+  property: OnboardingPropertyColumns;
+};
+
+export type OnboardingStructureResult = {
+  organizationId: string;
+  organizationCreated: boolean;
+  legalEntity: { id: string; code: string; legalName: string; taxId: string | null; created: boolean };
+  property: { id: string; code: string; kind: PropertyKind; legalEntityId: string; created: boolean };
+};
+
+/**
+ * Organization + implicit sociedad + coded work centre in ONE transaction, the
+ * same shape bootstrap.service.ts and createTenant produce (design §5.1 R10):
+ *   · a new organization is created with its name only — the deprecated
+ *     Organization.legalName / taxId columns are never written (R2); the razón
+ *     social and the NIF live in the LegalEntity (400 TAX_ID_INVALID / 409
+ *     TAX_ID_IN_USE from createImplicitLegalEntity);
+ *   · an existing organization keeps its sociedad and NIF; a tenant created
+ *     before the backfill gets its implicit sociedad from the deprecated
+ *     columns exactly as the backfill would (ensureDefaultLegalEntity);
+ *   · the property is created with legalEntityId, kind and a code unique in the
+ *     sociedad (409 CODE_IN_USE for an explicit clash); Property.legalName is
+ *     never written — the payload's `legalName` is the hotel's trade name and
+ *     lands in tradeName only when it differs from the razón social;
+ *   · re-running for the same ids converges (no second sociedad, code kept,
+ *     legalEntityId filled when it was null); a property id that belongs to
+ *     another organization is an opaque 404 (never adopted or rewritten, R10.5).
+ * Exported for the integration test (tests/integration/integrador-fix-t6b.test.mts).
+ */
+export async function materialiseOnboardingStructure(input: OnboardingStructureInput): Promise<OnboardingStructureResult> {
+  return prisma.$transaction(async (tx) => {
+    const existingOrganization = await tx.organization.findUnique({ where: { id: input.organizationId }, select: { id: true, name: true } });
+    let legalEntity: Awaited<ReturnType<typeof createImplicitLegalEntity>>;
+    let legalEntityCreated: boolean;
+    if (!existingOrganization) {
+      await tx.organization.create({ data: { id: input.organizationId, name: input.organizationName } });
+      legalEntity = await createImplicitLegalEntity(tx, {
+        organizationId: input.organizationId,
+        organizationName: input.organizationName,
+        legalName: input.organizationLegalName,
+        taxId: input.organizationTaxId
+      });
+      legalEntityCreated = true;
+    } else {
+      const ensured = await ensureDefaultLegalEntity(tx, existingOrganization.id);
+      legalEntity = ensured.entity;
+      legalEntityCreated = ensured.created;
+    }
+    const organizationName = existingOrganization?.name ?? input.organizationName;
+
+    const existingProperty = await tx.property.findUnique({
+      where: { id: input.propertyId },
+      select: { id: true, organizationId: true, legalEntityId: true, code: true, kind: true }
+    });
+    if (existingProperty && existingProperty.organizationId !== input.organizationId) {
+      throw new NotFoundError("Propiedad no encontrada.");
+    }
+
+    const siblings = await tx.property.findMany({ where: { legalEntityId: legalEntity.id, NOT: { id: input.propertyId } }, select: { code: true } });
+    const taken = new Set(siblings.map((row) => row.code).filter((value): value is string => value !== null));
+    let code = existingProperty?.code ?? null;
+    if (!code) {
+      code = planPropertyCode(input.property.name, { name: organizationName, legalName: legalEntity.legalName }, taken, input.requestedCode);
+      if (taken.has(code)) throw codeInUse("property", code);
+    }
+    const tradeName = input.tradeName && input.tradeName !== legalEntity.legalName ? input.tradeName : null;
+    const columns = { ...input.property, tradeName, status: "open" as const };
+    // The timezone is fixed at creation (legacy contract of the import): a re-import never moves it.
+    const { timezone: _createOnlyTimezone, ...updateColumns } = columns;
+    const select = { id: true, code: true, kind: true, legalEntityId: true } as const;
+    const row = existingProperty
+      ? await tx.property.update({
+          where: { id: input.propertyId },
+          data: { ...updateColumns, legalEntityId: existingProperty.legalEntityId ?? legalEntity.id, code },
+          select
+        })
+      : await tx.property.create({
+          data: { id: input.propertyId, organizationId: input.organizationId, legalEntityId: legalEntity.id, kind: input.kind, code, ...columns },
+          select
+        });
+
+    return {
+      organizationId: input.organizationId,
+      organizationCreated: !existingOrganization,
+      legalEntity: { id: legalEntity.id, code: legalEntity.code, legalName: legalEntity.legalName, taxId: legalEntity.taxId ?? null, created: legalEntityCreated },
+      property: { id: row.id, code: row.code ?? code, kind: row.kind, legalEntityId: row.legalEntityId ?? legalEntity.id, created: !existingProperty }
+    };
+  });
+}
+
 async function materialiseOnboardingProject(
   projectId: string,
   context: UserContext,
@@ -1060,18 +1177,34 @@ async function materialiseOnboardingProject(
   spaces?: Array<Record<string, unknown>>
 ) {
   const organizationId = String(targetProperty.organizationId ?? context.organizationId);
-  // FISC-03: Organization.taxId is the issuer NIF of every invoice / registro.
-  // Same rule as the profile form and the bootstrap: a given value must be a
-  // checksum-valid DNI / NIE / CIF (400 otherwise) and is stored normalised;
-  // an empty value stores NULL ("not configured"). Validated before any write
-  // so a bad NIF leaves nothing half-materialised.
+  // Tanda 6b (R2): the NIF is the sociedad's (LegalEntity.taxId), never
+  // Organization.taxId. Same rule as bootstrap / createTenant: a given value
+  // must be a checksum-valid DNI / NIE / CIF (400 TAX_ID_INVALID otherwise) and
+  // is stored normalised; an empty value leaves the NIF pending. Validated
+  // before any write so a bad NIF leaves nothing half-materialised.
   const rawOrganizationTaxId = targetProperty.organizationTaxId ? String(targetProperty.organizationTaxId).trim() : "";
   const taxIdProblem = rawOrganizationTaxId ? spanishTaxIdValidationMessage(rawOrganizationTaxId) : null;
   if (taxIdProblem) {
-    throw new BadRequestError(`targetProperty.organizationTaxId no es un NIF/CIF válido («${rawOrganizationTaxId}»): ${taxIdProblem}`);
+    const error = new BadRequestError(`targetProperty.organizationTaxId no es un NIF/CIF válido («${rawOrganizationTaxId}»): ${taxIdProblem}`);
+    error.details = { code: "TAX_ID_INVALID", taxId: rawOrganizationTaxId, reason: taxIdProblem };
+    throw error;
   }
   const organizationTaxId = rawOrganizationTaxId ? normalizeTaxId(rawOrganizationTaxId) : null;
   const propertyId = String(targetProperty.id ?? `prop_${projectId}`);
+  // Work-centre kind (hotel by default; office / other never get rooms, R6) and explicit code.
+  const rawKind = targetProperty.kind === undefined || targetProperty.kind === null || targetProperty.kind === "" ? "hotel" : String(targetProperty.kind).trim().toLowerCase();
+  if (!(PROPERTY_KINDS as readonly string[]).includes(rawKind)) {
+    const error = new BadRequestError(`targetProperty.kind no válido («${rawKind}»): usa hotel, office u other.`);
+    error.details = { code: "VALIDATION_ERROR", issues: [{ path: "targetProperty.kind", message: `valor no admitido: ${rawKind}` }] };
+    throw error;
+  }
+  const propertyKind = rawKind as PropertyKind;
+  const requestedCode = targetProperty.code ? String(targetProperty.code).trim() : null;
+  const propertyTradeName = targetProperty.tradeName
+    ? String(targetProperty.tradeName).trim()
+    : targetProperty.legalName
+      ? String(targetProperty.legalName).trim()
+      : null;
   // Tanda 3: fiscal location validated BEFORE any write and merged non-destructively over
   // the existing property (an import that omits the region keeps / canonicalises the current
   // one, or derives it from the province); free-text regions are a 400, never persisted.
@@ -1090,23 +1223,19 @@ async function materialiseOnboardingProject(
     },
     province: province || null
   });
-  // Ensure the organization exists (an existing organization keeps its own NIF).
-  await prisma.organization.upsert({
-    where: { id: organizationId },
-    update: {},
-    create: {
-      id: organizationId,
-      name: String(targetProperty.organizationName ?? "HotelOS Group"),
-      legalName: String(targetProperty.organizationLegalName ?? targetProperty.organizationName ?? "HotelOS Group"),
-      taxId: organizationTaxId
-    }
-  });
-
-  await prisma.property.upsert({
-    where: { id: propertyId },
-    update: {
+  // Organization (name only) + implicit sociedad + coded centre, one transaction
+  // (fix t6b#7): an existing organization keeps its own sociedad and NIF.
+  const structure = await materialiseOnboardingStructure({
+    organizationId,
+    organizationName: String(targetProperty.organizationName ?? "HotelOS Group"),
+    organizationLegalName: targetProperty.organizationLegalName ? String(targetProperty.organizationLegalName).trim() : null,
+    organizationTaxId,
+    propertyId,
+    kind: propertyKind,
+    requestedCode,
+    tradeName: propertyTradeName,
+    property: {
       name: String(targetProperty.name ?? "Imported property"),
-      legalName: targetProperty.legalName ? String(targetProperty.legalName) : null,
       address: targetProperty.address ? String(targetProperty.address) : null,
       municipality: targetProperty.municipality ? String(targetProperty.municipality) : null,
       province: province || null,
@@ -1115,23 +1244,7 @@ async function materialiseOnboardingProject(
       postalCode: fiscal.postalCode,
       ineMunicipalityCode: fiscal.ineMunicipalityCode,
       fiscalTerritory: fiscal.fiscalTerritory,
-      status: "open"
-    },
-    create: {
-      id: propertyId,
-      organizationId,
-      name: String(targetProperty.name ?? "Imported property"),
-      legalName: targetProperty.legalName ? String(targetProperty.legalName) : null,
-      address: targetProperty.address ? String(targetProperty.address) : null,
-      municipality: targetProperty.municipality ? String(targetProperty.municipality) : null,
-      province: province || null,
-      country: String(targetProperty.country ?? "ES"),
-      taxRegion: fiscal.taxRegionToPersist,
-      postalCode: fiscal.postalCode,
-      ineMunicipalityCode: fiscal.ineMunicipalityCode,
-      fiscalTerritory: fiscal.fiscalTerritory,
-      timezone: String(targetProperty.timezone ?? "Europe/Madrid"),
-      status: "open"
+      timezone: String(targetProperty.timezone ?? "Europe/Madrid")
     }
   });
   // The tax resolver caches region/rates per property: drop them and (re)provision the
@@ -1257,6 +1370,14 @@ async function materialiseOnboardingProject(
   return {
     propertyId,
     organizationId,
+    // Tanda 6b: who invoices (sociedad) and how the centre is coded (fix t6b#7).
+    structure: {
+      legalEntityId: structure.legalEntity.id,
+      legalEntityCode: structure.legalEntity.code,
+      legalEntityCreated: structure.legalEntity.created,
+      propertyCode: structure.property.code,
+      kind: structure.property.kind
+    },
     fiscal: {
       taxRegion: fiscal.taxRegion,
       taxRegionSource: fiscal.taxRegionSource,

@@ -15,6 +15,11 @@
 // La respuesta conserva la forma que lee la pantalla «Extractos y remesas»
 // (accounts[].movements/matches/unmatchedMovementIdxs, unmatchedPayments) y
 // añade statementId/bankAccountId/persisted/newLines/duplicateLines/warnings.
+//
+// Cuenta de la sociedad (Tanda 6b · L4): la cuenta bancaria puede pertenecer al
+// centro o a la sociedad (sin centro, `bankAccountServesCentre`); un fichero
+// importado desde un centro se resuelve contra sus cuentas y contra las de la
+// sociedad, nunca contra las de otro centro.
 
 import { prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
@@ -24,6 +29,7 @@ import { getStatement, persistStatement, type StatementLineInput } from "../bank
 import { autoMatchStatement, loadCandidates, type AutoMatchDetail } from "../banking/reconciliation.service.js";
 import { createRemittance, type CreateRemittanceResult } from "../treasury/sepa-remittance.service.js";
 import { fromCents, isoDay } from "../treasury/money.js";
+import { bankAccountServesCentre } from "../treasury/treasury.service.js";
 import { TREASURY_WRITE_KEYS, requireAnyPermission } from "../treasury/permissions.js";
 import { parseCsb43File, type Csb43Account, type Csb43Movement } from "./csb43.parser.js";
 import { validateIban, type SepaRemittance } from "./sepa-norma19.generator.js";
@@ -67,16 +73,23 @@ function movementToLine(movement: Csb43Movement): StatementLineInput {
   };
 }
 
-async function resolveBankAccount(input: { context: UserContext; propertyId: string; account: Csb43Account; bankAccountId?: string | null; createMissing: boolean; warnings: string[] }): Promise<string | null> {
+/** Active account of the sociedad WITHOUT a centre matching the IBAN (null until BankAccount.propertyId is nullable). */
+async function findEntityLevelBankAccountByIban(organizationId: string, propertyId: string, iban: string): Promise<{ id: string } | null> {
+  const normalised = iban.replace(/\s+/g, "").toUpperCase();
+  const accounts = await prisma.bankAccount.findMany({ where: { organizationId, active: true }, select: { id: true, iban: true, propertyId: true } });
+  return accounts.find((a) => bankAccountServesCentre(a, propertyId) && (a.iban ?? "").replace(/\s+/g, "").toUpperCase() === normalised) ?? null;
+}
+
+async function resolveBankAccount(input: { context: UserContext; organizationId: string; propertyId: string; account: Csb43Account; bankAccountId?: string | null; createMissing: boolean; warnings: string[] }): Promise<string | null> {
   if (input.bankAccountId) {
-    const explicit = await prisma.bankAccount.findFirst({ where: { id: input.bankAccountId, propertyId: input.propertyId } });
-    if (!explicit) throw new NotFoundError("La cuenta bancaria indicada no existe en esta propiedad.");
+    const explicit = await prisma.bankAccount.findUnique({ where: { id: input.bankAccountId } });
+    if (!explicit || explicit.organizationId !== input.organizationId || !bankAccountServesCentre(explicit, input.propertyId)) throw new NotFoundError("La cuenta bancaria indicada no existe en esta propiedad.");
     if (explicit.iban && explicit.iban.replace(/\s+/g, "").toUpperCase() !== input.account.iban) {
       input.warnings.push(`El IBAN del fichero (${input.account.iban}) no coincide con el de la cuenta ${explicit.name} (${explicit.iban}).`);
     }
     return explicit.id;
   }
-  const byIban = await findBankAccountByIban(input.propertyId, input.account.iban);
+  const byIban = (await findBankAccountByIban(input.propertyId, input.account.iban)) ?? (await findEntityLevelBankAccountByIban(input.organizationId, input.propertyId, input.account.iban));
   if (byIban) return byIban.id;
   if (!input.createMissing) return null;
   const created = await createBankAccount({
@@ -120,9 +133,9 @@ export async function importCsb43(input: {
 
   for (const account of parsed.accounts) {
     const accountWarnings = [...account.warnings];
-    const bankAccountId = await resolveBankAccount({ context: input.context, propertyId: input.propertyId, account, bankAccountId: input.bankAccountId, createMissing: input.createMissingAccount !== false, warnings: accountWarnings });
+    const bankAccountId = await resolveBankAccount({ context: input.context, organizationId: property.organizationId, propertyId: input.propertyId, account, bankAccountId: input.bankAccountId, createMissing: input.createMissingAccount !== false, warnings: accountWarnings });
     if (!bankAccountId) {
-      accountWarnings.push(`No hay cuenta bancaria con IBAN ${account.iban} en la propiedad: crea la cuenta y vuelve a importar.`);
+      accountWarnings.push(`No hay cuenta bancaria con IBAN ${account.iban} en la propiedad ni en la sociedad: crea la cuenta y vuelve a importar.`);
       accounts.push({ ...account, bankAccountId: null, statementId: null, persisted: false, newLines: 0, duplicateLines: 0, matches: [], unmatchedMovementIdxs: account.movements.map((_, i) => i), warnings: accountWarnings });
       continue;
     }

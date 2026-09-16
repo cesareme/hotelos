@@ -65,15 +65,45 @@ export const usaliPnlQuerySchema = z
   .strict()
   .refine((q) => q.from <= q.to, { message: "from no puede ser posterior a to", path: ["from"] });
 
+/** Reparto informativo de la oficina central (CorporateAllocationMethod, legal-structure-types.ts). */
+export const corporateAllocationMethodSchema = z.enum(["none", "revenue", "rooms_available", "headcount", "manual"], {
+  message: "allocation debe ser none, revenue, rooms_available, headcount o manual"
+});
+
 export const usaliCompareQuerySchema = z
   .object({
     from: isoDateSchema,
     to: isoDateSchema,
     /** Comma-separated property ids; omitted → every property of the organisation. */
-    propertyIds: z.string().optional()
+    propertyIds: z.string().optional(),
+    /** Tanda 6b: "1" → hotels in `properties`, office/other in `corporate`, society-level entries in `unassigned`, rollup and allocation. */
+    includeCorporate: z.enum(["0", "1", "true", "false"]).optional(),
+    /** Allocation key of this response (overrides the stored one); only meaningful with includeCorporate. */
+    allocation: corporateAllocationMethodSchema.optional()
   })
   .strict()
   .refine((q) => q.from <= q.to, { message: "from no puede ser posterior a to", path: ["from"] });
+
+/** GET /accounting/pnl/by-property. */
+export const pnlByPropertyQuerySchema = z
+  .object({
+    from: isoDateSchema,
+    to: isoDateSchema,
+    allocation: corporateAllocationMethodSchema.optional()
+  })
+  .strict()
+  .refine((q) => q.from <= q.to, { message: "from no puede ser posterior a to", path: ["from"] });
+
+/** PUT /accounting/allocation. */
+export const corporateAllocationPutSchema = z
+  .object({
+    method: corporateAllocationMethodSchema,
+    weights: z
+      .array(z.object({ propertyId: z.string().min(1), weight: z.number().finite({ message: "weight debe ser un número" }) }).strict())
+      .max(200)
+      .optional()
+  })
+  .strict();
 
 /** "2026-01-01..2026-03-31,2025-01-01..2025-03-31" (2 to 6 periods, the first is the base). */
 export const usaliPeriodsQuerySchema = z

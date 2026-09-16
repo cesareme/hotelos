@@ -13,13 +13,27 @@
 //   VERIFACTU_SYSTEM_ID         IdSistemaInformatico (exactly 2 chars)      default "01"
 //   VERIFACTU_SYSTEM_VERSION    Version (≤50) — falls back to APP_VERSION   default "0.1.0"
 //   VERIFACTU_INSTALL_NUMBER    NumeroInstalacion (≤100), assigned by the
-//                               producer per installation (NOT by AEAT)     required
+//                               producer per installation (NOT by AEAT).
+//                               Since Tanda 6b (estructura societaria) the
+//                               number of each «facturación» lives in
+//                               verifactu_installations (one row per billing
+//                               centre with `per_center`, one per legal entity
+//                               with `per_entity`; immutable, never reused).
+//                               The variable is ONLY the sandbox fallback for a
+//                               centre without a declared installation and the
+//                               deployment-level check server.ts runs at boot.
 //   VERIFACTU_MULTI_OT          "S" | "N" — TipoUsoPosibleMultiOT and
 //                               IndicadorMultiplesOT (SaaS multi-tenant)    default "S"
 //
 // Missing required values are replaced by labelled sandbox defaults so the
 // stub pipeline keeps working, and reported in `errors` so real modes
 // (preproduction / production) refuse to send and readiness stays red.
+//
+// Installation (Tanda 6b · L3, design §5.2 R7): callers that know the
+// VerifactuInstallation of the record pass it in `options.installation`; its
+// `numeroInstalacion` is what the XML carries and the env variable is not
+// consulted for the number. With `requireInstallation: true` (real modes) a
+// missing installation is an error of the block — never a fallback to the env.
 
 import { isValidSpanishTaxId, normalizeTaxId, SPANISH_TAX_ID_PLACEHOLDER, spanishTaxIdValidationMessage } from "../tax-id.js";
 
@@ -43,13 +57,40 @@ export type VerifactuSoftwareBlock = {
   indicadorMultiplesOT: VerifactuSoftwareFlag;
 };
 
+/** The declared installation of a record (verifactu_installations row). */
+export type VerifactuInstallationRef = {
+  /** Row id (kept on the submission for traceability); optional for callers that only know the number. */
+  id?: string;
+  /** NumeroInstalacion declared by the producer for this billing centre / legal entity. Immutable. */
+  numeroInstalacion: string;
+};
+
+/** Where the NumeroInstalacion of a resolution came from. */
+export type VerifactuInstallationSource = "installation" | "env" | "default";
+
 export type VerifactuSoftwareResolution = {
   /** True when every field is present and within the XSD limits. */
   ok: boolean;
   /** Spanish, user-facing reasons the block is not ready for AEAT (empty when ok). */
   errors: string[];
   software: VerifactuSoftwareBlock;
+  /** `installation` when a declared installation supplied the number; `env` / `default` otherwise (sandbox only). */
+  installationSource: VerifactuInstallationSource;
 };
+
+export type VerifactuSoftwareOptions = {
+  /**
+   * Declared installation of the record. `undefined` keeps the legacy
+   * env-only behaviour; `null` states that the centre has NO installation
+   * (the env is then a sandbox fallback, or an error with `requireInstallation`).
+   */
+  installation?: VerifactuInstallationRef | null;
+  /** Real modes: a missing installation is an error of the block, never a fallback to the env. */
+  requireInstallation?: boolean;
+};
+
+/** Reason reported (and `errorCode` of the parked submission) when a real mode has no declared installation. */
+export const VERIFACTU_INSTALLATION_NOT_DECLARED_CODE = "INSTALLATION_NOT_DECLARED" as const;
 
 // Limits from SuministroInformacion.xsd (TextMax120Type, NIFType, TextMax30Type,
 // TextMax2Type, TextMax50Type, TextMax100Type).
@@ -96,11 +137,51 @@ function checkMaxLength(value: string, max: number, label: string, variable: str
 }
 
 /**
- * Resolve the SistemaInformatico block from the environment (contract E).
- * Pure: reads `env` only, never throws; callers decide what to do with
+ * NumeroInstalacion of the block (design §5.2 R7). Pure.
+ *   · declared installation → its number (validated for length; the env is ignored);
+ *   · no installation + requireInstallation → error INSTALLATION_NOT_DECLARED
+ *     (the env or the default fills the field only so the block stays
+ *     well-formed; `ok` is false, nothing is sent);
+ *   · no installation, sandbox → legacy env fallback (error when unset, as before).
+ */
+export function resolveNumeroInstalacion(
+  env: NodeJS.ProcessEnv,
+  options: VerifactuSoftwareOptions,
+  errors: string[]
+): { numeroInstalacion: string; source: VerifactuInstallationSource } {
+  const installation = options.installation;
+  if (installation) {
+    const declared = installation.numeroInstalacion.trim();
+    if (declared.length === 0) {
+      errors.push("La instalación VeriFactu declarada no tiene número (verifactu_installations.numero_instalacion vacío).");
+    } else {
+      checkMaxLength(declared, VERIFACTU_SOFTWARE_LIMITS.numeroInstalacion, "El número de instalación", "verifactu_installations.numero_instalacion", errors);
+    }
+    return { numeroInstalacion: declared.length > 0 ? declared : VERIFACTU_SOFTWARE_DEFAULTS.numeroInstalacion, source: "installation" };
+  }
+
+  const fromEnv = readEnv(env, "VERIFACTU_INSTALL_NUMBER");
+  if (options.requireInstallation) {
+    errors.push(
+      `${VERIFACTU_INSTALLATION_NOT_DECLARED_CODE}: el centro no tiene una instalación VeriFactu declarada (verifactu_installations). En preproduction/production el NumeroInstalacion nunca sale del entorno: da de alta la instalación del centro (o de la sociedad, según la política de cadena) en Configuración › Estructura societaria › Series y VeriFactu.`
+    );
+    return { numeroInstalacion: fromEnv ?? VERIFACTU_SOFTWARE_DEFAULTS.numeroInstalacion, source: fromEnv ? "env" : "default" };
+  }
+  if (fromEnv === null) {
+    errors.push("Falta VERIFACTU_INSTALL_NUMBER (número de instalación asignado por el productor a este despliegue).");
+    return { numeroInstalacion: VERIFACTU_SOFTWARE_DEFAULTS.numeroInstalacion, source: "default" };
+  }
+  checkMaxLength(fromEnv, VERIFACTU_SOFTWARE_LIMITS.numeroInstalacion, "El número de instalación", "VERIFACTU_INSTALL_NUMBER", errors);
+  return { numeroInstalacion: fromEnv, source: "env" };
+}
+
+/**
+ * Resolve the SistemaInformatico block from the environment (contract E) and,
+ * since Tanda 6b, from the declared installation of the record. Pure: reads
+ * `env` and `options` only, never throws; callers decide what to do with
  * `errors` (sandbox tolerates them, real modes must not send).
  */
-export function resolveVerifactuSoftware(env: NodeJS.ProcessEnv = process.env): VerifactuSoftwareResolution {
+export function resolveVerifactuSoftware(env: NodeJS.ProcessEnv = process.env, options: VerifactuSoftwareOptions = {}): VerifactuSoftwareResolution {
   const errors: string[] = [];
 
   const nombreRazonRaw = readEnv(env, "VERIFACTU_SOFTWARE_NAME");
@@ -136,26 +217,21 @@ export function resolveVerifactuSoftware(env: NodeJS.ProcessEnv = process.env): 
   const version = readEnv(env, "VERIFACTU_SYSTEM_VERSION") ?? readEnv(env, "APP_VERSION") ?? VERIFACTU_SOFTWARE_DEFAULTS.version;
   checkMaxLength(version, VERIFACTU_SOFTWARE_LIMITS.version, "La versión del sistema", "VERIFACTU_SYSTEM_VERSION", errors);
 
-  const numeroInstalacionRaw = readEnv(env, "VERIFACTU_INSTALL_NUMBER");
-  const numeroInstalacion = numeroInstalacionRaw ?? VERIFACTU_SOFTWARE_DEFAULTS.numeroInstalacion;
-  if (numeroInstalacionRaw === null) {
-    errors.push("Falta VERIFACTU_INSTALL_NUMBER (número de instalación asignado por el productor a este despliegue).");
-  } else {
-    checkMaxLength(numeroInstalacionRaw, VERIFACTU_SOFTWARE_LIMITS.numeroInstalacion, "El número de instalación", "VERIFACTU_INSTALL_NUMBER", errors);
-  }
+  const installation = resolveNumeroInstalacion(env, options, errors);
 
   const multiOT = readFlag(env, "VERIFACTU_MULTI_OT", VERIFACTU_SOFTWARE_DEFAULTS.multiOT, errors);
 
   return {
     ok: errors.length === 0,
     errors,
+    installationSource: installation.source,
     software: {
       nombreRazon,
       nif,
       nombreSistema,
       idSistema,
       version,
-      numeroInstalacion,
+      numeroInstalacion: installation.numeroInstalacion,
       // Anfitorio only ever runs as a VERI*FACTU system (records are sent to
       // AEAT, never kept offline), so the "solo VeriFactu" flag is fixed.
       tipoUsoPosibleSoloVerifactu: "S",

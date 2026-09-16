@@ -15,9 +15,33 @@
 // Replaces (integrator): GET /organizations/:id/journal-entries,
 // POST /journal-entries/drafts, POST /journal-entries/:id/post,
 // GET /accounting/journal-entries/recent and GET /organizations/:id/accounts.
+//
+// Estructura societaria (Tanda 6b · L5, design §5.2 R11): every read with
+// amounts of the three finance route families (ledger, fiscal, financial
+// statements) goes through `assertFinanceReadScope` below. A user WITHOUT
+// `accounting.entity.read` whose roles cover a subset of the centres
+// (`assignedPropertyIds`) can only read WITH a `propertyId` of an assigned
+// centre; the whole-sociedad scope (no `propertyId`) and a sister centre are
+// an opaque 404, never a 403 that would confirm what exists. Platform admins
+// and contexts without assignments (organization-wide by construction, same
+// rule as lib/tenancy.ts isPropertyAssigned) keep the full scope. The helper
+// lives here because the three route files are the only callers and the L1
+// helper module (lib/finance-scope.ts) is closed; it mirrors
+// `propertyWithinScope` from there.
+//
+// Writes follow the same rule (fix t6b#5, design R4 + R11): a manual asiento
+// WITHOUT centre (`societyLevel: true`, or a balance-sheet-only entry with no
+// `propertyId`) is booked on the whole sociedad, so posting or reversing one
+// needs the whole-sociedad scope too (`assertFinanceWriteScope`); a centre's
+// asiento needs that centre. Otherwise a director whose only role lives in one
+// hotel could post society-level entries (property_id NULL) he is not allowed
+// to read back.
 
+import { prisma } from "@hotelos/database";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
+import { assertFinanceReadScope, assertFinanceWriteScope } from "../../lib/finance-scope.js";
+import { NotFoundError } from "../../lib/http-error.js";
 import { createId } from "../../lib/ids.js";
 import { pageHeaders, parsePageQuery } from "../../lib/pagination.js";
 import { assertEntityAccess, resolveOrganizationScope } from "../../lib/tenancy.js";
@@ -76,6 +100,8 @@ const ManualEntrySchema = z
     description: z.string().min(1, { message: "El concepto es obligatorio." }).max(500),
     reference: z.string().max(200).optional(),
     propertyId: z.string().min(1).optional(),
+    // Tanda 6b (R4, L4): asiento de sociedad sin centro (grupos 6/7 admitidos sin propertyId).
+    societyLevel: z.boolean().optional(),
     lines: z.array(ManualLineSchema).min(2, { message: "Un asiento necesita al menos dos líneas." }).max(500)
   })
   .strict({ message: "Campo no admitido en el cuerpo de la petición." });
@@ -145,6 +171,12 @@ function flag(value: string | undefined): boolean {
   return value === "1" || value === "true";
 }
 
+// ── Whole-sociedad read scope (Tanda 6b · R11) ──────────────────────────────
+// The helpers live in lib/finance-scope.ts (next to `propertyWithinScope`) so
+// that services never import a routes module; re-exported here for the
+// importers that predate the move (tests, server.ts).
+export { ENTITY_READ_PERMISSION, assertFinanceReadScope, assertFinanceReadScopeMany, assertFinanceWriteScope, hasEntityReadScope, type FinanceScopeContext } from "../../lib/finance-scope.js";
+
 function sendCsv(reply: FastifyReply, filename: string, csv: string): string {
   reply.header("Content-Type", "text/csv; charset=utf-8");
   reply.header("Content-Disposition", `attachment; filename="${filename}"`);
@@ -156,6 +188,7 @@ export function registerLedgerRoutes(app: FastifyInstance): void {
   app.get("/accounting/journal", async (request, reply) => {
     const raw = (request.query ?? {}) as Record<string, unknown>;
     const q = parse(JournalQuerySchema, raw, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const page = parsePageQuery(raw, { limit: 50, max: 500 });
     const result = await listJournal({
       context: request.userContext,
@@ -167,6 +200,7 @@ export function registerLedgerRoutes(app: FastifyInstance): void {
 
   app.get("/accounting/journal/export", async (request, reply) => {
     const q = parse(JournalQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const result = await exportJournal({ context: request.userContext, query: { from: q.from, to: q.to, propertyId: q.propertyId, sourceType: q.sourceType, status: q.status, accountCode: q.accountCode, q: q.q } });
     reply.header("X-Total-Count", String(result.entries));
     return sendCsv(reply, `diario${q.from ? `-${q.from}` : ""}${q.to ? `-${q.to}` : ""}.csv`, result.csv);
@@ -174,6 +208,8 @@ export function registerLedgerRoutes(app: FastifyInstance): void {
 
   app.post("/accounting/journal", async (request, reply) => {
     const body = parse(ManualEntrySchema, request.body ?? {}, "body");
+    // R4 + R11: no `propertyId` (societyLevel or balance-only) = asiento of the whole sociedad → whole-sociedad scope; a centre → that centre.
+    assertFinanceWriteScope(request.userContext, body.propertyId ?? null);
     const posted = await createManualJournalEntry({ context: request.userContext, body, correlationId: createId("corr") });
     reply.code(201);
     return posted;
@@ -182,13 +218,20 @@ export function registerLedgerRoutes(app: FastifyInstance): void {
   app.get("/accounting/journal/:id", async (request) => {
     const { id } = request.params as { id: string };
     await assertEntityAccess(request, { entity: "journalEntry", id });
-    return getJournalEntry({ context: request.userContext, journalEntryId: id });
+    const entry = await getJournalEntry({ context: request.userContext, journalEntryId: id });
+    // A society-level entry (no centre) needs the whole-sociedad scope; a centre's entry, that centre (R11).
+    assertFinanceReadScope(request.userContext, entry.propertyId);
+    return entry;
   });
 
   app.post("/accounting/journal/:id/reverse", async (request, reply) => {
     const { id } = request.params as { id: string };
     await assertEntityAccess(request, { entity: "journalEntry", id });
     const body = parse(ReverseSchema, request.body ?? {}, "body");
+    // Reversing a society-level asiento (no centre) is a write on the whole sociedad; a centre's asiento, on that centre (R4 + R11).
+    const target = await prisma.journalEntry.findFirst({ where: { id, organizationId: request.userContext.organizationId }, select: { propertyId: true } });
+    if (!target) throw new NotFoundError("Asiento no encontrado.");
+    assertFinanceWriteScope(request.userContext, target.propertyId);
     const reversal = await reverseJournalEntryByUser({ context: request.userContext, journalEntryId: id, reason: body.reason, entryDate: body.entryDate, correlationId: createId("corr") });
     reply.code(201);
     return reversal;
@@ -198,6 +241,7 @@ export function registerLedgerRoutes(app: FastifyInstance): void {
   app.get("/accounting/ledger/:accountCode", async (request, reply) => {
     const { accountCode } = request.params as { accountCode: string };
     const q = parse(LedgerQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const ledger = await getAccountLedger({ context: request.userContext, accountCode, from: q.from, to: q.to, propertyId: q.propertyId });
     if (q.format === "csv") return sendCsv(reply, `mayor-${accountCode}${q.from ? `-${q.from}` : ""}-${ledger.to}.csv`, ledgerToCsv(ledger));
     return ledger;

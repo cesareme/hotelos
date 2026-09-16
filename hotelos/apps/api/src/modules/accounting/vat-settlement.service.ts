@@ -32,6 +32,7 @@ import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-er
 import { requirePermissions } from "../auth/auth.service.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { isPostingAllowed } from "./fiscal-period.service.js";
+import { assertFinanceReadScope } from "../../lib/finance-scope.js";
 import type { JournalEntryKind } from "@hotelos/shared/src/accounting-types.js";
 import { journalNumberingLockKey, postJournalEntry as postCanonicalJournalEntry, reverseJournalEntry as reverseCanonicalJournalEntry } from "./accounting.service.js";
 import { modelo303ForPeriod, resolveSettlementPeriod, vatSettlementSourceId, type Modelo303Computation } from "./modelo-303.service.js";
@@ -406,6 +407,8 @@ async function buildPreview(input: { organizationId: string; periodo: FiscalPeri
 
 export async function previewVatSettlement(input: { context: UserContext; period: string }): Promise<VatSettlementPreview> {
   requirePermissions(input.context, ["accounting.read"]);
+  // The settlement is of the sociedad (propertyId = null): whole-sociedad scope required (R11).
+  assertFinanceReadScope(input.context, null);
   const settings = await getVatSettings(input.context.organizationId);
   const periodo = resolveSettlementPeriod({ period: input.period }, settings.periodicity);
   return buildPreview({ organizationId: input.context.organizationId, periodo });

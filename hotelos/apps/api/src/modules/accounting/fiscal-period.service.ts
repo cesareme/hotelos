@@ -4,6 +4,7 @@ import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-er
 import { isIsoDate } from "../../lib/query-dates.js";
 import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { isStructureEnabled } from "../../lib/finance-scope.js";
 
 // Fiscal periods (month / quarter / year) — the lock of the diario: the
 // engine (accounting.service.postJournalEntry) refuses any asiento whose
@@ -40,6 +41,29 @@ function requireDay(value: unknown, name: string): string {
   return value;
 }
 
+/**
+ * Tanda 6b · L4 (design §5.2 R4): ejercicios and periodos fiscales belong to
+ * the sociedad — one Diario per NIF (CCom 25), regularización / cierre against
+ * 129 only at entity level. A `propertyId` on their creation (or on the
+ * fiscal-year listing) is a 400 FISCAL_YEAR_IS_ENTITY_SCOPED; the UI never
+ * sent it (YearEndCloseScreen.tsx:146) and the local database holds 0
+ * property-scoped rows. Legacy rows, if any, stay readable. Gated by
+ * STRUCTURE_ENABLED like the work-centre rule. Lives here (the leaf of the
+ * accounting import graph) so fiscal-year.service.ts can reuse it without a
+ * cycle through accounting.service.ts.
+ */
+export function assertEntityScopedFiscalInput(propertyId: string | null | undefined, subject: "ejercicio" | "periodo"): void {
+  if (!propertyId) return;
+  if (!isStructureEnabled()) return;
+  const error = new BadRequestError(
+    subject === "ejercicio"
+      ? "Los ejercicios fiscales son de la sociedad: no admiten propertyId. Usa el ámbito «Sociedad»."
+      : "Los periodos fiscales son de la sociedad: no admiten propertyId. Usa el ámbito «Sociedad»."
+  );
+  error.details = { code: "FISCAL_YEAR_IS_ENTITY_SCOPED", subject, propertyId };
+  throw error;
+}
+
 function mapPeriod(row: NonNullable<Awaited<ReturnType<typeof prisma.fiscalPeriod.findUnique>>>): FiscalPeriodRecord {
   return {
     id: row.id,
@@ -67,6 +91,7 @@ export async function openFiscalPeriod(input: {
   correlationId: string;
 }): Promise<FiscalPeriodRecord> {
   requirePermissions(input.context, ["accounting.journal.post"]);
+  assertEntityScopedFiscalInput(input.propertyId, "periodo");
   const startDate = requireDay(input.startDate, "startDate");
   const endDate = requireDay(input.endDate, "endDate");
   if (startDate >= endDate) throw new BadRequestError("startDate debe ser anterior a endDate.");

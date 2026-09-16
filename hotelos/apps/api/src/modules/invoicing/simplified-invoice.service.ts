@@ -22,6 +22,7 @@ import { PAYMENT_METHOD_ACCOUNT_CODES, type PaymentMethodCode } from "../../../.
 import { buildCashSaleJournalLines, buildInvoiceSnapshot, buildVatBookRows, customerRequiredFor } from "./invoice-snapshot.js";
 import {
   allocateInvoiceNumber,
+  assertInvoiceNumberFreeInEntity,
   breakdownJson,
   evaluateTaxReadiness,
   findPreviousChainLink,
@@ -32,6 +33,7 @@ import {
   previousLinkFields,
   recipientNameRequired,
   simplifiedLimitExceededError,
+  structureSnapshot,
   taxContextFromProfile,
   taxNotConfiguredError,
   totalsForInvoiceLines,
@@ -39,7 +41,7 @@ import {
   type InvoiceRecord,
   type ResolvedInvoiceLine
 } from "./invoice.service.js";
-import { requireIssuerIdentity, resolveFiscalMode } from "./issuer-identity.service.js";
+import { requireIssuerIdentity, resolveFiscalMode, verifactuExclusionWarning } from "./issuer-identity.service.js";
 import { getLedgerPort } from "./ledger.port.js";
 import { writeIssuedVatBookRows } from "./vat-book.js";
 
@@ -132,25 +134,35 @@ export async function createSimplifiedInvoice(input: CreateSimplifiedInvoiceInpu
   }
 
   const issuer = await requireIssuerIdentity(input.propertyId);
+  // R7 / R8 (t6b#2): a sociedad in the SII expedites without a VeriFactu record.
+  const exclusion = issuer.verifactuExclusion;
+  if (exclusion) warnings.push(verifactuExclusionWarning(exclusion));
   const soldAt = input.soldAt ?? new Date();
   const paidWithAccount = PAYMENT_METHOD_ACCOUNT_CODES[input.paidWith];
 
   const created = await prisma.$transaction(async (tx) => {
-    await lockVerifactuChain(tx, input.propertyId);
+    // Tanda 6b (L3, integración): the chain is the INSTALLATION's (per_center ·
+    // per_entity), not the property's; the lock returns the resolved scope and
+    // adopts orphan records (NULL installation_id) before we read the tail.
+    const chain = await lockVerifactuChain(tx, input.propertyId);
     const issuedAt = new Date();
     const allocated = await allocateInvoiceNumber(tx, { propertyId: input.propertyId, series: "SIM", issuedAt });
     const invoiceNumber = allocated.invoiceNumber;
-    const previous = await findPreviousChainLink(tx, input.propertyId);
-    const { canonical, hash } = computeVerifactuHash({
-      emitterTaxId: issuer.taxId,
-      invoiceNumber,
-      issuedAt: issuedAt.toISOString(),
-      invoiceType: "F2" as VerifactuInvoiceType,
-      vatTotal: totals.taxTotal,
-      invoiceTotal: totals.total,
-      previousHash: previous?.hash ?? null
-    });
-    const qrUrl = buildVerifactuQrUrl({ emitterTaxId: issuer.taxId, invoiceNumber, issuedAt: issuedAt.toISOString(), invoiceTotal: totals.total, preProduction: issuer.fiscalMode !== "production" });
+    // Same NIF, same number in a sister centre → 409 INVOICE_NUMBER_DUPLICATE (R3).
+    await assertInvoiceNumberFreeInEntity(tx, allocated.scope, invoiceNumber);
+    const previous = exclusion ? null : await findPreviousChainLink(tx, chain);
+    const record = exclusion
+      ? null
+      : computeVerifactuHash({
+          emitterTaxId: issuer.taxId,
+          invoiceNumber,
+          issuedAt: issuedAt.toISOString(),
+          invoiceType: "F2" as VerifactuInvoiceType,
+          vatTotal: totals.taxTotal,
+          invoiceTotal: totals.total,
+          previousHash: previous?.hash ?? null
+        });
+    const qrUrl = exclusion ? null : buildVerifactuQrUrl({ emitterTaxId: issuer.taxId, invoiceNumber, issuedAt: issuedAt.toISOString(), invoiceTotal: totals.total, preProduction: issuer.fiscalMode !== "production" });
     const snapshot = buildInvoiceSnapshot({
       issuedAt,
       currencyCode: property.currency ?? "EUR",
@@ -164,6 +176,9 @@ export async function createSimplifiedInvoice(input: CreateSimplifiedInvoiceInpu
     const invoice = await tx.invoice.create({
       data: {
         propertyId: input.propertyId,
+        // Tanda 6b (L3): sociedad + instalación of the chain, frozen with the establishment block in the snapshot.
+        legalEntityId: chain.legalEntityId ?? issuer.legalEntityId,
+        installationId: exclusion ? null : chain.installation?.id ?? null,
         invoiceNumber,
         invoiceType: "F2",
         customerType: "guest",
@@ -175,14 +190,14 @@ export async function createSimplifiedInvoice(input: CreateSimplifiedInvoiceInpu
         total: totals.total,
         taxTotal: totals.taxTotal,
         taxBreakdownJson: breakdownJson(totals.breakdown),
-        warningsJson: warnings,
-        verifactuHash: hash,
+        warningsJson: [...warnings, ...allocated.warnings],
+        verifactuHash: record?.hash ?? null,
         previousInvoiceHash: previous?.hash ?? null,
         qrPayload: qrUrl,
         issuerTaxId: issuer.taxId,
         issuerLegalName: issuer.legalName,
         issuerTaxIdPlaceholder: issuer.placeholder,
-        snapshotJson: { ...snapshot, posOrderId: input.posOrderId ?? null, paidWith: input.paidWith } as unknown as Prisma.InputJsonValue,
+        snapshotJson: { ...snapshot, ...structureSnapshot(issuer, chain), posOrderId: input.posOrderId ?? null, paidWith: input.paidWith } as unknown as Prisma.InputJsonValue,
         seriesCode: "SIM",
         simplified: true,
         customerRequired: requirement.required
@@ -216,7 +231,7 @@ export async function createSimplifiedInvoice(input: CreateSimplifiedInvoiceInpu
       },
       tx
     );
-    return { invoice, canonical, hash, previous, year: allocated.year, journalEntryId: posted.journalEntryId };
+    return { invoice, canonical: record?.canonical ?? null, hash: record?.hash ?? null, previous, year: allocated.year, journalEntryId: posted.journalEntryId };
   });
 
   const after = await loadInvoice(created.invoice.id);
@@ -242,6 +257,7 @@ export async function createSimplifiedInvoice(input: CreateSimplifiedInvoiceInpu
       paidWith: input.paidWith,
       posOrderId: input.posOrderId ?? null,
       journalEntryId: created.journalEntryId,
+      verifactuExclusion: exclusion,
       taxWarnings: warnings
     },
     correlationId: input.correlationId
@@ -252,7 +268,7 @@ export async function createSimplifiedInvoice(input: CreateSimplifiedInvoiceInpu
     entityType: "invoice",
     entityId: after.id,
     eventType: "InvoiceIssued",
-    payload: { invoiceNumber: after.invoiceNumber!, verifactuHash: after.verifactuHash!, total: after.total, taxTotal: after.taxTotal, simplified: true, posOrderId: input.posOrderId ?? null, ...previousLinkFields(created.previous) },
+    payload: { invoiceNumber: after.invoiceNumber!, verifactuHash: after.verifactuHash ?? null, verifactuExclusion: exclusion?.code ?? null, total: after.total, taxTotal: after.taxTotal, simplified: true, posOrderId: input.posOrderId ?? null, ...previousLinkFields(created.previous) },
     actorType: "user",
     actorUserId: input.context.userId,
     correlationId: input.correlationId

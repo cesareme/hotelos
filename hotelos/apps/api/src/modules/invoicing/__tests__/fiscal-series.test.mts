@@ -65,8 +65,14 @@ type SequenceRow = {
   invoiceType: string;
   active: boolean;
   year: number | null;
+  legalEntityId?: string | null;
 };
 
+/**
+ * In-memory transaction: the sequence rows plus a single-centre property
+ * (no siblings → R3 keeps the plain `FAC-<año>-` prefix, no clash lookups).
+ * The multi-centre cases live in structure-l3-invoicing.test.mts.
+ */
 function sequenceTx(rows: SequenceRow[]): { tx: InvoiceSequenceTx; rows: SequenceRow[]; calls: string[] } {
   const calls: string[] = [];
   let counter = 0;
@@ -78,31 +84,44 @@ function sequenceTx(rows: SequenceRow[]): { tx: InvoiceSequenceTx; rows: Sequenc
       );
       return matches.sort((a, b) => b.nextNumber - a.nextNumber)[0] ?? null;
     },
-    async update(args: { where: { id: string }; data: { year?: number; nextNumber?: { increment: number } } }) {
+    async findUnique(args: { where: { propertyId_sequenceCode_year: { propertyId: string; sequenceCode: string; year: number } } }) {
+      calls.push("findUnique");
+      const key = args.where.propertyId_sequenceCode_year;
+      return rows.find((r) => r.propertyId === key.propertyId && r.sequenceCode === key.sequenceCode && r.year === key.year) ?? null;
+    },
+    async findMany() {
+      calls.push("findMany");
+      return [];
+    },
+    async update(args: { where: { id: string }; data: { year?: number; nextNumber?: { increment: number }; legalEntityId?: string } }) {
       calls.push("update");
       const row = rows.find((r) => r.id === args.where.id)!;
       if (args.data.year !== undefined) row.year = args.data.year;
       if (args.data.nextNumber?.increment) row.nextNumber += args.data.nextNumber.increment;
+      if (args.data.legalEntityId !== undefined) row.legalEntityId = args.data.legalEntityId;
       return { ...row };
     },
-    async upsert(args: {
-      where: { propertyId_sequenceCode_year: { propertyId: string; sequenceCode: string; year: number } };
-      update: { nextNumber: { increment: number } };
-      create: Omit<SequenceRow, "id" | "active">;
-    }) {
-      calls.push("upsert");
-      const key = args.where.propertyId_sequenceCode_year;
-      const existing = rows.find((r) => r.propertyId === key.propertyId && r.sequenceCode === key.sequenceCode && r.year === key.year);
-      if (existing) {
-        existing.nextNumber += args.update.nextNumber.increment;
-        return { ...existing };
-      }
-      const created: SequenceRow = { id: `seq_${++counter}`, active: true, ...args.create };
+    async create(args: { data: Omit<SequenceRow, "id" | "active"> }) {
+      calls.push("create");
+      const created: SequenceRow = { id: `seq_${++counter}`, active: true, ...args.data };
       rows.push(created);
       return { ...created };
     }
   };
-  return { tx: { invoiceSequence } as unknown as InvoiceSequenceTx, rows, calls };
+  const property = {
+    async findUnique(args: { where: { id: string } }) {
+      return { id: args.where.id, organizationId: "org_test", legalEntityId: null, code: null, kind: "hotel" };
+    },
+    async findMany() {
+      return [];
+    }
+  };
+  // Series-opening advisory lock (fix t6b#1): recorded, no database.
+  const $executeRaw = async () => {
+    calls.push("lock");
+    return 0;
+  };
+  return { tx: { invoiceSequence, property, $executeRaw } as unknown as InvoiceSequenceTx, rows, calls };
 }
 
 const FARANDA = "prop_faranda";
@@ -136,6 +155,8 @@ describe("allocateInvoiceNumber — one series per fiscal year (FISC-09)", () =>
     assert.equal(created.padding, 6);
     assert.equal(created.invoiceType, "F1");
     assert.equal(rows[0]!.nextNumber, 14, "2026 row not consumed");
+    assert.equal(result.prefix, "FAC-2027-");
+    assert.equal(result.created, true, "the allocation opened the 2027 row");
   });
 
   it("increments an existing yearly row and pads to 6 digits", async () => {
@@ -145,7 +166,7 @@ describe("allocateInvoiceNumber — one series per fiscal year (FISC-09)", () =>
     assert.equal(a.invoiceNumber, "FAC-2027-000003");
     assert.equal(b.invoiceNumber, "FAC-2027-000004");
     assert.equal(a.sequenceId, "y2027");
-    assert.deepEqual(calls, ["findFirst", "upsert", "findFirst", "upsert"]);
+    assert.deepEqual(calls, ["findFirst", "findUnique", "update", "findFirst", "findUnique", "update"]);
   });
 
   it("respects the padding stored on the row", async () => {

@@ -9,23 +9,66 @@
 
 import { Prisma } from "@prisma/client";
 import { accountGroup, isPostableCode, templateAccount, templateUsaliFor, type AccountKind } from "../../accounting/chart-of-accounts.service.js";
+import type { LegalIdentityDto } from "@hotelos/shared";
 import {
   ledgerEntryCounts,
   ledgerEntryIsBooked,
+  sortWorkCentres,
   type AccountBalanceRow,
   type ChartAccountLite,
   type DocumentRef,
   type FinancialStatementsSource,
   type FixedAssetLite,
+  type HeadcountByProperty,
   type JournalLineExportRow,
   type LedgerQuery,
   type OccupancyFacts,
-  type OrganizationLite,
   type PropertyLite,
   type UsaliMappingSourceRow,
   type VatBookExportRow,
   type VatTotalsRow
 } from "../source.js";
+
+/** A legal entity of the tests (Tanda 6b): the sociedad behind `org_t`. */
+export function testIdentity(overrides: Partial<LegalIdentityDto> = {}): LegalIdentityDto {
+  return {
+    legalEntityId: "le_t",
+    organizationId: "org_t",
+    code: "TST",
+    legalName: "Test Org SL",
+    taxId: "B12345674",
+    taxIdValid: true,
+    source: "legal_entity",
+    legalForm: "sl",
+    fiscalAddress: "Calle Real 1",
+    fiscalPostalCode: "15001",
+    fiscalMunicipality: "A Coruña",
+    fiscalIneCode: "15030",
+    fiscalProvince: "A Coruña",
+    pgcVariant: "pymes",
+    largeCompany: false,
+    siiEnabled: false,
+    verifactuChainScope: "per_center",
+    cccPrincipal: null,
+    ...overrides
+  };
+}
+
+/** A work centre of the tests; `kind` defaults to hotel. */
+export function testProperty(overrides: Partial<PropertyLite> & Pick<PropertyLite, "id" | "name">): PropertyLite {
+  return {
+    organizationId: "org_t",
+    legalEntityId: "le_t",
+    code: null,
+    tradeName: null,
+    kind: "hotel",
+    address: null,
+    municipality: null,
+    province: null,
+    currency: "EUR",
+    ...overrides
+  };
+}
 
 const D = (v: Prisma.Decimal.Value): Prisma.Decimal => new Prisma.Decimal(v);
 
@@ -68,11 +111,16 @@ export class MemorySource implements FinancialStatementsSource {
   mappings: UsaliMappingSourceRow[] = [];
   props: PropertyLite[] = [];
   occupancyFacts: OccupancyFacts = { roomsInventory: 0, roomsOccupied: 0 };
-  org: OrganizationLite | null = null;
+  /** Per-property occupancy (Tanda 6b compare tests); falls back to `occupancyFacts` when a property is not listed. */
+  occupancyByProperty = new Map<string, OccupancyFacts>();
+  identity: LegalIdentityDto | null = null;
   assets: FixedAssetLite[] = [];
   vat: VatTotalsRow[] = [];
   vatRows: VatBookExportRow[] = [];
   people: number | null = null;
+  peopleByProperty: HeadcountByProperty = [];
+  /** Raw AccountingSetting.configurationJson of the organisation (corporateAllocation lives here). */
+  configuration: unknown = null;
   refs: Record<string, Map<string, DocumentRef>> = { invoice: new Map(), supplier_bill: new Map(), expense: new Map() };
   private seq = 0;
 
@@ -153,6 +201,7 @@ export class MemorySource implements FinancialStatementsSource {
     return this.entries.filter((e) => {
       if (!ledgerEntryCounts({ status: e.status ?? "posted", reversedById: e.reversedById ?? null, reversalOfId: e.reversalOfId ?? null })) return false;
       if (query.propertyId && e.propertyId !== query.propertyId) return false;
+      if (!query.propertyId && query.unassignedOnly && (e.propertyId ?? null) !== null) return false;
       if (query.mode === "balance_at") {
         if (e.date > query.to) return false;
         if (e.kind === "closing" && e.date === query.to) return false;
@@ -208,15 +257,32 @@ export class MemorySource implements FinancialStatementsSource {
   }
 
   async properties(): Promise<PropertyLite[]> {
-    return this.props;
+    return sortWorkCentres(this.props);
   }
 
-  async occupancy(): Promise<OccupancyFacts> {
-    return this.occupancyFacts;
+  async occupancy(propertyIds: string[]): Promise<OccupancyFacts> {
+    if (this.occupancyByProperty.size === 0) return this.occupancyFacts;
+    let roomsInventory = 0;
+    let roomsOccupied = 0;
+    for (const id of propertyIds) {
+      const facts = this.occupancyByProperty.get(id);
+      if (!facts) continue;
+      roomsInventory += facts.roomsInventory;
+      roomsOccupied += facts.roomsOccupied;
+    }
+    return { roomsInventory, roomsOccupied };
   }
 
-  async organization(): Promise<OrganizationLite | null> {
-    return this.org;
+  async legalIdentity(): Promise<LegalIdentityDto | null> {
+    return this.identity;
+  }
+
+  async headcountByProperty(): Promise<HeadcountByProperty> {
+    return this.peopleByProperty;
+  }
+
+  async accountingConfiguration(): Promise<unknown> {
+    return this.configuration;
   }
 
   async fixedAssets(): Promise<FixedAssetLite[]> {
@@ -285,8 +351,8 @@ export class MemorySource implements FinancialStatementsSource {
  */
 export function referenceLedger(): MemorySource {
   const s = new MemorySource("org_t");
-  s.props = [{ id: "prop_t", organizationId: "org_t", name: "Hotel Test", legalName: "Hotel Test SL", address: "Calle Real 1", municipality: "A Coruña", province: "A Coruña", currency: "EUR" }];
-  s.org = { id: "org_t", name: "Test Org", legalName: "Test Org SL", taxId: "B12345674" };
+  s.props = [testProperty({ id: "prop_t", name: "Hotel Test", code: "HT", tradeName: "Hotel Test", address: "Calle Real 1", municipality: "A Coruña", province: "A Coruña" })];
+  s.identity = testIdentity();
   s.occupancyFacts = { roomsInventory: 10, roomsOccupied: 45 };
   s.account("645", { name: "Retribuciones en especie", kind: "expense", usaliDepartment: null, usaliLine: null });
   const P = "prop_t";

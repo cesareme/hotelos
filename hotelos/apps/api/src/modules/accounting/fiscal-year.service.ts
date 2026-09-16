@@ -6,6 +6,7 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { ZERO, aggregateAccountBalances, dateOnlyUtc, isoDay, nextDay, postJournalEntry, reverseJournalEntry, type AccountBalanceRow } from "./accounting.service.js";
 import { buildClosingEntry, buildOpeningEntry, buildRegularizationEntry, RESULT_ACCOUNT, type YearBalance } from "./posting-rules.js";
+import { assertEntityScopedFiscalInput } from "./fiscal-period.service.js";
 
 // ---------------------------------------------------------------------------
 // Spanish PGC year-end close (canonical rule «Regularización» of the runbook §2)
@@ -23,6 +24,14 @@ import { buildClosingEntry, buildOpeningEntry, buildRegularizationEntry, RESULT_
 // reversedById, entryKind reversal) — nothing is deleted — so a later close
 // starts clean and the trail keeps both.
 // Rolling 129 into reservas (113) is a separate manual asiento by design.
+//
+// Ámbito (Tanda 6b · L4, design §5.2 R1/R4): the ejercicio is the sociedad's.
+// `propertyId` on GET/POST /accounting/fiscal-years → 400
+// FISCAL_YEAR_IS_ENTITY_SCOPED (assertEntityScopedFiscalInput); a per-hotel
+// year would regularise a partial 6/7 against the same 129. The close itself
+// posts regularización / cierre / apertura without a centre (entryKind exempt
+// from WORK_CENTER_REQUIRED). Legacy property-scoped rows (0 in the local
+// database) stay readable through `loadYear`.
 
 export type FiscalYearStatus = "open" | "closing" | "closed";
 
@@ -103,6 +112,7 @@ export async function listFiscalYears(input: {
   context: UserContext;
   propertyId?: string;
 }): Promise<FiscalYearRecord[]> {
+  assertEntityScopedFiscalInput(input.propertyId, "ejercicio");
   const rows = await prisma.fiscalYear.findMany({
     where: {
       organizationId: input.context.organizationId,
@@ -122,6 +132,7 @@ export async function createFiscalYear(input: {
   correlationId: string;
 }): Promise<FiscalYearRecord> {
   requirePermissions(input.context, ["accounting.journal.post"]);
+  assertEntityScopedFiscalInput(input.propertyId, "ejercicio");
   if (!isIsoDate(input.startDate) || !isIsoDate(input.endDate)) throw new BadRequestError("startDate y endDate deben ser fechas YYYY-MM-DD.");
   if (input.startDate >= input.endDate) throw new BadRequestError("startDate debe ser anterior a endDate.");
   if (!input.code || input.code.length > 16) throw new BadRequestError("code es obligatorio (máximo 16 caracteres).");

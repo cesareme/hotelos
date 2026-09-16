@@ -300,7 +300,7 @@ describe("memoria", () => {
       organizationId: "org_t",
       propertyId: "prop_t",
       period: YEAR,
-      organization: source.org,
+      identity: source.identity,
       properties: source.props,
       balance,
       pyg,

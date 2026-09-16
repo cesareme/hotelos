@@ -20,10 +20,29 @@
 //                issue + 30 days when the document has no due date — flagged
 //                `assumed`), bucketed 0-30 / 31-60 / 61-90 / >90 and overdue,
 //                with the projected balance after each horizon.
+//
+//   Ámbito (Tanda 6b · L4, design §5.2 R1 «Tesorería»): every reader takes
+//   either ONE centre (`{ propertyId }`, the historical contract) or the whole
+//   sociedad (`{ scope: "entity", organizationId }` — `GET /treasury/position
+//   ?scope=entity`). The sociedad scope is guarded by the SAME predicate as
+//   every other whole-sociedad finance read (`assertFinanceReadScope`,
+//   lib/finance-scope.ts; design §5.2 R11): platform admin, holder of
+//   accounting.entity.read or a context without property assignments pass; a
+//   centre-bound user gets the opaque 404 ENTITY_SCOPE_REQUIRED — never a 403
+//   that would confirm the scope exists and name the missing key (fix:L4
+//   t6b#15). The sociedad view sums
+//   every bank account of the organisation (attached to a centre or not:
+//   BankAccount.propertyId becomes optional once the deferred `DROP NOT NULL`
+//   lands) and every centre's documents; organisation-wide payroll periods are
+//   counted once. `bankAccountServesCentre` is the ONE predicate for «this
+//   account belongs to this centre or to the sociedad».
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@prisma/client";
+import type { UserContext } from "../../lib/demo-store.js";
+import { requireLegalIdentity } from "../../lib/finance-scope.js";
 import { NotFoundError } from "../../lib/http-error.js";
+import { assertFinanceReadScope, type FinanceScopeContext } from "../../lib/finance-scope.js";
 import { ledgerBalances } from "./ledger-bridge.js";
 import { addDays, dayUtc, daysBetween, dec, isoDay, money, round2, sum, type Dec } from "./money.js";
 import { DEFAULT_BANK_LEDGER_CODE } from "../banking/bank-account.service.js";
@@ -39,6 +58,8 @@ const DEFAULT_PAYMENT_TERMS_DAYS = 30;
 
 export type TreasuryBankRow = {
   bankAccountId: string;
+  /** Centre the account is attached to; null = account of the sociedad (no centre). */
+  propertyId: string | null;
   name: string;
   ibanMasked: string | null;
   ledgerAccountCode: string;
@@ -53,8 +74,13 @@ export type TreasuryBankRow = {
 };
 
 export type TreasuryPosition = {
-  propertyId: string;
+  scope: TreasuryScopeKind;
+  /** Centre of a property-scoped position; null for the sociedad. */
+  propertyId: string | null;
   organizationId: string;
+  legalEntityId: string | null;
+  /** Razón social of the sociedad (resolveLegalIdentity). */
+  entityLabel: string;
   asOf: string;
   cash: { ledgerAccountCode: string; balance: string };
   banks: TreasuryBankRow[];
@@ -92,12 +118,13 @@ export type PayableItem = {
 
 export type AgingBuckets = { current: string; days0_30: string; days31_60: string; days61_90: string; days90Plus: string; total: string };
 
-export type Receivables = { propertyId: string; asOf: string; total: string; invoices: string; openFolios: string; aging: AgingBuckets; items: ReceivableItem[]; method: string[] };
-export type Payables = { propertyId: string; asOf: string; total: string; supplierBills: string; payroll: string; commissions: string; taxLiabilities: string; aging: AgingBuckets; items: PayableItem[]; method: string[] };
+export type Receivables = { scope: TreasuryScopeKind; propertyId: string | null; asOf: string; total: string; invoices: string; openFolios: string; aging: AgingBuckets; items: ReceivableItem[]; method: string[] };
+export type Payables = { scope: TreasuryScopeKind; propertyId: string | null; asOf: string; total: string; supplierBills: string; payroll: string; commissions: string; taxLiabilities: string; aging: AgingBuckets; items: PayableItem[]; method: string[] };
 
 export type ForecastBucket = { label: "overdue" | "0-30" | "31-60" | "61-90" | "90+"; from: string | null; to: string | null; inflows: string; outflows: string; net: string };
 export type TreasuryForecast = {
-  propertyId: string;
+  scope: TreasuryScopeKind;
+  propertyId: string | null;
   asOf: string;
   opening: string;
   buckets: ForecastBucket[];
@@ -112,10 +139,96 @@ function maskIban(iban: string | null): string | null {
   return clean.length > 8 ? `${clean.slice(0, 4)} •••• ${clean.slice(-4)}` : clean;
 }
 
-async function organizationOf(propertyId: string): Promise<string> {
-  const property = await prisma.property.findUnique({ where: { id: propertyId }, select: { organizationId: true } });
+// ---- Ámbito ---------------------------------------------------------------------------
+
+export type TreasuryScopeKind = "property" | "entity";
+
+/** One centre (historical contract, `scope` absent) or the whole sociedad (`scope: "entity"`). */
+export type TreasuryScopeInput =
+  | { propertyId: string; asOf?: Date; scope?: "property" }
+  | {
+      scope: "entity";
+      organizationId: string;
+      asOf?: Date;
+      /**
+       * When given, the whole-sociedad read scope is enforced (`assertTreasuryEntityScope`:
+       * opaque 404 ENTITY_SCOPE_REQUIRED for a centre-bound user, design §5.2 R11);
+       * service-to-service callers may omit it.
+       */
+      context?: UserContext;
+    };
+
+export type TreasuryScope = {
+  kind: TreasuryScopeKind;
+  organizationId: string;
+  legalEntityId: string | null;
+  /** Razón social of the sociedad. */
+  entityLabel: string;
+  /** Centre of a property scope; null for the sociedad. */
+  propertyId: string | null;
+  /** Centres whose documents enter the figures: the centre, or every centre of the organisation (office included). */
+  propertyIds: string[];
+};
+
+function asOfOf(input: { asOf?: Date }): Date {
+  return dayUtc(input.asOf ?? new Date());
+}
+
+/**
+ * Whole-sociedad scope of a treasury reader (fix:L4 t6b#15): the ONE guard
+ * shared with the ledger, fiscal and financial-statements reads
+ * (`assertFinanceReadScope(context, null)`, lib/finance-scope.ts).
+ * Platform admins, holders of accounting.entity.read and contexts without
+ * property assignments (owners without user_property_roles, demo fallback)
+ * pass; a centre-bound user gets the opaque 404 ENTITY_SCOPE_REQUIRED
+ * (`details.requiredPermission = accounting.entity.read`) — the same status a
+ * sister centre gets, so the answer is no oracle of the sociedad's structure.
+ * Never a 403: `?scope=entity` used to answer «requiere: accounting.entity.read».
+ */
+export function assertTreasuryEntityScope(context: FinanceScopeContext): void {
+  assertFinanceReadScope(context, null);
+}
+
+/** Resolves the input into a scope: 404 opaque for an unknown property; 404 ENTITY_SCOPE_REQUIRED for the sociedad outside the caller's read scope. */
+export async function resolveTreasuryScope(input: TreasuryScopeInput): Promise<TreasuryScope> {
+  if (input.scope === "entity") {
+    if (input.context) assertTreasuryEntityScope(input.context);
+    const identity = await requireLegalIdentity(input.organizationId);
+    const properties = await prisma.property.findMany({ where: { organizationId: input.organizationId }, select: { id: true }, orderBy: { createdAt: "asc" } });
+    return { kind: "entity", organizationId: input.organizationId, legalEntityId: identity.legalEntityId, entityLabel: identity.legalName, propertyId: null, propertyIds: properties.map((p) => p.id) };
+  }
+  const property = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { id: true, organizationId: true } });
   if (!property) throw new NotFoundError("La propiedad no existe.");
-  return property.organizationId;
+  const identity = await requireLegalIdentity(property.organizationId);
+  return { kind: "property", organizationId: property.organizationId, legalEntityId: identity.legalEntityId, entityLabel: identity.legalName, propertyId: property.id, propertyIds: [property.id] };
+}
+
+/** Prisma filter on `propertyId` for the documents of the scope (invoices, payments, bills, accruals, reservations). */
+function centreFilter(scope: TreasuryScope): { propertyId: string | { in: string[] } } {
+  return scope.kind === "property" && scope.propertyId ? { propertyId: scope.propertyId } : { propertyId: { in: scope.propertyIds } };
+}
+
+/** Payroll periods: a centre sees its own and the organisation-wide ones; the sociedad sees every period once. */
+function payrollCentreFilter(scope: TreasuryScope): Prisma.PayrollPeriodWhereInput {
+  return scope.kind === "property" && scope.propertyId ? { OR: [{ propertyId: scope.propertyId }, { propertyId: null }] } : {};
+}
+
+/** Bank accounts: the centre's, or every active account of the organisation (with or without a centre). */
+function bankAccountFilter(scope: TreasuryScope): Prisma.BankAccountWhereInput {
+  return scope.kind === "property" && scope.propertyId ? { propertyId: scope.propertyId, active: true } : { organizationId: scope.organizationId, active: true };
+}
+
+function ledgerScopeOptions(scope: TreasuryScope, asOf: Date): { propertyId?: string; asOf: Date } {
+  return scope.kind === "property" && scope.propertyId ? { propertyId: scope.propertyId, asOf } : { asOf };
+}
+
+/**
+ * The ONE predicate for «this bank account belongs to this centre or to the
+ * sociedad» (an account without a centre serves every centre). Shared with
+ * the SEPA and CSB43 services.
+ */
+export function bankAccountServesCentre(account: { propertyId: string | null }, propertyId: string): boolean {
+  return account.propertyId === null || account.propertyId === propertyId;
 }
 
 function emptyAging(): { current: Dec; days0_30: Dec; days31_60: Dec; days61_90: Dec; days90Plus: Dec } {
@@ -136,14 +249,17 @@ function agingOut(b: ReturnType<typeof emptyAging>): AgingBuckets {
 
 // ---- Position -----------------------------------------------------------------------
 
-export async function treasuryPosition(input: { propertyId: string; asOf?: Date }): Promise<TreasuryPosition> {
-  const asOf = dayUtc(input.asOf ?? new Date());
-  const organizationId = await organizationOf(input.propertyId);
+export async function treasuryPosition(input: TreasuryScopeInput): Promise<TreasuryPosition> {
+  return positionForScope(await resolveTreasuryScope(input), asOfOf(input));
+}
+
+async function positionForScope(scope: TreasuryScope, asOf: Date): Promise<TreasuryPosition> {
+  const organizationId = scope.organizationId;
   const warnings: string[] = [];
-  const bankAccounts = await prisma.bankAccount.findMany({ where: { propertyId: input.propertyId, active: true }, orderBy: { name: "asc" } });
+  const bankAccounts = await prisma.bankAccount.findMany({ where: bankAccountFilter(scope), orderBy: [{ propertyId: "asc" }, { name: "asc" }] });
   const bankCodes = Array.from(new Set(bankAccounts.map((b) => b.ledgerAccountCode ?? DEFAULT_BANK_LEDGER_CODE)));
   const codes = Array.from(new Set([CASH_CODE, CARD_PENDING_CODE, PSP_PENDING_CODE, DEFAULT_BANK_LEDGER_CODE, ...bankCodes]));
-  const balances = await ledgerBalances(organizationId, codes, { propertyId: input.propertyId, asOf });
+  const balances = await ledgerBalances(organizationId, codes, ledgerScopeOptions(scope, asOf));
   const anyEntry = await prisma.journalEntry.findFirst({ where: { organizationId, status: { in: ["posted", "reversed"] } }, select: { id: true } });
   if (!anyEntry) warnings.push("La organización no tiene asientos contabilizados: los saldos de caja y bancos del libro son 0 hasta que la contabilidad esté al día.");
 
@@ -167,6 +283,7 @@ export async function treasuryPosition(input: { propertyId: string; asOf?: Date 
     if ((sharedCodeCount.get(code) ?? 0) > 1) warnings.push(`Varias cuentas bancarias comparten la subcuenta ${code}: el saldo del libro se repite en cada una; asigna una subcuenta 572.x por cuenta.`);
     banks.push({
       bankAccountId: account.id,
+      propertyId: account.propertyId ?? null,
       name: account.name,
       ibanMasked: maskIban(account.iban),
       ledgerAccountCode: code,
@@ -183,16 +300,19 @@ export async function treasuryPosition(input: { propertyId: string; asOf?: Date 
   let banksTotal = sum(banks.map((b) => dec(b.reconciledBalance)));
   if (bankAccounts.length === 0) {
     banksTotal = round2(balances.get(DEFAULT_BANK_LEDGER_CODE) ?? dec(0));
-    warnings.push("La propiedad no tiene cuentas bancarias registradas: se muestra el saldo contable de 572.");
+    warnings.push(scope.kind === "entity" ? "La sociedad no tiene cuentas bancarias registradas: se muestra el saldo contable de 572." : "La propiedad no tiene cuentas bancarias registradas: se muestra el saldo contable de 572.");
   }
   const cash = round2(balances.get(CASH_CODE) ?? dec(0));
   const cardPending = round2(balances.get(CARD_PENDING_CODE) ?? dec(0));
   const pspPending = round2(balances.get(PSP_PENDING_CODE) ?? dec(0));
-  const [receivables, payables] = await Promise.all([treasuryReceivables({ propertyId: input.propertyId, asOf }), treasuryPayables({ propertyId: input.propertyId, asOf })]);
+  const [receivables, payables] = await Promise.all([receivablesForScope(scope, asOf), payablesForScope(scope, asOf)]);
   const cashAndBanks = round2(cash.plus(banksTotal));
   return {
-    propertyId: input.propertyId,
+    scope: scope.kind,
+    propertyId: scope.propertyId,
     organizationId,
+    legalEntityId: scope.legalEntityId,
+    entityLabel: scope.entityLabel,
     asOf: isoDay(asOf),
     cash: { ledgerAccountCode: CASH_CODE, balance: money(cash) },
     banks,
@@ -222,8 +342,11 @@ type InvoiceRow = {
   customerType: string;
 };
 
-export async function treasuryReceivables(input: { propertyId: string; asOf?: Date }): Promise<Receivables> {
-  const asOf = dayUtc(input.asOf ?? new Date());
+export async function treasuryReceivables(input: TreasuryScopeInput): Promise<Receivables> {
+  return receivablesForScope(await resolveTreasuryScope(input), asOfOf(input));
+}
+
+async function receivablesForScope(scope: TreasuryScope, asOf: Date): Promise<Receivables> {
   const method = [
     "Facturas emitidas (no anuladas) netas de rectificativas: una rectificativa por sustitución reemplaza a la original; una por diferencias se suma a ella.",
     "Cobros descontados: los enlazados a la factura y, si viene de un folio, los cobros del folio no enlazados (FIFO por fecha de emisión).",
@@ -231,7 +354,7 @@ export async function treasuryReceivables(input: { propertyId: string; asOf?: Da
     "Vencimiento asumido a 30 días de la emisión (las facturas no tienen fecha de vencimiento) y a la salida en los folios."
   ];
   const invoices = (await prisma.invoice.findMany({
-    where: { propertyId: input.propertyId, deletedAt: null, status: { in: ["issued", "rectified"] } },
+    where: { ...centreFilter(scope), deletedAt: null, status: { in: ["issued", "rectified"] } },
     select: { id: true, invoiceNumber: true, status: true, issuedAt: true, createdAt: true, total: true, rectifyingForId: true, rectificationType: true, folioId: true, reservationId: true, paidAt: true, customerName: true, customerTaxId: true, customerType: true }
   })) as InvoiceRow[];
   const byId = new Map(invoices.map((i) => [i.id, i]));
@@ -265,7 +388,7 @@ export async function treasuryReceivables(input: { propertyId: string; asOf?: Da
   const invoiceIds = invoices.map((i) => i.id);
   const folioIds = Array.from(new Set(invoices.map((i) => i.folioId).filter((id): id is string => Boolean(id))));
   const payments = await prisma.payment.findMany({
-    where: { propertyId: input.propertyId, status: "captured", deletedAt: null, createdAt: { lte: addDays(asOf, 1) }, OR: [{ invoiceId: { in: invoiceIds } }, { folioId: { in: folioIds }, invoiceId: null }] },
+    where: { ...centreFilter(scope), status: "captured", deletedAt: null, createdAt: { lte: addDays(asOf, 1) }, OR: [{ invoiceId: { in: invoiceIds } }, { folioId: { in: folioIds }, invoiceId: null }] },
     select: { id: true, amount: true, invoiceId: true, folioId: true }
   });
   const refunds = payments.length ? await prisma.paymentRefund.findMany({ where: { paymentId: { in: payments.map((p) => p.id) }, status: { notIn: ["rejected", "failed", "cancelled"] } }, select: { paymentId: true, amount: true } }) : [];
@@ -320,7 +443,7 @@ export async function treasuryReceivables(input: { propertyId: string; asOf?: Da
   }
 
   // Open folios without any invoice.
-  const reservations = await prisma.reservation.findMany({ where: { propertyId: input.propertyId, deletedAt: null }, select: { id: true, code: true, departureDate: true, bookerName: true, companyName: true } });
+  const reservations = await prisma.reservation.findMany({ where: { ...centreFilter(scope), deletedAt: null }, select: { id: true, code: true, departureDate: true, bookerName: true, companyName: true } });
   const reservationById = new Map(reservations.map((r) => [r.id, r]));
   const openFolios = reservations.length
     ? await prisma.folio.findMany({ where: { reservationId: { in: reservations.map((r) => r.id) }, status: "open", deletedAt: null }, select: { id: true, reservationId: true, label: true, invoices: { select: { id: true, status: true } } } })
@@ -366,7 +489,7 @@ export async function treasuryReceivables(input: { propertyId: string; asOf?: Da
     }
   }
   items.sort((a, b) => b.daysOverdue - a.daysOverdue);
-  return { propertyId: input.propertyId, asOf: isoDay(asOf), total: money(invoicesTotal.plus(foliosTotal)), invoices: money(invoicesTotal), openFolios: money(foliosTotal), aging: agingOut(aging), items, method };
+  return { scope: scope.kind, propertyId: scope.propertyId, asOf: isoDay(asOf), total: money(invoicesTotal.plus(foliosTotal)), invoices: money(invoicesTotal), openFolios: money(foliosTotal), aging: agingOut(aging), items, method };
 }
 
 // ---- Payables -------------------------------------------------------------------------
@@ -385,9 +508,12 @@ function socialSecurityDueDate(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 2, 0));
 }
 
-export async function treasuryPayables(input: { propertyId: string; asOf?: Date }): Promise<Payables> {
-  const asOf = dayUtc(input.asOf ?? new Date());
-  const organizationId = await organizationOf(input.propertyId);
+export async function treasuryPayables(input: TreasuryScopeInput): Promise<Payables> {
+  return payablesForScope(await resolveTreasuryScope(input), asOfOf(input));
+}
+
+async function payablesForScope(scope: TreasuryScope, asOf: Date): Promise<Payables> {
+  const organizationId = scope.organizationId;
   const method = [
     "Facturas recibidas aprobadas o contabilizadas sin fecha de pago (vencimiento: fecha de vencimiento o emisión + 30 días).",
     "Nóminas calculadas y no pagadas (líquido; fecha: fin del periodo).",
@@ -402,7 +528,7 @@ export async function treasuryPayables(input: { propertyId: string; asOf?: Date 
   let taxTotal = dec(0);
 
   const bills = await prisma.supplierBill.findMany({
-    where: { propertyId: input.propertyId, status: { in: ["approved", "posted"] }, paymentDate: null, cancelledAt: null },
+    where: { ...centreFilter(scope), status: { in: ["approved", "posted"] }, paymentDate: null, cancelledAt: null },
     select: { id: true, total: true, dueDate: true, issueDate: true, createdAt: true, invoiceNumber: true, supplierName: true }
   });
   for (const bill of bills) {
@@ -415,7 +541,7 @@ export async function treasuryPayables(input: { propertyId: string; asOf?: Date 
     items.push({ kind: "supplier_bill", id: bill.id, reference: bill.invoiceNumber ?? bill.id, counterparty: bill.supplierName ?? "Proveedor", date: isoDay(issue), expectedOn: isoDay(expectedOn), assumedDate: !bill.dueDate, amount: money(total), outstanding: money(total), daysOverdue: daysBetween(asOf, expectedOn) });
   }
 
-  const periods = await prisma.payrollPeriod.findMany({ where: { organizationId, OR: [{ propertyId: input.propertyId }, { propertyId: null }], status: { in: ["calculated", "exported"] }, paidAt: null }, select: { id: true, periodCode: true, totalNet: true, endDate: true } });
+  const periods = await prisma.payrollPeriod.findMany({ where: { organizationId, ...payrollCentreFilter(scope), status: { in: ["calculated", "exported"] }, paidAt: null }, select: { id: true, periodCode: true, totalNet: true, endDate: true } });
   for (const period of periods) {
     const net = round2(dec(period.totalNet));
     if (net.lte(0)) continue;
@@ -424,7 +550,7 @@ export async function treasuryPayables(input: { propertyId: string; asOf?: Date 
     items.push({ kind: "payroll_period", id: period.id, reference: `Nóminas ${period.periodCode}`, counterparty: "Personal", date: isoDay(period.endDate), expectedOn: isoDay(period.endDate), assumedDate: false, amount: money(net), outstanding: money(net), daysOverdue: daysBetween(asOf, period.endDate) });
   }
 
-  const accruals = await prisma.commissionAccrual.findMany({ where: { propertyId: input.propertyId, status: "accrued" }, select: { id: true, commissionAmount: true, accruedAt: true, channelCode: true, channelId: true, reservationId: true } });
+  const accruals = await prisma.commissionAccrual.findMany({ where: { ...centreFilter(scope), status: "accrued" }, select: { id: true, commissionAmount: true, accruedAt: true, channelCode: true, channelId: true, reservationId: true } });
   for (const accrual of accruals) {
     const amount = round2(dec(accrual.commissionAmount));
     if (amount.lte(0)) continue;
@@ -434,7 +560,7 @@ export async function treasuryPayables(input: { propertyId: string; asOf?: Date 
     items.push({ kind: "commission_accrual", id: accrual.id, reference: accrual.reservationId ?? accrual.id, counterparty: `Canal ${accrual.channelCode ?? accrual.channelId ?? ""}`.trim(), date: isoDay(accrual.accruedAt), expectedOn: isoDay(expectedOn), assumedDate: true, amount: money(amount), outstanding: money(amount), daysOverdue: daysBetween(asOf, expectedOn) });
   }
 
-  const balances = await ledgerBalances(organizationId, [VAT_PAYABLE_CODE, WITHHOLDING_PAYABLE_CODE, SS_PAYABLE_CODE], { propertyId: input.propertyId, asOf });
+  const balances = await ledgerBalances(organizationId, [VAT_PAYABLE_CODE, WITHHOLDING_PAYABLE_CODE, SS_PAYABLE_CODE], ledgerScopeOptions(scope, asOf));
   const liabilities: Array<{ code: string; label: string; due: Date }> = [
     { code: VAT_PAYABLE_CODE, label: "IVA a ingresar (Modelo 303)", due: quarterSettlementDate(asOf) },
     { code: WITHHOLDING_PAYABLE_CODE, label: "Retenciones IRPF (Modelo 111/115)", due: quarterSettlementDate(asOf) },
@@ -449,7 +575,8 @@ export async function treasuryPayables(input: { propertyId: string; asOf?: Date 
   }
   items.sort((a, b) => b.daysOverdue - a.daysOverdue);
   return {
-    propertyId: input.propertyId,
+    scope: scope.kind,
+    propertyId: scope.propertyId,
     asOf: isoDay(asOf),
     total: money(sum([supplierTotal, payrollTotal, commissionTotal, taxTotal])),
     supplierBills: money(supplierTotal),
@@ -503,9 +630,10 @@ export function buildForecast(input: { asOf: Date; opening: Dec; inflows: Array<
   return { buckets, horizons };
 }
 
-export async function treasuryForecast(input: { propertyId: string; asOf?: Date }): Promise<TreasuryForecast> {
-  const asOf = dayUtc(input.asOf ?? new Date());
-  const [position, receivables, payables] = await Promise.all([treasuryPosition({ propertyId: input.propertyId, asOf }), treasuryReceivables({ propertyId: input.propertyId, asOf }), treasuryPayables({ propertyId: input.propertyId, asOf })]);
+export async function treasuryForecast(input: TreasuryScopeInput): Promise<TreasuryForecast> {
+  const scope = await resolveTreasuryScope(input);
+  const asOf = asOfOf(input);
+  const [position, receivables, payables] = await Promise.all([positionForScope(scope, asOf), receivablesForScope(scope, asOf), payablesForScope(scope, asOf)]);
   const inflows = receivables.items.map((i) => ({ expectedOn: dayUtc(i.expectedOn), amount: dec(i.outstanding) }));
   const outflows = payables.items.map((i) => ({ expectedOn: dayUtc(i.expectedOn), amount: dec(i.outstanding) }));
   const { buckets, horizons } = buildForecast({ asOf, opening: dec(position.totals.cashAndBanks), inflows, outflows });
@@ -514,7 +642,8 @@ export async function treasuryForecast(input: { propertyId: string; asOf?: Date 
     ...payables.items.map((i) => ({ ...i, direction: "out" as const }))
   ].sort((a, b) => a.expectedOn.localeCompare(b.expectedOn));
   return {
-    propertyId: input.propertyId,
+    scope: scope.kind,
+    propertyId: scope.propertyId,
     asOf: isoDay(asOf),
     opening: position.totals.cashAndBanks,
     buckets,

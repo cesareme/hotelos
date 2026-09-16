@@ -8,10 +8,20 @@
 // like /accounting/fiscal-years); USALI mapping edits and snapshots →
 // accounting.configure; gestoría exports → analytics.export (they leave the
 // system). Risk: reads medium, writes high.
+//
+// Tanda 6b · L5 (estructura societaria): PyG por centro and the informative
+// allocation key (GET read · PUT accounting.configure). The whole-sociedad
+// scope of every read with amounts is enforced at runtime by
+// `assertFinanceReadScope` (lib/finance-scope.ts): without
+// `accounting.entity.read` a centre-scoped user needs an assigned `propertyId`.
 
 import type { ApiRoutePermission } from "../../security/route-permissions.js";
 
 export const FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS: ApiRoutePermission[] = [
+  // PyG por centro de trabajo y reparto informativo de la oficina central (Tanda 6b)
+  { method: "GET", path: "/accounting/pnl/by-property", permissions: ["accounting.read"], riskLevel: "medium" },
+  { method: "GET", path: "/accounting/allocation", permissions: ["accounting.read"], riskLevel: "medium" },
+  { method: "PUT", path: "/accounting/allocation", permissions: ["accounting.configure"], riskLevel: "high" },
   // USALI mapping editor
   { method: "GET", path: "/accounting/usali/mappings", permissions: ["accounting.read"], riskLevel: "medium" },
   { method: "PATCH", path: "/accounting/usali/mappings", permissions: ["accounting.configure"], riskLevel: "high" },

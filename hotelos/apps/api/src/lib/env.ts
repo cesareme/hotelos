@@ -171,6 +171,13 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     default: "info",
     doc: "Nivel de log de Prisma. Sin definir: warn en producción e info en desarrollo."
   },
+  STRUCTURE_ENABLED: {
+    section: "Proceso",
+    ...BOOL,
+    default: "true",
+    example: "true",
+    doc: "Interruptor de la estructura societaria (Tanda 6b: Sociedad → Centros de trabajo). Con false el API se comporta como hotel individual: sin ámbito «Sociedad», sin oficina central en el switcher y las rutas /legal-entities y /organizations/me/structure responden 404. Las tablas, el backfill (backfill-legal-structure.ts) y resolveLegalIdentity no dependen de él."
+  },
 
   // ------------------------------------------------------------ BD y colas
   DATABASE_URL: {
@@ -488,7 +495,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     format: "string",
     maxLength: 100,
     tags: ["fiscal-real"],
-    doc: "NumeroInstalacion (≤100): identificador que el productor asigna a esta instalación (no lo asigna AEAT)."
+    doc: "NumeroInstalacion (≤100): identificador que el productor asigna a esta instalación (no lo asigna AEAT). Desde la Tanda 6b el número de cada facturación vive en verifactu_installations (una fila por centro o por sociedad, inmutable); esta variable es solo el fallback en modo sandbox y el valor que el backfill hereda para las propiedades con envíos previos. En preproduction/production la ausencia de instalación es un error de readiness, nunca un fallback al env."
   },
   VERIFACTU_MULTI_OT: {
     section: "VeriFactu",
@@ -643,7 +650,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     section: "TBAI",
     format: "string",
     maxLength: 30,
-    doc: "NumSerieDispositivo (≤30). Vacío = VERIFACTU_INSTALL_NUMBER."
+    doc: "NumSerieDispositivo (≤30). Vacío = número de la instalación TicketBAI declarada del centro (verifactu_installations, route tbai), después VERIFACTU_INSTALL_NUMBER; en TBAI_MODE=production la ausencia de instalación bloquea el envío."
   },
 
   // ------------------------------------------------------------------ IGIC

@@ -1,5 +1,6 @@
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
+import { listOperationalProperties } from "../../lib/tenancy.js";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
 
 /**
@@ -467,11 +468,18 @@ export async function buildPortfolioDashboard(
   const dayEnd = endOfUtcDay(dayStart);
   const monthStart = startOfUtcMonth(dayStart);
 
-  const properties = await prisma.property.findMany({
-    where: { organizationId },
-    select: { id: true, name: true, status: true, municipality: true, province: true, taxRegion: true },
-    orderBy: { name: "asc" }
-  });
+  // Tanda 6b (R6): only operational centres (kind = hotel) enter the portfolio
+  // fan-out; the head office and other non-lodging centres have no rooms nor
+  // occupancy and must never dilute the KPIs (single filter: lib/tenancy.ts).
+  const operational = await listOperationalProperties(organizationId, prisma, { includeClosed: true });
+  const properties =
+    operational.length === 0
+      ? []
+      : await prisma.property.findMany({
+          where: { id: { in: operational.map((property) => property.id) } },
+          select: { id: true, name: true, status: true, municipality: true, province: true, taxRegion: true },
+          orderBy: { name: "asc" }
+        });
 
   if (properties.length === 0) {
     return {

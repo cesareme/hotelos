@@ -6,6 +6,7 @@ import { recordAuditEvent, recordDomainEvent } from "../audit/audit.service.js";
 import { ledger, type Db } from "../treasury/ledger-bridge.js";
 import { dayUtc, dec, isoDay, money, moneyNumber, round2, sum, type Dec } from "../treasury/money.js";
 import { PAYROLL_WRITE_KEYS, requireAnyPermission } from "../treasury/permissions.js";
+import { requireWithholdingWorkCenter, workCenterRequiredError } from "../accounting/posting-rules/withholding-tax.js";
 
 // ---- Payroll periods (lote tesoreria-banca) ----
 //
@@ -32,6 +33,16 @@ import { PAYROLL_WRITE_KEYS, requireAnyPermission } from "../treasury/permission
 // that wipes the slips and posts the new ones; `journalEntryIds` /
 // `reversalJournalEntryIds` keep the whole history on the period. IRPF rows
 // feed Modelo 111 through WithholdingTaxRecord (rowCode "01").
+//
+// Work centre (Tanda 6b · L4, design §5.2 R4 and §4 #7/#12): every slip has
+// ONE centre — `resolvePayrollWorkCenter`: the period's property, else the
+// contract's, else the employee profile's — used for BOTH the asiento
+// (640/642 are group-6 lines: WORK_CENTER_REQUIRED in the ledger otherwise)
+// and the WithholdingTaxRecord, so the head office's payroll (Property.kind
+// office) enters the Modelo 111 like any hotel's. No centre at all → 409
+// WORK_CENTER_REQUIRED + audit event PAYROLL_WORK_CENTER_REQUIRED, the whole
+// calculation rolls back (nothing is dropped in silence). The employer of the
+// export is the sociedad (export.service.ts).
 
 export const SS_EMPLOYEE_PCT = "6.35";
 export const SS_EMPLOYER_PCT = "30.5";
@@ -157,6 +168,15 @@ function daysInPeriodMonth(period: { startDate: Date; endDate: Date }): number {
   return period.endDate.getUTCDate();
 }
 
+/**
+ * Work centre of a slip (pure): the period's property (a per-centre payroll
+ * run), else the contract's, else the employee profile's home property; null
+ * when none — the caller turns that into 409 WORK_CENTER_REQUIRED.
+ */
+export function resolvePayrollWorkCenter(input: { periodPropertyId?: string | null; contractPropertyId?: string | null; profilePropertyId?: string | null }): string | null {
+  return input.periodPropertyId || input.contractPropertyId || input.profilePropertyId || null;
+}
+
 /** Naive annual bracket table on the monthly gross ×12 (only when the contract has no rate). */
 export function defaultIrpfRate(monthlyGross: number | Dec): number {
   const annual = dec(monthlyGross).mul(12);
@@ -205,6 +225,11 @@ export async function getPeriod(periodId: string): Promise<PayrollPeriodRecord> 
 export async function createPeriod(input: { context: UserContext; organizationId: string; propertyId?: string; periodCode: string; correlationId: string }): Promise<PayrollPeriodRecord> {
   requireAnyPermission(input.context, PAYROLL_WRITE_KEYS);
   const { startDate, endDate } = deriveMonthRange(input.periodCode);
+  if (input.propertyId) {
+    // A per-centre period must name a centre of the organisation (hotel, office or other); opaque 404 otherwise.
+    const centre = await prisma.property.findUnique({ where: { id: input.propertyId }, select: { organizationId: true } });
+    if (!centre || centre.organizationId !== input.organizationId) throw new NotFoundError("La propiedad no existe.");
+  }
   const existing = await prisma.payrollPeriod.findFirst({ where: { organizationId: input.organizationId, periodCode: input.periodCode, propertyId: input.propertyId ?? null } });
   if (existing) throw new ConflictError(`El periodo ${input.periodCode} ya existe.`, { code: "PAYROLL_PERIOD_EXISTS", periodId: existing.id });
   const created = await prisma.payrollPeriod.create({
@@ -286,6 +311,7 @@ export async function calculatePeriod(input: { context: UserContext; periodId: s
     const slipIds: string[] = [];
     const journalEntryIds: string[] = [];
     const seenProfiles = new Set<string>();
+    const verifiedWorkCenters = new Set<string>();
 
     for (const contract of contracts) {
       if (seenProfiles.has(contract.staffProfileId)) continue; // unique (periodId, staffProfileId)
@@ -294,6 +320,26 @@ export async function calculatePeriod(input: { context: UserContext; periodId: s
       const calc = computeSlip({ fullGross: dec(contract.grossSalary), daysWorked, daysInMonth, irpfRatePct: contract.irpfRatePct === null ? null : dec(contract.irpfRatePct) });
       if (calc.effectiveGross.lte(0)) continue;
       seenProfiles.add(contract.staffProfileId);
+
+      // Work centre of the slip (R4): period > contract > employee profile; never silent.
+      const workCenterId = resolvePayrollWorkCenter({ periodPropertyId: period.propertyId, contractPropertyId: contract.propertyId, profilePropertyId: profileById.get(contract.staffProfileId)?.propertyId });
+      if (!workCenterId) {
+        recordAuditEvent({
+          organizationId: period.organizationId,
+          actorUserId: input.context.userId,
+          actorType: "user",
+          action: "PAYROLL_WORK_CENTER_REQUIRED",
+          entityType: "employment_contract",
+          entityId: contract.id,
+          afterJson: { code: "WORK_CENTER_REQUIRED", periodId: period.id, periodCode: period.periodCode, staffProfileId: contract.staffProfileId, irpfRetention: money(calc.irpfRetention) },
+          correlationId: input.correlationId
+        });
+        throw workCenterRequiredError({ periodId: period.id, periodCode: period.periodCode, contractId: contract.id, staffProfileId: contract.staffProfileId, source: "payroll_slip" });
+      }
+      if (!verifiedWorkCenters.has(workCenterId)) {
+        await requireWithholdingWorkCenter(period.organizationId, workCenterId, tx);
+        verifiedWorkCenters.add(workCenterId);
+      }
       const proratedNote = daysWorked !== daysInMonth ? ` (prorrateo ${daysWorked}/${daysInMonth} días)` : "";
       const slip = await tx.payrollSlip.create({
         data: {
@@ -330,7 +376,7 @@ export async function calculatePeriod(input: { context: UserContext; periodId: s
       ];
       const entry = await ledger().postJournalEntry({
         organizationId: period.organizationId,
-        propertyId: period.propertyId ?? contract.propertyId ?? null,
+        propertyId: workCenterId,
         entryDate: period.endDate,
         sourceType: "payroll_slip",
         sourceId: slip.id,
@@ -342,13 +388,12 @@ export async function calculatePeriod(input: { context: UserContext; periodId: s
       });
       journalEntryIds.push(entry.id);
 
-      // 4) Modelo 111 (rendimientos del trabajo, fila 01).
-      const withholdingPropertyId = period.propertyId ?? contract.propertyId ?? profileById.get(contract.staffProfileId)?.propertyId ?? null;
-      if (withholdingPropertyId && calc.irpfRetention.gt(0)) {
+      // 4) Modelo 111 (rendimientos del trabajo, fila 01) — always on the slip's centre (the office included).
+      if (calc.irpfRetention.gt(0)) {
         await tx.withholdingTaxRecord.create({
           data: {
             organizationId: period.organizationId,
-            propertyId: withholdingPropertyId,
+            propertyId: workCenterId,
             sourceType: "payroll_slip",
             sourceId: slip.id,
             recipientNif: null,

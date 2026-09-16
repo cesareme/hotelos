@@ -73,6 +73,15 @@ describe("renderFiscalReportPdf", () => {
       propertyId: null,
       periodo: parseFiscalPeriod("2026-Q2"),
       declarante: { nif: "B12345674", nombre: "HotelOS Demo SL" },
+      sociedad: {
+        legalEntityId: "le_t",
+        code: "HD",
+        legalName: "HotelOS Demo SL",
+        taxId: "B12345674",
+        taxIdValid: true,
+        source: "legal_entity",
+        regimen: { siiEnabled: false, largeCompany: false, periodicity: "quarterly", persistedPeriodicity: "quarterly", periodicityForcedBy: null, modelosNoPresentados: [], verifactu: { aplica: true, motivo: null } }
+      },
       casillas: [
         { casilla: "04", clave: "DEV_BASE_10", descripcion: "Base imponible al 10 %", seccion: "IVA devengado", importe: 3050, tipo: "base" },
         { casilla: "71", clave: "RESULTADO_LIQUIDACION", descripcion: "Resultado de la liquidación", seccion: "Resultado", importe: 95, tipo: "resultado" }

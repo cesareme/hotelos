@@ -13,6 +13,7 @@
 
 import { prisma } from "@hotelos/database";
 import type { Prisma } from "@hotelos/database";
+import { filterOperationalProperties } from "../../lib/tenancy.js";
 
 const MS_DAY = 86_400_000;
 const OTB_STATUSES = ["confirmed", "checked_in", "checked_out"] as const;
@@ -202,9 +203,9 @@ export async function capturePaceSnapshot(propertyId: string, captureDateIso?: s
   return { propertyId, captureDate: isoDate(captureDate), captured };
 }
 
-/** Capture nightly snapshots for every active property (scheduler entry point). */
+/** Capture nightly snapshots for every operational property (scheduler entry point; Tanda 6b R6: offices excluded). */
 export async function capturePaceSnapshotsForAllProperties(): Promise<{ properties: number; captured: number; failed: string[] }> {
-  const properties = await prisma.property.findMany({ select: { id: true } });
+  const properties = filterOperationalProperties(await prisma.property.findMany({ select: { id: true, kind: true } }));
   let captured = 0;
   const failed: string[] = [];
   for (const p of properties) {

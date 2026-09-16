@@ -11,11 +11,27 @@
 // Snapshots and exports are fetched by id + organizationId (404 otherwise).
 // Downloads (format=pdf|xlsx|csv) set content-type and content-disposition;
 // JSON is the default.
+//
+// Estructura societaria (Tanda 6b · L5, design §5.2 R11): the reads with
+// amounts also go through `assertFinanceReadScope` (modules/accounting/
+// ledger.routes.ts): without `accounting.entity.read` a centre-scoped user
+// must name an assigned `propertyId`; the whole-sociedad views (compare
+// without ids, PyG por centro, snapshots) are an opaque 404 for such a user.
+// New in 6b: `GET /accounting/pnl/by-property` (PyG cuenta × centro with
+// «Oficina central» and «Sin asignar»), `GET/PUT /accounting/allocation`
+// (informative allocation key, never posted) and the `includeCorporate` /
+// `allocation` flags of the USALI comparison. The entity label of every
+// rendered file comes from the legal entity (`resolveLegalIdentity`).
+// Gestoría exports (fix t6b#4): stored rows carry no centre, so the whole
+// family is a whole-sociedad artefact — list, get and download need the entity
+// scope like the snapshots (the service enforces it too for direct callers).
 
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { createId } from "../../lib/ids.js";
 import { requirePermissions } from "../auth/auth.service.js";
-import type { GestoriaExportFormatKey, UsaliMappingUpsert } from "../../../../../packages/shared/src/financial-statements-types.js";
+import { assertFinanceReadScope, assertFinanceReadScopeMany } from "../../lib/finance-scope.js";
+import type { CorporateAllocationPutBody, GestoriaExportFormatKey, UsaliMappingUpsert } from "@hotelos/shared";
+import { getCorporateAllocationView, putCorporateAllocation } from "./allocation.service.js";
 import {
   buildAnnualAccounts,
   buildBalanceSheet,
@@ -28,12 +44,14 @@ import {
 } from "./annual-accounts.service.js";
 import {
   annualAccountsQuerySchema,
+  corporateAllocationPutSchema,
   gestoriaExportCreateSchema,
   gestoriaExportListQuerySchema,
   optionalPeriodQuerySchema,
   parseOr400,
   parsePeriodsParam,
   periodsListSchema,
+  pnlByPropertyQuerySchema,
   snapshotCreateSchema,
   snapshotDownloadQuerySchema,
   snapshotListQuerySchema,
@@ -43,7 +61,8 @@ import {
   usaliPnlQuerySchema
 } from "./financial-statements.schemas.js";
 import { GESTORIA_FORMATS, createGestoriaExport, getGestoriaExport, listGestoriaExports } from "./gestoria-export.service.js";
-import { prismaFinancialStatementsSource } from "./source.js";
+import { buildPnlByProperty } from "./pnl-by-property.service.js";
+import { entityBadgeOf, entityLabelOf, prismaFinancialStatementsSource } from "./source.js";
 import { renderStatementFile, type RenderableStatement } from "./statement-render.js";
 import { deleteUsaliMapping, getUsaliCoverage, getUsaliMappings, patchUsaliMappings } from "./usali-mapping.service.js";
 import { buildUsaliPnl, compareUsaliPeriods, compareUsaliProperties } from "./usali.service.js";
@@ -57,10 +76,10 @@ function sendFile(reply: FastifyReply, file: { buffer: Buffer; contentType: stri
   return reply.send(file.buffer);
 }
 
-async function entityLabel(organizationId: string): Promise<string | undefined> {
-  const organization = await prismaFinancialStatementsSource.organization(organizationId);
-  if (!organization) return undefined;
-  return `${organization.legalName ?? organization.name}${organization.taxId ? ` · NIF ${organization.taxId}` : ""}`;
+/** «<razón social> · NIF <nif>» of the sociedad (Tanda 6b: the legal entity, never Organization columns). */
+async function entityLabel(organizationId: string): Promise<string> {
+  const identity = await prismaFinancialStatementsSource.legalIdentity(organizationId);
+  return entityLabelOf(entityBadgeOf(identity));
 }
 
 /** JSON by default; pdf/xlsx/csv as a download named <stem>_<from>_<to>.<ext>. */
@@ -98,6 +117,7 @@ export function registerFinancialStatementsRoutes(app: FastifyInstance): void {
   // ---- USALI statement ------------------------------------------------------
   app.get("/accounting/usali/pnl", async (request, reply) => {
     const q = parseOr400(usaliPnlQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const pnl = await buildUsaliPnl({ context: request.userContext, propertyId: q.propertyId ?? null, from: q.from, to: q.to });
     return respond(reply, pnl, q.format, `usali${q.propertyId ? `_${q.propertyId}` : ""}`);
   });
@@ -108,7 +128,8 @@ export function registerFinancialStatementsRoutes(app: FastifyInstance): void {
     const { format: _format, ...rest } = raw;
     const q = parseOr400(usaliCompareQuerySchema, rest, "query");
     const propertyIds = q.propertyIds ? q.propertyIds.split(",").map((s) => s.trim()).filter(Boolean) : null;
-    const comparison = await compareUsaliProperties({ context: request.userContext, from: q.from, to: q.to, propertyIds });
+    assertFinanceReadScopeMany(request.userContext, propertyIds);
+    const comparison = await compareUsaliProperties({ context: request.userContext, from: q.from, to: q.to, propertyIds, includeCorporate: boolFlag(q.includeCorporate), allocation: q.allocation ?? null });
     return respond(reply, comparison, format, "usali_propiedades");
   });
 
@@ -117,50 +138,75 @@ export function registerFinancialStatementsRoutes(app: FastifyInstance): void {
     const format = typeof raw.format === "string" ? (raw.format as Format) : undefined;
     const { format: _format, ...rest } = raw;
     const q = parseOr400(usaliPeriodsQuerySchema, rest, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const periods = parseOr400(periodsListSchema, parsePeriodsParam(q.periods), "periods");
     const comparison = await compareUsaliPeriods({ context: request.userContext, propertyId: q.propertyId ?? null, periods });
     return respond(reply, comparison, format, "usali_periodos");
   });
 
+  // ---- PyG por centro de trabajo y reparto informativo (Tanda 6b) -------------
+  app.get("/accounting/pnl/by-property", async (request) => {
+    const q = parseOr400(pnlByPropertyQuerySchema, request.query ?? {}, "query");
+    // Whole-sociedad matrix: the centre-scoped user reads its centre through the PyG with propertyId instead.
+    assertFinanceReadScope(request.userContext, null);
+    return buildPnlByProperty({ context: request.userContext, from: q.from, to: q.to, allocation: q.allocation ?? null });
+  });
+
+  app.get("/accounting/allocation", async (request) => {
+    return getCorporateAllocationView({ context: request.userContext });
+  });
+
+  app.put("/accounting/allocation", async (request) => {
+    const body = parseOr400(corporateAllocationPutSchema, request.body ?? {}, "body") as CorporateAllocationPutBody;
+    return putCorporateAllocation({ context: request.userContext, body, correlationId: createId("corr") });
+  });
+
   // ---- Cuentas anuales PGC Pymes ---------------------------------------------
   app.get("/accounting/annual-accounts", async (request, reply) => {
     const q = parseOr400(annualAccountsQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const accounts = await buildAnnualAccounts({ context: request.userContext, fiscalYearId: q.fiscalYearId, from: q.from, to: q.to, propertyId: q.propertyId ?? null, comparative: boolFlag(q.comparative) });
     return respond(reply, accounts, q.format, "cuentas_anuales");
   });
 
   app.get("/accounting/annual-accounts/balance", async (request, reply) => {
     const q = parseOr400(annualAccountsQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const balance = await buildBalanceSheet({ context: request.userContext, fiscalYearId: q.fiscalYearId, from: q.from, to: q.to, propertyId: q.propertyId ?? null, comparative: boolFlag(q.comparative) });
     return respond(reply, balance, q.format, "balance");
   });
 
   app.get("/accounting/annual-accounts/pyg", async (request, reply) => {
     const q = parseOr400(annualAccountsQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const pyg = await buildProfitAndLoss({ context: request.userContext, fiscalYearId: q.fiscalYearId, from: q.from, to: q.to, propertyId: q.propertyId ?? null, comparative: boolFlag(q.comparative) });
     return respond(reply, pyg, q.format, "pyg");
   });
 
   app.get("/accounting/annual-accounts/ecpn", async (request, reply) => {
     const q = parseOr400(annualAccountsQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const ecpn = await buildEquityChanges({ context: request.userContext, fiscalYearId: q.fiscalYearId, from: q.from, to: q.to, propertyId: q.propertyId ?? null });
     return respond(reply, ecpn, q.format, "ecpn");
   });
 
   app.get("/accounting/annual-accounts/memoria", async (request, reply) => {
     const q = parseOr400(annualAccountsQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, q.propertyId ?? null);
     const memoria = await buildMemoria({ context: request.userContext, fiscalYearId: q.fiscalYearId, from: q.from, to: q.to, propertyId: q.propertyId ?? null });
     return respond(reply, memoria, q.format, "memoria");
   });
 
-  // ---- Snapshots -------------------------------------------------------------
+  // ---- Snapshots (entity-level artefacts: whole-sociedad scope) ---------------
   app.get("/accounting/annual-accounts/snapshots", async (request) => {
     const q = parseOr400(snapshotListQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, null);
     return listStatementSnapshots({ context: request.userContext, kind: q.kind ?? null, fiscalYearId: q.fiscalYearId ?? null, limit: q.limit });
   });
 
   app.post("/accounting/annual-accounts/snapshots", async (request, reply) => {
     const body = parseOr400(snapshotCreateSchema, request.body ?? {}, "body");
+    assertFinanceReadScope(request.userContext, body.propertyId ?? null);
     const snapshot = await createStatementSnapshot({
       context: request.userContext,
       kind: body.kind,
@@ -177,12 +223,14 @@ export function registerFinancialStatementsRoutes(app: FastifyInstance): void {
 
   app.get("/accounting/annual-accounts/snapshots/:snapshotId", async (request) => {
     const { snapshotId } = request.params as { snapshotId: string };
+    assertFinanceReadScope(request.userContext, null);
     return getStatementSnapshot({ context: request.userContext, snapshotId });
   });
 
   app.get("/accounting/annual-accounts/snapshots/:snapshotId/download", async (request, reply) => {
     const { snapshotId } = request.params as { snapshotId: string };
     const q = parseOr400(snapshotDownloadQuerySchema, request.query ?? {}, "query");
+    assertFinanceReadScope(request.userContext, null);
     const snapshot = await getStatementSnapshot({ context: request.userContext, snapshotId });
     const statement = snapshot.json as RenderableStatement;
     if (!q.format || q.format === "json") return statement;
@@ -198,11 +246,16 @@ export function registerFinancialStatementsRoutes(app: FastifyInstance): void {
 
   app.get("/accounting/gestoria-exports", async (request) => {
     const q = parseOr400(gestoriaExportListQuerySchema, request.query ?? {}, "query");
+    // Stored exports have no centre: whole-sociedad artefacts (R11), opaque 404 for a centre-scoped user.
+    assertFinanceReadScope(request.userContext, null);
     return listGestoriaExports({ context: request.userContext, format: (q.format as GestoriaExportFormatKey | undefined) ?? null, limit: q.limit });
   });
 
   app.post("/accounting/gestoria-exports", async (request, reply) => {
     const body = parseOr400(gestoriaExportCreateSchema, request.body ?? {}, "body");
+    // The diario / VAT books of the sociedad leave the system and the stored row has no centre: whole-sociedad scope (R11); a centre export also validates its centre.
+    assertFinanceReadScope(request.userContext, null);
+    if (body.propertyId) assertFinanceReadScope(request.userContext, body.propertyId);
     const row = await createGestoriaExport({
       context: request.userContext,
       format: body.format,
@@ -218,11 +271,13 @@ export function registerFinancialStatementsRoutes(app: FastifyInstance): void {
 
   app.get("/accounting/gestoria-exports/:exportId", async (request) => {
     const { exportId } = request.params as { exportId: string };
+    assertFinanceReadScope(request.userContext, null);
     return (await getGestoriaExport({ context: request.userContext, exportId })).row;
   });
 
   app.get("/accounting/gestoria-exports/:exportId/download", async (request, reply) => {
     const { exportId } = request.params as { exportId: string };
+    assertFinanceReadScope(request.userContext, null);
     const { row, content } = await getGestoriaExport({ context: request.userContext, exportId });
     return sendFile(reply, { buffer: Buffer.from(content, "utf8"), contentType: "text/csv; charset=utf-8" }, row.fileName);
   });
