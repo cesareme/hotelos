@@ -72,7 +72,7 @@ export function CocoaCallout({ tone = "neutral", variant = "inline", title, icon
             {title}
           </span>
         ) : null}
-        {children}
+        {children !== undefined && children !== null ? <div className="c22-callout__text">{children}</div> : null}
       </div>
       {actions ? (
         <div className="c22-callout__actions" style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", flexShrink: 0, alignItems: "center" }}>

@@ -377,6 +377,8 @@
 .c22-callout__icon { color: var(--c22-tone); flex-shrink: 0; display: inline-flex; margin-top: 1px; }
 .c22-callout__title { font-weight: var(--cocoa-fw-semibold); color: var(--c22-tone-text); }
 .c22-callout__body { min-width: 0; flex: 1 1 auto; }
+/* Texto del callout: un solo contexto en línea, para que <strong>/<code>/<a> no se conviertan en ítems flex (líneas partidas). */
+.c22-callout__text { min-width: 0; }
 .c22-callout__actions { display: inline-flex; gap: var(--cocoa-space-2); flex-shrink: 0; }
 /* Shell banner variant: full width under the toolbar, no radius. */
 .c22-callout[data-variant="banner"] {
