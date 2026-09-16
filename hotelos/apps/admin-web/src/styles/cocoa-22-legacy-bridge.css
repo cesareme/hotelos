@@ -381,14 +381,15 @@
     cursor: not-allowed;
     transform: none;
   }
-  /* filled accent */
+  /* filled accent — same surface as CocoaButton filled accent: the fill token
+     carries the white ink at 5.35:1 in light (the bare hue only 4.36:1). */
   button.primary, .bo-button.primary {
-    background: var(--cocoa-accent);
+    background: var(--cocoa-accent-fill);
     color: var(--cocoa-accent-contrast);
     border-color: transparent;
   }
   button.primary:hover, .bo-button.primary:hover {
-    background: var(--cocoa-accent);
+    background: var(--cocoa-accent-fill);
     border-color: transparent;
     filter: brightness(1.04);
   }

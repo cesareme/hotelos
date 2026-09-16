@@ -14,7 +14,10 @@
 // Props:
 //   - title       (required) Card heading
 //   - description (required) Short explanatory paragraph
-//   - steps?      Ordered string[] rendered as a numbered list
+//   - steps?      Ordered string[] rendered as a numbered list. The accent
+//                 badge carries the ordinal, so a leading "1. " / "1) " in
+//                 the copy is stripped at render time (qa#9: content files
+//                 that hand-numbered their steps read "1  1. Comprueba…")
 //   - tip?        Single tip line shown in a warning-toned callout
 //   - dismissible?    When true, shows an "X" close button
 //   - persistKey?     If provided, the dismissed state is saved to
@@ -48,6 +51,16 @@ export interface CocoaScreenInstructionsCardProps {
 }
 
 const STORAGE_PREFIX = "cocoa-screen-instructions:";
+
+// A hand-written ordinal at the start of a step ("1. ", "12) ") duplicates
+// the badge the list already paints. One or two digits followed by "." or ")"
+// and whitespace; "2.5 % de recargo" keeps its number because no whitespace
+// follows the dot.
+const LEADING_ORDINAL_RE = /^\s*\d{1,2}[.)]\s+/;
+
+export function stripStepOrdinal(step: string): string {
+  return step.replace(LEADING_ORDINAL_RE, "");
+}
 
 function readDismissed(persistKey: string | undefined): boolean {
   if (!persistKey) return false;
@@ -140,7 +153,9 @@ const stepDotStyle: CSSProperties = {
   width: 20,
   height: 20,
   borderRadius: "50%",
-  background: "var(--cocoa-accent)",
+  // Filled surface under the accent ink with an 11 px numeral: the bare hue
+  // carries white at 4.36:1 in light, the fill token at 5.35:1 (qa#8).
+  background: "var(--cocoa-accent-fill)",
   color: "var(--cocoa-accent-contrast)",
   fontSize: "var(--cocoa-fs-caption-1)",
   fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,
@@ -308,7 +323,7 @@ export function CocoaScreenInstructionsCard({
                     <span style={stepDotStyle} aria-hidden="true">
                       {index + 1}
                     </span>
-                    <span style={stepTextStyle}>{step}</span>
+                    <span style={stepTextStyle}>{stripStepOrdinal(step)}</span>
                   </li>
                 ))}
               </ol>

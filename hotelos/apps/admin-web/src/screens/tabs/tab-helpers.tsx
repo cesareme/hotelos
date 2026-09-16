@@ -34,7 +34,7 @@ import { usePathname } from "./usePathname";
 
 // ----------------------------------------------------------------- hosted head
 
-export type HostedHeadProps = Pick<CocoaPageHeaderProps, "title" | "subtitle" | "actions" | "tabs" | "activeTab" | "onTabChange"> & {
+export type HostedHeadProps = Pick<CocoaPageHeaderProps, "title" | "subtitle" | "actions" | "tabs" | "activeTab" | "onTabChange" | "panelId"> & {
   /**
    * Not painted here (the container owns the eyebrow): registered with it through
    * `useHostedEyebrow` so «Finanzas · <sociedad>» qualifies the container's category
@@ -70,7 +70,7 @@ HostedEyebrow.displayName = "HostedEyebrow";
  * when it has nothing to say. Layout: the lead column is as wide as its
  * segmented views and the actions wrap under them when both do not fit.
  */
-export function HostedHead({ title, subtitle, actions, tabs, activeTab, onTabChange, eyebrow }: HostedHeadProps) {
+export function HostedHead({ title, subtitle, actions, tabs, activeTab, onTabChange, panelId, eyebrow }: HostedHeadProps) {
   const hasTabs = Array.isArray(tabs) && tabs.length > 0;
   const register = eyebrow ? <HostedEyebrow eyebrow={eyebrow} /> : null;
   if (!subtitle && !hasTabs && !actions) return register;
@@ -85,6 +85,7 @@ export function HostedHead({ title, subtitle, actions, tabs, activeTab, onTabCha
             onChange={(value) => onTabChange?.(value)}
             options={tabs!}
             size="small"
+            panelId={panelId}
             aria-label={`${title}: vistas`}
           />
         ) : null}

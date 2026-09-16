@@ -4,9 +4,27 @@ import { useToast } from "../components/Toast";
 import { getActivePropertyId } from "../services/activeProperty";
 import { modulesPath, setPropertyModuleState, type PropertyModule, type PropertyModuleHealth, type PropertyModuleStatus } from "../services/modulesApi";
 import { menuEntriesUnlockedBy } from "../navigation/nav-tree";
+import { toArray } from "../utils/toArray";
+import { plural } from "../lib/format";
 import { ACTIONS, STATUS_LABELS } from "../content/actions";
-import { pageHead } from "./tabs/configuracion/tab-helpers";
+import { useTabHost } from "./tabs/TabHost";
+import { treeHeaderFor } from "./tabs/tab-helpers";
 import { moduleCategoryLabel } from "./module-category-labels";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaSwitch,
+  type CocoaTone
+} from "../components/cocoa";
 
 /**
  * Module Manager — wires the back-office modules grid to the real API:
@@ -25,6 +43,11 @@ import { moduleCategoryLabel } from "./module-category-labels";
  * the list can never drift from the menu. «Activar módulo» in the Sidebar
  * opens this screen with `#modulo=<code>`: that card is highlighted and
  * scrolled into view.
+ *
+ * Cocoa 22 · ola 10 · lote 10-C (form archetype): CocoaPage → in-memory
+ * warning as a CocoaCallout → KPI strip → one CocoaSection per module on the
+ * 12-column grid (status badge, what it unlocks, health, a CocoaSwitch to
+ * activate it). Calls, hash handling and the scroll-into-view are untouched.
  */
 
 /** §6.2: modules whose data still lives in memory until L2 persists them. */
@@ -49,7 +72,7 @@ function ModuleUnlocks({ module }: { module: PropertyModule }) {
   const unlocks = useMemo(() => menuEntriesUnlockedBy(module.code), [module.code]);
   if (unlocks.length > 0) {
     return (
-      <p className="bo-muted" style={{ fontSize: 12 }}>
+      <p className="cocoa-note">
         Desbloquea en el menú:{" "}
         {unlocks.map((unlock, index) => (
           <span key={`${unlock.category.key}-${unlock.item.screenKey}`}>
@@ -64,7 +87,7 @@ function ModuleUnlocks({ module }: { module: PropertyModule }) {
   const entries = module.menuEntries ?? [];
   if (entries.length === 0) return null;
   return (
-    <p className="bo-muted" style={{ fontSize: 12 }}>
+    <p className="cocoa-note">
       Desbloquea en el menú:{" "}
       {entries.map((entry, index) => (
         <span key={`${entry.screenKey}-${entry.url}`}>
@@ -84,20 +107,22 @@ const STATUS_LABEL: Record<PropertyModuleStatus, string> = {
   available: "Disponible"
 };
 
-function statusTone(status: PropertyModuleStatus): "ok" | "warn" | "info" {
-  if (status === "enabled") return "ok";
-  if (status === "disabled") return "warn";
+const HEADER = treeHeaderFor("ModuleManager", { eyebrow: "Configuración", title: "Módulos" });
+
+function statusTone(status: PropertyModuleStatus): CocoaTone {
+  if (status === "enabled") return "success";
+  if (status === "disabled") return "warning";
   return "info";
 }
 
-function healthTone(health: PropertyModuleHealth): "ok" | "warn" | "error" {
-  if (health === "ok") return "ok";
-  if (health === "error") return "error";
-  return "warn";
+function healthTone(health: PropertyModuleHealth): CocoaTone {
+  if (health === "ok") return "success";
+  if (health === "error") return "danger";
+  return "warning";
 }
 
 function healthLabel(health: PropertyModuleHealth): string {
-  if (health === "ok") return "Salud OK";
+  if (health === "ok") return "Salud correcta";
   if (health === "error") return "Error";
   return "Configuración pendiente";
 }
@@ -107,9 +132,10 @@ function readHashCode(): string | null {
   return moduleCodeFromHash(window.location.hash);
 }
 
-export function ModuleManager({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
-  const Head = pageHead(embedded);
+function ModuleManagerPage({ embedded }: { embedded: boolean }) {
+  // The host context decides the head (CocoaPage reads it); `embedded` is the L1c bridge the loader still passes.
+  // Hosted, the container already describes the modules in its subtitle (§4.2 D20).
+  const hosted = embedded || useTabHost() !== null;
   const propertyId = useMemo(() => getActivePropertyId(), []);
   const { showToast } = useToast();
 
@@ -129,7 +155,7 @@ export function ModuleManager({ embedded = false }: { embedded?: boolean } = {})
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  const modules = data ?? [];
+  const modules = useMemo(() => toArray<PropertyModule>(data), [data]);
   const activeCount = modules.filter((m) => m.status === "enabled").length;
   const blockedCount = modules.filter((m) => m.healthStatus !== "ok").length;
   const focused = focusCode ? modules.find((m) => m.code === focusCode) ?? null : null;
@@ -187,136 +213,107 @@ export function ModuleManager({ embedded = false }: { embedded?: boolean } = {})
   }
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <Head
-        eyebrow="Configuración"
-        title="Módulos"
-        subtitle="Activa, desactiva e inspecciona los módulos de la propiedad. Los módulos base no pueden desactivarse y las dependencias se validan en el servidor. Cada módulo indica qué entradas del menú desbloquea."
-        actions={
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {loading ? <span className="bo-status info">{STATUS_LABELS.loading}</span> : null}
-            {error ? <span className="bo-status error">{error}</span> : null}
-            <button type="button" onClick={refresh} disabled={loading}>↻ {ACTIONS.refresh}</button>
-          </div>
-        }
-      />
-
-      <div
-        role="note"
-        data-module-warning="in-memory"
-        style={{ fontSize: 13, padding: "10px 12px", borderRadius: "var(--radius-sm)", background: "var(--warn-soft, var(--surface-soft))", color: "var(--ink)" }}
-      >
-        {IN_MEMORY_WARNING}
+    <CocoaPage
+      eyebrow={HEADER.eyebrow}
+      title={HEADER.title}
+      subtitle={hosted ? undefined : "Activa, desactiva e inspecciona los módulos de la propiedad. Los módulos base no pueden desactivarse y las dependencias se validan en el servidor. Cada módulo indica qué entradas del menú desbloquea."}
+      actions={
+        <>
+          {error ? <CocoaBadge tone="danger">{error}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={loading} loading={loading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={loading && !data ? "loading" : error && !data ? "error" : "ready"}
+      skeleton={
+        <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+          <CocoaSkeleton.Strip count={2} min={200} />
+          <CocoaSkeleton.Grid rows={[[6, 6], [6, 6]]} height={220} />
+        </div>
+      }
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "module-manager-refresh", label: "Actualizar los módulos de la propiedad", run: refresh }]}
+    >
+      <div data-module-warning="in-memory">
+        <CocoaCallout tone="warning" title="Datos guardados en memoria">
+          {IN_MEMORY_WARNING}
+        </CocoaCallout>
       </div>
 
       {focusCode && !loading && !focused ? (
-        <div role="status" style={{ fontSize: 13, padding: "10px 12px", borderRadius: "var(--radius-sm)", background: "var(--surface-soft)", color: "var(--ink)" }}>
+        <CocoaCallout tone="info" role="status">
           El módulo «{focusCode}» no está disponible en esta propiedad.
-        </div>
+        </CocoaCallout>
       ) : null}
 
-      <div className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Módulos activos</h3>
-            <span className="bo-status ok">ok</span>
-          </div>
-          <div className="bo-metric">{activeCount}</div>
-          <p>De {modules.length} módulos disponibles para esta propiedad.</p>
-        </article>
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Pendientes de configuración</h3>
-            <span className={`bo-status ${blockedCount > 0 ? "warn" : "ok"}`}>
-              {blockedCount > 0 ? "warn" : "ok"}
-            </span>
-          </div>
-          <div className="bo-metric">{blockedCount}</div>
-          <p>Módulos con comprobaciones de salud fallidas o que requieren configuración.</p>
-        </article>
-      </div>
+      <CocoaKpiStrip min={200} aria-label="Resumen de módulos">
+        <CocoaKpi label="Módulos activos" value={activeCount} unit={`de ${modules.length}`} caption="disponibles para esta propiedad" polarity="neutral" status="ok" />
+        <CocoaKpi label="Pendientes de configuración" value={blockedCount} caption="con comprobaciones de salud fallidas o que requieren configuración" polarity="negative-good" status={blockedCount > 0 ? "warning" : "ok"} />
+      </CocoaKpiStrip>
 
-      <div className="bo-grid two">
+      <CocoaGrid align="start" aria-label="Módulos de la propiedad">
         {modules.map((module) => {
           const busy = pending.has(module.code);
           const isOn = module.status === "enabled";
           const isFocused = focused?.code === module.code;
           const inMemory = IN_MEMORY_MODULE_CODES.includes(module.code);
           return (
-            <article
-              className="bo-card"
-              key={module.code}
-              id={`module-${module.code}`}
-              data-module-code={module.code}
-              data-module-status={module.status}
-              style={isFocused ? { outline: "2px solid var(--accent, #6f3ad2)", outlineOffset: 2 } : undefined}
-            >
-              <div className="bo-card-head">
-                <div>
-                  <h3>{module.name}</h3>
-                  <p className="bo-muted" style={{ marginTop: 2, fontSize: 12 }}>
-                    {moduleCategoryLabel(module.category)}
+            <CocoaSpan cols={6} min={320} key={module.code}>
+              <CocoaSection
+                id={`module-${module.code}`}
+                variant={isFocused ? "elevated" : "bordered"}
+                title={module.name}
+                meta={<CocoaBadge tone={statusTone(module.status)}>{STATUS_LABEL[module.status]}</CocoaBadge>}
+              >
+                <p className="cocoa-note">{moduleCategoryLabel(module.category)}</p>
+                <p>{module.description}</p>
+                <ModuleUnlocks module={module} />
+                {inMemory ? (
+                  <p className="cocoa-note" data-module-warning={module.code}>
+                    Sus datos se guardan en memoria hasta la siguiente entrega: se pierden al reiniciar el servidor.
                   </p>
-                </div>
-                <span className={`bo-status ${statusTone(module.status)}`}>
-                  {STATUS_LABEL[module.status]}
-                </span>
-              </div>
-              <p>{module.description}</p>
-              <ModuleUnlocks module={module} />
-              {inMemory ? (
-                <p className="bo-muted" style={{ fontSize: 12 }} data-module-warning={module.code}>
-                  Sus datos se guardan en memoria hasta la siguiente entrega: se pierden al reiniciar el servidor.
-                </p>
-              ) : null}
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                <span className={`bo-status ${healthTone(module.healthStatus)}`}>
-                  {healthLabel(module.healthStatus)}
-                </span>
-                {module.isCore ? <span className="bo-chip">base</span> : null}
-                {module.dependencies.length ? (
-                  <span className="bo-chip" title={`Depende de: ${module.dependencies.join(", ")}`}>
-                    dependencias: {module.dependencies.length}
-                  </span>
                 ) : null}
-              </div>
-              {module.recommendedNextAction && module.healthStatus !== "ok" ? (
-                <p className="bo-muted" style={{ fontSize: 12 }}>
-                  {module.recommendedNextAction}
-                </p>
-              ) : null}
-              <div className="bo-actions" style={{ marginTop: 8 }}>
-                <label
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 8,
-                    cursor: module.isCore ? "not-allowed" : "pointer",
-                    opacity: module.isCore ? 0.6 : 1
-                  }}
-                  title={module.isCore ? "Los módulos base no pueden desactivarse" : undefined}
-                >
-                  <input
-                    type="checkbox"
-                    role="switch"
+                <div className="cocoa-cluster">
+                  <CocoaBadge tone={healthTone(module.healthStatus)}>{healthLabel(module.healthStatus)}</CocoaBadge>
+                  {module.isCore ? <CocoaBadge tone="neutral">base</CocoaBadge> : null}
+                  {module.dependencies.length ? (
+                    <CocoaBadge tone="neutral" title={`Depende de: ${module.dependencies.join(", ")}`}>
+                      {plural(module.dependencies.length, "dependencia", "dependencias")}
+                    </CocoaBadge>
+                  ) : null}
+                  {isFocused ? <CocoaBadge tone="accent">Seleccionado desde el menú</CocoaBadge> : null}
+                </div>
+                {module.recommendedNextAction && module.healthStatus !== "ok" ? (
+                  <CocoaCallout tone="warning">{module.recommendedNextAction}</CocoaCallout>
+                ) : null}
+                <div className="cocoa-row" data-gap="2">
+                  <CocoaSwitch
                     checked={isOn}
+                    onChange={() => void toggle(module)}
                     disabled={module.isCore || busy || loading}
-                    onChange={() => toggle(module)}
-                    aria-label={isOn ? `Desactivar ${module.name}` : `${ACTIONS.enableModule}: ${module.name}`}
+                    aria-label={isOn ? `${ACTIONS.deactivate} ${module.name}` : `${ACTIONS.enableModule}: ${module.name}`}
                   />
-                  <span>{isOn ? "Activado" : "Desactivado"}</span>
-                  {busy ? <span className="bo-status info">{STATUS_LABELS.saving}</span> : null}
-                </label>
-              </div>
-            </article>
+                  <span>{isOn ? STATUS_LABELS.enabled : STATUS_LABELS.disabled}</span>
+                  {busy ? <CocoaBadge tone="info">{STATUS_LABELS.saving}</CocoaBadge> : null}
+                  {module.isCore ? <span className="cocoa-note">Los módulos base no pueden desactivarse</span> : null}
+                </div>
+              </CocoaSection>
+            </CocoaSpan>
           );
         })}
-        {!loading && modules.length === 0 ? (
-          <article className="bo-card">
-            <p className="bo-muted">No hay módulos disponibles para esta propiedad.</p>
-          </article>
-        ) : null}
-      </div>
-    </section>
+      </CocoaGrid>
+
+      {!loading && modules.length === 0 ? (
+        <CocoaSection aria-label="Sin módulos">
+          <CocoaState kind="empty" title="No hay módulos disponibles para esta propiedad." />
+        </CocoaSection>
+      ) : null}
+    </CocoaPage>
   );
+}
+
+// Bridge of L1c (TabHost.tsx): the loader still passes `embedded`; the page reads the host context.
+export function ModuleManager({ embedded = false }: { embedded?: boolean } = {}) {
+  return <ModuleManagerPage embedded={embedded} />;
 }

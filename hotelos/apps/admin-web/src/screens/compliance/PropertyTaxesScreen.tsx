@@ -1,4 +1,5 @@
-// Impuestos de la propiedad (Tanda 3 · lote front-fiscal · cierre).
+// Impuestos de la propiedad — /cumplimiento/impuestos (Tanda 3 · lote front-fiscal;
+// Cocoa 22 · ola 8 · lote 8-C, plantilla ListaTabla; hosted in ImpuestosTabs).
 //
 // Reads GET /backoffice/properties/:id/taxes (contract C · getPropertyTaxProfile)
 // and lets a compliance.configure user override a rate per category (PUT
@@ -10,7 +11,20 @@
 // catalogue answer) and `overridden` — and the IPSI card only renders for
 // Ceuta/Melilla. A 400 from the legality check (TAX_RATE_NOT_ALLOWED with the
 // admitted percentages) is shown verbatim next to the editor.
-import { useCallback, useEffect, useMemo, useState } from "react";
+//
+// Page: profile badges → callouts (provision error, region note, missing core
+// rates) → «Tipos por concepto» CocoaTable with the row action «Editar» /
+// «Definir» → the rate editor as a CocoaSection (three fields, two-button
+// footer; the confirmation is a CocoaDialog with `busy`) → tourist tax and
+// IPSI ordinance in a 6/6 grid.
+//
+// L1c bridge: the screen keeps `pageHead(embedded)` (HostedHead inside a
+// container, CocoaPageHeader standalone — the same head CocoaPage paints from
+// the host context) because the container test
+// (tabs/cumplimiento/__tests__/cumplimiento-tabs.test.mts, EMBEDDED_SCREENS)
+// still expects the `embedded?: boolean` prop; states, skeleton and ⌘K
+// commands are handled here. Once that entry goes, the frame becomes CocoaPage.
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { ApiError } from "../../services/api-client";
 import {
@@ -38,22 +52,47 @@ import {
 } from "../../services/taxesApi";
 import { patchComplianceSettings } from "../../services/complianceApi";
 import { useToast } from "../../components/Toast";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
-import { EmptyState, ErrorState, LoadingBlock } from "../../components/States";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { pageHead } from "../tabs/configuracion/tab-helpers";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
-import { CocoaInput } from "../../components/cocoa/CocoaInput";
-import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
 import { CocoaScreenInstructionsCard } from "../../components/cocoa-guidance/CocoaScreenInstructionsCard";
 import { TAXES_INSTRUCTIONS } from "../../content/screen-instructions/taxes";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { toArray } from "../../utils/toArray";
 import { navigateTo } from "../../lib/navigate";
-import { date, percent } from "../../lib/format";
+import { date, percent, plural } from "../../lib/format";
+import { pageHead, treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaDialog,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  registerPageCommands,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+// Menu labels of the tree (Cumplimiento › Impuestos), never retyped here.
+const HEADER = treeHeaderFor("PropertyTaxesScreen", { eyebrow: "Cumplimiento", title: "Impuestos" });
+const RESTORE_LABEL = "Restaurar catálogo";
+const OPEN_PROFILE_LABEL = "Abrir perfil del establecimiento";
+const EDITOR_SECTION_ID = "property-taxes-rate-editor";
+const EDITOR_FIELD_ID = "property-taxes-rate-calificacion";
+
+const TREATMENT_OPTIONS = TOURIST_TAX_TREATMENT_OPTIONS.map((option) => ({ value: option.value, label: option.label }));
+const CALIFICACION_OPTIONS = [
+  { value: "S1", label: CALIFICACION_LABELS.S1 },
+  { value: "N1", label: CALIFICACION_LABELS.N1 }
+];
 
 type RateRowView = {
   _key: string;
@@ -97,8 +136,66 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback;
 }
 
+function sourceCell(rate: PropertyTaxRateRow) {
+  return (
+    <span className="cocoa-row" data-gap="1">
+      <CocoaBadge tone={isManualTaxSource(rate.source) ? "info" : isCatalogTaxSource(rate.source) ? "success" : "warning"} uppercase={false} title={taxRateSourceDetail(rate.source)}>
+        {taxRateSourceLabel(rate.source)}
+      </CocoaBadge>
+      {isCatalogTaxSource(rate.source) ? (
+        <span className="cocoa-caption" title={taxRateSourceDetail(rate.source)}>
+          {isProvisionedTaxSource(rate.source) ? "provisionado" : "sin fila"}
+        </span>
+      ) : null}
+      {rate.overridden ? (
+        <CocoaBadge tone="warning" uppercase={false} title="Un tipo manual oculta el tipo del catálogo para este concepto">
+          sobrescribe el catálogo
+        </CocoaBadge>
+      ) : null}
+    </span>
+  );
+}
+
+// Columns outside the component (A5): the short ones fit their content, the secondary ones show from laptop (D26); the row action lives in `rowActions`.
+const RATE_COLUMNS: CocoaTableColumn<RateRowView>[] = [
+  { key: "label", label: "Concepto", minWidth: 160, render: (row) => <strong>{row.label}</strong> },
+  {
+    key: "rate",
+    label: "Tipo",
+    align: "right",
+    fit: true,
+    render: (row) =>
+      row.rate ? (
+        row.rate.calificacion === "N1" ? (
+          <span className="cocoa-caption">no sujeta</span>
+        ) : (
+          fmtPercent(row.rate.ratePercent)
+        )
+      ) : (
+        <CocoaBadge tone="warning" uppercase={false} title="No hay tipo configurado ni en la BD ni en el catálogo para este concepto">
+          sin tipo
+        </CocoaBadge>
+      )
+  },
+  { key: "calificacion", label: "Calificación", fit: true, hideOnNarrow: true, render: (row) => (row.rate ? CALIFICACION_LABELS[row.rate.calificacion] : "—") },
+  { key: "source", label: "Fuente", render: (row) => (row.rate ? sourceCell(row.rate) : "—") },
+  { key: "legalBasis", label: "Base legal", showFrom: "desktop", render: (row) => row.rate?.legalBasis ?? "—" },
+  { key: "validFrom", label: "Vigente desde", fit: true, showFrom: "laptop", render: (row) => fmtDate(row.rate?.validFrom) }
+];
+
+// Mirror skeleton: badges row, the rates table and the 6/6 grid.
+function TaxesSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="row" />
+      <CocoaSkeleton variant="card" height={280} />
+      <CocoaSkeleton.Grid rows={[[6, 6]]} height={160} />
+    </div>
+  );
+}
+
 export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  // Inside a tab container the page header belongs to the container: the head paints only subtitle and actions.
   const Head = pageHead(embedded);
   const { showToast } = useToast();
   const [profile, setProfile] = useState<PropertyTaxProfile | null>(null);
@@ -125,6 +222,25 @@ export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean }
   useEffect(() => {
     void load();
   }, [load]);
+
+  // ⌘K: the page's commands while it is mounted (D28); every `run` is a stable closure.
+  useEffect(
+    () =>
+      registerPageCommands([
+        { id: "impuestos-restaurar-catalogo", label: `${RESTORE_LABEL} de impuestos`, run: () => setPending({ kind: "provision" }) },
+        { id: "impuestos-ajustes-fiscales", label: "Abrir ajustes fiscales", run: () => navigateTo("TaxComplianceSettings") },
+        { id: "impuestos-centro-fiscal", label: "Abrir el centro fiscal", run: () => navigateTo("FiscalDashboard") }
+      ]),
+    []
+  );
+
+  // The editor opens below the table: bring it into view and focus its first control.
+  const editorCategory = editor?.category ?? null;
+  useEffect(() => {
+    if (!editorCategory || typeof document === "undefined") return;
+    document.getElementById(EDITOR_SECTION_ID)?.scrollIntoView({ block: "nearest" });
+    document.getElementById(EDITOR_FIELD_ID)?.focus();
+  }, [editorCategory]);
 
   const rates = useMemo(() => toArray<PropertyTaxRateRow>(profile?.rates), [profile]);
   const warnings = useMemo(() => toArray<string>(profile?.warnings), [profile]);
@@ -161,14 +277,20 @@ export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean }
     });
   }
 
+  function cancelEdit() {
+    if (busy) return;
+    setEditor(null);
+    setEditorError(null);
+  }
+
   function requestSaveRate() {
     if (!editor) return;
-    const percent = Number(editor.ratePercent.replace(",", "."));
-    if (editor.calificacion === "S1" && (!Number.isFinite(percent) || percent < 0 || percent > 100)) {
+    const percentValue = Number(editor.ratePercent.replace(",", "."));
+    if (editor.calificacion === "S1" && (!Number.isFinite(percentValue) || percentValue < 0 || percentValue > 100)) {
       showToast("Indica un tipo entre 0 y 100.", { variant: "error" });
       return;
     }
-    if (editor.calificacion === "S1" && percent === 0 && editor.category !== "not_subject") {
+    if (editor.calificacion === "S1" && percentValue === 0 && editor.category !== "not_subject") {
       showToast("Un tipo del 0 % sujeto (S1) no es válido en VeriFactu. Usa «No sujeta (N1)» si la operación no lleva impuesto.", { variant: "error" });
       return;
     }
@@ -180,10 +302,10 @@ export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean }
     setBusy(true);
     try {
       if (pending.kind === "rate") {
-        const percent = pending.editor.calificacion === "N1" ? 0 : Number(pending.editor.ratePercent.replace(",", "."));
+        const percentValue = pending.editor.calificacion === "N1" ? 0 : Number(pending.editor.ratePercent.replace(",", "."));
         await upsertPropertyTaxRate(PROPERTY_ID, {
           category: pending.editor.category,
-          ratePercent: percent,
+          ratePercent: percentValue,
           calificacion: pending.editor.calificacion,
           validFrom: pending.editor.validFrom || undefined
         });
@@ -242,372 +364,315 @@ export function PropertyTaxesScreen({ embedded = false }: { embedded?: boolean }
     }
   }
 
-  const columns = useMemo<CocoaTableColumn<RateRowView>[]>(
-    () => [
-      { key: "label", label: "Concepto", render: (row) => <strong>{row.label}</strong> },
-      {
-        key: "rate",
-        label: "Tipo",
-        align: "right",
-        width: "110px",
-        render: (row) =>
-          row.rate ? (
-            row.rate.calificacion === "N1" ? <span className="bo-muted">no sujeta</span> : fmtPercent(row.rate.ratePercent)
-          ) : (
-            <span className="bo-status warn" style={{ textTransform: "none" }} title="No hay tipo configurado ni en la BD ni en el catálogo para este concepto">
-              sin tipo
-            </span>
-          )
-      },
-      {
-        key: "calificacion",
-        label: "Calificación",
-        width: "150px",
-        render: (row) => (row.rate ? CALIFICACION_LABELS[row.rate.calificacion] : "—")
-      },
-      {
-        key: "source",
-        label: "Fuente",
-        width: "170px",
-        render: (row) =>
-          row.rate ? (
-            <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-              <span
-                className={`bo-status ${isManualTaxSource(row.rate.source) ? "info" : isCatalogTaxSource(row.rate.source) ? "ok" : "warn"}`}
-                style={{ textTransform: "none" }}
-                title={taxRateSourceDetail(row.rate.source)}
-              >
-                {taxRateSourceLabel(row.rate.source)}
-              </span>
-              {isCatalogTaxSource(row.rate.source) ? (
-                <span className="bo-muted" style={{ fontSize: 11 }} title={taxRateSourceDetail(row.rate.source)}>
-                  {isProvisionedTaxSource(row.rate.source) ? "provisionado" : "sin fila"}
-                </span>
-              ) : null}
-              {row.rate.overridden ? (
-                <span className="bo-status warn" style={{ textTransform: "none" }} title="Un tipo manual oculta el tipo del catálogo para este concepto">
-                  sobrescribe el catálogo
-                </span>
-              ) : null}
-            </span>
-          ) : (
-            "—"
-          )
-      },
-      {
-        key: "legalBasis",
-        label: "Base legal",
-        render: (row) => (row.rate?.legalBasis ? <span className="bo-muted">{row.rate.legalBasis}</span> : "—")
-      },
-      { key: "validFrom", label: "Vigente desde", width: "130px", render: (row) => fmtDate(row.rate?.validFrom) },
-      {
-        key: "actions",
-        label: "",
-        align: "right",
-        width: "100px",
-        render: (row) => (
-          <CocoaButton variant="plain" size="small" onClick={() => startEdit(row)} disabled={busy}>
-            {row.rate ? "Editar" : "Definir"}
-          </CocoaButton>
-        )
-      }
-    ],
-    [busy]
-  );
-
-  if (loading && !profile) {
-    return (
-      <section className="bo-card">
-        <LoadingBlock label="Cargando impuestos de la propiedad…" />
-      </section>
-    );
-  }
-  if (error && !profile) {
-    return (
-      <section className="bo-card">
-        <ErrorState title="No se pudo cargar el perfil fiscal" message={error} onRetry={() => void load()} />
-      </section>
-    );
-  }
-  if (!profile) return null;
-
   const regionSourceNote =
-    profile.regionSource === "province"
+    profile?.regionSource === "province"
       ? "La región fiscal se ha derivado de la provincia del establecimiento; confírmala en el perfil."
-      : profile.regionSource === "default"
+      : profile?.regionSource === "default"
         ? "La propiedad no tiene región fiscal configurada: se aplica Península y Baleares por defecto. Configúrala en el perfil antes de facturar."
         : null;
 
-  return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <Head
-        eyebrow="Cumplimiento · Fiscal"
-        title="Impuestos de la propiedad"
-        subtitle="Tipos de IVA / IGIC / IPSI por concepto de folio, con su base legal y vigencia"
-        actions={
-          <span style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", flexWrap: "wrap" }}>
-            <CocoaButton variant="plain" onClick={() => navigateTo("TaxComplianceSettings")}>
-              Ajustes fiscales
-            </CocoaButton>
-            <CocoaButton variant="plain" onClick={() => navigateTo("FiscalDashboard")}>
-              Centro fiscal
-            </CocoaButton>
-            <CocoaButton variant="bordered" tone="neutral" onClick={() => setPending({ kind: "provision" })} disabled={busy}>
-              Restaurar catálogo
-            </CocoaButton>
+  const treatmentValue = profile?.touristTaxTreatment ?? "none";
+  const treatmentHint = TOURIST_TAX_TREATMENT_OPTIONS.find((option) => option.value === treatmentValue)?.hint;
+  const editingRow = editor ? rows.find((row) => row.category === editor.category) : undefined;
+
+  const sourcesSummary = profile
+    ? `${plural(manualRates.length, "manual", "manuales", { withCount: true })} · ${catalogRates.length} de catálogo${
+        catalogRates.length > 0
+          ? ` (${plural(provisionedRates.length, "provisionado", "provisionados", { withCount: true })}, ${catalogRates.length - provisionedRates.length} sin fila)`
+          : ""
+      }${
+        unknownSourceRates.length > 0 ? ` · ${unknownSourceRates.length} con origen no reconocido (${unknownSourceRates.map((row) => String(row.source)).join(", ")})` : ""
+      }${overriddenRates.length > 0 ? ` · ${overriddenRates.length} sobrescribe${overriddenRates.length === 1 ? "" : "n"} el catálogo` : ""}`
+    : "";
+
+  const actions = (
+    <>
+      <CocoaButton variant="plain" size="small" onClick={() => navigateTo("TaxComplianceSettings")}>
+        Ajustes fiscales
+      </CocoaButton>
+      <CocoaButton variant="plain" size="small" onClick={() => navigateTo("FiscalDashboard")}>
+        Centro fiscal
+      </CocoaButton>
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setPending({ kind: "provision" })} disabled={busy || !profile}>
+        {RESTORE_LABEL}
+      </CocoaButton>
+    </>
+  );
+
+  // Page states (D27): skeleton while the first load runs, error / empty when there is no profile, else the content.
+  let body: ReactNode;
+  if (loading && !profile) body = <TaxesSkeleton />;
+  else if (error && !profile) body = <CocoaState kind="error" title="No se pudo cargar el perfil fiscal" message={error} onRetry={() => void load()} />;
+  else if (!profile) body = <CocoaState kind="empty" title="Sin perfil fiscal" message="La propiedad no devolvió ningún perfil fiscal." onRetry={() => void load()} />;
+  else {
+    body = (
+      <>
+        <CocoaScreenInstructionsCard
+          title="Impuestos de la propiedad"
+          description={TAXES_INSTRUCTIONS.whatIsThis}
+          steps={TAXES_INSTRUCTIONS.howToUse}
+          tip={TAXES_INSTRUCTIONS.tips[0]}
+          dismissible
+          persistKey="property-taxes"
+        />
+
+        <div className="cocoa-row" data-gap="2" role="group" aria-label="Perfil fiscal de la propiedad">
+          <CocoaBadge tone={profile.taxRegion ? "info" : "warning"} uppercase={false}>
+            {taxRegionLabel(profile.taxRegion)}
+          </CocoaBadge>
+          <CocoaBadge tone="neutral" uppercase={false}>
+            {profile.figure} · Impuesto {profile.impuesto}
+          </CocoaBadge>
+          <CocoaBadge tone="neutral" uppercase={false}>
+            Región: {profile.regionSource === "property" ? "perfil de la propiedad" : profile.regionSource === "province" ? "derivada de la provincia" : "valor por defecto"}
+          </CocoaBadge>
+          <span
+            className="cocoa-caption"
+            title="Tipos configurados por la propiedad (manual) frente a tipos del catálogo estatutario (provisionados como fila propia o respondidos directamente por el catálogo)"
+          >
+            {sourcesSummary}
           </span>
-        }
-      />
-
-      <CocoaScreenInstructionsCard
-        title="Impuestos de la propiedad"
-        description={TAXES_INSTRUCTIONS.whatIsThis}
-        steps={TAXES_INSTRUCTIONS.howToUse}
-        tip={TAXES_INSTRUCTIONS.tips[0]}
-        dismissible
-        persistKey="property-taxes"
-      />
-
-      <div className="bo-pill-row" style={{ display: "flex", flexWrap: "wrap", gap: "var(--cocoa-space-2)", alignItems: "center" }}>
-        <span className={`bo-status ${profile.taxRegion ? "info" : "warn"}`} style={{ textTransform: "none" }}>
-          {taxRegionLabel(profile.taxRegion)}
-        </span>
-        <span className="bo-chip">
-          {profile.figure} · Impuesto {profile.impuesto}
-        </span>
-        <span className="bo-chip">
-          Región: {profile.regionSource === "property" ? "perfil de la propiedad" : profile.regionSource === "province" ? "derivada de la provincia" : "valor por defecto"}
-        </span>
-        <span
-          className="bo-chip"
-          title="Tipos configurados por la propiedad (manual) frente a tipos del catálogo estatutario (provisionados como fila propia o respondidos directamente por el catálogo)"
-        >
-          {manualRates.length} manual{manualRates.length === 1 ? "" : "es"} · {catalogRates.length} de catálogo
-          {catalogRates.length > 0
-            ? ` (${provisionedRates.length} provisionado${provisionedRates.length === 1 ? "" : "s"}, ${catalogRates.length - provisionedRates.length} sin fila)`
-            : ""}
-          {unknownSourceRates.length > 0
-            ? ` · ${unknownSourceRates.length} con origen no reconocido (${unknownSourceRates.map((row) => String(row.source)).join(", ")})`
-            : ""}
-          {overriddenRates.length > 0 ? ` · ${overriddenRates.length} sobrescribe${overriddenRates.length === 1 ? "" : "n"} el catálogo` : ""}
-        </span>
-        {loading ? <span className="bo-muted">Actualizando…</span> : null}
-      </div>
-
-      {provisionError ? (
-        <div className="bo-status error" style={{ textTransform: "none", display: "flex", justifyContent: "space-between", gap: "var(--cocoa-space-3)", alignItems: "center", flexWrap: "wrap" }}>
-          <span>
-            No se pudo restaurar el catálogo{provisionError.status ? ` (HTTP ${provisionError.status})` : ""}: {provisionError.message}
-            {provisionError.code ? <span className="bo-muted"> ({provisionError.code})</span> : null}
-          </span>
-          <span style={{ display: "inline-flex", gap: "var(--cocoa-space-2)" }}>
-            {provisionError.code === TAX_RATE_ERROR_CODES.regionMissing ? (
-              <CocoaButton variant="plain" size="small" onClick={() => navigateTo("PropertyProfileSetupForm")}>
-                Abrir perfil del establecimiento
-              </CocoaButton>
-            ) : null}
-            <CocoaButton variant="plain" size="small" onClick={() => setProvisionError(null)}>
-              Cerrar
-            </CocoaButton>
-          </span>
+          {loading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
         </div>
-      ) : null}
 
-      {regionSourceNote ? (
-        <div className="bo-status warn" style={{ textTransform: "none", display: "flex", justifyContent: "space-between", gap: "var(--cocoa-space-3)", alignItems: "center", flexWrap: "wrap" }}>
-          <span>{regionSourceNote}</span>
-          <CocoaButton variant="plain" size="small" onClick={() => navigateTo("PropertyProfileSetupForm")}>
-            Abrir perfil del establecimiento
-          </CocoaButton>
-        </div>
-      ) : null}
-
-      {warnings.length > 0 ? (
-        <CocoaCard variant="bordered" padding="md">
-          <p className="bo-muted" style={{ marginTop: 0 }}>Avisos del resolutor fiscal</p>
-          <ul style={{ margin: 0, paddingLeft: "1.2em", display: "grid", gap: "var(--cocoa-space-1)" }}>
-            {warnings.map((warning, index) => (
-              <li key={`${index}-${warning}`}>{warning}</li>
-            ))}
-          </ul>
-        </CocoaCard>
-      ) : null}
-
-      {missingCoreRates.length > 0 ? (
-        <div className="bo-status error" style={{ textTransform: "none" }}>
-          Faltan tipos para {missingCoreRates.map((row) => row.label.toLowerCase()).join(", ")}: sin ellos la emisión en modo fiscal se bloquea (TAX_NOT_CONFIGURED).
-          Usa «Restaurar catálogo» o define cada tipo manualmente.
-        </div>
-      ) : null}
-
-      <div>
-        <h3 style={{ marginBottom: "var(--cocoa-space-3)" }}>Tipos por concepto</h3>
-        {rows.length === 0 ? (
-          <EmptyState title="Sin catálogo fiscal" message="La propiedad no tiene tipos configurados. Provisiona el catálogo estatutario para empezar." />
-        ) : (
-          <CocoaTable<RateRowView> columns={columns} rows={rows} rowKey="_key" emptyState="Sin tipos configurados." />
-        )}
-      </div>
-
-      {lineTypeOverrides.length > 0 ? (
-        <CocoaCard variant="bordered" padding="md">
-          <p className="bo-muted" style={{ marginTop: 0 }}>Tipos por tipo de línea de folio</p>
-          <p style={{ marginTop: 0 }}>
-            Filas vigentes vinculadas a un tipo de línea concreto en lugar de a un concepto fiscal (sobrescrituras manuales o semillas heredadas). El
-            resolutor las aplica antes que el tipo del concepto; «Restaurar catálogo» no las toca.
-          </p>
-          <ul style={{ margin: 0, paddingLeft: "1.2em", display: "grid", gap: "var(--cocoa-space-1)" }}>
-            {lineTypeOverrides.map((row) => (
-              <li key={`${row.lineType}-${row.validFrom}`}>
-                <strong>{row.lineType}</strong> · {row.calificacion === "N1" ? "no sujeta (N1)" : fmtPercent(row.ratePercent)} · desde {fmtDate(row.validFrom)} ·
-                origen {taxRateSourceLabel(row.source)}
-              </li>
-            ))}
-          </ul>
-        </CocoaCard>
-      ) : null}
-
-      {editor ? (
-        <CocoaCard variant="bordered" padding="md">
-          <div className="bo-card-head">
-            <h3 style={{ margin: 0 }}>
-              {rows.find((row) => row.category === editor.category)?.rate ? "Sobrescribir" : "Definir"} tipo · {TAX_CATEGORY_LABELS[editor.category]}
-            </h3>
-            <CocoaButton
-              variant="plain"
-              size="small"
-              onClick={() => {
-                setEditor(null);
-                setEditorError(null);
-              }}
-              disabled={busy}
-            >
-              Cancelar
-            </CocoaButton>
-          </div>
-          {editorError ? (
-            <div className="bo-status error" style={{ textTransform: "none", display: "flex", justifyContent: "space-between", gap: "var(--cocoa-space-3)", alignItems: "center", flexWrap: "wrap", marginBottom: "var(--cocoa-space-3)" }}>
-              <span>
-                El servidor rechazó el tipo{editorError.status ? ` (HTTP ${editorError.status})` : ""}: {editorError.message}
-                {editorError.code ? <span className="bo-muted"> ({editorError.code})</span> : null}
-                {editorError.code === TAX_RATE_ERROR_CODES.notAllowed && editorError.allowed.length > 0 ? (
-                  <span className="bo-muted">
-                    {" "}
-                    · Tipos legales de «{TAX_CATEGORY_LABELS[editor.category]}» en {profile.figure}: {editorError.allowed.map((percent) => fmtPercent(percent)).join(" / ")}
-                  </span>
+        {provisionError ? (
+          <CocoaCallout
+            tone="danger"
+            role="alert"
+            title={`No se pudo restaurar el catálogo${provisionError.status ? ` (HTTP ${provisionError.status})` : ""}`}
+            actions={
+              <>
+                {provisionError.code === TAX_RATE_ERROR_CODES.regionMissing ? (
+                  <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("PropertyProfileSetupForm")}>
+                    {OPEN_PROFILE_LABEL}
+                  </CocoaButton>
                 ) : null}
-              </span>
-              {editorError.code === TAX_RATE_ERROR_CODES.regionMissing ? (
-                <CocoaButton variant="plain" size="small" onClick={() => navigateTo("PropertyProfileSetupForm")}>
-                  Abrir perfil del establecimiento
+                <CocoaButton variant="plain" size="small" onClick={() => setProvisionError(null)}>
+                  {ACTIONS.close}
                 </CocoaButton>
-              ) : null}
-            </div>
-          ) : null}
-          <div className="bo-grid three">
-            <label className="bo-form-field">
-              <span>Calificación</span>
-              <CocoaSelect
-                value={editor.calificacion}
-                onChange={(value) => {
-                  setEditorError(null);
-                  setEditor({ ...editor, calificacion: value as Calificacion });
-                }}
-                options={[
-                  { value: "S1", label: CALIFICACION_LABELS.S1 },
-                  { value: "N1", label: CALIFICACION_LABELS.N1 }
-                ]}
-              />
-            </label>
-            <label className="bo-form-field">
-              <span>Tipo ({profile.figure}) %</span>
-              <CocoaInput
-                value={editor.ratePercent}
-                onChange={(value) => {
-                  setEditorError(null);
-                  setEditor({ ...editor, ratePercent: value });
-                }}
-                type="number"
-                inputMode="decimal"
-                disabled={editor.calificacion === "N1"}
-                placeholder={editor.calificacion === "N1" ? "no aplica" : "10"}
-                error={Boolean(editorError)}
-              />
-            </label>
-            <label className="bo-form-field">
-              <span>Vigente desde</span>
-              <input type="date" value={editor.validFrom} onChange={(event) => setEditor({ ...editor, validFrom: event.currentTarget.value })} />
-            </label>
-          </div>
-          <p className="bo-muted" style={{ marginBottom: "var(--cocoa-space-3)" }}>
-            El tipo manual prevalece sobre el catálogo a partir de la fecha indicada. Las facturas ya emitidas no cambian.
-          </p>
-          <div className="bo-actions">
-            <CocoaButton variant="filled" tone="accent" onClick={requestSaveRate} disabled={busy}>
-              Guardar tipo
-            </CocoaButton>
-          </div>
-        </CocoaCard>
-      ) : null}
-
-      <div className="bo-grid two">
-        <CocoaCard variant="bordered" padding="md">
-          <p className="bo-muted" style={{ marginTop: 0 }}>Tasa turística</p>
-          <label className="bo-form-field">
-            <span>Tratamiento en la factura</span>
-            <CocoaSelect
-              value={profile.touristTaxTreatment ?? "none"}
-              onChange={(value) => void handleTouristTaxTreatment(value)}
-              options={TOURIST_TAX_TREATMENT_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
-              disabled={busy}
-            />
-          </label>
-          <small className="bo-muted">
-            {TOURIST_TAX_TREATMENT_OPTIONS.find((option) => option.value === (profile.touristTaxTreatment ?? "none"))?.hint}
-          </small>
-        </CocoaCard>
-
-        {isIpsi ? (
-          <CocoaCard variant="bordered" padding="md">
-            <p className="bo-muted" style={{ marginTop: 0 }}>IPSI · ordenanza municipal</p>
-            <p style={{ marginTop: 0 }}>
-              Los tipos del IPSI cambian por ordenanza anual y dependen de la categoría del establecimiento (1 % / 2 % / 4 %). El bloqueo de emisión en
-              producción exige confirmar que los tipos coinciden con la ordenanza vigente.
-              {ordinanceRates.length > 0 ? ` Conceptos a verificar: ${ordinanceRates.map((row) => TAX_CATEGORY_LABELS[row.category].toLowerCase()).join(", ")}.` : ""}
-            </p>
-            <label className="bo-form-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={Boolean(profile.ipsiOrdinanceConfirmedAt)}
-                onChange={(event) => void handleIpsiConfirmation(event.currentTarget.checked)}
-                disabled={busy}
-                style={{ width: "auto" }}
-              />
-              <span style={{ fontWeight: 500 }}>He verificado los tipos con la ordenanza vigente</span>
-            </label>
-            <small className="bo-muted">
-              {profile.ipsiOrdinanceConfirmedAt ? `Confirmado el ${fmtDate(profile.ipsiOrdinanceConfirmedAt)}.` : "Pendiente de confirmación."}
-            </small>
-          </CocoaCard>
+              </>
+            }
+          >
+            {provisionError.message}
+            {provisionError.code ? ` (${provisionError.code})` : ""}
+          </CocoaCallout>
         ) : null}
-      </div>
 
-      <ConfirmDialog
-        open={pending !== null}
-        title={pending?.kind === "provision" ? "¿Restaurar los tipos del catálogo?" : "¿Guardar este tipo manual?"}
-        description={
-          pending?.kind === "provision"
-            ? `Se vuelven a aplicar los tipos estatutarios de ${taxRegionLabel(profile.taxRegion)} en los conceptos sin tipo vigente. Los conceptos que ya tienen un tipo (manual o de catálogo) se omiten; el servidor informa de cuántos se han provisionado y cuántos se han omitido.`
-            : pending?.kind === "rate"
-              ? `${TAX_CATEGORY_LABELS[pending.editor.category]}: ${pending.editor.calificacion === "N1" ? "no sujeta (N1)" : `${pending.editor.ratePercent} % (S1)`} desde ${fmtDate(pending.editor.validFrom)}. Prevalece sobre el catálogo para cargos y facturas posteriores.`
-              : undefined
-        }
-        confirmLabel={busy ? "Guardando…" : "Confirmar"}
-        variant="primary"
-        onConfirm={() => void confirmPending()}
-        onCancel={() => (busy ? undefined : setPending(null))}
-      />
-    </section>
+        {regionSourceNote ? (
+          <CocoaCallout
+            tone="warning"
+            title="Región fiscal por confirmar"
+            actions={
+              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("PropertyProfileSetupForm")}>
+                {OPEN_PROFILE_LABEL}
+              </CocoaButton>
+            }
+          >
+            {regionSourceNote}
+          </CocoaCallout>
+        ) : null}
+
+        {warnings.length > 0 ? (
+          <CocoaSection title="Avisos del resolutor fiscal" meta={plural(warnings.length, "aviso", "avisos", { withCount: true })}>
+            <ul className="c22-section__list">
+              {warnings.map((warning, index) => (
+                <li key={`${index}-${warning}`}>
+                  <span>{warning}</span>
+                </li>
+              ))}
+            </ul>
+          </CocoaSection>
+        ) : null}
+
+        {missingCoreRates.length > 0 ? (
+          <CocoaCallout tone="danger" title="Faltan tipos obligatorios">
+            Faltan tipos para {missingCoreRates.map((row) => row.label.toLowerCase()).join(", ")}: sin ellos la emisión en modo fiscal se bloquea (TAX_NOT_CONFIGURED). Usa
+            «{RESTORE_LABEL}» o define cada tipo manualmente.
+          </CocoaCallout>
+        ) : null}
+
+        <CocoaSection
+          title="Tipos por concepto"
+          meta={plural(rates.length, "tipo vigente", "tipos vigentes", { withCount: true })}
+          padding={rows.length > 0 ? "none" : "md"}
+          style={{ overflow: "clip" }}
+        >
+          {rows.length === 0 ? (
+            <CocoaState
+              kind="empty"
+              title="Sin catálogo fiscal"
+              message="La propiedad no tiene tipos configurados. Provisiona el catálogo estatutario para empezar."
+              primaryAction={{ label: RESTORE_LABEL, onClick: () => setPending({ kind: "provision" }) }}
+            />
+          ) : (
+            <CocoaTable<RateRowView>
+              columns={RATE_COLUMNS}
+              rows={rows}
+              rowKey="_key"
+              rowActionsVisible="always"
+              rowActions={(row) => (
+                <CocoaButton
+                  variant="plain"
+                  size="small"
+                  disabled={busy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    startEdit(row);
+                  }}
+                >
+                  {row.rate ? ACTIONS.edit : "Definir"}
+                </CocoaButton>
+              )}
+              emptyState="Sin tipos configurados."
+              caption="Tipos de impuesto por concepto de folio"
+              aria-label="Tipos de impuesto por concepto de folio"
+            />
+          )}
+        </CocoaSection>
+
+        {lineTypeOverrides.length > 0 ? (
+          <CocoaSection title="Tipos por tipo de línea de folio" meta={plural(lineTypeOverrides.length, "fila vigente", "filas vigentes", { withCount: true })}>
+            <p>
+              Filas vigentes vinculadas a un tipo de línea concreto en lugar de a un concepto fiscal (sobrescrituras manuales o semillas heredadas). El resolutor las
+              aplica antes que el tipo del concepto; «{RESTORE_LABEL}» no las toca.
+            </p>
+            <ul className="c22-section__list">
+              {lineTypeOverrides.map((row) => (
+                <li key={`${row.lineType}-${row.validFrom}`}>
+                  <span>
+                    <strong>{row.lineType}</strong> · {row.calificacion === "N1" ? "no sujeta (N1)" : fmtPercent(row.ratePercent)} · desde {fmtDate(row.validFrom)} · origen{" "}
+                    {taxRateSourceLabel(row.source)}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </CocoaSection>
+        ) : null}
+
+        {editor ? (
+          <CocoaSection
+            id={EDITOR_SECTION_ID}
+            title={`${editingRow?.rate ? "Sobrescribir" : "Definir"} tipo · ${TAX_CATEGORY_LABELS[editor.category]}`}
+            footer={
+              <div className="cocoa-row" data-gap="2" data-justify="end">
+                <CocoaButton variant="bordered" tone="neutral" onClick={cancelEdit} disabled={busy}>
+                  {ACTIONS.cancel}
+                </CocoaButton>
+                <CocoaButton variant="filled" tone="accent" onClick={requestSaveRate} disabled={busy}>
+                  Guardar tipo
+                </CocoaButton>
+              </div>
+            }
+          >
+            {editorError ? (
+              <CocoaCallout
+                tone="danger"
+                role="alert"
+                title={`El servidor rechazó el tipo${editorError.status ? ` (HTTP ${editorError.status})` : ""}`}
+                actions={
+                  editorError.code === TAX_RATE_ERROR_CODES.regionMissing ? (
+                    <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("PropertyProfileSetupForm")}>
+                      {OPEN_PROFILE_LABEL}
+                    </CocoaButton>
+                  ) : undefined
+                }
+              >
+                {editorError.message}
+                {editorError.code ? ` (${editorError.code})` : ""}
+                {editorError.code === TAX_RATE_ERROR_CODES.notAllowed && editorError.allowed.length > 0
+                  ? ` · Tipos legales de «${TAX_CATEGORY_LABELS[editor.category]}» en ${profile.figure}: ${editorError.allowed.map((value) => fmtPercent(value)).join(" / ")}`
+                  : ""}
+              </CocoaCallout>
+            ) : null}
+            <CocoaFormRow columns={3}>
+              <CocoaField label="Calificación">
+                <CocoaSelect
+                  id={EDITOR_FIELD_ID}
+                  value={editor.calificacion}
+                  onChange={(value) => {
+                    setEditorError(null);
+                    setEditor({ ...editor, calificacion: value as Calificacion });
+                  }}
+                  options={CALIFICACION_OPTIONS}
+                  disabled={busy}
+                />
+              </CocoaField>
+              <CocoaField label={`Tipo (${profile.figure}) %`} help={editor.calificacion === "N1" ? "Una operación no sujeta no lleva tipo." : "Entre 0 y 100."}>
+                <CocoaInput
+                  value={editor.ratePercent}
+                  onChange={(value) => {
+                    setEditorError(null);
+                    setEditor({ ...editor, ratePercent: value });
+                  }}
+                  type="number"
+                  inputMode="decimal"
+                  disabled={busy || editor.calificacion === "N1"}
+                  placeholder={editor.calificacion === "N1" ? "no aplica" : "10"}
+                  error={Boolean(editorError)}
+                />
+              </CocoaField>
+              <CocoaField label="Vigente desde">
+                <CocoaDatePicker value={editor.validFrom} onChange={(value) => setEditor({ ...editor, validFrom: value })} disabled={busy} />
+              </CocoaField>
+            </CocoaFormRow>
+            <p className="cocoa-caption">El tipo manual prevalece sobre el catálogo a partir de la fecha indicada. Las facturas ya emitidas no cambian.</p>
+          </CocoaSection>
+        ) : null}
+
+        <CocoaGrid align="start" aria-label="Tasa turística e IPSI">
+          <CocoaSpan cols={6} min={320}>
+            <CocoaSection title="Tasa turística">
+              <CocoaField label="Tratamiento en la factura" help={treatmentHint}>
+                <CocoaSelect value={treatmentValue} onChange={(value) => void handleTouristTaxTreatment(value)} options={TREATMENT_OPTIONS} disabled={busy} />
+              </CocoaField>
+            </CocoaSection>
+          </CocoaSpan>
+          {isIpsi ? (
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="IPSI · ordenanza municipal">
+                <p>
+                  Los tipos del IPSI cambian por ordenanza anual y dependen de la categoría del establecimiento (1 % / 2 % / 4 %). El bloqueo de emisión en
+                  producción exige confirmar que los tipos coinciden con la ordenanza vigente.
+                  {ordinanceRates.length > 0 ? ` Conceptos a verificar: ${ordinanceRates.map((row) => TAX_CATEGORY_LABELS[row.category].toLowerCase()).join(", ")}.` : ""}
+                </p>
+                <CocoaField
+                  inline
+                  label="He verificado los tipos con la ordenanza vigente"
+                  help={profile.ipsiOrdinanceConfirmedAt ? `Confirmado el ${fmtDate(profile.ipsiOrdinanceConfirmedAt)}.` : "Pendiente de confirmación."}
+                >
+                  <CocoaSwitch checked={Boolean(profile.ipsiOrdinanceConfirmedAt)} onChange={(value) => void handleIpsiConfirmation(value)} disabled={busy} />
+                </CocoaField>
+              </CocoaSection>
+            </CocoaSpan>
+          ) : null}
+        </CocoaGrid>
+
+        <CocoaDialog
+          open={pending !== null}
+          onClose={() => {
+            if (!busy) setPending(null);
+          }}
+          title={pending?.kind === "provision" ? "¿Restaurar los tipos del catálogo?" : "¿Guardar este tipo manual?"}
+          description={
+            pending?.kind === "provision"
+              ? `Se vuelven a aplicar los tipos estatutarios de ${taxRegionLabel(profile.taxRegion)} en los conceptos sin tipo vigente. Los conceptos que ya tienen un tipo (manual o de catálogo) se omiten; el servidor informa de cuántos se han provisionado y cuántos se han omitido.`
+              : pending?.kind === "rate"
+                ? `${TAX_CATEGORY_LABELS[pending.editor.category]}: ${pending.editor.calificacion === "N1" ? "no sujeta (N1)" : `${pending.editor.ratePercent} % (S1)`} desde ${fmtDate(pending.editor.validFrom)}. Prevalece sobre el catálogo para cargos y facturas posteriores.`
+                : undefined
+          }
+          confirmLabel={ACTIONS.confirm}
+          busy={busy}
+          onConfirm={confirmPending}
+        />
+      </>
+    );
+  }
+
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-busy={loading && !profile ? true : undefined}>
+      <Head eyebrow={HEADER.eyebrow} title={HEADER.title} subtitle="Tipos de IVA / IGIC / IPSI por concepto de folio, con su base legal y vigencia." actions={actions} />
+      {body}
+    </div>
   );
 }
 

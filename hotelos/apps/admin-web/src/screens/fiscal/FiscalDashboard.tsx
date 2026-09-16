@@ -1,14 +1,49 @@
+// Centro fiscal — /cumplimiento/verifactu (base tab «VeriFactu» of VerifactuTabs).
+//
+// Cocoa 22 · ola 8 · lote 8-B (plantilla DashboardAlojado). Four submission
+// feeds (VeriFactu · TicketBAI · IGIC · SES.HOSPEDAJES) summarised as a KPI
+// strip, and three inner views: the authorities (one card each, «Ver envíos»
+// opens the submissions centre), the AEAT models (303 · 390 · IRPF) and the
+// reference table of the signing certificates.
+//
+// Bridge (TabHost.tsx, cumplimiento-tabs test): VerifactuTabs still loads this
+// screen through `embed()`, so the `embedded` prop stays and the header is
+// `pageHead(embedded)` — HostedHead inside the container (the container paints
+// eyebrow and H1), CocoaPageHeader standalone. The host context decides too.
+
 import { useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
+import { number, percent, plural } from "../../lib/format";
+import { ACTIONS, FIELD_LABELS, STATUS_LABELS } from "../../content/actions";
+import { pageHead } from "../tabs/tab-helpers";
+import { useTabHost } from "../tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaStat,
+  CocoaTable,
+  type CocoaPageHeaderTab,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
 type SubmissionLite = { status: string; submittedAt?: string };
 
-function countByStatus(rows: SubmissionLite[] | null) {
+type Counts = { accepted: number; rejected: number; retrying: number; queued: number; submitting: number; other: number; total: number };
+
+function countByStatus(rows: SubmissionLite[] | null): Counts {
   const map = { accepted: 0, rejected: 0, retrying: 0, queued: 0, submitting: 0, other: 0 };
   for (const r of rows ?? []) {
     if (r.status in map) map[r.status as keyof typeof map] += 1;
@@ -19,18 +54,100 @@ function countByStatus(rows: SubmissionLite[] | null) {
 
 type FiscalSection = "authorities" | "reports" | "certificates";
 
+const SECTION_TABS: CocoaPageHeaderTab[] = [
+  { value: "authorities", label: "Autoridades" },
+  { value: "reports", label: "Modelos" },
+  { value: "certificates", label: "Certificados" }
+];
+
+const SECTION_LABEL: Record<FiscalSection, string> = {
+  authorities: "Autoridades",
+  reports: "Modelos para la AEAT",
+  certificates: "Estado de los certificados"
+};
+
+type AuthorityId = "verifactu" | "tbai" | "igic" | "ses";
+
+const AUTHORITIES: ReadonlyArray<{ id: AuthorityId; label: string; body: string; description: string }> = [
+  {
+    id: "verifactu",
+    label: "VeriFactu",
+    body: "AEAT · Península y Baleares",
+    description: "RD 1007/2023 · Sistema de facturación verificable: cadena de huellas SHA-256, código QR de la AEAT y numeración legal."
+  },
+  {
+    id: "tbai",
+    label: "TicketBAI",
+    body: "Hacienda Foral · País Vasco",
+    description: "Bizkaia · Gipuzkoa · Araba. Cadena de huellas TBAI, XML por territorio foral y código TBAI en cada factura."
+  },
+  {
+    id: "igic",
+    label: "IGIC",
+    body: "ATC · Canarias",
+    description: "Impuesto General Indirecto Canario. Se presenta ante la Hacienda Canaria, no ante la AEAT, con el desglose del IGIC."
+  },
+  {
+    id: "ses",
+    label: "SES.HOSPEDAJES",
+    body: "MIR · Ministerio del Interior",
+    description: "RD 933/2021 · Comunicaciones de Hospedaje. Datos del viajero y contrato firmados con el certificado FNMT registrado en el MIR."
+  }
+];
+
+/** Tone and label of an authority card: rejected first, then retrying, then «Sin datos» / «Correcto». */
+function authorityStatus(c: Counts): { tone: CocoaTone; label: string } {
+  if (c.rejected > 0) return { tone: "danger", label: plural(c.rejected, "rechazado", "rechazados") };
+  if (c.retrying > 0) return { tone: "warning", label: `${number(c.retrying)} reintentando` };
+  if (c.total === 0) return { tone: "neutral", label: "Sin datos" };
+  return { tone: "success", label: "Correcto" };
+}
+
+// Reference table of the demo environment (no PKCS#12 certificate is configured).
+type CertificateRow = { authority: string; mode: string; certificate: string; endpoint: string; status: string };
+
+const CERTIFICATE_ROWS: CertificateRow[] = [
+  { authority: "VeriFactu", mode: "Pruebas", certificate: "Firmador en modo demostración (sin certificado PKCS#12 configurado)", endpoint: "Demostración (pruebas)", status: "Demostración" },
+  { authority: "TicketBAI", mode: "Pruebas", certificate: "Firmador en modo demostración", endpoint: "Demostración (pruebas)", status: "Demostración" },
+  { authority: "IGIC", mode: "Pruebas", certificate: "Firmador en modo demostración", endpoint: "Demostración (pruebas)", status: "Demostración" },
+  {
+    authority: "SES.HOSPEDAJES",
+    mode: "Pruebas",
+    certificate: "Firmador en modo demostración (en producción exige el certificado FNMT registrado en el MIR)",
+    endpoint: "Demostración (pruebas)",
+    status: "Demostración"
+  }
+];
+
+const CERTIFICATE_COLUMNS: CocoaTableColumn<CertificateRow>[] = [
+  { key: "authority", label: "Autoridad", fit: true, render: (r) => <strong>{r.authority}</strong> },
+  { key: "mode", label: "Modo", fit: true, render: (r) => <CocoaBadge tone="neutral">{r.mode}</CocoaBadge> },
+  { key: "certificate", label: "Certificado", minWidth: 240 },
+  { key: "endpoint", label: "Punto de conexión", showFrom: "tablet" },
+  { key: "status", label: FIELD_LABELS.status, fit: true, render: (r) => <CocoaBadge tone="warning">{r.status}</CocoaBadge> }
+];
+
+function FiscalSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton.Grid rows={[[6, 6], [6, 6]]} height={220} />
+    </div>
+  );
+}
+
 export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; embedded?: boolean }) {
   const embedded = props.embedded === true;
-  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
+  const hosted = useTabHost() !== null || embedded;
+  const Head = pageHead(embedded);
   const { showToast } = useToast();
   const verifactu = useApiData<SubmissionLite[]>(`/properties/${PROPERTY_ID}/verifactu/submissions`);
   const tbai = useApiData<SubmissionLite[]>(`/properties/${PROPERTY_ID}/tbai/submissions`);
   const igic = useApiData<SubmissionLite[]>(`/properties/${PROPERTY_ID}/igic/submissions`);
   const ses = useApiData<SubmissionLite[]>(`/properties/${PROPERTY_ID}/ses/submissions`);
+  const feeds = { verifactu, tbai, igic, ses };
 
-  // FIX 4: refresh paralelo con manejo de errores agregado. Antes se disparaban 4
-  // refresh() sin try/catch ni feedback; si alguno fallaba el operador no se
-  // enteraba. Ahora usamos Promise.allSettled + toast si alguno falla.
+  // Parallel refresh with aggregated feedback: one toast when any authority fails.
   async function refreshAll() {
     const results = await Promise.allSettled([
       Promise.resolve(verifactu.refresh()),
@@ -44,271 +161,199 @@ export function FiscalDashboard(props: { onNavigate?: (screen: string) => void; 
     }
   }
 
-  // DEV #5 layout declutter — 3 secciones grandes (autoridades, reports, certs)
-  // pasan a tabs internos. Solo una sección visible a la vez.
+  // Three inner views (authorities · models · certificates): one visible at a time.
   const [activeSection, setActiveSection] = useState<FiscalSection>("authorities");
 
-  // toArray() normaliza cualquier forma de respuesta (array plano, `{ items }` o
-  // null) a un array. /tbai/submissions devuelve `{ items }` mientras que los
-  // otros tres devuelven array plano; sin esto, `countByStatus` hacía
-  // `for..of` sobre un objeto no iterable y tumbaba la pantalla con el
-  // ErrorBoundary (visible sobre todo como admin, que sí recibe 200 de TBAI).
-  const v = countByStatus(toArray<SubmissionLite>(verifactu.data));
-  const t = countByStatus(toArray<SubmissionLite>(tbai.data));
-  const i = countByStatus(toArray<SubmissionLite>(igic.data));
-  const s = countByStatus(toArray<SubmissionLite>(ses.data));
-  const failures = v.rejected + t.rejected + i.rejected + s.rejected;
-  const retrying = v.retrying + t.retrying + i.retrying + s.retrying;
-  const totalAccepted = v.accepted + t.accepted + i.accepted + s.accepted;
-  const totalSubmissions = v.total + t.total + i.total + s.total;
+  // toArray() normalises every payload shape (plain array, `{ items }` or null):
+  // /tbai/submissions answers `{ items }` while the other three answer a plain array.
+  const counts: Record<AuthorityId, Counts> = {
+    verifactu: countByStatus(toArray<SubmissionLite>(verifactu.data)),
+    tbai: countByStatus(toArray<SubmissionLite>(tbai.data)),
+    igic: countByStatus(toArray<SubmissionLite>(igic.data)),
+    ses: countByStatus(toArray<SubmissionLite>(ses.data))
+  };
+  const all = Object.values(counts);
+  const failures = all.reduce((sum, c) => sum + c.rejected, 0);
+  const retrying = all.reduce((sum, c) => sum + c.retrying, 0);
+  const totalAccepted = all.reduce((sum, c) => sum + c.accepted, 0);
+  const totalSubmissions = all.reduce((sum, c) => sum + c.total, 0);
   const acceptanceRate = totalSubmissions > 0 ? Math.round((totalAccepted / totalSubmissions) * 100) : 0;
 
+  const initialLoading = AUTHORITIES.some((a) => feeds[a.id].loading && feeds[a.id].data === null && feeds[a.id].error === null);
+  const anyLoading = AUTHORITIES.some((a) => feeds[a.id].loading);
+  const failedFeeds = AUTHORITIES.filter((a) => feeds[a.id].error !== null).map((a) => a.label);
+
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : <div className="bo-page-eyebrow">Cumplimiento</div>}
-          {embedded ? null : <h1 className="bo-page-title">Centro fiscal</h1>}
-          <p className="bo-page-subtitle">
-            Cumplimiento normativo español: VeriFactu (AEAT), TicketBAI (forales vascos), IGIC (Canarias), SES.HOSPEDAJES (MIR) y Modelos 303 / 390.
-            Todos los envíos se firman con XAdES-EPES, se encadenan con huellas digitales y se reintentan automáticamente.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => { void refreshAll(); }}>↻ Refrescar</button>
-          <button type="button" className="primary" onClick={() => props.onNavigate?.("Modelo303Screen")}>Generar Modelo 303</button>
-        </div>
-      </div>
+    <div className="cocoa-stack" data-gap="4">
+      <Head
+        eyebrow="Cumplimiento"
+        title="Centro fiscal"
+        subtitle={
+          hosted
+            ? undefined
+            : "Cumplimiento normativo español: VeriFactu (AEAT), TicketBAI (forales vascos), IGIC (Canarias), SES.HOSPEDAJES (MIR) y Modelos 303 / 390. Todos los envíos se firman con XAdES-EPES, se encadenan con huellas digitales y se reintentan automáticamente."
+        }
+        tabs={SECTION_TABS}
+        panelId="fiscal-dashboard-panel"
+        activeTab={activeSection}
+        onTabChange={(value) => setActiveSection(value as FiscalSection)}
+        actions={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refreshAll()} loading={anyLoading && !initialLoading}>
+              {ACTIONS.refresh}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" size="small" onClick={() => props.onNavigate?.("Modelo303Screen")}>
+              Generar Modelo 303
+            </CocoaButton>
+          </>
+        }
+      />
 
-      <section className="rev-kpi-grid">
-        {/* FIX 1-3: KPIs en castellano para mantener consistencia con el resto
-            del centro fiscal, y ocultando detalle de implementacion (pg-boss). */}
-        <article className={`rev-kpi ${failures > 0 ? "rev-kpi-error" : retrying > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tasa de aceptación</span></div>
-          <div className="rev-kpi-value">{acceptanceRate}%</div>
-          <div className="rev-kpi-delta">{totalAccepted} / {totalSubmissions} envíos</div>
-        </article>
-        <article className={`rev-kpi ${failures > 0 ? "rev-kpi-error" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Rechazadas</span></div>
-          <div className="rev-kpi-value">{failures}</div>
-          <div className="rev-kpi-delta">Revisión manual requerida</div>
-        </article>
-        <article className={`rev-kpi ${retrying > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Cola de reintentos</span></div>
-          <div className="rev-kpi-value">{retrying}</div>
-          <div className="rev-kpi-delta">Se reintentará en 5 min</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total del periodo</span></div>
-          <div className="rev-kpi-value">{totalSubmissions}</div>
-          <div className="rev-kpi-delta">en 4 autoridades</div>
-        </article>
-      </section>
-
-      {/* DEV #5 — Tabs internas para dividir 3 secciones grandes: autoridades
-          (VeriFactu/TBAI/IGIC/SES), reports (Modelos 303/390/IRPF) y certs. */}
-      <nav
-        role="tablist"
-        aria-label="Vistas del centro fiscal"
-        style={{ display: "flex", flexWrap: "wrap", gap: 4, borderBottom: "1px solid var(--border)" }}
-      >
-        {(
-          [
-            { id: "authorities" as const, label: "Autoridades" },
-            { id: "reports" as const, label: "Modelos" },
-            { id: "certificates" as const, label: "Certificados" }
-          ]
-        ).map((tab) => {
-          const isActive = activeSection === tab.id;
-          return (
-            <button
-              key={tab.id}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => setActiveSection(tab.id)}
-              className={isActive ? "primary" : "ghost"}
-              style={{ padding: "6px 14px", fontSize: 13 }}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
-      </nav>
-
-      {activeSection === "authorities" ? (
-      <section className="bo-grid two">
-        <button className="bo-card" type="button" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => props.onNavigate?.("FiscalSubmissionsCenter")}>
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted" style={{ fontSize: 11 }}>AEAT · Península y Baleares</p>
-              <h3>VeriFactu</h3>
-            </div>
-            <span className={`bo-status ${v.rejected > 0 ? "error" : v.retrying > 0 ? "warn" : "ok"}`}>
-              {v.rejected > 0 ? `${v.rejected} rechazados` : v.retrying > 0 ? `${v.retrying} reintentando` : v.total === 0 ? "sin datos" : "correcto"}
-            </span>
-          </div>
-          <div className="bo-metric">{v.total}</div>
-          <p>RD 1007/2023 · Sistema de facturación verificable: cadena de huellas SHA-256, código QR de la AEAT y numeración legal.</p>
-          <div className="bo-pill-row" style={{ marginTop: 12 }}>
-            <span className="bo-pill">{v.accepted} aceptados</span>
-            {v.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{v.rejected} rechazados</span> : null}
-            {v.retrying > 0 ? <span className="bo-pill" style={{ color: "var(--warn-ink)" }}>{v.retrying} reintentando</span> : null}
-          </div>
-        </button>
-
-        <button className="bo-card" type="button" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => props.onNavigate?.("FiscalSubmissionsCenter")}>
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted" style={{ fontSize: 11 }}>Hacienda Foral · País Vasco</p>
-              <h3>TicketBAI</h3>
-            </div>
-            <span className={`bo-status ${t.rejected > 0 ? "error" : t.retrying > 0 ? "warn" : "ok"}`}>
-              {t.rejected > 0 ? `${t.rejected} rechazados` : t.retrying > 0 ? `${t.retrying} reintentando` : t.total === 0 ? "sin datos" : "correcto"}
-            </span>
-          </div>
-          <div className="bo-metric">{t.total}</div>
-          <p>Bizkaia · Gipuzkoa · Araba. Cadena de huellas TBAI, XML por territorio foral y código TBAI en cada factura.</p>
-          <div className="bo-pill-row" style={{ marginTop: 12 }}>
-            <span className="bo-pill">{t.accepted} aceptados</span>
-            {t.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{t.rejected} rechazados</span> : null}
-          </div>
-        </button>
-
-        <button className="bo-card" type="button" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => props.onNavigate?.("FiscalSubmissionsCenter")}>
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted" style={{ fontSize: 11 }}>ATC · Canarias</p>
-              <h3>IGIC</h3>
-            </div>
-            <span className={`bo-status ${i.rejected > 0 ? "error" : i.retrying > 0 ? "warn" : "ok"}`}>
-              {i.rejected > 0 ? `${i.rejected} rechazados` : i.retrying > 0 ? `${i.retrying} reintentando` : i.total === 0 ? "sin datos" : "correcto"}
-            </span>
-          </div>
-          <div className="bo-metric">{i.total}</div>
-          <p>Impuesto General Indirecto Canario. Se presenta ante la Hacienda Canaria, no ante la AEAT, con el desglose del IGIC.</p>
-          <div className="bo-pill-row" style={{ marginTop: 12 }}>
-            <span className="bo-pill">{i.accepted} aceptados</span>
-          </div>
-        </button>
-
-        <button className="bo-card" type="button" style={{ textAlign: "left", cursor: "pointer" }} onClick={() => props.onNavigate?.("FiscalSubmissionsCenter")}>
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted" style={{ fontSize: 11 }}>MIR · Ministerio del Interior</p>
-              <h3>SES.HOSPEDAJES</h3>
-            </div>
-            <span className={`bo-status ${s.rejected > 0 ? "error" : s.retrying > 0 ? "warn" : "ok"}`}>
-              {s.rejected > 0 ? `${s.rejected} rechazados` : s.retrying > 0 ? `${s.retrying} reintentando` : s.total === 0 ? "sin datos" : "correcto"}
-            </span>
-          </div>
-          <div className="bo-metric">{s.total}</div>
-          <p>RD 933/2021 · Comunicaciones de Hospedaje. Datos del viajero + contrato firmados con cert FNMT registrado en MIR.</p>
-          <div className="bo-pill-row" style={{ marginTop: 12 }}>
-            <span className="bo-pill">{s.accepted} aceptados</span>
-            {s.rejected > 0 ? <span className="bo-pill" style={{ color: "var(--danger-ink)" }}>{s.rejected} rechazados</span> : null}
-          </div>
-        </button>
-      </section>
+      {failedFeeds.length > 0 ? (
+        <CocoaCallout
+          tone="danger"
+          title={STATUS_LABELS.loadError}
+          role="status"
+          actions={
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refreshAll()}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
+          No se pudieron cargar los envíos de {failedFeeds.join(", ")}. Los indicadores solo cuentan las autoridades cargadas.
+        </CocoaCallout>
       ) : null}
 
-      {activeSection === "reports" ? (
-      <section className="bo-section">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Reports for AEAT</p>
-            <h2 style={{ fontSize: 20 }}>Spanish VAT consolidation</h2>
-          </div>
-        </div>
-        <div className="bo-grid two">
-          <article className="bo-card">
-            <div className="bo-card-head">
-              <h3>Modelo 303 — Declaración trimestral IVA</h3>
-              <span className="bo-chip">Trimestral</span>
-            </div>
-            <p>Agrega cuota repercutida (cuenta 477) por bucket de tipo impositivo (4%, 10%, 21%) y mapea a las casillas oficiales AEAT.</p>
-            <div className="bo-row" style={{ marginTop: 12 }}>
-              <button type="button" className="primary" onClick={() => props.onNavigate?.("Modelo303Screen")}>Abrir Modelo 303</button>
-            </div>
-          </article>
-          <article className="bo-card">
-            <div className="bo-card-head">
-              <h3>Modelo 390 — Resumen anual IVA</h3>
-              <span className="bo-chip">Anual</span>
-            </div>
-            <p>Consolidación anual de los 4 modelos 303 con buckets por tasa, totales y casillas Modelo 390 (07/09, 04/06, 99, 109, etc.).</p>
-            <div className="bo-row" style={{ marginTop: 12 }}>
-              <button type="button" className="primary" onClick={() => props.onNavigate?.("Modelo390Screen")}>Abrir Modelo 390</button>
-            </div>
-          </article>
-          <article className="bo-card">
-            <div className="bo-card-head">
-              <h3>Modelos IRPF</h3>
-              <span className="bo-chip">Retenciones</span>
-            </div>
-            <p>Retenciones de IRPF: Modelo 111 (trimestral) y Modelo 115 (arrendamientos trimestral), con sus resúmenes anuales Modelo 180.</p>
-            <div className="bo-row" style={{ marginTop: 12, flexWrap: "wrap", gap: 8 }}>
-              <button type="button" onClick={() => props.onNavigate?.("Modelo111Screen")}>Modelo 111</button>
-              <button type="button" onClick={() => props.onNavigate?.("Modelo115Screen")}>Modelo 115</button>
-              <button type="button" onClick={() => props.onNavigate?.("Modelo180Screen")}>Modelo 180</button>
-            </div>
-          </article>
-        </div>
-      </section>
-      ) : null}
+      {initialLoading ? (
+        <FiscalSkeleton />
+      ) : (
+        <>
+          <CocoaKpiStrip stagger aria-label="Indicadores de envíos a las autoridades">
+            <CocoaKpi
+              label="Tasa de aceptación"
+              value={percent(acceptanceRate)}
+              caption={`${number(totalAccepted)} de ${number(totalSubmissions)} envíos`}
+              polarity="positive-good"
+              status={failures > 0 ? "critical" : retrying > 0 ? "warning" : "ok"}
+            />
+            <CocoaKpi label="Rechazadas" value={number(failures)} caption="Revisión manual requerida" polarity="negative-good" status={failures > 0 ? "critical" : "ok"} />
+            <CocoaKpi label="Cola de reintentos" value={number(retrying)} caption="Se reintentará en 5 min" polarity="negative-good" status={retrying > 0 ? "warning" : "ok"} />
+            <CocoaKpi label="Total del periodo" value={number(totalSubmissions)} caption="En 4 autoridades" polarity="neutral" />
+          </CocoaKpiStrip>
 
-      {activeSection === "certificates" ? (
-      <section className="bo-section">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Cadena de firma XAdES-EPES</p>
-            <h2 style={{ fontSize: 20 }}>Estado de los certificados</h2>
-            <p className="bo-muted" style={{ textTransform: "none", marginTop: 4 }}>Tabla de referencia del entorno de demostración. El estado real del conector VeriFactu y su certificado se consulta en Configuración › Facturación.</p>
+          <div role="tabpanel" id="fiscal-dashboard-panel" aria-label={SECTION_LABEL[activeSection]} className="cocoa-stack" data-gap="4">
+            {activeSection === "authorities" ? (
+              <CocoaGrid align="start" aria-label="Autoridades">
+                {AUTHORITIES.map((a) => {
+                  const c = counts[a.id];
+                  const status = authorityStatus(c);
+                  return (
+                    <CocoaSpan key={a.id} cols={6} min={320}>
+                      <CocoaSection
+                        title={a.label}
+                        meta={a.body}
+                        action={
+                          <CocoaButton variant="plain" tone="accent" size="small" onClick={() => props.onNavigate?.("FiscalSubmissionsCenter")}>
+                            Ver envíos
+                          </CocoaButton>
+                        }
+                      >
+                        <div className="cocoa-row" data-justify="between" data-align="start">
+                          <CocoaStat label="Envíos" value={number(c.total)} size="large" />
+                          <CocoaBadge tone={status.tone} variant="tinted">
+                            {status.label}
+                          </CocoaBadge>
+                        </div>
+                        <p className="cocoa-note">{a.description}</p>
+                        <div className="cocoa-cluster">
+                          <CocoaBadge tone="success">{plural(c.accepted, "aceptado", "aceptados")}</CocoaBadge>
+                          {c.rejected > 0 ? <CocoaBadge tone="danger">{plural(c.rejected, "rechazado", "rechazados")}</CocoaBadge> : null}
+                          {c.retrying > 0 ? <CocoaBadge tone="warning">{number(c.retrying)} reintentando</CocoaBadge> : null}
+                        </div>
+                      </CocoaSection>
+                    </CocoaSpan>
+                  );
+                })}
+              </CocoaGrid>
+            ) : null}
+
+            {activeSection === "reports" ? (
+              <CocoaGrid align="start" aria-label="Modelos para la AEAT">
+                <CocoaSpan cols={4} min={240}>
+                  <CocoaSection
+                    title="Modelo 303 · Declaración trimestral del IVA"
+                    meta={<CocoaBadge tone="neutral">Trimestral</CocoaBadge>}
+                    footer={
+                      <CocoaButton variant="filled" tone="accent" size="small" onClick={() => props.onNavigate?.("Modelo303Screen")}>
+                        Abrir Modelo 303
+                      </CocoaButton>
+                    }
+                  >
+                    <p className="cocoa-note">
+                      Agrega la cuota repercutida (cuenta 477) por tramo de tipo impositivo (4 %, 10 % y 21 %) y la lleva a las casillas oficiales de la AEAT.
+                    </p>
+                  </CocoaSection>
+                </CocoaSpan>
+                <CocoaSpan cols={4} min={240}>
+                  <CocoaSection
+                    title="Modelo 390 · Resumen anual del IVA"
+                    meta={<CocoaBadge tone="neutral">Anual</CocoaBadge>}
+                    footer={
+                      <CocoaButton variant="filled" tone="accent" size="small" onClick={() => props.onNavigate?.("Modelo390Screen")}>
+                        Abrir Modelo 390
+                      </CocoaButton>
+                    }
+                  >
+                    <p className="cocoa-note">
+                      Consolidación anual de los cuatro modelos 303 por tipo impositivo, con totales y casillas del Modelo 390 (07/09, 04/06, 99, 109…).
+                    </p>
+                  </CocoaSection>
+                </CocoaSpan>
+                <CocoaSpan cols={4} min={240}>
+                  <CocoaSection
+                    title="Modelos IRPF"
+                    meta={<CocoaBadge tone="neutral">Retenciones</CocoaBadge>}
+                    footer={
+                      <div className="cocoa-row" data-gap="2">
+                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => props.onNavigate?.("Modelo111Screen")}>
+                          Modelo 111
+                        </CocoaButton>
+                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => props.onNavigate?.("Modelo115Screen")}>
+                          Modelo 115
+                        </CocoaButton>
+                        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => props.onNavigate?.("Modelo180Screen")}>
+                          Modelo 180
+                        </CocoaButton>
+                      </div>
+                    }
+                  >
+                    <p className="cocoa-note">
+                      Retenciones de IRPF: Modelo 111 (trimestral) y Modelo 115 (arrendamientos, trimestral), con sus resúmenes anuales en el Modelo 180.
+                    </p>
+                  </CocoaSection>
+                </CocoaSpan>
+              </CocoaGrid>
+            ) : null}
+
+            {activeSection === "certificates" ? (
+              <>
+                <CocoaCallout tone="info" title="Tabla de referencia del entorno de demostración" role="note">
+                  El estado real del conector VeriFactu y su certificado se consulta en Configuración › Facturación.
+                </CocoaCallout>
+                <CocoaSection title="Estado de los certificados" meta="Cadena de firma XAdES-EPES" padding="none" style={{ overflow: "clip" }}>
+                  <CocoaTable
+                    columns={CERTIFICATE_COLUMNS}
+                    rows={CERTIFICATE_ROWS}
+                    rowKey="authority"
+                    caption="Estado de los certificados por autoridad"
+                    aria-label="Estado de los certificados por autoridad"
+                  />
+                </CocoaSection>
+              </>
+            ) : null}
           </div>
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>Autoridad</th>
-              <th>Modo</th>
-              <th>Certificado</th>
-              <th>Punto de conexión</th>
-              <th>Estado</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td><strong>VeriFactu</strong></td>
-              <td><span className="bo-chip">pruebas</span></td>
-              <td>Firmador en modo demostración (sin certificado PKCS#12 configurado)</td>
-              <td>Demostración (pruebas)</td>
-              <td><span className="bo-status warn">Demostración</span></td>
-            </tr>
-            <tr>
-              <td><strong>TicketBAI</strong></td>
-              <td><span className="bo-chip">pruebas</span></td>
-              <td>Firmador en modo demostración</td>
-              <td>Demostración (pruebas)</td>
-              <td><span className="bo-status warn">Demostración</span></td>
-            </tr>
-            <tr>
-              <td><strong>IGIC</strong></td>
-              <td><span className="bo-chip">pruebas</span></td>
-              <td>Firmador en modo demostración</td>
-              <td>Demostración (pruebas)</td>
-              <td><span className="bo-status warn">Demostración</span></td>
-            </tr>
-            <tr>
-              <td><strong>SES.HOSPEDAJES</strong></td>
-              <td><span className="bo-chip">pruebas</span></td>
-              <td>Firmador en modo demostración (en producción exige el certificado FNMT registrado en el MIR)</td>
-              <td>Demostración (pruebas)</td>
-              <td><span className="bo-status warn">Demostración</span></td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-      ) : null}
-    </>
+        </>
+      )}
+    </div>
   );
 }

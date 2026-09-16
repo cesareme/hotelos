@@ -1551,7 +1551,7 @@ function GridSection() {
 
 const TABLE_SAMPLE = `const columns: CocoaTableColumn<Row>[] = [
   { key: "id", label: "Reserva", sortable: true },
-  { key: "guest", label: "Huésped", sortable: true },
+  { key: "guest", label: "Huésped", sortable: true, truncate: 160 },                                                   // truncate: tope en px con el texto completo en title (identificadores, tokens)
   { key: "arrival", label: "Llegada", fit: true, render: (r) => date(r.arrival, "short"), hideOnNarrow: true },   // fit: la columna se ajusta a su contenido en una línea
   { key: "amount", label: "Importe", align: "right", render: (r) => money(r.amount), footer: money(total) },      // align="right" nunca parte la cifra
   { key: "channel", label: "Canal", showFrom: "desktop" },                                                          // secundaria: solo ≥ 1200 px
@@ -1587,7 +1587,7 @@ function TablesSection() {
   const total = RESERVATIONS.filter((row) => row.status !== "cancelada").reduce((sum, row) => sum + row.amount, 0);
   const columns: CocoaTableColumn<ReservationRow>[] = [
     { key: "id", label: "Reserva", sortable: true, minWidth: 110, render: (row) => <Mono>{row.id}</Mono> },
-    { key: "guest", label: "Huésped", sortable: true, minWidth: 140 },
+    { key: "guest", label: "Huésped", sortable: true, minWidth: 140, truncate: 160 },
     { key: "arrival", label: "Llegada", sortable: true, fit: true, hideOnNarrow: true, render: (row) => date(row.arrival, "short") },
     { key: "nights", label: "Noches", align: "right", sortable: true, render: (row) => number(row.nights), footer: number(RESERVATIONS.reduce((sum, row) => sum + row.nights, 0)) },
     { key: "amount", label: "Importe", align: "right", sortable: true, render: (row) => money(row.amount), footer: money(total) },
@@ -1729,14 +1729,22 @@ const TABS_SAMPLE = `// Pestañas de página = URL (contenedor de screens/tabs/*
   tabs={[{ key: "lista", label: "Lista", path: "/recepcion/reservas", lazy: () => import("../reservations/ReservationsList") },
          { key: "cronograma", label: "Cronograma", lazy: () => import("../reservations/LiveTimeline") }]} />
 // Vistas internas sin URL (≤ 4 opciones): CocoaSegmentedControl
-<CocoaPage title="Mi día" tabs={[{ value: "hoy", label: "Hoy" }, { value: "semana", label: "Semana" }]} activeTab={view} onTabChange={setView}>…</CocoaPage>
+<CocoaPage title="Mi día" tabs={[{ value: "hoy", label: "Hoy" }, { value: "semana", label: "Semana" }]} activeTab={view} onTabChange={setView} panelId={panelId}>
+  <div role="tabpanel" id={panelId} aria-label="Vista de Mi día">…</div>          // la cabecera (alojada o no) reenvía panelId a su tira
+</CocoaPage>
+// Sin panelId, el cuerpo de CocoaPage (.c22-page__body) es el tabpanel: id generado, aria-label = vista activa
 <CocoaSegmentedControl value={view} onChange={setView} options={views} aria-label="Vistas del grupo" panelId={panelId} />   // aria-controls en la pestaña activa
 <div role="tabpanel" id={panelId} aria-label="Resumen del grupo">…</div>
+// Dentro de un CocoaField (id + aria-describedby llegan al tablist):
+<CocoaField label="Nivel de automatización" help="Se aplica a las conversaciones nuevas">
+  <CocoaSegmentedControl value={level} onChange={setLevel} options={levels} aria-label="Nivel de automatización" />
+</CocoaField>
 // Barra de filtros de contenido:
 <CocoaToolbar variant="content" leftSlot={<CocoaSearchInput … />} rightSlot={<CocoaSelect … />} />`;
 
 function TabsSection() {
   const [view, setView] = useState("hoy");
+  const [level, setLevel] = useState("sugerir");
   const panelId = `${useId()}-panel`;
   const [query, setQuery] = useState("");
   const [channel, setChannel] = useState("");
@@ -1761,9 +1769,12 @@ function TabsSection() {
         </div>
         <div role="tabpanel" id={panelId} aria-label="Vista seleccionada de ejemplo">
           <Note>
-            Vista <Mono>{view}</Mono> · la pestaña activa apunta a este contenedor con <Mono>aria-controls</Mono> (<Mono>panelId</Mono>); el panel lleva <Mono>role=&quot;tabpanel&quot;</Mono> y su propio <Mono>aria-label</Mono>.
+            Vista <Mono>{view}</Mono> · la pestaña activa apunta a este contenedor con <Mono>aria-controls</Mono> (<Mono>panelId</Mono>); el panel lleva <Mono>role=&quot;tabpanel&quot;</Mono> y su propio <Mono>aria-label</Mono>. Las vistas internas de <Mono>CocoaPage</Mono> / <Mono>CocoaPageHeader</Mono> aceptan el mismo <Mono>panelId</Mono> (la cabecera alojada lo reenvía a su tira).
           </Note>
         </div>
+        <CocoaField label="Nivel de automatización" help="Un CocoaField puede envolver la tira: su etiqueta apunta al tablist (id) y la ayuda llega por aria-describedby.">
+          <CocoaSegmentedControl size="small" value={level} onChange={setLevel} options={[{ value: "sugerir", label: "Sugerir" }, { value: "borrador", label: "Borrador" }, { value: "auto", label: "Automático" }]} aria-label="Nivel de automatización de ejemplo" />
+        </CocoaField>
         <div style={{ border: "1px dashed var(--cocoa-separator)", borderRadius: "var(--cocoa-radius-md)" }}>
           <CocoaToolbar
             variant="content"

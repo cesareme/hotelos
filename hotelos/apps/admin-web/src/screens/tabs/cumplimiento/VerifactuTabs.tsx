@@ -5,6 +5,11 @@
 // Labels, URLs and roles come from nav-tree.generated.json (pilots/tanda5-nav-tree.csv).
 //
 // L1b registers: screenKey FiscalDashboard · url /cumplimiento/verifactu · tab /cumplimiento/verifactu/ticketbai.
+//
+// Cocoa 22 · ola 8 · lote 8-B: both screens are Cocoa 22 (FiscalDashboard on
+// pageHead(embedded) + Cocoa body, TbaiForalScreen on CocoaPage). FiscalDashboard
+// keeps the `embed()` bridge (EMBED_BRIDGE of cumplimiento-tabs.test.mts and
+// TabHost.tsx) until the integrator retires it; the host context already decides.
 
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";

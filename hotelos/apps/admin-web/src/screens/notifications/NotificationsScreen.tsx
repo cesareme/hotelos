@@ -1,7 +1,13 @@
-// Notifications screen (Sprint 26 — Notification engine + document template
-// renderer). Three tabs: Templates, Deliveries, Stats. All data flows through
-// `useApiData` so mutations refresh the table that changed without forcing a
-// full-page reload.
+// Comunicaciones · Plantillas y envíos — /configuracion/comunicaciones (base
+// tab of ComunicacionesTabs; Cocoa 22 · ola 10 · lote 10-B, plantilla
+// DashboardAlojado).
+//
+// Notification engine (templates · deliveries · stats) over
+// /notifications/templates, /notifications/deliveries and
+// /notifications/template-stats. All data flows through `useApiData` so a
+// mutation refreshes only the table that changed. The template form opens in
+// a CocoaDrawer; the delivery filters live in a CocoaToolbar; every table is
+// a CocoaTable. Same endpoints, queries and bodies as before.
 
 import { getActiveOrganizationId, getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
@@ -9,7 +15,30 @@ import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
-import { dateTime, percent, plural } from "../../lib/format";
+import { dateTime, number, percent, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
+import { useTabHost } from "../tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaState,
+  CocoaTable,
+  CocoaToolbar,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 // Organisation of the active property (never a fixed demo id: Los Tilos answered 404 ×3, browser-roles#10).
@@ -77,20 +106,58 @@ const DELIVERY_STATUS_LABEL: Record<Delivery["status"], string> = {
   bounced: "rebotado"
 };
 
-function formatDateTime(value: string | null): string {
-  return dateTime(value);
+const CHANNEL_LABEL: Record<string, string> = { email: "correo", sms: "SMS", whatsapp: "WhatsApp" };
+
+function channelLabel(channel: string): string {
+  return CHANNEL_LABEL[channel] ?? channel;
 }
 
-function statusPill(status: Delivery["status"]) {
-  if (status === "sent") return <span className="bo-status ok">{DELIVERY_STATUS_LABEL.sent}</span>;
-  if (status === "failed" || status === "bounced") return <span className="bo-status" style={{ color: "var(--danger-ink)" }}>{DELIVERY_STATUS_LABEL[status]}</span>;
-  return <span className="bo-status warn">{DELIVERY_STATUS_LABEL[status] ?? status}</span>;
+function deliveryTone(status: Delivery["status"]): CocoaTone {
+  if (status === "sent") return "success";
+  if (status === "failed" || status === "bounced") return "danger";
+  return "warning";
 }
+
+function statusBadge(status: Delivery["status"]) {
+  return (
+    <CocoaBadge tone={deliveryTone(status)} variant="tinted" size="small">
+      {DELIVERY_STATUS_LABEL[status] ?? status}
+    </CocoaBadge>
+  );
+}
+
+const VIEWS: Array<{ value: TabKey; label: string }> = [
+  { value: "templates", label: "Plantillas" },
+  { value: "deliveries", label: "Envíos" },
+  { value: "stats", label: "Estadísticas" }
+];
+
+const STATUS_FILTER_OPTIONS = [
+  { value: "", label: "Todos los estados" },
+  { value: "sent", label: "enviado" },
+  { value: "failed", label: "fallido" },
+  { value: "queued", label: "en cola" },
+  { value: "bounced", label: "rebotado" }
+];
+
+const CHANNEL_FILTER_OPTIONS = [
+  { value: "", label: "Todos los canales" },
+  { value: "email", label: "correo" },
+  { value: "sms", label: "SMS" },
+  { value: "whatsapp", label: "WhatsApp" }
+];
+
+const WINDOW_OPTIONS = [
+  { value: "7", label: "7 días" },
+  { value: "30", label: "30 días" },
+  { value: "90", label: "90 días" }
+];
 
 // ---- screen ----
 
 export function NotificationsScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
+  // Hosted (ComunicacionesTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
+  const hosted = useTabHost() !== null || embedded;
   const { showToast } = useToast();
   const [tab, setTab] = useState<TabKey>("templates");
   const [busy, setBusy] = useState<string | null>(null);
@@ -117,19 +184,19 @@ export function NotificationsScreen({ embedded = false }: { embedded?: boolean }
   });
 
   // Defensive: backend may return raw array or envelope { items: [] }; coerce once.
+  const templateList = useMemo(() => toArray<NotificationTemplate>(templates.data), [templates.data]);
   const deliveryList = useMemo(() => toArray<Delivery>(deliveries.data), [deliveries.data]);
-  const sentCount = useMemo<number>(
-    () => deliveryList.filter((d) => d.status === "sent").length,
-    [deliveryList]
-  );
-  const failedCount = useMemo<number>(
-    () => deliveryList.filter((d) => d.status === "failed" || d.status === "bounced").length,
-    [deliveryList]
-  );
-  const queuedCount = useMemo<number>(
-    () => deliveryList.filter((d) => d.status === "queued" || d.status === "pending").length,
-    [deliveryList]
-  );
+  const statList = useMemo(() => toArray<TemplateStat>(stats.data), [stats.data]);
+  const sentCount = useMemo<number>(() => deliveryList.filter((d) => d.status === "sent").length, [deliveryList]);
+  const failedCount = useMemo<number>(() => deliveryList.filter((d) => d.status === "failed" || d.status === "bounced").length, [deliveryList]);
+  const queuedCount = useMemo<number>(() => deliveryList.filter((d) => d.status === "queued" || d.status === "pending").length, [deliveryList]);
+  const activeTemplates = templateList.filter((t) => t.active).length;
+
+  function refreshAll() {
+    templates.refresh();
+    deliveries.refresh();
+    stats.refresh();
+  }
 
   async function handleDeactivateTemplate(id: string) {
     setBusy(`deact-${id}`);
@@ -165,204 +232,200 @@ export function NotificationsScreen({ embedded = false }: { embedded?: boolean }
   }
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : <div className="bo-page-eyebrow">Comunicaciones</div>}
-          {embedded ? null : <h1 className="bo-page-title">Notificaciones y plantillas</h1>}
-          <p className="bo-page-subtitle">
-            Plantillas por canal (correo · SMS · WhatsApp), historial de envíos y volúmenes. Las facturas, las
-            confirmaciones de reserva y los recibos de pago se envían solos cuando ocurre el evento.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button
-            type="button"
-            className="ghost"
-            onClick={() => {
-              templates.refresh();
-              deliveries.refresh();
-              stats.refresh();
-            }}
-          >
-            ↻ Actualizar
-          </button>
-        </div>
-      </div>
-
-      <section className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Enviadas (30 días)</span></div>
-          <div className="rev-kpi-value">{sentCount}</div>
-          <div className="rev-kpi-delta">entregadas</div>
-        </article>
-        <article className={`rev-kpi ${failedCount > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Fallidas</span></div>
-          <div className="rev-kpi-value">{failedCount}</div>
-          <div className="rev-kpi-delta">reintenta desde la pestaña de envíos</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">En cola</span></div>
-          <div className="rev-kpi-value">{queuedCount}</div>
-          <div className="rev-kpi-delta">pendientes de envío</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Plantillas activas</span></div>
-          <div className="rev-kpi-value">{toArray<NotificationTemplate>(templates.data).filter((t) => t.active).length}</div>
-          <div className="rev-kpi-delta">{toArray<NotificationTemplate>(templates.data).length} en total</div>
-        </article>
-      </section>
+    <CocoaPage
+      eyebrow="Configuración · Comunicaciones"
+      title="Notificaciones y plantillas"
+      subtitle={
+        hosted
+          ? undefined
+          : "Plantillas por canal (correo · SMS · WhatsApp), historial de envíos y volúmenes. Las facturas, las confirmaciones de reserva y los recibos de pago se envían solos cuando ocurre el evento."
+      }
+      tabs={VIEWS}
+      activeTab={tab}
+      onTabChange={(value) => setTab(value as TabKey)}
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll}>
+          {ACTIONS.refresh}
+        </CocoaButton>
+      }
+      commands={[
+        { id: "comunicaciones-refresh", label: "Actualizar plantillas y envíos", run: refreshAll },
+        { id: "comunicaciones-nueva-plantilla", label: "Añadir plantilla de notificación", run: () => setShowNewTemplate(true) }
+      ]}
+    >
+      <CocoaKpiStrip stagger aria-label="Envíos de los últimos 30 días">
+        <CocoaKpi label="Enviadas (30 días)" value={number(sentCount)} caption="entregadas" polarity="neutral" status="ok" />
+        <CocoaKpi label="Fallidas" value={number(failedCount)} caption="reintenta desde la pestaña de envíos" polarity="negative-good" status={failedCount > 0 ? "warning" : "ok"} />
+        <CocoaKpi label="En cola" value={number(queuedCount)} caption="pendientes de envío" polarity="neutral" status="ok" />
+        <CocoaKpi label="Plantillas activas" value={number(activeTemplates)} caption={`${plural(templateList.length, "plantilla", "plantillas")} en total`} polarity="neutral" status="ok" />
+      </CocoaKpiStrip>
 
       {error ? (
-        <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)", marginBottom: 16 }}>
-          No hemos podido cargar esta vista. Inténtalo de nuevo.
-        </div>
+        <CocoaCallout
+          tone="danger"
+          role="alert"
+          title="No se pudo completar la acción"
+          actions={
+            <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setError(null)}>
+              {ACTIONS.discard}
+            </CocoaButton>
+          }
+        >
+          {error}
+        </CocoaCallout>
       ) : null}
-
-      <div className="rev-toolbar" style={{ gap: 8 }}>
-        <button type="button" className={tab === "templates" ? "primary" : "ghost"} onClick={() => setTab("templates")}>
-          Plantillas ({templates.data?.length ?? 0})
-        </button>
-        <button type="button" className={tab === "deliveries" ? "primary" : "ghost"} onClick={() => setTab("deliveries")}>
-          Envíos ({deliveries.data?.length ?? 0})
-        </button>
-        <button type="button" className={tab === "stats" ? "primary" : "ghost"} onClick={() => setTab("stats")}>
-          Estadísticas
-        </button>
-      </div>
 
       {tab === "templates" ? (
         <TemplatesTab
-          templates={templates.data}
+          templates={templateList}
           loading={templates.loading}
           fetchError={templates.error}
+          onRetry={templates.refresh}
           showForm={showNewTemplate}
           onToggleForm={() => setShowNewTemplate((v) => !v)}
           onCreated={() => {
             setShowNewTemplate(false);
             templates.refresh();
           }}
-          onDeactivate={handleDeactivateTemplate}
+          onDeactivate={(id) => void handleDeactivateTemplate(id)}
           busy={busy}
         />
       ) : null}
 
       {tab === "deliveries" ? (
         <DeliveriesTab
-          deliveries={deliveries.data}
+          deliveries={deliveryList}
           loading={deliveries.loading}
           fetchError={deliveries.error}
+          onRetryLoad={deliveries.refresh}
           statusFilter={statusFilter}
           channelFilter={channelFilter}
           onStatusFilter={setStatusFilter}
           onChannelFilter={setChannelFilter}
-          onRetry={handleRetry}
+          onRetry={(id) => void handleRetry(id)}
           busy={busy}
         />
       ) : null}
 
-      {tab === "stats" ? (
-        <StatsTab
-          stats={stats.data}
-          loading={stats.loading}
-          fetchError={stats.error}
-          days={statsDays}
-          onChangeDays={setStatsDays}
-        />
-      ) : null}
-    </>
+      {tab === "stats" ? <StatsTab stats={statList} loading={stats.loading} fetchError={stats.error} onRetry={stats.refresh} days={statsDays} onChangeDays={setStatsDays} /> : null}
+    </CocoaPage>
   );
 }
 
 // ---- Tab: Templates ----
 
+const TEMPLATE_COLUMNS: CocoaTableColumn<NotificationTemplate>[] = [
+  { key: "code", label: "Código", minWidth: 160, render: (t) => <strong>{t.code}</strong> },
+  { key: "channel", label: "Canal", fit: true, render: (t) => channelLabel(t.channel) },
+  { key: "language", label: "Idioma", fit: true, hideOnNarrow: true },
+  { key: "scope", label: "Ámbito", fit: true, hideOnNarrow: true, render: (t) => (t.propertyId ? "propiedad" : <span className="cocoa-note">organización</span>) },
+  {
+    key: "subject",
+    label: "Asunto",
+    minWidth: 200,
+    showFrom: "laptop",
+    render: (t) => (
+      <span className="cocoa-truncate" style={{ display: "block", maxWidth: 320 }}>
+        {t.subject ?? "—"}
+      </span>
+    )
+  },
+  {
+    key: "tokens",
+    label: "Variables",
+    showFrom: "desktop",
+    render: (t) => (
+      <code className="cocoa-mono">
+        {t.tokens.length === 0 ? "—" : t.tokens.slice(0, 4).join(", ")}
+        {t.tokens.length > 4 ? ` +${t.tokens.length - 4}` : ""}
+      </code>
+    )
+  },
+  {
+    key: "active",
+    label: "Estado",
+    fit: true,
+    render: (t) => (
+      <CocoaBadge tone={t.active ? "success" : "neutral"} variant="tinted" size="small">
+        {t.active ? "activa" : "inactiva"}
+      </CocoaBadge>
+    )
+  }
+];
+
 function TemplatesTab(props: {
-  templates: NotificationTemplate[] | null;
+  templates: NotificationTemplate[];
   loading: boolean;
   fetchError: string | null;
+  onRetry: () => void;
   showForm: boolean;
   onToggleForm: () => void;
   onCreated: () => void;
   onDeactivate: (id: string) => void;
   busy: string | null;
 }) {
+  const rows = props.templates;
+  const ready = !props.fetchError && !(props.loading && rows.length === 0);
+
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Plantillas de notificación</h2>
-        <button type="button" className="primary" onClick={props.onToggleForm}>
-          {props.showForm ? "Cancelar" : "+ Añadir o editar plantilla"}
-        </button>
-      </div>
+    <>
+      <CocoaSection
+        title="Plantillas de notificación"
+        meta={plural(rows.length, "plantilla", "plantillas")}
+        padding={ready && rows.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+        action={
+          <CocoaButton variant="plain" tone="accent" size="small" icon={<PlusIcon size={14} />} onClick={props.onToggleForm}>
+            Añadir plantilla
+          </CocoaButton>
+        }
+      >
+        {props.fetchError ? (
+          <CocoaState kind="error" title="No se pudieron cargar las plantillas" message={props.fetchError} onRetry={props.onRetry} />
+        ) : !props.loading && rows.length === 0 ? (
+          <CocoaState
+            kind="empty"
+            title="Todavía no hay plantillas"
+            message="Añade la primera; los códigos que usa el motor son invoice_issued, reservation_confirmed y payment_receipt."
+            primaryAction={{ label: "Añadir plantilla", onClick: props.onToggleForm }}
+          />
+        ) : (
+          <CocoaTable
+            columns={TEMPLATE_COLUMNS}
+            rows={rows}
+            rowKey="id"
+            loading={props.loading && rows.length === 0}
+            rowActionsVisible="always"
+            rowActions={(t) =>
+              t.active ? (
+                <CocoaButton variant="plain" size="small" tone="neutral" disabled={props.busy === `deact-${t.id}`} loading={props.busy === `deact-${t.id}`} onClick={() => props.onDeactivate(t.id)}>
+                  {ACTIONS.deactivate}
+                </CocoaButton>
+              ) : null
+            }
+            caption="Plantillas de notificación"
+            aria-label="Plantillas de notificación"
+          />
+        )}
+      </CocoaSection>
 
-      {props.showForm ? <TemplateForm onCreated={props.onCreated} /> : null}
-
-      {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Cargando plantillas…</p>
-      ) : props.fetchError ? (
-        <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
-      ) : (props.templates ?? []).length === 0 ? (
-        <p style={{ color: "var(--ink-muted)" }}>
-          Todavía no hay plantillas. Añade la primera; los códigos que usa el motor son
-          {" "}<code>invoice_issued</code>, <code>reservation_confirmed</code> y <code>payment_receipt</code>.
-        </p>
-      ) : (
-        <div className="rev-report-wrap">
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Código</th>
-                <th>Canal</th>
-                <th>Idioma</th>
-                <th>Ámbito</th>
-                <th>Asunto</th>
-                <th>Variables</th>
-                <th>Estado</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {(props.templates ?? []).map((t) => (
-                <tr key={t.id}>
-                  <td><strong>{t.code}</strong></td>
-                  <td>{t.channel}</td>
-                  <td>{t.language}</td>
-                  <td>{t.propertyId ? "propiedad" : <span style={{ color: "var(--ink-muted)" }}>organización</span>}</td>
-                  <td style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {t.subject ?? <span style={{ color: "var(--ink-muted)" }}>—</span>}
-                  </td>
-                  <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                    {t.tokens.length === 0 ? "—" : t.tokens.slice(0, 4).join(", ")}
-                    {t.tokens.length > 4 ? ` +${t.tokens.length - 4}` : ""}
-                  </td>
-                  <td>
-                    <span className={t.active ? "bo-status ok" : "bo-status"}>
-                      {t.active ? "active" : "inactive"}
-                    </span>
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    {t.active ? (
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={props.busy === `deact-${t.id}`}
-                        onClick={() => props.onDeactivate(t.id)}
-                      >
-                        {props.busy === `deact-${t.id}` ? "…" : "Desactivar"}
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
+      <TemplateForm open={props.showForm} onClose={props.onToggleForm} onCreated={props.onCreated} />
+    </>
   );
 }
 
-function TemplateForm(props: { onCreated: () => void }) {
+const CHANNEL_OPTIONS = [
+  { value: "email", label: "correo" },
+  { value: "sms", label: "SMS" },
+  { value: "whatsapp", label: "WhatsApp" }
+];
+
+const SCOPE_OPTIONS = [
+  { value: "property", label: "de esta propiedad" },
+  { value: "org", label: "predeterminada de la organización" }
+];
+
+function TemplateForm(props: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const [code, setCode] = useState("invoice_issued");
   const [channel, setChannel] = useState<"email" | "sms" | "whatsapp">("email");
   const [language, setLanguage] = useState("es");
@@ -374,13 +437,12 @@ function TemplateForm(props: { onCreated: () => void }) {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const codeError = code.trim() ? undefined : "El código de la plantilla es obligatorio.";
+  const bodyError = body.trim() ? undefined : "El cuerpo de la plantilla no puede estar vacío.";
+
   async function submit() {
-    if (!code.trim()) {
-      setFormError("El código de la plantilla es obligatorio.");
-      return;
-    }
-    if (!body.trim()) {
-      setFormError("El cuerpo de la plantilla no puede estar vacío.");
+    if (codeError || bodyError) {
+      setFormError(codeError ?? bodyError ?? null);
       return;
     }
     setSubmitting(true);
@@ -407,69 +469,94 @@ function TemplateForm(props: { onCreated: () => void }) {
   }
 
   return (
-    <div
-      className="bo-card"
-      style={{ background: "var(--surface)", marginBottom: 16, padding: 16, border: "1px solid var(--line)" }}
+    <CocoaDrawer
+      open={props.open}
+      onClose={props.onClose}
+      title="Nueva plantilla o actualización"
+      subtitle="Una plantilla por código, canal e idioma; guardar con el mismo código la actualiza."
+      side="right"
+      size="lg"
+      footer={
+        <div className="cocoa-row" data-justify="end" data-gap="2">
+          <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose}>
+            {ACTIONS.cancel}
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" disabled={submitting || Boolean(codeError) || Boolean(bodyError)} loading={submitting} onClick={() => void submit()}>
+            {submitting ? STATUS_LABELS.saving : "Guardar plantilla"}
+          </CocoaButton>
+        </div>
+      }
     >
-      <h3 style={{ fontSize: 16, marginTop: 0 }}>Nueva plantilla o actualización</h3>
-      <div className="bo-grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
-        <label>
-          Código
-          <input value={code} onChange={(e) => setCode(e.target.value)} placeholder="invoice_issued" />
-        </label>
-        <label>
-          Canal
-          <select value={channel} onChange={(e) => setChannel(e.target.value as "email" | "sms" | "whatsapp")}>
-            <option value="email">correo</option>
-            <option value="sms">SMS</option>
-            <option value="whatsapp">WhatsApp</option>
-          </select>
-        </label>
-        <label>
-          Idioma
-          <input value={language} onChange={(e) => setLanguage(e.target.value)} placeholder="es" />
-        </label>
-        <label>
-          Ámbito
-          <select value={scope} onChange={(e) => setScope(e.target.value as "property" | "org")}>
-            <option value="property">de esta propiedad</option>
-            <option value="org">predeterminada de la organización</option>
-          </select>
-        </label>
-      </div>
-      <label style={{ display: "block", marginTop: 12 }}>
-        Asunto (solo correo y WhatsApp)
-        <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Factura {{invoice_number}}" />
-      </label>
-      <label style={{ display: "block", marginTop: 12 }}>
-        Cuerpo
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={8}
-          style={{ width: "100%", fontFamily: "var(--font-mono)", fontSize: 13 }}
-        />
-      </label>
-      <p style={{ color: "var(--ink-muted)", fontSize: 12, marginTop: 4 }}>
-        Variables: <code>{"{{var}}"}</code> o <code>{"{{var | default: \"valor\"}}"}</code>. Se admiten rutas con punto
-        como <code>{"{{guest.name}}"}</code> (un nivel).
-      </p>
-      {formError ? <p style={{ color: "var(--danger-ink)", marginTop: 8 }}>{formError}</p> : null}
-      <div style={{ marginTop: 12 }}>
-        <button type="button" className="primary" disabled={submitting} onClick={submit}>
-          {submitting ? "Guardando…" : "Guardar plantilla"}
-        </button>
-      </div>
-    </div>
+      <CocoaFormSection title="Plantilla" description="Código que dispara el motor, canal, idioma y ámbito.">
+        <CocoaFormRow columns={2}>
+          <CocoaField label="Código" required error={codeError}>
+            <CocoaInput value={code} onChange={setCode} placeholder="invoice_issued" />
+          </CocoaField>
+          <CocoaField label="Canal">
+            <CocoaSelect value={channel} onChange={(v) => setChannel(v as "email" | "sms" | "whatsapp")} options={CHANNEL_OPTIONS} />
+          </CocoaField>
+          <CocoaField label="Idioma">
+            <CocoaInput value={language} onChange={setLanguage} placeholder="es" maxLength={8} />
+          </CocoaField>
+          <CocoaField label="Ámbito">
+            <CocoaSelect value={scope} onChange={(v) => setScope(v as "property" | "org")} options={SCOPE_OPTIONS} />
+          </CocoaField>
+        </CocoaFormRow>
+      </CocoaFormSection>
+      <CocoaFormSection title="Contenido" description={'Variables: {{var}} o {{var | default: "valor"}}. Se admiten rutas con punto como {{guest.name}} (un nivel).'}>
+        <CocoaField label="Asunto (solo correo y WhatsApp)" fullWidth>
+          <CocoaInput value={subject} onChange={setSubject} placeholder="Factura {{invoice_number}}" />
+        </CocoaField>
+        <CocoaField label="Cuerpo" required error={bodyError} fullWidth>
+          <CocoaInput value={body} onChange={setBody} multiline rows={8} className="cocoa-mono" />
+        </CocoaField>
+      </CocoaFormSection>
+      {formError ? (
+        <CocoaCallout tone="danger" role="alert" title={STATUS_LABELS.saveError}>
+          {formError}
+        </CocoaCallout>
+      ) : null}
+    </CocoaDrawer>
   );
 }
 
 // ---- Tab: Deliveries ----
 
+const DELIVERY_COLUMNS: CocoaTableColumn<Delivery>[] = [
+  { key: "createdAt", label: "Cuándo", fit: true, render: (d) => dateTime(d.createdAt) },
+  { key: "channel", label: "Canal", fit: true, render: (d) => channelLabel(d.channel) },
+  { key: "templateCode", label: "Plantilla", minWidth: 140, render: (d) => <strong>{d.templateCode ?? "(manual)"}</strong> },
+  { key: "recipient", label: "Destinatario", minWidth: 160, render: (d) => <code className="cocoa-mono">{d.recipient}</code> },
+  {
+    key: "subject",
+    label: "Asunto",
+    minWidth: 200,
+    showFrom: "laptop",
+    render: (d) => (
+      <span className="cocoa-truncate" style={{ display: "block", maxWidth: 320 }}>
+        {d.subject ?? "—"}
+      </span>
+    )
+  },
+  {
+    key: "status",
+    label: "Estado",
+    fit: true,
+    render: (d) => (
+      <>
+        {statusBadge(d.status)}
+        {d.errorMessage ? <span className="cocoa-note">{d.errorMessage}</span> : null}
+      </>
+    )
+  },
+  { key: "attempts", label: "Intentos", align: "right", fit: true, hideOnNarrow: true, render: (d) => number(d.attempts) }
+];
+
 function DeliveriesTab(props: {
-  deliveries: Delivery[] | null;
+  deliveries: Delivery[];
   loading: boolean;
   fetchError: string | null;
+  onRetryLoad: () => void;
   statusFilter: string;
   channelFilter: string;
   onStatusFilter: (v: string) => void;
@@ -477,174 +564,124 @@ function DeliveriesTab(props: {
   onRetry: (id: string) => void;
   busy: string | null;
 }) {
-  return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Registro de envíos</h2>
-        <div style={{ display: "flex", gap: 8 }}>
-          <select value={props.statusFilter} onChange={(e) => props.onStatusFilter(e.target.value)}>
-            <option value="">todos los estados</option>
-            <option value="sent">enviado</option>
-            <option value="failed">fallido</option>
-            <option value="queued">en cola</option>
-            <option value="bounced">rebotado</option>
-          </select>
-          <select value={props.channelFilter} onChange={(e) => props.onChannelFilter(e.target.value)}>
-            <option value="">todos los canales</option>
-            <option value="email">email</option>
-            <option value="sms">sms</option>
-            <option value="whatsapp">whatsapp</option>
-          </select>
-        </div>
-      </div>
+  const rows = props.deliveries;
+  const ready = !props.fetchError && !(props.loading && rows.length === 0);
+  const filtered = props.statusFilter !== "" || props.channelFilter !== "";
 
-      {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Cargando envíos…</p>
-      ) : props.fetchError ? (
-        <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
-      ) : (props.deliveries ?? []).length === 0 ? (
-        <p style={{ color: "var(--ink-muted)" }}>
-          Todavía no hay envíos. Emite una factura o crea una reserva con el correo del titular y el motor
-          encolará uno automáticamente.
-        </p>
-      ) : (
-        <div className="rev-report-wrap">
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Cuándo</th>
-                <th>Canal</th>
-                <th>Plantilla</th>
-                <th>Destinatario</th>
-                <th>Asunto</th>
-                <th>Estado</th>
-                <th>Intentos</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {(props.deliveries ?? []).map((d) => (
-                <tr key={d.id}>
-                  <td>{formatDateTime(d.createdAt)}</td>
-                  <td>{d.channel}</td>
-                  <td><strong>{d.templateCode ?? "(manual)"}</strong></td>
-                  <td style={{ fontFamily: "var(--font-mono)", fontSize: 12 }}>{d.recipient}</td>
-                  <td style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {d.subject ?? <span style={{ color: "var(--ink-muted)" }}>—</span>}
-                  </td>
-                  <td>
-                    <div>{statusPill(d.status)}</div>
-                    {d.errorMessage ? (
-                      <div style={{ color: "var(--danger-ink)", fontSize: 11, marginTop: 4 }}>{d.errorMessage}</div>
-                    ) : null}
-                  </td>
-                  <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{d.attempts}</td>
-                  <td style={{ textAlign: "right" }}>
-                    {d.status === "failed" || d.status === "bounced" ? (
-                      <button
-                        type="button"
-                        className="ghost"
-                        disabled={props.busy === `retry-${d.id}`}
-                        onClick={() => props.onRetry(d.id)}
-                      >
-                        {props.busy === `retry-${d.id}` ? "…" : "Reintentar"}
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </section>
+  return (
+    <>
+      <CocoaToolbar
+        variant="content"
+        aria-label="Filtros del registro de envíos"
+        leftSlot={
+          <>
+            <CocoaSelect value={props.statusFilter} onChange={props.onStatusFilter} options={STATUS_FILTER_OPTIONS} inline aria-label="Filtrar por estado" />
+            <CocoaSelect value={props.channelFilter} onChange={props.onChannelFilter} options={CHANNEL_FILTER_OPTIONS} inline aria-label="Filtrar por canal" />
+          </>
+        }
+      />
+      <CocoaSection title="Registro de envíos" meta={`${plural(rows.length, "envío", "envíos")} · 30 días`} padding={ready && rows.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {props.fetchError ? (
+          <CocoaState kind="error" title="No se pudieron cargar los envíos" message={props.fetchError} onRetry={props.onRetryLoad} />
+        ) : !props.loading && rows.length === 0 ? (
+          <CocoaState
+            kind="empty"
+            illustration={filtered ? "search" : "box"}
+            title={filtered ? STATUS_LABELS.noResults : "Todavía no hay envíos"}
+            message={filtered ? "Prueba con otro estado o canal." : "Emite una factura o crea una reserva con el correo del titular y el motor encolará uno automáticamente."}
+            primaryAction={
+              filtered
+                ? {
+                    label: ACTIONS.clearFilters,
+                    onClick: () => {
+                      props.onStatusFilter("");
+                      props.onChannelFilter("");
+                    }
+                  }
+                : undefined
+            }
+          />
+        ) : (
+          <CocoaTable
+            columns={DELIVERY_COLUMNS}
+            rows={rows}
+            rowKey="id"
+            loading={props.loading && rows.length === 0}
+            rowTone={(d) => (d.status === "failed" || d.status === "bounced" ? "danger" : undefined)}
+            rowActionsVisible="always"
+            rowActions={(d) =>
+              d.status === "failed" || d.status === "bounced" ? (
+                <CocoaButton variant="plain" size="small" tone="accent" disabled={props.busy === `retry-${d.id}`} loading={props.busy === `retry-${d.id}`} onClick={() => props.onRetry(d.id)}>
+                  {ACTIONS.retry}
+                </CocoaButton>
+              ) : null
+            }
+            caption="Registro de envíos"
+            aria-label="Registro de envíos"
+          />
+        )}
+      </CocoaSection>
+    </>
   );
 }
 
 // ---- Tab: Stats ----
 
-function StatsTab(props: {
-  stats: TemplateStat[] | null;
-  loading: boolean;
-  fetchError: string | null;
-  days: number;
-  onChangeDays: (n: number) => void;
-}) {
-  const totalSent = (props.stats ?? []).reduce((sum, s) => sum + s.sent, 0);
-  const totalFailed = (props.stats ?? []).reduce((sum, s) => sum + s.failed, 0);
-  const totalQueued = (props.stats ?? []).reduce((sum, s) => sum + s.queued, 0);
+const STAT_COLUMNS: CocoaTableColumn<TemplateStat>[] = [
+  { key: "templateCode", label: "Plantilla", minWidth: 160, render: (s) => <strong>{s.templateCode}</strong> },
+  { key: "channel", label: "Canal", fit: true, render: (s) => channelLabel(s.channel) },
+  { key: "sent", label: "Enviadas", align: "right", fit: true, render: (s) => number(s.sent) },
+  {
+    key: "failed",
+    label: "Fallidas",
+    align: "right",
+    fit: true,
+    render: (s) =>
+      s.failed > 0 ? (
+        <CocoaBadge tone="danger" variant="tinted" size="small">
+          {number(s.failed)}
+        </CocoaBadge>
+      ) : (
+        number(s.failed)
+      )
+  },
+  { key: "queued", label: "En cola", align: "right", fit: true, hideOnNarrow: true, render: (s) => number(s.queued) },
+  { key: "total", label: "Total", align: "right", fit: true, render: (s) => <strong>{number(s.total)}</strong> },
+  { key: "lastSentAt", label: "Último envío", fit: true, showFrom: "laptop", render: (s) => dateTime(s.lastSentAt) },
+  { key: "lastFailedAt", label: "Último fallo", fit: true, showFrom: "desktop", render: (s) => dateTime(s.lastFailedAt) }
+];
+
+function StatsTab(props: { stats: TemplateStat[]; loading: boolean; fetchError: string | null; onRetry: () => void; days: number; onChangeDays: (n: number) => void }) {
+  const rows = props.stats;
+  const totalSent = rows.reduce((sum, s) => sum + s.sent, 0);
+  const totalFailed = rows.reduce((sum, s) => sum + s.failed, 0);
+  const totalQueued = rows.reduce((sum, s) => sum + s.queued, 0);
   const failureRate = totalSent + totalFailed > 0 ? (totalFailed / (totalSent + totalFailed)) * 100 : 0;
+  const ready = !props.fetchError && !(props.loading && rows.length === 0);
 
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <h2 style={{ fontSize: 20 }}>Rendimiento de las plantillas · últimos {plural(props.days, "día", "días", { withCount: true })}</h2>
-        <select value={props.days} onChange={(e) => props.onChangeDays(Number(e.target.value))} aria-label="Ventana de días">
-          <option value={7}>7 días</option>
-          <option value={30}>30 días</option>
-          <option value={90}>90 días</option>
-        </select>
+    <CocoaSection
+      title="Rendimiento de las plantillas"
+      meta={`últimos ${plural(props.days, "día", "días")}`}
+      padding={ready && rows.length > 0 ? "none" : "md"}
+      style={{ overflow: "clip" }}
+      action={<CocoaSelect value={String(props.days)} onChange={(v) => props.onChangeDays(Number(v))} options={WINDOW_OPTIONS} size="small" inline aria-label="Ventana de días" />}
+    >
+      <div className="cocoa-stack" data-gap="4" style={{ padding: ready && rows.length > 0 ? "var(--cocoa-space-4) var(--cocoa-space-4) 0" : 0 }}>
+        <CocoaKpiStrip aria-label={`Envíos de los últimos ${plural(props.days, "día", "días")}`}>
+          <CocoaKpi label="Total enviadas" value={number(totalSent)} polarity="neutral" status="ok" />
+          <CocoaKpi label="Total fallidas" value={number(totalFailed)} polarity="negative-good" status={totalFailed > 0 ? "warning" : "ok"} />
+          <CocoaKpi label="Tasa de fallos" value={percent(failureRate, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} polarity="negative-good" status={failureRate > 5 ? "warning" : "ok"} />
+          <CocoaKpi label="En cola / pendientes" value={number(totalQueued)} polarity="neutral" status="ok" />
+        </CocoaKpiStrip>
       </div>
-
-      <section className="rev-kpi-grid" style={{ marginBottom: 16 }}>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total enviadas</span></div>
-          <div className="rev-kpi-value">{totalSent}</div>
-        </article>
-        <article className={`rev-kpi ${totalFailed > 0 ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total fallidas</span></div>
-          <div className="rev-kpi-value">{totalFailed}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tasa de fallos</span></div>
-          <div className="rev-kpi-value">{percent(failureRate, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">En cola / pendientes</span></div>
-          <div className="rev-kpi-value">{totalQueued}</div>
-        </article>
-      </section>
-
-      {props.loading ? (
-        <p style={{ color: "var(--ink-muted)" }}>Cargando estadísticas…</p>
-      ) : props.fetchError ? (
-        <p style={{ color: "var(--danger-ink)" }}>{props.fetchError}</p>
-      ) : (props.stats ?? []).length === 0 ? (
-        <p style={{ color: "var(--ink-muted)" }}>Sin envíos en este periodo.</p>
+      {props.fetchError ? (
+        <CocoaState kind="error" title="No se pudieron cargar las estadísticas" message={props.fetchError} onRetry={props.onRetry} />
+      ) : !props.loading && rows.length === 0 ? (
+        <CocoaState kind="empty" inline title="Sin envíos en este periodo." />
       ) : (
-        <div className="rev-report-wrap">
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Plantilla</th>
-                <th>Canal</th>
-                <th style={{ textAlign: "right" }}>Enviadas</th>
-                <th style={{ textAlign: "right" }}>Fallidas</th>
-                <th style={{ textAlign: "right" }}>En cola</th>
-                <th style={{ textAlign: "right" }}>Total</th>
-                <th>Último envío</th>
-                <th>Último fallo</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(props.stats ?? []).map((s) => (
-                <tr key={`${s.templateCode}-${s.channel}`}>
-                  <td><strong>{s.templateCode}</strong></td>
-                  <td>{s.channel}</td>
-                  <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{s.sent}</td>
-                  <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: s.failed > 0 ? "var(--danger-ink)" : undefined }}>
-                    {s.failed}
-                  </td>
-                  <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{s.queued}</td>
-                  <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700 }}>{s.total}</td>
-                  <td>{formatDateTime(s.lastSentAt)}</td>
-                  <td>{formatDateTime(s.lastFailedAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <CocoaTable columns={STAT_COLUMNS} rows={rows} rowKey={(s) => `${s.templateCode}-${s.channel}`} loading={props.loading && rows.length === 0} caption="Rendimiento de las plantillas" aria-label="Rendimiento de las plantillas" />
       )}
-    </section>
+    </CocoaSection>
   );
 }

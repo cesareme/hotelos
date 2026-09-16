@@ -95,7 +95,8 @@ function measure(src) {
     cocoaButtons: count(src, /<CocoaButton\b/g),
     rawTables: count(src, /<table\b/g),
     cocoaTables: count(src, /<CocoaTable\b/g),
-    rawInputs: count(src, /<(?:input|select|textarea)\b/g),
+    // Hidden and file inputs are not UI (CocoaFileInput itself wraps one): rule 4 of the contract exempts them.
+    rawInputs: (src.match(/<(?:input|select|textarea)\b[^>]*>?/g) ?? []).filter((tag) => !/type="(?:file|hidden)"/.test(tag)).length,
     cocoaInputs: count(src, /<Cocoa(?:Input|Select|Switch|DatePicker|SearchInput|SegmentedControl)\b/g),
     inlineStyles: count(src, /\bstyle=\{/g),
     cocoaCards: count(src, /<CocoaCard\b/g),

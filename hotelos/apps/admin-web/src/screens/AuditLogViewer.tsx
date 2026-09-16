@@ -1,29 +1,47 @@
-// Audit Log Viewer — read-only window over the sealed audit chain.
+// Audit Log Viewer — Configuración › Sistema › Auditoría (/configuracion/sistema).
 //
-// Lists events returned by GET /audit-events (sealed via SHA-256 chain). The
-// backend now does server-side filtering and pagination from the Postgres
-// mirror, so this screen ships only the visible slice over the wire. Filter
-// dropdowns are hydrated from /audit-events/facets so the lists reflect the
-// full org-wide set rather than just the current page.
+// Read-only window over the sealed audit chain (GET /audit-events, SHA-256
+// chained). The backend does the filtering and the pagination from the
+// Postgres mirror, so the screen only ships the visible page (50 rows) over
+// the wire; the filter dropdowns come from /audit-events/facets so they
+// reflect the whole organization, not just the current page. CSV export
+// downloads the currently filtered page only (there is no «export everything
+// matching» endpoint yet).
 //
-// The table uses a lightweight row windowing pass (render only the visible
-// rows + a small overscan) so wider page sizes don't tank scroll perf. CSV
-// export downloads the currently-filtered page only — exporting the entire
-// chain would need an explicit "export all matching" backend endpoint we
-// haven't built yet.
+// Cocoa 22 (lote 10-A · lista / tabla): CocoaPage → CocoaSection «Filtros»
+// (CocoaFormRow of CocoaField + CocoaDatePicker / CocoaSelect / CocoaInput)
+// → CocoaSection padding="none" with the CocoaTable (a row opens its detail in
+// a CocoaDrawer) and a footer with the page count and Anterior / Siguiente.
+// Hosted in SistemaTabs the container paints the title; the actions row
+// (Exportar CSV · Actualizar) is the page's own in both modes.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { AuditEvent } from "@hotelos/shared";
 import { useApiData } from "../hooks/useApiData";
-import { LoadingBlock, ErrorState, EmptyState } from "../components/States";
 import { useToast } from "../components/Toast";
 import { exportToCsv, type CsvColumn } from "../lib/csv";
-import { dateTime } from "../lib/format";
+import { dateTime, plural } from "../lib/format";
+import { A11Y_LABELS, ACTIONS, PAGINATION, STATUS_LABELS } from "../content/actions";
+import { useTabHost } from "./tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCard,
+  CocoaDatePicker,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaState,
+  CocoaTable,
+  type CocoaSelectOption,
+  type CocoaTableColumn
+} from "../components/cocoa";
 
 const PAGE_SIZE = 50;
-const ROW_HEIGHT = 56; // matches `.cm-table tbody tr` baseline (kept in sync with styles.css)
-const VIEWPORT_HEIGHT = 560;
-const OVERSCAN = 6;
 
 type AuditListResponse = {
   items: AuditEvent[];
@@ -43,7 +61,7 @@ function fmtDateTime(iso: string): string {
 }
 
 function compact(value: unknown): string {
-  // Short, human-friendly representation of a JSON blob for the table cell.
+  // Short, human-friendly representation of a JSON blob for the CSV cell.
   if (value === undefined || value === null) return "";
   try {
     return JSON.stringify(value);
@@ -52,11 +70,58 @@ function compact(value: unknown): string {
   }
 }
 
+/** Facet values as select options behind an explicit «all» choice (a real choice, not a placeholder). */
+function facetOptions(values: string[] | undefined, allLabel: string): CocoaSelectOption[] {
+  return [{ value: "", label: allLabel }, ...(values ?? []).map((value) => ({ value, label: value }))];
+}
+
+// Columns outside the component: the row type is the shared AuditEvent.
+const COLUMNS: CocoaTableColumn<AuditEvent>[] = [
+  { key: "createdAt", label: "Fecha", fit: true, render: (event) => <strong>{fmtDateTime(event.createdAt)}</strong> },
+  {
+    key: "actor",
+    label: "Actor",
+    render: (event) => (
+      <>
+        {event.actorUserId ?? "—"}
+        <span className="cocoa-note">{event.actorType}</span>
+      </>
+    )
+  },
+  {
+    key: "action",
+    label: "Acción",
+    render: (event) => (
+      <CocoaBadge tone="info" uppercase={false}>
+        {event.action}
+      </CocoaBadge>
+    )
+  },
+  { key: "entityType", label: "Entidad", hideOnNarrow: true },
+  // qa#16 (1024 × 768): a 417 px column of cuids pushed the table 522 px past its wrap; desktop-only, fit and cut to 12 characters (the drawer shows the full id).
+  { key: "entityId", label: "ID", fit: true, showFrom: "desktop", render: (event) => <code className="cocoa-mono" title={event.entityId ?? undefined}>{event.entityId ? `${event.entityId.slice(0, 12)}…` : "—"}</code> }
+];
+
+/** One JSON snapshot of the event («Antes» / «Después») as a collapsible block. */
+function JsonBlock({ label, value, open }: { label: string; value: unknown; open?: boolean }) {
+  return (
+    <details open={open}>
+      <summary className="cocoa-note">{label}</summary>
+      <CocoaCard variant="bordered" padding="sm" style={{ marginTop: "var(--cocoa-space-2)" }}>
+        <pre className="cocoa-mono" style={{ margin: 0, overflow: "auto", maxHeight: 240 }}>
+          {JSON.stringify(value, null, 2)}
+        </pre>
+      </CocoaCard>
+    </details>
+  );
+}
+
 export function AuditLogViewer() {
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
 
-  // Filter UI state. We hold separate "draft" state for the free-text box and
-  // debounce it into `q` so we don't fire a request on every keystroke.
+  // Filter state. The free-text box keeps a draft and debounces it into `q`
+  // so we do not fire a request on every keystroke.
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [actionFilter, setActionFilter] = useState("");
@@ -72,22 +137,25 @@ export function AuditLogViewer() {
     return () => window.clearTimeout(handle);
   }, [searchDraft]);
 
-  // Reset to the first page whenever a filter changes — paging through the old
+  // Back to the first page whenever a filter changes: paging through the old
   // result set's offset against a fresh predicate is almost always wrong.
   useEffect(() => {
     setPage(0);
   }, [fromDate, toDate, actionFilter, entityFilter, actorFilter, search]);
 
-  const query = useMemo<Record<string, string | number | undefined>>(() => ({
-    from: fromDate || undefined,
-    to: toDate || undefined,
-    action: actionFilter || undefined,
-    entityType: entityFilter || undefined,
-    actor: actorFilter || undefined,
-    q: search || undefined,
-    limit: PAGE_SIZE,
-    offset: page * PAGE_SIZE
-  }), [fromDate, toDate, actionFilter, entityFilter, actorFilter, search, page]);
+  const query = useMemo<Record<string, string | number | undefined>>(
+    () => ({
+      from: fromDate || undefined,
+      to: toDate || undefined,
+      action: actionFilter || undefined,
+      entityType: entityFilter || undefined,
+      actor: actorFilter || undefined,
+      q: search || undefined,
+      limit: PAGE_SIZE,
+      offset: page * PAGE_SIZE
+    }),
+    [fromDate, toDate, actionFilter, entityFilter, actorFilter, search, page]
+  );
 
   const { data, loading, error, refresh } = useApiData<AuditListResponse>("/audit-events", { query });
   const { data: facets } = useApiData<AuditFacets>("/audit-events/facets");
@@ -96,29 +164,8 @@ export function AuditLogViewer() {
   const total = data?.total ?? 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const safePage = Math.min(page, pageCount - 1);
-  const selected = selectedId ? items.find((event) => event.id === selectedId) ?? null : null;
-
-  // Row windowing — we render only the rows currently visible in the scroll
-  // viewport (plus a small overscan) and pad with spacer divs above/below so
-  // the scrollbar geometry stays correct. Keeps DOM weight bounded for large
-  // page sizes.
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const handleScroll = useCallback(() => {
-    if (!scrollRef.current) return;
-    setScrollTop(scrollRef.current.scrollTop);
-  }, []);
-  // Reset scroll position when the result set changes (filter / page / refresh).
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollTop = 0;
-    setScrollTop(0);
-  }, [items]);
-
-  const visibleStart = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
-  const visibleEnd = Math.min(items.length, Math.ceil((scrollTop + VIEWPORT_HEIGHT) / ROW_HEIGHT) + OVERSCAN);
-  const visibleRows = items.slice(visibleStart, visibleEnd);
-  const padTop = visibleStart * ROW_HEIGHT;
-  const padBottom = Math.max(0, (items.length - visibleEnd) * ROW_HEIGHT);
+  const selected = selectedId ? (items.find((event) => event.id === selectedId) ?? null) : null;
+  const filtersActive = Boolean(fromDate || toDate || actionFilter || entityFilter || actorFilter || search);
 
   function clearFilters() {
     setFromDate("");
@@ -152,195 +199,191 @@ export function AuditLogViewer() {
     const stamp = new Date().toISOString().slice(0, 10);
     try {
       exportToCsv(items, `audit-events-${stamp}`, columns);
-      showToast(`Exportados ${items.length} eventos a CSV (página actual)`, { variant: "success" });
+      showToast(`Exportados ${plural(items.length, "evento", "eventos")} a CSV (página actual)`, { variant: "success" });
     } catch (e) {
       const message = e instanceof Error ? e.message : "No se pudo exportar a CSV.";
       showToast(message, { variant: "error" });
     }
   }
 
-  const actionOptions = facets?.actions ?? [];
-  const entityOptions = facets?.entityTypes ?? [];
-  const actorOptions = facets?.actors ?? [];
+  const actionOptions = useMemo(() => facetOptions(facets?.actions, "Todas"), [facets]);
+  const entityOptions = useMemo(() => facetOptions(facets?.entityTypes, "Todas"), [facets]);
+  const actorOptions = useMemo(() => facetOptions(facets?.actors, "Todos"), [facets]);
+
+  const exportLabel = `${ACTIONS.export} CSV`;
+  const ready = !error && items.length > 0;
+
+  const footer = ready ? (
+    <>
+      <span>
+        {PAGINATION.page(safePage + 1, pageCount)} · {items.length} de {plural(total, "evento", "eventos")}
+      </span>
+      {pageCount > 1 ? (
+        <span className="cocoa-cluster">
+          <CocoaButton variant="bordered" tone="neutral" size="small" disabled={safePage === 0 || loading} onClick={() => setPage(safePage - 1)} aria-label={A11Y_LABELS.previousPage}>
+            {PAGINATION.previous}
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" disabled={safePage >= pageCount - 1 || loading} onClick={() => setPage(safePage + 1)} aria-label={A11Y_LABELS.nextPage}>
+            {PAGINATION.next}
+          </CocoaButton>
+        </span>
+      ) : null}
+    </>
+  ) : undefined;
+
+  let body;
+  if (error) {
+    body = <CocoaState kind="error" title={STATUS_LABELS.loadError} message={error} onRetry={() => refresh()} />;
+  } else if (!loading && items.length === 0) {
+    body = (
+      <CocoaState
+        kind="empty"
+        illustration={filtersActive ? "search" : "box"}
+        title="Sin eventos"
+        message={filtersActive ? "Ningún evento coincide con los filtros aplicados." : "Todavía no se ha registrado ninguna acción auditada."}
+        primaryAction={filtersActive ? { label: ACTIONS.clearFilters, onClick: clearFilters } : undefined}
+      />
+    );
+  } else {
+    body = (
+      <CocoaTable
+        columns={COLUMNS}
+        rows={items}
+        rowKey="id"
+        loading={loading && items.length === 0}
+        selectedKey={selected?.id}
+        onSelect={(event) => setSelectedId(event.id)}
+        rowActions={(event) => (
+          <CocoaButton
+            variant="plain"
+            size="small"
+            onClick={(click) => {
+              click.stopPropagation();
+              setSelectedId(event.id);
+            }}
+          >
+            {ACTIONS.view}
+          </CocoaButton>
+        )}
+        caption="Eventos auditados"
+        aria-label="Eventos auditados"
+      />
+    );
+  }
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Sistema</p>
-          <h2 style={{ color: "var(--ink)" }}>Registro de auditoría</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Cadena sellada SHA-256 de eventos críticos: setup, mapeo, módulos, integraciones, facturación, IA, QR, importaciones y go-live.
-          </p>
-        </div>
-        <div className="bo-pill-row">
-          <button type="button" className="bo-button" onClick={handleExportCsv} disabled={loading || items.length === 0}>Exportar CSV</button>
-          <button type="button" onClick={() => refresh()} disabled={loading}>↻ Actualizar</button>
-        </div>
-      </header>
+    <CocoaPage
+      eyebrow="Configuración · Sistema"
+      title="Registro de auditoría"
+      subtitle={hosted ? undefined : "Cadena sellada SHA-256 de eventos críticos: configuración, mapeo, módulos, integraciones, facturación, IA, QR, importaciones y puesta en marcha."}
+      actions={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={handleExportCsv} disabled={loading || items.length === 0}>
+            {exportLabel}
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => refresh()} disabled={loading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      commands={[
+        { id: "audit-export-csv", label: `${exportLabel}: registro de auditoría`, run: handleExportCsv },
+        { id: "audit-refresh", label: `${ACTIONS.refresh} registro de auditoría`, run: () => refresh() }
+      ]}
+    >
+      <CocoaSection
+        title="Filtros"
+        meta={data ? plural(total, "evento", "eventos") : undefined}
+        action={
+          <CocoaButton variant="plain" size="small" onClick={clearFilters} disabled={!filtersActive}>
+            {ACTIONS.clearFilters}
+          </CocoaButton>
+        }
+      >
+        <CocoaFormRow columns={3} min={200} role="group" aria-label="Filtros del registro de auditoría">
+          <CocoaField label="Desde">
+            <CocoaDatePicker value={fromDate} onChange={setFromDate} />
+          </CocoaField>
+          <CocoaField label="Hasta">
+            <CocoaDatePicker value={toDate} onChange={setToDate} min={fromDate || undefined} />
+          </CocoaField>
+          <CocoaField label="Acción">
+            <CocoaSelect value={actionFilter} onChange={setActionFilter} options={actionOptions} />
+          </CocoaField>
+          <CocoaField label="Entidad">
+            <CocoaSelect value={entityFilter} onChange={setEntityFilter} options={entityOptions} />
+          </CocoaField>
+          <CocoaField label="Actor">
+            <CocoaSelect value={actorFilter} onChange={setActorFilter} options={actorOptions} />
+          </CocoaField>
+          <CocoaField label="Buscar por ID o correlación">
+            <CocoaInput value={searchDraft} onChange={setSearchDraft} placeholder="res_… o corr_…" inputMode="search" autoComplete="off" />
+          </CocoaField>
+        </CocoaFormRow>
+      </CocoaSection>
 
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head"><h3 style={{ color: "var(--ink)" }}>Filtros</h3></div>
-        <div className="bo-row" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <label className="bo-form-field" style={{ margin: 0, minWidth: 150 }}>
-            <span>Desde</span>
-            <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-          </label>
-          <label className="bo-form-field" style={{ margin: 0, minWidth: 150 }}>
-            <span>Hasta</span>
-            <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-          </label>
-          <label className="bo-form-field" style={{ margin: 0, minWidth: 180 }}>
-            <span>Acción</span>
-            <select value={actionFilter} onChange={(e) => setActionFilter(e.target.value)}>
-              <option value="">Todas</option>
-              {actionOptions.map((action) => <option key={action} value={action}>{action}</option>)}
-            </select>
-          </label>
-          <label className="bo-form-field" style={{ margin: 0, minWidth: 180 }}>
-            <span>Entidad</span>
-            <select value={entityFilter} onChange={(e) => setEntityFilter(e.target.value)}>
-              <option value="">Todas</option>
-              {entityOptions.map((entity) => <option key={entity} value={entity}>{entity}</option>)}
-            </select>
-          </label>
-          <label className="bo-form-field" style={{ margin: 0, minWidth: 200 }}>
-            <span>Actor</span>
-            <select value={actorFilter} onChange={(e) => setActorFilter(e.target.value)}>
-              <option value="">Todos</option>
-              {actorOptions.map((actor) => <option key={actor} value={actor}>{actor}</option>)}
-            </select>
-          </label>
-          <label className="bo-form-field" style={{ margin: 0, minWidth: 220 }}>
-            <span>Buscar (ID/correlación)</span>
-            <input
-              type="search"
-              value={searchDraft}
-              placeholder="ej. res_… o corr_…"
-              onChange={(e) => setSearchDraft(e.target.value)}
-            />
-          </label>
-          <button type="button" className="bo-button-link" onClick={clearFilters}>Limpiar</button>
-          <span className="bo-muted" style={{ marginLeft: "auto", textTransform: "none" }}>
-            {total} {total === 1 ? "evento" : "eventos"}
-          </span>
-        </div>
-      </article>
+      <CocoaSection padding={ready ? "none" : "md"} style={{ overflow: "clip" }} aria-label="Eventos auditados" footer={footer}>
+        {body}
+      </CocoaSection>
 
-      {loading && !data ? (
-        <LoadingBlock label="Cargando registro de auditoría…" />
-      ) : error ? (
-        <ErrorState title="No se pudo cargar" message={error} onRetry={() => refresh()} />
-      ) : items.length === 0 ? (
-        <EmptyState
-          title="Sin eventos"
-          message={total === 0 && !fromDate && !toDate && !actionFilter && !entityFilter && !actorFilter && !search
-            ? "Todavía no se ha registrado ninguna acción auditada."
-            : "Ningún evento coincide con los filtros aplicados."}
-          actions={total > 0 ? <button type="button" onClick={clearFilters}>Limpiar filtros</button> : undefined}
-        />
-      ) : (
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Eventos auditados</h3>
-            <span className="bo-chip">{total}</span>
-          </div>
-          <div
-            ref={scrollRef}
-            onScroll={handleScroll}
-            className="rev-report-wrap"
-            style={{ maxHeight: VIEWPORT_HEIGHT, overflowY: "auto", position: "relative" }}
-          >
-            <table className="cm-table" style={{ tableLayout: "fixed", width: "100%" }}>
-              <thead>
-                <tr>
-                  <th style={{ width: 180 }}>Fecha</th>
-                  <th style={{ width: 200 }}>Actor</th>
-                  <th>Acción</th>
-                  <th style={{ width: 160 }}>Entidad</th>
-                  <th>ID</th>
-                  <th style={{ width: 90 }}>Detalles</th>
-                </tr>
-              </thead>
-              <tbody>
-                {padTop > 0 ? (
-                  <tr aria-hidden style={{ height: padTop }}>
-                    <td colSpan={6} style={{ padding: 0, border: 0 }} />
-                  </tr>
-                ) : null}
-                {visibleRows.map((event) => (
-                  <tr
-                    key={event.id}
-                    style={{ height: ROW_HEIGHT, cursor: "pointer" }}
-                    onClick={() => setSelectedId(event.id === selectedId ? null : event.id)}
-                  >
-                    <td><strong>{fmtDateTime(event.createdAt)}</strong></td>
-                    <td>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                        <span>{event.actorUserId ?? <span className="bo-muted">—</span>}</span>
-                        <span className="bo-muted" style={{ fontSize: 11, textTransform: "none" }}>{event.actorType}</span>
-                      </div>
-                    </td>
-                    <td><span className="bo-status info" style={{ textTransform: "none" }}>{event.action}</span></td>
-                    <td>{event.entityType}</td>
-                    <td><code style={{ fontSize: 11 }}>{event.entityId ?? "—"}</code></td>
-                    <td>
-                      <button
-                        type="button"
-                        className="bo-button-link"
-                        onClick={(e) => { e.stopPropagation(); setSelectedId(event.id === selectedId ? null : event.id); }}
-                      >
-                        {event.id === selectedId ? "Ocultar" : "Ver"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {padBottom > 0 ? (
-                  <tr aria-hidden style={{ height: padBottom }}>
-                    <td colSpan={6} style={{ padding: 0, border: 0 }} />
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-
-          {selected ? (
-            <div style={{ marginTop: 12, padding: 12, background: "var(--surface-soft)", borderRadius: "var(--radius-md, 8px)", border: "1px solid var(--line-soft)" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <strong>Detalles del evento</strong>
-                <code style={{ fontSize: 11 }}>{selected.id}</code>
-              </div>
-              {selected.correlationId ? <p style={{ margin: "4px 0", fontSize: 12 }}><span className="bo-muted">Correlación · </span><code>{selected.correlationId}</code></p> : null}
-              {selected.ipAddress ? <p style={{ margin: "4px 0", fontSize: 12 }}><span className="bo-muted">IP · </span>{selected.ipAddress}</p> : null}
-              <p style={{ margin: "4px 0", fontSize: 12 }}><span className="bo-muted">Hash · </span><code style={{ fontSize: 11 }}>{selected.currentHash.slice(0, 16)}…</code></p>
-              {selected.beforeJson !== undefined ? (
-                <details style={{ marginTop: 6 }}>
-                  <summary style={{ cursor: "pointer", fontSize: 12 }} className="bo-muted">Antes</summary>
-                  <pre style={{ fontSize: 11, marginTop: 4, overflow: "auto", maxHeight: 200 }}>{JSON.stringify(selected.beforeJson, null, 2)}</pre>
-                </details>
+      <CocoaDrawer
+        open={selected !== null}
+        onClose={() => setSelectedId(null)}
+        title="Detalles del evento"
+        subtitle={selected ? `${selected.action} · ${fmtDateTime(selected.createdAt)}` : undefined}
+        side="right"
+        size="md"
+        footer={
+          <CocoaButton variant="bordered" tone="neutral" onClick={() => setSelectedId(null)}>
+            {ACTIONS.close}
+          </CocoaButton>
+        }
+      >
+        {selected ? (
+          <div className="cocoa-stack" data-gap="4">
+            <ul className="c22-section__list" aria-label="Datos del evento">
+              <li>
+                <span>Identificador</span>
+                <code className="cocoa-mono">{selected.id}</code>
+              </li>
+              <li>
+                <span>Actor</span>
+                <strong>{selected.actorUserId ?? "—"}</strong>
+              </li>
+              <li>
+                <span>Tipo de actor</span>
+                <strong>{selected.actorType}</strong>
+              </li>
+              <li>
+                <span>Entidad</span>
+                <strong>{selected.entityType}</strong>
+              </li>
+              <li>
+                <span>ID de la entidad</span>
+                <code className="cocoa-mono">{selected.entityId ?? "—"}</code>
+              </li>
+              {selected.correlationId ? (
+                <li>
+                  <span>Correlación</span>
+                  <code className="cocoa-mono">{selected.correlationId}</code>
+                </li>
               ) : null}
-              {selected.afterJson !== undefined ? (
-                <details style={{ marginTop: 6 }} open>
-                  <summary style={{ cursor: "pointer", fontSize: 12 }} className="bo-muted">Después</summary>
-                  <pre style={{ fontSize: 11, marginTop: 4, overflow: "auto", maxHeight: 200 }}>{JSON.stringify(selected.afterJson, null, 2)}</pre>
-                </details>
+              {selected.ipAddress ? (
+                <li>
+                  <span>IP</span>
+                  <strong>{selected.ipAddress}</strong>
+                </li>
               ) : null}
-            </div>
-          ) : null}
-
-          {pageCount > 1 ? (
-            <div className="bo-row" style={{ justifyContent: "space-between", marginTop: 12, alignItems: "center" }}>
-              <span className="bo-muted" style={{ fontSize: 12, textTransform: "none" }}>
-                Página {safePage + 1} de {pageCount} · {items.length} de {total} mostrados
-              </span>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button type="button" disabled={safePage === 0 || loading} onClick={() => setPage(safePage - 1)}>← Anterior</button>
-                <button type="button" disabled={safePage >= pageCount - 1 || loading} onClick={() => setPage(safePage + 1)}>Siguiente →</button>
-              </div>
-            </div>
-          ) : null}
-        </article>
-      )}
-    </section>
+              <li>
+                <span>Hash</span>
+                <code className="cocoa-mono">{selected.currentHash.slice(0, 16)}…</code>
+              </li>
+            </ul>
+            {selected.beforeJson !== undefined ? <JsonBlock label="Antes" value={selected.beforeJson} /> : null}
+            {selected.afterJson !== undefined ? <JsonBlock label="Después" value={selected.afterJson} open /> : null}
+          </div>
+        ) : null}
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }

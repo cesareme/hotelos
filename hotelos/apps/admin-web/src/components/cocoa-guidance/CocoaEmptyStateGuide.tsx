@@ -108,7 +108,9 @@ const stepNumberStyle: CSSProperties = {
   height: 28,
   flexShrink: 0,
   borderRadius: "50%",
-  background: "var(--cocoa-accent)",
+  // Filled surface under the accent ink with an 11 px numeral: the bare hue
+  // carries white at 4.36:1 in light, the fill token at 5.35:1 (qa#8).
+  background: "var(--cocoa-accent-fill)",
   color: "var(--cocoa-accent-contrast)",
   fontSize: "var(--cocoa-fs-subheadline)",
   fontWeight: "var(--cocoa-fw-semibold)" as unknown as number,

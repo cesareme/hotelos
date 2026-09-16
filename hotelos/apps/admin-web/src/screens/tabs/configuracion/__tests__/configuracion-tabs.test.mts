@@ -20,16 +20,15 @@ const CONTAINERS: Record<string, string> = {
 };
 
 // Screens merged here that still take the `embedded` prop (bridge of L1c, see TabHost.tsx):
-// the ones built on `pageHead(embedded)` are already on the host context; the
-// ones in EMBED_BRIDGE branch on the prop by hand and keep `embed()` in their loader.
+// since Cocoa 22 · ola 10 every one of them reads `useTabHost()` (CocoaPage) and keeps the
+// prop only as the bridge — `hosted = useTabHost() !== null || embedded` or a wrapper that
+// forwards `embedded={embedded}`; the ones in EMBED_BRIDGE keep `embed()` in their loader.
+// BillingSettings, PaymentSettings, AccountingSettings and TaxComplianceSettings (lote 10-D)
+// dropped the prop altogether (direct loaders, CocoaPage on the context) and left this list.
 const EMBEDDED_SCREENS = [
   "backoffice/SetupCenterScreen.tsx",
   "GoLiveChecklist.tsx",
   "notifications/NotificationsScreen.tsx",
-  "BillingSettings.tsx",
-  "PaymentSettings.tsx",
-  "AccountingSettings.tsx",
-  "TaxComplianceSettings.tsx",
   "ModuleManager.tsx",
   "ModuleHealthCenter.tsx",
   "aiOperations/PropertyAiScreen.tsx",
@@ -227,7 +226,7 @@ describe("tabs-c · Configuración · registration and hosted screens", () => {
     for (const file of EMBEDDED_SCREENS) {
       const source = read(`../../../${file}`);
       assert.match(source, /embedded\?: boolean/, `${file}: embedded prop missing`);
-      assert.match(source, /pageHead\(embedded\)|\{embedded \? null : <h1 |embedded=\{embedded\}/, `${file}: header not demoted when embedded`);
+      assert.match(source, /pageHead\(embedded\)|\{embedded \? null : <h1 |embedded=\{embedded\}|useTabHost\(\) !== null \|\| embedded/, `${file}: header not demoted when embedded`);
     }
   });
 

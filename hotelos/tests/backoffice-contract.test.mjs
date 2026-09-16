@@ -271,7 +271,7 @@ describe("Back Office hotel setup layer", () => {
     ]) {
       assert.match(setupCenter, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     }
-    assert.match(goLiveChecklist, /Recalcular readiness/);
+    assert.match(goLiveChecklist, /Recalcular preparación/);
     assert.match(adminApp, /OnboardingGoLiveReadiness: PuestaEnMarchaTabs/);
 
     // The Aurora theme tokens were migrated from per-component --bo-* vars to

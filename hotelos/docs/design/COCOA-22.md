@@ -2005,6 +2005,8 @@ export interface CocoaPageHeaderProps {
   tabs?: Array<CocoaPageHeaderTab>;
   activeTab?: string;
   onTabChange?: (value: string) => void;
+  /** id of the `role="tabpanel"` the active inner view controls (forwarded to CocoaSegmentedControl `panelId`); CocoaPage makes its body that panel when the screen passes none. */
+  panelId?: string;
   /** Let the title wrap on desktop too (narrow containers such as the 440 px auth card); default: one line with ellipsis. */
   wrap?: boolean;
   className?: string;
@@ -2013,7 +2015,7 @@ export interface CocoaPageHeaderProps {
 
 /** Title metrics by tier (pure): 26 px nowrap on desktop, 22 px wrapping on phones; `wrap` keeps the 26 px and lets it wrap. */
 export function headerTitleStyle(isNarrow: boolean, wrap = false): CSSProperties
-export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs, activeTab, onTabChange, wrap = false, className, style }: CocoaPageHeaderProps)
+export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs, activeTab, onTabChange, panelId, wrap = false, className, style }: CocoaPageHeaderProps)
 ```
 
 #### `CocoaPage.tsx`
@@ -2023,7 +2025,7 @@ export { commandsKey };
 export type CocoaPageDensity = "comfortable" | "compact";
 export type CocoaPageGap = 3 | 4 | 5;
 
-export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange" | "wrap"> {
+export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange" | "panelId" | "wrap"> {
   /** Actions row (standalone → header; hosted → HOSTED_ACTIONS_ROW). */
   actions?: ReactNode;
   state?: CocoaPageState;
@@ -2044,7 +2046,7 @@ export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "
   "aria-label"?: string;
 }
 
-export function CocoaPage({ eyebrow, title, subtitle, icon, tabs, activeTab, onTabChange, wrap, actions, state, skeleton, empty, error, density, fullBleed = false, gap = 4, commands, children, id, className, style, "aria-label": ariaLabel }: CocoaPageProps)
+export function CocoaPage({ eyebrow, title, subtitle, icon, tabs, activeTab, onTabChange, panelId, wrap, actions, state, skeleton, empty, error, density, fullBleed = false, gap = 4, commands, children, id, className, style, "aria-label": ariaLabel }: CocoaPageProps)
 ```
 
 #### `CocoaGrid.tsx`
@@ -2758,9 +2760,13 @@ export interface CocoaSegmentedControlProps {
    * segmented control has no ids of its own to point `aria-labelledby` at.
    */
   panelId?: string;
+  /** id of the tablist (so a `CocoaField` label can point at it with `htmlFor`). */
+  id?: string;
   className?: string;
   style?: CSSProperties;
   "aria-label"?: string;
+  /** id of the help / error text of the control (CocoaField injects it). */
+  "aria-describedby"?: string;
 }
 
 /** Next enabled value for a navigation key (pure): wraps; null for other keys. */
@@ -2777,7 +2783,7 @@ export function tabSurfaceStyle(isActive: boolean): CSSProperties
 
 /** Button style of a segment (pure): NO `boxShadow` and a transparent background — both live on the surface child. */
 export function segmentItemStyle(input: { isActive: boolean; disabled?: boolean; size: CocoaSegmentedControlSize; fullWidth: boolean }): CSSProperties
-export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, panelId, className, style, "aria-label": ariaLabel }: CocoaSegmentedControlProps)
+export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, panelId, id, className, style, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy }: CocoaSegmentedControlProps)
 ```
 
 #### `CocoaTable.tsx`
@@ -2801,6 +2807,17 @@ export interface CocoaTableColumn<Row> {
   fit?: boolean;
   /** Keep the cells on one line. Default: `true` for `fit` and for `align: "right"` (a number never splits). */
   nowrap?: boolean;
+  /**
+   * Cap the cell at this many pixels and cut its text with an ellipsis (an
+   * inline-block `.cocoa-truncate` around the rendered content; the full text
+   * goes to the native tooltip when the cell renders a string or a number).
+   * For identifiers, tokens and addresses whose length the screen does not
+   * control: with `fit` the column still shrinks to its content, but never
+   * past the cap (qa#1 8-A: an 83-character document token made «Documento»
+   * 667 px and the table 1610 px inside a 1150 px wrapper). Also applied in
+   * the phone cards, where an unbreakable value would otherwise widen the card.
+   */
+  truncate?: number;
   render?: (row: Row) => ReactNode;
   /** Cell of the totals row (`footer` prop must be true or an object). */
   footer?: ReactNode;
@@ -2882,6 +2899,9 @@ export function columnSizingStyle(column: Pick<CocoaTableColumn<unknown>, "width
 export function densityRowPadding(density: CocoaTableDensity | undefined): string
 export function resolveRowKey<Row>(row: Row, rowKey: string | ((row: Row) => string) | undefined, idx: number): string
 export function defaultRender<Row>(row: Row, key: string): ReactNode
+
+/** Native tooltip of a truncated cell (pure): the full text when the cell renders a string or a number, nothing otherwise. */
+export function truncatedCellTitle(content: ReactNode): string | undefined
 export function CocoaTable<Row>({ columns, rows, sortBy, onSort, rowKey, selectedKey, onSelect, emptyState, loading = false, density, stickyFirstColumn = false, rowActions, rowActionsVisible = "hover", rowTone, rowTitle, footer, virtualize = false, caption, "aria-label": ariaLabel, maxHeight, className, style }: CocoaTableProps<Row>)
 ```
 

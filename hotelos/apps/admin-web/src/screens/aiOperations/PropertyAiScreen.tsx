@@ -1,9 +1,45 @@
+// Ajustes de la IA — /configuracion/ia (base tab of InteligenciaArtificialTabs;
+// Cocoa 22 · ola 10 · lote 10-B, plantilla Formulario).
+//
+// Master switch and defaults of every AI feature of the active property
+// (GET/POST /ai-operations/property/settings), the readiness checklist
+// (GET /ai-operations/property/readiness) and the organisation-wide table
+// (GET /ai-operations/property/configured). Form sections with controlled
+// Cocoa controls, a CocoaActionBar that saves (⌘/Ctrl+Enter), a discard guard
+// (CocoaDialog, qa#18) and a toast for the outcome; the per-tool exceptions
+// live in the tool catalogue. The readiness rows are rendered in Spanish by
+// their API key (./ai-operations-labels, qa#3). Same endpoints, query and
+// body as before.
+
 import { getActivePropertyId, getActiveOrganizationId } from "../../services/activeProperty";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { LoadingBlock } from "../../components/States";
-import { dateTime } from "../../lib/format";
+import { useToast } from "../../components/Toast";
+import { toArray } from "../../utils/toArray";
+import { dateTime, number, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS, confirmDiscard } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
+import { readinessCheckLabel, readinessDetail, type ReadinessContext } from "./ai-operations-labels";
+import {
+  CocoaActionBar,
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaField,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSegmentedControl,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  toneFromStatus,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 const ORGANIZATION_ID = getActiveOrganizationId();
@@ -47,6 +83,14 @@ type ConfiguredPropertySummary = {
   updatedAt: string | null;
 };
 
+type FormValues = {
+  aiEnabled: boolean;
+  automationLevel: AutomationLevel;
+  disclosure: string;
+  voiceLocales: string[];
+  autonomousApprovedBy: string;
+};
+
 // --- constants -----------------------------------------------------------
 
 const AUTOMATION_OPTIONS: Array<{ value: AutomationLevel; label: string; description: string }> = [
@@ -75,20 +119,80 @@ const VOICE_LOCALE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: "nl-NL", label: "Neerlandés · nl-NL" }
 ];
 
+const READINESS_LABEL: Record<ReadinessCheck["status"], string> = { ok: "correcto", warn: "aviso", error: "error" };
+
+const DEFAULT_VALUES: FormValues = { aiEnabled: true, automationLevel: "suggest_and_confirm", disclosure: "", voiceLocales: [], autonomousApprovedBy: "" };
+
 // --- helpers -------------------------------------------------------------
 
-function readinessTone(status: ReadinessCheck["status"]): "ok" | "warn" | "error" {
-  return status;
+function automationLabel(level: string): string {
+  return AUTOMATION_OPTIONS.find((o) => o.value === level)?.label ?? level.replace(/_/g, " ");
 }
 
-function fmtDateTime(iso: string | null): string {
-  return dateTime(iso);
+function valuesFrom(data: PropertyAiSettings): FormValues {
+  const approver = data.configurationJson?.autonomousApprovedBy;
+  return {
+    aiEnabled: data.aiEnabled,
+    automationLevel: data.defaultAutomationLevel,
+    disclosure: data.guestFacingDisclosure ?? "",
+    voiceLocales: data.voiceLocales,
+    autonomousApprovedBy: typeof approver === "string" ? approver : ""
+  };
+}
+
+const CONFIGURED_COLUMNS: CocoaTableColumn<ConfiguredPropertySummary>[] = [
+  { key: "propertyName", label: "Propiedad", minWidth: 180, render: (row) => <strong>{row.propertyName}</strong> },
+  {
+    key: "aiEnabled",
+    label: "IA",
+    fit: true,
+    render: (row) => (
+      <CocoaBadge tone={row.aiEnabled ? "success" : "neutral"} variant="tinted" size="small">
+        {row.aiEnabled ? "activada" : "desactivada"}
+      </CocoaBadge>
+    )
+  },
+  { key: "defaultAutomationLevel", label: "Automatización", fit: true, hideOnNarrow: true, render: (row) => automationLabel(row.defaultAutomationLevel) },
+  {
+    key: "disclosureSet",
+    label: "Aviso",
+    fit: true,
+    render: (row) => (
+      <CocoaBadge tone={row.disclosureSet ? "success" : "warning"} variant="tinted" size="small">
+        {row.disclosureSet ? STATUS_LABELS.yes : STATUS_LABELS.no}
+      </CocoaBadge>
+    )
+  },
+  { key: "voiceLocaleCount", label: "Idiomas de voz", align: "right", fit: true, hideOnNarrow: true, render: (row) => number(row.voiceLocaleCount) },
+  {
+    key: "configured",
+    label: "Configurada",
+    fit: true,
+    showFrom: "laptop",
+    render: (row) => (
+      <CocoaBadge tone={row.configured ? "success" : "neutral"} variant="outline" size="small">
+        {row.configured ? "guardada" : "por defecto"}
+      </CocoaBadge>
+    )
+  }
+];
+
+function SettingsSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton variant="card" height={160} />
+      <CocoaSkeleton variant="card" height={120} />
+      <CocoaSkeleton variant="card" height={200} />
+    </div>
+  );
 }
 
 // --- screen --------------------------------------------------------------
 
 export function PropertyAiScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
+  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
+  const hosted = useTabHost() !== null || embedded;
+  const { showToast } = useToast();
   const settingsState = useApiData<PropertyAiSettings>("/ai-operations/property/settings", {
     query: { propertyId: PROPERTY_ID }
   });
@@ -99,33 +203,32 @@ export function PropertyAiScreen({ embedded = false }: { embedded?: boolean } = 
     query: { organizationId: ORGANIZATION_ID }
   });
 
-  // Editable form state (hydrated from the loaded settings).
-  const [aiEnabled, setAiEnabled] = useState(true);
-  const [automationLevel, setAutomationLevel] = useState<AutomationLevel>("suggest_and_confirm");
-  const [disclosure, setDisclosure] = useState("");
-  const [voiceLocales, setVoiceLocales] = useState<string[]>([]);
-  const [autonomousApprovedBy, setAutonomousApprovedBy] = useState("");
-
+  // Editable form state (hydrated from the loaded settings) and its saved snapshot for the dirty guard.
+  const [values, setValues] = useState<FormValues>(DEFAULT_VALUES);
+  const [saved, setSaved] = useState<FormValues>(DEFAULT_VALUES);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [askDiscard, setAskDiscard] = useState(false);
 
   // Hydrate the editable form whenever fresh settings arrive.
   useEffect(() => {
     const data = settingsState.data;
     if (!data) return;
-    setAiEnabled(data.aiEnabled);
-    setAutomationLevel(data.defaultAutomationLevel);
-    setDisclosure(data.guestFacingDisclosure ?? "");
-    setVoiceLocales(data.voiceLocales);
-    const approver = data.configurationJson?.autonomousApprovedBy;
-    setAutonomousApprovedBy(typeof approver === "string" ? approver : "");
+    const next = valuesFrom(data);
+    setValues(next);
+    setSaved(next);
   }, [settingsState.data]);
 
+  const { aiEnabled, automationLevel, disclosure, voiceLocales, autonomousApprovedBy } = values;
+  const dirty = JSON.stringify(values) !== JSON.stringify(saved);
+  const approverMissing = automationLevel === "autonomous" && !autonomousApprovedBy.trim();
+
+  function set<K extends keyof FormValues>(key: K, value: FormValues[K]) {
+    setValues((current) => ({ ...current, [key]: value }));
+  }
+
   const toggleLocale = (value: string) => {
-    setVoiceLocales((current) =>
-      current.includes(value) ? current.filter((l) => l !== value) : [...current, value]
-    );
+    set("voiceLocales", voiceLocales.includes(value) ? voiceLocales.filter((l) => l !== value) : [...voiceLocales, value]);
   };
 
   const refreshAll = () => {
@@ -135,8 +238,8 @@ export function PropertyAiScreen({ embedded = false }: { embedded?: boolean } = 
   };
 
   const handleSave = async () => {
+    if (saving) return;
     setSaveError(null);
-    setSaveSuccess(false);
     setSaving(true);
     try {
       // Merge the approver into configurationJson so the autonomous guardrail
@@ -160,336 +263,192 @@ export function PropertyAiScreen({ embedded = false }: { embedded?: boolean } = 
           configurationJson
         }
       });
-      setSaveSuccess(true);
+      showToast("Configuración de IA guardada", { variant: "success" });
       refreshAll();
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      setSaveError(message);
+      showToast(message, { variant: "error" });
     } finally {
       setSaving(false);
     }
   };
 
   const readiness = readinessState.data;
+  const checks = useMemo(() => toArray<ReadinessCheck>(readiness?.checks), [readiness]);
+  const okChecks = checks.filter((c) => c.status === "ok").length;
   const ready = readiness?.ready ?? false;
+  const configured = useMemo(() => toArray<ConfiguredPropertySummary>(configuredState.data), [configuredState.data]);
+  const selectedOption = AUTOMATION_OPTIONS.find((o) => o.value === automationLevel);
+  const settings = settingsState.data;
+  // The readiness sentences quote the SAVED settings (what the API checked), never the edited form.
+  const readinessContext = useMemo<ReadinessContext>(() => {
+    if (!settings) return {};
+    const approver = settings.configurationJson?.autonomousApprovedBy;
+    return {
+      voiceLocales: settings.voiceLocales,
+      automationLevel: settings.defaultAutomationLevel,
+      automationLevelLabel: automationLabel(settings.defaultAutomationLevel),
+      approvedBy: typeof approver === "string" && approver.trim() ? approver.trim() : undefined
+    };
+  }, [settings]);
+  const discard = confirmDiscard();
+  const savedStatus = dirty
+    ? "Cambios sin guardar"
+    : settings?.updatedAt
+      ? `Última actualización ${dateTime(settings.updatedAt)}`
+      : settings?.isDefault
+        ? "Aún sin guardar: se muestran los valores por defecto."
+        : undefined;
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : <div className="bo-page-eyebrow">IA · Configuración por propiedad</div>}
-          {embedded ? null : <h1 className="bo-page-title">Configuración de IA de la propiedad</h1>}
-          <p className="bo-page-subtitle">
-            El interruptor principal y los valores por defecto de toda la IA, para esta propiedad. Las
-            excepciones por herramienta se gestionan aparte en el registro de herramientas de IA.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
+    <CocoaPage
+      eyebrow="Configuración · Inteligencia artificial"
+      title="Configuración de IA de la propiedad"
+      subtitle={
+        hosted
+          ? undefined
+          : "El interruptor principal y los valores por defecto de toda la IA, para esta propiedad. Las excepciones por herramienta se gestionan aparte en el catálogo de herramientas de IA."
+      }
+      actions={
+        <>
           {readiness ? (
-            <span className={`bo-status ${ready ? "ok" : "warn"}`} style={{ fontSize: 13, padding: "6px 12px" }}>
-              {ready ? "✓ IA lista" : "⚠ Requiere atención"}
-            </span>
+            <CocoaBadge tone={ready ? "success" : "warning"} variant="tinted">
+              {ready ? "IA lista" : "Requiere atención"}
+            </CocoaBadge>
           ) : null}
-          <button type="button" onClick={refreshAll}>↻ Actualizar</button>
-        </div>
-      </div>
-
-      {/* Readiness checklist */}
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h2 style={{ fontSize: 18 }}>Preparación de la IA</h2>
-          {readiness ? (
-            <span className={`bo-chip`}>{readiness.checks.filter((c) => c.status === "ok").length}/{readiness.checks.length} correcto</span>
-          ) : null}
-        </div>
-        {readinessState.loading ? (
-          <p style={{ color: "var(--ink-muted)" }}>Comprobando la preparación…</p>
-        ) : readinessState.error ? (
-          <p style={{ color: "var(--danger-ink)" }}>{readinessState.error}</p>
-        ) : readiness ? (
-          <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 10 }}>
-            {readiness.checks.map((check) => (
-              <li
-                key={check.key}
-                style={{ display: "flex", gap: 12, alignItems: "flex-start" }}
-              >
-                <span className={`bo-status ${readinessTone(check.status)}`} style={{ minWidth: 56, textAlign: "center" }}>
-                  {check.status === "ok" ? "correcto" : check.status === "warn" ? "aviso" : "error"}
-                </span>
-                <div>
-                  <div style={{ fontWeight: 600 }}>{check.label}</div>
-                  <div style={{ fontSize: 13, color: "var(--ink-muted)" }}>{check.detail}</div>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={settingsState.loading && !settings ? "loading" : settingsState.error && !settings ? "error" : "ready"}
+      skeleton={<SettingsSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: settingsState.error ?? undefined, onRetry: refreshAll }}
+      commands={[
+        { id: "ia-ajustes-save", label: "Guardar la configuración de IA", run: () => { void handleSave(); }, shortcut: "⌘ Enter" },
+        { id: "ia-ajustes-refresh", label: "Actualizar la configuración de IA", run: refreshAll }
+      ]}
+    >
+      <CocoaSection title="Preparación de la IA" meta={readiness ? `${number(okChecks)} de ${plural(checks.length, "comprobación", "comprobaciones")} correctas` : undefined}>
+        {readinessState.loading && !readiness ? (
+          <CocoaSkeleton variant="text" lines={3} />
+        ) : readinessState.error && !readiness ? (
+          <CocoaState kind="error" inline title="No se pudo comprobar la preparación" message={readinessState.error} onRetry={readinessState.refresh} />
+        ) : checks.length === 0 ? (
+          <CocoaState kind="empty" inline title="Sin comprobaciones para esta propiedad." />
+        ) : (
+          <ul className="c22-section__list" aria-label="Comprobaciones de preparación">
+            {checks.map((check) => (
+              <li key={check.key}>
+                <div className="cocoa-stack" data-gap="1" style={{ flex: "1 1 auto" }}>
+                  <strong>{readinessCheckLabel(check)}</strong>
+                  <span className="cocoa-note">{readinessDetail(check, readinessContext)}</span>
                 </div>
+                <CocoaBadge tone={toneFromStatus(check.status)} variant="dot" size="small">
+                  {READINESS_LABEL[check.status]}
+                </CocoaBadge>
               </li>
             ))}
           </ul>
+        )}
+      </CocoaSection>
+
+      <CocoaFormSection title="Interruptor principal" description="Enciende o apaga todas las funciones de IA de esta propiedad.">
+        <CocoaField label="IA activada para esta propiedad" inline>
+          <CocoaSwitch checked={aiEnabled} onChange={(v) => set("aiEnabled", v)} />
+        </CocoaField>
+        {!aiEnabled ? (
+          <CocoaCallout tone="warning" title="La IA queda desactivada por completo">
+            Las sugerencias, la voz, la automatización y la IA de cara al huésped se detendrán en esta propiedad hasta que se reactive.
+          </CocoaCallout>
         ) : null}
-      </section>
+      </CocoaFormSection>
 
-      {settingsState.loading ? (
-        <section className="bo-card">
-          <LoadingBlock label="Cargando configuración…" />
-        </section>
-      ) : settingsState.error ? (
-        <section className="bo-card">
-          <p style={{ color: "var(--danger-ink)" }}>{settingsState.error}</p>
-        </section>
-      ) : (
-        <>
-          {/* Master switch */}
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 18 }}>Interruptor principal</h2>
-              <span className={`bo-status ${aiEnabled ? "ok" : "neutral"}`}>{aiEnabled ? "activada" : "desactivada"}</span>
+      <CocoaFormSection title="Nivel de automatización por defecto" description="Cuánto puede hacer la IA sin una persona; cada herramienta puede ajustarlo aparte.">
+        <div className="cocoa-stack" data-gap="2">
+          <CocoaSegmentedControl
+            value={automationLevel}
+            onChange={(v) => set("automationLevel", v as AutomationLevel)}
+            options={AUTOMATION_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+            aria-label="Nivel de automatización por defecto"
+          />
+          {selectedOption ? <p className="cocoa-note">{selectedOption.description}</p> : null}
+        </div>
+        {automationLevel === "autonomous" ? (
+          <CocoaCallout tone="warning" title="La IA autónoma actúa sin confirmación para cada acción">
+            <div className="cocoa-stack" data-gap="3">
+              <span>Es una decisión deliberada y para toda la organización, y requiere un responsable de aprobación registrado antes de poder guardarse.</span>
+              <CocoaField label="Aprobado por (nombre o usuario)" required error={approverMissing ? "Indica quién aprueba el modo autónomo." : undefined}>
+                <CocoaInput value={autonomousApprovedBy} onChange={(v) => set("autonomousApprovedBy", v)} placeholder="p. ej. Juana Pérez, Directora de Operaciones" />
+              </CocoaField>
             </div>
-            <label style={{ display: "flex", gap: 12, alignItems: "center", cursor: "pointer" }}>
-              <input
-                type="checkbox"
-                checked={aiEnabled}
-                onChange={(e) => setAiEnabled(e.target.checked)}
-              />
-              <span style={{ fontWeight: 600 }}>IA activada para esta propiedad</span>
-            </label>
-            {!aiEnabled ? (
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: 12,
-                  background: "var(--warn-surface, #fff7ed)",
-                  border: "1px solid var(--warn-line, #fed7aa)",
-                  borderRadius: "var(--radius-md)",
-                  color: "var(--warn-ink, #9a3412)",
-                  fontSize: 13
-                }}
-              >
-                ⚠ Desactivar la IA deshabilita <strong>todas</strong> las funciones de IA de esta propiedad: las
-                sugerencias, la voz, la automatización y la IA de cara al huésped se detendrán hasta que se reactive.
-              </div>
-            ) : null}
-          </section>
+          </CocoaCallout>
+        ) : null}
+      </CocoaFormSection>
 
-          {/* Automation level */}
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 18 }}>Nivel de automatización por defecto</h2>
-            </div>
-            <div style={{ display: "grid", gap: 10 }}>
-              {AUTOMATION_OPTIONS.map((option) => (
-                <label
-                  key={option.value}
-                  style={{
-                    display: "flex",
-                    gap: 12,
-                    alignItems: "flex-start",
-                    padding: 12,
-                    border: `1px solid ${automationLevel === option.value ? "var(--accent, #2563eb)" : "var(--line)"}`,
-                    borderRadius: "var(--radius-md)",
-                    cursor: "pointer"
-                  }}
-                >
-                  <input
-                    type="radio"
-                    name="automationLevel"
-                    value={option.value}
-                    checked={automationLevel === option.value}
-                    onChange={() => setAutomationLevel(option.value)}
-                    style={{ marginTop: 3 }}
-                  />
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{option.label}</div>
-                    <div style={{ fontSize: 13, color: "var(--ink-muted)" }}>{option.description}</div>
-                  </div>
-                </label>
-              ))}
-            </div>
+      <CocoaFormSection
+        title="Aviso de IA al huésped"
+        description="Informar al huésped de que interviene la IA es un requisito legal. Incluye un aviso bilingüe (español + inglés) que se mostrará allí donde los huéspedes interactúen con la IA."
+      >
+        <CocoaField label="Aviso al huésped" fullWidth>
+          <CocoaInput value={disclosure} onChange={(v) => set("disclosure", v)} multiline rows={6} placeholder={"Aviso en español…\nAviso en inglés…"} />
+        </CocoaField>
+      </CocoaFormSection>
 
-            {automationLevel === "autonomous" ? (
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: 12,
-                  background: "var(--warn-surface, #fff7ed)",
-                  border: "1px solid var(--warn-line, #fed7aa)",
-                  borderRadius: "var(--radius-md)"
-                }}
-              >
-                <div style={{ fontSize: 13, color: "var(--warn-ink, #9a3412)", marginBottom: 8 }}>
-                  ⚠ La IA autónoma actúa sin confirmación para cada acción. Es una decisión deliberada y para toda la
-                  organización, y requiere un responsable de aprobación registrado antes de poder guardarse.
-                </div>
-                <label style={{ display: "grid", gap: 6 }}>
-                  <span style={{ fontSize: 12, color: "var(--ink-muted)" }}>Aprobado por (nombre o usuario)</span>
-                  <input
-                    type="text"
-                    placeholder="p. ej. Juana Pérez, Directora de Operaciones"
-                    value={autonomousApprovedBy}
-                    onChange={(e) => setAutonomousApprovedBy(e.target.value)}
-                  />
-                </label>
-              </div>
-            ) : null}
-          </section>
+      <CocoaFormSection title="Idiomas de voz" description="Idiomas en los que la IA de voz puede hablar. Selecciona todos los que usen tus huéspedes.">
+        <CocoaField label="Idiomas" hint={`${number(voiceLocales.length)} seleccionados`} help="Pulsa un idioma para activarlo o desactivarlo." fullWidth>
+          <div role="group" aria-label="Idiomas de voz" className="cocoa-cluster">
+            {VOICE_LOCALE_OPTIONS.map((option) => {
+              const active = voiceLocales.includes(option.value);
+              return (
+                <CocoaButton key={option.value} size="small" variant={active ? "tinted" : "bordered"} tone={active ? "accent" : "neutral"} aria-pressed={active} onClick={() => toggleLocale(option.value)}>
+                  {option.label}
+                </CocoaButton>
+              );
+            })}
+          </div>
+        </CocoaField>
+      </CocoaFormSection>
 
-          {/* Guest-facing disclosure */}
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 18 }}>Aviso de IA al huésped</h2>
-            </div>
-            <p style={{ fontSize: 13, color: "var(--ink-muted)", marginTop: 0 }}>
-              Informar al huésped de que interviene la IA es un <strong>requisito legal</strong>. Incluya un aviso
-              bilingüe (español + inglés) que se mostrará allí donde los huéspedes interactúen con la IA.
-            </p>
-            <textarea
-              value={disclosure}
-              onChange={(e) => setDisclosure(e.target.value)}
-              rows={6}
-              placeholder={"Aviso en español…\nAviso en inglés…"}
-              style={{
-                width: "100%",
-                fontFamily: "inherit",
-                fontSize: 14,
-                padding: 12,
-                border: "1px solid var(--line)",
-                borderRadius: "var(--radius-md)",
-                resize: "vertical"
-              }}
-            />
-          </section>
+      {saveError ? (
+        <CocoaCallout tone="danger" role="alert" title={STATUS_LABELS.saveError}>
+          {saveError}
+        </CocoaCallout>
+      ) : null}
 
-          {/* Voice locales */}
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 18 }}>Idiomas de voz</h2>
-              <span className="bo-chip">{voiceLocales.length} seleccionados</span>
-            </div>
-            <p style={{ fontSize: 13, color: "var(--ink-muted)", marginTop: 0 }}>
-              Idiomas en los que la IA de voz puede hablar. Seleccione todos los que usen sus huéspedes.
-            </p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
-              {VOICE_LOCALE_OPTIONS.map((option) => (
-                <label
-                  key={option.value}
-                  style={{
-                    display: "flex",
-                    gap: 8,
-                    alignItems: "center",
-                    padding: "8px 12px",
-                    border: `1px solid ${voiceLocales.includes(option.value) ? "var(--accent, #2563eb)" : "var(--line)"}`,
-                    borderRadius: "var(--radius-md)",
-                    cursor: "pointer"
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={voiceLocales.includes(option.value)}
-                    onChange={() => toggleLocale(option.value)}
-                  />
-                  <span style={{ fontSize: 13 }}>{option.label}</span>
-                </label>
-              ))}
-            </div>
-          </section>
+      <CocoaSection title="Configuración de IA de toda la organización" meta={plural(configured.length, "propiedad", "propiedades")} padding={configured.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {configuredState.error && configured.length === 0 ? (
+          <CocoaState kind="error" inline title="No se pudieron cargar las propiedades" message={configuredState.error} onRetry={configuredState.refresh} />
+        ) : !configuredState.loading && configured.length === 0 ? (
+          <CocoaState kind="empty" inline title="No se han encontrado propiedades para esta organización." />
+        ) : (
+          <CocoaTable columns={CONFIGURED_COLUMNS} rows={configured} rowKey="propertyId" loading={configuredState.loading && configured.length === 0} caption="Configuración de IA por propiedad" aria-label="Configuración de IA por propiedad" />
+        )}
+      </CocoaSection>
 
-          {/* Save */}
-          <section className="bo-card">
-            <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
-              <button type="button" className="primary" onClick={handleSave} disabled={saving}>
-                {saving ? "Guardando…" : "Guardar configuración de IA"}
-              </button>
-              {settingsState.data?.updatedAt ? (
-                <span style={{ fontSize: 12, color: "var(--ink-muted)" }}>
-                  Última actualización {fmtDateTime(settingsState.data.updatedAt)}
-                </span>
-              ) : settingsState.data?.isDefault ? (
-                <span style={{ fontSize: 12, color: "var(--ink-muted)" }}>Aún sin guardar: se muestran los valores por defecto.</span>
-              ) : null}
-            </div>
-            {saveError ? (
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: 12,
-                  background: "var(--danger-surface, #fef2f2)",
-                  border: "1px solid var(--danger-line, #fecaca)",
-                  borderRadius: "var(--radius-md)",
-                  color: "var(--danger-ink)",
-                  fontSize: 13
-                }}
-              >
-                {saveError}
-              </div>
-            ) : null}
-            {saveSuccess ? (
-              <div
-                style={{
-                  marginTop: 12,
-                  padding: 12,
-                  background: "var(--ok-surface, #f0fdf4)",
-                  border: "1px solid var(--ok-line, #bbf7d0)",
-                  borderRadius: "var(--radius-md)",
-                  color: "var(--ok-ink, #166534)",
-                  fontSize: 13
-                }}
-              >
-                ✓ Configuración de IA guardada.
-              </div>
-            ) : null}
-          </section>
+      <CocoaActionBar
+        aria-label="Acciones de la configuración de IA"
+        status={savedStatus}
+        secondary={{ label: "Descartar cambios", disabled: !dirty || saving, onClick: () => setAskDiscard(true) }}
+        primary={{ label: saving ? STATUS_LABELS.saving : "Guardar configuración de IA", loading: saving, disabled: saving || approverMissing, onClick: () => { void handleSave(); } }}
+        publishToastOffset
+      />
 
-          {/* Org-wide configuration */}
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 18 }}>Configuración de IA de toda la organización</h2>
-              <span className="bo-chip">{configuredState.data?.length ?? 0} propiedades</span>
-            </div>
-            {configuredState.loading ? (
-              <LoadingBlock label="Cargando propiedades…" />
-            ) : configuredState.error ? (
-              <p style={{ color: "var(--danger-ink)" }}>{configuredState.error}</p>
-            ) : !configuredState.data || configuredState.data.length === 0 ? (
-              <p style={{ color: "var(--ink-muted)" }}>No se han encontrado propiedades para esta organización.</p>
-            ) : (
-              <div className="rev-report-wrap">
-                <table className="cm-table">
-                  <thead>
-                    <tr>
-                      <th>Propiedad</th>
-                      <th>IA</th>
-                      <th>Automatización</th>
-                      <th>Aviso</th>
-                      <th style={{ textAlign: "right" }}>Idiomas de voz</th>
-                      <th>Configurada</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {configuredState.data.map((row) => (
-                      <tr key={row.propertyId}>
-                        <td><strong>{row.propertyName}</strong></td>
-                        <td>
-                          <span className={`bo-status ${row.aiEnabled ? "ok" : "neutral"}`}>
-                            {row.aiEnabled ? "activada" : "desactivada"}
-                          </span>
-                        </td>
-                        <td>{AUTOMATION_OPTIONS.find((o) => o.value === row.defaultAutomationLevel)?.label ?? row.defaultAutomationLevel.replace(/_/g, " ")}</td>
-                        <td>
-                          <span className={`bo-status ${row.disclosureSet ? "ok" : "warn"}`}>
-                            {row.disclosureSet ? "sí" : "no"}
-                          </span>
-                        </td>
-                        <td style={{ textAlign: "right" }}>{row.voiceLocaleCount}</td>
-                        <td>
-                          <span className={`bo-status ${row.configured ? "ok" : "neutral"}`}>
-                            {row.configured ? "guardada" : "por defecto"}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-        </>
-      )}
-    </>
+      <CocoaDialog
+        open={askDiscard}
+        onClose={() => setAskDiscard(false)}
+        tone="destructive"
+        title={discard.title}
+        description={discard.message}
+        confirmLabel={discard.confirmLabel}
+        cancelLabel={discard.cancelLabel}
+        onConfirm={() => {
+          setValues(saved);
+          setSaveError(null);
+          setAskDiscard(false);
+        }}
+      />
+    </CocoaPage>
   );
 }

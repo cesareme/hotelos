@@ -1,5 +1,12 @@
-// TicketBAI multi-jurisdicción foral — dashboard de envíos por territorio
-// + verificación de cadena hash.
+// TicketBAI foral — /cumplimiento/verifactu/ticketbai (tab «TicketBAI (forales)»
+// of VerifactuTabs). Cocoa 22 · ola 8 · lote 8-B (plantilla DashboardAlojado).
+//
+// Submissions to the Basque haciendas by territory (Bizkaia · Gipuzkoa · Araba
+// · Navarra): the territory filter is the inner views of the hosted head, the
+// selected territory paints its hacienda card («Verificar la cadena de huellas»
+// calls /tbai/chain/:territory/verify), a KPI strip counts the submissions per
+// territory and the history table lists them (CocoaTable: fit columns, the
+// secondary ones from tablet / laptop, cards on phones).
 
 import { useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
@@ -11,34 +18,110 @@ import {
   type TbaiSubmission,
   type TbaiTerritoryConfig
 } from "../../services/tbaiApi";
-import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
-import { dateTime } from "../../lib/format";
+import { EMPTY, dateTime, number, plural } from "../../lib/format";
+import { STATUS_LABELS } from "../../content/actions";
+import { submissionStatusLabel } from "./fiscal-shared";
+import { useTabHost } from "../tabs/TabHost";
+import { CheckCircleIcon, XCircleIcon } from "../../components/cocoa-icons/StatusIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaStat,
+  CocoaState,
+  CocoaTable,
+  type CocoaPageHeaderTab,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
+const ALL_TERRITORIES = "all";
+const DAY_MS = 86_400_000;
 
 function fmtDateTime(iso: string | null): string {
   return dateTime(iso, { style: "dayMonth" });
 }
 
-function statusBadge(status: string): "ok" | "warn" | "info" {
-  if (status === "delivered" || status === "acknowledged") return "ok";
-  if (status === "retrying" || status === "submitting" || status === "pending") return "warn";
-  return "info";
+const STATUS_TONE: Record<string, CocoaTone> = {
+  delivered: "success",
+  acknowledged: "success",
+  accepted: "success",
+  accepted_with_errors: "success",
+  retrying: "warning",
+  submitting: "warning",
+  pending: "warning",
+  queued: "warning",
+  network_error: "warning",
+  rejected: "danger",
+  failed: "danger",
+  abandoned: "danger"
+};
+
+function statusTone(status: string): CocoaTone {
+  return STATUS_TONE[status] ?? "info";
+}
+
+// The Spanish label of every wire status is `submissionStatusLabel`
+// (fiscal-shared.ts, shared with FiscalSubmissionsCenter and unit-tested).
+
+/** Columns of the history table; the territory names come from the loaded config. */
+function submissionColumns(config: Record<string, TbaiTerritoryConfig>): CocoaTableColumn<TbaiSubmission>[] {
+  return [
+    { key: "tbaiCode", label: "Código", fit: true, render: (s) => <strong className="cocoa-mono">{s.tbaiCode ?? s.id.slice(0, 16)}</strong> },
+    { key: "territory", label: "Territorio", fit: true, render: (s) => config[s.territory]?.name ?? s.territory },
+    { key: "status", label: "Estado", fit: true, render: (s) => <CocoaBadge tone={statusTone(s.status)}>{submissionStatusLabel(s.status)}</CocoaBadge> },
+    {
+      key: "tbaiHash",
+      label: "Huella TBAI",
+      showFrom: "laptop",
+      render: (s) =>
+        s.tbaiHash ? (
+          <span className="cocoa-mono" title={s.tbaiHash}>
+            {`${s.tbaiHash.slice(0, 16)}…`}
+          </span>
+        ) : (
+          EMPTY
+        )
+    },
+    { key: "attempts", label: "Intentos", align: "right", fit: true, render: (s) => number(s.attempts) },
+    { key: "submittedAt", label: "Enviado", fit: true, showFrom: "tablet", render: (s) => fmtDateTime(s.submittedAt) },
+    { key: "acknowledgedAt", label: "Confirmado", fit: true, showFrom: "tablet", render: (s) => fmtDateTime(s.acknowledgedAt) }
+  ];
+}
+
+function TbaiSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton variant="card" height={220} />
+    </div>
+  );
 }
 
 export function TbaiForalScreen() {
+  const hosted = useTabHost() !== null;
   const [territories, setTerritories] = useState<ForalTerritory[]>([]);
   const [config, setConfig] = useState<Record<string, TbaiTerritoryConfig>>({});
   const [active, setActive] = useState<ForalTerritory | "">("");
   const [submissions, setSubmissions] = useState<TbaiSubmission[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedOnce, setLoadedOnce] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [chainResult, setChainResult] = useState<{ valid: boolean; inspected: number; brokenAt?: string } | null>(null);
 
   useEffect(() => {
     fetchTerritories()
-      .then((r) => { setTerritories(r.items); setConfig(r.config); })
+      .then((r) => {
+        setTerritories(r.items);
+        setConfig(r.config);
+      })
       .catch((e) => setError(e instanceof Error ? e.message : "Error."));
   }, []);
 
@@ -47,7 +130,10 @@ export function TbaiForalScreen() {
     fetchSubmissions(PROPERTY_ID, active || undefined)
       .then(setSubmissions)
       .catch((e) => setError(e instanceof Error ? e.message : "Error."))
-      .finally(() => setLoading(false));
+      .finally(() => {
+        setLoading(false);
+        setLoadedOnce(true);
+      });
   }, [active]);
 
   async function handleVerify() {
@@ -58,7 +144,7 @@ export function TbaiForalScreen() {
       const r = await verifyChain(PROPERTY_ID, active);
       setChainResult(r);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Error verificando cadena.");
+      setError(e instanceof Error ? e.message : "Error verificando la cadena.");
     } finally {
       setVerifying(false);
     }
@@ -74,118 +160,109 @@ export function TbaiForalScreen() {
     return { byTerritory, byStatus };
   }, [submissions]);
 
+  const columns = useMemo(() => submissionColumns(config), [config]);
+
+  const territoryTabs: CocoaPageHeaderTab[] = [
+    { value: ALL_TERRITORIES, label: STATUS_LABELS.all },
+    ...territories.map((t) => ({ value: t, label: config[t]?.name ?? t }))
+  ];
+
+  const activeConfig = active ? config[active] : undefined;
+  const activeName = active ? (config[active]?.name ?? active) : "";
+  const hasRows = submissions.length > 0;
+
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Cumplimiento · TicketBAI foral
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Envíos a haciendas forales</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Cada factura emitida en territorio foral se envía a la <strong>hacienda correspondiente</strong> con cadena
-            de huellas TBAI (cada envío incluye el hash del anterior). Bizkaia exige envío en ≤ 24 h.
-          </p>
-        </div>
-      </header>
+    <CocoaPage
+      eyebrow="Cumplimiento"
+      title="TicketBAI"
+      subtitle={hosted ? undefined : "Envíos a las haciendas forales con cadena de huellas TBAI, por territorio."}
+      tabs={territoryTabs}
+      activeTab={active || ALL_TERRITORIES}
+      onTabChange={(value) => setActive(value === ALL_TERRITORIES ? "" : (value as ForalTerritory))}
+      state={!loadedOnce && loading ? "loading" : "ready"}
+      skeleton={<TbaiSkeleton />}
+    >
+      <CocoaCallout tone="info" role="note">
+        Cada factura emitida en territorio foral se envía a la <strong>hacienda correspondiente</strong> con cadena de huellas TBAI (cada envío
+        incluye la huella del anterior). Bizkaia exige el envío en 24 h como máximo.
+      </CocoaCallout>
 
-      {error ? <p className="bo-status warn" style={{ textTransform: "none" }}>{error}</p> : null}
-
-      {/* Territory tabs */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        <button type="button" onClick={() => setActive("")} className={active === "" ? "primary" : ""} style={{ padding: "6px 12px" }}>
-          Todos
-        </button>
-        {territories.map((t) => (
-          <button key={t} type="button" onClick={() => setActive(t)} className={active === t ? "primary" : ""} style={{ padding: "6px 12px" }}>
-            {config[t]?.name ?? t}
-          </button>
-        ))}
-      </div>
-
-      {/* Territory info card */}
-      {active && config[active] ? (
-        <article className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>{config[active].hacienda}</h3>
-            <button type="button" onClick={handleVerify} disabled={verifying}>
-              {verifying ? <Spinner size="sm" /> : "Verificar cadena hash"}
-            </button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 8, fontSize: 12 }}>
-            <div>
-              <span className="bo-muted">ISO</span>
-              <p className="mono" style={{ margin: 0, color: "var(--ink)" }}>{config[active].isoCode}</p>
-            </div>
-            <div>
-              <span className="bo-muted">Plazo</span>
-              <p style={{ margin: 0, color: "var(--ink)" }}>{Math.round(config[active].submissionDeadlineMs / 86_400_000)} días máximo</p>
-            </div>
-            <div style={{ gridColumn: "1 / -1" }}>
-              <span className="bo-muted">Punto de conexión de pruebas</span>
-              <p className="mono" style={{ margin: 0, color: "var(--ink-muted)", fontSize: 11, overflow: "hidden", textOverflow: "ellipsis" }}>{config[active].endpoints.sandbox}</p>
-            </div>
-          </div>
-          {chainResult ? (
-            <p className={`bo-status ${chainResult.valid ? "ok" : "warn"}`} style={{ textTransform: "none", marginTop: 8 }}>
-              {chainResult.valid
-                ? `✓ Cadena íntegra · ${chainResult.inspected} envíos verificados.`
-                : `✗ Cadena rota · ${chainResult.inspected} inspeccionados · broken at ${chainResult.brokenAt}`}
-            </p>
-          ) : null}
-        </article>
+      {error ? (
+        <CocoaCallout tone="danger" title={STATUS_LABELS.loadError} role="status">
+          {error}
+        </CocoaCallout>
       ) : null}
 
-      {/* KPIs */}
-      <div className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Envíos totales</span></div>
-          <div className="rev-kpi-value">{submissions.length}</div>
-        </article>
-        {territories.slice(0, 3).map((t) => (
-          <article key={t} className="rev-kpi rev-kpi-ok">
-            <div className="rev-kpi-head"><span className="rev-kpi-label">{config[t]?.name ?? t}</span></div>
-            <div className="rev-kpi-value">{stats.byTerritory[t] ?? 0}</div>
-          </article>
-        ))}
-      </div>
+      {active && activeConfig ? (
+        <CocoaSection
+          title={activeConfig.hacienda}
+          meta={activeConfig.name}
+          action={
+            <CocoaButton variant="plain" tone="accent" size="small" onClick={() => void handleVerify()} loading={verifying}>
+              Verificar la cadena de huellas
+            </CocoaButton>
+          }
+        >
+          <div className="cocoa-row" data-gap="4" data-align="start">
+            <CocoaStat label="Código ISO" value={activeConfig.isoCode} tabular={false} />
+            <CocoaStat label="Plazo máximo" value={plural(Math.round(activeConfig.submissionDeadlineMs / DAY_MS), "día", "días")} tabular={false} />
+            <CocoaStat
+              label="Punto de conexión de pruebas"
+              value={
+                <span className="cocoa-mono cocoa-truncate" title={activeConfig.endpoints.sandbox} style={{ display: "block", maxWidth: "100%" }}>
+                  {activeConfig.endpoints.sandbox}
+                </span>
+              }
+              tabular={false}
+              style={{ minWidth: 0, flex: "1 1 240px", maxWidth: "100%" }}
+            />
+          </div>
+          {chainResult ? (
+            <CocoaCallout
+              tone={chainResult.valid ? "success" : "danger"}
+              role="status"
+              icon={chainResult.valid ? <CheckCircleIcon size={16} /> : <XCircleIcon size={16} />}
+              title={chainResult.valid ? "Cadena íntegra" : "Cadena rota"}
+            >
+              {chainResult.valid
+                ? `${plural(chainResult.inspected, "envío verificado", "envíos verificados")}.`
+                : `${plural(chainResult.inspected, "envío inspeccionado", "envíos inspeccionados")} · rota en ${chainResult.brokenAt ?? EMPTY}.`}
+            </CocoaCallout>
+          ) : null}
+        </CocoaSection>
+      ) : null}
 
-      {/* Submissions table */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Histórico de envíos</h3>
-          <span className="bo-chip">{submissions.length}</span>
-        </div>
-        {loading ? <LoadingBlock label="Cargando envíos…" /> : submissions.length === 0 ? (
-          <EmptyState
+      <CocoaKpiStrip stagger aria-label="Envíos TicketBAI por territorio">
+        <CocoaKpi label="Envíos totales" value={number(submissions.length)} caption={active ? activeName : "Todos los territorios"} polarity="neutral" />
+        {territories.slice(0, 3).map((t) => (
+          <CocoaKpi key={t} label={config[t]?.name ?? t} value={number(stats.byTerritory[t] ?? 0)} polarity="neutral" />
+        ))}
+      </CocoaKpiStrip>
+
+      <CocoaSection
+        title="Histórico de envíos"
+        meta={loading && hasRows ? STATUS_LABELS.loading : plural(submissions.length, "envío", "envíos")}
+        padding={hasRows || loading ? "none" : "md"}
+        style={{ overflow: "clip" }}
+      >
+        {!loading && !hasRows ? (
+          <CocoaState
+            kind="empty"
+            illustration="box"
             title="Sin envíos todavía"
-            message={`No hay submissions TBAI para ${active ? config[active]?.name : "esta propiedad"}. Se crean automáticamente al emitir facturas en territorio foral.`}
+            message={`No hay envíos TicketBAI para ${active ? activeName : "esta propiedad"}. Se crean automáticamente al emitir facturas en territorio foral.`}
           />
         ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr><th>Código</th><th>Territorio</th><th>Estado</th><th>Hash TBAI</th><th>Intentos</th><th>Enviado</th><th>Confirmado</th></tr>
-              </thead>
-              <tbody>
-                {submissions.map((s) => (
-                  <tr key={s.id}>
-                    <td className="mono"><strong>{s.tbaiCode ?? s.id.slice(0, 16)}</strong></td>
-                    <td>{config[s.territory]?.name ?? s.territory}</td>
-                    <td><span className={`bo-status ${statusBadge(s.status)}`} style={{ fontSize: 10 }}>{s.status}</span></td>
-                    <td className="mono" style={{ fontSize: 10, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {s.tbaiHash ? s.tbaiHash.slice(0, 16) + "…" : "—"}
-                    </td>
-                    <td className="mono">{s.attempts}</td>
-                    <td className="mono" style={{ fontSize: 11 }}>{fmtDateTime(s.submittedAt)}</td>
-                    <td className="mono" style={{ fontSize: 11 }}>{fmtDateTime(s.acknowledgedAt)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <CocoaTable
+            columns={columns}
+            rows={submissions}
+            rowKey="id"
+            loading={loading && !hasRows}
+            caption="Histórico de envíos TicketBAI"
+            aria-label="Histórico de envíos TicketBAI"
+          />
         )}
-      </article>
-    </section>
+      </CocoaSection>
+    </CocoaPage>
   );
 }

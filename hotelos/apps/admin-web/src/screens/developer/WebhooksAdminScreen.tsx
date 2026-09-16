@@ -1,7 +1,18 @@
-// Webhooks admin — gestiona suscripciones, prueba en vivo y ve historial de entregas.
+// Webhooks admin — Configuración › Sistema › Webhooks (/configuracion/sistema/webhooks).
 //
-// Conecta el backend P0-1 (apps/api/src/modules/webhooks + apps/worker) con la
-// interfaz. Es la primera pantalla operativa para developer/partners.
+// Subscriptions, live test and delivery history over the real backend
+// (apps/api/src/modules/webhooks + apps/worker webhook-delivery job):
+// HMAC-SHA256 signature in `X-HotelOS-Signature` («sha256=<hex>»), the
+// secret shown ONCE on creation, retries by the worker (6 attempts: 30 s →
+// 6 h). Honest limit: today only «Enviar evento de prueba» creates
+// deliveries — the PMS does not publish its domain events to the
+// subscriptions yet — and the screen says so.
+//
+// Cocoa 22 (lote 10-A · lista / tabla): CocoaPage → CocoaFormSection «Nueva
+// suscripción» (URL + event chips with aria-pressed) → CocoaSection
+// padding="none" with the subscriptions CocoaTable (row actions always
+// visible; a row selects it) → CocoaSection «Entregas» of the selected
+// subscription → CocoaDialog destructive for the deletion.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -15,22 +26,75 @@ import {
   type WebhookSubscription,
   type WebhookDelivery
 } from "../../services/webhooksApi";
-import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
+import { copyText } from "../../services/authApi";
 import { useToast } from "../../components/Toast";
-import { dateTime } from "../../lib/format";
+import { dateTime, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaField,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaState,
+  CocoaTable,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 function fmtTime(iso: string): string {
   return dateTime(iso, { style: "dayMonth" });
 }
 
-function statusBadge(status: string): "ok" | "warn" | "info" {
-  if (status === "delivered") return "ok";
-  if (status === "pending" || status === "retrying") return "warn";
-  return "info";
+/** Delivery status of the worker → tone and Spanish label (unknown values pass through). */
+function deliveryStatus(status: string): { tone: CocoaTone; label: string } {
+  switch (status) {
+    case "delivered":
+      return { tone: "success", label: "Entregada" };
+    case "pending":
+      return { tone: "warning", label: STATUS_LABELS.pending };
+    case "retrying":
+      return { tone: "warning", label: "Reintentando" };
+    case "failed":
+    case "permanent_failure":
+      return { tone: "danger", label: status === "failed" ? "Fallida" : "Fallo definitivo" };
+    default:
+      return { tone: "info", label: status };
+  }
 }
 
+/** A long target URL for a section title («Entregas · https://…»). */
+function shortUrl(url: string): string {
+  return url.length > 60 ? `${url.slice(0, 60)}…` : url;
+}
+
+const DELIVERY_COLUMNS: CocoaTableColumn<WebhookDelivery>[] = [
+  { key: "attemptedAt", label: "Cuándo", fit: true, render: (d) => fmtTime(d.attemptedAt) },
+  { key: "eventType", label: "Evento", render: (d) => <code className="cocoa-mono">{d.eventType}</code> },
+  {
+    key: "status",
+    label: "Estado",
+    fit: true,
+    render: (d) => {
+      const s = deliveryStatus(d.status);
+      return (
+        <CocoaBadge tone={s.tone} uppercase={false}>
+          {s.label}
+        </CocoaBadge>
+      );
+    }
+  },
+  { key: "responseStatus", label: "HTTP", align: "right", fit: true, render: (d) => d.responseStatus ?? "—" },
+  { key: "errorMessage", label: "Error", hideOnNarrow: true, render: (d) => d.errorMessage ?? "—" }
+];
+
 export function WebhooksAdminScreen() {
+  const hosted = useTabHost() !== null;
   const { showToast } = useToast();
   const [eventTypes, setEventTypes] = useState<string[]>([]);
   const [subs, setSubs] = useState<WebhookSubscription[]>([]);
@@ -42,16 +106,18 @@ export function WebhooksAdminScreen() {
   const [newEvents, setNewEvents] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState(false);
   const [createdSecret, setCreatedSecret] = useState<string | null>(null);
+  const [secretCopied, setSecretCopied] = useState(false);
 
   // Selected sub state
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deliveries, setDeliveries] = useState<WebhookDelivery[]>([]);
   const [deliveriesLoading, setDeliveriesLoading] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
 
-  // Confirm dialog state for delete action
+  // Confirm dialog state for the delete action
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -67,10 +133,15 @@ export function WebhooksAdminScreen() {
     }
   }
 
-  useEffect(() => { void refresh(); }, []);
+  useEffect(() => {
+    void refresh();
+  }, []);
 
   useEffect(() => {
-    if (!selectedId) { setDeliveries([]); return; }
+    if (!selectedId) {
+      setDeliveries([]);
+      return;
+    }
     setDeliveriesLoading(true);
     fetchDeliveries(selectedId)
       .then(setDeliveries)
@@ -83,14 +154,16 @@ export function WebhooksAdminScreen() {
   function toggleEvent(t: string) {
     setNewEvents((prev) => {
       const next = new Set(prev);
-      if (next.has(t)) next.delete(t); else next.add(t);
+      if (next.has(t)) next.delete(t);
+      else next.add(t);
       return next;
     });
   }
 
-  async function handleCreate(e: React.FormEvent) {
-    e.preventDefault();
-    if (!newUrl.trim() || newEvents.size === 0) return;
+  const canCreate = !creating && newUrl.trim() !== "" && newEvents.size > 0;
+
+  async function handleCreate() {
+    if (!canCreate) return;
     setCreating(true);
     setError(null);
     try {
@@ -99,6 +172,7 @@ export function WebhooksAdminScreen() {
         eventTypes: Array.from(newEvents)
       });
       setCreatedSecret(result.secret);
+      setSecretCopied(false);
       setNewUrl("");
       setNewEvents(new Set());
       await refresh();
@@ -107,6 +181,14 @@ export function WebhooksAdminScreen() {
       setError(e instanceof Error ? e.message : "No se pudo crear la suscripción.");
     } finally {
       setCreating(false);
+    }
+  }
+
+  async function copySecret() {
+    if (!createdSecret) return;
+    if (await copyText(createdSecret)) {
+      setSecretCopied(true);
+      window.setTimeout(() => setSecretCopied(false), 1600);
     }
   }
 
@@ -122,16 +204,20 @@ export function WebhooksAdminScreen() {
   async function confirmDelete() {
     const id = pendingDeleteId;
     if (!id) return;
-    setPendingDeleteId(null);
+    setDeleting(true);
     try {
       await deleteSubscription(id);
       if (selectedId === id) setSelectedId(null);
+      setPendingDeleteId(null);
       await refresh();
       showToast("Suscripción eliminada", { variant: "success" });
     } catch (e) {
       const message = e instanceof Error ? e.message : "No se pudo eliminar.";
       setError(message);
       showToast(message, { variant: "error" });
+      setPendingDeleteId(null);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -143,173 +229,215 @@ export function WebhooksAdminScreen() {
       const r = await testSubscription(selectedId);
       setTestResult(
         r.delivered
-          ? `Entrega correcta · HTTP ${r.responseStatus}`
-          : `Falló · ${r.errorMessage ?? `HTTP ${r.responseStatus}`}`
+          ? { ok: true, message: `Entrega correcta · HTTP ${r.responseStatus ?? "—"}` }
+          : { ok: false, message: `Falló · ${r.errorMessage ?? `HTTP ${r.responseStatus ?? "—"}`}` }
       );
-      // Refresca historial para mostrar la entrega
+      // Reload the history so the test delivery shows up.
       const fresh = await fetchDeliveries(selectedId);
       setDeliveries(fresh);
     } catch (e) {
-      setTestResult(e instanceof Error ? e.message : "Test fallido.");
+      setTestResult({ ok: false, message: e instanceof Error ? e.message : "La prueba falló." });
     } finally {
       setTesting(false);
     }
   }
 
-  return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Plataforma · Webhooks
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Suscripciones a eventos</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Cada evento del PMS (reservas, folios, facturas, habitaciones) se entrega por HTTP POST a la URL del partner.
-            Las entregas se firman con <code>HMAC-SHA256</code> sobre el body usando el <strong>secret</strong> que aparece
-            <strong> solo una vez</strong> al crear la suscripción. Reintentos exponenciales (30s → 6h, 6 intentos).
-          </p>
-        </div>
-        <button type="button" onClick={() => void refresh()} disabled={loading}>↻ Actualizar</button>
-      </header>
+  // Columns close over the busy flags and the row handlers.
+  const subscriptionColumns: CocoaTableColumn<WebhookSubscription>[] = [
+    { key: "targetUrl", label: "URL", minWidth: 240, render: (s) => <code className="cocoa-mono cocoa-truncate">{s.targetUrl}</code> },
+    { key: "eventTypes", label: "Eventos", align: "right", fit: true, render: (s) => s.eventTypes.length },
+    {
+      key: "active",
+      label: "Estado",
+      fit: true,
+      render: (s) => (
+        <CocoaBadge tone={s.active ? "success" : "neutral"} uppercase={false}>
+          {s.active ? "Activa" : "Pausada"}
+        </CocoaBadge>
+      )
+    },
+    { key: "secretMasked", label: "Secret", fit: true, showFrom: "laptop", render: (s) => <code className="cocoa-mono">{s.secretMasked ?? "—"}</code> },
+    { key: "createdAt", label: "Creada", fit: true, hideOnNarrow: true, render: (s) => fmtTime(s.createdAt) }
+  ];
 
-      {error ? <p className="bo-status warn" style={{ textTransform: "none" }}>{error}</p> : null}
+  const ready = !loading && subs.length > 0;
+
+  let listBody;
+  if (loading && subs.length === 0) {
+    listBody = <CocoaTable columns={subscriptionColumns} rows={[]} loading aria-label="Suscripciones" />;
+  } else if (subs.length === 0) {
+    listBody = <CocoaState kind="empty" title="Sin suscripciones" message="Crea la primera con el formulario de arriba: URL de destino y los eventos que quieres recibir." />;
+  } else {
+    listBody = (
+      <CocoaTable
+        columns={subscriptionColumns}
+        rows={subs}
+        rowKey="id"
+        selectedKey={selectedId ?? undefined}
+        onSelect={(s) => setSelectedId(s.id)}
+        rowActionsVisible="always"
+        rowActions={(s) => (
+          <>
+            <CocoaButton
+              variant="plain"
+              size="small"
+              onClick={(event) => {
+                event.stopPropagation();
+                void handleToggle(s);
+              }}
+            >
+              {s.active ? "Pausar" : ACTIONS.activate}
+            </CocoaButton>
+            <CocoaButton
+              variant="plain"
+              tone="destructive"
+              size="small"
+              onClick={(event) => {
+                event.stopPropagation();
+                setPendingDeleteId(s.id);
+              }}
+            >
+              {ACTIONS.delete}
+            </CocoaButton>
+          </>
+        )}
+        caption="Suscripciones a eventos"
+        aria-label="Suscripciones a eventos"
+      />
+    );
+  }
+
+  return (
+    <CocoaPage
+      eyebrow="Configuración · Sistema"
+      title="Webhooks"
+      subtitle={hosted ? undefined : "Suscripciones a eventos entregadas por HTTP POST a la URL del partner, firmadas con HMAC-SHA256."}
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refresh()} disabled={loading}>
+          {ACTIONS.refresh}
+        </CocoaButton>
+      }
+      commands={[{ id: "webhooks-refresh", label: `${ACTIONS.refresh} webhooks`, run: () => void refresh() }]}
+    >
+      <CocoaCallout tone="info" title="Cómo se entregan">
+        Cada entrega es un HTTP POST firmado con HMAC-SHA256 sobre el cuerpo, en la cabecera <code className="cocoa-mono">X-HotelOS-Signature</code> (formato <code className="cocoa-mono">sha256=…</code>), usando el secret
+        que se muestra una sola vez al crear la suscripción. Si la URL no responde 2xx, el sistema reintenta hasta 6 veces (30 s → 6 h). Hoy solo «Enviar evento de prueba» genera entregas: los eventos del PMS
+        (reservas, folios, facturas, habitaciones) todavía no se publican automáticamente en las suscripciones.
+      </CocoaCallout>
+
+      {error ? (
+        <CocoaCallout tone="danger" title={STATUS_LABELS.loadError} role="alert">
+          {error}
+        </CocoaCallout>
+      ) : null}
 
       {createdSecret ? (
-        <article className="bo-card" style={{ background: "var(--accent-soft, rgba(78,224,163,0.10))", border: "1px solid var(--accent)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Secret generado</h3>
-            <button type="button" onClick={() => setCreatedSecret(null)}>Cerrar</button>
-          </div>
-          <p className="bo-muted" style={{ textTransform: "none" }}>
-            Cópialo ahora — no se mostrará de nuevo. El partner lo necesita para verificar la firma <code>X-Anfitorio-Signature</code>.
-          </p>
-          <pre className="mono" style={{ background: "var(--surface-2)", padding: 10, borderRadius: 6, overflowX: "auto", margin: "8px 0 0" }}>
-            {createdSecret}
-          </pre>
-        </article>
+        <CocoaCallout
+          tone="success"
+          title="Secret generado"
+          role="status"
+          actions={
+            <>
+              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void copySecret()}>
+                {secretCopied ? "Copiado" : ACTIONS.copy}
+              </CocoaButton>
+              <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setCreatedSecret(null)}>
+                {ACTIONS.close}
+              </CocoaButton>
+            </>
+          }
+        >
+          Cópialo ahora: no se mostrará de nuevo. El partner lo necesita para verificar la firma. <code className="cocoa-mono">{createdSecret}</code>
+        </CocoaCallout>
       ) : null}
 
-      {/* Create form */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head"><h3 style={{ color: "var(--ink)" }}>Nueva suscripción</h3></div>
-        <form onSubmit={handleCreate} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          <label className="bo-muted" style={{ textTransform: "none" }}>URL de destino</label>
-          <input
-            type="url"
-            value={newUrl}
-            onChange={(e) => setNewUrl(e.target.value)}
-            placeholder="https://partner.example.com/hotelos/webhook"
-            required
-            style={{ padding: "8px 12px" }}
-          />
-          <label className="bo-muted" style={{ textTransform: "none" }}>
-            Eventos a recibir ({newEvents.size}/{eventTypes.length})
-          </label>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 4 }}>
-            {eventTypes.map((t) => (
-              <label key={t} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                <input type="checkbox" checked={newEvents.has(t)} onChange={() => toggleEvent(t)} />
-                <span className="mono" style={{ fontSize: 12 }}>{t}</span>
-              </label>
-            ))}
+      <CocoaFormSection
+        title="Nueva suscripción"
+        description="URL de destino y eventos que recibirá. El secret de firma se genera al crearla."
+        columns={1}
+        actions={
+          <CocoaButton variant="filled" tone="accent" size="small" onClick={() => void handleCreate()} disabled={!canCreate} loading={creating}>
+            Crear suscripción
+          </CocoaButton>
+        }
+      >
+        <CocoaField label="URL de destino" required help="Debe aceptar HTTP POST con el cuerpo JSON del evento.">
+          <CocoaInput value={newUrl} onChange={setNewUrl} type="url" inputMode="url" placeholder="https://partner.example.com/anfitorio/webhook" disabled={creating} autoComplete="off" />
+        </CocoaField>
+        <div className="cocoa-stack" data-gap="2" role="group" aria-label="Eventos a recibir">
+          <div className="cocoa-row" data-gap="2" data-justify="between">
+            <span className="cocoa-caption">
+              Eventos a recibir · {newEvents.size} de {eventTypes.length}
+            </span>
+            <span className="cocoa-cluster">
+              <CocoaButton variant="plain" size="small" onClick={() => setNewEvents(new Set(eventTypes))} disabled={creating || eventTypes.length === 0}>
+                {ACTIONS.selectAll}
+              </CocoaButton>
+              <CocoaButton variant="plain" size="small" onClick={() => setNewEvents(new Set())} disabled={creating || newEvents.size === 0}>
+                {ACTIONS.clearSelection}
+              </CocoaButton>
+            </span>
           </div>
-          <div className="bo-row" style={{ gap: 8 }}>
-            <button type="submit" className="primary" disabled={creating || !newUrl.trim() || newEvents.size === 0}>
-              {creating ? <Spinner size="sm" /> : "+ Crear suscripción"}
-            </button>
-            <button type="button" onClick={() => setNewEvents(new Set(eventTypes))} disabled={creating}>
-              Seleccionar todos
-            </button>
-            <button type="button" onClick={() => setNewEvents(new Set())} disabled={creating}>
-              Limpiar
-            </button>
-          </div>
-        </form>
-      </article>
-
-      {/* List */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Suscripciones activas</h3>
-          <span className="bo-chip">{subs.length}</span>
-        </div>
-        {loading && subs.length === 0 ? <LoadingBlock label="Cargando…" /> : subs.length === 0 ? (
-          <EmptyState title="Sin suscripciones" message="Crea la primera arriba." />
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr><th>URL</th><th>Eventos</th><th>Estado</th><th>Secret</th><th>Creada</th><th></th></tr>
-              </thead>
-              <tbody>
-                {subs.map((s) => (
-                  <tr key={s.id} style={{ background: selectedId === s.id ? "var(--accent-soft, rgba(78,224,163,0.08))" : undefined, cursor: "pointer" }} onClick={() => setSelectedId(s.id)}>
-                    <td className="mono" style={{ maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis" }}>{s.targetUrl}</td>
-                    <td>{s.eventTypes.length}</td>
-                    <td><span className={`bo-status ${s.active ? "ok" : "info"}`} style={{ fontSize: 10 }}>{s.active ? "activa" : "pausada"}</span></td>
-                    <td className="mono" style={{ fontSize: 11 }}>{s.secretMasked ?? "—"}</td>
-                    <td className="mono" style={{ fontSize: 11 }}>{fmtTime(s.createdAt)}</td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <button type="button" onClick={() => void handleToggle(s)}>{s.active ? "Pausar" : "Activar"}</button>
-                      {" "}
-                      <button type="button" onClick={() => setPendingDeleteId(s.id)}>Eliminar</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </article>
-
-      {/* Deliveries for selected */}
-      {selected ? (
-        <article className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Entregas · {selected.targetUrl.slice(0, 60)}{selected.targetUrl.length > 60 ? "…" : ""}</h3>
-            <div className="bo-row" style={{ gap: 8 }}>
-              <button type="button" onClick={handleTest} disabled={testing} className="primary">
-                {testing ? <Spinner size="sm" /> : "Enviar evento de prueba"}
-              </button>
-              <button type="button" onClick={() => setSelectedId(null)}>Cerrar</button>
-            </div>
-          </div>
-          {testResult ? <p className="bo-status info" style={{ textTransform: "none" }}>{testResult}</p> : null}
-          {deliveriesLoading ? <LoadingBlock label="Cargando entregas…" /> : deliveries.length === 0 ? (
-            <EmptyState title="Sin entregas" message="No hay entregas registradas todavía. Pulsa «Enviar evento de prueba» para validar la URL." />
+          {eventTypes.length === 0 ? (
+            <CocoaState kind="empty" inline title={loading ? STATUS_LABELS.loading : "El API no expone tipos de evento."} />
           ) : (
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead>
-                  <tr><th>Cuándo</th><th>Evento</th><th>Estado</th><th>HTTP</th><th>Error</th></tr>
-                </thead>
-                <tbody>
-                  {deliveries.map((d) => (
-                    <tr key={d.id}>
-                      <td className="mono" style={{ fontSize: 11 }}>{fmtTime(d.attemptedAt)}</td>
-                      <td className="mono" style={{ fontSize: 11 }}>{d.eventType}</td>
-                      <td><span className={`bo-status ${statusBadge(d.status)}`} style={{ fontSize: 10 }}>{d.status}</span></td>
-                      <td className="mono">{d.responseStatus ?? "—"}</td>
-                      <td style={{ fontSize: 11, color: "var(--ink-muted)" }}>{d.errorMessage ?? "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="cocoa-cluster">
+              {eventTypes.map((t) => {
+                const active = newEvents.has(t);
+                return (
+                  <CocoaButton key={t} size="small" variant={active ? "tinted" : "bordered"} tone={active ? "accent" : "neutral"} aria-pressed={active} disabled={creating} onClick={() => toggleEvent(t)}>
+                    {t}
+                  </CocoaButton>
+                );
+              })}
             </div>
           )}
-        </article>
+        </div>
+      </CocoaFormSection>
+
+      <CocoaSection padding={ready ? "none" : "md"} style={{ overflow: "clip" }} aria-label="Suscripciones a eventos" footer={ready ? <span>{plural(subs.length, "suscripción", "suscripciones")}</span> : undefined}>
+        {listBody}
+      </CocoaSection>
+
+      {selected ? (
+        <CocoaSection
+          title="Entregas"
+          meta={shortUrl(selected.targetUrl)}
+          padding={deliveries.length > 0 ? "none" : "md"}
+          style={{ overflow: "clip" }}
+          action={
+            <span className="cocoa-cluster">
+              <CocoaButton variant="filled" tone="accent" size="small" onClick={() => void handleTest()} loading={testing} disabled={testing}>
+                Enviar evento de prueba
+              </CocoaButton>
+              <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setSelectedId(null)}>
+                {ACTIONS.close}
+              </CocoaButton>
+            </span>
+          }
+          footer={testResult ? <span role="status">{testResult.message}</span> : undefined}
+        >
+          {deliveriesLoading ? (
+            <CocoaTable columns={DELIVERY_COLUMNS} rows={[]} loading aria-label="Entregas" />
+          ) : deliveries.length === 0 ? (
+            <CocoaState kind="empty" inline title="No hay entregas registradas todavía. Pulsa «Enviar evento de prueba» para validar la URL." />
+          ) : (
+            <CocoaTable columns={DELIVERY_COLUMNS} rows={deliveries} rowKey="id" caption="Entregas de la suscripción" aria-label="Entregas de la suscripción" />
+          )}
+        </CocoaSection>
       ) : null}
 
-      <ConfirmDialog
+      <CocoaDialog
         open={pendingDeleteId !== null}
+        onClose={() => (deleting ? undefined : setPendingDeleteId(null))}
+        tone="destructive"
         title="¿Eliminar esta suscripción?"
-        description="Las entregas pendientes se cancelan."
-        confirmLabel="Eliminar"
-        variant="danger"
-        onConfirm={() => void confirmDelete()}
-        onCancel={() => setPendingDeleteId(null)}
+        description="Las entregas pendientes se cancelan y el partner dejará de recibir eventos en esa URL."
+        confirmLabel={ACTIONS.delete}
+        cancelLabel={ACTIONS.cancel}
+        busy={deleting}
+        onConfirm={confirmDelete}
       />
-    </section>
+    </CocoaPage>
   );
 }

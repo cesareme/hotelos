@@ -1,25 +1,55 @@
-// Tourist tax rates per CCAA (España).
+// Tasa turística por comunidad autónoma — /cumplimiento/impuestos/tasa-turistica
+// (Cocoa 22 · ola 8 · lote 8-C, plantilla DashboardAlojado; hosted in ImpuestosTabs).
 //
 // Real endpoints:
-//   GET  /tourist-tax/rates[?ccaaCode=CAT]      — listar tarifas
-//   POST /tourist-tax/rates                     — crear tarifa
-//   POST /tourist-tax/seed                      — sembrar tarifas reales 2026
+//   GET  /tourist-tax/rates[?ccaaCode=CAT]      — list the rates
+//   POST /tourist-tax/rates                     — create a rate
+//   POST /tourist-tax/seed                      — seed the real 2026 rates
 //
-// Modelo: `TouristTaxRate` (packages/database/prisma/schema.prisma).
-// Datos reales sembrados: Cataluña (Ley 2/2026), Baleares (Decreto 35/2016),
-// País Vasco / Gipuzkoa (Norma Foral 2/2024). El motor calcula la tasa por
-// noche · persona · clase, con recargo opcional de temporada alta y
-// exenciones (menores, motivos médicos).
+// Model: `TouristTaxRate` (packages/database/prisma/schema.prisma). Seeded real
+// data: Cataluña (Ley 2/2026), Baleares (Decreto 35/2016), País Vasco /
+// Gipuzkoa (Norma Foral 2/2024). The engine computes the tax per night ·
+// person · class, with an optional high-season surcharge and exemptions
+// (minors, medical reasons).
+//
+// Page: KPI strip (rates, valid today, regions, municipal rates) → filter by
+// region → one CocoaSection per region with its CocoaTable (8 columns: the
+// short ones `fit`, the secondary ones from laptop / desktop) → the new-rate
+// form lives in a CocoaDrawer (two-button footer, field-level validation).
 
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import {
-  createTouristTaxRate, seedTouristTaxRates,
-  type TouristTaxRate, type CreateTouristTaxRatePayload
-} from "../../services/touristTaxApi";
-import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
+import { createTouristTaxRate, seedTouristTaxRates, type CreateTouristTaxRatePayload, type TouristTaxRate } from "../../services/touristTaxApi";
 import { useToast } from "../../components/Toast";
-import { date, DEFAULT_CURRENCY, money, percent } from "../../lib/format";
+import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
+import { date, DEFAULT_CURRENCY, money, percent, plural, toNumber } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS, newLabel } from "../../content/actions";
+import { toArray } from "../../utils/toArray";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaTable,
+  CocoaToolbar,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
+
+// Menu labels of the tree (Cumplimiento › Impuestos › Tasa turística), never retyped here.
+const HEADER = treeHeaderFor("TouristTax", { eyebrow: "Cumplimiento · Impuestos", title: "Tasa turística" });
 
 const CCAA_LABEL: Record<string, string> = {
   CAT: "Cataluña",
@@ -53,30 +83,30 @@ const CLASS_LABEL: Record<string, string> = {
   "2_o_menos": "2 estrellas o menos",
   "1_estrella": "1 estrella",
   apt_turistico: "Apartamento turístico",
-  apt_4_4sup: "Apt. 4★ / 4★ sup",
-  apt_3_2_1: "Apt. 1-3★",
+  apt_4_4sup: "Apt. 4 estrellas / 4 superior",
+  apt_3_2_1: "Apt. 1-3 estrellas",
   rural: "Turismo rural",
   camping: "Camping",
   hostel: "Hostel / albergue"
 };
 
-const EXEMPTION_LABEL: Record<string, { icon: string; label: string }> = {
-  MENORES_16: { icon: "‹16", label: "Menores 16" },
-  MENORES_18: { icon: "‹18", label: "Menores 18" },
-  MEDICAL_TRIP: { icon: "Med", label: "Motivos médicos" },
-  FORCED_BY_AUTHORITY: { icon: "Aut", label: "Estancia forzosa" },
-  ARMED_FORCES: { icon: "FFAA", label: "Fuerzas armadas" }
+const EXEMPTION_LABEL: Record<string, string> = {
+  MENORES_16: "Menores de 16",
+  MENORES_18: "Menores de 18",
+  MEDICAL_TRIP: "Motivos médicos",
+  FORCED_BY_AUTHORITY: "Estancia forzosa",
+  ARMED_FORCES: "Fuerzas armadas"
 };
 
-const CLASS_OPTIONS = Object.keys(CLASS_LABEL);
+const CCAA_OPTIONS = Object.keys(CCAA_LABEL).map((code) => ({ value: code, label: `${CCAA_LABEL[code]} (${code})` }));
+const CCAA_FILTER_OPTIONS = [{ value: "", label: "Todas las comunidades" }, ...CCAA_OPTIONS];
+const CLASS_OPTIONS = Object.keys(CLASS_LABEL).map((code) => ({ value: code, label: CLASS_LABEL[code] }));
 
-function fmtMoney(n: number): string {
-  return money(n);
-}
-
-function fmtDate(iso: string | null): string {
-  return date(iso, "medium");
-}
+/** Sanity ceiling: real Spanish rates go from 0,25 € (Asturias) to about 7–8 € per person and night (5* GL in Cataluña / Baleares); above 100 € it is almost surely a typo. */
+const MAX_AMOUNT_PER_PERSON_NIGHT = 100;
+const SEED_LABEL = "Sembrar tarifas 2026";
+const NEW_RATE_LABEL = newLabel("f", "tarifa");
+const CCAA_FIELD_ID = "tourist-tax-new-rate-ccaa";
 
 type Draft = {
   ccaaCode: string;
@@ -93,6 +123,9 @@ type Draft = {
   taxableAgeFrom: string;
   legalSource: string;
 };
+
+type DraftErrors = Partial<Record<keyof Draft, string>>;
+type Notice = { tone: CocoaTone; text: string };
 
 function todayIso(): string {
   const d = new Date();
@@ -117,21 +150,112 @@ function emptyDraft(): Draft {
   };
 }
 
+/** Field-level validation of the new-rate form (pure): the same rules the legacy screen enforced, plus the 0–1 range of the surcharge. */
+export function validateDraft(draft: Draft): DraftErrors {
+  const errors: DraftErrors = {};
+  if (!draft.ccaaCode.trim()) errors.ccaaCode = "Indica la comunidad autónoma.";
+  if (!draft.establishmentClass.trim()) errors.establishmentClass = "Indica la categoría del establecimiento.";
+  const amount = toNumber(draft.amountPerPersonNight);
+  if (!draft.amountPerPersonNight.trim() || amount === null || amount < 0) {
+    errors.amountPerPersonNight = "La tarifa por persona y noche es obligatoria y no puede ser negativa.";
+  } else if (amount > MAX_AMOUNT_PER_PERSON_NIGHT) {
+    errors.amountPerPersonNight = `La tarifa parece desproporcionada (${money(amount)} por persona y noche). El máximo admitido es ${money(MAX_AMOUNT_PER_PERSON_NIGHT)}. Revisa el importe.`;
+  }
+  if (!draft.validFrom) errors.validFrom = "La fecha de inicio de vigencia es obligatoria.";
+  if (draft.maxNightsPerStay.trim()) {
+    const maxNights = toNumber(draft.maxNightsPerStay);
+    if (maxNights === null || maxNights < 0 || maxNights > 365) errors.maxNightsPerStay = "Máx. noches debe estar entre 0 (sin límite) y 365.";
+  }
+  if (draft.highSeasonSurcharge.trim()) {
+    const surcharge = toNumber(draft.highSeasonSurcharge);
+    if (surcharge === null || surcharge < 0 || surcharge > 1) errors.highSeasonSurcharge = "El recargo se indica como fracción entre 0 y 1 (0,25 = +25 %).";
+  }
+  return errors;
+}
+
+function highSeasonCell(rate: TouristTaxRate) {
+  if (!rate.highSeasonSurcharge || rate.highSeasonSurcharge <= 0) return "—";
+  const surcharge = percent(rate.highSeasonSurcharge, { ratio: true, signDisplay: "always", maximumFractionDigits: 0 });
+  const detail = `Recargo del ${percent(rate.highSeasonSurcharge, { ratio: true, maximumFractionDigits: 0 })} entre ${rate.highSeasonFromMmdd} y ${rate.highSeasonUntilMmdd}`;
+  return (
+    <CocoaBadge tone="warning" uppercase={false} title={detail}>
+      {surcharge} · {rate.highSeasonFromMmdd} → {rate.highSeasonUntilMmdd}
+    </CocoaBadge>
+  );
+}
+
+function exemptionsCell(rate: TouristTaxRate) {
+  return (
+    <span className="cocoa-row" data-gap="1">
+      <CocoaBadge tone="neutral" size="small" uppercase={false} title={`Menores de ${rate.taxableAgeFrom} años exentos`}>
+        Menores de {rate.taxableAgeFrom}
+      </CocoaBadge>
+      {rate.ccaaCode === "CAT" ? (
+        <>
+          <CocoaBadge tone="neutral" size="small" uppercase={false}>
+            {EXEMPTION_LABEL.MEDICAL_TRIP}
+          </CocoaBadge>
+          <CocoaBadge tone="neutral" size="small" uppercase={false}>
+            {EXEMPTION_LABEL.FORCED_BY_AUTHORITY}
+          </CocoaBadge>
+        </>
+      ) : null}
+    </span>
+  );
+}
+
+// Columns outside the component (A5): the short ones fit their content, the secondary ones show from laptop / desktop (D26).
+const RATE_COLUMNS: CocoaTableColumn<TouristTaxRate>[] = [
+  { key: "municipality", label: "Municipio", minWidth: 140, render: (rate) => rate.municipality ?? <span className="cocoa-caption">Toda la comunidad</span> },
+  { key: "establishmentClass", label: "Categoría", minWidth: 160, render: (rate) => CLASS_LABEL[rate.establishmentClass] ?? rate.establishmentClass },
+  { key: "amountPerPersonNight", label: "€ por persona y noche", align: "right", fit: true, render: (rate) => <strong>{money(rate.amountPerPersonNight, rate.currency)}</strong> },
+  {
+    key: "maxNightsPerStay",
+    label: "Máx. noches",
+    align: "right",
+    fit: true,
+    hideOnNarrow: true,
+    render: (rate) => (rate.maxNightsPerStay > 0 ? plural(rate.maxNightsPerStay, "noche", "noches", { withCount: true }) : "Sin límite")
+  },
+  { key: "highSeason", label: "Temporada alta", fit: true, showFrom: "laptop", render: highSeasonCell },
+  { key: "exemptions", label: "Exenciones", showFrom: "laptop", render: exemptionsCell },
+  {
+    key: "validity",
+    label: "Vigencia",
+    fit: true,
+    hideOnNarrow: true,
+    render: (rate) => `${date(rate.validFrom, "medium")} → ${rate.validUntil ? date(rate.validUntil, "medium") : "indefinida"}`
+  },
+  { key: "legalSource", label: "Fuente legal", showFrom: "desktop", render: (rate) => rate.legalSource ?? "—" }
+];
+
+// Mirror skeleton: the KPI strip and one region card.
+function TouristTaxSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton variant="card" height={280} />
+    </div>
+  );
+}
+
 export function TouristTaxScreen() {
+  // Hosted in ImpuestosTabs: CocoaPage reads the host context itself and paints
+  // only the subtitle and the actions row under the container's head.
   const { showToast } = useToast();
   const [filterCcaa, setFilterCcaa] = useState<string>("");
-  const path = filterCcaa
-    ? `/tourist-tax/rates?ccaaCode=${encodeURIComponent(filterCcaa)}`
-    : `/tourist-tax/rates`;
+  const path = filterCcaa ? `/tourist-tax/rates?ccaaCode=${encodeURIComponent(filterCcaa)}` : `/tourist-tax/rates`;
   const { data, loading, error, refresh } = useApiData<{ items: TouristTaxRate[] }>(path, { pollIntervalMs: 0 });
-  const rates = data?.items ?? [];
+  const rates = useMemo(() => toArray<TouristTaxRate>(data?.items), [data]);
 
   const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [showForm, setShowForm] = useState(false);
-  const [draft, setDraft] = useState<Draft>(emptyDraft());
+  const [formError, setFormError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<Draft>(emptyDraft);
+  const [draftErrors, setDraftErrors] = useState<DraftErrors>({});
 
-  // Agrupar por CCAA
+  // Group by region; inside each group municipality first (null first), then class.
   const byCcaa = useMemo(() => {
     const m = new Map<string, TouristTaxRate[]>();
     for (const r of rates) {
@@ -139,7 +263,6 @@ export function TouristTaxScreen() {
       arr.push(r);
       m.set(r.ccaaCode, arr);
     }
-    // Ordenar cada grupo por municipio (null arriba) y luego por clase
     for (const [k, arr] of m.entries()) {
       arr.sort((a, b) => {
         if ((a.municipality ?? "") !== (b.municipality ?? "")) {
@@ -155,8 +278,8 @@ export function TouristTaxScreen() {
   const kpis = useMemo(() => {
     const activeCcaa = new Set(rates.map((r) => r.ccaaCode));
     const munis = new Set(rates.filter((r) => r.municipality).map((r) => `${r.ccaaCode}:${r.municipality}`));
+    const now = Date.now();
     const validNow = rates.filter((r) => {
-      const now = Date.now();
       const from = new Date(r.validFrom).getTime();
       const until = r.validUntil ? new Date(r.validUntil).getTime() : Number.POSITIVE_INFINITY;
       return now >= from && now <= until;
@@ -164,16 +287,46 @@ export function TouristTaxScreen() {
     return { totalRates: rates.length, ccaaCount: activeCcaa.size, muniCount: munis.size, validCount: validNow.length };
   }, [rates]);
 
+  function openForm() {
+    setDraft(emptyDraft());
+    setDraftErrors({});
+    setFormError(null);
+    setNotice(null);
+    setShowForm(true);
+  }
+
+  function closeForm() {
+    if (busy) return;
+    setShowForm(false);
+    setDraftErrors({});
+    setFormError(null);
+  }
+
+  function patch<K extends keyof Draft>(key: K, value: Draft[K]) {
+    setDraft((d) => ({ ...d, [key]: value }));
+    if (draftErrors[key]) {
+      setDraftErrors((errors) => {
+        const next = { ...errors };
+        delete next[key];
+        return next;
+      });
+    }
+  }
+
   async function seed() {
-    setBusy(true); setMsg(null);
+    setBusy(true);
+    setNotice(null);
     try {
       const r = await seedTouristTaxRates();
-      setMsg(`Seed completado: ${r.rates} tarifas, ${r.exemptions} exenciones.`);
-      showToast(`Sembrados ${r.rates} registros de tasa turística`, { variant: "success" });
+      setNotice({
+        tone: "success",
+        text: `Carga completada: ${plural(r.rates, "tarifa", "tarifas", { withCount: true })} y ${plural(r.exemptions, "exención", "exenciones", { withCount: true })}.`
+      });
+      showToast(`${plural(r.rates, "registro de tasa turística sembrado", "registros de tasa turística sembrados", { withCount: true })}`, { variant: "success" });
       refresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : "No se pudo sembrar.";
-      setMsg(message);
+      setNotice({ tone: "danger", text: message });
       showToast(message, { variant: "error" });
     } finally {
       setBusy(false);
@@ -181,34 +334,13 @@ export function TouristTaxScreen() {
   }
 
   async function save() {
-    if (!draft.ccaaCode.trim() || !draft.establishmentClass.trim()) {
-      setMsg("CCAA y clase de establecimiento son obligatorios.");
-      return;
-    }
-    const amount = Number(draft.amountPerPersonNight);
-    if (!draft.amountPerPersonNight.trim() || Number.isNaN(amount) || amount < 0) {
-      setMsg("La tarifa por persona/noche es obligatoria y no puede ser negativa.");
-      return;
-    }
-    // FIX 10: tope superior razonable. Las tasas turísticas reales en España
-    // van de 0,25 € (Asturias, etc.) hasta unos 7-8 €/persona/noche en
-    // 5★ GL de Cataluña/Baleares. Si alguien introduce >100 € casi seguro
-    // es un typo (€10000/noche habría que rechazar antes de guardar).
-    if (amount > 100) {
-      setMsg(`La tarifa parece desproporcionada (${amount} €/persona/noche). El máximo permitido es 100 €. Revisa el importe.`);
-      return;
-    }
-    if (!draft.validFrom) { setMsg("La fecha de inicio de vigencia es obligatoria."); return; }
-    // FIX 11: validar rango de maxNightsPerStay para evitar valores negativos.
-    if (draft.maxNightsPerStay.trim()) {
-      const maxNights = Number(draft.maxNightsPerStay);
-      if (Number.isNaN(maxNights) || maxNights < 0 || maxNights > 365) {
-        setMsg("Máx. noches debe estar entre 0 (sin límite) y 365.");
-        return;
-      }
-    }
-
-    setBusy(true); setMsg(null);
+    const errors = validateDraft(draft);
+    setDraftErrors(errors);
+    setFormError(null);
+    if (Object.keys(errors).length > 0) return;
+    const amount = toNumber(draft.amountPerPersonNight) ?? 0;
+    setBusy(true);
+    setNotice(null);
     try {
       const payload: CreateTouristTaxRatePayload = {
         ccaaCode: draft.ccaaCode.trim(),
@@ -218,226 +350,192 @@ export function TouristTaxScreen() {
         currency: draft.currency || DEFAULT_CURRENCY,
         validFrom: draft.validFrom,
         validUntil: draft.validUntil || null,
-        maxNightsPerStay: draft.maxNightsPerStay ? Number(draft.maxNightsPerStay) : 0,
-        highSeasonSurcharge: draft.highSeasonSurcharge ? Number(draft.highSeasonSurcharge) : null,
+        maxNightsPerStay: toNumber(draft.maxNightsPerStay) ?? 0,
+        highSeasonSurcharge: toNumber(draft.highSeasonSurcharge),
         highSeasonFromMmdd: draft.highSeasonFromMmdd.trim() || null,
         highSeasonUntilMmdd: draft.highSeasonUntilMmdd.trim() || null,
-        taxableAgeFrom: draft.taxableAgeFrom ? Number(draft.taxableAgeFrom) : 16,
+        taxableAgeFrom: toNumber(draft.taxableAgeFrom) ?? 16,
         legalSource: draft.legalSource.trim() || null
       };
       await createTouristTaxRate(payload);
-      setMsg(`Tarifa creada en ${CCAA_LABEL[draft.ccaaCode] ?? draft.ccaaCode}.`);
-      showToast(`Tarifa de ${CCAA_LABEL[draft.ccaaCode] ?? draft.ccaaCode} creada`, { variant: "success" });
+      const ccaaName = CCAA_LABEL[draft.ccaaCode] ?? draft.ccaaCode;
+      setNotice({ tone: "success", text: `Tarifa creada en ${ccaaName}.` });
+      showToast(`Tarifa de ${ccaaName} creada`, { variant: "success" });
       setShowForm(false);
       setDraft(emptyDraft());
       refresh();
     } catch (e) {
       const message = e instanceof Error ? e.message : "No se pudo crear la tarifa.";
-      setMsg(message);
+      setFormError(message);
       showToast(message, { variant: "error" });
     } finally {
       setBusy(false);
     }
   }
 
+  const groups = [...byCcaa.entries()];
+  const actions = (
+    <>
+      {busy ? <CocoaBadge tone="info">{STATUS_LABELS.saving}</CocoaBadge> : loading && data ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={loading || busy}>
+        {ACTIONS.refresh}
+      </CocoaButton>
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void seed()} disabled={busy}>
+        {SEED_LABEL}
+      </CocoaButton>
+      <CocoaButton variant="filled" tone="accent" size="small" icon={<PlusIcon size={14} />} onClick={openForm} disabled={busy}>
+        {NEW_RATE_LABEL}
+      </CocoaButton>
+    </>
+  );
+
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Compliance · Tasas autonómicas</p>
-          <h2 style={{ color: "var(--ink)" }}>Tasa turística por CCAA</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Tarifas vigentes en España. El motor de tasa turística aplica la tarifa <strong>más específica</strong>
-            (municipio + CCAA, o sólo CCAA), respetando recargos de temporada alta y exenciones
-            (menores, motivos médicos, fuerzas armadas según jurisdicción).
-          </p>
-        </div>
-        <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-          {busy ? <Spinner size="sm" /> : null}
-          <button type="button" onClick={refresh} disabled={loading}>↻ Actualizar</button>
-          <button type="button" onClick={seed} disabled={busy}>↻ Sembrar tarifas 2026</button>
-          <button type="button" className="primary" onClick={() => { setDraft(emptyDraft()); setShowForm(true); setMsg(null); }} disabled={busy}>+ Nueva tarifa</button>
-        </div>
-      </header>
+    <CocoaPage
+      eyebrow={HEADER.eyebrow}
+      title={HEADER.title}
+      subtitle="Tarifas vigentes en España. El motor de tasa turística aplica la tarifa más específica (municipio + comunidad, o solo comunidad), respetando recargos de temporada alta y exenciones (menores, motivos médicos, fuerzas armadas según jurisdicción)."
+      actions={actions}
+      state={loading && !data ? "loading" : "ready"}
+      skeleton={<TouristTaxSkeleton />}
+      commands={[
+        { id: "tasa-turistica-refresh", label: "Actualizar la tasa turística", run: refresh },
+        { id: "tasa-turistica-seed", label: `${SEED_LABEL} de tasa turística`, run: () => void seed() },
+        { id: "tasa-turistica-new", label: `${NEW_RATE_LABEL} de tasa turística`, run: openForm }
+      ]}
+    >
+      {notice ? (
+        <CocoaCallout tone={notice.tone} role="status">
+          {notice.text}
+        </CocoaCallout>
+      ) : null}
 
-      {msg ? <p role="status" aria-live="polite" className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
+      <CocoaKpiStrip stagger aria-label="Resumen de la tasa turística">
+        <CocoaKpi label="Tarifas catalogadas" value={kpis.totalRates} caption="en total" polarity="neutral" />
+        <CocoaKpi label="Vigentes hoy" value={kpis.validCount} caption="activas" polarity="neutral" status="ok" />
+        <CocoaKpi label="Comunidades cubiertas" value={kpis.ccaaCount} caption="distintas" polarity="neutral" />
+        <CocoaKpi label="Tarifas municipales" value={kpis.muniCount} caption="recargo local" polarity="neutral" />
+      </CocoaKpiStrip>
 
-      <div className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tarifas catalogadas</span><span className="bo-status info">total</span></div>
-          <div className="rev-kpi-value">{kpis.totalRates}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Vigentes hoy</span><span className="bo-status ok">activas</span></div>
-          <div className="rev-kpi-value">{kpis.validCount}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">CCAA cubiertas</span><span className="bo-status info">distintas</span></div>
-          <div className="rev-kpi-value">{kpis.ccaaCount}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tarifas municipales</span><span className="bo-status info">recargo local</span></div>
-          <div className="rev-kpi-value">{kpis.muniCount}</div>
-        </article>
-      </div>
+      <CocoaToolbar
+        variant="content"
+        aria-label="Filtro de tarifas"
+        leftSlot={<CocoaSelect inline aria-label="Filtrar por comunidad autónoma" value={filterCcaa} onChange={setFilterCcaa} options={CCAA_FILTER_OPTIONS} disabled={busy} />}
+        rightSlot={<span className="cocoa-caption">{plural(rates.length, "tarifa", "tarifas", { withCount: true })}</span>}
+      />
 
-      <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-        <label className="bo-form-field" style={{ minWidth: 200 }}>
-          <span>Filtrar por CCAA</span>
-          <select value={filterCcaa} onChange={(e) => setFilterCcaa(e.target.value)} disabled={busy}>
-            <option value="">Todas</option>
-            {Object.keys(CCAA_LABEL).map((c) => <option key={c} value={c}>{CCAA_LABEL[c]} ({c})</option>)}
-          </select>
-        </label>
-      </div>
+      {error && rates.length > 0 ? (
+        <CocoaCallout
+          tone="danger"
+          role="alert"
+          title="No se pudieron cargar las tarifas"
+          actions={
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
+          {error} Se muestran las últimas tarifas cargadas.
+        </CocoaCallout>
+      ) : null}
 
-      {loading && rates.length === 0 ? (
-        <LoadingBlock label="Cargando tarifas…" />
-      ) : error ? (
-        <ErrorState title="No se pudieron cargar las tarifas" message={error} onRetry={refresh} />
-      ) : rates.length === 0 ? (
-        <EmptyState
-          title="Sin tarifas catalogadas"
-          message="Pulsa «Sembrar tarifas 2026» para cargar las tarifas reales vigentes en España (CAT, BAL, EUSK), o «Nueva tarifa» para crear una manual."
-          actions={<button type="button" className="primary" onClick={seed} disabled={busy}>↻ Sembrar tarifas 2026</button>}
-        />
+      {error && rates.length === 0 ? (
+        <CocoaSection aria-label="Tarifas de tasa turística">
+          <CocoaState kind="error" title="No se pudieron cargar las tarifas" message={error} onRetry={refresh} />
+        </CocoaSection>
+      ) : !loading && rates.length === 0 ? (
+        <CocoaSection aria-label="Tarifas de tasa turística">
+          <CocoaState
+            kind="empty"
+            illustration={filterCcaa ? "search" : "box"}
+            title="Sin tarifas catalogadas"
+            message={
+              filterCcaa
+                ? `Ninguna tarifa catalogada en ${CCAA_LABEL[filterCcaa] ?? filterCcaa}. Prueba con otra comunidad o crea una tarifa manual.`
+                : `Pulsa «${SEED_LABEL}» para cargar las tarifas reales vigentes en España (Cataluña, Baleares y País Vasco), o «${NEW_RATE_LABEL}» para crear una manual.`
+            }
+            primaryAction={{ label: SEED_LABEL, onClick: () => void seed(), loading: busy }}
+            secondaryAction={{ label: NEW_RATE_LABEL, onClick: openForm }}
+          />
+        </CocoaSection>
       ) : (
-        <div className="bo-stack" style={{ gap: 12 }}>
-          {[...byCcaa.entries()].map(([ccaa, items]) => (
-            <article key={ccaa} className="bo-card" style={{ background: "var(--surface)" }}>
-              <div className="bo-card-head">
-                <div>
-                  <h3 style={{ color: "var(--ink)", margin: 0 }}>
-                    {CCAA_LABEL[ccaa] ?? ccaa} <span className="mono bo-muted" style={{ fontSize: 12, fontWeight: 400 }}>({ccaa})</span>
-                  </h3>
-                  <p className="bo-muted" style={{ margin: "2px 0 0 0", fontSize: 12, textTransform: "none" }}>
-                    {items.length} tarifa{items.length === 1 ? "" : "s"} catalogada{items.length === 1 ? "" : "s"}
-                  </p>
-                </div>
-                <span className="bo-chip">{items.length}</span>
-              </div>
-              <div className="rev-report-wrap">
-                <table className="cm-table">
-                  <thead>
-                    <tr>
-                      <th>Municipio</th>
-                      <th>Categoría</th>
-                      <th style={{ textAlign: "right" }}>€/persona/noche</th>
-                      <th>Máx. noches</th>
-                      <th>Temp. alta</th>
-                      <th>Exenciones</th>
-                      <th>Vigencia</th>
-                      <th>Fuente legal</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {items.map((r) => (
-                      <tr key={r.id}>
-                        <td>{r.municipality ?? <span className="bo-muted" style={{ fontStyle: "italic" }}>Toda la CCAA</span>}</td>
-                        <td>{CLASS_LABEL[r.establishmentClass] ?? r.establishmentClass}</td>
-                        <td style={{ textAlign: "right" }}><strong>{fmtMoney(Number(r.amountPerPersonNight))}</strong></td>
-                        <td>{r.maxNightsPerStay > 0 ? `${r.maxNightsPerStay} n.` : <span className="bo-muted">Sin límite</span>}</td>
-                        <td>
-                          {r.highSeasonSurcharge && r.highSeasonSurcharge > 0 ? (
-                            <span className="bo-chip" style={{ fontSize: 11 }} title={`Recargo del ${percent(r.highSeasonSurcharge, { ratio: true, maximumFractionDigits: 0 })} entre ${r.highSeasonFromMmdd} y ${r.highSeasonUntilMmdd}`}>
-                              {percent(r.highSeasonSurcharge, { ratio: true, signDisplay: "always", maximumFractionDigits: 0 })} · {r.highSeasonFromMmdd}→{r.highSeasonUntilMmdd}
-                            </span>
-                          ) : <span className="bo-muted" style={{ fontSize: 12 }}>—</span>}
-                        </td>
-                        <td>
-                          <span style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                            {/* Exenciones del régimen: edad mínima de tributación. */}
-                            <span className="bo-chip" style={{ fontSize: 11 }} title={`Menores de ${r.taxableAgeFrom} años exentos`}>
-                              ‹{r.taxableAgeFrom}
-                            </span>
-                            {r.ccaaCode === "CAT" ? (
-                              <>
-                                <span className="bo-chip" style={{ fontSize: 11 }}>{EXEMPTION_LABEL.MEDICAL_TRIP.icon}</span>
-                                <span className="bo-chip" style={{ fontSize: 11 }}>{EXEMPTION_LABEL.FORCED_BY_AUTHORITY.icon}</span>
-                              </>
-                            ) : null}
-                          </span>
-                        </td>
-                        <td className="bo-muted" style={{ fontSize: 12 }}>
-                          {fmtDate(r.validFrom)} → {r.validUntil ? fmtDate(r.validUntil) : "indef."}
-                        </td>
-                        <td className="bo-muted" style={{ fontSize: 11 }}>{r.legalSource ?? "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </article>
-          ))}
-        </div>
+        groups.map(([ccaa, items]) => (
+          <CocoaSection
+            key={ccaa}
+            title={`${CCAA_LABEL[ccaa] ?? ccaa} (${ccaa})`}
+            meta={plural(items.length, "tarifa catalogada", "tarifas catalogadas", { withCount: true })}
+            padding="none"
+            style={{ overflow: "clip" }}
+          >
+            <CocoaTable columns={RATE_COLUMNS} rows={items} rowKey="id" caption={`Tarifas de ${CCAA_LABEL[ccaa] ?? ccaa}`} aria-label={`Tarifas de ${CCAA_LABEL[ccaa] ?? ccaa}`} />
+          </CocoaSection>
+        ))
       )}
 
-      {showForm ? (
-        <article className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)", margin: 0 }}>Nueva tarifa</h3>
-            <button type="button" onClick={() => setShowForm(false)} aria-label="Cerrar formulario de nueva tarifa" title="Cerrar">✕</button>
-          </div>
-          <div className="bo-grid two" style={{ gap: 10 }}>
-            <label className="bo-form-field">
-              <span>CCAA *</span>
-              <select value={draft.ccaaCode} onChange={(e) => setDraft((d) => ({ ...d, ccaaCode: e.target.value }))} disabled={busy}>
-                {Object.keys(CCAA_LABEL).map((c) => <option key={c} value={c}>{CCAA_LABEL[c]} ({c})</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>Municipio (vacío = toda la CCAA)</span>
-              <input value={draft.municipality} onChange={(e) => setDraft((d) => ({ ...d, municipality: e.target.value }))} placeholder="Ej. Barcelona" disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Categoría del establecimiento *</span>
-              <select value={draft.establishmentClass} onChange={(e) => setDraft((d) => ({ ...d, establishmentClass: e.target.value }))} disabled={busy}>
-                {CLASS_OPTIONS.map((c) => <option key={c} value={c}>{CLASS_LABEL[c]}</option>)}
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>€ por persona y noche *</span>
-              <input type="number" min={0} max={100} step={0.01} value={draft.amountPerPersonNight} onChange={(e) => setDraft((d) => ({ ...d, amountPerPersonNight: e.target.value }))} placeholder="3.50" disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Vigente desde *</span>
-              <input type="date" value={draft.validFrom} onChange={(e) => setDraft((d) => ({ ...d, validFrom: e.target.value }))} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Vigente hasta (opcional)</span>
-              <input type="date" value={draft.validUntil} onChange={(e) => setDraft((d) => ({ ...d, validUntil: e.target.value }))} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Máx. noches por estancia (0 = sin límite)</span>
-              <input type="number" min={0} step={1} value={draft.maxNightsPerStay} onChange={(e) => setDraft((d) => ({ ...d, maxNightsPerStay: e.target.value }))} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Edad mínima tributable</span>
-              <input type="number" min={0} max={99} step={1} value={draft.taxableAgeFrom} onChange={(e) => setDraft((d) => ({ ...d, taxableAgeFrom: e.target.value }))} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Recargo temp. alta (0.25 = +25%)</span>
-              <input type="number" min={0} max={1} step={0.01} value={draft.highSeasonSurcharge} onChange={(e) => setDraft((d) => ({ ...d, highSeasonSurcharge: e.target.value }))} placeholder="0.25" disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Temp. alta desde (mm-dd)</span>
-              <input value={draft.highSeasonFromMmdd} onChange={(e) => setDraft((d) => ({ ...d, highSeasonFromMmdd: e.target.value }))} placeholder="05-01" disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Temp. alta hasta (mm-dd)</span>
-              <input value={draft.highSeasonUntilMmdd} onChange={(e) => setDraft((d) => ({ ...d, highSeasonUntilMmdd: e.target.value }))} placeholder="10-31" disabled={busy} />
-            </label>
-            <label className="bo-form-field" style={{ gridColumn: "1 / -1" }}>
-              <span>Fuente legal (DOGC, BOE, etc.)</span>
-              <input value={draft.legalSource} onChange={(e) => setDraft((d) => ({ ...d, legalSource: e.target.value }))} placeholder="DOGC Ley 2/2026" disabled={busy} />
-            </label>
-          </div>
-          <div className="bo-actions" style={{ marginTop: 10 }}>
-            <button type="button" className="primary" onClick={save} disabled={busy}>Crear tarifa</button>
-            <button type="button" onClick={() => setShowForm(false)} disabled={busy}>Cancelar</button>
-          </div>
-        </article>
-      ) : null}
-    </section>
+      <CocoaDrawer
+        open={showForm}
+        onClose={closeForm}
+        title={NEW_RATE_LABEL}
+        subtitle="Tarifa por persona y noche para una comunidad autónoma o un municipio."
+        side="right"
+        size="lg"
+        initialFocus={() => document.getElementById(CCAA_FIELD_ID)}
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={closeForm} disabled={busy}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" onClick={() => void save()} loading={busy}>
+              Crear tarifa
+            </CocoaButton>
+          </>
+        }
+      >
+        <div className="cocoa-stack" data-gap="4">
+          {formError ? (
+            <CocoaCallout tone="danger" role="alert" title="No se pudo crear la tarifa">
+              {formError}
+            </CocoaCallout>
+          ) : null}
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Comunidad autónoma" required error={draftErrors.ccaaCode}>
+              <CocoaSelect id={CCAA_FIELD_ID} value={draft.ccaaCode} onChange={(value) => patch("ccaaCode", value)} options={CCAA_OPTIONS} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Municipio" help="Vacío = toda la comunidad autónoma.">
+              <CocoaInput value={draft.municipality} onChange={(value) => patch("municipality", value)} placeholder="Ej. Barcelona" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Categoría del establecimiento" required error={draftErrors.establishmentClass}>
+              <CocoaSelect value={draft.establishmentClass} onChange={(value) => patch("establishmentClass", value)} options={CLASS_OPTIONS} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="€ por persona y noche" required error={draftErrors.amountPerPersonNight} help={`Hasta ${money(MAX_AMOUNT_PER_PERSON_NIGHT)}.`}>
+              <CocoaInput inputMode="decimal" value={draft.amountPerPersonNight} onChange={(value) => patch("amountPerPersonNight", value)} placeholder="3,50" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Vigente desde" required error={draftErrors.validFrom}>
+              <CocoaDatePicker value={draft.validFrom} onChange={(value) => patch("validFrom", value)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Vigente hasta" hint={STATUS_LABELS.optional.toLowerCase()}>
+              <CocoaDatePicker value={draft.validUntil} onChange={(value) => patch("validUntil", value)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Máx. noches por estancia" help="0 = sin límite." error={draftErrors.maxNightsPerStay}>
+              <CocoaInput type="number" inputMode="numeric" min={0} max={365} step={1} value={draft.maxNightsPerStay} onChange={(value) => patch("maxNightsPerStay", value)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Edad mínima tributable">
+              <CocoaInput type="number" inputMode="numeric" min={0} max={99} step={1} value={draft.taxableAgeFrom} onChange={(value) => patch("taxableAgeFrom", value)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Recargo de temporada alta" help="Fracción: 0,25 = +25 %." error={draftErrors.highSeasonSurcharge}>
+              <CocoaInput inputMode="decimal" value={draft.highSeasonSurcharge} onChange={(value) => patch("highSeasonSurcharge", value)} placeholder="0,25" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Temporada alta desde" help="Formato mm-dd.">
+              <CocoaInput value={draft.highSeasonFromMmdd} onChange={(value) => patch("highSeasonFromMmdd", value)} placeholder="05-01" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Temporada alta hasta" help="Formato mm-dd.">
+              <CocoaInput value={draft.highSeasonUntilMmdd} onChange={(value) => patch("highSeasonUntilMmdd", value)} placeholder="10-31" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Fuente legal" fullWidth help="DOGC, BOE, etc.">
+              <CocoaInput value={draft.legalSource} onChange={(value) => patch("legalSource", value)} placeholder="DOGC Ley 2/2026" disabled={busy} />
+            </CocoaField>
+          </CocoaFormRow>
+        </div>
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }

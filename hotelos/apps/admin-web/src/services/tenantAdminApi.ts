@@ -10,23 +10,18 @@
 // state + copyable link; POST …/reissue-invite mints a new one). The former
 // clear-text temp-password flow (`resetTempPassword` → newPassword in a
 // toast) is gone from the client on purpose.
+//
+// qa#5 (fix:10-A): the API nests the figures under `counts`; the list and the
+// detail go through normalizeTenantSummary (tenant-admin-contracts.ts) so the
+// screens always read flat `propertiesCount` / `usersCount` numbers.
 
 import { apiRequest } from "./api-client";
 import { toArray } from "../utils/toArray";
 import type { InvitationResult } from "./authApi";
+import { normalizeTenantSummary, type TenantSummary, type TenantSummaryDto } from "./tenant-admin-contracts";
 
-export type TenantStatus = "active" | "suspended" | "trial" | "archived" | string;
-
-export type TenantSummary = {
-  organizationId: string;
-  name: string;
-  country: string;
-  propertiesCount: number;
-  usersCount: number;
-  status: TenantStatus;
-  plan: string;
-  createdAt: string;
-};
+export type { TenantCounts, TenantStatus, TenantSummary, TenantSummaryDto, PlatformTotals } from "./tenant-admin-contracts";
+export { normalizeTenantSummary, platformTotals } from "./tenant-admin-contracts";
 
 /** Row of `TenantDetail.users` (mirror of tenant-admin.service TenantUserSummary). */
 export type TenantUserSummary = {
@@ -72,22 +67,24 @@ export type CreateTenantResponse = {
 
 export type ToggleModuleResponse = { ok: boolean };
 
-/** List all tenants (organizations) visible to the current superadmin. */
+/** List all tenants (organizations) visible to the current superadmin, with the flat counts normalised. */
 export async function fetchTenants(): Promise<TenantSummary[]> {
   const res = await apiRequest<unknown>("/admin/tenants");
-  return toArray<TenantSummary>(res);
+  return toArray<TenantSummaryDto>(res).map((row) => normalizeTenantSummary(row));
 }
 
-/** Full detail for a single tenant: properties, users, modules, activity. */
+/** Full detail for a single tenant: properties, users, modules, activity (counts fall back to the arrays). */
 export async function fetchTenantDetail(orgId: string): Promise<TenantDetail> {
-  const detail = await apiRequest<TenantDetail>(`/admin/tenants/${orgId}`);
+  const detail = await apiRequest<Omit<TenantDetail, "propertiesCount" | "usersCount"> & TenantSummaryDto>(`/admin/tenants/${orgId}`);
+  const properties = toArray<any>(detail.properties);
+  const users = toArray<TenantUserSummary>(detail.users).map((user) => ({
+    ...user,
+    roles: toArray<string>(user.roles)
+  }));
   return {
-    ...detail,
-    properties: toArray<any>(detail.properties),
-    users: toArray<TenantUserSummary>(detail.users).map((user) => ({
-      ...user,
-      roles: toArray<string>(user.roles)
-    }))
+    ...normalizeTenantSummary(detail, { properties: properties.length, users: users.length }),
+    properties,
+    users
   };
 }
 

@@ -1,34 +1,51 @@
-// NewTenantWizardDialog — Super-Admin provisioning wizard for a new tenant.
+// NewTenantWizardDialog — platform-console provisioning wizard for a new tenant.
 //
-// 5-step modal dialog: org metadata, first property, owner user, modules /
-// plan, and a final confirmation that calls /admin/tenants POST. After a
-// successful create we show a result panel with the REAL outcome of the owner
-// invitation (Tanda 3 · CFG-P1-6): "enviada" only when the API's email
-// provider accepted it, otherwise the copyable single-use invite link to hand
-// over by another channel, plus a "Reenviar invitación" that calls
-// POST /admin/tenants/:orgId/users/:ownerUserId/reissue-invite. No temp
-// password is ever displayed (the API no longer needs to return one).
+// Five steps in a CocoaDrawer: organization (with its implicit sociedad,
+// Tanda 6b), first work centre, owner user, modules / plan, and a final
+// summary that calls POST /admin/tenants. After a successful create the
+// drawer shows the REAL outcome of the owner invitation (Tanda 3 ·
+// CFG-P1-6): «enviada» only when the API's email provider accepted it,
+// otherwise the copyable single-use invite link to hand over by another
+// channel, plus «Reenviar invitación» (POST
+// /admin/tenants/:orgId/users/:ownerUserId/reissue-invite). No temp password
+// is ever displayed.
 //
 // Props:
 //   open       — controls visibility
-//   onClose    — fired on Cancel / overlay / Escape
+//   onClose    — fired on Cancel / scrim / Escape (never while submitting)
 //   onCompleted(result) — called after the API returns; receives the full
 //                         CreateTenantResponse so callers can refresh lists.
 //
-// Validation: each step has an `isStepValid` gate; Next is disabled until the
-// current step is complete. Step 4 pre-selects modules for the chosen plan;
-// PMS Core is always-on.
+// Validation: each step has an `isStepValid` gate; «Siguiente» is disabled
+// until the current step is complete. Step 4 pre-selects the modules of the
+// chosen plan; PMS Core is always on.
+//
+// Cocoa 22 (lote 10-A · diálogo / drawer): CocoaDrawer (focus trap, Esc,
+// scrim, bottom sheet on phones) → CocoaChart.Progress + step badges
+// (`aria-current="step"`) → CocoaField + CocoaInput / CocoaSelect / CocoaSwitch
+// → summary in `c22-section__list` → two-button footer (Anterior · Siguiente).
 
-import { useEffect, useId, useMemo, useState, type CSSProperties, type ReactNode } from "react";
-import { createPortal } from "react-dom";
-
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaInput } from "../../components/cocoa/CocoaInput";
-import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { createTenant, reissueTenantInvitation, type CreateTenantResponse } from "../../services/tenantAdminApi";
 import { copyText, describeDelivery, formatExpiry, type InvitationResult } from "../../services/authApi";
+import { ACTIONS } from "../../content/actions";
 // Tanda 6b (L6): the tenant is born with its implicit sociedad (NIF optional, checked live) and a typed first centre.
 import { LEGAL_FORM_OPTIONS, PROPERTY_KIND_OPTIONS, normalizeStructureCode, normalizeTaxId, propertyKindLabel, structureCodeError, taxIdValidationMessage } from "../structure/structure-ui";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaInput,
+  CocoaSection,
+  CocoaSelect,
+  CocoaState,
+  CocoaSwitch,
+  type CocoaTone
+} from "../../components/cocoa";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -77,51 +94,62 @@ interface ModuleDef {
 // ---------------------------------------------------------------------------
 
 const COUNTRIES = [
-  { value: "ES", label: "España" }, { value: "PT", label: "Portugal" },
-  { value: "MX", label: "México" }, { value: "FR", label: "Francia" },
-  { value: "IT", label: "Italia" }, { value: "DE", label: "Alemania" },
-  { value: "GB", label: "Reino Unido" }, { value: "US", label: "Estados Unidos" },
-  { value: "AR", label: "Argentina" }, { value: "CO", label: "Colombia" },
-  { value: "CL", label: "Chile" }, { value: "BR", label: "Brasil" },
+  { value: "ES", label: "España" },
+  { value: "PT", label: "Portugal" },
+  { value: "MX", label: "México" },
+  { value: "FR", label: "Francia" },
+  { value: "IT", label: "Italia" },
+  { value: "DE", label: "Alemania" },
+  { value: "GB", label: "Reino Unido" },
+  { value: "US", label: "Estados Unidos" },
+  { value: "AR", label: "Argentina" },
+  { value: "CO", label: "Colombia" },
+  { value: "CL", label: "Chile" },
+  { value: "BR", label: "Brasil" }
 ];
 
 const PROPERTY_TYPES = [
-  { value: "urban", label: "Urbano" }, { value: "beach", label: "Playa" },
-  { value: "resort", label: "Resort" }, { value: "boutique", label: "Boutique" },
-  { value: "rural", label: "Rural" }, { value: "business", label: "Business" },
-  { value: "apart", label: "Apartamentos" },
+  { value: "urban", label: "Urbano" },
+  { value: "beach", label: "Playa" },
+  { value: "resort", label: "Resort" },
+  { value: "boutique", label: "Boutique" },
+  { value: "rural", label: "Rural" },
+  { value: "business", label: "Negocios" },
+  { value: "apart", label: "Apartamentos" }
 ];
 
 const PLAN_OPTIONS: Array<{ value: Plan; label: string }> = [
   { value: "starter", label: "Starter" },
   { value: "pro", label: "Pro" },
-  { value: "enterprise", label: "Enterprise" },
+  { value: "enterprise", label: "Enterprise" }
 ];
 
-// Auditoría 2026-07: los codes deben coincidir con el manifest canónico de
-// @hotelos/product (module-manifest.ts) — antes usaba codes inventados
-// (channel_manager, fnb, spa…) que el backend descartaba en silencio y el
-// tenant nacía sin módulos.
+// The codes must match the canonical manifest of @hotelos/product
+// (module-manifest.ts): the backend silently drops unknown codes and the
+// tenant would be born without modules.
 const MODULES: ModuleDef[] = [
   { code: "pms_core", label: "PMS Core", description: "Reservas, rooming, folios", alwaysOn: true },
-  { code: "distribution_hub", label: "Channel Manager", description: "OTAs y distribución" },
-  { code: "revenue_profit_engine", label: "Revenue Manager", description: "Pricing y forecasting" },
-  { code: "outlet_pos", label: "F&B / TPV", description: "Restaurante, bar, room service" },
-  { code: "guest_experience", label: "Guest Experience", description: "Upsells, peticiones, bienestar" },
-  { code: "compliance_hub", label: "Compliance ES", description: "SES Hospedajes, AEAT" },
-  { code: "ai_front_desk", label: "AI Operations", description: "Copilot operativo" },
-  { code: "energy_sustainability", label: "ESRS", description: "Sostenibilidad y reporting" },
-  { code: "integration_marketplace", label: "Marketplace", description: "Extensiones de partners" },
+  { code: "distribution_hub", label: "Channel Manager", description: "OTA y distribución" },
+  { code: "revenue_profit_engine", label: "Revenue Manager", description: "Precios y previsión" },
+  { code: "outlet_pos", label: "F&B / TPV", description: "Restaurante, bar, servicio de habitaciones" },
+  { code: "guest_experience", label: "Experiencia del huésped", description: "Ventas adicionales, peticiones, bienestar" },
+  { code: "compliance_hub", label: "Cumplimiento ES", description: "SES Hospedajes, AEAT" },
+  { code: "ai_front_desk", label: "Operaciones con IA", description: "Copiloto operativo" },
+  { code: "energy_sustainability", label: "ESRS", description: "Sostenibilidad e informes" },
+  { code: "integration_marketplace", label: "Marketplace", description: "Extensiones de partners" }
 ];
 
 const PLAN_MODULES: Record<Plan, string[]> = {
   starter: ["pms_core", "distribution_hub"],
   pro: ["pms_core", "distribution_hub", "revenue_profit_engine", "outlet_pos", "guest_experience", "compliance_hub"],
-  enterprise: MODULES.map((m) => m.code),
+  enterprise: MODULES.map((m) => m.code)
 };
 
 const TOTAL_STEPS = 5;
-const STEP_TITLES = ["Organización", "Propiedad", "Usuario propietario", "Módulos & plan", "Confirmar"];
+const STEP_TITLES = ["Organización", "Centro de trabajo", "Usuario propietario", "Módulos y plan", "Confirmar"];
+
+// The step list is a `.cocoa-cluster` of badges: no markers, no list inset.
+const STEP_LIST_STYLE: CSSProperties = { listStyle: "none", margin: 0, padding: 0 };
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -136,11 +164,24 @@ function modulesForPlan(plan: Plan): Record<string, boolean> {
 
 function makeInitialState(): WizardState {
   return {
-    organizationName: "", country: "ES", contactEmail: "",
-    legalName: "", taxId: "", legalEntityCode: "", legalForm: "",
-    propertyName: "", propertyType: "urban", propertyKind: "hotel", propertyCode: "", municipality: "", province: "",
-    ownerEmail: "", ownerFullName: "", ownerPhone: "",
-    plan: "pro", modules: modulesForPlan("pro"),
+    organizationName: "",
+    country: "ES",
+    contactEmail: "",
+    legalName: "",
+    taxId: "",
+    legalEntityCode: "",
+    legalForm: "",
+    propertyName: "",
+    propertyType: "urban",
+    propertyKind: "hotel",
+    propertyCode: "",
+    municipality: "",
+    province: "",
+    ownerEmail: "",
+    ownerFullName: "",
+    ownerPhone: "",
+    plan: "pro",
+    modules: modulesForPlan("pro")
   };
 }
 
@@ -150,8 +191,7 @@ function isStepValid(step: number, s: WizardState): boolean {
     return s.organizationName.trim().length > 0 && s.country.length > 0 && isEmail(s.contactEmail) && taxIdOk && structureCodeError(s.legalEntityCode) === null;
   }
   if (step === 2) {
-    return s.propertyName.trim().length > 0 && s.propertyType.length > 0 &&
-      s.municipality.trim().length > 0 && s.province.trim().length > 0 && structureCodeError(s.propertyCode) === null;
+    return s.propertyName.trim().length > 0 && s.propertyType.length > 0 && s.municipality.trim().length > 0 && s.province.trim().length > 0 && structureCodeError(s.propertyCode) === null;
   }
   if (step === 3) return isEmail(s.ownerEmail) && s.ownerFullName.trim().length > 0;
   if (step === 4) return Boolean(s.plan);
@@ -159,132 +199,94 @@ function isStepValid(step: number, s: WizardState): boolean {
   return false;
 }
 
-// ---------------------------------------------------------------------------
-// Styles
-// ---------------------------------------------------------------------------
-
-const S = {
-  label: { fontFamily: "var(--cocoa-font)", fontSize: "var(--cocoa-fs-subheadline)", fontWeight: 500, color: "var(--cocoa-label)", margin: 0 } as CSSProperties,
-  hint: { fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-tertiary)", margin: 0 } as CSSProperties,
-  field: { display: "flex", flexDirection: "column", gap: 4 } as CSSProperties,
-  row: { display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--cocoa-separator)", fontSize: "var(--cocoa-fs-body)" } as CSSProperties,
-  rowK: { color: "var(--cocoa-label-secondary)" } as CSSProperties,
-  rowV: { color: "var(--cocoa-label)", fontWeight: 500, textAlign: "right" } as CSSProperties,
-  hintBox: { margin: 0, padding: "10px 12px", fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)", background: "var(--cocoa-background-control)", borderRadius: "var(--cocoa-radius-md)", border: "1px solid var(--cocoa-separator)" } as CSSProperties,
-  moduleBox: { display: "flex", flexDirection: "column", gap: 6, border: "1px solid var(--cocoa-separator)", borderRadius: "var(--cocoa-radius-md)", padding: 8, background: "var(--cocoa-background-control)" } as CSSProperties,
-  overlay: { position: "fixed", inset: 0, zIndex: 9999, background: "rgba(15, 23, 42, 0.55)", backdropFilter: "blur(2px)", WebkitBackdropFilter: "blur(2px)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16 } as CSSProperties,
-  dialog: { background: "var(--cocoa-background-content)", color: "var(--cocoa-label)", borderRadius: "var(--cocoa-radius-lg)", boxShadow: "var(--cocoa-shadow-modal, 0 24px 60px rgba(0,0,0,0.25))", width: "100%", maxWidth: 600, maxHeight: "90vh", display: "flex", flexDirection: "column", overflow: "hidden", fontFamily: "var(--cocoa-font)" } as CSSProperties,
-  header: { padding: "20px 24px 12px 24px", borderBottom: "1px solid var(--cocoa-separator)", display: "flex", flexDirection: "column", gap: 8 } as CSSProperties,
-  eyebrow: { margin: 0, fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)", letterSpacing: "var(--cocoa-tracking-wide)", textTransform: "uppercase", fontWeight: 600 } as CSSProperties,
-  title: { margin: 0, fontSize: "var(--cocoa-fs-title-1)", fontWeight: 700, color: "var(--cocoa-label)" } as CSSProperties,
-  progress: { position: "relative", width: "100%", height: 4, borderRadius: "var(--cocoa-radius-full)", background: "color-mix(in srgb, var(--cocoa-separator) 60%, transparent)", overflow: "hidden", marginTop: 4 } as CSSProperties,
-  progressFill: (pct: number): CSSProperties => ({ width: `${pct}%`, height: "100%", background: "var(--cocoa-accent)", borderRadius: "var(--cocoa-radius-full)", transition: "width var(--cocoa-duration-base) var(--cocoa-ease-out)" }),
-  body: { padding: "20px 24px", overflowY: "auto", flex: 1 } as CSSProperties,
-  footer: { padding: "12px 24px 16px 24px", borderTop: "1px solid var(--cocoa-separator)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, background: "var(--cocoa-background-control)" } as CSSProperties,
-  errorBox: { margin: "12px 0 0 0", padding: "10px 12px", fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-danger)", background: "rgba(255, 59, 48, 0.08)", border: "1px solid var(--cocoa-danger)", borderRadius: "var(--cocoa-radius-md)" } as CSSProperties,
-  moduleLabel: (alwaysOn: boolean): CSSProperties => ({ display: "flex", alignItems: "flex-start", gap: 10, padding: "8px 10px", borderRadius: "var(--cocoa-radius-sm)", cursor: alwaysOn ? "default" : "pointer", opacity: alwaysOn ? 0.85 : 1 }),
-};
-
-// ---------------------------------------------------------------------------
-// Shared primitives
-// ---------------------------------------------------------------------------
-
-function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <div style={S.field}>
-      <label style={S.label}>{label}</label>
-      {children}
-      {hint ? <p style={S.hint}>{hint}</p> : null}
-    </div>
-  );
-}
-
-function SummaryRow({ k, v }: { k: string; v: string }) {
-  return (
-    <div style={S.row}>
-      <span style={S.rowK}>{k}</span>
-      <span style={S.rowV}>{v}</span>
-    </div>
-  );
-}
+/** authApi delivery tone («ok» / «warn» / «error») → Cocoa tone. */
+const DELIVERY_TONE: Record<"ok" | "warn" | "error", CocoaTone> = { ok: "success", warn: "warning", error: "danger" };
 
 // ---------------------------------------------------------------------------
 // Steps
 // ---------------------------------------------------------------------------
 
-interface StepProps { state: WizardState; setState: (next: WizardState) => void }
+interface StepProps {
+  state: WizardState;
+  setState: (next: WizardState) => void;
+}
 
 function StepOrganization({ state, setState }: StepProps) {
+  const taxIdError = state.taxId.trim() !== "" ? (taxIdValidationMessage(state.taxId) ?? undefined) : undefined;
   return (
-    <div className="cocoa-stack" data-gap="4">
-      <Field label="Nombre de la organización">
-        <CocoaInput value={state.organizationName} onChange={(v) => setState({ ...state, organizationName: v })} placeholder="Hoteles Mediterránea SL" required />
-      </Field>
-      <Field label="País">
+    <div className="cocoa-stack" data-gap="3">
+      <CocoaField label="Nombre de la organización" required>
+        <CocoaInput value={state.organizationName} onChange={(v) => setState({ ...state, organizationName: v })} placeholder="Hoteles Mediterránea SL" autoComplete="organization" />
+      </CocoaField>
+      <CocoaField label="País" required>
         <CocoaSelect value={state.country} onChange={(v) => setState({ ...state, country: v })} options={COUNTRIES} />
-      </Field>
-      <Field label="Email de contacto" hint="Usado para facturación y comunicaciones críticas.">
-        <CocoaInput value={state.contactEmail} onChange={(v) => setState({ ...state, contactEmail: v })} placeholder="cuentas@mediterranea.com" type="email" inputMode="email" required />
-      </Field>
-      <Field label="Razón social de la sociedad (opcional)" hint="Quien factura. Vacío = el nombre de la organización; se edita después en Configuración › Estructura societaria › Datos fiscales.">
+      </CocoaField>
+      <CocoaField label="Email de contacto" required help="Usado para facturación y comunicaciones críticas.">
+        <CocoaInput value={state.contactEmail} onChange={(v) => setState({ ...state, contactEmail: v })} placeholder="cuentas@mediterranea.com" type="email" inputMode="email" autoComplete="off" />
+      </CocoaField>
+      <CocoaField label="Razón social de la sociedad" hint="opcional" help="Quien factura. Vacío = el nombre de la organización; se edita después en Configuración › Estructura societaria › Datos fiscales.">
         <CocoaInput value={state.legalName} onChange={(v) => setState({ ...state, legalName: v })} placeholder="Hoteles Mediterránea S.L." maxLength={200} />
-      </Field>
-      <Field label="NIF de la sociedad (opcional)" hint={state.taxId.trim() === "" ? "Sin NIF la sociedad nace con «NIF pendiente»: no podrá emitir factura en modo fiscal real hasta indicarlo." : taxIdValidationMessage(state.taxId) ?? "Carácter de control correcto."}>
-        <CocoaInput value={state.taxId} onChange={(v) => setState({ ...state, taxId: v.toUpperCase().replace(/[\s.-]/g, "") })} placeholder="B12345674" maxLength={20} error={state.taxId.trim() !== "" && taxIdValidationMessage(state.taxId) !== null} />
-      </Field>
-      <Field label="Código de la sociedad (opcional)" hint={structureCodeError(state.legalEntityCode) ?? "De 2 a 6 letras o dígitos; vacío = se deriva de la razón social."}>
+      </CocoaField>
+      <CocoaField
+        label="NIF de la sociedad"
+        hint="opcional"
+        error={taxIdError}
+        help={state.taxId.trim() === "" ? "Sin NIF la sociedad nace con «NIF pendiente»: no podrá emitir factura en modo fiscal real hasta indicarlo." : taxIdError ? undefined : "Carácter de control correcto."}
+      >
+        <CocoaInput value={state.taxId} onChange={(v) => setState({ ...state, taxId: v.toUpperCase().replace(/[\s.-]/g, "") })} placeholder="B12345674" maxLength={20} />
+      </CocoaField>
+      <CocoaField label="Código de la sociedad" hint="opcional" error={structureCodeError(state.legalEntityCode) ?? undefined} help="De 2 a 6 letras o dígitos; vacío = se deriva de la razón social.">
         <CocoaInput value={state.legalEntityCode} onChange={(v) => setState({ ...state, legalEntityCode: normalizeStructureCode(v) })} placeholder="HM" maxLength={6} />
-      </Field>
-      <Field label="Forma jurídica">
+      </CocoaField>
+      <CocoaField label="Forma jurídica">
         <CocoaSelect value={state.legalForm} onChange={(v) => setState({ ...state, legalForm: v })} options={[...LEGAL_FORM_OPTIONS]} />
-      </Field>
+      </CocoaField>
     </div>
   );
 }
 
 function StepProperty({ state, setState }: StepProps) {
   return (
-    <div className="cocoa-stack" data-gap="4">
-      <Field label="Nombre de la propiedad">
-        <CocoaInput value={state.propertyName} onChange={(v) => setState({ ...state, propertyName: v })} placeholder="Hotel Palacio del Mar" required />
-      </Field>
-      <Field label="Tipo de centro" hint={state.propertyKind === "hotel" ? "Hotel: habitaciones, tarifas, recepción, tasa turística y SES." : "Sin operación hotelera: solo Finanzas y Configuración (nóminas, gastos, bancos, inmovilizado)."}>
+    <div className="cocoa-stack" data-gap="3">
+      <CocoaField label="Nombre del centro" required>
+        <CocoaInput value={state.propertyName} onChange={(v) => setState({ ...state, propertyName: v })} placeholder="Hotel Palacio del Mar" autoComplete="off" />
+      </CocoaField>
+      <CocoaField label="Tipo de centro" required help={state.propertyKind === "hotel" ? "Hotel: habitaciones, tarifas, recepción, tasa turística y SES." : "Sin operación hotelera: solo Finanzas y Configuración (nóminas, gastos, bancos, inmovilizado)."}>
         <CocoaSelect value={state.propertyKind} onChange={(v) => setState({ ...state, propertyKind: v })} options={[...PROPERTY_KIND_OPTIONS]} />
-      </Field>
-      <Field label="Código del centro (opcional)" hint={structureCodeError(state.propertyCode) ?? "De 2 a 6 letras o dígitos; vacío = se deriva del nombre."}>
+      </CocoaField>
+      <CocoaField label="Código del centro" hint="opcional" error={structureCodeError(state.propertyCode) ?? undefined} help="De 2 a 6 letras o dígitos; vacío = se deriva del nombre.">
         <CocoaInput value={state.propertyCode} onChange={(v) => setState({ ...state, propertyCode: normalizeStructureCode(v) })} placeholder="RA" maxLength={6} />
-      </Field>
-      <Field label="Tipo">
+      </CocoaField>
+      <CocoaField label="Tipo de establecimiento" required>
         <CocoaSelect value={state.propertyType} onChange={(v) => setState({ ...state, propertyType: v })} options={PROPERTY_TYPES} />
-      </Field>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-        <Field label="Municipio">
-          <CocoaInput value={state.municipality} onChange={(v) => setState({ ...state, municipality: v })} placeholder="Málaga" required />
-        </Field>
-        <Field label="Provincia">
-          <CocoaInput value={state.province} onChange={(v) => setState({ ...state, province: v })} placeholder="Málaga" required />
-        </Field>
-      </div>
+      </CocoaField>
+      <CocoaFormRow columns={2} min={200}>
+        <CocoaField label="Municipio" required>
+          <CocoaInput value={state.municipality} onChange={(v) => setState({ ...state, municipality: v })} placeholder="Málaga" autoComplete="address-level2" />
+        </CocoaField>
+        <CocoaField label="Provincia" required>
+          <CocoaInput value={state.province} onChange={(v) => setState({ ...state, province: v })} placeholder="Málaga" autoComplete="address-level1" />
+        </CocoaField>
+      </CocoaFormRow>
     </div>
   );
 }
 
 function StepOwner({ state, setState }: StepProps) {
   return (
-    <div className="cocoa-stack" data-gap="4">
-      <Field label="Email del propietario">
-        <CocoaInput value={state.ownerEmail} onChange={(v) => setState({ ...state, ownerEmail: v })} placeholder="director@palaciodelmar.com" type="email" inputMode="email" required />
-      </Field>
-      <Field label="Nombre completo">
-        <CocoaInput value={state.ownerFullName} onChange={(v) => setState({ ...state, ownerFullName: v })} placeholder="María García López" required />
-      </Field>
-      <Field label="Teléfono (opcional)">
-        <CocoaInput value={state.ownerPhone} onChange={(v) => setState({ ...state, ownerPhone: v })} placeholder="+34 600 000 000" inputMode="tel" />
-      </Field>
-      <p style={S.hintBox}>
-        Recibirá un enlace de invitación de un solo uso (72 h) para crear su contraseña. Si el email saliente del servidor no está
-        configurado, al terminar podrás copiar el enlace y entregarlo por otro canal.
-      </p>
+    <div className="cocoa-stack" data-gap="3">
+      <CocoaField label="Email del propietario" required>
+        <CocoaInput value={state.ownerEmail} onChange={(v) => setState({ ...state, ownerEmail: v })} placeholder="director@palaciodelmar.com" type="email" inputMode="email" autoComplete="off" />
+      </CocoaField>
+      <CocoaField label="Nombre completo" required>
+        <CocoaInput value={state.ownerFullName} onChange={(v) => setState({ ...state, ownerFullName: v })} placeholder="María García López" autoComplete="off" />
+      </CocoaField>
+      <CocoaField label="Teléfono" hint="opcional">
+        <CocoaInput value={state.ownerPhone} onChange={(v) => setState({ ...state, ownerPhone: v })} placeholder="+34 600 000 000" type="tel" inputMode="tel" autoComplete="off" />
+      </CocoaField>
+      <CocoaCallout tone="info">
+        Recibirá un enlace de invitación de un solo uso (72 h) para crear su contraseña. Si el email saliente del servidor no está configurado, al terminar podrás copiar el enlace y entregarlo por otro canal.
+      </CocoaCallout>
     </div>
   );
 }
@@ -299,36 +301,40 @@ function StepModules({ state, setState }: StepProps) {
     setState({ ...state, modules: { ...state.modules, [code]: !state.modules[code] } });
   };
   return (
-    <div className="cocoa-stack" data-gap="4">
-      <Field label="Plan">
+    <div className="cocoa-stack" data-gap="3">
+      <CocoaField label="Plan" required>
         <CocoaSelect value={state.plan} onChange={onPlanChange} options={PLAN_OPTIONS} />
-      </Field>
-      <div>
-        <p style={{ ...S.label, marginBottom: 8 }}>Módulos activos</p>
-        <div style={S.moduleBox}>
+      </CocoaField>
+      <CocoaSection title="Módulos activos" meta={`${MODULES.filter((m) => state.modules[m.code]).length} de ${MODULES.length}`}>
+        <ul className="c22-section__list" aria-label="Módulos del cliente">
           {MODULES.map((m) => (
-            <label key={m.code} style={S.moduleLabel(Boolean(m.alwaysOn))}>
-              <input
-                type="checkbox"
-                checked={Boolean(state.modules[m.code])}
-                disabled={m.alwaysOn}
-                onChange={() => toggleModule(m.code, m.alwaysOn)}
-                style={{ marginTop: 2 }}
-              />
-              <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                <span style={{ fontSize: "var(--cocoa-fs-body)", fontWeight: 500, color: "var(--cocoa-label)" }}>
-                  {m.label}
+            <li key={m.code}>
+              <div className="cocoa-stack" data-gap="1" style={{ minWidth: 0 }}>
+                <span className="cocoa-cluster">
+                  <strong>{m.label}</strong>
                   {m.alwaysOn ? (
-                    <span style={{ marginLeft: 6, fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-tertiary)", fontWeight: 400 }}>(auto)</span>
+                    <CocoaBadge tone="neutral" size="small">
+                      siempre activo
+                    </CocoaBadge>
                   ) : null}
                 </span>
-                <span style={S.hint}>{m.description}</span>
-              </span>
-            </label>
+                <span className="cocoa-note">{m.description}</span>
+              </div>
+              <CocoaSwitch size="small" checked={Boolean(state.modules[m.code])} disabled={m.alwaysOn} onChange={() => toggleModule(m.code, m.alwaysOn)} aria-label={`Módulo ${m.label}`} />
+            </li>
           ))}
-        </div>
-      </div>
+        </ul>
+      </CocoaSection>
     </div>
+  );
+}
+
+function SummaryRow({ k, v }: { k: string; v: string }) {
+  return (
+    <li>
+      <span>{k}</span>
+      <strong>{v}</strong>
+    </li>
   );
 }
 
@@ -337,35 +343,39 @@ function StepConfirm({ state }: { state: WizardState }) {
   const ptype = PROPERTY_TYPES.find((p) => p.value === state.propertyType)?.label ?? state.propertyType;
   const enabledModules = MODULES.filter((m) => state.modules[m.code]).map((m) => m.label);
   return (
-    <div className="cocoa-stack" data-gap="4">
-      <section>
-        <p style={{ ...S.label, marginBottom: 4 }}>Organización</p>
-        <SummaryRow k="Nombre" v={state.organizationName} />
-        <SummaryRow k="País" v={country} />
-        <SummaryRow k="Email contacto" v={state.contactEmail} />
-        <SummaryRow k="Sociedad" v={state.legalName.trim() || `${state.organizationName.trim()} (mismo nombre)`} />
-        <SummaryRow k="NIF" v={normalizeTaxId(state.taxId) ?? "pendiente"} />
-        {state.legalEntityCode.trim() ? <SummaryRow k="Código de sociedad" v={state.legalEntityCode.trim()} /> : null}
-        {state.legalForm ? <SummaryRow k="Forma jurídica" v={LEGAL_FORM_OPTIONS.find((option) => option.value === state.legalForm)?.label ?? state.legalForm} /> : null}
-      </section>
-      <section>
-        <p style={{ ...S.label, marginBottom: 4 }}>Propiedad</p>
-        <SummaryRow k="Nombre" v={state.propertyName} />
-        <SummaryRow k="Tipo de centro" v={`${propertyKindLabel(state.propertyKind)}${state.propertyCode.trim() ? ` · ${state.propertyCode.trim()}` : ""}`} />
-        <SummaryRow k="Tipo" v={ptype} />
-        <SummaryRow k="Ubicación" v={`${state.municipality}, ${state.province}`} />
-      </section>
-      <section>
-        <p style={{ ...S.label, marginBottom: 4 }}>Propietario</p>
-        <SummaryRow k="Nombre" v={state.ownerFullName} />
-        <SummaryRow k="Email" v={state.ownerEmail} />
-        {state.ownerPhone ? <SummaryRow k="Teléfono" v={state.ownerPhone} /> : null}
-      </section>
-      <section>
-        <p style={{ ...S.label, marginBottom: 4 }}>Plan & módulos</p>
-        <SummaryRow k="Plan" v={state.plan} />
-        <SummaryRow k="Módulos" v={enabledModules.join(", ") || "—"} />
-      </section>
+    <div className="cocoa-stack" data-gap="3">
+      <CocoaSection title="Organización">
+        <ul className="c22-section__list" aria-label="Resumen de la organización">
+          <SummaryRow k="Nombre" v={state.organizationName} />
+          <SummaryRow k="País" v={country} />
+          <SummaryRow k="Email de contacto" v={state.contactEmail} />
+          <SummaryRow k="Sociedad" v={state.legalName.trim() || `${state.organizationName.trim()} (mismo nombre)`} />
+          <SummaryRow k="NIF" v={normalizeTaxId(state.taxId) ?? "pendiente"} />
+          {state.legalEntityCode.trim() ? <SummaryRow k="Código de sociedad" v={state.legalEntityCode.trim()} /> : null}
+          {state.legalForm ? <SummaryRow k="Forma jurídica" v={LEGAL_FORM_OPTIONS.find((option) => option.value === state.legalForm)?.label ?? state.legalForm} /> : null}
+        </ul>
+      </CocoaSection>
+      <CocoaSection title="Centro de trabajo">
+        <ul className="c22-section__list" aria-label="Resumen del centro">
+          <SummaryRow k="Nombre" v={state.propertyName} />
+          <SummaryRow k="Tipo de centro" v={`${propertyKindLabel(state.propertyKind)}${state.propertyCode.trim() ? ` · ${state.propertyCode.trim()}` : ""}`} />
+          <SummaryRow k="Tipo de establecimiento" v={ptype} />
+          <SummaryRow k="Ubicación" v={`${state.municipality}, ${state.province}`} />
+        </ul>
+      </CocoaSection>
+      <CocoaSection title="Propietario">
+        <ul className="c22-section__list" aria-label="Resumen del propietario">
+          <SummaryRow k="Nombre" v={state.ownerFullName} />
+          <SummaryRow k="Email" v={state.ownerEmail} />
+          {state.ownerPhone ? <SummaryRow k="Teléfono" v={state.ownerPhone} /> : null}
+        </ul>
+      </CocoaSection>
+      <CocoaSection title="Plan y módulos">
+        <ul className="c22-section__list" aria-label="Resumen del plan">
+          <SummaryRow k="Plan" v={PLAN_OPTIONS.find((p) => p.value === state.plan)?.label ?? state.plan} />
+          <SummaryRow k="Módulos" v={enabledModules.join(", ") || "—"} />
+        </ul>
+      </CocoaSection>
     </div>
   );
 }
@@ -383,23 +393,17 @@ function CopyRow({ label, value }: { label: string; value: string }) {
     }
   };
   return (
-    <div style={S.field}>
-      <span style={{ ...S.label, fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" }}>{label}</span>
-      <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
-        <CocoaInput value={value} onChange={() => undefined} />
-        <CocoaButton variant="bordered" tone="neutral" size="regular" onClick={handleCopy}>
-          {copied ? "Copiado" : "Copiar"}
+    <div className="cocoa-stack" data-gap="1">
+      <span className="cocoa-caption">{label}</span>
+      <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
+        <CocoaInput value={value} onChange={() => undefined} readOnly aria-label={label} style={{ flex: "1 1 auto", minWidth: 0 }} />
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void handleCopy()}>
+          {copied ? "Copiado" : ACTIONS.copy}
         </CocoaButton>
       </div>
     </div>
   );
 }
-
-const DELIVERY_BOX: Record<"ok" | "warn" | "error", CSSProperties> = {
-  ok: { background: "rgba(52, 199, 89, 0.10)", border: "1px solid rgba(52, 199, 89, 0.45)" },
-  warn: { background: "rgba(255, 159, 10, 0.10)", border: "1px solid rgba(255, 159, 10, 0.45)" },
-  error: { background: "rgba(255, 59, 48, 0.08)", border: "1px solid var(--cocoa-danger)" }
-};
 
 /**
  * What the panel knows about the owner invitation. `delivery` is absent when
@@ -414,58 +418,22 @@ function inviteViewFromResult(result: CreateTenantResponse): InviteView | undefi
   return undefined;
 }
 
-/** Real outcome of the owner invitation (never "enviada" unless the provider accepted it). */
-function DeliveryBanner({ invitation, email }: { invitation: InviteView | undefined; email: string }) {
-  const delivery = describeDelivery(invitation?.delivery, email);
-  return (
-    <div role="status" style={{ ...S.hintBox, ...DELIVERY_BOX[delivery.tone], color: "var(--cocoa-label)" }}>
-      <strong>{delivery.title}</strong>
-      <div style={{ marginTop: 4, color: "var(--cocoa-label-secondary)" }}>{delivery.detail}</div>
-    </div>
-  );
-}
-
-function SuccessPanel({ result, ownerEmail, onClose }: { result: CreateTenantResponse; ownerEmail: string; onClose: () => void }) {
-  const [invitation, setInvitation] = useState<InviteView | undefined>(() => inviteViewFromResult(result));
-  const [resending, setResending] = useState(false);
-  const [resendError, setResendError] = useState<string | null>(null);
-
-  const handleResend = async () => {
-    setResending(true);
-    setResendError(null);
-    try {
-      const next = await reissueTenantInvitation(result.organizationId, result.ownerUserId);
-      setInvitation(next);
-    } catch (err) {
-      setResendError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setResending(false);
-    }
-  };
-
+function SuccessPanel({ invitation, ownerEmail, resendError }: { invitation: InviteView | undefined; ownerEmail: string; resendError: string | null }) {
+  const delivery = describeDelivery(invitation?.delivery, ownerEmail);
   const showLink = Boolean(invitation?.inviteUrl) && invitation?.delivery?.status !== "sent";
-
   return (
     <div className="cocoa-stack" data-gap="4">
-      <div>
-        <h3 style={{ margin: 0, fontSize: "var(--cocoa-fs-title-2)", fontWeight: 700, color: "var(--cocoa-label)" }}>
-          Cliente creado
-        </h3>
-        <p style={{ margin: "6px 0 0 0", color: "var(--cocoa-label-secondary)" }}>
-          La organización quedó provisionada con propiedad y usuario propietario ({ownerEmail}). El propietario crea su contraseña
-          al aceptar la invitación.
-        </p>
-      </div>
-      <DeliveryBanner invitation={invitation} email={ownerEmail} />
+      <CocoaState kind="empty" illustration="success" title="Cliente creado" message={`La organización quedó provisionada con su centro de trabajo y el usuario propietario (${ownerEmail}). El propietario crea su contraseña al aceptar la invitación.`} />
+      <CocoaCallout tone={DELIVERY_TONE[delivery.tone]} title={delivery.title} role="status">
+        {delivery.detail}
+      </CocoaCallout>
       {showLink && invitation?.inviteUrl ? <CopyRow label="Enlace de invitación (un solo uso)" value={invitation.inviteUrl} /> : null}
-      {invitation?.expiresAt ? <p style={S.hint}>Caduca el {formatExpiry(invitation.expiresAt)}. Reenviar genera un enlace nuevo y anula este.</p> : null}
-      {resendError ? <p role="alert" style={S.errorBox}>{resendError}</p> : null}
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
-        <CocoaButton variant="bordered" tone="accent" onClick={handleResend} loading={resending}>
-          Reenviar invitación
-        </CocoaButton>
-        <CocoaButton variant="filled" tone="accent" onClick={onClose}>Cerrar</CocoaButton>
-      </div>
+      {invitation?.expiresAt ? <p className="cocoa-note">Caduca el {formatExpiry(invitation.expiresAt)}. Reenviar genera un enlace nuevo y anula este.</p> : null}
+      {resendError ? (
+        <CocoaCallout tone="danger" title="No se pudo reenviar la invitación" role="alert">
+          {resendError}
+        </CocoaCallout>
+      ) : null}
     </div>
   );
 }
@@ -475,12 +443,15 @@ function SuccessPanel({ result, ownerEmail, onClose }: { result: CreateTenantRes
 // ---------------------------------------------------------------------------
 
 export function NewTenantWizardDialog({ open, onClose, onCompleted }: NewTenantWizardDialogProps) {
-  const headingId = useId();
   const [step, setStep] = useState(1);
   const [state, setState] = useState<WizardState>(() => makeInitialState());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<CreateTenantResponse | null>(null);
+  // Owner invitation after the create (re-issued from the footer).
+  const [invitation, setInvitation] = useState<InviteView | undefined>(undefined);
+  const [resending, setResending] = useState(false);
+  const [resendError, setResendError] = useState<string | null>(null);
 
   useEffect(() => {
     if (open) {
@@ -489,22 +460,20 @@ export function NewTenantWizardDialog({ open, onClose, onCompleted }: NewTenantW
       setSubmitting(false);
       setError(null);
       setResult(null);
+      setInvitation(undefined);
+      setResending(false);
+      setResendError(null);
     }
   }, [open]);
 
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape" && !submitting) onClose(); };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [open, onClose, submitting]);
-
   const stepValid = useMemo(() => isStepValid(step, state), [step, state]);
 
-  if (!open) return null;
-
-  const handleNext = () => { if (stepValid && step < TOTAL_STEPS) setStep(step + 1); };
-  const handleBack = () => { if (step > 1) setStep(step - 1); };
+  const handleNext = () => {
+    if (stepValid && step < TOTAL_STEPS) setStep(step + 1);
+  };
+  const handleBack = () => {
+    if (step > 1) setStep(step - 1);
+  };
   const handleSubmit = async () => {
     setSubmitting(true);
     setError(null);
@@ -534,9 +503,10 @@ export function NewTenantWizardDialog({ open, onClose, onCompleted }: NewTenantW
               }
             }
           : {}),
-        modulesEnabled,
+        modulesEnabled
       });
       setResult(res);
+      setInvitation(inviteViewFromResult(res));
       onCompleted(res);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -545,74 +515,103 @@ export function NewTenantWizardDialog({ open, onClose, onCompleted }: NewTenantW
     }
   };
 
-  const pct = Math.round((step / TOTAL_STEPS) * 100);
+  const handleResend = async () => {
+    if (!result) return;
+    setResending(true);
+    setResendError(null);
+    try {
+      const next = await reissueTenantInvitation(result.organizationId, result.ownerUserId);
+      setInvitation(next);
+    } catch (err) {
+      setResendError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResending(false);
+    }
+  };
 
   const stepBody =
-    step === 1 ? <StepOrganization state={state} setState={setState} /> :
-    step === 2 ? <StepProperty state={state} setState={setState} /> :
-    step === 3 ? <StepOwner state={state} setState={setState} /> :
-    step === 4 ? <StepModules state={state} setState={setState} /> :
-    <StepConfirm state={state} />;
+    step === 1 ? (
+      <StepOrganization state={state} setState={setState} />
+    ) : step === 2 ? (
+      <StepProperty state={state} setState={setState} />
+    ) : step === 3 ? (
+      <StepOwner state={state} setState={setState} />
+    ) : step === 4 ? (
+      <StepModules state={state} setState={setState} />
+    ) : (
+      <StepConfirm state={state} />
+    );
 
-  const node = (
-    <div
-      role="presentation"
-      style={S.overlay}
-      onClick={(e) => { if (e.target === e.currentTarget && !submitting) onClose(); }}
-    >
-      <div role="dialog" aria-modal="true" aria-labelledby={headingId} style={S.dialog}>
-        <header style={S.header}>
-          <p style={S.eyebrow}>
-            {result ? "Resultado" : `Paso ${step} de ${TOTAL_STEPS} · ${STEP_TITLES[step - 1]}`}
-          </p>
-          <h2 id={headingId} style={S.title}>
-            {result ? "Cliente creado" : "Nuevo cliente"}
-          </h2>
-          {!result ? (
-            <div role="progressbar" aria-valuemin={0} aria-valuemax={TOTAL_STEPS} aria-valuenow={step} style={S.progress}>
-              <div style={S.progressFill(pct)} />
-            </div>
-          ) : null}
-        </header>
+  const busy = submitting || resending;
 
-        <div style={S.body}>
-          {result ? (
-            <SuccessPanel result={result} ownerEmail={state.ownerEmail.trim()} onClose={onClose} />
-          ) : (
-            <>
-              {stepBody}
-              {error ? <p role="alert" style={S.errorBox}>{error}</p> : null}
-            </>
-          )}
-        </div>
-
-        {!result ? (
-          <footer style={S.footer}>
-            <CocoaButton variant="plain" tone="neutral" onClick={onClose} disabled={submitting}>
-              Cancelar
+  return (
+    <CocoaDrawer
+      open={open}
+      onClose={onClose}
+      title={result ? "Cliente creado" : "Nuevo cliente"}
+      subtitle={result ? state.ownerEmail.trim() : `Paso ${step} de ${TOTAL_STEPS} · ${STEP_TITLES[step - 1]}`}
+      side="right"
+      size="lg"
+      dismissible={!busy}
+      focusKey={`${step}-${result ? "done" : "form"}`}
+      footer={
+        result ? (
+          <>
+            <CocoaButton variant="bordered" tone="accent" onClick={() => void handleResend()} loading={resending} disabled={resending}>
+              Reenviar invitación
             </CocoaButton>
-            <div style={{ display: "flex", gap: 8 }}>
-              <CocoaButton variant="bordered" tone="neutral" onClick={handleBack} disabled={step === 1 || submitting}>
-                Anterior
+            <CocoaButton variant="filled" tone="accent" onClick={onClose} disabled={resending}>
+              {ACTIONS.close}
+            </CocoaButton>
+          </>
+        ) : (
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={handleBack} disabled={step === 1 || submitting}>
+              {ACTIONS.previous}
+            </CocoaButton>
+            {step < TOTAL_STEPS ? (
+              <CocoaButton variant="filled" tone="accent" onClick={handleNext} disabled={!stepValid}>
+                {ACTIONS.next}
               </CocoaButton>
-              {step < TOTAL_STEPS ? (
-                <CocoaButton variant="filled" tone="accent" onClick={handleNext} disabled={!stepValid}>
-                  Siguiente
-                </CocoaButton>
-              ) : (
-                <CocoaButton variant="filled" tone="accent" onClick={handleSubmit} loading={submitting} disabled={!stepValid || submitting}>
-                  Crear cliente
-                </CocoaButton>
-              )}
-            </div>
-          </footer>
-        ) : null}
-      </div>
-    </div>
+            ) : (
+              <CocoaButton variant="filled" tone="accent" onClick={() => void handleSubmit()} loading={submitting} disabled={!stepValid || submitting}>
+                Crear cliente
+              </CocoaButton>
+            )}
+          </>
+        )
+      }
+    >
+      {result ? (
+        <SuccessPanel invitation={invitation} ownerEmail={state.ownerEmail.trim()} resendError={resendError} />
+      ) : (
+        <div className="cocoa-stack" data-gap="4">
+          <div className="cocoa-stack" data-gap="2">
+            <CocoaChart.Progress value={step} max={TOTAL_STEPS} label={STEP_TITLES[step - 1]} valueLabel={`Paso ${step} de ${TOTAL_STEPS}`} aria-label={`Paso ${step} de ${TOTAL_STEPS}: ${STEP_TITLES[step - 1]}`} />
+            <ol className="cocoa-cluster" aria-label="Pasos del alta" style={STEP_LIST_STYLE}>
+              {STEP_TITLES.map((title, index) => {
+                const number = index + 1;
+                const tone: CocoaTone = number < step ? "success" : number === step ? "accent" : "neutral";
+                return (
+                  <li key={title} aria-current={number === step ? "step" : undefined}>
+                    <CocoaBadge tone={tone} variant="dot" size="small">
+                      {title}
+                    </CocoaBadge>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+          {stepBody}
+          {error ? (
+            <CocoaCallout tone="danger" title="No se pudo crear el cliente" role="alert">
+              {error}
+            </CocoaCallout>
+          ) : null}
+        </div>
+      )}
+    </CocoaDrawer>
   );
-
-  if (typeof document === "undefined") return node;
-  return createPortal(node, document.body);
 }
 
 export default NewTenantWizardDialog;

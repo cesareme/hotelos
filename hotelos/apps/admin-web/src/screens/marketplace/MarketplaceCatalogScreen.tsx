@@ -1,5 +1,10 @@
 // Marketplace público de apps — catálogo + instalación.
 // Conecta con el backend P2-1 (Apaleo-style).
+//
+// Cocoa 22 · ola 10 · lote 10-C (list archetype): CocoaPage → content toolbar
+// (category filter) → catalogue cards on the 12-column grid → installed apps in
+// a CocoaTable → the install flow (permissions to grant) in a CocoaDrawer and
+// the uninstall confirmation in a CocoaDialog. Calls are untouched.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -12,10 +17,28 @@ import {
   type MarketplaceListing,
   type AppInstallation
 } from "../../services/marketplaceApi";
-import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
-import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { useToast } from "../../components/Toast";
-import { date } from "../../lib/format";
+import { date, plural } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaCard,
+  CocoaDialog,
+  CocoaDrawer,
+  CocoaGrid,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  CocoaToolbar,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 const CATEGORY_LABELS: Record<string, string> = {
   channel_manager: "Channel Manager",
@@ -33,6 +56,15 @@ const CATEGORY_LABELS: Record<string, string> = {
   ai_assistant: "Asistentes IA"
 };
 
+const HEADER = treeHeaderFor("MarketplaceCatalog", { eyebrow: "Configuración · Módulos e integraciones", title: "Catálogo de apps" });
+
+// Columns outside the component (§4.2 A5).
+const INSTALLED_COLUMNS: CocoaTableColumn<AppInstallation>[] = [
+  { key: "appId", label: "Aplicación", fit: true, render: (installation) => <strong>{installation.appId}</strong> },
+  { key: "scopes", label: "Permisos", render: (installation) => installation.scopes.join(", ") },
+  { key: "installedAt", label: "Instalada", fit: true, hideOnNarrow: true, render: (installation) => date(installation.installedAt) }
+];
+
 export function MarketplaceCatalogScreen() {
   const { showToast } = useToast();
   const [categories, setCategories] = useState<string[]>([]);
@@ -46,6 +78,7 @@ export function MarketplaceCatalogScreen() {
   const [installing, setInstalling] = useState(false);
   const [chosenScopes, setChosenScopes] = useState<Set<string>>(new Set());
   const [pendingUninstallId, setPendingUninstallId] = useState<string | null>(null);
+  const [uninstalling, setUninstalling] = useState(false);
 
   async function refresh() {
     setLoading(true);
@@ -81,7 +114,7 @@ export function MarketplaceCatalogScreen() {
       setSelected(null);
       setChosenScopes(new Set());
       await refresh();
-      showToast(`Módulo "${appId}" instalado`, { variant: "success" });
+      showToast(`Aplicación «${appId}» instalada`, { variant: "success" });
     } catch (e) {
       const message = e instanceof Error ? e.message : "No se ha podido instalar la aplicación.";
       setError(message);
@@ -94,15 +127,18 @@ export function MarketplaceCatalogScreen() {
   async function confirmUninstall() {
     const appId = pendingUninstallId;
     if (!appId) return;
-    setPendingUninstallId(null);
+    setUninstalling(true);
     try {
       await uninstallListing(appId);
       await refresh();
-      showToast(`Módulo "${appId}" desinstalado`, { variant: "success" });
+      showToast(`Aplicación «${appId}» desinstalada`, { variant: "success" });
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Error.";
+      const message = e instanceof Error ? e.message : "No se ha podido desinstalar la aplicación.";
       setError(message);
       showToast(message, { variant: "error" });
+    } finally {
+      setUninstalling(false);
+      setPendingUninstallId(null);
     }
   }
 
@@ -114,152 +150,180 @@ export function MarketplaceCatalogScreen() {
     });
   }
 
+  // First paint only: later refreshes (a category change) keep the page and mark the sections.
+  const initialLoading = loading && categories.length === 0 && listings.length === 0 && !error;
+  const categoryOptions = [{ value: "", label: "Todas las categorías" }, ...categories.map((c) => ({ value: c, label: CATEGORY_LABELS[c] ?? c }))];
+
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Plataforma · Marketplace
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Catálogo de apps</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Apps certificadas que extienden tu PMS — channel managers, revenue tools, llaves digitales, asistentes IA…
-            Cada app pide los <strong>scopes OAuth</strong> que necesita y tú apruebas exactamente qué datos puede leer/escribir.
-          </p>
+    <CocoaPage
+      eyebrow={HEADER.eyebrow}
+      title={HEADER.title}
+      subtitle="Aplicaciones certificadas que extienden tu PMS: gestores de canales, herramientas de revenue, llaves digitales, asistentes IA… Cada aplicación pide los permisos (OAuth) que necesita y tú apruebas exactamente qué datos puede leer o escribir."
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refresh()} disabled={loading} loading={loading}>
+          {ACTIONS.refresh}
+        </CocoaButton>
+      }
+      state={initialLoading ? "loading" : "ready"}
+      skeleton={
+        <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+          <CocoaSkeleton variant="row" />
+          <CocoaSkeleton.Grid rows={[[4, 4, 4]]} height={180} />
         </div>
-        <button type="button" onClick={() => void refresh()} disabled={loading}>↻ Actualizar</button>
-      </header>
+      }
+      commands={[{ id: "marketplace-refresh", label: "Actualizar el catálogo de aplicaciones", run: () => { void refresh(); } }]}
+    >
+      <CocoaToolbar
+        variant="content"
+        aria-label="Filtro por categoría"
+        leftSlot={<CocoaSelect inline value={category} onChange={setCategory} options={categoryOptions} aria-label="Categoría" />}
+        rightSlot={<span className="cocoa-note">{plural(listings.length, "aplicación publicada", "aplicaciones publicadas")}</span>}
+      />
 
-      {/* Category filter */}
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-        <button
-          type="button"
-          onClick={() => setCategory("")}
-          className={category === "" ? "primary" : ""}
-          style={{ padding: "6px 12px" }}
-        >
-          Todas
-        </button>
-        {categories.map((c) => (
-          <button
-            key={c}
-            type="button"
-            onClick={() => setCategory(c)}
-            className={category === c ? "primary" : ""}
-            style={{ padding: "6px 12px" }}
-          >
-            {CATEGORY_LABELS[c] ?? c}
-          </button>
-        ))}
-      </div>
-
-      {error ? <p className="bo-status warn" style={{ textTransform: "none" }}>{error}</p> : null}
-
-      {/* Listings grid */}
-      {loading ? <LoadingBlock label="Cargando catálogo…" /> : listings.length === 0 ? (
-        <EmptyState
-          title="Sin apps publicadas en esta categoría"
-          message="Las apps verificadas aparecerán aquí en cuanto un partner publique. Mientras tanto, puedes crear tu propia app en «Developer Apps»."
-        />
-      ) : (
-        <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))" }}>
-          {listings.map((l) => {
-            const installed = installedAppIds.has(l.appId);
-            return (
-              <article key={l.id} className="bo-card" style={{ background: "var(--surface)", display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  {l.iconUrl ? (
-                    <img src={l.iconUrl} alt="" width={36} height={36} style={{ borderRadius: 8 }} />
-                  ) : (
-                    <div style={{ width: 36, height: 36, borderRadius: 8, background: "var(--accent-soft, rgba(78,224,163,0.15))", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>📦</div>
-                  )}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <h3 style={{ color: "var(--ink)", margin: 0, fontSize: 14 }}>{l.appId}</h3>
-                    <p className="bo-muted" style={{ margin: 0, fontSize: 11 }}>
-                      {CATEGORY_LABELS[l.category] ?? l.category}
-                      {l.verified ? " · ✓ verificada" : ""}
-                    </p>
-                  </div>
-                </div>
-                <p style={{ fontSize: 13, color: "var(--ink)", margin: 0 }}>{l.tagline}</p>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: "auto", paddingTop: 8, borderTop: "1px solid var(--border)" }}>
-                  <span className="bo-muted" style={{ fontSize: 11 }}>{l.installsCount} instalaciones · {l.pricing ?? "free"}</span>
-                  {installed ? (
-                    <button type="button" onClick={() => setPendingUninstallId(l.appId)}>Desinstalar</button>
-                  ) : (
-                    <button type="button" className="primary" onClick={() => { setSelected(l); setChosenScopes(new Set()); }}>Instalar</button>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Install dialog */}
-      {selected ? (
-        <article className="bo-card" style={{ background: "var(--surface-2, var(--surface))", border: "1px solid var(--accent)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>Instalar {selected.appId}</h3>
-            <button type="button" onClick={() => setSelected(null)}>Cancelar</button>
-          </div>
-          <p style={{ color: "var(--ink)", margin: "8px 0" }}>{selected.description}</p>
-          <p className="bo-muted" style={{ marginTop: 12, fontSize: 12 }}>
-            Esta app puede pedir acceso a los siguientes scopes. Selecciona los que quieras conceder:
-          </p>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 4 }}>
-            {scopes.map((s) => (
-              <label key={s} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, cursor: "pointer" }}>
-                <input type="checkbox" checked={chosenScopes.has(s)} onChange={() => toggleScope(s)} />
-                <span className="mono">{s}</span>
-              </label>
-            ))}
-          </div>
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button type="button" className="primary" onClick={handleInstall} disabled={installing || chosenScopes.size === 0}>
-              {installing ? <Spinner size="sm" /> : `Instalar con ${chosenScopes.size} scopes`}
-            </button>
-            <button type="button" onClick={() => setChosenScopes(new Set(scopes))} disabled={installing}>Conceder todos</button>
-          </div>
-        </article>
+      {error ? (
+        <CocoaCallout tone="danger" role="alert">
+          {error}
+        </CocoaCallout>
       ) : null}
 
-      {/* Installed list */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Apps instaladas</h3>
-          <span className="bo-chip">{installations.length}</span>
-        </div>
-        {installations.length === 0 ? (
-          <EmptyState title="Ninguna app instalada" message="Instala una app del catálogo para empezar." />
+      <CocoaSection title="Catálogo" meta={category ? CATEGORY_LABELS[category] ?? category : "Todas las categorías"}>
+        {loading && listings.length === 0 ? (
+          <CocoaState kind="loading" inline />
+        ) : listings.length === 0 ? (
+          <CocoaState
+            kind="empty"
+            illustration="box"
+            title="Sin aplicaciones publicadas en esta categoría"
+            message="Las aplicaciones verificadas aparecerán aquí en cuanto un socio publique. Mientras tanto, puedes crear tu propia aplicación en Configuración › Sistema › Aplicaciones."
+          />
         ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead><tr><th>Aplicación</th><th>Permisos</th><th>Instalada</th><th></th></tr></thead>
-              <tbody>
-                {installations.map((i) => (
-                  <tr key={i.id}>
-                    <td className="mono">{i.appId}</td>
-                    <td style={{ fontSize: 11 }}>{i.scopes.join(", ")}</td>
-                    <td className="mono" style={{ fontSize: 11 }}>{date(i.installedAt)}</td>
-                    <td><button type="button" onClick={() => setPendingUninstallId(i.appId)}>Desinstalar</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <CocoaGrid aria-label="Aplicaciones del catálogo">
+            {listings.map((l) => {
+              const installed = installedAppIds.has(l.appId);
+              return (
+                <CocoaSpan cols={4} min={240} key={l.id}>
+                  <CocoaCard variant="bordered" padding="md" role="group" aria-label={l.appId}>
+                    <div className="cocoa-stack" data-gap="2">
+                      <div className="cocoa-row" data-gap="2">
+                        {l.iconUrl ? <img src={l.iconUrl} alt="" width={36} height={36} /> : null}
+                        <span className="cocoa-stack" data-gap="1" style={{ flex: "1 1 auto", minWidth: 0 }}>
+                          <strong>{l.appId}</strong>
+                          <span className="cocoa-note">{CATEGORY_LABELS[l.category] ?? l.category}</span>
+                        </span>
+                        {l.verified ? (
+                          <CocoaBadge tone="success" size="small">
+                            verificada
+                          </CocoaBadge>
+                        ) : null}
+                      </div>
+                      <p className="cocoa-note">{l.tagline}</p>
+                      <div className="cocoa-row" data-gap="2" data-justify="between">
+                        <span className="cocoa-note">
+                          {plural(l.installsCount, "instalación", "instalaciones")} · {l.pricing ?? "gratuita"}
+                        </span>
+                        {installed ? (
+                          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setPendingUninstallId(l.appId)}>
+                            Desinstalar
+                          </CocoaButton>
+                        ) : (
+                          <CocoaButton variant="filled" tone="accent" size="small" onClick={() => { setSelected(l); setChosenScopes(new Set()); }}>
+                            Instalar
+                          </CocoaButton>
+                        )}
+                      </div>
+                    </div>
+                  </CocoaCard>
+                </CocoaSpan>
+              );
+            })}
+          </CocoaGrid>
         )}
-      </article>
+      </CocoaSection>
 
-      <ConfirmDialog
+      {/* padding="none" + overflow clip: the table clips to the radius without creating a scroll container (§4.2 D26). */}
+      <CocoaSection title="Aplicaciones instaladas" meta={plural(installations.length, "aplicación", "aplicaciones")} padding={installations.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {installations.length === 0 ? (
+          <CocoaState kind="empty" inline title="Ninguna aplicación instalada. Instala una del catálogo para empezar." />
+        ) : (
+          <CocoaTable
+            columns={INSTALLED_COLUMNS}
+            rows={installations}
+            rowKey="id"
+            rowActions={(installation) => (
+              <CocoaButton
+                variant="plain"
+                tone="destructive"
+                size="small"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPendingUninstallId(installation.appId);
+                }}
+              >
+                Desinstalar
+              </CocoaButton>
+            )}
+            rowActionsVisible="always"
+            caption="Aplicaciones instaladas"
+            aria-label="Aplicaciones instaladas"
+          />
+        )}
+      </CocoaSection>
+
+      <CocoaDrawer
+        open={selected !== null}
+        onClose={() => setSelected(null)}
+        title={selected ? `Instalar ${selected.appId}` : "Instalar aplicación"}
+        subtitle={selected?.tagline}
+        side="right"
+        size="md"
+        footer={
+          <>
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => setSelected(null)} disabled={installing}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" onClick={() => void handleInstall()} loading={installing} disabled={installing || chosenScopes.size === 0}>
+              {`Instalar con ${plural(chosenScopes.size, "permiso", "permisos")}`}
+            </CocoaButton>
+          </>
+        }
+      >
+        {selected ? (
+          <div className="cocoa-stack" data-gap="3">
+            <p style={{ margin: 0 }}>{selected.description}</p>
+            <p className="cocoa-note">Esta aplicación puede pedir acceso a los siguientes permisos. Selecciona los que quieras conceder:</p>
+            <div role="group" aria-label="Permisos a conceder" className="cocoa-cluster">
+              {scopes.map((s) => {
+                const on = chosenScopes.has(s);
+                return (
+                  <CocoaButton key={s} size="small" variant={on ? "tinted" : "bordered"} tone={on ? "accent" : "neutral"} aria-pressed={on} onClick={() => toggleScope(s)}>
+                    {s}
+                  </CocoaButton>
+                );
+              })}
+            </div>
+            <div className="cocoa-row" data-gap="2">
+              <CocoaButton variant="plain" tone="accent" size="small" onClick={() => setChosenScopes(new Set(scopes))} disabled={installing}>
+                Conceder todos
+              </CocoaButton>
+              <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setChosenScopes(new Set())} disabled={installing || chosenScopes.size === 0}>
+                {ACTIONS.clearSelection}
+              </CocoaButton>
+            </div>
+          </div>
+        ) : null}
+      </CocoaDrawer>
+
+      <CocoaDialog
         open={pendingUninstallId !== null}
-        title="¿Desinstalar esta app?"
+        onClose={() => setPendingUninstallId(null)}
+        tone="destructive"
+        title="¿Desinstalar esta aplicación?"
         description="Los tokens emitidos quedarán inactivos."
         confirmLabel="Desinstalar"
-        variant="danger"
-        onConfirm={() => void confirmUninstall()}
-        onCancel={() => setPendingUninstallId(null)}
+        cancelLabel={ACTIONS.cancel}
+        onConfirm={confirmUninstall}
+        busy={uninstalling}
       />
-    </section>
+    </CocoaPage>
   );
 }

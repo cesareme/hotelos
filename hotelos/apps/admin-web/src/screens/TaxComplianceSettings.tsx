@@ -1,11 +1,19 @@
-// Ajustes de cumplimiento fiscal (Tanda 3 · lote front-fiscal).
-//
-// Real form over GET/PATCH /backoffice/properties/:id/compliance-settings plus
-// status cards fed ONLY by real endpoints: /compliance/health (integration
-// modes, VeriFactu software block when exposed), /properties/:id/ses/establishment
-// (contract F) and /backoffice/properties/:id/taxes (contract C). When a source
-// is unavailable the card says so instead of guessing.
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+// Ajustes de cumplimiento fiscal — Configuración › Contabilidad y fiscal › Fiscal
+// (/configuracion/contabilidad-fiscal/fiscal, hosted in ContabilidadFiscalTabs).
+// Cocoa 22 · ola 10 · lote 10-D, archetype «formulario / ajustes»
+// (docs/design/COCOA-22.md §4): CocoaPage (hosted: the container paints eyebrow
+// and title) → status sections on the 12-column grid, each fed ONLY by a real
+// endpoint — /compliance/health (integration modes, VeriFactu software block
+// when exposed), /properties/:id/ses/establishment (contract F) and
+// /backoffice/properties/:id/taxes (contract C); when a source is unavailable
+// the section says so instead of guessing — → CocoaFormSection over GET/PATCH
+// /backoffice/properties/:id/compliance-settings (region, territory, tourist
+// tax, CP / INE / SES registry with the server rules mirrored in
+// CocoaField.error, connector switches) → CocoaActionBar (Cancelar · Guardar
+// configuración; ⌘/Ctrl+Enter saves) with a discard dialog. The fiscal
+// identity of the issuer (NIF, razón social) belongs to the legal entity and
+// is only linked from here (Configuración › Estructura societaria).
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../services/activeProperty";
 import { ApiError } from "../services/api-client";
 import {
@@ -34,19 +42,33 @@ import {
   type TouristTaxTreatment
 } from "../services/taxesApi";
 import { useToast } from "../components/Toast";
-import { ErrorState, LoadingBlock, Spinner } from "../components/States";
-import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
-import { pageHead } from "./tabs/configuracion/tab-helpers";
-import { CocoaCard } from "../components/cocoa/CocoaCard";
-import { CocoaButton } from "../components/cocoa/CocoaButton";
-import { CocoaSelect } from "../components/cocoa/CocoaSelect";
-import { CocoaInput } from "../components/cocoa/CocoaInput";
+import {
+  CocoaActionBar,
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaGrid,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaSwitch,
+  DegradedValue,
+  type CocoaTone
+} from "../components/cocoa";
 import { CocoaScreenInstructionsCard } from "../components/cocoa-guidance/CocoaScreenInstructionsCard";
-import { DegradedValue } from "../components/cocoa-extras/DegradedValue";
 import { TAX_COMPLIANCE_INSTRUCTIONS } from "../content/screen-instructions/taxes";
+import { ACTIONS, STATUS_LABELS, confirmDiscard } from "../content/actions";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
-import { dateTime } from "../lib/format";
+import { dateTime, number, plural } from "../lib/format";
+import { treeHeaderFor } from "./tabs/tab-helpers";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -77,6 +99,17 @@ type Form = {
   touristTaxTreatment: TouristTaxTreatment | "";
   ipsiOrdinanceConfirmed: boolean;
 };
+
+type ConnectorKey = "sesHospedajesEnabled" | "verifactuEnabled" | "ticketbaiEnabled" | "siiEnabled" | "b2bEinvoiceEnabled";
+
+/** Connector switches of the form, in the order they are painted. */
+const CONNECTOR_TOGGLES: ReadonlyArray<readonly [ConnectorKey, string]> = [
+  ["sesHospedajesEnabled", "SES.HOSPEDAJES (parte de viajeros)"],
+  ["verifactuEnabled", "VeriFactu (registro de facturación AEAT)"],
+  ["ticketbaiEnabled", "TicketBAI (haciendas forales)"],
+  ["siiEnabled", "SII (suministro inmediato de información)"],
+  ["b2bEinvoiceEnabled", "Factura electrónica B2B"]
+];
 
 function text(value: unknown): string {
   return typeof value === "string" ? value : value === null || value === undefined ? "" : String(value);
@@ -165,6 +198,10 @@ function toForm(settings: ComplianceSettings): Form {
   };
 }
 
+function isSameForm(a: Form, b: Form): boolean {
+  return (Object.keys(a) as Array<keyof Form>).every((key) => a[key] === b[key]);
+}
+
 function modeLabel(mode: string | undefined): string {
   if (mode === "production") return "producción";
   if (mode === "preproduction") return "preproducción";
@@ -172,17 +209,20 @@ function modeLabel(mode: string | undefined): string {
   return "—";
 }
 
-function StatusLine(props: { tone: "ok" | "warn" | "error" | "info"; children: ReactNode }) {
-  return (
-    <span className={`bo-status ${props.tone}`} style={{ textTransform: "none", letterSpacing: 0, display: "inline-flex" }}>
-      {props.children}
-    </span>
-  );
+/** Connector line of a health entry: mode and certificate, as the API reports them. */
+function connectorLine(entry: ComplianceHealthReport["integrations"][number]): string {
+  const certificate = entry.cert.configured ? (entry.cert.certPathExists ? "configurado" : "ruta no encontrada") : "sin configurar";
+  return `Modo ${modeLabel(entry.mode)} · certificado ${certificate}`;
 }
 
-export function TaxComplianceSettings({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
-  const Head = pageHead(embedded);
+/** Tone of an «activado / desactivado» badge: the switch decides the wording, the readiness the colour. */
+function toggleTone(enabled: boolean, ready: boolean | undefined): CocoaTone {
+  if (!enabled) return "neutral";
+  return ready ? "success" : "warning";
+}
+
+export function TaxComplianceSettings() {
+  const header = treeHeaderFor("TaxComplianceSettings", { eyebrow: "Cumplimiento · Fiscal", title: "Ajustes de cumplimiento fiscal" });
   const { showToast } = useToast();
   const [settings, setSettings] = useState<ComplianceSettings | null>(null);
   const [form, setForm] = useState<Form | null>(null);
@@ -190,6 +230,7 @@ export function TaxComplianceSettings({ embedded = false }: { embedded?: boolean
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [askDiscard, setAskDiscard] = useState(false);
   const [health, setHealth] = useState<ComplianceHealthReport | null>(null);
   const [healthError, setHealthError] = useState<string | null>(null);
   const [establishment, setEstablishment] = useState<SesEstablishment | null>(null);
@@ -293,7 +334,7 @@ export function TaxComplianceSettings({ embedded = false }: { embedded?: boolean
         { variant: "success" }
       );
       // Re-read everything from GET so the form shows what is really stored
-      // (including `null` for cleared fields) and the status cards refresh.
+      // (including `null` for cleared fields) and the status sections refresh.
       await load();
     } catch (err) {
       const message =
@@ -318,391 +359,353 @@ export function TaxComplianceSettings({ embedded = false }: { embedded?: boolean
   const establishmentMissing = useMemo(() => toArray<string>(establishment?.missing), [establishment]);
   const taxWarnings = useMemo(() => toArray<string>(taxes?.warnings), [taxes]);
   const fiscalErrors = useMemo<FiscalCodeErrors>(() => (form ? validateFiscalCodes(form) : {}), [form]);
+  const saved = useMemo(() => (settings ? toForm(settings) : null), [settings]);
+  const dirty = form !== null && saved !== null && !isSameForm(form, saved);
   const figure = form?.taxRegion ? figureForRegion(form.taxRegion) : null;
   const isIpsi = form?.taxRegion === "ES_CEUTA" || form?.taxRegion === "ES_MELILLA";
   const isForal = Boolean(form?.fiscalTerritory && form.fiscalTerritory !== "common");
-  const unrecognisedRegion = rawRegion && !normalizeTaxRegionClient(rawRegion);
-
-  if (loading && !form) {
-    return (
-      <section className="bo-card">
-        <LoadingBlock label="Cargando configuración fiscal…" />
-      </section>
-    );
-  }
-  if (error && !form) {
-    return (
-      <section className="bo-card">
-        <ErrorState title="No se pudo cargar la configuración fiscal" message={error} onRetry={() => void load()} />
-      </section>
-    );
-  }
-  if (!form || !settings) return null;
+  const unrecognisedRegion = Boolean(rawRegion) && !normalizeTaxRegionClient(rawRegion);
+  const territoryLabel = FISCAL_TERRITORY_OPTIONS.find((option) => option.value === form?.fiscalTerritory)?.label ?? form?.fiscalTerritory ?? "";
+  const stat = (value: number | null | undefined) => (value === null || value === undefined ? "—" : number(value));
+  const discard = confirmDiscard();
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <Head
-        eyebrow="Cumplimiento · Fiscal"
-        title="Ajustes de cumplimiento fiscal"
-        subtitle="País, región fiscal, conectores obligatorios y datos del establecimiento"
-        actions={
-          <span style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", flexWrap: "wrap" }}>
-            <CocoaButton variant="plain" onClick={openPropertyTaxes}>
-              Impuestos de la propiedad
-            </CocoaButton>
-            <CocoaButton variant="plain" onClick={() => navigateTo("FiscalDashboard")}>
-              Centro fiscal
-            </CocoaButton>
-            <CocoaButton variant="plain" onClick={() => navigateTo("ComplianceInbox")}>
-              Bandeja de cumplimiento
-            </CocoaButton>
-          </span>
-        }
-      />
+    <CocoaPage
+      eyebrow={header.eyebrow}
+      title={header.title}
+      subtitle="País, región fiscal, conectores obligatorios y datos del establecimiento"
+      actions={
+        <>
+          <CocoaButton variant="plain" onClick={openPropertyTaxes}>
+            Impuestos de la propiedad
+          </CocoaButton>
+          <CocoaButton variant="plain" onClick={() => navigateTo("FiscalDashboard")}>
+            Centro fiscal
+          </CocoaButton>
+          <CocoaButton variant="plain" onClick={() => navigateTo("ComplianceInbox")}>
+            Bandeja de cumplimiento
+          </CocoaButton>
+        </>
+      }
+      state={loading && !form ? "loading" : error && !form ? "error" : "ready"}
+      skeleton={<CocoaSkeleton.Grid rows={[[12], [6, 6], [6, 6], [12]]} height={160} label="Cargando configuración fiscal…" />}
+      error={{ title: "No se pudo cargar la configuración fiscal", message: error ?? undefined, onRetry: () => void load() }}
+      commands={[
+        { id: "tax-compliance-save", label: `${ACTIONS.save}: configuración fiscal`, run: () => void handleSave(), shortcut: "⌘ Enter" },
+        { id: "tax-compliance-refresh", label: "Actualizar los ajustes de cumplimiento fiscal", run: () => void load() }
+      ]}
+      id="tax-compliance-settings"
+    >
+      {form && settings ? (
+        <>
+          <CocoaScreenInstructionsCard
+            title="Ajustes de cumplimiento fiscal"
+            description={TAX_COMPLIANCE_INSTRUCTIONS.whatIsThis}
+            steps={TAX_COMPLIANCE_INSTRUCTIONS.howToUse}
+            dismissible
+            persistKey="tax-compliance-settings"
+          />
 
-      <CocoaScreenInstructionsCard
-        title="Ajustes de cumplimiento fiscal"
-        description={TAX_COMPLIANCE_INSTRUCTIONS.whatIsThis}
-        steps={TAX_COMPLIANCE_INSTRUCTIONS.howToUse}
-        dismissible
-        persistKey="tax-compliance-settings"
-      />
-
-      {!settings.provisioned ? (
-        <StatusLine tone="info">Esta propiedad aún no tiene ajustes de cumplimiento guardados: se muestran los valores por defecto. Al guardar se crea el registro.</StatusLine>
-      ) : null}
-      {unrecognisedRegion ? (
-        <StatusLine tone="warn">
-          La región fiscal guardada («{rawRegion}») no es un código reconocido. Selecciona la región canónica y guarda para que el resolutor de impuestos la aplique.
-        </StatusLine>
-      ) : null}
-
-      {/* ---- Real status cards ---- */}
-      <div className="bo-grid two">
-        <CocoaCard variant="bordered" padding="md">
-          <div className="bo-card-head">
-            <h3 style={{ margin: 0 }}>Impuestos indirectos</h3>
-            <StatusLine tone={taxes ? (taxWarnings.length > 0 || !taxes.taxRegion ? "warn" : "ok") : "info"}>
-              {taxes ? (taxes.taxRegion ? `${taxes.figure} · Impuesto ${taxes.impuesto}` : "sin región") : "no disponible"}
-            </StatusLine>
-          </div>
-          {taxes ? (
-            <>
-              <p style={{ margin: "0 0 var(--cocoa-space-2)" }}>
-                {taxRegionLabel(taxes.taxRegion)} · {toArray(taxes.rates).length} tipos vigentes
-                {taxes.regionSource !== "property" ? " · región derivada, confirma en el perfil" : ""}
-              </p>
-              {taxWarnings.length > 0 ? (
-                <ul style={{ margin: 0, paddingLeft: "1.2em" }}>
-                  {taxWarnings.map((warning, index) => (
-                    <li key={`${index}-${warning}`} className="bo-muted">
-                      {warning}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-            </>
-          ) : (
-            <p className="bo-muted" style={{ margin: 0 }}>
-              No se pudo leer el perfil de impuestos{taxesError ? `: ${taxesError}` : "."}
-            </p>
-          )}
-          <div className="bo-actions">
-            <CocoaButton variant="plain" size="small" onClick={openPropertyTaxes}>
-              Ver tipos por concepto
-            </CocoaButton>
-          </div>
-        </CocoaCard>
-
-        <CocoaCard variant="bordered" padding="md">
-          <div className="bo-card-head">
-            <h3 style={{ margin: 0 }}>VeriFactu (AEAT)</h3>
-            <StatusLine tone={form.verifactuEnabled ? (verifactuHealth?.readyForReal ? "ok" : "warn") : "info"}>
-              {form.verifactuEnabled ? "activado" : "desactivado"}
-            </StatusLine>
-          </div>
-          {verifactuHealth ? (
-            <p style={{ margin: "0 0 var(--cocoa-space-2)" }}>
-              Modo {modeLabel(verifactuHealth.mode)} · certificado {verifactuHealth.cert.configured ? (verifactuHealth.cert.certPathExists ? "configurado" : "ruta no encontrada") : "sin configurar"}
-              {verifactuHealth.notes ? <span className="bo-muted"> · {verifactuHealth.notes}</span> : null}
-            </p>
-          ) : (
-            <p className="bo-muted" style={{ margin: "0 0 var(--cocoa-space-2)" }}>
-              Estado del conector no disponible{healthError ? `: ${healthError}` : "."}
-            </p>
-          )}
-          {software ? (
-            software.ok ? (
-              <StatusLine tone="ok">Bloque SistemaInformatico completo</StatusLine>
-            ) : (
-              <div>
-                <StatusLine tone="error">Software VeriFactu incompleto</StatusLine>
-                <ul style={{ margin: "var(--cocoa-space-2) 0 0", paddingLeft: "1.2em" }}>
-                  {software.errors.map((message, index) => (
-                    <li key={`${index}-${message}`} className="bo-muted">
-                      {message}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )
-          ) : (
-            <p className="bo-muted" style={{ margin: 0 }}>
-              El API no expone todavía la validación del bloque SistemaInformatico (NIF del productor, versión, instalación).
-            </p>
-          )}
-          <div className="bo-actions">
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("FiscalDashboard")}>
-              Colas y envíos
-            </CocoaButton>
-          </div>
-        </CocoaCard>
-
-        <CocoaCard variant="bordered" padding="md">
-          <div className="bo-card-head">
-            <h3 style={{ margin: 0 }}>SES.HOSPEDAJES (MIR)</h3>
-            <StatusLine tone={form.sesHospedajesEnabled ? (establishment?.ok ? "ok" : "warn") : "info"}>
-              {form.sesHospedajesEnabled ? "activado" : "desactivado"}
-            </StatusLine>
-          </div>
-          {sesHealth ? (
-            <p style={{ margin: "0 0 var(--cocoa-space-2)" }}>
-              Modo {modeLabel(sesHealth.mode)} · certificado {sesHealth.cert.configured ? (sesHealth.cert.certPathExists ? "configurado" : "ruta no encontrada") : "sin configurar"}
-            </p>
+          {!settings.provisioned ? (
+            <CocoaCallout tone="info" title="Sin ajustes guardados">
+              Esta propiedad aún no tiene ajustes de cumplimiento guardados: se muestran los valores por defecto. Al guardar se crea el registro.
+            </CocoaCallout>
           ) : null}
-          {establishment ? (
-            establishment.ok ? (
-              <StatusLine tone="ok">Datos del establecimiento completos</StatusLine>
-            ) : (
-              <div>
-                <StatusLine tone="warn">Faltan datos del establecimiento</StatusLine>
-                <p className="bo-muted" style={{ margin: "var(--cocoa-space-2) 0 0" }}>
-                  {establishmentMissing.map(sesEstablishmentIssueLabel).join(", ")}
+          {unrecognisedRegion ? (
+            <CocoaCallout tone="warning" title="Región fiscal no reconocida" role="alert">
+              La región fiscal guardada («{rawRegion}») no es un código reconocido. Selecciona la región canónica y guarda para que el resolutor de impuestos la
+              aplique.
+            </CocoaCallout>
+          ) : null}
+
+          <CocoaGrid aria-label="Estado de los impuestos y los conectores">
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection
+                title="Impuestos indirectos"
+                meta={
+                  <CocoaBadge tone={taxes ? (taxWarnings.length > 0 || !taxes.taxRegion ? "warning" : "success") : "neutral"}>
+                    {taxes ? (taxes.taxRegion ? `${taxes.figure} · Impuesto ${taxes.impuesto}` : "sin región") : "no disponible"}
+                  </CocoaBadge>
+                }
+                action={
+                  <CocoaButton variant="plain" size="small" onClick={openPropertyTaxes}>
+                    Ver tipos por concepto
+                  </CocoaButton>
+                }
+              >
+                {taxes ? (
+                  <>
+                    <p>
+                      {taxRegionLabel(taxes.taxRegion)} · {plural(toArray(taxes.rates).length, "tipo vigente", "tipos vigentes")}
+                      {taxes.regionSource !== "property" ? " · región derivada, confirma en el perfil" : ""}
+                    </p>
+                    {taxWarnings.length > 0 ? (
+                      <ul className="c22-section__list" aria-label="Avisos del perfil de impuestos">
+                        {taxWarnings.map((warning, index) => (
+                          <li key={`${index}-${warning}`}>
+                            <span className="cocoa-note">{warning}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className="cocoa-note">No se pudo leer el perfil de impuestos{taxesError ? `: ${taxesError}` : "."}</p>
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection
+                title="VeriFactu (AEAT)"
+                meta={<CocoaBadge tone={toggleTone(form.verifactuEnabled, verifactuHealth?.readyForReal)}>{form.verifactuEnabled ? STATUS_LABELS.enabled : STATUS_LABELS.disabled}</CocoaBadge>}
+                action={
+                  <CocoaButton variant="plain" size="small" onClick={() => navigateTo("FiscalDashboard")}>
+                    Colas y envíos
+                  </CocoaButton>
+                }
+              >
+                {verifactuHealth ? (
+                  <p>
+                    {connectorLine(verifactuHealth)}
+                    {verifactuHealth.notes ? ` · ${verifactuHealth.notes}` : ""}
+                  </p>
+                ) : (
+                  <p className="cocoa-note">Estado del conector no disponible{healthError ? `: ${healthError}` : "."}</p>
+                )}
+                {software ? (
+                  software.ok ? (
+                    <div className="cocoa-cluster">
+                      <CocoaBadge tone="success">Bloque SistemaInformatico completo</CocoaBadge>
+                    </div>
+                  ) : (
+                    <CocoaCallout tone="danger" title="Software VeriFactu incompleto" role="alert">
+                      <ul className="c22-section__list" aria-label="Errores del bloque SistemaInformatico">
+                        {software.errors.map((message, index) => (
+                          <li key={`${index}-${message}`}>
+                            <span className="cocoa-note">{message}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </CocoaCallout>
+                  )
+                ) : (
+                  <p className="cocoa-note">El API no expone todavía la validación del bloque SistemaInformatico (NIF del productor, versión, instalación).</p>
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection
+                title="SES.HOSPEDAJES (MIR)"
+                meta={<CocoaBadge tone={toggleTone(form.sesHospedajesEnabled, establishment?.ok)}>{form.sesHospedajesEnabled ? STATUS_LABELS.enabled : STATUS_LABELS.disabled}</CocoaBadge>}
+                footer={
+                  <div className="cocoa-cluster">
+                    <CocoaButton variant="plain" size="small" onClick={() => navigateTo("SesHospedajesSettings")}>
+                      Conector SES
+                    </CocoaButton>
+                    <CocoaButton variant="plain" size="small" onClick={() => navigateTo("GuestRegisterSettings")}>
+                      Registro de viajeros
+                    </CocoaButton>
+                    <CocoaButton variant="plain" size="small" onClick={() => navigateTo("AuthorityRoutingSettings")}>
+                      Enrutamiento
+                    </CocoaButton>
+                    <CocoaButton variant="plain" size="small" onClick={() => navigateTo("GuestRegisterRetentionSettings")}>
+                      Retención
+                    </CocoaButton>
+                  </div>
+                }
+              >
+                {sesHealth ? <p>{connectorLine(sesHealth)}</p> : null}
+                {establishment ? (
+                  establishment.ok ? (
+                    <div className="cocoa-cluster">
+                      <CocoaBadge tone="success">Datos del establecimiento completos</CocoaBadge>
+                    </div>
+                  ) : (
+                    <CocoaCallout tone="warning" title="Faltan datos del establecimiento" role="alert">
+                      {establishmentMissing.map(sesEstablishmentIssueLabel).join(", ")}
+                    </CocoaCallout>
+                  )
+                ) : (
+                  <p className="cocoa-note">Datos del establecimiento no disponibles{establishmentError ? `: ${establishmentError}` : "."}</p>
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection
+                title="Territorio foral y Canarias"
+                meta={<CocoaBadge tone={isForal ? (form.ticketbaiEnabled ? "success" : "warning") : "neutral"}>{isForal ? "TicketBAI" : "territorio común"}</CocoaBadge>}
+                footer={
+                  <div className="cocoa-cluster">
+                    <CocoaButton variant="plain" size="small" onClick={() => navigateTo("TbaiForal")}>
+                      TicketBAI
+                    </CocoaButton>
+                    <CocoaButton variant="plain" size="small" onClick={() => navigateTo("FiscalSubmissionsCenter")}>
+                      Centro de envíos
+                    </CocoaButton>
+                  </div>
+                }
+              >
+                <p>
+                  {isForal
+                    ? `Las facturas se envían a la Hacienda Foral (${territoryLabel}).${tbaiHealth ? ` Conector TBAI en modo ${modeLabel(tbaiHealth.mode)}.` : ""}`
+                    : "Las facturas se envían a la AEAT por VeriFactu."}
+                  {form.taxRegion === "ES_CANARIAS" && igicHealth ? ` IGIC en modo ${modeLabel(igicHealth.mode)}.` : ""}
                 </p>
-              </div>
-            )
-          ) : (
-            <p className="bo-muted" style={{ margin: 0 }}>
-              Datos del establecimiento no disponibles{establishmentError ? `: ${establishmentError}` : "."}
-            </p>
-          )}
-          <div className="bo-actions">
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("SesHospedajesSettings")}>
-              Conector SES
-            </CocoaButton>
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("GuestRegisterSettings")}>
-              Registro de viajeros
-            </CocoaButton>
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("AuthorityRoutingSettings")}>
-              Enrutamiento
-            </CocoaButton>
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("GuestRegisterRetentionSettings")}>
-              Retención
-            </CocoaButton>
-          </div>
-        </CocoaCard>
+                <p className="cocoa-note">
+                  Últimas 24 h · VeriFactu:{" "}
+                  <DegradedValue label="verifactuSubmissionsLast24h" degraded={degraded}>
+                    {stat(health?.stats.verifactuSubmissionsLast24h)}
+                  </DegradedValue>{" "}
+                  envíos /{" "}
+                  <DegradedValue label="verifactuRejectedLast24h" degraded={degraded}>
+                    {stat(health?.stats.verifactuRejectedLast24h)}
+                  </DegradedValue>{" "}
+                  rechazos · SES:{" "}
+                  <DegradedValue label="sesSubmissionsLast24h" degraded={degraded}>
+                    {stat(health?.stats.sesSubmissionsLast24h)}
+                  </DegradedValue>{" "}
+                  envíos /{" "}
+                  <DegradedValue label="sesRejectedLast24h" degraded={degraded}>
+                    {stat(health?.stats.sesRejectedLast24h)}
+                  </DegradedValue>{" "}
+                  rechazos
+                </p>
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
 
-        <CocoaCard variant="bordered" padding="md">
-          <div className="bo-card-head">
-            <h3 style={{ margin: 0 }}>Territorio foral y Canarias</h3>
-            <StatusLine tone={isForal ? (form.ticketbaiEnabled ? "ok" : "warn") : "info"}>{isForal ? "TicketBAI" : "territorio común"}</StatusLine>
-          </div>
-          <p style={{ margin: "0 0 var(--cocoa-space-2)" }}>
-            {isForal
-              ? `Las facturas se envían a la Hacienda Foral (${FISCAL_TERRITORY_OPTIONS.find((option) => option.value === form.fiscalTerritory)?.label ?? form.fiscalTerritory}).${tbaiHealth ? ` Conector TBAI en modo ${modeLabel(tbaiHealth.mode)}.` : ""}`
-              : "Las facturas se envían a la AEAT por VeriFactu."}
-            {form.taxRegion === "ES_CANARIAS" && igicHealth ? ` IGIC en modo ${modeLabel(igicHealth.mode)}.` : ""}
-          </p>
-          <p style={{ margin: 0 }}>
-            Últimas 24 h · VeriFactu:{" "}
-            <DegradedValue label="verifactuSubmissionsLast24h" degraded={degraded}>
-              {health ? (health.stats.verifactuSubmissionsLast24h ?? "—") : "—"}
-            </DegradedValue>{" "}
-            envíos /{" "}
-            <DegradedValue label="verifactuRejectedLast24h" degraded={degraded}>
-              {health ? (health.stats.verifactuRejectedLast24h ?? "—") : "—"}
-            </DegradedValue>{" "}
-            rechazos · SES:{" "}
-            <DegradedValue label="sesSubmissionsLast24h" degraded={degraded}>
-              {health ? (health.stats.sesSubmissionsLast24h ?? "—") : "—"}
-            </DegradedValue>{" "}
-            envíos /{" "}
-            <DegradedValue label="sesRejectedLast24h" degraded={degraded}>
-              {health ? (health.stats.sesRejectedLast24h ?? "—") : "—"}
-            </DegradedValue>{" "}
-            rechazos
-          </p>
-          <div className="bo-actions">
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("TbaiForal")}>
-              TicketBAI
-            </CocoaButton>
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("FiscalSubmissionsCenter")}>
-              Centro de envíos
-            </CocoaButton>
-          </div>
-        </CocoaCard>
-      </div>
-
-      {/* ---- Form ---- */}
-      <CocoaCard variant="bordered" padding="md">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted" style={{ margin: 0 }}>Configuración</p>
-            <h3 style={{ margin: 0 }}>Región fiscal y conectores</h3>
-          </div>
-          {settings.updatedAt ? (
-            <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
-              Actualizado {dateTime(settings.updatedAt)}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="bo-grid three">
-          <label className="bo-form-field">
-            <span>País</span>
-            <CocoaSelect value={form.country} onChange={(value) => set("country", value)} options={COUNTRY_OPTIONS} />
-          </label>
-          <label className="bo-form-field">
-            <span>Región fiscal <strong>obligatorio</strong></span>
-            <CocoaSelect
-              value={form.taxRegion}
-              onChange={(value) => set("taxRegion", value as TaxRegion | "")}
-              options={[{ value: "", label: "Seleccionar…" }, ...TAX_REGION_OPTIONS.map((option) => ({ value: option.value, label: option.label }))]}
-            />
-            <small>{figure ? `Figura: ${figure.figure} · Impuesto VeriFactu ${figure.impuesto}` : "Determina IVA, IGIC o IPSI."}</small>
-          </label>
-          <label className="bo-form-field">
-            <span>Territorio foral (ruta de envío)</span>
-            <CocoaSelect
-              value={form.fiscalTerritory}
-              onChange={(value) => set("fiscalTerritory", value)}
-              options={FISCAL_TERRITORY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
-            />
-          </label>
-          <label className="bo-form-field">
-            <span>Tasa turística autonómica</span>
-            <CocoaSelect
-              value={form.tourismTaxRegion}
-              onChange={(value) => set("tourismTaxRegion", value)}
-              options={[
-                ...TOURISM_TAX_REGION_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
-                ...(form.tourismTaxRegion && !TOURISM_TAX_REGION_OPTIONS.some((option) => option.value === form.tourismTaxRegion)
-                  ? [{ value: form.tourismTaxRegion, label: `Valor actual: ${form.tourismTaxRegion}` }]
-                  : [])
-              ]}
-            />
-          </label>
-          <label className="bo-form-field">
-            <span>Tratamiento de la tasa turística</span>
-            <CocoaSelect
-              value={form.touristTaxTreatment}
-              onChange={(value) => set("touristTaxTreatment", value as TouristTaxTreatment | "")}
-              options={[{ value: "", label: "Sin definir" }, ...TOURIST_TAX_TREATMENT_OPTIONS.map((option) => ({ value: option.value, label: option.label }))]}
-            />
-          </label>
-          <label className="bo-form-field">
-            <span>Código postal</span>
-            <CocoaInput
-              value={form.postalCode}
-              onChange={(value) => set("postalCode", value)}
-              placeholder="15001"
-              inputMode="numeric"
-              error={Boolean(fiscalErrors.postalCode)}
-            />
-            {fiscalErrors.postalCode ? (
-              <small className="bo-status error" style={{ textTransform: "none", letterSpacing: 0 }}>{fiscalErrors.postalCode}</small>
-            ) : (
-              <small>Cinco dígitos. Déjalo vacío para borrar el valor guardado.</small>
-            )}
-          </label>
-          <label className="bo-form-field">
-            <span>Código INE del municipio</span>
-            <CocoaInput
-              value={form.ineMunicipalityCode}
-              onChange={(value) => set("ineMunicipalityCode", value)}
-              placeholder="15030"
-              inputMode="numeric"
-              error={Boolean(fiscalErrors.ineMunicipalityCode)}
-            />
-            {fiscalErrors.ineMunicipalityCode ? (
-              <small className="bo-status error" style={{ textTransform: "none", letterSpacing: 0 }}>{fiscalErrors.ineMunicipalityCode}</small>
-            ) : (
-              <small>Cinco dígitos (provincia + municipio), misma provincia que el CP; SES.HOSPEDAJES lo exige en la dirección del establecimiento. Vacío = borrar.</small>
-            )}
-          </label>
-          <label className="bo-form-field">
-            <span>Nº de registro turístico (SES)</span>
-            <CocoaInput
-              value={form.sesRegistryNumber}
-              onChange={(value) => set("sesRegistryNumber", value)}
-              placeholder="H-CO-000123"
-              error={Boolean(fiscalErrors.sesRegistryNumber)}
-            />
-            {fiscalErrors.sesRegistryNumber ? (
-              <small className="bo-status error" style={{ textTransform: "none", letterSpacing: 0 }}>{fiscalErrors.sesRegistryNumber}</small>
-            ) : (
-              <small>Entre 3 y 64 caracteres alfanuméricos o guiones. Vacío = borrar el número guardado.</small>
-            )}
-          </label>
-        </div>
-
-        <div className="bo-grid three" style={{ marginTop: "var(--cocoa-space-2)" }}>
-          {(
-            [
-              ["sesHospedajesEnabled", "SES.HOSPEDAJES (parte de viajeros)"],
-              ["verifactuEnabled", "VeriFactu (registro de facturación AEAT)"],
-              ["ticketbaiEnabled", "TicketBAI (haciendas forales)"],
-              ["siiEnabled", "SII (suministro inmediato de información)"],
-              ["b2bEinvoiceEnabled", "Factura electrónica B2B"]
-            ] as Array<[keyof Form, string]>
-          ).map(([key, label]) => (
-            <label key={String(key)} className="bo-form-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <input type="checkbox" checked={Boolean(form[key])} onChange={(event) => set(key, event.currentTarget.checked as Form[typeof key])} style={{ width: "auto" }} />
-              <span style={{ fontWeight: 500 }}>{label}</span>
-            </label>
-          ))}
-          {isIpsi ? (
-            <label className="bo-form-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <input
-                type="checkbox"
-                checked={form.ipsiOrdinanceConfirmed}
-                onChange={(event) => set("ipsiOrdinanceConfirmed", event.currentTarget.checked)}
-                style={{ width: "auto" }}
-              />
-              <span style={{ fontWeight: 500 }}>Tipos IPSI verificados con la ordenanza vigente</span>
-            </label>
-          ) : null}
-        </div>
-
-        {isForal && !form.ticketbaiEnabled ? (
-          <StatusLine tone="warn">Has seleccionado un territorio foral sin activar TicketBAI: las facturas no se enviarán a la Hacienda Foral.</StatusLine>
-        ) : null}
-        {form.taxRegion === "ES_CANARIAS" && form.tourismTaxRegion ? (
-          <StatusLine tone="warn">Canarias no tiene tasa turística autonómica en 2026; revisa la región de tasa turística.</StatusLine>
-        ) : null}
-
-        <div className="bo-actions" style={{ marginTop: "var(--cocoa-space-4)" }}>
-          <CocoaButton
-            variant="filled"
-            tone="accent"
-            onClick={() => void handleSave()}
-            disabled={saving || Boolean(firstFiscalError(fiscalErrors))}
-            loading={saving}
+          <CocoaCallout
+            tone="neutral"
+            title="Identidad fiscal del emisor"
+            actions={
+              <CocoaButton variant="plain" size="small" onClick={() => navigateTo("StructureScreen")}>
+                Estructura societaria
+              </CocoaButton>
+            }
           >
-            {saving ? (
-              <>
-                <Spinner size="sm" /> Guardando…
-              </>
-            ) : (
-              "Guardar configuración"
-            )}
-          </CocoaButton>
-          <CocoaButton variant="plain" onClick={() => navigateTo("PropertyProfileSetupForm")}>
-            Perfil del establecimiento
-          </CocoaButton>
-        </div>
-      </CocoaCard>
-    </section>
+            El NIF, la razón social y el domicilio fiscal son de la sociedad y se consultan en Configuración › Estructura societaria. Aquí solo se
+            configuran la región fiscal, los conectores y los códigos de este establecimiento.
+          </CocoaCallout>
+
+          <CocoaFormSection
+            title="Región fiscal y conectores"
+            description={`País, región fiscal, ruta de envío, tasa turística y códigos del establecimiento.${settings.updatedAt ? ` Actualizado ${dateTime(settings.updatedAt)}.` : ""}`}
+            actions={
+              <CocoaButton variant="plain" size="small" onClick={() => navigateTo("PropertyProfileSetupForm")}>
+                Perfil del establecimiento
+              </CocoaButton>
+            }
+          >
+            <CocoaFormRow columns={3}>
+              <CocoaField label="País" required>
+                <CocoaSelect value={form.country} onChange={(value) => set("country", value)} options={COUNTRY_OPTIONS} />
+              </CocoaField>
+              <CocoaField label="Región fiscal" required help={figure ? `Figura: ${figure.figure} · Impuesto VeriFactu ${figure.impuesto}` : "Determina IVA, IGIC o IPSI."}>
+                <CocoaSelect
+                  value={form.taxRegion}
+                  onChange={(value) => set("taxRegion", value as TaxRegion | "")}
+                  placeholder="Seleccionar…"
+                  options={TAX_REGION_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                />
+              </CocoaField>
+              <CocoaField label="Territorio foral (ruta de envío)">
+                <CocoaSelect
+                  value={form.fiscalTerritory}
+                  onChange={(value) => set("fiscalTerritory", value)}
+                  options={FISCAL_TERRITORY_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
+                />
+              </CocoaField>
+              <CocoaField label="Tasa turística autonómica">
+                <CocoaSelect
+                  value={form.tourismTaxRegion}
+                  onChange={(value) => set("tourismTaxRegion", value)}
+                  options={[
+                    ...TOURISM_TAX_REGION_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
+                    ...(form.tourismTaxRegion && !TOURISM_TAX_REGION_OPTIONS.some((option) => option.value === form.tourismTaxRegion)
+                      ? [{ value: form.tourismTaxRegion, label: `Valor actual: ${form.tourismTaxRegion}` }]
+                      : [])
+                  ]}
+                />
+              </CocoaField>
+              <CocoaField label="Tratamiento de la tasa turística">
+                <CocoaSelect
+                  value={form.touristTaxTreatment}
+                  onChange={(value) => set("touristTaxTreatment", value as TouristTaxTreatment | "")}
+                  options={[{ value: "", label: "Sin definir" }, ...TOURIST_TAX_TREATMENT_OPTIONS.map((option) => ({ value: option.value, label: option.label }))]}
+                />
+              </CocoaField>
+              <CocoaField label="Código postal" error={fiscalErrors.postalCode} help="Cinco dígitos. Déjalo vacío para borrar el valor guardado.">
+                <CocoaInput value={form.postalCode} onChange={(value) => set("postalCode", value)} placeholder="15001" inputMode="numeric" maxLength={5} autoComplete="postal-code" />
+              </CocoaField>
+              <CocoaField
+                label="Código INE del municipio"
+                error={fiscalErrors.ineMunicipalityCode}
+                help="Cinco dígitos (provincia + municipio), misma provincia que el CP; SES.HOSPEDAJES lo exige en la dirección del establecimiento. Vacío = borrar."
+              >
+                <CocoaInput value={form.ineMunicipalityCode} onChange={(value) => set("ineMunicipalityCode", value)} placeholder="15030" inputMode="numeric" maxLength={5} />
+              </CocoaField>
+              <CocoaField label="Nº de registro turístico (SES)" error={fiscalErrors.sesRegistryNumber} help="Entre 3 y 64 caracteres alfanuméricos o guiones. Vacío = borrar el número guardado.">
+                <CocoaInput value={form.sesRegistryNumber} onChange={(value) => set("sesRegistryNumber", value)} placeholder="H-CO-000123" maxLength={64} />
+              </CocoaField>
+            </CocoaFormRow>
+
+            <CocoaFormRow columns={3} role="group" aria-label="Conectores obligatorios">
+              {CONNECTOR_TOGGLES.map(([key, label]) => (
+                <CocoaField key={key} label={label} inline>
+                  <CocoaSwitch checked={form[key]} onChange={(value) => set(key, value)} size="small" />
+                </CocoaField>
+              ))}
+              {isIpsi ? (
+                <CocoaField label="Tipos IPSI verificados con la ordenanza vigente" inline>
+                  <CocoaSwitch checked={form.ipsiOrdinanceConfirmed} onChange={(value) => set("ipsiOrdinanceConfirmed", value)} size="small" />
+                </CocoaField>
+              ) : null}
+            </CocoaFormRow>
+
+            {isForal && !form.ticketbaiEnabled ? (
+              <CocoaCallout tone="warning" title="TicketBAI desactivado" role="status">
+                Has seleccionado un territorio foral sin activar TicketBAI: las facturas no se enviarán a la Hacienda Foral.
+              </CocoaCallout>
+            ) : null}
+            {form.taxRegion === "ES_CANARIAS" && form.tourismTaxRegion ? (
+              <CocoaCallout tone="warning" title="Tasa turística en Canarias" role="status">
+                Canarias no tiene tasa turística autonómica en 2026; revisa la región de tasa turística.
+              </CocoaCallout>
+            ) : null}
+          </CocoaFormSection>
+
+          <CocoaActionBar
+            aria-label="Acciones de la configuración fiscal"
+            status={dirty ? "Cambios sin guardar" : settings.provisioned ? undefined : "Valores por defecto, sin guardar"}
+            secondary={{ label: ACTIONS.cancel, disabled: !dirty || saving, onClick: () => setAskDiscard(true) }}
+            primary={{
+              label: saving ? STATUS_LABELS.saving : "Guardar configuración",
+              loading: saving,
+              disabled: saving || Boolean(firstFiscalError(fiscalErrors)),
+              onClick: () => void handleSave()
+            }}
+            publishToastOffset
+          />
+
+          <CocoaDialog
+            open={askDiscard}
+            onClose={() => setAskDiscard(false)}
+            tone="destructive"
+            title={discard.title}
+            description={discard.message}
+            confirmLabel={discard.confirmLabel}
+            cancelLabel={discard.cancelLabel}
+            onConfirm={() => {
+              if (saved) setForm(saved);
+              setAskDiscard(false);
+            }}
+          />
+        </>
+      ) : null}
+    </CocoaPage>
   );
 }
 

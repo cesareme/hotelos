@@ -1,13 +1,15 @@
-// Cumplimiento › Modelos AEAT (Cocoa 22 · ola 8 · lote 8-B) — pure helpers
-// shared by the six model screens (FiscalModelReport.tsx), the VAT books and
-// the VAT settlement: period pickers, Spanish labels of the wire contract
-// (packages/shared/src/fiscal-types.ts), box/total formatting through
-// lib/format, the fiscal error mapping on top of finance-contracts.ts, the
-// client-side CSV of a VAT book and the blob download. No React, no network:
-// screens/fiscal/__tests__/fiscal-shared.test.mts runs it under node --test.
+// Cumplimiento › Modelos AEAT y envíos (Cocoa 22 · ola 8 · lote 8-B) — pure
+// helpers shared by the six model screens (FiscalModelReport.tsx), the VAT
+// books, the VAT settlement, the submissions centre and the TicketBAI screen:
+// period pickers, Spanish labels of the wire contract
+// (packages/shared/src/fiscal-types.ts) and of the submission statuses,
+// box/total formatting through lib/format, the fiscal error mapping on top of
+// finance-contracts.ts, the client-side CSV of a VAT book and the blob
+// download. No React, no network: screens/fiscal/__tests__/fiscal-shared.test.mts
+// runs it under node --test.
 
 import type { FiscalBox, FiscalBoxKind, FiscalModelCode, FiscalPeriodDto, FiscalReportSources, VatBookName, VatBookRowDto, VatBookSourceTypeCode, VatPeriodicityCode, VatRegimeCode } from "@hotelos/shared";
-import { UI_STATES } from "../../content/actions";
+import { STATUS_LABELS, UI_STATES } from "../../content/actions";
 import { date, dateRange, dateTime, money, number, percent } from "../../lib/format";
 import { financeErrorCode, financeErrorMessage, financeErrorStatus, isAnnualFiscalModel, monthPeriod, periodBounds, quarterPeriod, yearPeriod } from "../../services/finance-contracts";
 
@@ -143,6 +145,39 @@ export const REGIME_LABELS: Readonly<Record<VatRegimeCode, string>> = Object.fre
   redeme: "REDEME (devolución mensual)",
   recargo: "Recargo de equivalencia"
 });
+
+/**
+ * Wire status of a submission to an authority → Spanish label. Union of the
+ * four submitters of the API (`invoicing/verifactu-submission.service.ts`,
+ * `tbai-submission.service.ts`, `igic-submission.service.ts`,
+ * `compliance/ses-submission.service.ts`): VeriFactu writes
+ * `accepted_with_errors` («AceptadoConErrores» of the AEAT), SES
+ * `accepted_with_warnings`, `sent` and `annulled`. Shared by the submissions
+ * centre and the TicketBAI screen so no status reaches a badge untranslated
+ * (qa#2 of the 8-B fix lot: «accepted» in every row of /cumplimiento/envios).
+ */
+export const SUBMISSION_STATUS_LABELS: Readonly<Record<string, string>> = Object.freeze({
+  pending: STATUS_LABELS.pending,
+  queued: "En cola",
+  submitting: "Enviando",
+  sent: STATUS_LABELS.sent,
+  retrying: "Reintentando",
+  network_error: "Error de red",
+  accepted: "Aceptado",
+  accepted_with_errors: "Aceptado con errores",
+  accepted_with_warnings: "Aceptado con avisos",
+  delivered: "Entregado",
+  acknowledged: "Confirmado",
+  rejected: STATUS_LABELS.rejected,
+  failed: "Fallido (máx. intentos)",
+  abandoned: "Abandonado",
+  annulled: "Anulado"
+});
+
+/** Label of a submission status; a status the API adds later falls back to its raw value. */
+export function submissionStatusLabel(status: string): string {
+  return SUBMISSION_STATUS_LABELS[status] ?? status;
+}
 
 /** `totales` keys of the six models → Spanish label; unknown keys fall back to the key itself. */
 export const TOTALES_LABELS: Readonly<Record<string, string>> = Object.freeze({

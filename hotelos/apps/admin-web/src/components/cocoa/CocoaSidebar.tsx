@@ -130,7 +130,9 @@ function SidebarItem({ item, onSelect }: { item: CocoaSidebarItem; onSelect: (it
   const style: CSSProperties = useMemo(() => {
     const merged: CSSProperties = { ...itemBaseStyle };
     if (isSelected) {
-      merged.background = "var(--cocoa-accent)";
+      // Filled surface under the accent ink with 13 px text: the fill token
+      // (5.35:1 in light), not the bare hue (4.36:1) — same rule as CocoaButton.
+      merged.background = "var(--cocoa-accent-fill)";
       merged.color = "var(--cocoa-accent-contrast)";
       merged.fontWeight = "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"];
     } else if (hovered) {

@@ -31,7 +31,9 @@
 //           (`"desktop"` = only ≥ 1200: qa#2 measured 7–9 columns at 1024
 //           crushing the text column to 117 px) and `hideOnNarrow` is its
 //           `"tablet"` case. `minWidth` on the text column is the floor below
-//           which the wrapper scrolls horizontally instead of wrapping.
+//           which the wrapper scrolls horizontally instead of wrapping;
+//           `truncate` caps a cell whose value length the screen does not
+//           control (identifiers, tokens) with an ellipsis and a tooltip.
 //   < 600   stacked label/value cards (radius 12, hairline, control shadow)
 //
 // Density can also be inherited from `CocoaPage density` (the
@@ -71,6 +73,17 @@ export interface CocoaTableColumn<Row> {
   fit?: boolean;
   /** Keep the cells on one line. Default: `true` for `fit` and for `align: "right"` (a number never splits). */
   nowrap?: boolean;
+  /**
+   * Cap the cell at this many pixels and cut its text with an ellipsis (an
+   * inline-block `.cocoa-truncate` around the rendered content; the full text
+   * goes to the native tooltip when the cell renders a string or a number).
+   * For identifiers, tokens and addresses whose length the screen does not
+   * control: with `fit` the column still shrinks to its content, but never
+   * past the cap (qa#1 8-A: an 83-character document token made «Documento»
+   * 667 px and the table 1610 px inside a 1150 px wrapper). Also applied in
+   * the phone cards, where an unbreakable value would otherwise widen the card.
+   */
+  truncate?: number;
   render?: (row: Row) => ReactNode;
   /** Cell of the totals row (`footer` prop must be true or an object). */
   footer?: ReactNode;
@@ -216,6 +229,24 @@ export function defaultRender<Row>(row: Row, key: string): ReactNode {
   return null;
 }
 
+/** Native tooltip of a truncated cell (pure): the full text when the cell renders a string or a number, nothing otherwise. */
+export function truncatedCellTitle(content: ReactNode): string | undefined {
+  return typeof content === "string" || typeof content === "number" ? String(content) : undefined;
+}
+
+/** Rendered content of a column, wrapped in the truncation cap when the column asks for it (`truncate`). */
+function cellContent<Row>(row: Row, col: CocoaTableColumn<Row>): ReactNode {
+  const content = col.render ? col.render(row) : defaultRender(row, col.key);
+  if (col.truncate === undefined) return content;
+  // `vertical-align: bottom`: an inline-block with `overflow: hidden` moves its
+  // baseline to its bottom edge, which would lift the value above the sibling text.
+  return (
+    <span className="cocoa-truncate c22-table__truncate" style={{ display: "inline-block", maxWidth: col.truncate, verticalAlign: "bottom" }} title={truncatedCellTitle(content)}>
+      {content}
+    </span>
+  );
+}
+
 function SortIcon({ state }: { state: "asc" | "desc" | "none" }) {
   if (state === "none") return null;
   return (
@@ -356,7 +387,7 @@ export function CocoaTable<Row>({
               data-tone={tone}
             >
               {visibleColumns.map((col) => {
-                const content = col.render ? col.render(row) : defaultRender(row, col.key);
+                const content = cellContent(row, col);
                 return (
                   <div key={col.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: "var(--cocoa-space-3)" }}>
                     {col.label ? (
@@ -514,7 +545,7 @@ export function CocoaTable<Row>({
                     });
                     return (
                       <td key={col.key} style={tdStyle} data-align={align} data-fit={col.fit ? "true" : undefined}>
-                        {col.render ? col.render(row) : defaultRender(row, col.key)}
+                        {cellContent(row, col)}
                       </td>
                     );
                   })}

@@ -17,12 +17,17 @@
 //               24 / 16); header, toolbar, chips and states keep it (§5.1)
 //   commands    registered in the page-command registry while mounted; the
 //               command palette lists them as «Acciones de la página»
+//   tabs        inner views: the head (standalone or hosted) paints the
+//               CocoaSegmentedControl and the BODY is their `role="tabpanel"`
+//               (`useId()`, labelled with the active view) so the active tab
+//               always carries `aria-controls` (qa#10). A screen that paints
+//               its own panel passes `panelId` and the body stays a plain div.
 //
 // Layout (stack, gap, full-bleed margins) is owned by the css lot through
 // `.c22-page[data-gap]` / `[data-full-bleed]`; this component only emits the
 // hooks (§8 contract: data-cocoa root + c22-* classes + data-* variants).
 
-import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useId, useRef, type CSSProperties, type ReactNode } from "react";
 import { HostedHead } from "../../screens/tabs/tab-helpers";
 import { useHostedEyebrow, useTabHost } from "../../screens/tabs/TabHost";
 import { CocoaPageHeader, type CocoaPageHeaderProps } from "./CocoaPageHeader";
@@ -34,7 +39,7 @@ export { commandsKey };
 export type CocoaPageDensity = "comfortable" | "compact";
 export type CocoaPageGap = 3 | 4 | 5;
 
-export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange" | "wrap"> {
+export interface CocoaPageProps extends Pick<CocoaPageHeaderProps, "eyebrow" | "title" | "subtitle" | "icon" | "tabs" | "activeTab" | "onTabChange" | "panelId" | "wrap"> {
   /** Actions row (standalone → header; hosted → HOSTED_ACTIONS_ROW). */
   actions?: ReactNode;
   state?: CocoaPageState;
@@ -63,6 +68,7 @@ export function CocoaPage({
   tabs,
   activeTab,
   onTabChange,
+  panelId,
   wrap,
   actions,
   state,
@@ -108,7 +114,15 @@ export function CocoaPage({
 
   // A hosted page with nothing to add under the container's head paints no
   // header wrapper at all (an empty wrapper would still take a gap slot).
-  const hasHostedHead = Boolean(subtitle || actions || (Array.isArray(tabs) && tabs.length > 0));
+  const hasTabs = Array.isArray(tabs) && tabs.length > 0;
+  const hasHostedHead = Boolean(subtitle || actions || hasTabs);
+
+  // Inner views own a panel: unless the screen paints its own (`panelId`
+  // given), the body is the `role="tabpanel"` the active tab controls.
+  const generatedPanelId = useId();
+  const ownsPanel = hasTabs && !panelId;
+  const resolvedPanelId = hasTabs ? (panelId ?? generatedPanelId) : undefined;
+  const activeView = hasTabs ? (tabs!.find((tab) => tab.value === activeTab) ?? tabs![0]) : undefined;
 
   return (
     <div
@@ -126,15 +140,21 @@ export function CocoaPage({
       {hosted ? (
         hasHostedHead ? (
           <div className="c22-page__header">
-            <HostedHead title={title} subtitle={subtitle} actions={actions} tabs={tabs} activeTab={activeTab} onTabChange={onTabChange} />
+            <HostedHead title={title} subtitle={subtitle} actions={actions} tabs={tabs} activeTab={activeTab} onTabChange={onTabChange} panelId={resolvedPanelId} />
           </div>
         ) : null
       ) : (
         <div className="c22-page__header">
-          <CocoaPageHeader eyebrow={eyebrow} title={title} subtitle={subtitle} icon={icon} actions={actions} tabs={tabs} activeTab={activeTab} onTabChange={onTabChange} wrap={wrap} />
+          <CocoaPageHeader eyebrow={eyebrow} title={title} subtitle={subtitle} icon={icon} actions={actions} tabs={tabs} activeTab={activeTab} onTabChange={onTabChange} panelId={resolvedPanelId} wrap={wrap} />
         </div>
       )}
-      <div className="c22-page__body cocoa-page-body" aria-busy={resolved === "loading" || undefined}>
+      <div
+        className="c22-page__body cocoa-page-body"
+        id={ownsPanel ? resolvedPanelId : undefined}
+        role={ownsPanel ? "tabpanel" : undefined}
+        aria-label={ownsPanel ? activeView?.label : undefined}
+        aria-busy={resolved === "loading" || undefined}
+      >
         {body}
       </div>
     </div>

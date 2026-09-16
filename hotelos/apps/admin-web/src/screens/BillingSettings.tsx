@@ -1,24 +1,46 @@
-// Ajustes de facturación (Tanda 3 · lote front-fiscal).
-//
-// Series de facturación reales (GET/PATCH /backoffice/properties/:id/billing-settings)
-// y estado VeriFactu leído de compliance-settings + /compliance/health. La
-// antigua tarjeta «No active sequence is configured» era un literal falso.
+// Ajustes de facturación — Configuración › Facturación y pagos › Facturación
+// (/configuracion/facturacion-pagos, base tab of FacturacionPagosTabs).
+// Cocoa 22 · ola 10 · lote 10-D, archetype «formulario / ajustes»
+// (docs/design/COCOA-22.md §4): CocoaPage (hosted: the container paints eyebrow
+// and title) → two CocoaSection panels on the 12-column grid (series summary
+// with the link to the sociedad-wide view of Estructura societaria · VeriFactu
+// status read from compliance-settings + /compliance/health) → CocoaTable of
+// the real invoice series (GET /backoffice/properties/:id/billing-settings)
+// with «Editar» per row → CocoaDrawer editor (CocoaField controls, the server
+// rules mirrored in CocoaField.error, «Guardar serie» through PATCH
+// /backoffice/properties/:id/billing-settings). The fiscal identity of the
+// issuer (NIF, razón social) belongs to the legal entity and is only linked
+// from here. The old «No active sequence is configured» card was a false literal.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../services/activeProperty";
 import { ApiError } from "../services/api-client";
 import { fetchBillingSettings, patchBillingSettings, type InvoiceSequence, type InvoiceSequencePatch } from "../services/billingApi";
 import { fetchComplianceHealth, fetchComplianceSettings, type ComplianceHealthReport, type ComplianceSettings } from "../services/complianceApi";
 import { useToast } from "../components/Toast";
-import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
-import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
-import { pageHead } from "./tabs/configuracion/tab-helpers";
-import { CocoaCard } from "../components/cocoa/CocoaCard";
-import { CocoaButton } from "../components/cocoa/CocoaButton";
-import { CocoaSelect } from "../components/cocoa/CocoaSelect";
-import { CocoaInput } from "../components/cocoa/CocoaInput";
-import { CocoaTable, type CocoaTableColumn } from "../components/cocoa/CocoaTable";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  type CocoaTableColumn
+} from "../components/cocoa";
+import { ACTIONS, STATUS_LABELS } from "../content/actions";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
+import { EMPTY, plural } from "../lib/format";
+import { treeHeaderFor } from "./tabs/tab-helpers";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -36,11 +58,23 @@ const INVOICE_TYPE_LABELS: Record<string, string> = {
   R5: "Rectificativa (R5 · simplificada)"
 };
 
+const INVOICE_TYPE_OPTIONS = [
+  { value: "full", label: INVOICE_TYPE_LABELS.full },
+  { value: "simplified", label: INVOICE_TYPE_LABELS.simplified },
+  { value: "rectifying", label: INVOICE_TYPE_LABELS.rectifying },
+  { value: "credit_note", label: INVOICE_TYPE_LABELS.credit_note }
+];
+
 const SERIES_PRESETS: Array<{ code: string; label: string; invoiceType: InvoiceSequencePatch["invoiceType"]; prefix: string }> = [
   { code: "FAC", label: "FAC · facturas completas", invoiceType: "full", prefix: "FAC-" },
   { code: "SIM", label: "SIM · facturas simplificadas", invoiceType: "simplified", prefix: "SIM-" },
   { code: "REC", label: "REC · rectificativas", invoiceType: "rectifying", prefix: "REC-" }
 ];
+
+/** Value of the code picker that opens the free-text code field. */
+const CUSTOM_CODE = "__custom";
+
+const CODE_OPTIONS = [...SERIES_PRESETS.map((preset) => ({ value: preset.code, label: preset.label })), { value: CUSTOM_CODE, label: "Otro código…" }];
 
 type SeriesForm = {
   sequenceCode: string;
@@ -51,6 +85,8 @@ type SeriesForm = {
   year: string;
   active: boolean;
 };
+
+type SeriesErrors = Partial<Record<"sequenceCode" | "nextNumber" | "padding" | "year", string>>;
 
 const CURRENT_YEAR = new Date().getFullYear();
 
@@ -70,9 +106,52 @@ function previewNumber(sequence: { prefix?: string | null; nextNumber: number; p
   return `${sequence.prefix ?? ""}${String(sequence.nextNumber).padStart(Math.max(0, sequence.padding), "0")}`;
 }
 
-export function BillingSettings({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
-  const Head = pageHead(embedded);
+/** Client mirror of the PATCH rules; the messages are the ones the toast used to show. Empty = valid. */
+function validateSeries(form: SeriesForm): SeriesErrors {
+  const errors: SeriesErrors = {};
+  if (!form.sequenceCode.trim()) errors.sequenceCode = "Indica el código de la serie (FAC, SIM, REC…).";
+  const nextNumber = Number(form.nextNumber);
+  if (!Number.isInteger(nextNumber) || nextNumber < 1) errors.nextNumber = "El próximo número debe ser un entero mayor que 0.";
+  const padding = Number(form.padding);
+  if (!Number.isInteger(padding) || padding < 0 || padding > 12) errors.padding = "El relleno debe estar entre 0 y 12 dígitos.";
+  if (form.year.trim()) {
+    const year = Number(form.year);
+    if (!Number.isInteger(year) || year < 2000 || year > 2100) errors.year = "El año de la serie no es válido.";
+  }
+  return errors;
+}
+
+function firstSeriesError(errors: SeriesErrors): string | undefined {
+  return errors.sequenceCode ?? errors.nextNumber ?? errors.padding ?? errors.year;
+}
+
+function modeLabel(mode: string | undefined): string {
+  if (mode === "production") return "producción";
+  if (mode === "preproduction") return "preproducción";
+  return "pruebas";
+}
+
+const SEQUENCE_COLUMNS: CocoaTableColumn<InvoiceSequence>[] = [
+  { key: "sequenceCode", label: "Código", fit: true, render: (row) => <strong className="cocoa-tabular">{row.sequenceCode}</strong> },
+  { key: "prefix", label: "Prefijo", render: (row) => row.prefix || EMPTY },
+  {
+    key: "year",
+    label: "Año",
+    fit: true,
+    render: (row) => (row.year ? <span className="cocoa-tabular">{String(row.year)}</span> : <span title="Serie sin ejercicio (numeración continua)">{EMPTY}</span>)
+  },
+  { key: "nextNumber", label: "Próximo nº", align: "right", fit: true, render: (row) => <span className="cocoa-tabular">{previewNumber(row)}</span> },
+  { key: "invoiceType", label: "Tipo", hideOnNarrow: true, render: (row) => INVOICE_TYPE_LABELS[row.invoiceType] ?? row.invoiceType },
+  {
+    key: "active",
+    label: "Activa",
+    fit: true,
+    render: (row) => <CocoaBadge tone={row.active ? "success" : "warning"}>{row.active ? STATUS_LABELS.yes : STATUS_LABELS.no}</CocoaBadge>
+  }
+];
+
+export function BillingSettings() {
+  const header = treeHeaderFor("BillingSettings", { eyebrow: "Finanzas y cumplimiento", title: "Ajustes de facturación" });
   const { showToast } = useToast();
   const [sequences, setSequences] = useState<InvoiceSequence[]>([]);
   const [loading, setLoading] = useState(true);
@@ -81,6 +160,7 @@ export function BillingSettings({ embedded = false }: { embedded?: boolean } = {
   const [health, setHealth] = useState<ComplianceHealthReport | null>(null);
   const [form, setForm] = useState<SeriesForm>(emptySeriesForm());
   const [showForm, setShowForm] = useState(false);
+  const [editingCode, setEditingCode] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const load = useCallback(async () => {
@@ -115,6 +195,12 @@ export function BillingSettings({ embedded = false }: { embedded?: boolean } = {
     }));
   }
 
+  function openNewSeries() {
+    setForm(emptySeriesForm());
+    setEditingCode(null);
+    setShowForm(true);
+  }
+
   function editSequence(sequence: InvoiceSequence) {
     setForm({
       sequenceCode: sequence.sequenceCode,
@@ -125,30 +211,27 @@ export function BillingSettings({ embedded = false }: { embedded?: boolean } = {
       year: sequence.year ? String(sequence.year) : "",
       active: sequence.active
     });
+    setEditingCode(sequence.sequenceCode);
     setShowForm(true);
   }
 
+  function closeForm() {
+    if (saving) return;
+    setShowForm(false);
+  }
+
+  const errors = useMemo(() => validateSeries(form), [form]);
+
   async function handleSave() {
+    const firstError = firstSeriesError(errors);
+    if (firstError) {
+      showToast(firstError, { variant: "error" });
+      return;
+    }
     const code = form.sequenceCode.trim().toUpperCase();
     const nextNumber = Number(form.nextNumber);
     const padding = Number(form.padding);
     const year = form.year.trim() ? Number(form.year) : undefined;
-    if (!code) {
-      showToast("Indica el código de la serie (FAC, SIM, REC…).", { variant: "error" });
-      return;
-    }
-    if (!Number.isInteger(nextNumber) || nextNumber < 1) {
-      showToast("El próximo número debe ser un entero mayor que 0.", { variant: "error" });
-      return;
-    }
-    if (!Number.isInteger(padding) || padding < 0 || padding > 12) {
-      showToast("El relleno debe estar entre 0 y 12 dígitos.", { variant: "error" });
-      return;
-    }
-    if (year !== undefined && (!Number.isInteger(year) || year < 2000 || year > 2100)) {
-      showToast("El año de la serie no es válido.", { variant: "error" });
-      return;
-    }
     setSaving(true);
     try {
       await patchBillingSettings(PROPERTY_ID, {
@@ -163,6 +246,7 @@ export function BillingSettings({ embedded = false }: { embedded?: boolean } = {
       showToast(`Serie ${code}${year ? ` (${year})` : ""} guardada.`, { variant: "success" });
       setShowForm(false);
       setForm(emptySeriesForm());
+      setEditingCode(null);
       await load();
     } catch (err) {
       const message =
@@ -178,210 +262,187 @@ export function BillingSettings({ embedded = false }: { embedded?: boolean } = {
   }
 
   const rows = useMemo(
-    () =>
-      [...sequences].sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || a.sequenceCode.localeCompare(b.sequenceCode)),
+    () => [...sequences].sort((a, b) => (b.year ?? 0) - (a.year ?? 0) || a.sequenceCode.localeCompare(b.sequenceCode)),
     [sequences]
-  );
-
-  const columns = useMemo<CocoaTableColumn<InvoiceSequence>[]>(
-    () => [
-      { key: "sequenceCode", label: "Código", render: (row) => <strong>{row.sequenceCode}</strong> },
-      { key: "prefix", label: "Prefijo", render: (row) => row.prefix || <span className="bo-muted">—</span> },
-      { key: "year", label: "Año", width: "80px", render: (row) => (row.year ? String(row.year) : <span className="bo-muted" title="Serie sin ejercicio (numeración continua)">—</span>) },
-      { key: "nextNumber", label: "Próximo nº", align: "right", width: "160px", render: (row) => <code>{previewNumber(row)}</code> },
-      { key: "invoiceType", label: "Tipo", render: (row) => INVOICE_TYPE_LABELS[row.invoiceType] ?? row.invoiceType },
-      {
-        key: "active",
-        label: "Activa",
-        width: "90px",
-        render: (row) => <span className={`bo-status ${row.active ? "ok" : "warn"}`} style={{ textTransform: "none" }}>{row.active ? "sí" : "no"}</span>
-      },
-      {
-        key: "actions",
-        label: "",
-        align: "right",
-        width: "90px",
-        render: (row) => (
-          <CocoaButton variant="plain" size="small" onClick={() => editSequence(row)}>
-            Editar
-          </CocoaButton>
-        )
-      }
-    ],
-    []
   );
 
   const verifactuHealth = toArray<ComplianceHealthReport["integrations"][number]>(health?.integrations).find((integration) => integration.integration === "verifactu");
   const activeCount = sequences.filter((sequence) => sequence.active).length;
-
-  if (loading && sequences.length === 0 && !error) {
-    return (
-      <section className="bo-card">
-        <LoadingBlock label="Cargando series de facturación…" />
-      </section>
-    );
-  }
-  if (error && sequences.length === 0) {
-    return (
-      <section className="bo-card">
-        <ErrorState title="No se pudieron cargar los ajustes de facturación" message={error} onRetry={() => void load()} />
-      </section>
-    );
-  }
+  const isPreset = SERIES_PRESETS.some((preset) => preset.code === form.sequenceCode);
+  const preview = previewNumber({ prefix: form.prefix, nextNumber: Number(form.nextNumber) || 1, padding: Number(form.padding) || 0 });
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <Head
-        eyebrow="Finanzas y cumplimiento"
-        title="Ajustes de facturación"
-        subtitle="Series de numeración por tipo de factura y ejercicio, y estado del registro VeriFactu"
-        actions={
-          <span style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", flexWrap: "wrap" }}>
-            <CocoaButton variant="plain" onClick={() => navigateTo("BillingCenter")}>
-              Centro de facturación
-            </CocoaButton>
-            <CocoaButton variant="plain" onClick={() => navigateTo("ReportingCenter")}>
-              Informes
-            </CocoaButton>
-            <CocoaButton
-              variant="filled"
-              tone="accent"
-              onClick={() => {
-                setForm(emptySeriesForm());
-                setShowForm(true);
-              }}
-            >
-              Nueva serie
-            </CocoaButton>
-          </span>
-        }
-      />
+    <CocoaPage
+      eyebrow={header.eyebrow}
+      title={header.title}
+      subtitle="Series de numeración por tipo de factura y ejercicio, y estado del registro VeriFactu"
+      actions={
+        <>
+          <CocoaButton variant="plain" onClick={() => navigateTo("BillingCenter")}>
+            Centro de facturación
+          </CocoaButton>
+          <CocoaButton variant="plain" onClick={() => navigateTo("ReportingCenter")}>
+            Informes
+          </CocoaButton>
+          <CocoaButton variant="filled" tone="accent" onClick={openNewSeries}>
+            Nueva serie
+          </CocoaButton>
+        </>
+      }
+      state={loading && sequences.length === 0 && !error ? "loading" : error && sequences.length === 0 ? "error" : "ready"}
+      skeleton={<CocoaSkeleton.Grid rows={[[6, 6], [12]]} height={160} label="Cargando series de facturación…" />}
+      error={{ title: "No se pudieron cargar los ajustes de facturación", message: error ?? undefined, onRetry: () => void load() }}
+      commands={[
+        { id: "billing-settings-new-series", label: "Nueva serie de facturación", run: openNewSeries },
+        { id: "billing-settings-refresh", label: "Actualizar los ajustes de facturación", run: () => void load() }
+      ]}
+      id="billing-settings"
+    >
+      <CocoaGrid aria-label="Series de facturación y VeriFactu">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Series de facturación"
+            meta={
+              <CocoaBadge tone={activeCount > 0 ? "success" : "danger"}>
+                {activeCount > 0 ? plural(activeCount, "activa", "activas") : "sin serie activa"}
+              </CocoaBadge>
+            }
+            footer={
+              <div className="cocoa-cluster">
+                <CocoaButton variant="plain" size="small" onClick={() => navigateTo("StructureSeriesTab")}>
+                  Series de toda la sociedad
+                </CocoaButton>
+                <CocoaButton variant="plain" size="small" onClick={() => navigateTo("FinanceComplianceSetupForm")}>
+                  Asistente de finanzas y cumplimiento
+                </CocoaButton>
+              </div>
+            }
+          >
+            <p>
+              Cada tipo de factura (completa, simplificada, rectificativa) necesita su serie. Con ejercicio, la numeración se reinicia cada año y el número se
+              asigna al emitir (nunca al crear el borrador).
+            </p>
+            <p className="cocoa-note">
+              La identidad fiscal del emisor (NIF y razón social) es de la sociedad y se consulta en Configuración › Estructura societaria; aquí solo se
+              numeran las facturas de este establecimiento.
+            </p>
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="VeriFactu"
+            meta={
+              <CocoaBadge tone={compliance ? (compliance.verifactuEnabled ? "success" : "warning") : "neutral"}>
+                {compliance ? (compliance.verifactuEnabled ? STATUS_LABELS.enabled : STATUS_LABELS.disabled) : "no disponible"}
+              </CocoaBadge>
+            }
+            footer={
+              <div className="cocoa-cluster">
+                <CocoaButton variant="plain" size="small" onClick={() => navigateTo("FiscalDashboard")}>
+                  Centro fiscal
+                </CocoaButton>
+                <CocoaButton variant="plain" size="small" onClick={() => navigateTo("TaxComplianceSettings")}>
+                  Ajustes fiscales
+                </CocoaButton>
+              </div>
+            }
+          >
+            <p>
+              {verifactuHealth
+                ? `Conector en modo ${modeLabel(verifactuHealth.mode)} · certificado ${verifactuHealth.cert.configured ? "configurado" : "sin configurar"}.`
+                : "Estado del conector no disponible."}{" "}
+              Las facturas emitidas son inmutables: se corrigen con anulación o rectificativa.
+            </p>
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
-      <div className="bo-grid two">
-        <CocoaCard variant="bordered" padding="md">
-          <div className="bo-card-head">
-            <h3 style={{ margin: 0 }}>Series de facturación</h3>
-            <span className={`bo-status ${activeCount > 0 ? "ok" : "error"}`} style={{ textTransform: "none" }}>
-              {activeCount > 0 ? `${activeCount} activa${activeCount === 1 ? "" : "s"}` : "sin serie activa"}
-            </span>
-          </div>
-          <p className="bo-muted" style={{ margin: 0 }}>
-            Cada tipo de factura (completa, simplificada, rectificativa) necesita su serie. Con ejercicio, la numeración se reinicia cada año y el
-            número se asigna al emitir (nunca al crear el borrador).
-          </p>
-        </CocoaCard>
-        <CocoaCard variant="bordered" padding="md">
-          <div className="bo-card-head">
-            <h3 style={{ margin: 0 }}>VeriFactu</h3>
-            <span className={`bo-status ${compliance ? (compliance.verifactuEnabled ? "ok" : "warn") : "info"}`} style={{ textTransform: "none" }}>
-              {compliance ? (compliance.verifactuEnabled ? "activado" : "desactivado") : "no disponible"}
-            </span>
-          </div>
-          <p className="bo-muted" style={{ margin: 0 }}>
-            {verifactuHealth
-              ? `Conector en modo ${verifactuHealth.mode === "production" ? "producción" : verifactuHealth.mode === "preproduction" ? "preproducción" : "pruebas"} · certificado ${verifactuHealth.cert.configured ? "configurado" : "sin configurar"}.`
-              : "Estado del conector no disponible."}{" "}
-            Las facturas emitidas son inmutables: se corrigen con anulación o rectificativa.
-          </p>
-          <div className="bo-actions">
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("FiscalDashboard")}>
-              Centro fiscal
-            </CocoaButton>
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("TaxComplianceSettings")}>
-              Ajustes fiscales
-            </CocoaButton>
-          </div>
-        </CocoaCard>
-      </div>
+      <CocoaSection title="Series de la propiedad" meta={plural(rows.length, "serie", "series")} padding={rows.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {rows.length === 0 ? (
+          <CocoaState
+            kind="empty"
+            dashed
+            title="Sin series de facturación"
+            message="No se puede emitir ninguna factura hasta crear al menos una serie activa (FAC para facturas completas)."
+            primaryAction={{ label: "Crear serie FAC", onClick: openNewSeries }}
+          />
+        ) : (
+          <CocoaTable<InvoiceSequence>
+            columns={SEQUENCE_COLUMNS}
+            rows={rows}
+            rowKey="id"
+            caption="Series de facturación de la propiedad"
+            aria-label="Series de facturación de la propiedad"
+            emptyState="Sin series."
+            rowActionsVisible="always"
+            rowActions={(row) => (
+              <CocoaButton
+                variant="plain"
+                size="small"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  editSequence(row);
+                }}
+              >
+                {ACTIONS.edit}
+              </CocoaButton>
+            )}
+          />
+        )}
+      </CocoaSection>
 
-      {rows.length === 0 ? (
-        <EmptyState
-          title="Sin series de facturación"
-          message="No se puede emitir ninguna factura hasta crear al menos una serie activa (FAC para facturas completas)."
-          actions={
-            <CocoaButton variant="filled" tone="accent" onClick={() => setShowForm(true)}>
-              Crear serie FAC
+      <CocoaDrawer
+        open={showForm}
+        onClose={closeForm}
+        title={editingCode ? `Serie ${editingCode}` : "Nueva serie"}
+        subtitle="Numeración por tipo de factura y ejercicio"
+        size="md"
+        footer={
+          <>
+            <CocoaButton variant="plain" tone="neutral" onClick={closeForm} disabled={saving}>
+              {ACTIONS.cancel}
             </CocoaButton>
-          }
-        />
-      ) : (
-        <CocoaTable<InvoiceSequence> columns={columns} rows={rows} rowKey="id" emptyState="Sin series." />
-      )}
-
-      {showForm ? (
-        <CocoaCard variant="bordered" padding="md">
-          <div className="bo-card-head">
-            <h3 style={{ margin: 0 }}>Serie {form.sequenceCode || "nueva"}</h3>
-            <CocoaButton variant="plain" size="small" onClick={() => setShowForm(false)} disabled={saving}>
-              Cerrar
-            </CocoaButton>
-          </div>
-          <div className="bo-grid three">
-            <label className="bo-form-field">
-              <span>Código de serie</span>
-              <CocoaSelect
-                value={SERIES_PRESETS.some((preset) => preset.code === form.sequenceCode) ? form.sequenceCode : "__custom"}
-                onChange={(value) => (value === "__custom" ? setForm({ ...form, sequenceCode: "" }) : applyPreset(value))}
-                options={[...SERIES_PRESETS.map((preset) => ({ value: preset.code, label: preset.label })), { value: "__custom", label: "Otro código…" }]}
-              />
-            </label>
-            {!SERIES_PRESETS.some((preset) => preset.code === form.sequenceCode) ? (
-              <label className="bo-form-field">
-                <span>Código personalizado</span>
-                <CocoaInput value={form.sequenceCode} onChange={(value) => setForm({ ...form, sequenceCode: value.toUpperCase() })} placeholder="AUDIT" />
-              </label>
-            ) : null}
-            <label className="bo-form-field">
-              <span>Tipo de factura</span>
-              <CocoaSelect
-                value={form.invoiceType}
-                onChange={(value) => setForm({ ...form, invoiceType: value as InvoiceSequencePatch["invoiceType"] })}
-                options={[
-                  { value: "full", label: INVOICE_TYPE_LABELS.full },
-                  { value: "simplified", label: INVOICE_TYPE_LABELS.simplified },
-                  { value: "rectifying", label: INVOICE_TYPE_LABELS.rectifying },
-                  { value: "credit_note", label: INVOICE_TYPE_LABELS.credit_note }
-                ]}
-              />
-            </label>
-            <label className="bo-form-field">
-              <span>Ejercicio (año)</span>
-              <CocoaInput value={form.year} onChange={(value) => setForm({ ...form, year: value })} type="number" inputMode="numeric" placeholder={String(CURRENT_YEAR)} />
-              <small>Vacío = numeración continua sin reinicio anual.</small>
-            </label>
-            <label className="bo-form-field">
-              <span>Prefijo</span>
-              <CocoaInput value={form.prefix} onChange={(value) => setForm({ ...form, prefix: value })} placeholder="FAC-2026-" />
-            </label>
-            <label className="bo-form-field">
-              <span>Próximo número</span>
-              <CocoaInput value={form.nextNumber} onChange={(value) => setForm({ ...form, nextNumber: value })} type="number" inputMode="numeric" />
-            </label>
-            <label className="bo-form-field">
-              <span>Relleno (dígitos)</span>
-              <CocoaInput value={form.padding} onChange={(value) => setForm({ ...form, padding: value })} type="number" inputMode="numeric" />
-            </label>
-            <label className="bo-form-field" style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.currentTarget.checked })} style={{ width: "auto" }} />
-              <span style={{ fontWeight: 500 }}>Serie activa</span>
-            </label>
-          </div>
-          <p className="bo-muted">
-            Vista previa del próximo número:{" "}
-            <code>{previewNumber({ prefix: form.prefix, nextNumber: Number(form.nextNumber) || 1, padding: Number(form.padding) || 0 })}</code>. Cambiar el próximo
-            número de una serie con facturas emitidas puede romper la correlatividad exigida por el RD 1619/2012.
-          </p>
-          <div className="bo-actions">
-            <CocoaButton variant="filled" tone="accent" onClick={() => void handleSave()} disabled={saving} loading={saving}>
+            <CocoaButton variant="filled" tone="accent" onClick={() => void handleSave()} loading={saving} disabled={saving || Boolean(firstSeriesError(errors))}>
               Guardar serie
             </CocoaButton>
-            <CocoaButton variant="plain" onClick={() => navigateTo("FinanceComplianceSetupForm")}>
-              Asistente de finanzas y cumplimiento
-            </CocoaButton>
-          </div>
-        </CocoaCard>
-      ) : null}
-    </section>
+          </>
+        }
+      >
+        <div className="cocoa-stack" data-gap="4">
+          <CocoaFormRow columns={2}>
+            <CocoaField label="Código de serie" required>
+              <CocoaSelect value={isPreset ? form.sequenceCode : CUSTOM_CODE} onChange={(value) => (value === CUSTOM_CODE ? setForm({ ...form, sequenceCode: "" }) : applyPreset(value))} options={CODE_OPTIONS} />
+            </CocoaField>
+            {!isPreset ? (
+              <CocoaField label="Código personalizado" required error={errors.sequenceCode}>
+                <CocoaInput value={form.sequenceCode} onChange={(value) => setForm({ ...form, sequenceCode: value.toUpperCase() })} placeholder="AUDIT" maxLength={12} />
+              </CocoaField>
+            ) : null}
+            <CocoaField label="Tipo de factura" required>
+              <CocoaSelect value={form.invoiceType} onChange={(value) => setForm({ ...form, invoiceType: value as InvoiceSequencePatch["invoiceType"] })} options={INVOICE_TYPE_OPTIONS} />
+            </CocoaField>
+            <CocoaField label="Ejercicio (año)" error={errors.year} help="Vacío = numeración continua sin reinicio anual.">
+              <CocoaInput value={form.year} onChange={(value) => setForm({ ...form, year: value })} type="number" inputMode="numeric" placeholder={String(CURRENT_YEAR)} min={2000} max={2100} />
+            </CocoaField>
+            <CocoaField label="Prefijo">
+              <CocoaInput value={form.prefix} onChange={(value) => setForm({ ...form, prefix: value })} placeholder={`FAC-${CURRENT_YEAR}-`} />
+            </CocoaField>
+            <CocoaField label="Próximo número" required error={errors.nextNumber}>
+              <CocoaInput value={form.nextNumber} onChange={(value) => setForm({ ...form, nextNumber: value })} type="number" inputMode="numeric" min={1} />
+            </CocoaField>
+            <CocoaField label="Relleno (dígitos)" required error={errors.padding}>
+              <CocoaInput value={form.padding} onChange={(value) => setForm({ ...form, padding: value })} type="number" inputMode="numeric" min={0} max={12} />
+            </CocoaField>
+            <CocoaField label="Serie activa" inline>
+              <CocoaSwitch checked={form.active} onChange={(value) => setForm({ ...form, active: value })} size="small" />
+            </CocoaField>
+          </CocoaFormRow>
+          <CocoaCallout tone="warning" title={`Vista previa del próximo número: ${preview}`}>
+            Cambiar el próximo número de una serie con facturas emitidas puede romper la correlatividad exigida por el RD 1619/2012.
+          </CocoaCallout>
+        </div>
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }
 

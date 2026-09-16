@@ -1,10 +1,44 @@
-// API Reference Screen — documentación pública navegable de la API.
+// API Reference — Configuración › Sistema › Referencia de API (/configuracion/sistema/api).
 //
-// Directriz Anfitorio (Nov 2026):
-//   "Integraciones abiertas. Anfitorio debe diseñarse como plataforma API-first."
+// Public, browsable documentation of the API generated from the route
+// permission manifest (GET /developer/api-reference): always in sync with
+// the code that runs in production.
+//
+// Cocoa 22 (lote 10-A · dashboard alojado): CocoaPage → CocoaKpiStrip
+// (totals by method and visibility) → CocoaToolbar sticky (search, category
+// and method filters, visible count) → one CocoaSection per category with
+// the endpoints as a `c22-section__list` (method badge · path · description ·
+// permission badges · risk badge). Hosted in SistemaTabs the container
+// paints the title; the `embedded` prop stays only for the `embed()` loader
+// bridge (TabHost.tsx) — the host context is what decides.
+//
+// qa#17 (fix:10-A): the API derives most descriptions from the last path
+// segment («Listar housekeeping settings.», api-reference.service.ts
+// describe()), which repeats the path in a mix of languages. The screen only
+// paints — and searches — a description that says more than that segment;
+// the handwritten ones (check-in, cancel, preview…) stay. The real fix (a
+// Spanish dictionary of segments) belongs to the API and re-enables them.
 
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
+import { number, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { LockIcon } from "../../components/cocoa-icons/StatusIcons";
+import { useTabHost } from "../tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSearchInput,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaToolbar,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type EndpointRef = {
   method: string;
@@ -32,23 +66,41 @@ type Data = {
   categories: CategoryGroup[];
 };
 
-const METHOD_COLOR: Record<string, string> = {
-  GET: "#1f8a4c",
-  POST: "#2663c4",
-  PATCH: "#a47600",
-  DELETE: "#d23b3b"
+const METHOD_TONE: Record<string, CocoaTone> = { GET: "success", POST: "info", PATCH: "warning", DELETE: "danger" };
+
+const RISK: Record<string, { tone: CocoaTone; label: string }> = {
+  public: { tone: "success", label: "público" },
+  low: { tone: "success", label: "riesgo bajo" },
+  medium: { tone: "warning", label: "riesgo medio" },
+  high: { tone: "danger", label: "riesgo alto" },
+  critical: { tone: "danger", label: "riesgo crítico" }
 };
 
-const RISK_COLOR: Record<string, string> = {
-  public: "#1f8a4c",
-  low: "#1f8a4c",
-  medium: "#d29b00",
-  high: "#d23b3b",
-  critical: "#7a1212"
-};
+const METHOD_OPTIONS = [
+  { value: "all", label: "Todos los métodos" },
+  { value: "GET", label: "GET" },
+  { value: "POST", label: "POST" },
+  { value: "PATCH", label: "PATCH" },
+  { value: "DELETE", label: "DELETE" }
+];
+
+/**
+ * Description worth painting: null when the API only echoed the method and
+ * the path («PUT /fiscal/vat-settings») or the last path segment («Listar
+ * rooms.», «Obtener detalle de :id.»), which the method badge and the
+ * monospace path already say.
+ */
+function endpointDescription(ep: Pick<EndpointRef, "method" | "path" | "description">): string | null {
+  const text = (ep.description ?? "").trim();
+  if (!text || text === `${ep.method} ${ep.path}`) return null;
+  const last = ep.path.split("/").filter(Boolean).pop() ?? "";
+  const echoed = last.replace(/-/g, " ").toLowerCase();
+  if (echoed && text.toLowerCase().endsWith(` ${echoed}.`)) return null;
+  return text;
+}
 
 export function ApiReferenceScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
+  const hosted = useTabHost() !== null || embedded;
   const { data, loading, error, refresh } = useApiData<Data>("/developer/api-reference");
   const [query, setQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | "all">("all");
@@ -64,9 +116,8 @@ export function ApiReferenceScreen({ embedded = false }: { embedded?: boolean } 
         endpoints: c.endpoints.filter((e) => {
           if (selectedMethod !== "all" && e.method !== selectedMethod) return false;
           if (q) {
-            return e.path.toLowerCase().includes(q) ||
-              e.description.toLowerCase().includes(q) ||
-              e.permissions.some((p) => p.toLowerCase().includes(q));
+            const description = endpointDescription(e);
+            return e.path.toLowerCase().includes(q) || (description !== null && description.toLowerCase().includes(q)) || e.permissions.some((p) => p.toLowerCase().includes(q));
           }
           return true;
         })
@@ -75,162 +126,127 @@ export function ApiReferenceScreen({ embedded = false }: { embedded?: boolean } 
   }, [data, query, selectedCategory, selectedMethod]);
 
   const visibleCount = filtered.reduce((s, c) => s + c.endpoints.length, 0);
+  const filtersActive = query.trim() !== "" || selectedCategory !== "all" || selectedMethod !== "all";
+
+  const categoryOptions = useMemo(
+    () => [{ value: "all", label: "Todas las categorías" }, ...(data?.categories ?? []).map((c) => ({ value: c.category, label: `${c.label} (${c.endpoints.length})` }))],
+    [data]
+  );
+
+  const summary = data ? `${plural(data.totalEndpoints, "endpoint", "endpoints")} en ${plural(data.categories.length, "categoría", "categorías")}.` : "";
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : <div className="bo-page-eyebrow">Sistema · Referencia de API</div>}
-          {embedded ? null : <h1 className="bo-page-title">API Anfitorio</h1>}
-          <p className="bo-page-subtitle">
-            Generado automáticamente desde el route permission manifest — siempre sincronizado con el código en producción.
-            {data ? ` ${data.totalEndpoints} endpoints en ${data.categories.length} categorías.` : null}
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          {loading ? <span className="bo-status info">cargando</span> : null}
-          {error ? <span className="bo-status error">{error}</span> : null}
-          <button type="button" className="ghost" onClick={refresh}>↻</button>
-        </div>
-      </div>
-
-      {/* Resumen */}
+    <CocoaPage
+      eyebrow="Configuración · Sistema"
+      title="Referencia de la API"
+      subtitle={hosted ? undefined : `Generada automáticamente desde el manifiesto de permisos de rutas: siempre sincronizada con el código en producción. ${summary}`.trim()}
+      actions={
+        <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={loading}>
+          {ACTIONS.refresh}
+        </CocoaButton>
+      }
+      state={loading && !data ? "loading" : error && !data ? "error" : "ready"}
+      skeleton={<CocoaSkeleton.Strip count={6} label="Cargando referencia de la API" />}
+      error={{ title: STATUS_LABELS.loadError, message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "api-reference-refresh", label: `${ACTIONS.refresh} referencia de la API`, run: refresh }]}
+    >
       {data ? (
-        <div className="rev-kpi-grid">
-          <article className="rev-kpi rev-kpi-ok">
-            <div className="rev-kpi-head"><span className="rev-kpi-label">Total endpoints</span></div>
-            <div className="rev-kpi-value">{data.totalEndpoints}</div>
-          </article>
-          <article className="rev-kpi rev-kpi-ok">
-            <div className="rev-kpi-head"><span className="rev-kpi-label">Públicos (sin perm.)</span></div>
-            <div className="rev-kpi-value">{data.publicEndpoints}</div>
-          </article>
-          <article className="rev-kpi rev-kpi-ok">
-            <div className="rev-kpi-head"><span className="rev-kpi-label">GET / POST / PATCH / DELETE</span></div>
-            <div className="rev-kpi-value" style={{ fontSize: 18 }}>
-              {data.byMethod.GET} / {data.byMethod.POST} / {data.byMethod.PATCH} / {data.byMethod.DELETE}
-            </div>
-          </article>
-          <article className={`rev-kpi ${data.byRisk.critical > 0 ? "rev-kpi-error" : "rev-kpi-ok"}`}>
-            <div className="rev-kpi-head"><span className="rev-kpi-label">Por riesgo</span></div>
-            <div className="rev-kpi-value" style={{ fontSize: 14 }}>
-              {data.byRisk.public}p · {data.byRisk.low}L · {data.byRisk.medium}M · {data.byRisk.high}H · {data.byRisk.critical}C
-            </div>
-          </article>
-        </div>
+        <CocoaKpiStrip stagger aria-label="Resumen de la API">
+          <CocoaKpi label="Endpoints" value={number(data.totalEndpoints)} caption={plural(data.categories.length, "categoría", "categorías")} size="compact" />
+          <CocoaKpi label="Públicos" value={number(data.publicEndpoints)} caption="sin permiso requerido" size="compact" />
+          <CocoaKpi label="GET" value={number(data.byMethod.GET)} size="compact" />
+          <CocoaKpi label="POST" value={number(data.byMethod.POST)} size="compact" />
+          <CocoaKpi label="PATCH" value={number(data.byMethod.PATCH)} size="compact" />
+          <CocoaKpi label="DELETE" value={number(data.byMethod.DELETE)} size="compact" />
+          <CocoaKpi
+            label="Riesgo alto o crítico"
+            value={number(data.byRisk.high + data.byRisk.critical)}
+            caption={`${number(data.byRisk.medium)} medio · ${number(data.byRisk.low + data.byRisk.public)} bajo o público`}
+            status={data.byRisk.critical > 0 ? "warning" : "ok"}
+            size="compact"
+          />
+        </CocoaKpiStrip>
       ) : null}
 
-      {/* Filters */}
-      <article className="bo-card" style={{ background: "var(--surface)", position: "sticky", top: 0, zIndex: 5 }}>
-        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input
-            type="search"
-            placeholder="Buscar por path, descripción o permiso…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            style={{ flex: "0 0 320px", padding: "8px 12px", border: "1px solid var(--border)", borderRadius: 6, fontSize: 13 }}
-          />
-          <select value={selectedCategory} onChange={(e) => setSelectedCategory(e.target.value)} style={{ padding: 6 }}>
-            <option value="all">Todas las categorías</option>
-            {data?.categories.map((c) => (
-              <option key={c.category} value={c.category}>{c.label} ({c.endpoints.length})</option>
-            ))}
-          </select>
-          <select value={selectedMethod} onChange={(e) => setSelectedMethod(e.target.value)} style={{ padding: 6 }}>
-            <option value="all">Todos los métodos</option>
-            <option value="GET">GET</option>
-            <option value="POST">POST</option>
-            <option value="PATCH">PATCH</option>
-            <option value="DELETE">DELETE</option>
-          </select>
-          <span className="bo-muted" style={{ fontSize: 12, marginLeft: "auto" }}>
-            {visibleCount} endpoint{visibleCount === 1 ? "" : "s"} visibles
-          </span>
-        </div>
-      </article>
+      <CocoaToolbar
+        variant="content"
+        sticky
+        aria-label="Filtros de la referencia"
+        leftSlot={<CocoaSearchInput value={query} onChange={setQuery} placeholder="Ruta, descripción o permiso…" aria-label="Buscar endpoints por ruta, descripción o permiso" />}
+        rightSlot={
+          <>
+            <CocoaSelect value={selectedCategory} onChange={setSelectedCategory} options={categoryOptions} inline aria-label="Filtrar por categoría" />
+            <CocoaSelect value={selectedMethod} onChange={setSelectedMethod} options={METHOD_OPTIONS} inline aria-label="Filtrar por método" />
+            <span className="cocoa-note" role="status">
+              {plural(visibleCount, "endpoint visible", "endpoints visibles")}
+            </span>
+          </>
+        }
+      />
 
-      {/* Categories */}
       {filtered.map((cat) => (
-        <article key={cat.category} className="bo-card" style={{ background: "var(--surface)" }}>
-          <div className="bo-card-head">
-            <div>
-              <h3 style={{ color: "var(--ink)", margin: 0 }}>{cat.label}</h3>
-              <p className="bo-muted" style={{ fontSize: 12, margin: "2px 0 0 0" }}>{cat.description}</p>
-            </div>
-            <span className="bo-chip">{cat.endpoints.length} endpoints</span>
-          </div>
-
-          <ul style={{ listStyle: "none", padding: 0, margin: 0, display: "flex", flexDirection: "column", gap: 4 }}>
-            {cat.endpoints.map((ep) => (
-              <li
-                key={`${ep.method}-${ep.path}`}
-                style={{
-                  padding: 10,
-                  border: "1px solid var(--border)",
-                  borderRadius: 6,
-                  display: "grid",
-                  gridTemplateColumns: "80px 1fr auto",
-                  gap: 10,
-                  alignItems: "center"
-                }}
-              >
-                <span
-                  style={{
-                    background: METHOD_COLOR[ep.method] ?? "#888",
-                    color: "white",
-                    padding: "3px 8px",
-                    borderRadius: 4,
-                    fontSize: 11,
-                    fontWeight: 700,
-                    textAlign: "center"
-                  }}
-                >
-                  {ep.method}
-                </span>
-                <div style={{ minWidth: 0 }}>
-                  <code style={{ fontSize: 13, color: "var(--ink)", fontFamily: "monospace" }}>{ep.path}</code>
-                  <div className="bo-muted" style={{ fontSize: 12, marginTop: 2 }}>{ep.description}</div>
-                  {ep.permissions.length > 0 ? (
-                    <div style={{ display: "flex", gap: 4, marginTop: 4, flexWrap: "wrap" }}>
-                      {ep.permissions.map((p) => (
-                        <span key={p} className="bo-chip" style={{ fontSize: 10, fontFamily: "monospace" }}>
-                          🔒 {p}
-                        </span>
-                      ))}
-                    </div>
-                  ) : (
-                    <div style={{ marginTop: 4 }}>
-                      <span className="bo-chip" style={{ fontSize: 10, background: "rgba(31, 138, 76, 0.1)", color: "#1f8a4c" }}>
-                        público
+        <CocoaSection key={cat.category} title={cat.label} meta={plural(cat.endpoints.length, "endpoint", "endpoints")}>
+          {cat.description ? <p className="cocoa-note">{cat.description}</p> : null}
+          <ul className="c22-section__list" aria-label={`Endpoints de ${cat.label}`}>
+            {cat.endpoints.map((ep) => {
+              const risk = RISK[ep.riskLevel] ?? { tone: "neutral" as CocoaTone, label: ep.riskLevel };
+              const description = endpointDescription(ep);
+              return (
+                <li key={`${ep.method}-${ep.path}`}>
+                  <div className="cocoa-stack" data-gap="1" style={{ minWidth: 0 }}>
+                    <span className="cocoa-cluster">
+                      <CocoaBadge tone={METHOD_TONE[ep.method] ?? "neutral"} variant="tinted" size="small">
+                        {ep.method}
+                      </CocoaBadge>
+                      <code className="cocoa-mono">{ep.path}</code>
+                    </span>
+                    {description ? <span className="cocoa-note">{description}</span> : null}
+                    {ep.permissions.length > 0 ? (
+                      <span className="cocoa-cluster" aria-label="Permisos requeridos">
+                        {ep.permissions.map((p) => (
+                          <CocoaBadge key={p} tone="neutral" size="small" uppercase={false} icon={<LockIcon size={10} aria-hidden />}>
+                            {p}
+                          </CocoaBadge>
+                        ))}
                       </span>
-                    </div>
-                  )}
-                </div>
-                <span
-                  style={{
-                    fontSize: 10,
-                    padding: "2px 6px",
-                    borderRadius: 4,
-                    background: RISK_COLOR[ep.riskLevel] ?? "#888",
-                    color: "white",
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: 0.5
-                  }}
-                >
-                  {ep.riskLevel}
-                </span>
-              </li>
-            ))}
+                    ) : (
+                      <CocoaBadge tone="success" size="small" style={{ alignSelf: "flex-start" }}>
+                        público
+                      </CocoaBadge>
+                    )}
+                  </div>
+                  <CocoaBadge tone={risk.tone} size="small">
+                    {risk.label}
+                  </CocoaBadge>
+                </li>
+              );
+            })}
           </ul>
-        </article>
+        </CocoaSection>
       ))}
 
       {filtered.length === 0 && data ? (
-        <p className="bo-muted" style={{ padding: 32, textAlign: "center" }}>
-          Sin endpoints que coincidan con la búsqueda.
-        </p>
+        <CocoaSection aria-label="Sin resultados">
+          <CocoaState
+            kind="empty"
+            illustration="search"
+            title={STATUS_LABELS.noResults}
+            message="Ningún endpoint coincide con la búsqueda o los filtros."
+            primaryAction={
+              filtersActive
+                ? {
+                    label: ACTIONS.clearFilters,
+                    onClick: () => {
+                      setQuery("");
+                      setSelectedCategory("all");
+                      setSelectedMethod("all");
+                    }
+                  }
+                : undefined
+            }
+          />
+        </CocoaSection>
       ) : null}
-    </>
+    </CocoaPage>
   );
 }

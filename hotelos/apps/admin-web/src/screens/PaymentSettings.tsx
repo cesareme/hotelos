@@ -1,33 +1,66 @@
-// Ajustes de pagos (Tanda 3 · lote front-fiscal).
-//
-// Lista las integraciones reales de la propiedad (GET
-// /backoffice/properties/:id/integrations) filtradas a proveedores de pago.
-// Sin PSP conectado se muestra un estado vacío honesto con enlace al catálogo.
+// Pagos — Configuración › Facturación y pagos › Pagos
+// (/configuracion/facturacion-pagos/pagos, hosted in FacturacionPagosTabs).
+// Cocoa 22 · ola 10 · lote 10-D, archetype «formulario / ajustes»
+// (docs/design/COCOA-22.md §4): CocoaPage (hosted: the container paints eyebrow
+// and title) → CocoaSection with the CocoaTable of the real integrations of
+// the property (GET /backoffice/properties/:id/integrations) filtered to
+// payment providers; without a connected PSP the gateway is declared «no
+// configurada» (badge + callout) and the empty state links to the catalogue
+// → two CocoaSection panels (refund policy · charges and reconciliation).
+// Nothing is edited here: providers are connected from the catalogue.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../services/activeProperty";
 import { fetchPropertyIntegrations, isPaymentIntegration, type PropertyIntegration } from "../services/billingApi";
-import { EmptyState, ErrorState, LoadingBlock } from "../components/States";
-import { CocoaPageHeader } from "../components/cocoa/CocoaPageHeader";
-import { pageHead } from "./tabs/configuracion/tab-helpers";
-import { CocoaCard } from "../components/cocoa/CocoaCard";
-import { CocoaButton } from "../components/cocoa/CocoaButton";
-import { CocoaTable, type CocoaTableColumn } from "../components/cocoa/CocoaTable";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaGrid,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../components/cocoa";
 import { toArray } from "../utils/toArray";
 import { navigateTo } from "../lib/navigate";
-import { dateTime } from "../lib/format";
+import { EMPTY, dateTime, plural } from "../lib/format";
+import { treeHeaderFor } from "./tabs/tab-helpers";
 
 const PROPERTY_ID = getActivePropertyId();
 
-const STATUS_META: Record<PropertyIntegration["status"], { label: string; tone: string }> = {
-  connected: { label: "Conectado", tone: "ok" },
-  testing: { label: "En pruebas", tone: "warn" },
-  error: { label: "Error", tone: "error" },
-  disconnected: { label: "Desconectado", tone: "info" }
+const STATUS_META: Record<PropertyIntegration["status"], { label: string; tone: CocoaTone }> = {
+  connected: { label: "Conectado", tone: "success" },
+  testing: { label: "En pruebas", tone: "warning" },
+  error: { label: "Error", tone: "danger" },
+  disconnected: { label: "Desconectado", tone: "neutral" }
 };
 
-export function PaymentSettings({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
-  const Head = pageHead(embedded);
+const INTEGRATION_COLUMNS: CocoaTableColumn<PropertyIntegration>[] = [
+  { key: "provider", label: "Proveedor", render: (row) => <strong>{row.provider?.name ?? row.providerId}</strong> },
+  { key: "code", label: "Código", fit: true, hideOnNarrow: true, render: (row) => <span className="cocoa-mono">{row.provider?.code ?? EMPTY}</span> },
+  {
+    key: "status",
+    label: "Estado",
+    fit: true,
+    render: (row) => {
+      const meta = STATUS_META[row.status] ?? { label: row.status, tone: "neutral" as CocoaTone };
+      return <CocoaBadge tone={meta.tone}>{meta.label}</CocoaBadge>;
+    }
+  },
+  { key: "auth", label: "Autenticación", fit: true, hideOnNarrow: true, render: (row) => row.provider?.authType ?? EMPTY },
+  { key: "lastSyncAt", label: "Última sincronización", fit: true, hideOnNarrow: true, render: (row) => dateTime(row.lastSyncAt) }
+];
+
+function openCatalog() {
+  navigateTo("MarketplaceCatalog");
+}
+
+export function PaymentSettings() {
+  const header = treeHeaderFor("PaymentSettings", { eyebrow: "Finanzas y cumplimiento", title: "Pagos" });
   const [integrations, setIntegrations] = useState<PropertyIntegration[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -50,103 +83,102 @@ export function PaymentSettings({ embedded = false }: { embedded?: boolean } = {
 
   const paymentIntegrations = useMemo(() => integrations.filter(isPaymentIntegration), [integrations]);
   const otherCount = integrations.length - paymentIntegrations.length;
-
-  const columns = useMemo<CocoaTableColumn<PropertyIntegration>[]>(
-    () => [
-      { key: "provider", label: "Proveedor", render: (row) => <strong>{row.provider?.name ?? row.providerId}</strong> },
-      { key: "code", label: "Código", render: (row) => <code>{row.provider?.code ?? "—"}</code> },
-      {
-        key: "status",
-        label: "Estado",
-        width: "130px",
-        render: (row) => {
-          const meta = STATUS_META[row.status] ?? { label: row.status, tone: "info" };
-          return <span className={`bo-status ${meta.tone}`} style={{ textTransform: "none" }}>{meta.label}</span>;
-        }
-      },
-      { key: "auth", label: "Autenticación", width: "130px", render: (row) => row.provider?.authType ?? "—" },
-      { key: "lastSyncAt", label: "Última sincronización", width: "170px", render: (row) => dateTime(row.lastSyncAt) }
-    ],
-    []
-  );
-
-  if (loading && integrations.length === 0 && !error) {
-    return (
-      <section className="bo-card">
-        <LoadingBlock label="Cargando proveedores de pago…" />
-      </section>
-    );
-  }
-  if (error && integrations.length === 0) {
-    return (
-      <section className="bo-card">
-        <ErrorState title="No se pudieron cargar las integraciones" message={error} onRetry={() => void load()} />
-      </section>
-    );
-  }
+  const connectedCount = paymentIntegrations.filter((integration) => integration.status === "connected").length;
+  const gatewayReady = connectedCount > 0;
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
-      <Head
-        eyebrow="Finanzas y cumplimiento"
-        title="Pagos"
-        subtitle="Proveedores de pago (PSP) conectados a la propiedad, tokenización y política de reembolsos"
-        actions={
-          <CocoaButton variant="filled" tone="accent" onClick={() => navigateTo("MarketplaceCatalog")}>
-            Catálogo de integraciones
-          </CocoaButton>
-        }
-      />
-
-      <div>
-        <div className="bo-card-head">
-          <h3 style={{ margin: 0 }}>Proveedores de pago</h3>
-          <span className={`bo-status ${paymentIntegrations.some((integration) => integration.status === "connected") ? "ok" : "warn"}`} style={{ textTransform: "none" }}>
-            {paymentIntegrations.filter((integration) => integration.status === "connected").length} conectado
-            {paymentIntegrations.filter((integration) => integration.status === "connected").length === 1 ? "" : "s"}
-          </span>
-        </div>
+    <CocoaPage
+      eyebrow={header.eyebrow}
+      title={header.title}
+      subtitle="Proveedores de pago (PSP) conectados a la propiedad, tokenización y política de reembolsos"
+      actions={
+        <CocoaButton variant="filled" tone="accent" onClick={openCatalog}>
+          Catálogo de integraciones
+        </CocoaButton>
+      }
+      state={loading && integrations.length === 0 && !error ? "loading" : error && integrations.length === 0 ? "error" : "ready"}
+      skeleton={<CocoaSkeleton.Grid rows={[[12], [6, 6]]} height={140} label="Cargando proveedores de pago…" />}
+      error={{ title: "No se pudieron cargar las integraciones", message: error ?? undefined, onRetry: () => void load() }}
+      commands={[
+        { id: "payment-settings-catalog", label: "Abrir el catálogo de integraciones", run: openCatalog },
+        { id: "payment-settings-refresh", label: "Actualizar los proveedores de pago", run: () => void load() }
+      ]}
+      id="payment-settings"
+    >
+      <CocoaSection
+        title="Proveedores de pago"
+        meta={<CocoaBadge tone={gatewayReady ? "success" : "warning"}>{gatewayReady ? plural(connectedCount, "conectado", "conectados") : "Pasarela no configurada"}</CocoaBadge>}
+        padding={paymentIntegrations.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+      >
         {paymentIntegrations.length === 0 ? (
-          <EmptyState
+          <CocoaState
+            kind="empty"
+            dashed
             title="Ningún PSP conectado"
-            message={`Esta propiedad no tiene ningún proveedor de pago conectado${otherCount > 0 ? ` (hay ${otherCount} integración${otherCount === 1 ? "" : "es"} de otras categorías)` : ""}. Los cobros con tarjeta, los enlaces de pago y las tarjetas virtuales de OTA requieren un PSP.`}
-            actions={
-              <CocoaButton variant="filled" tone="accent" onClick={() => navigateTo("MarketplaceCatalog")}>
-                Conectar un proveedor
-              </CocoaButton>
-            }
+            message={`Esta propiedad no tiene ningún proveedor de pago conectado${otherCount > 0 ? ` (hay ${plural(otherCount, "integración", "integraciones")} de otras categorías)` : ""}. Los cobros con tarjeta, los enlaces de pago y las tarjetas virtuales de OTA requieren un PSP.`}
+            primaryAction={{ label: "Conectar un proveedor", onClick: openCatalog }}
           />
         ) : (
-          <CocoaTable<PropertyIntegration> columns={columns} rows={paymentIntegrations} rowKey="id" emptyState="Sin proveedores de pago." />
+          <CocoaTable<PropertyIntegration>
+            columns={INTEGRATION_COLUMNS}
+            rows={paymentIntegrations}
+            rowKey="id"
+            caption="Proveedores de pago de la propiedad"
+            aria-label="Proveedores de pago de la propiedad"
+            emptyState="Sin proveedores de pago."
+          />
         )}
-      </div>
+      </CocoaSection>
 
-      <div className="bo-grid two">
-        <CocoaCard variant="bordered" padding="md">
-          <h3 style={{ marginTop: 0 }}>Política de reembolsos</h3>
-          <p className="bo-muted" style={{ margin: 0 }}>
-            Los reembolsos requieren aprobación de un responsable y nunca almacenan datos de tarjeta en claro: solo el token del PSP y la
-            referencia del cobro. Los permisos de aprobación se gestionan en Usuarios y roles.
-          </p>
-          <div className="bo-actions">
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("UserRoleManager")}>
-              Usuarios y roles
+      {paymentIntegrations.length > 0 && !gatewayReady ? (
+        <CocoaCallout
+          tone="warning"
+          title="Pasarela de pago no configurada"
+          role="status"
+          actions={
+            <CocoaButton variant="plain" size="small" onClick={openCatalog}>
+              Catálogo de integraciones
             </CocoaButton>
-          </div>
-        </CocoaCard>
-        <CocoaCard variant="bordered" padding="md">
-          <h3 style={{ marginTop: 0 }}>Cobros y conciliación</h3>
-          <p className="bo-muted" style={{ margin: 0 }}>
-            Los cobros capturados se registran en el folio de la reserva y se concilian con el banco desde el módulo de conciliación bancaria.
-          </p>
-          <div className="bo-actions">
-            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("BillingCenter")}>
-              Centro de facturación
-            </CocoaButton>
-          </div>
-        </CocoaCard>
-      </div>
-    </section>
+          }
+        >
+          Hay proveedores de pago dados de alta, pero ninguno está conectado: los cobros con tarjeta, los enlaces de pago y las tarjetas virtuales de OTA no
+          están operativos hasta que uno pase a «Conectado».
+        </CocoaCallout>
+      ) : null}
+
+      <CocoaGrid aria-label="Reembolsos, cobros y conciliación">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Política de reembolsos"
+            action={
+              <CocoaButton variant="plain" size="small" onClick={() => navigateTo("UserRoleManager")}>
+                Usuarios y roles
+              </CocoaButton>
+            }
+          >
+            <p className="cocoa-note">
+              Los reembolsos requieren aprobación de un responsable y nunca almacenan datos de tarjeta en claro: solo el token del PSP y la referencia del
+              cobro. Los permisos de aprobación se gestionan en Usuarios y roles.
+            </p>
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title="Cobros y conciliación"
+            action={
+              <CocoaButton variant="plain" size="small" onClick={() => navigateTo("BillingCenter")}>
+                Centro de facturación
+              </CocoaButton>
+            }
+          >
+            <p className="cocoa-note">
+              Los cobros capturados se registran en el folio de la reserva y se concilian con el banco desde el módulo de conciliación bancaria.
+            </p>
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+    </CocoaPage>
   );
 }
 

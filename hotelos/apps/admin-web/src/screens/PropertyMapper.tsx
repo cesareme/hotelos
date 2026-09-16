@@ -1,14 +1,41 @@
-import { getActivePropertyId } from "../services/activeProperty";
+// Property mapper (Configuración › Puesta en marcha › Importar desde documentos).
+// Cocoa 22 · ola 10 · lote 10-C (workspace archetype): documents on the left
+// (dashed drop zone, staged files, «Mapear con IA»), the proposed map on the
+// right (KPI strip, room types, proposed rooms table, apply through a
+// CocoaDialog), and the live structure of the property below. The extraction
+// and apply calls, the example CSV and the reading of text files are untouched.
 import { useEffect, useRef, useState, type DragEvent } from "react";
+import { getActivePropertyId } from "../services/activeProperty";
 import {
   extractPropertyMap,
   applyPropertyMap,
   type MapperFile,
   type PropertyMapProposal,
+  type ProposedRoom,
   type ApplyResult
 } from "../services/mapperApi";
 import { fetchRooms, fetchRoomTypes, type AdminRoom, type AdminRoomType } from "../services/pmsCommerceApi";
-import { Spinner, EmptyState } from "../components/States";
+import { EMPTY, plural } from "../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../content/actions";
+import { treeHeaderFor } from "./tabs/tab-helpers";
+import { DownloadIcon, UploadIcon, XmarkIcon } from "../components/cocoa-icons/ActionIcons";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  formatFileSize,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 const TEXT_EXT = /\.(csv|tsv|txt|json|md|tab)$/i;
@@ -30,19 +57,15 @@ function readFile(file: File): Promise<MapperFile> {
   });
 }
 
-const SOURCE_LABEL: Record<PropertyMapProposal["source"], { label: string; cls: string }> = {
-  rules: { label: "Leído de tu fichero", cls: "ok" },
-  ai: { label: "Extracción por IA", cls: "ai" },
-  none: { label: "No se detectó nada", cls: "warn" }
+const SOURCE_LABEL: Record<PropertyMapProposal["source"], { label: string; tone: CocoaTone }> = {
+  rules: { label: "Leído de tu fichero", tone: "success" },
+  ai: { label: "Extracción por IA", tone: "ai" },
+  none: { label: "No se detectó nada", tone: "warning" }
 };
 
 type StagedFile = { name: string; size: number; mf: MapperFile };
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+type CurrentRoomRow = { id: string; number: string; floor: string; typeName: string; status: string; sellable: boolean };
 
 const EXAMPLE_CSV =
   "room,floor,building,zone,type,beds,features,sellable\n" +
@@ -50,6 +73,39 @@ const EXAMPLE_CSV =
   "102,1,Main,East Wing,Double,Twin x2,accessible,yes\n" +
   "201,2,Main,West Wing,Junior Suite,King x1,balcony;minibar,yes\n" +
   "P01,-1,Main,Parking,Parking space,,,no\n";
+
+const CURRENT_ROOMS_LIMIT = 50;
+
+const HEADER = treeHeaderFor("PropertyMapper", { eyebrow: "Configuración · Puesta en marcha", title: "Importar desde documentos" });
+
+// Columns outside the component (§4.2 A5); `render` returns a ReactNode.
+const PROPOSED_COLUMNS: CocoaTableColumn<ProposedRoom>[] = [
+  { key: "number", label: "Habitación", fit: true, render: (room) => <strong>{room.number}</strong> },
+  { key: "building", label: "Edificio", render: (room) => room.building || "Propiedad" },
+  { key: "floor", label: "Planta", fit: true, render: (room) => (room.floor ? `Planta ${room.floor}` : "Sin asignar") },
+  { key: "roomTypeName", label: "Tipo de habitación", render: (room) => room.roomTypeName ?? EMPTY, hideOnNarrow: true },
+  { key: "zone", label: "Zona", render: (room) => room.zone ?? EMPTY, showFrom: "laptop" }
+];
+
+const CURRENT_COLUMNS: CocoaTableColumn<CurrentRoomRow>[] = [
+  { key: "number", label: "Habitación", fit: true, render: (room) => <strong>{room.number}</strong> },
+  { key: "floor", label: "Planta", fit: true },
+  { key: "typeName", label: "Tipo de habitación" },
+  {
+    key: "status",
+    label: "Estado",
+    fit: true,
+    hideOnNarrow: true,
+    render: (room) => (
+      <CocoaBadge tone="neutral" uppercase={false}>
+        {room.status}
+      </CocoaBadge>
+    )
+  },
+  { key: "sellable", label: "Vendible", fit: true, render: (room) => (room.sellable ? STATUS_LABELS.yes : STATUS_LABELS.no) }
+];
+
+const proposedRoomKey = (room: ProposedRoom) => `${room.building ?? ""}·${room.floor ?? ""}·${room.number}`;
 
 export function PropertyMapper() {
   const [staged, setStaged] = useState<StagedFile[]>([]);
@@ -133,12 +189,9 @@ export function PropertyMapper() {
     }
   }
 
+  // Confirmed from the CocoaDialog: one call, the dialog closes when it resolves.
   async function handleApply() {
     if (!proposal) return;
-    if (!confirmApply) {
-      setConfirmApply(true);
-      return;
-    }
     setApplying(true);
     setStatus(null);
     try {
@@ -148,236 +201,201 @@ export function PropertyMapper() {
       setStatus(`Listo — ${r.roomTypesCreated} tipos de habitación y ${r.roomsCreated} habitaciones creadas (${r.roomsSkipped} omitidas).`);
       loadCurrent();
     } catch (error) {
+      setConfirmApply(false);
       setStatus(error instanceof Error ? error.message : "La aplicación ha fallado.");
     } finally {
       setApplying(false);
     }
   }
 
-  // Group proposed rooms by building → floor for the preview tree.
-  const tree = proposal
-    ? (() => {
-        const byBuilding = new Map<string, Map<string, typeof proposal.rooms>>();
-        for (const r of proposal.rooms) {
-          const b = r.building || "Propiedad";
-          const f = r.floor ? `Planta ${r.floor}` : "Planta sin asignar";
-          if (!byBuilding.has(b)) byBuilding.set(b, new Map());
-          const floors = byBuilding.get(b)!;
-          if (!floors.has(f)) floors.set(f, []);
-          floors.get(f)!.push(r);
-        }
-        return Array.from(byBuilding.entries());
-      })()
-    : [];
+  const statusTone: CocoaTone = status?.startsWith("Listo") ? "success" : "warning";
+  const proposalReady = proposal !== null && proposal.source !== "none";
+  const currentRows: CurrentRoomRow[] = rooms.slice(0, CURRENT_ROOMS_LIMIT).map((room) => ({
+    id: room.id,
+    number: room.number,
+    floor: room.floor || EMPTY,
+    typeName: roomTypes.find((type) => type.id === room.roomTypeId)?.name ?? room.roomTypeId,
+    status: room.status,
+    sellable: room.sellable
+  }));
 
-  return (
-    <>
-      {/* Header */}
-      <section className="bo-card">
-        <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
-          <div>
-            <p className="bo-page-eyebrow">Back Office · Mapeador de propiedad</p>
-            <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>Mapea tu propiedad desde documentos</h2>
-          </div>
-          <span className="bo-chip">Asistido por IA</span>
-        </div>
-        <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
-          Sube tu lista de habitaciones, planos o exportaciones de la propiedad (CSV / hoja de cálculo / texto / PDF). El mapeador los lee y
-          propone la estructura completa —edificios, plantas, zonas, tipos de habitación y habitaciones— para que la revises antes de crear nada.
-        </p>
+  const documents = (
+    <CocoaSection title="Documentos" meta={staged.length > 0 ? plural(staged.length, "documento", "documentos") : undefined} aria-label="Documentos a mapear">
+      <div onDragOver={(event) => { event.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)} onDrop={onDrop} data-drag-over={dragOver ? "true" : undefined}>
+        <CocoaState
+          kind="empty"
+          dashed
+          title={dragOver ? "Suelta los documentos para añadirlos" : "Arrastra documentos aquí o elígelos desde tu equipo"}
+          message="Las listas de habitaciones y exportaciones (CSV, hoja de cálculo, texto) se leen al instante, sin IA. Los PDF e imágenes necesitan un proveedor de visión IA configurado."
+          primaryAction={{ label: "Elegir documentos", onClick: () => inputRef.current?.click() }}
+          secondaryAction={{ label: "Descargar CSV de ejemplo", onClick: downloadExample }}
+        />
+        <input
+          ref={inputRef}
+          type="file"
+          hidden
+          multiple
+          tabIndex={-1}
+          aria-hidden="true"
+          accept=".csv,.tsv,.txt,.json,.md,.pdf,image/*,text/*"
+          onChange={(event) => { void addFiles(event.target.files); event.currentTarget.value = ""; }}
+        />
+      </div>
 
-        {/* Dropzone */}
-        <div
-          className={`bo-dropzone${dragOver ? " is-drag" : ""}`}
-          role="button"
-          tabIndex={0}
-          style={{ marginTop: "var(--space-4)" }}
-          onClick={() => inputRef.current?.click()}
-          onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); inputRef.current?.click(); } }}
-          onDragOver={(event) => { event.preventDefault(); setDragOver(true); }}
-          onDragLeave={() => setDragOver(false)}
-          onDrop={onDrop}
+      {staged.length ? (
+        <ul className="c22-section__list" aria-label="Documentos añadidos">
+          {staged.map((s) => (
+            <li key={s.name}>
+              <span>{s.name}</span>
+              <span className="cocoa-note">{formatFileSize(s.size)}</span>
+              <CocoaButton variant="plain" tone="neutral" size="small" aria-label={`Quitar ${s.name}`} icon={<XmarkIcon size={14} />} onClick={() => removeFile(s.name)} />
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      <div className="cocoa-row" data-gap="2">
+        <CocoaButton
+          variant="filled"
+          tone="accent"
+          icon={<UploadIcon size={16} />}
+          onClick={() => void handleExtract()}
+          loading={extracting}
+          disabled={extracting || staged.length === 0}
+          title={staged.length === 0 ? "Añade un documento primero" : undefined}
         >
-          <div className="bo-dropzone-icon">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden>
-              <path d="M12 15V4M12 4 8 8M12 4l4 4" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
-              <path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-            </svg>
-          </div>
-          <span className="bo-dropzone-title">Arrastra documentos aquí, o haz clic para buscar</span>
-          <span className="bo-dropzone-hint">
-            Las listas de habitaciones y exportaciones (CSV, hoja de cálculo, texto) se leen al instante, sin IA. Los PDF e imágenes necesitan un proveedor de visión IA configurado.
-          </span>
-          <input
-            ref={inputRef}
-            type="file"
-            multiple
-            accept=".csv,.tsv,.txt,.json,.md,.pdf,image/*,text/*"
-            style={{ display: "none" }}
-            onChange={(event) => { void addFiles(event.target.files); event.currentTarget.value = ""; }}
-          />
-        </div>
-
-        {/* Staged files */}
+          {extracting ? "Mapeando…" : staged.length > 1 ? `Mapear ${staged.length} documentos con IA` : "Mapear con IA"}
+        </CocoaButton>
+        <CocoaButton variant="bordered" tone="neutral" icon={<DownloadIcon size={16} />} onClick={downloadExample}>
+          Descargar CSV de ejemplo
+        </CocoaButton>
         {staged.length ? (
-          <div className="bo-pill-row" style={{ marginTop: "var(--space-3)" }}>
-            {staged.map((s) => (
-              <span className="bo-file-chip" key={s.name}>
-                <span className="bo-file-chip-name">{s.name}</span>
-                <span className="bo-file-chip-size">{formatBytes(s.size)}</span>
-                <button type="button" className="bo-file-chip-remove" aria-label={`Quitar ${s.name}`} onClick={() => removeFile(s.name)}>×</button>
+          <CocoaButton variant="plain" tone="neutral" size="small" onClick={clearAll}>
+            Quitar todo
+          </CocoaButton>
+        ) : null}
+      </div>
+
+      {status ? (
+        <CocoaCallout tone={statusTone} role="status">
+          {status}
+        </CocoaCallout>
+      ) : null}
+    </CocoaSection>
+  );
+
+  const proposalPanel = proposalReady && proposal ? (
+    <CocoaSection title="Mapa de propiedad propuesto" meta={<CocoaBadge tone={SOURCE_LABEL[proposal.source].tone}>{SOURCE_LABEL[proposal.source].label}</CocoaBadge>}>
+      <CocoaCallout tone="info" title="Revisa antes de aplicar">
+        Las habitaciones existentes (por número) se omiten. No se crea nada hasta que confirmes.
+      </CocoaCallout>
+
+      <CocoaKpiStrip min={180} aria-label="Elementos detectados">
+        <CocoaKpi label="Edificios" value={proposal.counts.buildings} size="compact" polarity="neutral" />
+        <CocoaKpi label="Plantas" value={proposal.counts.floors} size="compact" polarity="neutral" />
+        <CocoaKpi label="Zonas" value={proposal.counts.zones} size="compact" polarity="neutral" />
+        <CocoaKpi label="Tipos de habitación" value={proposal.counts.roomTypes} size="compact" polarity="neutral" />
+        <CocoaKpi label="Habitaciones" value={proposal.counts.rooms} size="compact" polarity="neutral" />
+        <CocoaKpi label="Espacios" value={proposal.counts.spaces} size="compact" polarity="neutral" />
+      </CocoaKpiStrip>
+
+      {proposal.roomTypes.length ? (
+        <div className="cocoa-cluster" aria-label="Tipos de habitación propuestos">
+          <span className="cocoa-note">Tipos de habitación:</span>
+          {proposal.roomTypes.map((t) => (
+            <CocoaBadge key={t.name} tone="neutral" uppercase={false}>
+              {t.name}
+            </CocoaBadge>
+          ))}
+        </div>
+      ) : null}
+
+      {proposal.rooms.length === 0 ? (
+        <CocoaState kind="empty" inline title="La propuesta no incluye habitaciones." />
+      ) : (
+        <CocoaTable columns={PROPOSED_COLUMNS} rows={proposal.rooms} rowKey={proposedRoomKey} virtualize caption="Habitaciones propuestas" aria-label="Habitaciones propuestas" />
+      )}
+
+      <div className="cocoa-row" data-gap="2">
+        <CocoaButton variant="filled" tone="accent" onClick={() => setConfirmApply(true)} disabled={applying || proposal.rooms.length === 0} loading={applying}>
+          Aplicar a la propiedad
+        </CocoaButton>
+      </div>
+
+      {result ? (
+        <CocoaCallout tone="success" title="Mapa aplicado" role="status">
+          <div className="cocoa-stack" data-gap="2">
+            <div className="cocoa-cluster">
+              <CocoaBadge tone="success">{plural(result.roomTypesCreated, "tipo de habitación creado", "tipos de habitación creados")}</CocoaBadge>
+              <CocoaBadge tone="success">{plural(result.roomsCreated, "habitación creada", "habitaciones creadas")}</CocoaBadge>
+              {result.roomsSkipped ? <CocoaBadge tone="warning">{plural(result.roomsSkipped, "omitida", "omitidas")}</CocoaBadge> : null}
+            </div>
+            {result.notes.map((n) => (
+              <span className="cocoa-note" key={n}>
+                {n}
               </span>
             ))}
-            <button type="button" className="ghost" onClick={clearAll}>Quitar todo</button>
           </div>
-        ) : null}
-
-        {/* Actions */}
-        <div className="bo-actions" style={{ marginTop: "var(--space-4)", alignItems: "center" }}>
-          <button
-            type="button"
-            className="primary"
-            onClick={handleExtract}
-            disabled={extracting || staged.length === 0}
-            title={staged.length === 0 ? "Añade un documento primero" : undefined}
-          >
-            {extracting ? <><Spinner size="sm" /> Mapeando…</> : staged.length > 1 ? `Mapear ${staged.length} documentos con IA` : "Mapear con IA"}
-          </button>
-          <button type="button" onClick={downloadExample}>Descargar CSV de ejemplo</button>
-        </div>
-        {status ? <p className={status.startsWith("Listo") ? "bo-status ok" : "bo-muted"} style={{ marginTop: "var(--space-3)", textTransform: "none", letterSpacing: 0, display: "inline-flex" }}>{status}</p> : null}
-      </section>
-
-      {/* Proposal preview */}
-      {proposal && proposal.source !== "none" ? (
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Mapa de propiedad propuesto</p>
-              <h3 style={{ margin: 0 }}>Revisa antes de aplicar</h3>
-            </div>
-            <span className={`bo-status ${SOURCE_LABEL[proposal.source].cls}`}>{SOURCE_LABEL[proposal.source].label}</span>
-          </div>
-
-          <div className="rev-kpi-grid" style={{ marginBottom: "var(--space-4)" }}>
-            {([
-              ["Edificios", proposal.counts.buildings],
-              ["Plantas", proposal.counts.floors],
-              ["Zonas", proposal.counts.zones],
-              ["Tipos de habitación", proposal.counts.roomTypes],
-              ["Habitaciones", proposal.counts.rooms],
-              ["Espacios", proposal.counts.spaces]
-            ] as const).map(([label, value]) => (
-              <div className="rev-kpi" key={label}>
-                <span className="rev-kpi-label">{label}</span>
-                <span className="rev-kpi-value">{value}</span>
-              </div>
-            ))}
-          </div>
-
-          {proposal.roomTypes.length ? (
-            <div className="bo-pill-row" style={{ marginBottom: "var(--space-4)" }}>
-              <span className="bo-muted">Tipos de habitación:</span>
-              {proposal.roomTypes.map((t) => <span className="bo-pill" key={t.name}>{t.name}</span>)}
-            </div>
-          ) : null}
-
-          <div className="bo-table-wrap">
-            <ul className="bo-list" style={{ gap: "var(--space-2)" }}>
-              {tree.map(([building, floors]) => (
-                <li key={building} style={{ display: "block" }}>
-                  <strong>{building}</strong>
-                  <ul className="bo-list" style={{ marginTop: 4, marginLeft: "var(--space-4)" }}>
-                    {Array.from(floors.entries()).map(([floor, fr]) => (
-                      <li key={floor} style={{ display: "block" }}>
-                        <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>{floor}</span> — {fr.length} habitaciones
-                        <div className="bo-pill-row" style={{ marginTop: 4, marginLeft: "var(--space-4)" }}>
-                          {fr.slice(0, 24).map((r) => (
-                            <span className="bo-pill" key={r.number} title={[r.roomTypeName, r.zone].filter(Boolean).join(" · ")}>{r.number}</span>
-                          ))}
-                          {fr.length > 24 ? <span className="bo-muted">+{fr.length - 24} más</span> : null}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          <div className="bo-actions" style={{ marginTop: "var(--space-4)" }}>
-            <button type="button" className={confirmApply ? "danger" : "primary"} onClick={handleApply} disabled={applying || proposal.rooms.length === 0}>
-              {applying
-                ? <><Spinner size="sm" /> Aplicando…</>
-                : confirmApply
-                  ? `Confirmar — crear ${proposal.counts.roomTypes} tipos + ${proposal.counts.rooms} habitaciones`
-                  : "Aplicar a la propiedad"}
-            </button>
-            {confirmApply ? <button type="button" onClick={() => setConfirmApply(false)}>Cancelar</button> : null}
-            <small className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
-              Las habitaciones existentes (por número) se omiten. No se crea nada hasta que confirmes.
-            </small>
-          </div>
-
-          {result ? (
-            <div className="bo-stack" style={{ marginTop: "var(--space-3)" }}>
-              <div className="bo-pill-row">
-                <span className="bo-status ok">{result.roomTypesCreated} tipos de habitación creados</span>
-                <span className="bo-status ok">{result.roomsCreated} habitaciones creadas</span>
-                {result.roomsSkipped ? <span className="bo-status warn">{result.roomsSkipped} omitidas</span> : null}
-              </div>
-              {result.notes.map((n) => <small className="bo-muted" key={n} style={{ textTransform: "none", letterSpacing: 0 }}>{n}</small>)}
-            </div>
-          ) : null}
-        </section>
+        </CocoaCallout>
       ) : null}
+    </CocoaSection>
+  ) : proposal && proposal.source === "none" ? (
+    <CocoaSection title="Mapa de propiedad propuesto" meta={<CocoaBadge tone={SOURCE_LABEL.none.tone}>{SOURCE_LABEL.none.label}</CocoaBadge>}>
+      <CocoaState
+        kind="empty"
+        illustration="search"
+        title="No se pudieron mapear estos documentos"
+        message={proposal.message ?? "Sube una hoja de cálculo/CSV con la lista de habitaciones, o configura un proveedor de IA para PDF y ficheros no estructurados."}
+      />
+    </CocoaSection>
+  ) : (
+    <CocoaSection title="Mapa de propiedad propuesto">
+      <CocoaState kind="empty" illustration="box" title="Aún no hay propuesta" message="Añade documentos y pulsa «Mapear con IA»: la estructura detectada aparece aquí para que la revises antes de aplicarla." />
+    </CocoaSection>
+  );
 
-      {proposal && proposal.source === "none" ? (
-        <section className="bo-card">
-          <EmptyState
-            title="No se pudieron mapear estos documentos"
-            message={proposal.message ?? "Sube una hoja de cálculo/CSV con la lista de habitaciones, o configura un proveedor de IA para PDF y ficheros no estructurados."}
-          />
-        </section>
-      ) : null}
+  return (
+    <CocoaPage
+      eyebrow={HEADER.eyebrow}
+      title={HEADER.title}
+      subtitle="Mapeador de propiedad asistido por IA. Mapea tu propiedad desde documentos: sube tu lista de habitaciones, planos o exportaciones (CSV, hoja de cálculo, texto, PDF) y el mapeador propone la estructura completa —edificios, plantas, zonas, tipos de habitación y habitaciones— para que la revises antes de crear nada."
+      actions={<CocoaBadge tone="ai">Asistido por IA</CocoaBadge>}
+      commands={[{ id: "property-mapper-extract", label: "Mapear documentos con IA", run: () => { void handleExtract(); } }]}
+    >
+      <CocoaGrid align="start" aria-label="Documentos y propuesta">
+        <CocoaSpan cols={5} min={320}>{documents}</CocoaSpan>
+        <CocoaSpan cols={7} min={480}>{proposalPanel}</CocoaSpan>
+      </CocoaGrid>
 
       {/* Current structure (live) */}
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Estructura actual</p>
-            <h3 style={{ margin: 0 }}>Lo que hay mapeado ahora</h3>
-          </div>
-          <div className="bo-pill-row">
-            <span className="bo-chip">{roomTypes.length} tipos de habitación</span>
-            <span className="bo-chip">{rooms.length} habitaciones</span>
-          </div>
-        </div>
-        {rooms.length === 0 ? (
-          <p className="bo-muted">Aún no hay habitaciones mapeadas. Sube un documento arriba para empezar.</p>
+      <CocoaSection
+        title="Lo que hay mapeado ahora"
+        meta={`${plural(roomTypes.length, "tipo de habitación", "tipos de habitación")} · ${plural(rooms.length, "habitación", "habitaciones")}`}
+        padding={currentRows.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+        footer={rooms.length > CURRENT_ROOMS_LIMIT ? <span>Mostrando las primeras {CURRENT_ROOMS_LIMIT} de {rooms.length}.</span> : undefined}
+      >
+        {currentRows.length === 0 ? (
+          <CocoaState kind="empty" inline title="Aún no hay habitaciones mapeadas. Añade un documento en «Documentos» para empezar." />
         ) : (
-          <div className="bo-table-wrap">
-            <table>
-              <thead><tr><th>Habitación</th><th>Planta</th><th>Tipo</th><th>Estado</th><th>Vendible</th></tr></thead>
-              <tbody>
-                {rooms.slice(0, 50).map((r) => {
-                  const rt = roomTypes.find((t) => t.id === r.roomTypeId);
-                  return (
-                    <tr key={r.id}>
-                      <td><strong>{r.number}</strong></td>
-                      <td>{r.floor || "—"}</td>
-                      <td>{rt?.name ?? r.roomTypeId}</td>
-                      <td><span className="bo-chip">{r.status}</span></td>
-                      <td>{r.sellable ? "Sí" : "No"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            {rooms.length > 50 ? <p className="bo-muted" style={{ marginTop: 8 }}>Mostrando las primeras 50 de {rooms.length}.</p> : null}
-          </div>
+          <CocoaTable columns={CURRENT_COLUMNS} rows={currentRows} rowKey="id" caption="Estructura actual de la propiedad" aria-label="Estructura actual de la propiedad" />
         )}
-      </section>
-    </>
+      </CocoaSection>
+
+      <CocoaDialog
+        open={confirmApply}
+        onClose={() => setConfirmApply(false)}
+        title="¿Aplicar el mapa a la propiedad?"
+        description={
+          proposal
+            ? `Se crearán ${plural(proposal.counts.roomTypes, "tipo de habitación", "tipos de habitación")} y ${plural(proposal.counts.rooms, "habitación", "habitaciones")}. Las habitaciones que ya existen (por número) se omiten.`
+            : undefined
+        }
+        confirmLabel="Confirmar y crear"
+        cancelLabel={ACTIONS.cancel}
+        onConfirm={handleApply}
+        busy={applying}
+      />
+    </CocoaPage>
   );
 }

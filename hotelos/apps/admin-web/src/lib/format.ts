@@ -466,3 +466,134 @@ export function hotelCategoryLabel(code: string | null | undefined, options: Cod
 export function availabilityLabel(code: string | null | undefined, options: CodeLabelOptions = {}): string {
   return codeLabel(AVAILABILITY_LABELS, code, options);
 }
+
+// Cocoa 22 · ola 10 (lote 10-C · qa#14). Readiness checks and connector
+// health notes arrive from the API with environment variable names
+// («SES_HOSPEDAJES_MODE=sandbox»), English field keys («postalCode»), region
+// codes («ES_CANARIAS») and engineering words («sandbox», «stub», «flag») a
+// hotelier never reads elsewhere in the product. Until the API humanises them
+// at source (backoffice.service.ts computeReadiness, compliance-health.service.ts,
+// packages/compliance verifactu/software.ts), a screen passes every message
+// through readinessMessage(): the known fragments read in Spanish, the dynamic
+// parts (counts, names, modes, reasons) are kept and an unknown message comes
+// back unchanged. Callers keep the raw text in `title` when it differs (C19).
+
+const INTEGRATION_MODE_PHRASES: Record<string, string> = {
+  sandbox: "modo de pruebas",
+  preproduction: "modo de preproducción",
+  production: "modo de producción"
+};
+
+function integrationModePhrase(mode: string): string {
+  return INTEGRATION_MODE_PHRASES[mode.toLowerCase()] ?? `modo ${mode}`;
+}
+
+const FISCAL_ADDRESS_FIELD_LABELS: Record<string, string> = {
+  address: "dirección",
+  municipality: "municipio",
+  province: "provincia",
+  postalCode: "código postal",
+  country: "país"
+};
+
+const TAX_REGION_LABELS: Record<string, string> = {
+  ES_PENINSULA_BALEARES: "Península y Baleares",
+  ES_PENINSULA: "Península y Baleares",
+  ES_CANARIAS: "Canarias",
+  ES_CEUTA: "Ceuta",
+  ES_MELILLA: "Melilla"
+};
+
+type MessageReplacer = (match: string, ...groups: string[]) => string;
+type MessageRewrite = [RegExp, string | MessageReplacer];
+
+// Order matters: whole sentences first, then fragments, then the loose words.
+const READINESS_MESSAGE_REWRITES: MessageRewrite[] = [
+  // SES.HOSPEDAJES mode and certificate (check ses_hospedajes_credentials).
+  [
+    /SES_HOSPEDAJES_MODE=([a-z]+): los partes se envían a un simulador, no al MIR\. Configura preproduction\/production con certificado antes del go-live\./g,
+    (_match, mode) =>
+      `SES.HOSPEDAJES en ${integrationModePhrase(mode)}: los partes se envían a un simulador, no al Ministerio del Interior. Configura el modo de preproducción o producción con certificado antes de salir en vivo.`
+  ],
+  [/\bSES en modo ([a-z]+) sin certificado:/g, (_match, mode) => `SES.HOSPEDAJES en ${integrationModePhrase(mode)} sin certificado:`],
+  [/\bSES\.HOSPEDAJES en modo ([a-z]+) con certificado configurado\./g, (_match, mode) => `SES.HOSPEDAJES en ${integrationModePhrase(mode)} con certificado configurado.`],
+  // Connector health note of the fiscal settings card (compliance-health.service.ts), before the generic mode rules.
+  [
+    /Modo sandbox: no se llama a AEAT\. Cambia VERIFACTU_MODE=preproduction \+ cert para validar contra AEAT pre-producción\./g,
+    "Modo de pruebas: no se llama a la AEAT. Cambia a preproducción con certificado para validar contra la AEAT de preproducción."
+  ],
+  [/SES_HOSPEDAJES_MODE=([a-z]+)/g, (_match, mode) => `SES.HOSPEDAJES en ${integrationModePhrase(mode)}`],
+  [/VERIFACTU_MODE=([a-z]+)/g, (_match, mode) => `VeriFactu en ${integrationModePhrase(mode)}`],
+  [/SES_HOSPEDAJES_CERT_PATH apunta a un fichero inexistente\./g, "La ruta del certificado de SES.HOSPEDAJES apunta a un fichero que no existe."],
+  [/variable de ruta del certificado no configurada/g, "falta la ruta del certificado"],
+  [/passphrase del certificado no configurada/g, "falta la contraseña del certificado"],
+  [/Variable de path del certificado no configurada\./g, "Falta la ruta del certificado."],
+  [/Passphrase del certificado no configurada\./g, "Falta la contraseña del certificado."],
+  // Platform certificate notice (check platform_certificate_notice).
+  [/\(VERIFACTU_CERT_PATH \/ SES_HOSPEDAJES_CERT_PATH\)/g, "(VeriFactu y SES.HOSPEDAJES)"],
+  [
+    /los envíos a AEAT\/MIR se firman con un stub \(solo sandbox\)\./g,
+    "los envíos a la AEAT y al Ministerio del Interior se firman con una firma de pruebas, válida solo en modo de pruebas."
+  ],
+  // VeriFactu software block (check verifactu_software_declared · connector health).
+  [/Bloque SistemaInformatico incompleto/g, "Datos del software VeriFactu incompletos"],
+  [/Bloque SistemaInformatico declarado/g, "Datos del software VeriFactu declarados"],
+  [/Bloque SistemaInformatico completo/g, "Datos del software VeriFactu completos"],
+  [/Bloque Establecimiento SES completo/g, "Datos del establecimiento para SES.HOSPEDAJES completos"],
+  [/En sandbox se envía con valores de relleno\./g, "En modo de pruebas se envía con valores de relleno."],
+  [/Falta VERIFACTU_SOFTWARE_NAME \([^)]*\)\./g, "Falta la razón social del productor del software."],
+  [/Falta VERIFACTU_SOFTWARE_NIF \([^)]*\)\./g, "Falta el NIF del productor del software (no el del hotel)."],
+  [/VERIFACTU_SOFTWARE_NIF no es un NIF válido:/g, "El NIF del productor del software no es válido:"],
+  [/Falta VERIFACTU_INSTALL_NUMBER \([^)]*\)\./g, "Falta el número de instalación asignado por el productor."],
+  [/IdSistemaInformatico \(VERIFACTU_SYSTEM_ID\) debe tener exactamente/g, "El identificador del sistema debe tener exactamente"],
+  [/VERIFACTU_MULTI_OT debe ser/g, "El indicador de varios obligados tributarios debe ser"],
+  [
+    /INSTALLATION_NOT_DECLARED: el centro no tiene una instalación VeriFactu declarada \(verifactu_installations\)\. En preproduction\/production el NumeroInstalacion nunca sale del entorno:/g,
+    "El centro no tiene una instalación VeriFactu declarada. En preproducción o producción el número de instalación no puede salir de la configuración del servidor:"
+  ],
+  [/La instalación VeriFactu declarada no tiene número \([^)]*\)\./g, "La instalación VeriFactu declarada no tiene número."],
+  [/ \((?:VERIFACTU_[A-Z_]+|verifactu_installations\.numero_instalacion)\) supera los (\d+) caracteres permitidos por el XSD/g, " supera los $1 caracteres que admite la AEAT"],
+  // Usage notes («activo por uso») name the switch of the settings screen, not the flag.
+  [/el flag verifactuEnabled está desactivado/g, "VeriFactu no está activado en la configuración del establecimiento"],
+  [/el flag sesHospedajesEnabled está desactivado/g, "SES.HOSPEDAJES no está activado en la configuración del establecimiento"],
+  [/el flag compliance_billing \(módulo\) está desactivado/g, "el módulo de facturación y cumplimiento no está activado"],
+  // Issuer NIF (check issuer_tax_id_valid).
+  [/NIF de relleno \(sandbox\)/g, "NIF de relleno (modo de pruebas)"],
+  // Fiscal address keys (check property_fiscal_address_complete).
+  [
+    /Dirección fiscal incompleta: faltan ([A-Za-z, ]+)\./g,
+    (_match, keys) =>
+      `Dirección fiscal incompleta: faltan ${keys
+        .split(",")
+        .map((key) => FISCAL_ADDRESS_FIELD_LABELS[key.trim()] ?? key.trim())
+        .join(", ")}.`
+  ],
+  // Tax region codes (check tax_region_configured).
+  [/\bES_(?:PENINSULA_BALEARES|PENINSULA|CANARIAS|CEUTA|MELILLA)\b/g, (match) => TAX_REGION_LABELS[match] ?? match],
+  // Loose words nobody should read on a hotelier's screen.
+  [/\bModo sandbox\b/g, "Modo de pruebas"],
+  [/\(solo sandbox\)/g, "(solo en modo de pruebas)"],
+  [/\bsandbox\b/g, "modo de pruebas"],
+  [/\bstub\b/g, "simulador"],
+  [/\bgo-live\b/g, "salida en vivo"],
+  [/\bpreproduction\b/g, "preproducción"],
+  [/\bproduction\b/g, "producción"],
+  [/\bAEAT\/MIR\b/g, "AEAT y Ministerio del Interior"],
+  [/\bal MIR\b/g, "al Ministerio del Interior"]
+];
+
+/**
+ * readinessMessage("SES_HOSPEDAJES_MODE=sandbox: los partes se envían a un simulador, no al MIR. …")
+ *   → "SES.HOSPEDAJES en modo de pruebas: los partes se envían a un simulador, no al Ministerio del Interior. …"
+ * readinessMessage("Bloque SistemaInformatico incompleto (Falta VERIFACTU_SOFTWARE_NAME (…).). En sandbox se envía con valores de relleno.")
+ *   → "Datos del software VeriFactu incompletos (Falta la razón social del productor del software.). En modo de pruebas se envía con valores de relleno."
+ * readinessMessage("3 tipo(s) de habitación activos.") → unchanged · null → "".
+ */
+export function readinessMessage(message: string | null | undefined): string {
+  if (typeof message !== "string") return "";
+  let text = message;
+  for (const [pattern, replacement] of READINESS_MESSAGE_REWRITES) {
+    text = typeof replacement === "string" ? text.replace(pattern, replacement) : text.replace(pattern, replacement);
+  }
+  return text;
+}

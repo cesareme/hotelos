@@ -86,7 +86,7 @@ const OVERRIDE = {
   "tabs/tab-helpers.tsx": { wave: 11, note: "pinta el `<h1>` alojado (`HostedHead`): exención de la regla 8 o traslado a `components/` antes de salir de `NOT_MIGRATED`" },
   "tabs/TabHost.tsx": { wave: 11, note: "pinta el `<h1>` alojado: misma exención de la regla 8 que `tab-helpers.tsx`" },
   "tabs/NavItemTabs.tsx": { wave: 11, note: "ya Cocoa (`CocoaPageHeader` + `CocoaRouteTabs`); solo salir de `NOT_MIGRATED`" },
-  "tabs/configuracion/tab-helpers.tsx": { wave: 10, note: "helper de 13 líneas; solo salir de `NOT_MIGRATED`" },
+  // tabs/configuracion/tab-helpers.tsx: compatibility re-export with 0 importers, retired in wave 10 (integración; git D).
   "dev/StyleGuideScreen.tsx": { wave: 11, note: "ya en `CocoaPage` (37 `style={` de muestras): `STYLE_BUDGET` 40 y salir de `NOT_MIGRATED` en cuanto el integrador lo decida (puede ir con la ola 1)" }
 };
 
@@ -95,7 +95,7 @@ const DEAD = {
   // reservations/QuickActionsDialogs.tsx: retired in wave 3 (git D, lote 3-C).
   "billing/SplitFolioDialog.tsx": "0 importadores",
   "billing/InvoiceDetailScreen.tsx": "0 importadores (solo un comentario en billing/invoiceStatus.ts:2); sin clave ni URL",
-  "onboarding/CocoaOnboardingWizard.tsx": "0 importadores; lo lee layouts/__tests__/shell-cocoa22-contract.test.mts:16 (ajustar el test al retirarlo)",
+  // onboarding/CocoaOnboardingWizard.tsx: retired in wave 10 (git D, lote 10-C; shell-cocoa22-contract.test.mts no longer reads it).
   // auth/CocoaLoginScreen.tsx and errors/CocoaServerErrorScreen.tsx: retired in wave 1 (git D).
   "developer/CocoaShowcaseScreen.tsx": "0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:36 (borrar la línea)",
   "preview/CocoaGalleryScreen.tsx": "0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:37 (borrar la línea)"

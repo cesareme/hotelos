@@ -126,3 +126,46 @@ describe("CocoaPage · the markup the bleed rule relies on", () => {
     assert.doesNotMatch(html, /data-full-bleed/);
   });
 });
+
+// fix:primitives qa#10 — probe §5.4 on /cumplimiento/envios (and eight more
+// screens with inner views) returned `aria-controls=null` on the active tab
+// and no [role=tabpanel] in main: the plumbing existed end to end
+// (CocoaPage → head → CocoaSegmentedControl) but every screen had to mint a
+// panelId and paint the panel itself. Now the page body IS the panel unless
+// the screen passes its own `panelId`.
+describe("CocoaPage · the body is the tabpanel of the inner views (qa#10)", () => {
+  const tabs = [
+    { value: "hoy", label: "Hoy" },
+    { value: "semana", label: "Semana" }
+  ];
+  const activeTab = (html: string) => html.match(/<button[^>]*role="tab"[^>]*aria-selected="true"[^>]*>/)?.[0] ?? "";
+
+  it("with tabs and no panelId the active tab controls the body, labelled with the active view", () => {
+    const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", tabs, activeTab: "semana", children: "cuerpo" } as never));
+    const controls = activeTab(html).match(/aria-controls="([^"]+)"/);
+    assert.ok(controls, `active tab without aria-controls in ${html}`);
+    const panelId = controls[1];
+    assert.ok(!/\s/.test(panelId), `panel id must be a single IDREF token: ${panelId}`);
+    assert.ok(html.includes(`<div class="c22-page__body cocoa-page-body" id="${panelId}" role="tabpanel" aria-label="Semana">cuerpo</div>`), html);
+    // Only the active tab points at the panel (WAI-ARIA tabs pattern).
+    assert.equal((html.match(/aria-controls=/g) ?? []).length, 1);
+  });
+
+  it("falls back to the first view as the panel label when activeTab is not given", () => {
+    const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", tabs, children: "cuerpo" } as never));
+    assert.match(html, /role="tabpanel" aria-label="Hoy"/);
+  });
+
+  it("an explicit panelId is forwarded to the tab strip and the body stays a plain div (the screen paints its panel)", () => {
+    const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", tabs, activeTab: "hoy", panelId: "mi-dia-panel", children: "cuerpo" } as never));
+    assert.match(activeTab(html), /aria-controls="mi-dia-panel"/);
+    assert.ok(html.includes('<div class="c22-page__body cocoa-page-body">cuerpo</div>'), html);
+    assert.doesNotMatch(html, /role="tabpanel"/);
+  });
+
+  it("without inner views the body carries neither role nor id", () => {
+    const html = renderToStaticMarkup(createElement(CocoaPage, { title: "Mi día", children: "cuerpo" } as never));
+    assert.ok(html.includes('<div class="c22-page__body cocoa-page-body">cuerpo</div>'), html);
+    assert.doesNotMatch(html, /tabpanel|aria-controls/);
+  });
+});

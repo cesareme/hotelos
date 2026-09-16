@@ -1,15 +1,46 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+// Catálogo de herramientas de IA — /configuracion/ia/herramientas (hosted in
+// InteligenciaArtificialTabs; Cocoa 22 · ola 10 · lote 10-B, plantilla
+// DashboardAlojado con lista).
+//
+// Every AI-backed tool defined in code (@hotelos/ai-tools) mirrored into
+// AiToolRegistry (GET /ai-operations/tools, /tools/stats, POST /tools/sync)
+// plus the per-property enablement / automation settings
+// (GET /ai-operations/tools/:name, POST /tools/property-settings). KPI
+// strip, content toolbar with the three filters, a CocoaTable whose rows
+// open the tool in a CocoaDrawer with its definition and the per-property
+// form. Same endpoints, queries and bodies as before.
+
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { LoadingBlock } from "../../components/States";
-
-// ---- Sprint 47 — AI Tool Registry ----
-// Catalog of every AI-backed tool defined in code (@hotelos/ai-tools) mirrored
-// into AiToolRegistry, plus per-property enablement / automation settings.
-// Aurora v2 styling (rev-kpi / bo-card / cm-table / cm-pill), consistent with
-// the rest of the AI Operations zone. Wiring into App/Sidebar is done by the
-// orchestrator — this component only exports cleanly.
+import { useToast } from "../../components/Toast";
+import { toArray } from "../../utils/toArray";
+import { number, percent, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSearchInput,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  CocoaToolbar,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -99,53 +130,101 @@ function fmtRisk(risk: string): string {
   }
 }
 
-function riskPill(risk: string) {
-  const cls =
-    risk === "critical" || risk === "high"
-      ? "cm-pill-error"
-      : risk === "medium"
-        ? "cm-pill-warn"
-        : "cm-pill-ok";
-  return <span className={`cm-pill ${cls}`}>{fmtRisk(risk)}</span>;
+function riskTone(risk: string): CocoaTone {
+  return risk === "critical" || risk === "high" ? "danger" : risk === "medium" ? "warning" : "success";
+}
+
+function riskBadge(risk: string) {
+  return (
+    <CocoaBadge tone={riskTone(risk)} variant="tinted" size="small">
+      {fmtRisk(risk)}
+    </CocoaBadge>
+  );
+}
+
+function permissionChips(permissions: string[]) {
+  if (permissions.length === 0) return <span className="cocoa-note">—</span>;
+  return (
+    <div className="cocoa-cluster">
+      {permissions.map((perm) => (
+        <CocoaBadge key={perm} tone="neutral" variant="outline" size="small" uppercase={false}>
+          {perm}
+        </CocoaBadge>
+      ))}
+    </div>
+  );
 }
 
 // Mirror the backend guardrail client-side: critical/high tools cannot run
 // autonomous without an approval role.
 function autonomousBlocked(risk: string, automationLevel: string, approvalRole: string): boolean {
-  return (
-    automationLevel === "autonomous" &&
-    (risk === "critical" || risk === "high") &&
-    !approvalRole.trim()
-  );
+  return automationLevel === "autonomous" && (risk === "critical" || risk === "high") && !approvalRole.trim();
 }
+
+const AUTOMATION_OPTIONS = AUTOMATION_LEVELS.map((level) => ({ value: level, label: fmtAutomation(level) }));
+const RISK_FILTER_OPTIONS = [{ value: "", label: "Todos los riesgos" }, ...RISK_LEVELS.map((r) => ({ value: r, label: fmtRisk(r) }))];
+
+const TOOL_COLUMNS: CocoaTableColumn<ToolListItem>[] = [
+  {
+    key: "toolName",
+    label: "Herramienta",
+    minWidth: 200,
+    render: (tool) => (
+      <>
+        <strong>{tool.toolName}</strong>
+        {!tool.inCode ? <span className="cocoa-note">huérfana (sin definición en el código)</span> : null}
+      </>
+    )
+  },
+  { key: "moduleName", label: "Módulo", fit: true, hideOnNarrow: true },
+  { key: "riskLevel", label: "Riesgo", fit: true, render: (tool) => riskBadge(tool.riskLevel) },
+  {
+    key: "requiresConfirmation",
+    label: "Confirmación",
+    fit: true,
+    showFrom: "desktop", // qa#16: at 1024 × 768 the table ran 28 px past its wrap; the fit column (≈ 110 px) waits for desktop
+    render: (tool) =>
+      tool.requiresConfirmation ? (
+        <CocoaBadge tone="warning" variant="tinted" size="small">
+          obligatoria
+        </CocoaBadge>
+      ) : (
+        <span className="cocoa-note">no</span>
+      )
+  },
+  { key: "requiredPermissions", label: "Permisos", showFrom: "desktop", render: (tool) => permissionChips(tool.requiredPermissions) },
+  {
+    key: "active",
+    label: "Activa",
+    fit: true,
+    render: (tool) => (
+      <CocoaBadge tone={tool.active ? "success" : "neutral"} variant="tinted" size="small">
+        {tool.active ? "activa" : "inactiva"}
+      </CocoaBadge>
+    )
+  }
+];
 
 // ---- per-property settings editor ------------------------------------------
 
-function PropertySettingEditor(props: {
-  tool: ToolDetail;
-  onSaved: () => void;
-}) {
+function PropertySettingEditor(props: { tool: ToolDetail; onSaved: () => void }) {
   const { tool } = props;
+  const { showToast } = useToast();
   const existing = tool.propertySettings.find((s) => s.toolName === tool.toolName) ?? null;
 
   const [enabled, setEnabled] = useState<boolean>(existing?.enabled ?? true);
-  const [automationLevel, setAutomationLevel] = useState<AutomationLevel>(
-    existing?.automationLevel ?? "suggest_and_confirm"
-  );
+  const [automationLevel, setAutomationLevel] = useState<AutomationLevel>(existing?.automationLevel ?? "suggest_and_confirm");
   const [approvalRole, setApprovalRole] = useState<string>(existing?.requiresApprovalRole ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [message, setMessage] = useState<string | null>(null);
 
   const blocked = autonomousBlocked(tool.riskLevel, automationLevel, approvalRole);
+  const roleRequired = tool.riskLevel === "critical" || tool.riskLevel === "high";
 
   async function save() {
     setError(null);
-    setMessage(null);
     if (blocked) {
-      setError(
-        `El nivel de riesgo de la herramienta es "${fmtRisk(tool.riskLevel)}". La automatización autónoma requiere un rol que apruebe.`
-      );
+      setError(`El nivel de riesgo de la herramienta es «${fmtRisk(tool.riskLevel)}». La automatización autónoma requiere un rol que apruebe.`);
       return;
     }
     setSaving(true);
@@ -160,7 +239,7 @@ function PropertySettingEditor(props: {
           requiresApprovalRole: approvalRole.trim() ? approvalRole.trim() : null
         }
       });
-      setMessage("Guardado.");
+      showToast(STATUS_LABELS.saved, { variant: "success" });
       props.onSaved();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -170,134 +249,103 @@ function PropertySettingEditor(props: {
   }
 
   return (
-    <div>
-      <p className="bo-muted">Configuración por propiedad · {PROPERTY_ID}</p>
-
-      <label style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.75rem" }}>
-        <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />
-        <span>Activada para esta propiedad</span>
-      </label>
-
-      <label style={{ display: "block", marginBottom: "0.75rem" }}>
-        <span className="bo-muted">Nivel de automatización</span>
-        <select
-          value={automationLevel}
-          onChange={(e) => setAutomationLevel(e.target.value as AutomationLevel)}
-          style={{ width: "100%" }}
-        >
-          {AUTOMATION_LEVELS.map((level) => (
-            <option key={level} value={level}>
-              {fmtAutomation(level)}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label style={{ display: "block", marginBottom: "0.75rem" }}>
-        <span className="bo-muted">
-          Rol que aprueba {tool.riskLevel === "critical" || tool.riskLevel === "high" ? "(obligatorio para modo autónomo)" : "(opcional)"}
-        </span>
-        <input
-          type="text"
-          value={approvalRole}
-          onChange={(e) => setApprovalRole(e.target.value)}
-          style={{ width: "100%" }}
-          placeholder="p. ej. revenue_manager"
-        />
-      </label>
-
-      {blocked ? (
-        <p style={{ color: "var(--danger-ink)" }}>
-          {`Las herramientas con nivel de riesgo "${fmtRisk(tool.riskLevel)}" no pueden ejecutarse de forma autónoma sin un rol que apruebe.`}
-        </p>
+    <CocoaFormSection
+      title="Configuración por propiedad"
+      description={`Excepción de esta herramienta en ${getActiveProperty().propertyName}.`}
+      actions={
+        <CocoaButton variant="filled" tone="accent" size="small" disabled={saving || blocked} loading={saving} onClick={() => void save()}>
+          {saving ? STATUS_LABELS.saving : "Guardar configuración"}
+        </CocoaButton>
+      }
+    >
+      <CocoaField label="Activada para esta propiedad" inline>
+        <CocoaSwitch checked={enabled} onChange={setEnabled} />
+      </CocoaField>
+      <CocoaField label="Nivel de automatización" fullWidth>
+        <CocoaSelect value={automationLevel} onChange={(v) => setAutomationLevel(v as AutomationLevel)} options={AUTOMATION_OPTIONS} />
+      </CocoaField>
+      <CocoaField
+        label="Rol que aprueba"
+        hint={roleRequired ? "obligatorio para el modo autónomo" : STATUS_LABELS.optional.toLowerCase()}
+        error={blocked ? `Las herramientas con riesgo «${fmtRisk(tool.riskLevel)}» no pueden ejecutarse de forma autónoma sin un rol que apruebe.` : undefined}
+        fullWidth
+      >
+        <CocoaInput value={approvalRole} onChange={setApprovalRole} placeholder="p. ej. revenue_manager" />
+      </CocoaField>
+      {error ? (
+        <CocoaCallout tone="danger" role="alert" title={STATUS_LABELS.saveError}>
+          {error}
+        </CocoaCallout>
       ) : null}
-
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
-        <button type="button" className="primary" disabled={saving || blocked} onClick={save}>
-          {saving ? "Guardando…" : "Guardar configuración"}
-        </button>
-      </div>
-
-      {error ? <p style={{ color: "var(--danger-ink)" }}>{error}</p> : null}
-      {message ? <p className="bo-muted">{message}</p> : null}
-    </div>
+    </CocoaFormSection>
   );
 }
 
-// ---- detail side panel -----------------------------------------------------
+// ---- detail drawer ---------------------------------------------------------
 
-function ToolDetailPanel(props: { toolName: string; onClose: () => void; onSettingSaved: () => void }) {
-  const { data: tool, loading, error, refresh } = useApiData<ToolDetail>(
-    `/ai-operations/tools/${props.toolName}`
-  );
+function ToolDetailDrawer(props: { toolName: string | null; onClose: () => void; onSettingSaved: () => void }) {
+  const { data: tool, loading, error, refresh } = useApiData<ToolDetail>(props.toolName ? `/ai-operations/tools/${props.toolName}` : null);
 
   return (
-    <section className="bo-card">
-      <div className="bo-card-head">
-        <div>
-          <p className="bo-muted">Detalle de la herramienta</p>
-          <h3>{props.toolName}</h3>
-        </div>
-        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
-          {tool ? riskPill(tool.riskLevel) : null}
-          <button type="button" className="ghost" onClick={props.onClose}>
-            Cerrar
-          </button>
-        </div>
-      </div>
-
-      {loading && !tool ? <LoadingBlock /> : null}
-      {error ? <p style={{ color: "var(--danger-ink)" }}>{error}</p> : null}
-
-      {tool ? (
-        <div className="bo-grid two">
-          <div>
-            <p className="bo-muted">Definición</p>
-            <div className="dp-table">
-              <div className="dp-row">
-                <span className="dp-key">módulo</span>
-                <span className="dp-val">{tool.moduleName} ({tool.moduleCode})</span>
-              </div>
-              <div className="dp-row">
-                <span className="dp-key">riesgo</span>
-                <span className="dp-val">{fmtRisk(tool.riskLevel)}</span>
-              </div>
-              <div className="dp-row">
-                <span className="dp-key">requiere confirmación</span>
-                <span className="dp-val">{tool.requiresConfirmation ? "sí" : "no"}</span>
-              </div>
-              <div className="dp-row">
-                <span className="dp-key">activa</span>
-                <span className="dp-val">{tool.active ? "sí" : "no"}</span>
-              </div>
-              <div className="dp-row">
-                <span className="dp-key">en el código</span>
-                <span className="dp-val">{tool.inCode ? "sí" : "no (huérfana, sin definición en el código)"}</span>
-              </div>
-              <div className="dp-row">
-                <span className="dp-key">propiedades configuradas</span>
-                <span className="dp-val">{tool.enabledPropertyCount}/{tool.propertySettingCount} activadas</span>
-              </div>
+    <CocoaDrawer
+      open={props.toolName !== null}
+      onClose={props.onClose}
+      title={props.toolName ?? "Herramienta"}
+      subtitle={tool ? `${tool.moduleName} (${tool.moduleCode}) · riesgo ${fmtRisk(tool.riskLevel)}` : undefined}
+      side="right"
+      size="lg"
+      footer={
+        <CocoaButton variant="bordered" tone="neutral" onClick={props.onClose}>
+          {ACTIONS.close}
+        </CocoaButton>
+      }
+    >
+      {loading && !tool ? (
+        <CocoaSkeleton variant="text" lines={6} />
+      ) : error && !tool ? (
+        <CocoaState kind="error" title="No se pudo cargar la herramienta" message={error} onRetry={refresh} />
+      ) : tool ? (
+        <div className="cocoa-stack" data-gap="4">
+          <CocoaSection title="Definición" padding="sm">
+            <ul className="c22-section__list" aria-label="Definición de la herramienta">
+              <li>
+                <span>Módulo</span>
+                <strong>
+                  {tool.moduleName} ({tool.moduleCode})
+                </strong>
+              </li>
+              <li>
+                <span>Riesgo</span>
+                {riskBadge(tool.riskLevel)}
+              </li>
+              <li>
+                <span>Requiere confirmación</span>
+                <strong>{tool.requiresConfirmation ? STATUS_LABELS.yes : STATUS_LABELS.no}</strong>
+              </li>
+              <li>
+                <span>Activa</span>
+                <strong>{tool.active ? STATUS_LABELS.yes : STATUS_LABELS.no}</strong>
+              </li>
+              <li>
+                <span>En el código</span>
+                <strong>{tool.inCode ? STATUS_LABELS.yes : "no (huérfana, sin definición en el código)"}</strong>
+              </li>
+              <li>
+                <span>Propiedades configuradas</span>
+                <strong>
+                  {number(tool.enabledPropertyCount)}/{number(tool.propertySettingCount)} activadas
+                </strong>
+              </li>
+            </ul>
+            <p className="cocoa-note">{tool.description ?? "Sin descripción."}</p>
+            <div className="cocoa-stack" data-gap="1">
+              <span className="cocoa-caption">Permisos necesarios</span>
+              {tool.requiredPermissions.length === 0 ? <span className="cocoa-note">ninguno</span> : permissionChips(tool.requiredPermissions)}
             </div>
-
-            <p className="bo-muted" style={{ marginTop: "1rem" }}>Descripción</p>
-            <p>{tool.description ?? "—"}</p>
-
-            <p className="bo-muted" style={{ marginTop: "1rem" }}>Permisos necesarios</p>
-            <div className="bo-pill-row">
-              {tool.requiredPermissions.length === 0 ? (
-                <span className="bo-muted">ninguno</span>
-              ) : (
-                tool.requiredPermissions.map((perm) => (
-                  <span key={perm} className="bo-pill">
-                    {perm}
-                  </span>
-                ))
-              )}
-            </div>
-          </div>
+          </CocoaSection>
 
           <PropertySettingEditor
+            key={tool.toolName}
             tool={tool}
             onSaved={() => {
               refresh();
@@ -306,21 +354,21 @@ function ToolDetailPanel(props: { toolName: string; onClose: () => void; onSetti
           />
         </div>
       ) : null}
-    </section>
+    </CocoaDrawer>
   );
 }
 
 // ---- screen ----------------------------------------------------------------
 
 export function AiToolRegistryScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
+  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
+  const hosted = useTabHost() !== null || embedded;
+  const { showToast } = useToast();
   const [moduleFilter, setModuleFilter] = useState("");
   const [riskFilter, setRiskFilter] = useState("");
   const [search, setSearch] = useState("");
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
-  const [syncError, setSyncError] = useState<string | null>(null);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   const query = useMemo(
     () => ({
@@ -331,19 +379,18 @@ export function AiToolRegistryScreen({ embedded = false }: { embedded?: boolean 
     [moduleFilter, riskFilter, search]
   );
 
-  const { data: tools, loading, error, refresh: refreshTools } = useApiData<ToolListItem[]>(
-    "/ai-operations/tools",
-    { query }
-  );
+  const { data: tools, loading, error, refresh: refreshTools } = useApiData<ToolListItem[]>("/ai-operations/tools", { query });
   const { data: stats, refresh: refreshStats } = useApiData<ToolRegistryStats>("/ai-operations/tools/stats");
 
-  const items = tools ?? [];
+  const items = useMemo(() => toArray<ToolListItem>(tools), [tools]);
+  const filtered = moduleFilter !== "" || riskFilter !== "" || search.trim() !== "";
 
   const moduleOptions = useMemo(() => {
     const map = new Map<string, string>();
-    for (const m of stats?.byModule ?? []) map.set(m.moduleCode, m.moduleName);
+    for (const m of toArray<ToolRegistryStats["byModule"][number]>(stats?.byModule)) map.set(m.moduleCode, m.moduleName);
     for (const t of items) map.set(t.moduleCode, t.moduleName);
-    return [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    const sorted = [...map.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+    return [{ value: "", label: "Todos los módulos" }, ...sorted.map(([code, name]) => ({ value: code, label: name }))];
   }, [stats, items]);
 
   function refreshAll() {
@@ -353,192 +400,101 @@ export function AiToolRegistryScreen({ embedded = false }: { embedded?: boolean 
 
   async function runSync() {
     setSyncing(true);
-    setSyncError(null);
-    setSyncMessage(null);
     try {
-      const result = await apiRequest<{ synced: number; deactivated: number }>(
-        "/ai-operations/tools/sync",
-        { method: "POST" }
-      );
-      setSyncMessage(`Se sincronizaron ${result.synced} herramientas (${result.deactivated} desactivadas).`);
+      const result = await apiRequest<{ synced: number; deactivated: number }>("/ai-operations/tools/sync", { method: "POST" });
+      showToast(`Se sincronizaron ${plural(result.synced, "herramienta", "herramientas")} (${number(result.deactivated)} desactivadas).`, { variant: "success" });
       refreshAll();
     } catch (err) {
-      setSyncError(err instanceof Error ? err.message : String(err));
+      showToast(err instanceof Error ? err.message : String(err), { variant: "error" });
     } finally {
       setSyncing(false);
     }
   }
 
+  function clearFilters() {
+    setModuleFilter("");
+    setRiskFilter("");
+    setSearch("");
+  }
+
+  const ready = !error && !(loading && items.length === 0);
+
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : <div className="bo-page-eyebrow">IA · Catálogo de herramientas</div>}
-          {embedded ? null : <h1 className="bo-page-title">Catálogo de herramientas de IA</h1>}
-          <p className="bo-page-subtitle">
-            Catálogo de todas las herramientas con IA que la plataforma puede ejecutar, sincronizado
-            desde el código. Revisa el riesgo y los permisos y, después, actívalas y ajusta la
-            automatización por propiedad.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="primary" disabled={syncing} onClick={runSync}>
+    <CocoaPage
+      eyebrow="Configuración · Inteligencia artificial"
+      title="Catálogo de herramientas de IA"
+      subtitle={
+        hosted
+          ? undefined
+          : "Catálogo de todas las herramientas con IA que la plataforma puede ejecutar, sincronizado desde el código. Revisa el riesgo y los permisos y, después, actívalas y ajusta la automatización por propiedad."
+      }
+      actions={
+        <>
+          <CocoaButton variant="filled" tone="accent" size="small" disabled={syncing} loading={syncing} onClick={() => void runSync()}>
             {syncing ? "Sincronizando…" : "Sincronizar catálogo desde el código"}
-          </button>
-          <button type="button" className="ghost" onClick={refreshAll}>↻ Actualizar</button>
-        </div>
-      </div>
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      commands={[
+        { id: "ia-herramientas-sync", label: "Sincronizar el catálogo de herramientas de IA", run: () => void runSync() },
+        { id: "ia-herramientas-refresh", label: "Actualizar el catálogo de herramientas de IA", run: refreshAll }
+      ]}
+    >
+      {stats ? (
+        <CocoaKpiStrip stagger aria-label="Resumen del catálogo">
+          <CocoaKpi label="Total de herramientas" value={number(stats.totalTools)} caption={`${number(stats.activeTools)} activas · ${number(stats.inactiveTools)} inactivas`} polarity="neutral" status="ok" />
+          <CocoaKpi label="Crítico / Alto" value={`${number(stats.byRisk.critical)} / ${number(stats.byRisk.high)}`} caption="herramientas de riesgo elevado" polarity="negative-good" status={stats.byRisk.critical > 0 ? "critical" : "ok"} />
+          <CocoaKpi label="Medio / Bajo" value={`${number(stats.byRisk.medium)} / ${number(stats.byRisk.low)}`} caption="herramientas rutinarias" polarity="neutral" status="warning" />
+          <CocoaKpi label="Requieren confirmación" value={percent(stats.pctRequiringConfirmation, { maximumFractionDigits: 0 })} caption={plural(stats.requiringConfirmation, "herramienta", "herramientas")} polarity="neutral" status="ok" />
+          <CocoaKpi label="Activas" value={number(stats.activeTools)} caption="en el catálogo activo" polarity="positive-good" status="ok" />
+        </CocoaKpiStrip>
+      ) : (
+        <CocoaSkeleton.Strip count={5} />
+      )}
 
-      {syncError ? <p style={{ color: "var(--danger-ink)" }}>{syncError}</p> : null}
-      {syncMessage ? <p className="bo-muted">{syncMessage}</p> : null}
+      <CocoaToolbar
+        variant="content"
+        aria-label="Filtros del catálogo"
+        leftSlot={<CocoaSearchInput value={search} onChange={setSearch} debounceMs={250} placeholder="Nombre de herramienta, módulo o descripción…" aria-label="Buscar herramientas" />}
+        rightSlot={
+          <>
+            <CocoaSelect value={moduleFilter} onChange={setModuleFilter} options={moduleOptions} inline aria-label="Filtrar por módulo" />
+            <CocoaSelect value={riskFilter} onChange={setRiskFilter} options={RISK_FILTER_OPTIONS} inline aria-label="Filtrar por riesgo" />
+          </>
+        }
+      />
 
-      {error ? (
-        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
-          No se pudo cargar el catálogo de herramientas ahora mismo. Actualiza para reintentar.
-        </section>
-      ) : null}
-
-      <section className="rev-kpi-grid">
-        <article className="rev-kpi">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Total de herramientas</span></div>
-          <div className="rev-kpi-value">{stats?.totalTools ?? "…"}</div>
-          <div className="rev-kpi-delta">{stats?.activeTools ?? 0} activas · {stats?.inactiveTools ?? 0} inactivas</div>
-        </article>
-        <article className={`rev-kpi rev-kpi-${stats && stats.byRisk.critical > 0 ? "error" : "ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Crítico / Alto</span></div>
-          <div className="rev-kpi-value">
-            {stats ? `${stats.byRisk.critical} / ${stats.byRisk.high}` : "…"}
-          </div>
-          <div className="rev-kpi-delta">herramientas de riesgo elevado</div>
-        </article>
-        <article className="rev-kpi rev-kpi-warn">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Medio / Bajo</span></div>
-          <div className="rev-kpi-value">
-            {stats ? `${stats.byRisk.medium} / ${stats.byRisk.low}` : "…"}
-          </div>
-          <div className="rev-kpi-delta">herramientas rutinarias</div>
-        </article>
-        <article className="rev-kpi">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Requieren confirmación</span></div>
-          <div className="rev-kpi-value">{stats ? `${stats.pctRequiringConfirmation}%` : "…"}</div>
-          <div className="rev-kpi-delta">{stats?.requiringConfirmation ?? 0} herramientas</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Activas</span></div>
-          <div className="rev-kpi-value">{stats?.activeTools ?? "…"}</div>
-          <div className="rev-kpi-delta">en el catálogo activo</div>
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Filtros</p>
-            <h3>Herramientas</h3>
-          </div>
-          <span className="bo-chip">{items.length} herramientas</span>
-        </div>
-
-        <div className="bo-toolbar" style={{ display: "flex", flexWrap: "wrap", gap: "0.75rem", alignItems: "center" }}>
-          <label>
-            <span className="bo-muted" style={{ marginRight: "0.4rem" }}>Módulo</span>
-            <select value={moduleFilter} onChange={(e) => setModuleFilter(e.target.value)}>
-              <option value="">Todos los módulos</option>
-              {moduleOptions.map(([code, name]) => (
-                <option key={code} value={code}>{name}</option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span className="bo-muted" style={{ marginRight: "0.4rem" }}>Riesgo</span>
-            <select value={riskFilter} onChange={(e) => setRiskFilter(e.target.value)}>
-              <option value="">Todos los riesgos</option>
-              {RISK_LEVELS.map((r) => (
-                <option key={r} value={r}>{fmtRisk(r)}</option>
-              ))}
-            </select>
-          </label>
-          <label style={{ flex: "1 1 220px" }}>
-            <span className="bo-muted" style={{ marginRight: "0.4rem" }}>Buscar</span>
-            <input
-              type="search"
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Nombre de herramienta, módulo o descripción…"
-              style={{ minWidth: "180px" }}
-            />
-          </label>
-        </div>
-
-        {loading && items.length === 0 ? (
-          <LoadingBlock label="Cargando herramientas…" />
-        ) : items.length === 0 ? (
-          <p className="bo-muted">Ninguna herramienta coincide con estos filtros. Sincroniza el catálogo desde el código si parece vacío.</p>
+      <CocoaSection title="Herramientas" meta={plural(items.length, "herramienta", "herramientas")} padding={ready && items.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {error ? (
+          <CocoaState kind="error" title="No se pudo cargar el catálogo de herramientas" message={error} onRetry={refreshTools} />
+        ) : !loading && items.length === 0 ? (
+          <CocoaState
+            kind="empty"
+            illustration={filtered ? "search" : "box"}
+            title={filtered ? "Ninguna herramienta coincide con estos filtros" : "El catálogo está vacío"}
+            message={filtered ? "Prueba con otro módulo, riesgo o texto." : "Sincroniza el catálogo desde el código para cargar las herramientas definidas."}
+            primaryAction={filtered ? { label: ACTIONS.clearFilters, onClick: clearFilters } : { label: "Sincronizar catálogo desde el código", onClick: () => void runSync(), loading: syncing }}
+          />
         ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Herramienta</th>
-                  <th>Módulo</th>
-                  <th>Riesgo</th>
-                  <th>Confirmación</th>
-                  <th>Permisos</th>
-                  <th>Activa</th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((tool) => (
-                  <tr
-                    key={tool.toolName}
-                    className={tool.active ? undefined : "cm-row-error"}
-                    onClick={() => setSelectedTool(selectedTool === tool.toolName ? null : tool.toolName)}
-                    style={{ cursor: "pointer", opacity: tool.active ? 1 : 0.6 }}
-                  >
-                    <td>
-                      <strong>{tool.toolName}</strong>
-                      {!tool.inCode ? <span className="bo-muted"> · huérfana (sin definición en el código)</span> : null}
-                    </td>
-                    <td>{tool.moduleName}</td>
-                    <td>{riskPill(tool.riskLevel)}</td>
-                    <td>
-                      {tool.requiresConfirmation ? (
-                        <span className="cm-pill cm-pill-warn">obligatoria</span>
-                      ) : (
-                        <span className="bo-muted">no</span>
-                      )}
-                    </td>
-                    <td onClick={(e) => e.stopPropagation()}>
-                      <div className="bo-pill-row">
-                        {tool.requiredPermissions.length === 0 ? (
-                          <span className="bo-muted">—</span>
-                        ) : (
-                          tool.requiredPermissions.map((perm) => (
-                            <span key={perm} className="bo-pill">{perm}</span>
-                          ))
-                        )}
-                      </div>
-                    </td>
-                    <td>
-                      <span className={`cm-pill ${tool.active ? "cm-pill-ok" : "cm-pill-error"}`}>
-                        {tool.active ? "activa" : "inactiva"}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <CocoaTable
+            columns={TOOL_COLUMNS}
+            rows={items}
+            rowKey="toolName"
+            loading={loading && items.length === 0}
+            selectedKey={selectedTool ?? undefined}
+            onSelect={(tool) => setSelectedTool(selectedTool === tool.toolName ? null : tool.toolName)}
+            rowTone={(tool) => (tool.active ? undefined : "neutral")}
+            rowTitle={() => "Abrir el detalle de la herramienta"}
+            caption="Catálogo de herramientas de IA"
+            aria-label="Catálogo de herramientas de IA"
+          />
         )}
-      </section>
+      </CocoaSection>
 
-      {selectedTool ? (
-        <ToolDetailPanel
-          toolName={selectedTool}
-          onClose={() => setSelectedTool(null)}
-          onSettingSaved={refreshTools}
-        />
-      ) : null}
-    </>
+      <ToolDetailDrawer toolName={selectedTool} onClose={() => setSelectedTool(null)} onSettingSaved={refreshTools} />
+    </CocoaPage>
   );
 }

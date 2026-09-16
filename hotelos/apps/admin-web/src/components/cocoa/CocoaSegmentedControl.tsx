@@ -43,9 +43,13 @@ export interface CocoaSegmentedControlProps {
    * segmented control has no ids of its own to point `aria-labelledby` at.
    */
   panelId?: string;
+  /** id of the tablist (so a `CocoaField` label can point at it with `htmlFor`). */
+  id?: string;
   className?: string;
   style?: CSSProperties;
   "aria-label"?: string;
+  /** id of the help / error text of the control (CocoaField injects it). */
+  "aria-describedby"?: string;
 }
 
 const ITEM_PADDING_BY_SIZE: Record<CocoaSegmentedControlSize, string> = { small: "4px 12px", regular: "6px 16px" };
@@ -133,7 +137,7 @@ export function segmentItemStyle(input: { isActive: boolean; disabled?: boolean;
   };
 }
 
-export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, panelId, className, style, "aria-label": ariaLabel }: CocoaSegmentedControlProps) {
+export function CocoaSegmentedControl({ value, onChange, options, size = "regular", fullWidth = false, panelId, id, className, style, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy }: CocoaSegmentedControlProps) {
   const iconSize = ICON_SIZE_BY_SIZE[size];
   const refs = useRef(new Map<string, HTMLButtonElement>());
   const enabledValues = useMemo(() => options.filter((opt) => !opt.disabled).map((opt) => opt.value), [options]);
@@ -190,8 +194,10 @@ export function CocoaSegmentedControl({ value, onChange, options, size = "regula
   return (
     <div
       ref={listRef}
+      id={id}
       role="tablist"
       aria-label={ariaLabel}
+      aria-describedby={ariaDescribedBy}
       className={["cocoa-segmented", className].filter(Boolean).join(" ")}
       style={containerStyle}
       onKeyDown={onKeyDown}

@@ -21,6 +21,7 @@
 
 import { apiBase, apiRequest, ApiError, publicRequest } from "./api-client";
 import { clearSession, getToken, getUser, type AuthUser } from "./auth-storage";
+import { dateTime } from "../lib/format";
 import { toArray } from "../utils/toArray";
 
 // ---------------------------------------------------------------------------
@@ -330,11 +331,9 @@ export function describeDelivery(delivery: InvitationDelivery | undefined, email
   }
 }
 
+/** «15 sept 2026, 14:05» in Madrid time (lib/format); «—» without a date. */
 export function formatExpiry(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return iso;
-  return d.toLocaleString("es-ES", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  return dateTime(iso, { style: "medium", empty: "—" });
 }
 
 /** True when the invitation is past its expiry (server flag first, then the date). */

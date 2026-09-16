@@ -1,7 +1,22 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
-import { ErrorState, LoadingBlock, Spinner } from "../../components/States";
+// Partes de entrada — Cumplimiento › Registro de viajeros
+// (/cumplimiento/registro-viajeros, base tab of RegistroViajerosTabs; the legacy
+// key still opens it standalone). Cocoa 22 · ola 8 · lote 8-A, archetype
+// «dashboard» (docs/design/COCOA-22.md §4, plantilla DashboardAlojado).
+//
+// Real form over the Spain guest register (RD 933/2021): the KPI strip counts
+// the records of the property, the form validates identity, residence,
+// contract and contact with `validateSpainGuestRegisterForm` (Zod) before
+// creating the record and queueing its SES.Hospedajes submission, and the
+// table lists the last 50 records with the pipeline retry per row. Same
+// calls, same validation and same outcomes as the legacy screen; the copy is
+// now Spanish (browser-roles#13) and the paint uses the primitives.
+
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
-import { date, dateTime, plural } from "../../lib/format";
+import { date, dateTime, number, plural } from "../../lib/format";
+import { navigateTo } from "../../lib/navigate";
+import { ACTIONS } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
 import {
   createSpainGuestRegisterRecord,
   listPropertyGuestRegisterRecords,
@@ -12,25 +27,81 @@ import {
   type GuestRegisterStatus,
   type SpainGuestRegisterInput
 } from "../../services/guestRegisterApi";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaTable,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
-const STATUS_TONE: Record<GuestRegisterStatus, "ok" | "warn" | "error" | "info"> = {
-  draft: "info",
-  missing_data: "warn",
+// The queue keeps the last 50 records on screen (the API returns the whole property).
+const VISIBLE_RECORDS = 50;
+
+const STATUS_LABEL: Record<GuestRegisterStatus, string> = {
+  draft: "Borrador",
+  missing_data: "Datos incompletos",
+  ready_to_sign: "Listo para firmar",
+  signed: "Firmado",
+  ready_to_submit: "Listo para enviar",
+  queued: "En cola",
+  exported: "Exportado",
+  submitted: "Enviado",
+  accepted: "Aceptado",
+  rejected: "Rechazado",
+  failed: "Fallido",
+  annulled: "Anulado",
+  corrected: "Corregido",
+  expired: "Caducado"
+};
+
+const STATUS_TONE: Record<GuestRegisterStatus, CocoaTone> = {
+  draft: "neutral",
+  missing_data: "warning",
   ready_to_sign: "info",
   signed: "info",
   ready_to_submit: "info",
   queued: "info",
   exported: "info",
   submitted: "info",
-  accepted: "ok",
-  rejected: "error",
-  failed: "error",
-  annulled: "warn",
-  corrected: "warn",
-  expired: "warn"
+  accepted: "success",
+  rejected: "danger",
+  failed: "danger",
+  annulled: "warning",
+  corrected: "warning",
+  expired: "warning"
 };
+
+// Status of the authority submission the queue answers with.
+const SUBMISSION_STATUS_LABEL: Record<string, string> = {
+  queued: "en cola",
+  sent: "enviado",
+  accepted: "aceptado",
+  rejected: "rechazado",
+  failed: "fallido",
+  annulled: "anulado"
+};
+
+const DOCUMENT_TYPE_OPTIONS = [
+  { value: "DNI", label: "DNI" },
+  { value: "PASSPORT", label: "Pasaporte" },
+  { value: "TIE", label: "TIE" }
+];
 
 type FormState = {
   reservationId: string;
@@ -74,15 +145,16 @@ const EMPTY_FORM: FormState = {
   checkoutAt: ""
 };
 
+// Field errors of the form: the Zod issues of the RD 933/2021 input plus the
+// reservation, which travels outside that input (`createSpainGuestRegisterRecord`
+// takes it apart) but is a required field of the same form.
+type FieldErrors = FormValidationErrors & { reservationId?: string };
+
 type SubmissionState =
   | { kind: "idle" }
   | { kind: "submitting"; phase: "create" | "queue" }
   | { kind: "success"; recordId: string; submissionId?: string; message: string }
   | { kind: "error"; message: string };
-
-function nav(screen: string) {
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-}
 
 function formToInput(form: FormState): SpainGuestRegisterInput {
   // Cast through unknown — Zod will validate the actual shape.
@@ -108,13 +180,54 @@ function formToInput(form: FormState): SpainGuestRegisterInput {
   };
 }
 
+function canRetryQueue(record: GuestRegisterRecord): boolean {
+  return record.status === "failed" || record.status === "rejected" || record.status === "missing_data";
+}
+
+// Widths measured at 1440 (wrapper 1150 px, qa#1 8-A): «Documento» is capped
+// at 160 px — the API returns the stored number as is and one record carried
+// an 83-character token that widened the column to 667 px (table 1610 px);
+// a real «PASSPORT AB1234567» measures ≈ 130 px and the tooltip keeps the
+// full value. The cuid of the reservation (216 px, not truncated: a cuid
+// differs by its tail), the creation time and the retention date wait for the
+// desktop tier, so a 1024 laptop (wrapper 734 px) keeps guest · document ·
+// status · actions (≈ 643 px) without a horizontal scroller.
+const COLUMNS: CocoaTableColumn<GuestRegisterRecord>[] = [
+  { key: "guest", label: "Huésped", minWidth: 180, render: (r) => [r.firstName, r.surname1, r.surname2].filter(Boolean).join(" ") || "—" },
+  { key: "document", label: "Documento", fit: true, truncate: 160, hideOnNarrow: true, render: (r) => (r.documentType ? `${r.documentType} ${r.documentNumber ?? ""}` : "—") },
+  { key: "status", label: "Estado", fit: true, render: (r) => <CocoaBadge tone={STATUS_TONE[r.status] ?? "info"}>{STATUS_LABEL[r.status] ?? r.status}</CocoaBadge> },
+  { key: "reservationId", label: "Reserva", fit: true, showFrom: "desktop", render: (r) => <span className="cocoa-mono">{r.reservationId}</span> },
+  { key: "createdAt", label: "Creado", fit: true, showFrom: "desktop", render: (r) => dateTime(r.createdAt) },
+  { key: "retentionUntil", label: "Conservar hasta", fit: true, showFrom: "desktop", render: (r) => date(r.retentionUntil) }
+];
+
+function RegisterSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton variant="card" height={320} />
+      <CocoaSkeleton variant="card" height={200} />
+    </div>
+  );
+}
+
 export function GuestRegisterSettingsScreen() {
+  const hosted = useTabHost() !== null;
   const [records, setRecords] = useState<GuestRegisterRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
-  const [fieldErrors, setFieldErrors] = useState<FormValidationErrors>({});
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [submission, setSubmission] = useState<SubmissionState>({ kind: "idle" });
+  const formRef = useRef<HTMLFormElement | null>(null);
+  // Bumped by a rejected submit: the effect below moves the focus to the first
+  // invalid control once the errors are painted (a plain effect on `fieldErrors`
+  // would steal the focus again every time typing clears one of them).
+  const [invalidFocusTick, setInvalidFocusTick] = useState(0);
+  useEffect(() => {
+    if (invalidFocusTick === 0) return;
+    formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
+  }, [invalidFocusTick]);
 
   function load() {
     setLoading(true);
@@ -130,10 +243,10 @@ export function GuestRegisterSettingsScreen() {
 
   function set<K extends keyof FormState>(key: K, value: FormState[K]) {
     setForm((cur) => ({ ...cur, [key]: value }));
-    if (fieldErrors[key as keyof SpainGuestRegisterInput]) {
+    if (fieldErrors[key as keyof FieldErrors]) {
       setFieldErrors((cur) => {
         const next = { ...cur };
-        delete next[key as keyof SpainGuestRegisterInput];
+        delete next[key as keyof FieldErrors];
         return next;
       });
     }
@@ -142,20 +255,22 @@ export function GuestRegisterSettingsScreen() {
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setSubmission({ kind: "idle" });
-    setFieldErrors({});
 
-    if (!form.reservationId.trim()) {
-      setSubmission({ kind: "error", message: "Reservation ID is required." });
-      return;
-    }
-
-    const input = formToInput(form);
-    const validation = validateSpainGuestRegisterForm(input);
-    if (!validation.ok) {
-      setFieldErrors(validation.errors);
+    // One pass over every required field — the reservation and the Zod input —
+    // so a single submit marks all of them with `CocoaField error` and the
+    // callout only summarises (qa#15: the reservation check used to return
+    // before the validation and no field was ever marked).
+    const errors: FieldErrors = {};
+    if (!form.reservationId.trim()) errors.reservationId = "El identificador de la reserva es obligatorio.";
+    const validation = validateSpainGuestRegisterForm(formToInput(form));
+    if (!validation.ok) Object.assign(errors, validation.errors);
+    const invalid = Object.keys(errors).length;
+    setFieldErrors(errors);
+    if (!validation.ok || invalid > 0) {
+      setInvalidFocusTick((tick) => tick + 1);
       setSubmission({
         kind: "error",
-        message: "Some required fields are missing or invalid. Please review the form."
+        message: `Faltan campos obligatorios o hay datos no válidos. Revisa ${invalid === 1 ? "el campo marcado" : `los ${plural(invalid, "campo marcado", "campos marcados")}`}.`
       });
       return;
     }
@@ -179,11 +294,11 @@ export function GuestRegisterSettingsScreen() {
           baseDelayMs: 400
         });
         submissionId = queued.id;
-        queueMessage = `Record created and authority submission queued (${queued.status}).`;
+        queueMessage = `Parte creado y envío a la autoridad encolado (${SUBMISSION_STATUS_LABEL[queued.status] ?? queued.status}).`;
       } catch (queueErr) {
-        queueMessage = `Record created. Authority submission could not be queued: ${
-          queueErr instanceof Error ? queueErr.message : "unknown error"
-        }. Use Retry from the Compliance Inbox.`;
+        queueMessage = `Parte creado. No se pudo encolar el envío a la autoridad: ${
+          queueErr instanceof Error ? queueErr.message : "error desconocido"
+        }. Reintenta desde la bandeja de cumplimiento.`;
       }
 
       setSubmission({
@@ -213,7 +328,7 @@ export function GuestRegisterSettingsScreen() {
         kind: "success",
         recordId,
         submissionId: queued.id,
-        message: `Authority submission queued (${queued.status}).`
+        message: `Envío a la autoridad encolado (${SUBMISSION_STATUS_LABEL[queued.status] ?? queued.status}).`
       });
       load();
     } catch (err) {
@@ -231,6 +346,8 @@ export function GuestRegisterSettingsScreen() {
     }
     return acc;
   }, [records]);
+  const rows = useMemo(() => records.slice(0, VISIBLE_RECORDS), [records]);
+  const rejectedOrFailed = (counts.rejected ?? 0) + (counts.failed ?? 0);
 
   const busy = submission.kind === "submitting";
   const submittingLabel =
@@ -240,342 +357,181 @@ export function GuestRegisterSettingsScreen() {
         : "Encolando el envío a la autoridad…"
       : "";
 
-  if (loading) {
-    return (
-      <section className="bo-card">
-        <LoadingBlock label="Cargando el registro de viajeros…" />
-      </section>
-    );
-  }
-  if (loadError) {
-    return (
-      <section className="bo-card">
-        <ErrorState message={loadError} onRetry={load} />
-      </section>
-    );
-  }
-
   return (
-    <>
-      <section className="bo-card">
-        <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
-          <div>
-            <p className="bo-page-eyebrow">Registro de viajeros</p>
-            <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>
-              Partes de entrada
-            </h2>
-          </div>
-          <span className="bo-status info">{plural(records.length, "parte", "partes")}</span>
-        </div>
-        <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
-          Registro de viajeros del RD 933/2021 y envío de los partes a SES.Hospedajes. Los datos obligatorios de
-          identidad, residencia, contrato y contacto se validan antes de crear el parte.
-        </p>
+    <CocoaPage
+      eyebrow="Cumplimiento · Registro de viajeros"
+      title="Partes de entrada"
+      subtitle={
+        hosted
+          ? undefined
+          : "Registro de viajeros del RD 933/2021 y envío de los partes a SES.Hospedajes. Los datos obligatorios de identidad, residencia, contrato y contacto se validan antes de crear el parte."
+      }
+      actions={
+        <>
+          <CocoaBadge tone="info">{plural(records.length, "parte", "partes")}</CocoaBadge>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("SesHospedajesSettings")}>
+            Conector SES.Hospedajes
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => navigateTo("ComplianceInbox")}>
+            Bandeja de cumplimiento
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={load} disabled={busy || loading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={loading && records.length === 0 && !loadError ? "loading" : loadError && records.length === 0 ? "error" : "ready"}
+      skeleton={<RegisterSkeleton />}
+      error={{ title: "No se pudieron cargar los partes", message: loadError ?? undefined, onRetry: load }}
+      commands={[
+        { id: "guest-register-refresh", label: "Actualizar los partes de entrada", run: load },
+        { id: "guest-register-ses", label: "Abrir el conector SES.Hospedajes", run: () => navigateTo("SesHospedajesSettings") }
+      ]}
+    >
+      {loadError && records.length > 0 ? (
+        <CocoaCallout tone="danger" title="No se pudieron actualizar los partes" role="alert" actions={<CocoaButton variant="bordered" tone="neutral" size="small" onClick={load}>{ACTIONS.retry}</CocoaButton>}>
+          {loadError}
+        </CocoaCallout>
+      ) : null}
 
-        <div className="rev-kpi-grid" style={{ marginTop: "var(--space-4)" }}>
-          <div className="rev-kpi rev-kpi-ok">
-            <span className="rev-kpi-label">Aceptados</span>
-            <span className="rev-kpi-value">{counts.accepted ?? 0}</span>
-          </div>
-          <div className="rev-kpi rev-kpi-warn">
-            <span className="rev-kpi-label">Datos incompletos</span>
-            <span className="rev-kpi-value">{counts.missing_data ?? 0}</span>
-          </div>
-          <div className="rev-kpi">
-            <span className="rev-kpi-label">En cola</span>
-            <span className="rev-kpi-value">{counts.queued ?? 0}</span>
-          </div>
-          <div
-            className={`rev-kpi ${
-              (counts.rejected ?? 0) + (counts.failed ?? 0) ? "rev-kpi-error" : "rev-kpi-ok"
-            }`}
-          >
-            <span className="rev-kpi-label">Rechazados o fallidos</span>
-            <span className="rev-kpi-value">{(counts.rejected ?? 0) + (counts.failed ?? 0)}</span>
-          </div>
-        </div>
+      <CocoaKpiStrip aria-label="Estado de los partes de viajeros">
+        <CocoaKpi label="Aceptados" value={number(counts.accepted ?? 0)} polarity="neutral" status="ok" />
+        <CocoaKpi label="Datos incompletos" value={number(counts.missing_data ?? 0)} polarity="neutral" status={(counts.missing_data ?? 0) > 0 ? "warning" : "ok"} />
+        <CocoaKpi label="En cola" value={number(counts.queued ?? 0)} polarity="neutral" />
+        <CocoaKpi label="Rechazados o fallidos" value={number(rejectedOrFailed)} polarity="neutral" status={rejectedOrFailed > 0 ? "critical" : "ok"} />
+      </CocoaKpiStrip>
 
-        <div className="bo-actions" style={{ marginTop: "var(--space-4)" }}>
-          <button type="button" onClick={() => nav("SesHospedajesSettings")}>Conector SES.Hospedajes</button>
-          <button type="button" onClick={() => nav("ComplianceInbox")}>Abrir la bandeja de cumplimiento</button>
-          <button type="button" onClick={load} disabled={busy}>Actualizar</button>
-        </div>
-      </section>
+      <form ref={formRef} onSubmit={(event) => void handleSubmit(event)} noValidate>
+        <CocoaFormSection
+          title="Crear parte de entrada"
+          description="Datos del viajero, residencia, contacto y contrato. Los campos marcados son obligatorios para SES.Hospedajes; el parte se crea y su envío se encola en la misma acción."
+          actions={
+            <>
+              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => setForm(EMPTY_FORM)} disabled={busy}>
+                Limpiar
+              </CocoaButton>
+              <CocoaButton type="submit" variant="filled" tone="accent" size="small" disabled={busy} loading={busy}>
+                {busy ? submittingLabel : "Crear y encolar el envío"}
+              </CocoaButton>
+            </>
+          }
+        >
+          <CocoaFormRow columns={3}>
+            <CocoaField label="Identificador de la reserva" required error={fieldErrors.reservationId}>
+              <CocoaInput value={form.reservationId} onChange={(v) => set("reservationId", v)} placeholder="res_…" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Nombre" required error={fieldErrors.firstName}>
+              <CocoaInput value={form.firstName} onChange={(v) => set("firstName", v)} autoComplete="given-name" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Primer apellido" required error={fieldErrors.surname1}>
+              <CocoaInput value={form.surname1} onChange={(v) => set("surname1", v)} autoComplete="family-name" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Segundo apellido">
+              <CocoaInput value={form.surname2} onChange={(v) => set("surname2", v)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Tipo de documento" required>
+              <CocoaSelect value={form.documentType} onChange={(v) => set("documentType", v as FormState["documentType"])} options={DOCUMENT_TYPE_OPTIONS} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Número de documento" required error={fieldErrors.documentNumber}>
+              <CocoaInput value={form.documentNumber} onChange={(v) => set("documentNumber", v)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Número de soporte (DNI/TIE)">
+              <CocoaInput value={form.documentSupportNumber} onChange={(v) => set("documentSupportNumber", v)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Nacionalidad" required error={fieldErrors.nationality} help="Código de país de dos letras.">
+              <CocoaInput value={form.nationality} onChange={(v) => set("nationality", v)} placeholder="ES" maxLength={2} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Fecha de nacimiento" required error={fieldErrors.dateOfBirth}>
+              <CocoaDatePicker value={form.dateOfBirth} onChange={(v) => set("dateOfBirth", v)} disabled={busy} />
+            </CocoaField>
+          </CocoaFormRow>
 
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Nuevo parte</p>
-            <h3 style={{ margin: 0 }}>Crear parte de entrada</h3>
-          </div>
-        </div>
+          <CocoaFormRow columns={3}>
+            <CocoaField label="Dirección de residencia" required error={fieldErrors.residenceFullAddress} fullWidth>
+              <CocoaInput value={form.residenceFullAddress} onChange={(v) => set("residenceFullAddress", v)} autoComplete="street-address" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Localidad" required error={fieldErrors.residenceLocality}>
+              <CocoaInput value={form.residenceLocality} onChange={(v) => set("residenceLocality", v)} autoComplete="address-level2" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="País" required error={fieldErrors.residenceCountry} help="Código de país de dos letras.">
+              <CocoaInput value={form.residenceCountry} onChange={(v) => set("residenceCountry", v)} placeholder="ES" maxLength={2} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Teléfono móvil">
+              <CocoaInput type="tel" inputMode="tel" value={form.phoneMobile} onChange={(v) => set("phoneMobile", v)} autoComplete="tel" disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Correo electrónico" error={fieldErrors.email}>
+              <CocoaInput type="email" inputMode="email" value={form.email} onChange={(v) => set("email", v)} autoComplete="email" disabled={busy} />
+            </CocoaField>
+          </CocoaFormRow>
 
-        <form onSubmit={handleSubmit} noValidate>
-          <div className="bo-grid three">
-            <label className="bo-form-field">
-              <span>Reservation ID <strong>required</strong></span>
-              <input
-                value={form.reservationId}
-                onChange={(e) => set("reservationId", e.target.value)}
-                placeholder="res_..."
-                disabled={busy}
-              />
-            </label>
-            <label className="bo-form-field">
-              <span>First name <strong>required</strong></span>
-              <input value={form.firstName} onChange={(e) => set("firstName", e.target.value)} disabled={busy} />
-              {fieldErrors.firstName ? <small className="bo-field-error">{fieldErrors.firstName}</small> : null}
-            </label>
-            <label className="bo-form-field">
-              <span>Surname 1 <strong>required</strong></span>
-              <input value={form.surname1} onChange={(e) => set("surname1", e.target.value)} disabled={busy} />
-              {fieldErrors.surname1 ? <small className="bo-field-error">{fieldErrors.surname1}</small> : null}
-            </label>
-            <label className="bo-form-field">
-              <span>Surname 2</span>
-              <input value={form.surname2} onChange={(e) => set("surname2", e.target.value)} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Document type <strong>required</strong></span>
-              <select
-                value={form.documentType}
-                onChange={(e) => set("documentType", e.target.value as FormState["documentType"])}
-                disabled={busy}
-              >
-                <option value="DNI">DNI</option>
-                <option value="PASSPORT">Pasaporte</option>
-                <option value="TIE">TIE</option>
-              </select>
-            </label>
-            <label className="bo-form-field">
-              <span>Document number <strong>required</strong></span>
-              <input value={form.documentNumber} onChange={(e) => set("documentNumber", e.target.value)} disabled={busy} />
-              {fieldErrors.documentNumber ? (
-                <small className="bo-field-error">{fieldErrors.documentNumber}</small>
-              ) : null}
-            </label>
-            <label className="bo-form-field">
-              <span>Support number (DNI/TIE)</span>
-              <input
-                value={form.documentSupportNumber}
-                onChange={(e) => set("documentSupportNumber", e.target.value)}
-                disabled={busy}
-              />
-            </label>
-            <label className="bo-form-field">
-              <span>Nationality <strong>required</strong></span>
-              <input
-                value={form.nationality}
-                onChange={(e) => set("nationality", e.target.value)}
-                placeholder="ES"
-                maxLength={2}
-                disabled={busy}
-              />
-              {fieldErrors.nationality ? (
-                <small className="bo-field-error">{fieldErrors.nationality}</small>
-              ) : null}
-            </label>
-            <label className="bo-form-field">
-              <span>Date of birth <strong>required</strong></span>
-              <input
-                type="date"
-                value={form.dateOfBirth}
-                onChange={(e) => set("dateOfBirth", e.target.value)}
-                disabled={busy}
-              />
-              {fieldErrors.dateOfBirth ? <small className="bo-field-error">{fieldErrors.dateOfBirth}</small> : null}
-            </label>
-          </div>
+          <CocoaFormRow columns={3}>
+            <CocoaField label="Número de viajeros" required error={fieldErrors.travellerCount}>
+              <CocoaInput type="number" inputMode="numeric" min={1} value={form.travellerCount} onChange={(v) => set("travellerCount", v)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Referencia del contrato" required error={fieldErrors.contractReference}>
+              <CocoaInput value={form.contractReference} onChange={(v) => set("contractReference", v)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Entrada">
+              <CocoaDatePicker withTime value={form.checkinAt} onChange={(v) => set("checkinAt", v)} disabled={busy} />
+            </CocoaField>
+            <CocoaField label="Salida">
+              <CocoaDatePicker withTime value={form.checkoutAt} onChange={(v) => set("checkoutAt", v)} disabled={busy} />
+            </CocoaField>
+          </CocoaFormRow>
+        </CocoaFormSection>
+      </form>
 
-          <div className="bo-grid three" style={{ marginTop: "var(--space-2)" }}>
-            <label className="bo-form-field" style={{ gridColumn: "span 2" }}>
-              <span>Residence address <strong>required</strong></span>
-              <input
-                value={form.residenceFullAddress}
-                onChange={(e) => set("residenceFullAddress", e.target.value)}
-                disabled={busy}
-              />
-              {fieldErrors.residenceFullAddress ? (
-                <small className="bo-field-error">{fieldErrors.residenceFullAddress}</small>
-              ) : null}
-            </label>
-            <label className="bo-form-field">
-              <span>Locality <strong>required</strong></span>
-              <input
-                value={form.residenceLocality}
-                onChange={(e) => set("residenceLocality", e.target.value)}
-                disabled={busy}
-              />
-              {fieldErrors.residenceLocality ? (
-                <small className="bo-field-error">{fieldErrors.residenceLocality}</small>
-              ) : null}
-            </label>
-            <label className="bo-form-field">
-              <span>País <strong>obligatorio</strong></span>
-              <input
-                value={form.residenceCountry}
-                onChange={(e) => set("residenceCountry", e.target.value)}
-                placeholder="ES"
-                maxLength={2}
-                disabled={busy}
-              />
-              {fieldErrors.residenceCountry ? (
-                <small className="bo-field-error">{fieldErrors.residenceCountry}</small>
-              ) : null}
-            </label>
-            <label className="bo-form-field">
-              <span>Teléfono móvil</span>
-              <input value={form.phoneMobile} onChange={(e) => set("phoneMobile", e.target.value)} disabled={busy} />
-            </label>
-            <label className="bo-form-field">
-              <span>Correo electrónico</span>
-              <input
-                type="email"
-                value={form.email}
-                onChange={(e) => set("email", e.target.value)}
-                disabled={busy}
-              />
-              {fieldErrors.email ? <small className="bo-field-error">{fieldErrors.email}</small> : null}
-            </label>
-          </div>
+      {submission.kind === "error" ? (
+        <CocoaCallout tone="danger" role="alert" title="No se pudo crear el parte">
+          {submission.message}
+        </CocoaCallout>
+      ) : null}
+      {submission.kind === "success" ? (
+        <CocoaCallout tone="success" role="status">
+          {submission.message}
+          {submission.submissionId ? ` (envío ${submission.submissionId})` : ""}
+        </CocoaCallout>
+      ) : null}
 
-          <div className="bo-grid three" style={{ marginTop: "var(--space-2)" }}>
-            <label className="bo-form-field">
-              <span>Traveller count <strong>required</strong></span>
-              <input
-                type="number"
-                min={1}
-                value={form.travellerCount}
-                onChange={(e) => set("travellerCount", e.target.value)}
-                disabled={busy}
-              />
-              {fieldErrors.travellerCount ? (
-                <small className="bo-field-error">{fieldErrors.travellerCount}</small>
-              ) : null}
-            </label>
-            <label className="bo-form-field">
-              <span>Contract reference <strong>required</strong></span>
-              <input
-                value={form.contractReference}
-                onChange={(e) => set("contractReference", e.target.value)}
-                disabled={busy}
-              />
-              {fieldErrors.contractReference ? (
-                <small className="bo-field-error">{fieldErrors.contractReference}</small>
-              ) : null}
-            </label>
-            <label className="bo-form-field">
-              <span>Check-in</span>
-              <input
-                type="datetime-local"
-                value={form.checkinAt}
-                onChange={(e) => set("checkinAt", e.target.value)}
-                disabled={busy}
-              />
-            </label>
-            <label className="bo-form-field">
-              <span>Check-out</span>
-              <input
-                type="datetime-local"
-                value={form.checkoutAt}
-                onChange={(e) => set("checkoutAt", e.target.value)}
-                disabled={busy}
-              />
-            </label>
-          </div>
-
-          <div className="bo-actions" style={{ marginTop: "var(--space-4)" }}>
-            <button type="submit" className="primary" disabled={busy}>
-              {busy ? (
-                <>
-                  <Spinner size="sm" /> {submittingLabel}
-                </>
-              ) : (
-                "Crear y encolar el envío"
-              )}
-            </button>
-            <button type="button" onClick={() => setForm(EMPTY_FORM)} disabled={busy}>
-              Limpiar
-            </button>
-          </div>
-
-          {submission.kind === "error" ? (
-            <p
-              className="bo-status error"
-              style={{ marginTop: "var(--space-3)", display: "inline-flex", textTransform: "none", letterSpacing: 0 }}
-              role="alert"
-            >
-              {submission.message}
-            </p>
-          ) : null}
-          {submission.kind === "success" ? (
-            <p
-              className="bo-status ok"
-              style={{ marginTop: "var(--space-3)", display: "inline-flex", textTransform: "none", letterSpacing: 0 }}
-            >
-              {submission.message}
-              {submission.submissionId ? ` (submission ${submission.submissionId})` : ""}
-            </p>
-          ) : null}
-        </form>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Cola de envíos</p>
-            <h3 style={{ margin: 0 }}>Partes de viajeros</h3>
-          </div>
-        </div>
-        {records.length === 0 ? (
-          <p className="bo-muted">Todavía no hay partes de viajeros en esta propiedad.</p>
+      <CocoaSection
+        title="Partes de viajeros"
+        meta={
+          records.length > VISIBLE_RECORDS
+            ? `cola de envíos · ${number(VISIBLE_RECORDS)} de ${plural(records.length, "parte", "partes")}`
+            : `cola de envíos · ${plural(records.length, "parte", "partes")}`
+        }
+        padding={rows.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+      >
+        {rows.length === 0 ? (
+          <CocoaState kind="empty" illustration="box" title="Sin partes de viajeros" message="Todavía no hay partes de viajeros en esta propiedad. Crea el primero con el formulario." />
         ) : (
-          <div className="bo-table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Huésped</th>
-                  <th>Documento</th>
-                  <th>Estado</th>
-                  <th>Reserva</th>
-                  <th>Creado</th>
-                  <th>Conservar hasta</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {records.slice(0, 50).map((r) => {
-                  const tone = STATUS_TONE[r.status] ?? "info";
-                  const canRetryQueue = r.status === "failed" || r.status === "rejected" || r.status === "missing_data";
-                  return (
-                    <tr key={r.id}>
-                      <td>
-                        {[r.firstName, r.surname1, r.surname2].filter(Boolean).join(" ") || "—"}
-                      </td>
-                      <td>{r.documentType ? `${r.documentType} ${r.documentNumber ?? ""}` : "—"}</td>
-                      <td>
-                        <span className={`bo-status ${tone}`}>{r.status.replace(/_/g, " ")}</span>
-                      </td>
-                      <td>{r.reservationId}</td>
-                      <td>{dateTime(r.createdAt)}</td>
-                      <td>
-                        {date(r.retentionUntil)}
-                      </td>
-                      <td>
-                        {canRetryQueue ? (
-                          <button type="button" onClick={() => handleRetryQueue(r.id)} disabled={busy}>
-                            Retry queue
-                          </button>
-                        ) : null}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <CocoaTable
+            columns={COLUMNS}
+            rows={rows}
+            rowKey="id"
+            rowTone={(r) => (r.status === "rejected" || r.status === "failed" ? "danger" : r.status === "missing_data" ? "warning" : undefined)}
+            rowActionsVisible="always"
+            rowActions={(r) =>
+              canRetryQueue(r) ? (
+                <CocoaButton
+                  variant="plain"
+                  size="small"
+                  disabled={busy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleRetryQueue(r.id);
+                  }}
+                >
+                  Reintentar envío
+                </CocoaButton>
+              ) : null
+            }
+            caption="Partes de viajeros"
+            aria-label="Partes de viajeros"
+          />
         )}
-      </section>
-    </>
+      </CocoaSection>
+    </CocoaPage>
   );
 }

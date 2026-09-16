@@ -31,6 +31,8 @@ export interface CocoaPageHeaderProps {
   tabs?: Array<CocoaPageHeaderTab>;
   activeTab?: string;
   onTabChange?: (value: string) => void;
+  /** id of the `role="tabpanel"` the active inner view controls (forwarded to CocoaSegmentedControl `panelId`); CocoaPage makes its body that panel when the screen passes none. */
+  panelId?: string;
   /** Let the title wrap on desktop too (narrow containers such as the 440 px auth card); default: one line with ellipsis. */
   wrap?: boolean;
   className?: string;
@@ -88,7 +90,7 @@ export function headerTitleStyle(isNarrow: boolean, wrap = false): CSSProperties
   };
 }
 
-export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs, activeTab, onTabChange, wrap = false, className, style }: CocoaPageHeaderProps) {
+export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs, activeTab, onTabChange, panelId, wrap = false, className, style }: CocoaPageHeaderProps) {
   const isNarrow = useIsNarrow();
   const mergedContainerStyle: CSSProperties = style ? { ...containerStyle, ...style } : containerStyle;
   const hasTabs = Array.isArray(tabs) && tabs.length > 0;
@@ -132,7 +134,7 @@ export function CocoaPageHeader({ eyebrow, title, subtitle, icon, actions, tabs,
       </div>
       {hasTabs ? (
         <div style={{ display: "flex", alignItems: "center", marginTop: "var(--cocoa-space-2)", minWidth: 0 }}>
-          <CocoaSegmentedControl value={segmentedValue} onChange={(value) => onTabChange?.(value)} options={tabs!} fullWidth={isNarrow} aria-label={`Secciones de ${title}`} />
+          <CocoaSegmentedControl value={segmentedValue} onChange={(value) => onTabChange?.(value)} options={tabs!} fullWidth={isNarrow} panelId={panelId} aria-label={`Secciones de ${title}`} />
         </div>
       ) : null}
     </header>

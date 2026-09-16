@@ -1,9 +1,42 @@
+// Sostenibilidad — /cumplimiento/sostenibilidad (Cocoa 22 · ola 8 · lote 8-C,
+// plantilla DashboardAlojado; hosted in SostenibilidadTabs through `embed()`).
+//
+// Read-only panel of GET /dashboards/sustainability?propertyId= (5-minute
+// polling): CO2, water and waste per occupied room night as a KPI strip with
+// status thresholds, the metrics by category and the recent metrics as
+// CocoaTables, the active sustainability actions with a CocoaChart.Progress.
+//
+// L1c bridge: the loader still wraps the screen with `embed()` and the tests
+// (tabs/cumplimiento/__tests__/cumplimiento-tabs.test.mts EMBED_BRIDGE,
+// screens/__tests__/screens-fixes-contract.test.mts) expect the `embedded?:
+// boolean` prop and `pageHead(embedded)` in the code, so the screen keeps that
+// head (HostedHead inside a container, CocoaPageHeader standalone — the same
+// head CocoaPage paints from the host context); states, skeleton and ⌘K
+// commands are handled here. Once those entries go, the frame becomes CocoaPage.
+
+import { useEffect, type ReactNode } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { useApiData } from "../../hooks/useApiData";
 import { dateTime, number, percent, plural } from "../../lib/format";
-import { ErrorState } from "../../components/States";
-import { ACTIONS, errorStateFor } from "../../content/actions";
+import { ACTIONS, FIELD_LABELS, errorStateFor } from "../../content/actions";
 import { pageHead, treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  registerPageCommands,
+  type CocoaKpiStatus,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 // Menu labels of the tree (Cumplimiento › Sostenibilidad), never retyped here.
@@ -40,6 +73,10 @@ type SustainabilityDashboardData = {
   }>;
 };
 
+type CategoryRow = SustainabilityDashboardData["metricsByCategory"][number];
+type SustainabilityAction = SustainabilityDashboardData["activeActions"][number];
+type RecentMetric = SustainabilityDashboardData["recentMetrics"][number];
+
 const EMPTY: SustainabilityDashboardData = {
   kpis: {
     co2KgPerRoomNight: 0,
@@ -53,20 +90,8 @@ const EMPTY: SustainabilityDashboardData = {
   recentMetrics: []
 };
 
-const CLOSED_STATUSES = new Set([
-  "completed",
-  "done",
-  "cancelled",
-  "canceled",
-  "archived"
-]);
-const IN_PROGRESS_STATUSES = new Set([
-  "in_progress",
-  "in-progress",
-  "active",
-  "ongoing",
-  "running"
-]);
+const CLOSED_STATUSES = new Set(["completed", "done", "cancelled", "canceled", "archived"]);
+const IN_PROGRESS_STATUSES = new Set(["in_progress", "in-progress", "active", "ongoing", "running"]);
 
 const ACTION_STATUS_LABELS: Record<string, string> = {
   completed: "completada",
@@ -83,255 +108,228 @@ const ACTION_STATUS_LABELS: Record<string, string> = {
   paused: "en pausa"
 };
 
-function statusPill(status: string) {
+function statusBadge(status: string) {
   const s = status.toLowerCase().replace(/[\s-]+/g, "_");
   const label = ACTION_STATUS_LABELS[s] ?? status.replace(/_/g, " ");
-  if (CLOSED_STATUSES.has(s)) {
-    return <span className="cm-pill cm-pill-ok">{label}</span>;
-  }
-  if (IN_PROGRESS_STATUSES.has(s)) {
-    return <span className="cm-pill cm-pill-warn">{label}</span>;
-  }
-  return <span className="cm-pill cm-pill-warn">{label}</span>;
+  const tone = CLOSED_STATUSES.has(s) ? "success" : IN_PROGRESS_STATUSES.has(s) ? "info" : "neutral";
+  return (
+    <CocoaBadge tone={tone} variant="dot" size="small">
+      {label}
+    </CocoaBadge>
+  );
 }
 
-function trendPill(trendPct: number) {
+// For ESG metrics lower is generally better (less CO2 / water / waste): the sign
+// is shown honestly and the operator interprets it.
+function trendBadge(trendPct: number) {
   if (trendPct === 0) {
-    return <span className="cm-pill cm-pill-ok">estable</span>;
+    return (
+      <CocoaBadge tone="neutral" variant="dot">
+        estable
+      </CocoaBadge>
+    );
   }
-  // For ESG metrics, lower is generally better (less CO2/water/waste). We
-  // surface the sign honestly and let the operator interpret.
   if (trendPct < 0) {
-    return <span className="cm-pill cm-pill-ok">{percent(trendPct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>;
+    return (
+      <CocoaBadge tone="success" variant="dot">
+        {percent(trendPct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+      </CocoaBadge>
+    );
   }
-  return <span className="cm-pill cm-pill-warn">{percent(trendPct, { signDisplay: "always", minimumFractionDigits: 1, maximumFractionDigits: 1 })}</span>;
+  return (
+    <CocoaBadge tone="warning" variant="dot">
+      {percent(trendPct, { signDisplay: "always", minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+    </CocoaBadge>
+  );
 }
 
-function formatDate(iso?: string): string {
-  return dateTime(iso);
+/** KPI status by threshold (pure): zero means «no data yet», never an alarm. */
+export function intensityStatus(value: number, warnAbove: number, criticalAbove: number): CocoaKpiStatus {
+  if (value === 0) return "ok";
+  if (value > criticalAbove) return "critical";
+  if (value > warnAbove) return "warning";
+  return "ok";
 }
 
-function formatNumber(n: number): string {
-  return number(n);
+function clampProgress(value: number): number {
+  return Math.max(0, Math.min(100, value));
+}
+
+// Columns outside the component (A5): numbers fit their content on the right.
+const CATEGORY_COLUMNS: CocoaTableColumn<CategoryRow>[] = [
+  { key: "category", label: "Categoría", render: (row) => <strong>{row.category}</strong> },
+  { key: "latestValue", label: "Último valor", align: "right", fit: true, render: (row) => number(row.latestValue) },
+  { key: "unit", label: "Unidad", fit: true, hideOnNarrow: true, render: (row) => row.unit || "—" },
+  { key: "trendPct", label: "Tendencia", align: "right", fit: true, render: (row) => trendBadge(row.trendPct) }
+];
+
+const RECENT_COLUMNS: CocoaTableColumn<RecentMetric>[] = [
+  { key: "name", label: FIELD_LABELS.name, render: (metric) => <strong>{metric.name}</strong> },
+  { key: "value", label: "Valor", align: "right", fit: true, render: (metric) => number(metric.value) },
+  { key: "unit", label: "Unidad", fit: true, hideOnNarrow: true, render: (metric) => metric.unit || "—" },
+  { key: "recordedAt", label: "Registrado", fit: true, render: (metric) => dateTime(metric.recordedAt) }
+];
+
+// Mirror skeleton: the five-tile strip, the 6/6 grid and the recent-metrics card.
+function SustainabilitySkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} />
+      <CocoaSkeleton.Grid rows={[[6, 6], [12]]} />
+    </div>
+  );
+}
+
+function ActionItem({ action }: { action: SustainabilityAction }) {
+  const tracked = typeof action.progressPct === "number";
+  const progressLabel = tracked ? `${percent(action.progressPct, { maximumFractionDigits: 0 })} completado` : "sin seguimiento del progreso";
+  return (
+    <li>
+      <div className="cocoa-stack" data-gap="1" style={{ flex: "1 1 auto", minWidth: 0 }}>
+        <div className="cocoa-row" data-gap="2">
+          {statusBadge(action.status)}
+          <strong>{action.name}</strong>
+        </div>
+        {tracked ? <CocoaChart.Progress value={clampProgress(action.progressPct ?? 0)} showValue={false} aria-label={`Progreso de ${action.name}: ${progressLabel}`} /> : null}
+        <span className="cocoa-caption">
+          {progressLabel}
+          {action.targetDate ? ` · objetivo ${dateTime(action.targetDate)}` : ""}
+        </span>
+      </div>
+    </li>
+  );
 }
 
 export function SustainabilityDashboard({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: pageHead paints only subtitle and actions.
+  // Inside a tab container the page header belongs to the container: the head paints only subtitle and actions.
   const Head = pageHead(embedded);
-  const state = useApiData<SustainabilityDashboardData>(
-    `/dashboards/sustainability?propertyId=${PROPERTY_ID}`,
-    { pollIntervalMs: 300000 }
-  );
+  const state = useApiData<SustainabilityDashboardData>(`/dashboards/sustainability?propertyId=${PROPERTY_ID}`, { pollIntervalMs: 300000 });
+  const refresh = state.refresh;
+
+  // ⌘K: the page's command while it is mounted (D28).
+  useEffect(() => registerPageCommands([{ id: "sostenibilidad-refresh", label: "Actualizar el panel de sostenibilidad", run: refresh }]), [refresh]);
 
   const data = state.data ?? EMPTY;
   const { kpis, metricsByCategory, activeActions, recentMetrics } = data;
+  const firstLoad = state.loading && !state.data;
 
-  const co2PerRnStatus =
-    kpis.co2KgPerRoomNight === 0
-      ? "rev-kpi-ok"
-      : kpis.co2KgPerRoomNight > 30
-        ? "rev-kpi-error"
-        : kpis.co2KgPerRoomNight > 15
-          ? "rev-kpi-warn"
-          : "rev-kpi-ok";
-  const co2TotalStatus = kpis.co2Total30dKg > 0 ? "rev-kpi-warn" : "rev-kpi-ok";
-  const waterStatus =
-    kpis.waterLitersPerRoomNight === 0
-      ? "rev-kpi-ok"
-      : kpis.waterLitersPerRoomNight > 400
-        ? "rev-kpi-error"
-        : kpis.waterLitersPerRoomNight > 200
-          ? "rev-kpi-warn"
-          : "rev-kpi-ok";
-  const wasteStatus =
-    kpis.wastePerRoomNightKg === 0
-      ? "rev-kpi-ok"
-      : kpis.wastePerRoomNightKg > 2
-        ? "rev-kpi-error"
-        : kpis.wastePerRoomNightKg > 1
-          ? "rev-kpi-warn"
-          : "rev-kpi-ok";
-  const actionsStatus = kpis.activeActions > 0 ? "rev-kpi-warn" : "rev-kpi-ok";
+  // Page states (D27): skeleton on the first load, error state when nothing loaded, else the content (a later error keeps the last data with a callout).
+  let body: ReactNode;
+  if (firstLoad) body = <SustainabilitySkeleton />;
+  else if (state.error && !state.data) body = <CocoaState kind="error" title={LOAD_ERROR.title} message={LOAD_ERROR.message} onRetry={refresh} />;
+  else {
+    body = (
+      <>
+        {state.error && state.data ? (
+          <CocoaCallout
+            tone="danger"
+            role="alert"
+            title={LOAD_ERROR.title}
+            actions={
+              <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => state.refresh()}>
+                {ACTIONS.retry}
+              </CocoaButton>
+            }
+          >
+            {LOAD_ERROR.message} Se muestran los últimos datos cargados.
+          </CocoaCallout>
+        ) : null}
+
+        <CocoaKpiStrip stagger aria-label="Indicadores de sostenibilidad">
+          <CocoaKpi
+            label="CO2 por noche ocupada"
+            value={number(kpis.co2KgPerRoomNight)}
+            unit="kg"
+            caption="intensidad de carbono por noche ocupada"
+            polarity="neutral"
+            status={intensityStatus(kpis.co2KgPerRoomNight, 15, 30)}
+          />
+          <CocoaKpi
+            label="CO2 total (30 días)"
+            value={number(kpis.co2Total30dKg)}
+            unit="kg"
+            caption="suma de las métricas de CO2 en la ventana"
+            polarity="neutral"
+            status={kpis.co2Total30dKg > 0 ? "warning" : "ok"}
+          />
+          <CocoaKpi
+            label="Agua por noche ocupada"
+            value={number(kpis.waterLitersPerRoomNight)}
+            unit="L"
+            caption="litros por noche ocupada"
+            polarity="neutral"
+            status={intensityStatus(kpis.waterLitersPerRoomNight, 200, 400)}
+          />
+          <CocoaKpi
+            label="Residuos por noche ocupada"
+            value={number(kpis.wastePerRoomNightKg)}
+            unit="kg"
+            caption="kilos por noche ocupada"
+            polarity="neutral"
+            status={intensityStatus(kpis.wastePerRoomNightKg, 1, 2)}
+          />
+          <CocoaKpi label="Acciones activas" value={kpis.activeActions} caption="ni cerradas ni canceladas" polarity="neutral" status={kpis.activeActions > 0 ? "warning" : "ok"} />
+        </CocoaKpiStrip>
+
+        <CocoaGrid align="start" aria-label="Métricas por categoría y acciones activas">
+          <CocoaSpan cols={6} min={320}>
+            <CocoaSection
+              title="Métricas por categoría"
+              meta={plural(metricsByCategory.length, "categoría", "categorías", { withCount: true })}
+              padding={metricsByCategory.length > 0 ? "none" : "md"}
+              style={{ overflow: "clip" }}
+            >
+              {metricsByCategory.length === 0 ? (
+                <CocoaState kind="empty" inline title="Sin métricas registradas en el periodo seleccionado." />
+              ) : (
+                <CocoaTable columns={CATEGORY_COLUMNS} rows={metricsByCategory} rowKey="category" caption="Métricas por categoría" aria-label="Métricas por categoría" />
+              )}
+            </CocoaSection>
+          </CocoaSpan>
+          <CocoaSpan cols={6} min={320}>
+            <CocoaSection title="Acciones activas" meta={plural(activeActions.length, "acción", "acciones", { withCount: true })}>
+              {activeActions.length === 0 ? (
+                <CocoaState kind="empty" inline title="Sin acciones de sostenibilidad activas." />
+              ) : (
+                <ol className="c22-section__list" aria-label="Acciones de sostenibilidad activas">
+                  {activeActions.map((action) => (
+                    <ActionItem key={action.id} action={action} />
+                  ))}
+                </ol>
+              )}
+            </CocoaSection>
+          </CocoaSpan>
+        </CocoaGrid>
+
+        <CocoaSection
+          title="Métricas recientes"
+          meta={plural(recentMetrics.length, "métrica", "métricas", { withCount: true })}
+          padding={recentMetrics.length > 0 ? "none" : "md"}
+          style={{ overflow: "clip" }}
+        >
+          {recentMetrics.length === 0 ? (
+            <CocoaState kind="empty" inline title="Sin métricas recientes." />
+          ) : (
+            <CocoaTable columns={RECENT_COLUMNS} rows={recentMetrics} rowKey="id" caption="Métricas recientes" aria-label="Métricas recientes" />
+          )}
+        </CocoaSection>
+      </>
+    );
+  }
 
   return (
-    <>
+    <div className="cocoa-stack" data-gap="4" aria-busy={firstLoad ? true : undefined}>
       <Head
         eyebrow={HEADER.eyebrow}
         title={HEADER.title}
         subtitle="Panel de sostenibilidad en solo lectura: emisiones de CO2, consumo de agua y residuos por habitación-noche, y acciones de sostenibilidad activas. Se actualiza cada 5 minutos."
         actions={
-          <button type="button" className="ghost" onClick={() => state.refresh()}>
-            ↻ {ACTIONS.refresh}
-          </button>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} disabled={state.loading}>
+            {ACTIONS.refresh}
+          </CocoaButton>
         }
       />
-
-      {state.error ? <ErrorState title={LOAD_ERROR.title} message={LOAD_ERROR.message} onRetry={() => state.refresh()} /> : null}
-
-      <section className="rev-kpi-grid">
-        <article className={`rev-kpi ${co2PerRnStatus}`}>
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">CO2 por noche ocupada</span>
-          </div>
-          <div className="rev-kpi-value">{formatNumber(kpis.co2KgPerRoomNight)} kg</div>
-          <div className="rev-kpi-delta">intensidad de carbono por noche ocupada</div>
-        </article>
-        <article className={`rev-kpi ${co2TotalStatus}`}>
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">CO2 total (30 días)</span>
-          </div>
-          <div className="rev-kpi-value">{formatNumber(kpis.co2Total30dKg)} kg</div>
-          <div className="rev-kpi-delta">suma de las métricas de CO2 en la ventana</div>
-        </article>
-        <article className={`rev-kpi ${waterStatus}`}>
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Agua / noche ocupada</span>
-          </div>
-          <div className="rev-kpi-value">{formatNumber(kpis.waterLitersPerRoomNight)} L</div>
-          <div className="rev-kpi-delta">litros por noche ocupada</div>
-        </article>
-        <article className={`rev-kpi ${wasteStatus}`}>
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Residuos / noche ocupada</span>
-          </div>
-          <div className="rev-kpi-value">{formatNumber(kpis.wastePerRoomNightKg)} kg</div>
-          <div className="rev-kpi-delta">kilos por noche ocupada</div>
-        </article>
-        <article className={`rev-kpi ${actionsStatus}`}>
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Acciones activas</span>
-          </div>
-          <div className="rev-kpi-value">{kpis.activeActions}</div>
-          <div className="rev-kpi-delta">ni cerradas ni canceladas</div>
-        </article>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Métricas por categoría</h3>
-            <span className="bo-chip">{plural(metricsByCategory.length, "categoría", "categorías", { withCount: true })}</span>
-          </div>
-          {metricsByCategory.length === 0 ? (
-            <p className="bo-muted">Sin métricas registradas en el periodo seleccionado.</p>
-          ) : (
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Categoría</th>
-                  <th style={{ textAlign: "right" }}>Último valor</th>
-                  <th>Unidad</th>
-                  <th style={{ textAlign: "right" }}>Tendencia</th>
-                </tr>
-              </thead>
-              <tbody>
-                {metricsByCategory.map((row) => (
-                  <tr key={row.category}>
-                    <td><strong>{row.category}</strong></td>
-                    <td style={{ textAlign: "right" }}>{formatNumber(row.latestValue)}</td>
-                    <td>{row.unit || "—"}</td>
-                    <td style={{ textAlign: "right" }}>{trendPill(row.trendPct)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Acciones activas</h3>
-            <span className="bo-chip">{activeActions.length}</span>
-          </div>
-          {activeActions.length === 0 ? (
-            <p className="bo-muted">Sin acciones de sostenibilidad activas.</p>
-          ) : (
-            <ul className="bo-list">
-              {activeActions.map((action) => (
-                <li
-                  key={action.id}
-                  style={{ display: "flex", flexDirection: "column", gap: 4, paddingBottom: 8 }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                    {statusPill(action.status)}
-                    <strong>{action.name}</strong>
-                  </div>
-                  {typeof action.progressPct === "number" ? (
-                    <div
-                      aria-label={`Progreso ${action.progressPct}%`}
-                      style={{
-                        width: "100%",
-                        height: 8,
-                        background: "var(--surface-2, #eee)",
-                        borderRadius: 4,
-                        overflow: "hidden"
-                      }}
-                    >
-                      <div
-                        style={{
-                          width: `${Math.max(0, Math.min(100, action.progressPct))}%`,
-                          height: "100%",
-                          background: "var(--accent-ink, #2a7)"
-                        }}
-                      />
-                    </div>
-                  ) : (
-                    <div
-                      aria-label="Progreso no disponible"
-                      style={{
-                        width: "100%",
-                        height: 8,
-                        background: "var(--surface-2, #eee)",
-                        borderRadius: 4,
-                        opacity: 0.4
-                      }}
-                    />
-                  )}
-                  <small className="bo-muted">
-                    {typeof action.progressPct === "number"
-                      ? `${action.progressPct}% completado`
-                      : "sin seguimiento del progreso"}
-                    {action.targetDate ? (
-                      <> · objetivo {formatDate(action.targetDate)}</>
-                    ) : null}
-                  </small>
-                </li>
-              ))}
-            </ul>
-          )}
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Métricas recientes</h3>
-          <span className="bo-chip">{recentMetrics.length}</span>
-        </div>
-        {recentMetrics.length === 0 ? (
-          <p className="bo-muted">Sin métricas recientes.</p>
-        ) : (
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Nombre</th>
-                <th style={{ textAlign: "right" }}>Valor</th>
-                <th>Unidad</th>
-                <th>Registrado</th>
-              </tr>
-            </thead>
-            <tbody>
-              {recentMetrics.map((metric) => (
-                <tr key={metric.id}>
-                  <td><strong>{metric.name}</strong></td>
-                  <td style={{ textAlign: "right" }}>{formatNumber(metric.value)}</td>
-                  <td>{metric.unit || "—"}</td>
-                  <td>{formatDate(metric.recordedAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-    </>
+      {body}
+    </div>
   );
 }

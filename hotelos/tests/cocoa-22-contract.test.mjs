@@ -44,77 +44,20 @@ const toPosix = (p) => p.split(sep).join("/");
  * Migrating one = deleting its line here (and lowering ALLOWLIST_CEILING).
  * Pilot lot (2026-09-15): GeneralManagerScreen (canon), GuestsListScreen,
  * PropertySetupForms, ShiftManagerScreen and LoginScreen (shell lot) are out.
+ * Olas 8 · 10 (2026-09-16): 68 → 10; what is left is the ola 11 (shared, dev, cleanup).
  */
-export const ALLOWLIST_CEILING = 68;
+export const ALLOWLIST_CEILING = 10;
 
 export const NOT_MIGRATED = [
-  "AccountingSettings.tsx",
-  "AuditLogViewer.tsx",
-  "BillingSettings.tsx",
-  "GoLiveChecklist.tsx",
-  "ModuleHealthCenter.tsx",
-  "ModuleManager.tsx",
   "ModuleSettingsPlaceholder.tsx",
-  "PaymentSettings.tsx",
-  "PropertyMapper.tsx",
   "ScreenScaffold.tsx",
-  "TaxComplianceSettings.tsx",
-  "UserRoleManager.tsx",
-  "admin/InviteUserDialog.tsx",
-  "admin/NewTenantWizardDialog.tsx",
-  "admin/ResetPasswordConfirmDialog.tsx",
-  "admin/TenantAdminConsoleScreen.tsx",
-  "admin/TenantDetailScreen.tsx",
-  "admin/TouristTaxScreen.tsx",
-  "aiOperations/AiGovernanceScreen.tsx",
-  "aiOperations/AiPipelineStatusScreen.tsx",
-  "aiOperations/AiToolRegistryScreen.tsx",
-  "aiOperations/EmailConnectorsScreen.tsx",
-  "aiOperations/PropertyAiScreen.tsx",
-  "backoffice/SetupCenterScreen.tsx",
-  "backoffice/categories/CategoryDetailScreen.tsx",
-  "backoffice/categories/CategoryManagerScreen.tsx",
-  "backoffice/categories/CategoryOptionForm.tsx",
-  "compliance/AuthorityRoutingSettingsScreen.tsx",
-  "compliance/ComplianceCenterScreen.tsx",
-  "compliance/GdprRequestsScreen.tsx",
-  "compliance/GuestRegisterRetentionSettingsScreen.tsx",
-  "compliance/GuestRegisterSettingsScreen.tsx",
-  "compliance/PropertyTaxesScreen.tsx",
-  "compliance/SesHospedajesSettingsScreen.tsx",
   "dev/StyleGuideScreen.tsx",
-  "developer/ApiReferenceScreen.tsx",
   "developer/CocoaShowcaseScreen.tsx",
-  "developer/DeveloperAppsScreen.tsx",
-  "developer/WebhooksAdminScreen.tsx",
-  "esrs/EsrsReportScreen.tsx",
-  "fiscal/ComplianceInbox.tsx",
-  "fiscal/FiscalDashboard.tsx",
-  "fiscal/FiscalSubmissionsCenter.tsx",
-  "fiscal/TbaiForalScreen.tsx",
-  "marketplace/MarketplaceCatalogScreen.tsx",
-  "notifications/NotificationsScreen.tsx",
-  "onboarding/CocoaOnboardingWizard.tsx",
   "onboarding/OnboardingInteractive.tsx",
   "onboarding/OnboardingScreens.tsx",
-  "operations/SustainabilityDashboard.tsx",
   "preview/CocoaGalleryScreen.tsx",
   "tabs/NavItemTabs.tsx",
   "tabs/TabHost.tsx",
-  "tabs/configuracion/ComunicacionesTabs.tsx",
-  "tabs/configuracion/ContabilidadFiscalTabs.tsx",
-  "tabs/configuracion/FacturacionPagosTabs.tsx",
-  "tabs/configuracion/HabitacionesTabs.tsx",
-  "tabs/configuracion/InteligenciaArtificialTabs.tsx",
-  "tabs/configuracion/ModulosTabs.tsx",
-  "tabs/configuracion/PropiedadTabs.tsx",
-  "tabs/configuracion/PuestaEnMarchaTabs.tsx",
-  "tabs/configuracion/SistemaTabs.tsx",
-  "tabs/configuracion/tab-helpers.tsx",
-  "tabs/cumplimiento/ImpuestosTabs.tsx",
-  "tabs/cumplimiento/RegistroViajerosTabs.tsx",
-  "tabs/cumplimiento/SostenibilidadTabs.tsx",
-  "tabs/cumplimiento/VerifactuTabs.tsx",
   "tabs/tab-helpers.tsx"
 ];
 
@@ -161,6 +104,8 @@ const STYLE_BUDGET = {
   "fiscal/ReportErrorCard.tsx": 15,
   "fiscal/VatBooksScreen.tsx": 15,
   "fiscal/VatSettlementScreen.tsx": 15,
+  // Cocoa 22 · ola 8 · lote 8-B (VeriFactu, TicketBAI, envíos y bandeja: la bandeja de cumplimiento es workspace 40; FiscalDashboard, TbaiForalScreen y FiscalSubmissionsCenter son dashboard, 25 por defecto)
+  "fiscal/ComplianceInbox.tsx": 40,
   // Cocoa 22 · ola 6 · lote 6-A (Facturación y cobros: formulario · detalle · diálogo)
   "admin/FolioRoutingScreen.tsx": 15,
   "billing/FolioDetailScreen.tsx": 15,
@@ -199,12 +144,41 @@ const STYLE_BUDGET = {
   "structure/VatAndFiscalYearTab.tsx": 40,
   "structure/AllocationTab.tsx": 40,
   "structure/PropertyDrawer.tsx": 15,
-  "structure/AddPropertyDrawer.tsx": 15
+  "structure/AddPropertyDrawer.tsx": 15,
+  // Cocoa 22 · ola 10 · lote 10-A (Sistema, organizaciones, usuarios y desarrolladores: listas, formulario, detalle y diálogos 15 · Usuarios y roles workspace 40; la referencia de la API es dashboard, 25 por defecto)
+  "AuditLogViewer.tsx": 15,
+  "UserRoleManager.tsx": 40,
+  "developer/WebhooksAdminScreen.tsx": 15,
+  "developer/DeveloperAppsScreen.tsx": 15,
+  "admin/TenantDetailScreen.tsx": 15,
+  "admin/NewTenantWizardDialog.tsx": 15,
+  "admin/TenantAdminConsoleScreen.tsx": 15,
+  "admin/InviteUserDialog.tsx": 15,
+  "admin/ResetPasswordConfirmDialog.tsx": 15,
+  // Cocoa 22 · ola 10 · lote 10-D (Configuración › Contabilidad y fiscal · Facturación y pagos: formularios / ajustes)
+  "TaxComplianceSettings.tsx": 15,
+  "BillingSettings.tsx": 15,
+  "AccountingSettings.tsx": 15,
+  "PaymentSettings.tsx": 15,
+  // Cocoa 22 · ola 8 · lote 8-C (Impuestos y sostenibilidad: Impuestos de la propiedad es lista; Tasa turística, Informe ESRS y Sostenibilidad son dashboard, 25 por defecto)
+  "compliance/PropertyTaxesScreen.tsx": 15,
+  // Cocoa 22 · ola 10 · lote 10-B (Inteligencia artificial y comunicaciones: Ajustes de la IA y Correo entrante son formulario 15; Gobernanza, Actividad, Catálogo de herramientas y Plantillas y envíos son dashboard, 25 por defecto)
+  "aiOperations/PropertyAiScreen.tsx": 15,
+  "aiOperations/EmailConnectorsScreen.tsx": 15,
+  // Cocoa 22 · ola 8 · lote 8-A (Registro de viajeros, GDPR y centro de cumplimiento: Conservación y Autoridades son formulario 15; Centro de cumplimiento, Partes de entrada, SES.Hospedajes y Protección de datos son dashboard, 25 por defecto)
+  "compliance/GuestRegisterRetentionSettingsScreen.tsx": 15,
+  "compliance/AuthorityRoutingSettingsScreen.tsx": 15,
+  // Cocoa 22 · ola 10 · lote 10-C (Puesta en marcha, propiedad, categorías y módulos: el mapeador es workspace 40; catálogo de apps lista, Módulos formulario, nueva opción formulario y detalle de categoría 15; Puesta en marcha, Salud de módulos, Categorías y Salida en vivo son dashboard/otro/asistente, 25 por defecto)
+  "PropertyMapper.tsx": 40,
+  "marketplace/MarketplaceCatalogScreen.tsx": 15,
+  "ModuleManager.tsx": 15,
+  "backoffice/categories/CategoryOptionForm.tsx": 15,
+  "backoffice/categories/CategoryDetailScreen.tsx": 15
 };
 const DEFAULT_STYLE_BUDGET = 25;
 
-/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223; olas 3 · 5 · 7 integradas el 2026-09-16, lotes 3-A/3-B/3-C/5-A/5-B/5-C/7-A/7-B/7-C: 589/419/91/409/402/3223 → 307/203/40/158/70/1833; cierre de la Tanda B con las correcciones fix:* del 2026-09-16: sin cambio, los seis techos igualan los totales regenerados; Tanda 6b · L6/L7 (Estructura societaria y ámbito único) integradas el 2026-09-16: inlineStyles 1833 → 1832, el resto sin cambio). */
-const GLOBAL_CEILING = { boCard: 307, rawButtons: 203, rawTables: 40, rawInputs: 158, colourLiterals: 70, inlineStyles: 1832 };
+/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223; olas 3 · 5 · 7 integradas el 2026-09-16, lotes 3-A/3-B/3-C/5-A/5-B/5-C/7-A/7-B/7-C: 589/419/91/409/402/3223 → 307/203/40/158/70/1833; cierre de la Tanda B con las correcciones fix:* del 2026-09-16: sin cambio, los seis techos igualan los totales regenerados; Tanda 6b · L6/L7 (Estructura societaria y ámbito único) integradas el 2026-09-16: inlineStyles 1833 → 1832, el resto sin cambio; olas 8 · 10 integradas el 2026-09-16, lotes 8-A/8-B/8-C/10-A/10-B/10-C/10-D: 307/203/40/158/70/1832 → 26/12/3/4/2/801 — desde esta tanda el inventario exime los `<input type="file|hidden">` como la regla 4). */
+const GLOBAL_CEILING = { boCard: 26, rawButtons: 12, rawTables: 3, rawInputs: 4, colourLiterals: 2, inlineStyles: 801 };
 
 // ----------------------------------------------------------------- helpers
 

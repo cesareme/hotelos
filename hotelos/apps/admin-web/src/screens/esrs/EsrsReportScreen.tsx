@@ -1,38 +1,104 @@
-// CSRD/ESRS reporting — alimentación de indicadores + generación de informe.
+// Informe de sostenibilidad CSRD / ESRS — /cumplimiento/sostenibilidad/esrs
+// (Cocoa 22 · ola 8 · lote 8-C, plantilla DashboardAlojado; hosted in SostenibilidadTabs).
 //
-// La cadena introduce los datos (puede tirar de los contadores IoT cuando estén
-// conectados); el sistema calcula % completeness, agrupa por estándar y
-// genera un informe firmado con hash de integridad.
+// The chain enters the indicators (IoT meters can feed them once connected);
+// the system computes the completeness of the mandatory disclosures, groups
+// them by standard and generates a report signed with an integrity hash.
+//
+// Page: fiscal year + «Generar informe» in the actions row → KPI strip
+// (completeness, reported, active standards) → the generated report as a
+// CocoaCallout → one CocoaSection per ESRS standard with its CocoaTable
+// (row action «Editar» / «Reportar») → the value prompt is a CocoaDialog
+// whose confirm awaits the upsert (`busy`).
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { getActiveOrganizationId } from "../../services/activeProperty";
+import { fetchCatalog, fetchIndicators, generateReport, upsertIndicator, type EsrsDisclosure, type EsrsIndicator, type EsrsReportSummary } from "../../services/esrsApi";
+import { number, percent, plural, toNumber } from "../../lib/format";
+import { ACTIONS, UI_STATES } from "../../content/actions";
+import { treeHeaderFor } from "../tabs/tab-helpers";
 import {
-  fetchCatalog,
-  fetchIndicators,
-  upsertIndicator,
-  generateReport,
-  type EsrsDisclosure,
-  type EsrsIndicator,
-  type EsrsReportSummary
-} from "../../services/esrsApi";
-import { LoadingBlock, EmptyState, Spinner } from "../../components/States";
-import { number, percent } from "../../lib/format";
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaField,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaTable,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
 const ORG_ID = getActiveOrganizationId();
+// Menu labels of the tree (Cumplimiento › Sostenibilidad › Informe ESRS), never retyped here.
+const HEADER = treeHeaderFor("EsrsReport", { eyebrow: "Cumplimiento · Sostenibilidad", title: "Informe ESRS" });
 
-const STANDARD_LABEL: Record<string, { name: string; icon: string }> = {
-  ESRS_E1: { name: "Cambio climático", icon: "🌡" },
-  ESRS_E3: { name: "Recursos hídricos", icon: "💧" },
-  ESRS_E5: { name: "Economía circular", icon: "♻" },
-  ESRS_S1: { name: "Plantilla propia", icon: "👥" },
-  ESRS_G1: { name: "Conducta empresarial", icon: "⚖" }
+const STANDARD_LABEL: Record<string, string> = {
+  ESRS_E1: "Cambio climático",
+  ESRS_E3: "Recursos hídricos",
+  ESRS_E5: "Economía circular",
+  ESRS_S1: "Plantilla propia",
+  ESRS_G1: "Conducta empresarial"
 };
 
-function fmtNum(n: number | string | null): string {
-  return number(n);
+const YEAR_OPTIONS = ["2023", "2024", "2025", "2026"].map((year) => ({ value: year, label: year }));
+
+/** A catalogue disclosure with the indicator reported for the selected year (null when nothing was reported). */
+type DisclosureRow = EsrsDisclosure & { indicator: EsrsIndicator | null };
+
+/** Value cell of a reported indicator: the figure with its unit, or the free text. */
+function indicatorValue(indicator: EsrsIndicator): string {
+  if (indicator.numericValue !== null && indicator.numericValue !== undefined) {
+    return `${number(indicator.numericValue)}${indicator.unit ? ` ${indicator.unit}` : ""}`;
+  }
+  return indicator.textValue ?? "—";
+}
+
+/** Value the prompt starts from: the reported figure or text, empty when nothing was reported yet. */
+function initialDraft(indicator: EsrsIndicator | null): string {
+  if (!indicator) return "";
+  if (indicator.numericValue !== null && indicator.numericValue !== undefined) return String(indicator.numericValue);
+  return indicator.textValue ?? "";
+}
+
+// Columns outside the component (A5): code and unit fit their content, the description takes the free width.
+const DISCLOSURE_COLUMNS: CocoaTableColumn<DisclosureRow>[] = [
+  {
+    key: "code",
+    label: "Disclosure",
+    fit: true,
+    render: (row) => (
+      <strong>
+        {row.code}
+        {row.required ? " *" : ""}
+      </strong>
+    )
+  },
+  { key: "description", label: "Descripción", minWidth: 240 },
+  { key: "unit", label: "Unidad", fit: true, hideOnNarrow: true },
+  { key: "value", label: "Valor", align: "right", fit: true, render: (row) => (row.indicator ? <strong>{indicatorValue(row.indicator)}</strong> : "—") },
+  { key: "source", label: "Origen", showFrom: "desktop", render: (row) => row.indicator?.source ?? "—" }
+];
+
+// Mirror skeleton: the KPI strip and one standard card.
+function EsrsSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={3} />
+      <CocoaSkeleton variant="card" height={260} />
+    </div>
+  );
 }
 
 export function EsrsReportScreen() {
+  // Hosted in SostenibilidadTabs: CocoaPage reads the host context itself and
+  // paints only the subtitle and the actions row under the container's head.
   const [year, setYear] = useState<string>(String(new Date().getUTCFullYear() - 1));
   const [catalog, setCatalog] = useState<EsrsDisclosure[]>([]);
   const [indicators, setIndicators] = useState<EsrsIndicator[]>([]);
@@ -41,10 +107,11 @@ export function EsrsReportScreen() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [editing, setEditing] = useState<EsrsDisclosure | null>(null);
+  const [editing, setEditing] = useState<DisclosureRow | null>(null);
   const [draftValue, setDraftValue] = useState<string>("");
+  const valueRef = useRef<HTMLDivElement | null>(null);
 
-  async function refresh() {
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const [cat, inds] = await Promise.all([fetchCatalog(), fetchIndicators(ORG_ID, year)]);
@@ -56,23 +123,38 @@ export function EsrsReportScreen() {
     } finally {
       setLoading(false);
     }
-  }
-  useEffect(() => { void refresh(); }, [year]);
+  }, [year]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   const indByCode = useMemo(() => new Map(indicators.map((i) => [i.disclosureCode, i])), [indicators]);
-  const byStandard = useMemo(() => {
-    const m = new Map<string, EsrsDisclosure[]>();
+  const rowsByStandard = useMemo(() => {
+    const m = new Map<string, DisclosureRow[]>();
     for (const d of catalog) {
       const arr = m.get(d.standard) ?? [];
-      arr.push(d);
+      arr.push({ ...d, indicator: indByCode.get(d.code) ?? null });
       m.set(d.standard, arr);
     }
     return m;
-  }, [catalog]);
+  }, [catalog, indByCode]);
 
   const reqCount = catalog.filter((d) => d.required).length;
   const reportedReq = catalog.filter((d) => d.required && indByCode.has(d.code)).length;
   const completeness = reqCount > 0 ? Math.round((reportedReq / reqCount) * 1000) / 10 : 0;
+  const missingReq = reqCount - reportedReq;
+
+  function openEdit(row: DisclosureRow) {
+    setEditing(row);
+    setDraftValue(initialDraft(row.indicator));
+  }
+
+  function closeEdit() {
+    if (busy) return;
+    setEditing(null);
+    setDraftValue("");
+  }
 
   async function handleSave() {
     if (!editing) return;
@@ -80,8 +162,8 @@ export function EsrsReportScreen() {
     if (!val) return;
     setBusy(true);
     try {
-      const numeric = Number(val);
-      const isNumeric = !Number.isNaN(numeric) && editing.unit !== "n/a";
+      const numeric = toNumber(val);
+      const isNumeric = numeric !== null && editing.unit !== "n/a";
       await upsertIndicator({
         organizationId: ORG_ID,
         fiscalYear: year,
@@ -112,137 +194,144 @@ export function EsrsReportScreen() {
     }
   }
 
+  function submitOnEnter(event: ReactKeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || busy || !draftValue.trim()) return;
+    event.preventDefault();
+    void handleSave();
+  }
+
+  const actions = (
+    <>
+      <CocoaSelect size="small" inline aria-label="Ejercicio" value={year} onChange={setYear} options={YEAR_OPTIONS} disabled={busy} />
+      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refresh()} disabled={loading || busy}>
+        {ACTIONS.refresh}
+      </CocoaButton>
+      <CocoaButton variant="filled" tone="accent" size="small" onClick={() => void handleGenerate()} loading={busy && editing === null} disabled={busy}>
+        Generar informe
+      </CocoaButton>
+    </>
+  );
+
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <header className="bo-card-head">
-        <div>
-          <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>
-            Sostenibilidad · CSRD / ESRS
-          </p>
-          <h2 style={{ color: "var(--ink)" }}>Informe de sostenibilidad</h2>
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Indicadores obligatorios bajo la <strong>directiva CSRD</strong>. Grandes empresas reportan datos del ejercicio
-            anterior antes de fin del año en curso. Datos firmados con hash de integridad para auditoría externa.
-          </p>
-        </div>
-        <div className="bo-row" style={{ gap: 8, alignItems: "center" }}>
-          <label className="bo-muted" style={{ textTransform: "none" }}>Ejercicio:</label>
-          <select value={year} onChange={(e) => setYear(e.target.value)}>
-            {["2023", "2024", "2025", "2026"].map((y) => <option key={y} value={y}>{y}</option>)}
-          </select>
-          <button type="button" className="primary" onClick={handleGenerate} disabled={busy}>
-            {busy ? <Spinner size="sm" /> : "Generar informe"}
-          </button>
-        </div>
-      </header>
+    <CocoaPage
+      eyebrow={HEADER.eyebrow}
+      title={HEADER.title}
+      subtitle="Indicadores obligatorios bajo la directiva CSRD. Grandes empresas reportan datos del ejercicio anterior antes de fin del año en curso. Datos firmados con hash de integridad para auditoría externa."
+      actions={actions}
+      state={loading && catalog.length === 0 ? "loading" : "ready"}
+      skeleton={<EsrsSkeleton />}
+      commands={[
+        { id: "esrs-refresh", label: "Actualizar el informe ESRS", run: () => void refresh() },
+        { id: "esrs-generate", label: `Generar informe ESRS ${year}`, run: () => void handleGenerate() }
+      ]}
+    >
+      {error ? (
+        <CocoaCallout
+          tone="danger"
+          role="alert"
+          title={UI_STATES.error.title}
+          actions={
+            <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refresh()}>
+              {ACTIONS.retry}
+            </CocoaButton>
+          }
+        >
+          {error}
+        </CocoaCallout>
+      ) : null}
 
-      {error ? <p className="bo-status warn" style={{ textTransform: "none" }}>{error}</p> : null}
-
-      {/* KPIs */}
-      <div className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">% Cumplimiento</span>
-            <span className={`bo-status ${completeness === 100 ? "ok" : completeness >= 80 ? "info" : "warn"}`}>
-              {completeness === 100 ? "completo" : `${reqCount - reportedReq} faltan`}
-            </span>
-          </div>
-          <div className="rev-kpi-value">{percent(completeness, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Reportados</span>
-            <span className="bo-status info">{reqCount} obligatorios</span>
-          </div>
-          <div className="rev-kpi-value">{indicators.length}</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head">
-            <span className="rev-kpi-label">Estándares activos</span>
-            <span className="bo-status ok">ESRS</span>
-          </div>
-          <div className="rev-kpi-value">{byStandard.size}</div>
-        </article>
-      </div>
+      <CocoaKpiStrip stagger aria-label={`Cumplimiento ESRS del ejercicio ${year}`}>
+        <CocoaKpi
+          label="Cumplimiento"
+          value={percent(completeness, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}
+          caption={completeness === 100 ? "completo" : `faltan ${plural(missingReq, "obligatorio", "obligatorios", { withCount: true })}`}
+          status={completeness === 100 ? "ok" : completeness >= 80 ? "ok" : "warning"}
+          polarity="neutral"
+        />
+        <CocoaKpi label="Reportados" value={indicators.length} caption={plural(reqCount, "obligatorio", "obligatorios", { withCount: true })} polarity="neutral" />
+        <CocoaKpi label="Estándares activos" value={rowsByStandard.size} caption="ESRS" polarity="neutral" />
+      </CocoaKpiStrip>
 
       {summary ? (
-        <article className="bo-card" style={{ background: "var(--accent-soft, rgba(78,224,163,0.10))", border: "1px solid var(--accent)" }}>
-          <p style={{ margin: 0, color: "var(--ink)" }}>
-            Informe generado · <strong>{percent(summary.completenessPct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</strong> de cumplimiento sobre disclosures obligatorios
-            ({summary.reportedRequired}/{summary.requiredDisclosures}).
-            Estado: <strong>{summary.completenessPct === 100 ? "Listo para enviar" : "Borrador"}</strong>.
-          </p>
-        </article>
+        <CocoaCallout tone={summary.completenessPct === 100 ? "success" : "info"} title="Informe generado" role="status">
+          <strong>{percent(summary.completenessPct, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}</strong> de cumplimiento sobre disclosures obligatorios (
+          {summary.reportedRequired}/{summary.requiredDisclosures}). Estado: <strong>{summary.completenessPct === 100 ? "Listo para enviar" : "Borrador"}</strong>.
+        </CocoaCallout>
       ) : null}
 
-      {/* Edit dialog */}
-      {editing ? (
-        <article className="bo-card" style={{ background: "var(--surface-2, var(--surface))", border: "1px solid var(--accent)" }}>
-          <div className="bo-card-head">
-            <h3 style={{ color: "var(--ink)" }}>
-              {STANDARD_LABEL[editing.standard]?.icon ?? "📊"} {editing.code}
-            </h3>
-            <button type="button" onClick={() => setEditing(null)}>Cancelar</button>
-          </div>
-          <p style={{ margin: "4px 0", color: "var(--ink)" }}>{editing.description}</p>
-          <p className="bo-muted" style={{ margin: 0, fontSize: 12 }}>Unidad: <code>{editing.unit}</code></p>
-          <form onSubmit={(e) => { e.preventDefault(); void handleSave(); }} style={{ marginTop: 8, display: "flex", gap: 8 }}>
-            <input
-              type="text"
-              value={draftValue}
-              onChange={(e) => setDraftValue(e.target.value)}
-              placeholder={`Valor en ${editing.unit}`}
-              autoFocus
-              style={{ flex: "1 1 0%" }}
-            />
-            <button type="submit" className="primary" disabled={busy || !draftValue.trim()}>Guardar</button>
-          </form>
-        </article>
+      {!loading && catalog.length === 0 ? (
+        <CocoaSection aria-label="Catálogo ESRS">
+          <CocoaState kind="empty" title="Sin catálogo ESRS" message="El catálogo de disclosures no devolvió ningún estándar para este ejercicio." onRetry={() => void refresh()} />
+        </CocoaSection>
       ) : null}
 
-      {/* Por estándar */}
-      {loading ? <LoadingBlock label="Cargando catálogo ESRS…" /> : Array.from(byStandard.entries()).map(([std, items]) => {
-        const meta = STANDARD_LABEL[std] ?? { name: std, icon: "📊" };
-        const reportedHere = items.filter((d) => indByCode.has(d.code)).length;
+      {[...rowsByStandard.entries()].map(([std, rows]) => {
+        const reportedHere = rows.filter((row) => row.indicator !== null).length;
         return (
-          <article key={std} className="bo-card" style={{ background: "var(--surface)" }}>
-            <div className="bo-card-head">
-              <h3 style={{ color: "var(--ink)" }}>{meta.icon} {std} · {meta.name}</h3>
-              <span className={`bo-status ${reportedHere === items.length ? "ok" : "info"}`}>
-                {reportedHere}/{items.length} reportados
-              </span>
-            </div>
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead><tr><th>Disclosure</th><th>Descripción</th><th>Unidad</th><th>Valor</th><th>Origen</th><th></th></tr></thead>
-                <tbody>
-                  {items.map((d) => {
-                    const ind = indByCode.get(d.code);
-                    return (
-                      <tr key={d.code}>
-                        <td className="mono"><strong>{d.code}</strong>{d.required ? " *" : ""}</td>
-                        <td>{d.description}</td>
-                        <td className="mono">{d.unit}</td>
-                        <td>{ind ? <span className="mono"><strong>{fmtNum(ind.numericValue)}</strong> {ind.unit}</span> : <span className="bo-muted">—</span>}</td>
-                        <td className="bo-muted" style={{ fontSize: 11 }}>{ind?.source ?? ""}</td>
-                        <td>
-                          <button type="button" onClick={() => { setEditing(d); setDraftValue(ind?.numericValue ? String(ind.numericValue) : ind?.textValue ?? ""); }}>
-                            {ind ? "Editar" : "Reportar"}
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </article>
+          <CocoaSection
+            key={std}
+            title={`${std} · ${STANDARD_LABEL[std] ?? std}`}
+            meta={
+              <CocoaBadge tone={reportedHere === rows.length ? "success" : "info"} variant="dot">
+                {reportedHere}/{rows.length} reportados
+              </CocoaBadge>
+            }
+            padding="none"
+            style={{ overflow: "clip" }}
+          >
+            <CocoaTable
+              columns={DISCLOSURE_COLUMNS}
+              rows={rows}
+              rowKey="code"
+              rowActionsVisible="always"
+              rowActions={(row) => (
+                <CocoaButton
+                  variant="plain"
+                  size="small"
+                  disabled={busy}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    openEdit(row);
+                  }}
+                >
+                  {row.indicator ? ACTIONS.edit : "Reportar"}
+                </CocoaButton>
+              )}
+              caption={`Disclosures de ${std}`}
+              aria-label={`Disclosures de ${std}`}
+            />
+          </CocoaSection>
         );
       })}
 
-      <p className="bo-muted" style={{ fontSize: 11, textTransform: "none" }}>
-        * = disclosure obligatorio bajo CSRD. Los datos no obligatorios mejoran la calidad del informe pero no se exige reportarlos.
-      </p>
-    </section>
+      <p className="cocoa-caption">* = disclosure obligatorio bajo CSRD. Los datos no obligatorios mejoran la calidad del informe pero no se exige reportarlos.</p>
+
+      <CocoaDialog
+        open={editing !== null}
+        onClose={closeEdit}
+        title={editing ? `${editing.code} · ${STANDARD_LABEL[editing.standard] ?? editing.standard}` : "Indicador"}
+        description={editing?.description}
+        confirmLabel={ACTIONS.save}
+        busy={busy}
+        confirmDisabled={!draftValue.trim()}
+        onConfirm={handleSave}
+        initialFocus={() => valueRef.current?.querySelector("input")}
+      >
+        {editing ? (
+          <div ref={valueRef}>
+            <CocoaField label={`Valor en ${editing.unit}`} required help={`Unidad: ${editing.unit}. Un valor numérico se guarda como cifra; el resto, como texto.`}>
+              <CocoaInput
+                value={draftValue}
+                onChange={setDraftValue}
+                placeholder={`Valor en ${editing.unit}`}
+                inputMode={editing.unit === "n/a" ? "text" : "decimal"}
+                onKeyDown={submitOnEnter}
+                disabled={busy}
+              />
+            </CocoaField>
+          </div>
+        ) : null}
+      </CocoaDialog>
+    </CocoaPage>
   );
 }

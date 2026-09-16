@@ -1,17 +1,48 @@
-import { useMemo, useState } from "react";
+// Gobernanza de la IA — /configuracion/ia/gobernanza (hosted in
+// InteligenciaArtificialTabs; Cocoa 22 · ola 10 · lote 10-B, plantilla
+// DashboardAlojado).
+//
+// Five inner views over /ai-operations/governance/*: Políticas · Prompts ·
+// Evaluaciones · Incidencias · Coste. Reads go through useApiData and writes
+// through apiRequest, exactly as before; every outcome now reaches the toast
+// instead of the old dismissable banner. Editing a policy's JSON, the results
+// of an evaluation and the resolution of an incident open in a CocoaDrawer;
+// the version history of a prompt paints under its table with the draft form
+// and the diff. Same endpoints, bodies and screen key.
+
+import { useCallback, useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { LoadingBlock, Spinner } from "../../components/States";
+import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
-import { dateTime, money, number, percent } from "../../lib/format";
-
-// =====================================================================================
-// IA · Gobernanza — centro de gobernanza de la IA
-// Tabbed read+write screen over /ai-operations/governance/*:
-//   Policies · Prompts · Evaluations · Incidents · Cost
-// Aurora v2 styling (bo-card / rev-kpi / cm-table / cm-pill classes). Uses useApiData
-// for reads and apiRequest for mutations. Not wired into App.tsx/Sidebar (orchestrator).
-// =====================================================================================
+import { date, dateTime, money, number, percent, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaDrawer,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  toneBg,
+  toneInk,
+  type CocoaBarsDatum,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const GOV = "/ai-operations/governance";
 
@@ -93,175 +124,292 @@ type CostDashboard = {
   windowDays: number;
 };
 
-// ---- formatters ----
+type Notify = (message: string, variant?: "success" | "error") => void;
 
-function fmtEur(v: number | null | undefined): string {
-  return money(v);
-}
-function fmtNum(v: number | null | undefined): string {
-  return number(v, { maximumFractionDigits: 0 });
-}
-function fmtPct(v: number | null | undefined): string {
-  return percent(v, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-}
-function fmtDateTime(value?: string): string {
-  return dateTime(value);
-}
+// ---- labels and tones (API values stay in English; the screen speaks Spanish) ----
 
-function severityClass(severity?: string): "ok" | "warn" | "error" {
+const SEVERITY_LABEL: Record<string, string> = { low: "baja", medium: "media", high: "alta", critical: "crítica" };
+const SEVERITY_OPTIONS = ["low", "medium", "high", "critical"].map((value) => ({ value, label: SEVERITY_LABEL[value] }));
+const EVALUATION_TYPE_LABEL: Record<string, string> = { quality: "Calidad", accuracy: "Precisión", safety: "Seguridad", regression: "Regresión" };
+const EVALUATION_TYPE_OPTIONS = ["quality", "accuracy", "safety", "regression"].map((value) => ({ value, label: EVALUATION_TYPE_LABEL[value] }));
+const INCIDENT_TYPE_LABEL: Record<string, string> = {
+  hallucination: "Alucinación",
+  policy_violation: "Incumplimiento de política",
+  data_leak: "Fuga de datos",
+  bias: "Sesgo",
+  other: "Otro"
+};
+const INCIDENT_TYPE_OPTIONS = ["hallucination", "policy_violation", "data_leak", "bias", "other"].map((value) => ({ value, label: INCIDENT_TYPE_LABEL[value] }));
+const RECORD_STATUS_LABEL: Record<string, string> = {
+  resolved: "resuelta",
+  completed: "completada",
+  published: "publicada",
+  failed: "fallida",
+  open: "abierta",
+  archived: "archivada",
+  draft: "borrador",
+  pending: "pendiente",
+  running: "en curso",
+  in_progress: "en curso",
+  skipped: "omitida"
+};
+
+function severityTone(severity?: string): CocoaTone {
   const s = (severity ?? "").toLowerCase();
-  if (s === "critical" || s === "high") return "error";
-  if (s === "medium") return "warn";
-  return "ok";
-}
-function severityPill(severity?: string) {
-  const status = severityClass(severity);
-  const cls = status === "ok" ? "cm-pill-ok" : status === "warn" ? "cm-pill-warn" : "cm-pill-error";
-  return <span className={`cm-pill ${cls}`}>{severity ?? "—"}</span>;
-}
-function statusPill(status?: string) {
-  const s = (status ?? "").toLowerCase();
-  if (s === "resolved" || s === "completed" || s === "published") return <span className="cm-pill cm-pill-ok">{status}</span>;
-  if (s === "failed" || s === "open") return <span className="cm-pill cm-pill-error">{status}</span>;
-  if (s === "archived") return <span className="cm-pill">{status}</span>;
-  return <span className="cm-pill cm-pill-warn">{status}</span>;
+  if (s === "critical" || s === "high") return "danger";
+  if (s === "medium") return "warning";
+  return "success";
 }
 
-function Banner({ message, onDismiss }: { message: string | null; onDismiss: () => void }) {
-  if (!message) return null;
+function severityBadge(severity?: string) {
+  const s = (severity ?? "").toLowerCase();
   return (
-    <div
-      className="bo-card"
-      style={{ background: "var(--accent-soft)", borderLeft: "3px solid var(--accent)", padding: 12, fontSize: 13, display: "flex", justifyContent: "space-between", gap: 12 }}
-    >
-      <span>{message}</span>
-      <button type="button" className="ghost" onClick={onDismiss}>Descartar</button>
-    </div>
+    <CocoaBadge tone={severityTone(severity)} variant="tinted" size="small">
+      {SEVERITY_LABEL[s] ?? severity ?? "—"}
+    </CocoaBadge>
   );
 }
 
+function recordStatusTone(status?: string): CocoaTone {
+  const s = (status ?? "").toLowerCase();
+  if (s === "resolved" || s === "completed" || s === "published") return "success";
+  if (s === "failed" || s === "open") return "danger";
+  if (s === "archived") return "neutral";
+  return "warning";
+}
+
+function statusBadge(status?: string) {
+  const s = (status ?? "").toLowerCase();
+  return (
+    <CocoaBadge tone={recordStatusTone(status)} variant="tinted" size="small">
+      {RECORD_STATUS_LABEL[s] ?? status ?? "—"}
+    </CocoaBadge>
+  );
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+// Code blocks (JSON, diff) and one-line JSON previews: tokens only (rule 6).
+const codeStyle: CSSProperties = {
+  margin: 0,
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  fontFamily: "var(--cocoa-font-mono)",
+  fontSize: "var(--cocoa-fs-caption)",
+  lineHeight: "var(--cocoa-leading-text)",
+  color: "var(--cocoa-label)",
+  background: "var(--cocoa-fill-quaternary)",
+  borderRadius: "var(--cocoa-radius-md)",
+  padding: "var(--cocoa-space-3)",
+  maxHeight: 320,
+  overflow: "auto"
+};
+
+function diffLineStyle(type: PromptDiffLine["type"]): CSSProperties {
+  if (type === "equal") return { color: "var(--cocoa-label-secondary)" };
+  const tone: CocoaTone = type === "added" ? "success" : "danger";
+  return { color: toneInk(tone), background: toneBg(tone) };
+}
+
 // =====================================================================================
-// Policies tab
+// Policies
 // =====================================================================================
 
-function PoliciesTab({ notify }: { notify: (m: string) => void }) {
+const POLICY_COLUMNS: CocoaTableColumn<PolicyRecord>[] = [
+  {
+    key: "name",
+    label: "Política",
+    minWidth: 200,
+    render: (p) => (
+      <>
+        <strong>{p.name}</strong>
+        <span className="cocoa-note">
+          <code className="cocoa-mono">{p.policyCode}</code>
+        </span>
+      </>
+    )
+  },
+  {
+    key: "configuration",
+    label: "Configuración",
+    minWidth: 240,
+    render: (p) => (
+      <code className="cocoa-mono cocoa-truncate" style={{ display: "block", maxWidth: 480 }}>
+        {JSON.stringify(p.configuration ?? {})}
+      </code>
+    )
+  },
+  {
+    key: "active",
+    label: "Activa",
+    fit: true,
+    render: (p) => (
+      <CocoaBadge tone={p.active ? "success" : "neutral"} variant="tinted" size="small">
+        {p.active ? "activa" : "desactivada"}
+      </CocoaBadge>
+    )
+  }
+];
+
+function PoliciesTab({ notify }: { notify: Notify }) {
   const { data, loading, error, refresh } = useApiData<PolicyRecord[]>(`${GOV}/policies`);
-  const [editing, setEditing] = useState<string | null>(null);
+  const [editing, setEditing] = useState<PolicyRecord | null>(null);
   const [draftJson, setDraftJson] = useState<string>("");
   const [busy, setBusy] = useState<string | null>(null);
   const policies = useMemo(() => toArray<PolicyRecord>(data), [data]);
+
+  const jsonError = useMemo(() => {
+    if (!editing) return undefined;
+    try {
+      JSON.parse(draftJson);
+      return undefined;
+    } catch {
+      return "La configuración debe ser un JSON válido.";
+    }
+  }, [editing, draftJson]);
 
   async function toggleActive(p: PolicyRecord) {
     setBusy(p.id);
     try {
       await apiRequest(`${GOV}/policies/${p.id}/active`, { method: "POST", body: { active: !p.active } });
-      notify(`Política "${p.name}" ${p.active ? "desactivada" : "activada"}.`);
+      notify(`Política «${p.name}» ${p.active ? "desactivada" : "activada"}.`);
       refresh();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
   }
 
   function startEdit(p: PolicyRecord) {
-    setEditing(p.id);
+    setEditing(p);
     setDraftJson(JSON.stringify(p.configuration ?? {}, null, 2));
   }
 
-  async function saveConfig(p: PolicyRecord) {
-    let parsed: Record<string, unknown>;
-    try {
-      parsed = JSON.parse(draftJson);
-    } catch {
-      notify("La configuración debe ser un JSON válido.");
-      return;
-    }
+  async function saveConfig() {
+    if (!editing || jsonError) return;
+    const p = editing;
     setBusy(p.id);
     try {
-      await apiRequest(`${GOV}/policies`, { method: "POST", body: { policyCode: p.policyCode, configuration: parsed } });
-      notify(`Configuración de la política "${p.name}" guardada.`);
+      await apiRequest(`${GOV}/policies`, { method: "POST", body: { policyCode: p.policyCode, configuration: JSON.parse(draftJson) as Record<string, unknown> } });
+      notify(`Configuración de la política «${p.name}» guardada.`);
       setEditing(null);
       refresh();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
   }
 
+  const ready = !error && !(loading && policies.length === 0);
+
   return (
     <>
-      <div className="bo-card-head">
-        <div><p className="bo-muted">Reglas de protección</p><h3>Políticas</h3></div>
-        <span className="bo-chip">{policies.length} políticas</span>
-      </div>
-      {error ? <p className="bo-muted">No se pudieron cargar las políticas. Pulsa Actualizar para reintentar.</p> : null}
-      {loading && policies.length === 0 ? (
-        <LoadingBlock label="Cargando políticas…" />
-      ) : (
-        <div className="rev-report-wrap">
-          <table className="cm-table">
-            <thead>
-              <tr><th>Política</th><th>Código</th><th>Configuración</th><th>Activa</th><th /></tr>
-            </thead>
-            <tbody>
-              {policies.map((p) => (
-                <tr key={p.id}>
-                  <td><strong>{p.name}</strong></td>
-                  <td><code style={{ fontSize: 12 }}>{p.policyCode}</code></td>
-                  <td style={{ minWidth: 280 }}>
-                    {editing === p.id ? (
-                      <textarea
-                        value={draftJson}
-                        onChange={(e) => setDraftJson(e.target.value)}
-                        rows={5}
-                        style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
-                      />
-                    ) : (
-                      <code style={{ fontSize: 12 }}>{JSON.stringify(p.configuration ?? {})}</code>
-                    )}
-                  </td>
-                  <td>{p.active ? <span className="cm-pill cm-pill-ok">activa</span> : <span className="cm-pill">desactivada</span>}</td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    {editing === p.id ? (
-                      <>
-                        <button type="button" className="primary" disabled={busy === p.id} onClick={() => saveConfig(p)}>Guardar</button>{" "}
-                        <button type="button" className="ghost" onClick={() => setEditing(null)}>Cancelar</button>
-                      </>
-                    ) : (
-                      <>
-                        <button type="button" onClick={() => startEdit(p)}>Editar</button>{" "}
-                        <button type="button" className="ghost" disabled={busy === p.id} onClick={() => toggleActive(p)}>
-                          {p.active ? "Desactivar" : "Activar"}
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {policies.length === 0 && !loading ? (
-                <tr><td colSpan={5} className="bo-muted">No hay políticas configuradas.</td></tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <CocoaSection
+        title="Políticas"
+        meta={plural(policies.length, "política", "políticas")}
+        padding={ready && policies.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+        action={
+          <CocoaButton variant="plain" tone="accent" size="small" onClick={refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        }
+      >
+        {error ? (
+          <CocoaState kind="error" title="No se pudieron cargar las políticas" message={error} onRetry={refresh} />
+        ) : !loading && policies.length === 0 ? (
+          <CocoaState kind="empty" inline title="No hay políticas configuradas." />
+        ) : (
+          <CocoaTable
+            columns={POLICY_COLUMNS}
+            rows={policies}
+            rowKey="id"
+            loading={loading && policies.length === 0}
+            rowActionsVisible="always"
+            rowActions={(p) => (
+              <>
+                <CocoaButton variant="plain" size="small" onClick={() => startEdit(p)}>
+                  {ACTIONS.edit}
+                </CocoaButton>
+                <CocoaButton variant="plain" size="small" tone={p.active ? "neutral" : "accent"} disabled={busy === p.id} loading={busy === p.id} onClick={() => void toggleActive(p)}>
+                  {p.active ? ACTIONS.deactivate : ACTIONS.activate}
+                </CocoaButton>
+              </>
+            )}
+            caption="Políticas de la IA"
+            aria-label="Políticas de la IA"
+          />
+        )}
+      </CocoaSection>
+
+      <CocoaDrawer
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        title={editing ? `Editar política: ${editing.name}` : "Editar política"}
+        subtitle={editing?.policyCode}
+        side="right"
+        size="md"
+        footer={
+          <div className="cocoa-row" data-justify="end" data-gap="2">
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => setEditing(null)}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" disabled={Boolean(jsonError) || busy === editing?.id} loading={busy === editing?.id} onClick={() => void saveConfig()}>
+              {ACTIONS.save}
+            </CocoaButton>
+          </div>
+        }
+      >
+        <CocoaFormSection title="Configuración" description="Reglas de la política en formato JSON. Se guardan tal cual las escribas.">
+          <CocoaField label="Configuración (JSON)" error={jsonError} fullWidth>
+            <CocoaInput value={draftJson} onChange={setDraftJson} multiline rows={14} className="cocoa-mono" />
+          </CocoaField>
+        </CocoaFormSection>
+      </CocoaDrawer>
     </>
   );
 }
 
 // =====================================================================================
-// Prompts tab
+// Prompts
 // =====================================================================================
 
-function PromptsTab({ notify }: { notify: (m: string) => void }) {
+const PROMPT_COLUMNS: CocoaTableColumn<PromptGroup>[] = [
+  { key: "promptCode", label: "Código de prompt", minWidth: 180, render: (g) => <strong>{g.promptCode}</strong> },
+  { key: "versionCount", label: "Versiones", align: "right", fit: true, render: (g) => number(g.versionCount) },
+  {
+    key: "currentPublishedVersion",
+    label: "Publicada",
+    fit: true,
+    render: (g) =>
+      g.currentPublishedVersion ? (
+        <CocoaBadge tone="success" variant="tinted" size="small">
+          {g.currentPublishedVersion}
+        </CocoaBadge>
+      ) : (
+        <span className="cocoa-note">ninguna</span>
+      )
+  },
+  { key: "latestVersion", label: "Última", fit: true, hideOnNarrow: true, render: (g) => g.latestVersion ?? "—" },
+  { key: "updatedAt", label: "Actualizado", fit: true, showFrom: "laptop", render: (g) => dateTime(g.updatedAt) }
+];
+
+const VERSION_COLUMNS: CocoaTableColumn<PromptVersionRecord>[] = [
+  { key: "version", label: "Versión", fit: true, render: (v) => <strong>{v.version}</strong> },
+  { key: "status", label: "Estado", fit: true, render: (v) => statusBadge(v.status) },
+  { key: "notes", label: "Notas", minWidth: 160, render: (v) => v.notes ?? <span className="cocoa-note">—</span> },
+  { key: "publishedAt", label: "Publicada", fit: true, showFrom: "laptop", render: (v) => dateTime(v.publishedAt) },
+  { key: "createdAt", label: "Creada", fit: true, hideOnNarrow: true, render: (v) => dateTime(v.createdAt) }
+];
+
+function PromptsTab({ notify }: { notify: Notify }) {
   const { data: groups, loading, error, refresh } = useApiData<PromptGroup[]>(`${GOV}/prompts`);
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
-  const codeForVersions = selectedCode;
-  const { data: versions, refresh: refreshVersions } = useApiData<PromptVersionRecord[]>(
-    codeForVersions ? `${GOV}/prompts/${encodeURIComponent(codeForVersions)}/versions` : null
-  );
+  const versionsState = useApiData<PromptVersionRecord[]>(selectedCode ? `${GOV}/prompts/${encodeURIComponent(selectedCode)}/versions` : null);
   const [busy, setBusy] = useState<string | null>(null);
   const [diffA, setDiffA] = useState<string>("");
   const [diffB, setDiffB] = useState<string>("");
@@ -269,12 +417,20 @@ function PromptsTab({ notify }: { notify: (m: string) => void }) {
   const [newContent, setNewContent] = useState<string>("");
   const [newNotes, setNewNotes] = useState<string>("");
 
-  const list = groups ?? [];
-  const vlist = versions ?? [];
+  const list = useMemo(() => toArray<PromptGroup>(groups), [groups]);
+  const vlist = useMemo(() => toArray<PromptVersionRecord>(versionsState.data), [versionsState.data]);
+  const versionOptions = useMemo(() => vlist.map((v) => ({ value: v.id, label: `${v.version} (${RECORD_STATUS_LABEL[v.status.toLowerCase()] ?? v.status})` })), [vlist]);
 
   function refreshAll() {
     refresh();
-    refreshVersions();
+    versionsState.refresh();
+  }
+
+  function select(code: string) {
+    setSelectedCode(code);
+    setDiff(null);
+    setDiffA("");
+    setDiffB("");
   }
 
   async function publish(id: string) {
@@ -284,7 +440,7 @@ function PromptsTab({ notify }: { notify: (m: string) => void }) {
       notify("Versión del prompt publicada.");
       refreshAll();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
@@ -297,7 +453,7 @@ function PromptsTab({ notify }: { notify: (m: string) => void }) {
       notify("Versión del prompt archivada.");
       refreshAll();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
@@ -305,7 +461,7 @@ function PromptsTab({ notify }: { notify: (m: string) => void }) {
 
   async function addVersion() {
     if (!selectedCode || !newContent.trim()) {
-      notify("Primero elige un prompt e introduce su contenido.");
+      notify("Primero elige un prompt e introduce su contenido.", "error");
       return;
     }
     setBusy("new");
@@ -319,7 +475,7 @@ function PromptsTab({ notify }: { notify: (m: string) => void }) {
       setNewNotes("");
       refreshAll();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
@@ -327,140 +483,185 @@ function PromptsTab({ notify }: { notify: (m: string) => void }) {
 
   async function runDiff() {
     if (!diffA || !diffB) {
-      notify("Selecciona dos versiones para comparar.");
+      notify("Selecciona dos versiones para comparar.", "error");
       return;
     }
     try {
       const result = await apiRequest<PromptDiffResult>(`${GOV}/prompts/diff`, { query: { a: diffA, b: diffB } });
       setDiff(result);
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     }
   }
 
+  const ready = !error && !(loading && list.length === 0);
+  const versionsLoading = versionsState.loading && vlist.length === 0;
+
   return (
     <>
-      <div className="bo-card-head">
-        <div><p className="bo-muted">Control de versiones</p><h3>Prompts (instrucciones a la IA)</h3></div>
-        <span className="bo-chip">{list.length} códigos de prompt</span>
-      </div>
-      {error ? <p className="bo-muted">No se pudieron cargar los prompts. Pulsa Actualizar para reintentar.</p> : null}
-
-      <div className="rev-report-wrap">
-        <table className="cm-table">
-          <thead>
-            <tr><th>Código de prompt</th><th>Versiones</th><th>Publicada</th><th>Última</th><th>Actualizado</th><th /></tr>
-          </thead>
-          <tbody>
-            {list.map((g) => (
-              <tr key={g.promptCode} className={selectedCode === g.promptCode ? "cm-row-warn" : undefined}>
-                <td><strong>{g.promptCode}</strong></td>
-                <td>{g.versionCount}</td>
-                <td>{g.currentPublishedVersion ? <span className="cm-pill cm-pill-ok">{g.currentPublishedVersion}</span> : <span className="bo-muted">ninguna</span>}</td>
-                <td>{g.latestVersion ?? "—"}</td>
-                <td>{fmtDateTime(g.updatedAt)}</td>
-                <td><button type="button" onClick={() => { setSelectedCode(g.promptCode); setDiff(null); setDiffA(""); setDiffB(""); }}>Ver historial</button></td>
-              </tr>
-            ))}
-            {list.length === 0 && !loading ? <tr><td colSpan={6} className="bo-muted">Aún no hay prompts.</td></tr> : null}
-          </tbody>
-        </table>
-      </div>
+      <CocoaSection
+        title="Prompts (instrucciones a la IA)"
+        meta={plural(list.length, "código de prompt", "códigos de prompt")}
+        padding={ready && list.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+        action={
+          <CocoaButton variant="plain" tone="accent" size="small" onClick={refreshAll}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        }
+      >
+        {error ? (
+          <CocoaState kind="error" title="No se pudieron cargar los prompts" message={error} onRetry={refresh} />
+        ) : !loading && list.length === 0 ? (
+          <CocoaState kind="empty" inline title="Aún no hay prompts." />
+        ) : (
+          <CocoaTable
+            columns={PROMPT_COLUMNS}
+            rows={list}
+            rowKey="promptCode"
+            loading={loading && list.length === 0}
+            selectedKey={selectedCode ?? undefined}
+            onSelect={(g) => select(g.promptCode)}
+            rowActionsVisible="always"
+            rowActions={(g) => (
+              <CocoaButton
+                variant="plain"
+                size="small"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  select(g.promptCode);
+                }}
+              >
+                Ver historial
+              </CocoaButton>
+            )}
+            caption="Prompts de la IA"
+            aria-label="Prompts de la IA"
+          />
+        )}
+      </CocoaSection>
 
       {selectedCode ? (
-        <section className="bo-card" style={{ marginTop: 16 }}>
-          <div className="bo-card-head">
-            <div><p className="bo-muted">Historial de versiones</p><h3>{selectedCode}</h3></div>
-            <span className="bo-chip">{vlist.length} versiones</span>
-          </div>
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr><th>Versión</th><th>Estado</th><th>Notas</th><th>Publicada</th><th>Creada</th><th /></tr>
-              </thead>
-              <tbody>
-                {vlist.map((v) => (
-                  <tr key={v.id}>
-                    <td><strong>{v.version}</strong></td>
-                    <td>{statusPill(v.status)}</td>
-                    <td>{v.notes ?? <span className="bo-muted">—</span>}</td>
-                    <td>{fmtDateTime(v.publishedAt)}</td>
-                    <td>{fmtDateTime(v.createdAt)}</td>
-                    <td style={{ whiteSpace: "nowrap" }}>
-                      {v.status !== "published" ? (
-                        <button type="button" className="primary" disabled={busy === v.id} onClick={() => publish(v.id)}>Publicar</button>
-                      ) : null}{" "}
-                      {v.status !== "archived" ? (
-                        <button type="button" className="ghost" disabled={busy === v.id} onClick={() => archive(v.id)}>Archivar</button>
-                      ) : null}
-                    </td>
-                  </tr>
-                ))}
-                {vlist.length === 0 ? <tr><td colSpan={6} className="bo-muted"><span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}><Spinner size="sm" /> Cargando versiones…</span></td></tr> : null}
-              </tbody>
-            </table>
-          </div>
+        <>
+          <CocoaSection
+            title={`Historial de versiones · ${selectedCode}`}
+            meta={plural(vlist.length, "versión", "versiones")}
+            padding={vlist.length > 0 || versionsLoading ? "none" : "md"}
+            style={{ overflow: "clip" }}
+          >
+            {versionsState.error ? (
+              <CocoaState kind="error" title="No se pudieron cargar las versiones" message={versionsState.error} onRetry={versionsState.refresh} />
+            ) : !versionsState.loading && vlist.length === 0 ? (
+              <CocoaState kind="empty" inline title="Este prompt aún no tiene versiones." />
+            ) : (
+              <CocoaTable
+                columns={VERSION_COLUMNS}
+                rows={vlist}
+                rowKey="id"
+                loading={versionsLoading}
+                rowActionsVisible="always"
+                rowActions={(v) => (
+                  <>
+                    {v.status !== "published" ? (
+                      <CocoaButton variant="plain" size="small" tone="accent" disabled={busy === v.id} loading={busy === v.id} onClick={() => void publish(v.id)}>
+                        {ACTIONS.publish}
+                      </CocoaButton>
+                    ) : null}
+                    {v.status !== "archived" ? (
+                      <CocoaButton variant="plain" size="small" tone="neutral" disabled={busy === v.id} onClick={() => void archive(v.id)}>
+                        {ACTIONS.archive}
+                      </CocoaButton>
+                    ) : null}
+                  </>
+                )}
+                caption={`Versiones de ${selectedCode}`}
+                aria-label={`Versiones de ${selectedCode}`}
+              />
+            )}
+          </CocoaSection>
 
-          {/* New draft version */}
-          <div style={{ marginTop: 16 }}>
-            <p className="bo-muted" style={{ marginBottom: 6 }}>Nueva versión en borrador</p>
-            <textarea
-              value={newContent}
-              onChange={(e) => setNewContent(e.target.value)}
-              rows={4}
-              placeholder="Contenido del prompt…"
-              style={{ width: "100%", fontFamily: "monospace", fontSize: 12 }}
-            />
-            <div className="bo-row" style={{ gap: 8, marginTop: 8 }}>
-              <input value={newNotes} onChange={(e) => setNewNotes(e.target.value)} placeholder="Notas (opcional)" style={{ flex: 1 }} />
-              <button type="button" className="primary" disabled={busy === "new"} onClick={addVersion}>Crear borrador</button>
-            </div>
-          </div>
-
-          {/* Diff */}
-          <div style={{ marginTop: 16 }}>
-            <p className="bo-muted" style={{ marginBottom: 6 }}>Comparar versiones</p>
-            <div className="bo-row" style={{ gap: 8 }}>
-              <select value={diffA} onChange={(e) => setDiffA(e.target.value)}>
-                <option value="">Versión A…</option>
-                {vlist.map((v) => <option key={v.id} value={v.id}>{v.version} ({v.status})</option>)}
-              </select>
-              <select value={diffB} onChange={(e) => setDiffB(e.target.value)}>
-                <option value="">Versión B…</option>
-                {vlist.map((v) => <option key={v.id} value={v.id}>{v.version} ({v.status})</option>)}
-              </select>
-              <button type="button" onClick={runDiff}>Comparar</button>
-            </div>
-            {diff ? (
-              <pre style={{ marginTop: 12, background: "var(--surface-2, #0001)", padding: 12, borderRadius: 6, overflowX: "auto", fontSize: 12 }}>
-                {diff.diff.map((line, i) => (
-                  <div
-                    key={i}
-                    style={{
-                      color: line.type === "added" ? "var(--ok-ink, #137333)" : line.type === "removed" ? "var(--danger-ink, #c5221f)" : "inherit",
-                      background: line.type === "added" ? "rgba(19,115,51,0.08)" : line.type === "removed" ? "rgba(197,34,31,0.08)" : "transparent"
-                    }}
-                  >
-                    {line.type === "added" ? "+ " : line.type === "removed" ? "- " : "  "}{line.text}
-                  </div>
-                ))}
-              </pre>
-            ) : null}
-          </div>
-        </section>
+          <CocoaGrid align="start">
+            <CocoaSpan cols={6} min={320}>
+              <CocoaFormSection
+                title="Nueva versión en borrador"
+                description="El borrador no se usa hasta que se publique."
+                actions={
+                  <CocoaButton variant="filled" tone="accent" size="small" disabled={busy === "new" || !newContent.trim()} loading={busy === "new"} onClick={() => void addVersion()}>
+                    Crear borrador
+                  </CocoaButton>
+                }
+              >
+                <CocoaField label="Contenido del prompt" required fullWidth>
+                  <CocoaInput value={newContent} onChange={setNewContent} multiline rows={5} placeholder="Contenido del prompt…" className="cocoa-mono" />
+                </CocoaField>
+                <CocoaField label="Notas" hint={STATUS_LABELS.optional.toLowerCase()} fullWidth>
+                  <CocoaInput value={newNotes} onChange={setNewNotes} placeholder="Qué cambia en esta versión" />
+                </CocoaField>
+              </CocoaFormSection>
+            </CocoaSpan>
+            <CocoaSpan cols={6} min={320}>
+              <CocoaFormSection
+                title="Comparar versiones"
+                description="Líneas añadidas y retiradas entre dos versiones del prompt."
+                actions={
+                  <CocoaButton variant="bordered" tone="neutral" size="small" disabled={!diffA || !diffB} onClick={() => void runDiff()}>
+                    Comparar
+                  </CocoaButton>
+                }
+              >
+                <CocoaFormRow columns={2}>
+                  <CocoaField label="Versión A">
+                    <CocoaSelect value={diffA} onChange={setDiffA} placeholder="Versión A…" options={versionOptions} />
+                  </CocoaField>
+                  <CocoaField label="Versión B">
+                    <CocoaSelect value={diffB} onChange={setDiffB} placeholder="Versión B…" options={versionOptions} />
+                  </CocoaField>
+                </CocoaFormRow>
+                {diff ? (
+                  <pre style={codeStyle} aria-label={`Diferencias entre ${diff.a.version} y ${diff.b.version}`}>
+                    {diff.diff.map((line, i) => (
+                      <div key={i} style={diffLineStyle(line.type)}>
+                        {line.type === "added" ? "+ " : line.type === "removed" ? "- " : "  "}
+                        {line.text}
+                      </div>
+                    ))}
+                  </pre>
+                ) : null}
+              </CocoaFormSection>
+            </CocoaSpan>
+          </CocoaGrid>
+        </>
       ) : null}
     </>
   );
 }
 
 // =====================================================================================
-// Evaluations tab
+// Evaluations
 // =====================================================================================
 
-function EvaluationsTab({ notify }: { notify: (m: string) => void }) {
+const EVALUATION_COLUMNS: CocoaTableColumn<EvaluationRecord>[] = [
+  { key: "evaluationName", label: "Nombre", minWidth: 180, render: (ev) => <strong>{ev.evaluationName}</strong> },
+  { key: "evaluationType", label: "Tipo", fit: true, render: (ev) => EVALUATION_TYPE_LABEL[ev.evaluationType] ?? ev.evaluationType },
+  { key: "promptCode", label: "Prompt", fit: true, hideOnNarrow: true, render: (ev) => ev.promptCode ?? <span className="cocoa-note">—</span> },
+  { key: "status", label: "Estado", fit: true, render: (ev) => statusBadge(ev.status) },
+  { key: "score", label: "Puntuación", align: "right", fit: true, render: (ev) => (ev.score === undefined ? "—" : number(ev.score, { maximumFractionDigits: 1 })) },
+  {
+    key: "passRate",
+    label: "Tasa de aprobación",
+    align: "right",
+    fit: true,
+    hideOnNarrow: true,
+    render: (ev) => percent(ev.passRate, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+  },
+  { key: "sampleSize", label: "Muestra", align: "right", fit: true, showFrom: "laptop", render: (ev) => (ev.sampleSize === undefined ? "—" : number(ev.sampleSize)) },
+  { key: "completedAt", label: "Completada", fit: true, showFrom: "desktop", render: (ev) => dateTime(ev.completedAt) }
+];
+
+function EvaluationsTab({ notify }: { notify: Notify }) {
   const { data, loading, error, refresh } = useApiData<EvaluationRecord[]>(`${GOV}/evaluations`);
   const [busy, setBusy] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
+  const [results, setResults] = useState<EvaluationRecord | null>(null);
   const [name, setName] = useState("");
   const [type, setType] = useState("quality");
   const [promptCode, setPromptCode] = useState("");
@@ -468,7 +669,7 @@ function EvaluationsTab({ notify }: { notify: (m: string) => void }) {
 
   async function create() {
     if (!name.trim()) {
-      notify("El nombre de la evaluación es obligatorio.");
+      notify("El nombre de la evaluación es obligatorio.", "error");
       return;
     }
     setBusy("new");
@@ -479,7 +680,7 @@ function EvaluationsTab({ notify }: { notify: (m: string) => void }) {
       setPromptCode("");
       refresh();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
@@ -492,96 +693,140 @@ function EvaluationsTab({ notify }: { notify: (m: string) => void }) {
       notify("Ejecución de la evaluación completada.");
       refresh();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
   }
 
+  const ready = !error && !(loading && evals.length === 0);
+
   return (
     <>
-      <div className="bo-card-head">
-        <div><p className="bo-muted">Calidad</p><h3>Evaluaciones</h3></div>
-        <span className="bo-chip">{evals.length} evaluaciones</span>
-      </div>
+      <CocoaFormSection
+        title="Nueva evaluación"
+        description="Mide la calidad, la precisión o la seguridad de un prompt sobre una muestra."
+        actions={
+          <CocoaButton variant="filled" tone="accent" size="small" disabled={busy === "new" || !name.trim()} loading={busy === "new"} onClick={() => void create()}>
+            {ACTIONS.create}
+          </CocoaButton>
+        }
+      >
+        <CocoaFormRow columns={3}>
+          <CocoaField label="Nombre de la evaluación" required>
+            <CocoaInput value={name} onChange={setName} placeholder="Respuestas al huésped · septiembre" />
+          </CocoaField>
+          <CocoaField label="Tipo">
+            <CocoaSelect value={type} onChange={setType} options={EVALUATION_TYPE_OPTIONS} />
+          </CocoaField>
+          <CocoaField label="Código de prompt" hint={STATUS_LABELS.optional.toLowerCase()}>
+            <CocoaInput value={promptCode} onChange={setPromptCode} placeholder="guest_reply" />
+          </CocoaField>
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      <div className="bo-row" style={{ gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nombre de la evaluación" style={{ flex: 2, minWidth: 180 }} />
-        <select value={type} onChange={(e) => setType(e.target.value)}>
-          <option value="quality">quality</option>
-          <option value="accuracy">accuracy</option>
-          <option value="safety">safety</option>
-          <option value="regression">regression</option>
-        </select>
-        <input value={promptCode} onChange={(e) => setPromptCode(e.target.value)} placeholder="Código de prompt (opcional)" style={{ flex: 1, minWidth: 140 }} />
-        <button type="button" className="primary" disabled={busy === "new"} onClick={create}>Crear</button>
-      </div>
-
-      {error ? <p className="bo-muted">No se pudieron cargar las evaluaciones. Pulsa Actualizar para reintentar.</p> : null}
-      <div className="rev-report-wrap">
-        <table className="cm-table">
-          <thead>
-            <tr><th>Nombre</th><th>Tipo</th><th>Prompt</th><th>Estado</th><th style={{ textAlign: "right" }}>Puntuación</th><th style={{ textAlign: "right" }}>Tasa de aprobación</th><th style={{ textAlign: "right" }}>Muestra</th><th>Completada</th><th /></tr>
-          </thead>
-          <tbody>
-            {evals.map((ev) => (
+      <CocoaSection
+        title="Evaluaciones"
+        meta={plural(evals.length, "evaluación", "evaluaciones")}
+        padding={ready && evals.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+        action={
+          <CocoaButton variant="plain" tone="accent" size="small" onClick={refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        }
+      >
+        {error ? (
+          <CocoaState kind="error" title="No se pudieron cargar las evaluaciones" message={error} onRetry={refresh} />
+        ) : !loading && evals.length === 0 ? (
+          <CocoaState kind="empty" inline title="Aún no hay evaluaciones." />
+        ) : (
+          <CocoaTable
+            columns={EVALUATION_COLUMNS}
+            rows={evals}
+            rowKey="id"
+            loading={loading && evals.length === 0}
+            rowActionsVisible="always"
+            rowActions={(ev) => (
               <>
-                <tr key={ev.id}>
-                  <td><strong>{ev.evaluationName}</strong></td>
-                  <td>{ev.evaluationType}</td>
-                  <td>{ev.promptCode ?? <span className="bo-muted">—</span>}</td>
-                  <td>{statusPill(ev.status)}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{ev.score === undefined ? "—" : ev.score.toFixed(1)}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmtPct(ev.passRate)}</td>
-                  <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{ev.sampleSize ?? "—"}</td>
-                  <td>{fmtDateTime(ev.completedAt)}</td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    <button type="button" className="primary" disabled={busy === ev.id} onClick={() => run(ev.id)}>Ejecutar</button>{" "}
-                    {ev.status === "completed" || ev.status === "skipped" ? (
-                      <button type="button" className="ghost" onClick={() => setExpanded(expanded === ev.id ? null : ev.id)}>
-                        {expanded === ev.id ? "Ocultar" : ev.status === "skipped" ? "Por qué" : "Resultados"}
-                      </button>
-                    ) : null}
-                  </td>
-                </tr>
-                {expanded === ev.id ? (
-                  <tr key={`${ev.id}-detail`}>
-                    <td colSpan={9}>
-                      <pre style={{ background: "var(--surface-2, #0001)", padding: 12, borderRadius: 6, overflowX: "auto", fontSize: 12, maxHeight: 320 }}>
-                        {JSON.stringify(ev.results, null, 2)}
-                      </pre>
-                    </td>
-                  </tr>
+                <CocoaButton variant="plain" size="small" tone="accent" disabled={busy === ev.id} loading={busy === ev.id} onClick={() => void run(ev.id)}>
+                  Ejecutar
+                </CocoaButton>
+                {ev.status === "completed" || ev.status === "skipped" ? (
+                  <CocoaButton variant="plain" size="small" tone="neutral" onClick={() => setResults(ev)}>
+                    {ev.status === "skipped" ? "Por qué" : "Resultados"}
+                  </CocoaButton>
                 ) : null}
               </>
-            ))}
-            {evals.length === 0 && !loading ? <tr><td colSpan={9} className="bo-muted">Aún no hay evaluaciones.</td></tr> : null}
-          </tbody>
-        </table>
-      </div>
+            )}
+            caption="Evaluaciones de la IA"
+            aria-label="Evaluaciones de la IA"
+          />
+        )}
+      </CocoaSection>
+
+      <CocoaDrawer
+        open={results !== null}
+        onClose={() => setResults(null)}
+        title={results ? `Resultados: ${results.evaluationName}` : "Resultados"}
+        subtitle={results ? `${EVALUATION_TYPE_LABEL[results.evaluationType] ?? results.evaluationType} · ${RECORD_STATUS_LABEL[results.status.toLowerCase()] ?? results.status}` : undefined}
+        side="right"
+        size="md"
+        footer={
+          <CocoaButton variant="bordered" tone="neutral" onClick={() => setResults(null)}>
+            {ACTIONS.close}
+          </CocoaButton>
+        }
+      >
+        {results ? <pre style={codeStyle}>{JSON.stringify(results.results, null, 2)}</pre> : null}
+      </CocoaDrawer>
     </>
   );
 }
 
 // =====================================================================================
-// Incidents tab
+// Incidents
 // =====================================================================================
 
-function IncidentsTab({ notify }: { notify: (m: string) => void }) {
+const INCIDENT_COLUMNS: CocoaTableColumn<IncidentRecord>[] = [
+  { key: "severity", label: "Gravedad", fit: true, render: (inc) => severityBadge(inc.severity) },
+  {
+    key: "title",
+    label: "Título",
+    minWidth: 220,
+    render: (inc) => (
+      <>
+        <strong>{inc.title}</strong>
+        {inc.description ? <span className="cocoa-note">{inc.description}</span> : null}
+        {inc.status === "resolved" && (inc.rootCause || inc.resolutionNotes) ? (
+          <span className="cocoa-note">
+            Causa raíz: {inc.rootCause ?? "—"} · Notas: {inc.resolutionNotes ?? "—"} · Resuelta {dateTime(inc.resolvedAt)}
+          </span>
+        ) : null}
+      </>
+    )
+  },
+  { key: "incidentType", label: "Tipo", fit: true, hideOnNarrow: true, render: (inc) => INCIDENT_TYPE_LABEL[inc.incidentType] ?? inc.incidentType },
+  { key: "status", label: "Estado", fit: true, render: (inc) => statusBadge(inc.status) },
+  { key: "assignedTo", label: "Asignada a", fit: true, showFrom: "laptop", render: (inc) => inc.assignedTo ?? <span className="cocoa-note">—</span> },
+  { key: "createdAt", label: "Creada", fit: true, showFrom: "desktop", render: (inc) => dateTime(inc.createdAt) }
+];
+
+function IncidentsTab({ notify }: { notify: Notify }) {
   const { data, loading, error, refresh } = useApiData<IncidentRecord[]>(`${GOV}/incidents`);
   const [busy, setBusy] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [incidentType, setIncidentType] = useState("hallucination");
   const [severity, setSeverity] = useState("medium");
   const [description, setDescription] = useState("");
-  const [resolving, setResolving] = useState<string | null>(null);
+  const [resolving, setResolving] = useState<IncidentRecord | null>(null);
   const [rootCause, setRootCause] = useState("");
   const [resolutionNotes, setResolutionNotes] = useState("");
   const incidents = useMemo(() => toArray<IncidentRecord>(data), [data]);
 
   async function create() {
     if (!title.trim()) {
-      notify("El título es obligatorio.");
+      notify("El título es obligatorio.", "error");
       return;
     }
     setBusy("new");
@@ -592,7 +837,7 @@ function IncidentsTab({ notify }: { notify: (m: string) => void }) {
       setDescription("");
       refresh();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
@@ -605,7 +850,7 @@ function IncidentsTab({ notify }: { notify: (m: string) => void }) {
       notify("Incidencia asignada a ti.");
       refresh();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
@@ -618,13 +863,15 @@ function IncidentsTab({ notify }: { notify: (m: string) => void }) {
       notify("Incidencia reabierta.");
       refresh();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
   }
 
-  async function resolve(id: string) {
+  async function resolve() {
+    if (!resolving) return;
+    const id = resolving.id;
     setBusy(id);
     try {
       await apiRequest(`${GOV}/incidents/${id}/resolve`, { method: "POST", body: { rootCause, resolutionNotes } });
@@ -634,199 +881,211 @@ function IncidentsTab({ notify }: { notify: (m: string) => void }) {
       setResolutionNotes("");
       refresh();
     } catch (e) {
-      notify(e instanceof Error ? e.message : String(e));
+      notify(errorText(e), "error");
     } finally {
       setBusy(null);
     }
   }
 
+  const ready = !error && !(loading && incidents.length === 0);
+
   return (
     <>
-      <div className="bo-card-head">
-        <div><p className="bo-muted">Seguridad</p><h3>Incidencias</h3></div>
-        <span className="bo-chip">{incidents.length} incidencias</span>
-      </div>
+      <CocoaFormSection
+        title="Nueva incidencia"
+        description="Registra un comportamiento de la IA que haya que revisar."
+        actions={
+          <CocoaButton variant="filled" tone="accent" size="small" disabled={busy === "new" || !title.trim()} loading={busy === "new"} onClick={() => void create()}>
+            {ACTIONS.create}
+          </CocoaButton>
+        }
+      >
+        <CocoaFormRow columns={4}>
+          <CocoaField label="Título de la incidencia" required>
+            <CocoaInput value={title} onChange={setTitle} placeholder="Respuesta inventada sobre el desayuno" />
+          </CocoaField>
+          <CocoaField label="Tipo">
+            <CocoaSelect value={incidentType} onChange={setIncidentType} options={INCIDENT_TYPE_OPTIONS} />
+          </CocoaField>
+          <CocoaField label="Gravedad">
+            <CocoaSelect value={severity} onChange={setSeverity} options={SEVERITY_OPTIONS} />
+          </CocoaField>
+          <CocoaField label="Descripción" hint={STATUS_LABELS.optional.toLowerCase()}>
+            <CocoaInput value={description} onChange={setDescription} placeholder="Qué ocurrió y dónde" />
+          </CocoaField>
+        </CocoaFormRow>
+      </CocoaFormSection>
 
-      <div className="bo-row" style={{ gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Título de la incidencia" style={{ flex: 2, minWidth: 180 }} />
-        <select value={incidentType} onChange={(e) => setIncidentType(e.target.value)}>
-          <option value="hallucination">hallucination</option>
-          <option value="policy_violation">policy_violation</option>
-          <option value="data_leak">data_leak</option>
-          <option value="bias">bias</option>
-          <option value="other">other</option>
-        </select>
-        <select value={severity} onChange={(e) => setSeverity(e.target.value)}>
-          <option value="low">low</option>
-          <option value="medium">medium</option>
-          <option value="high">high</option>
-          <option value="critical">critical</option>
-        </select>
-        <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Descripción (opcional)" style={{ flex: 2, minWidth: 180 }} />
-        <button type="button" className="primary" disabled={busy === "new"} onClick={create}>Crear</button>
-      </div>
+      <CocoaSection
+        title="Incidencias"
+        meta={plural(incidents.length, "incidencia", "incidencias")}
+        padding={ready && incidents.length > 0 ? "none" : "md"}
+        style={{ overflow: "clip" }}
+        action={
+          <CocoaButton variant="plain" tone="accent" size="small" onClick={refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        }
+      >
+        {error ? (
+          <CocoaState kind="error" title="No se pudieron cargar las incidencias" message={error} onRetry={refresh} />
+        ) : !loading && incidents.length === 0 ? (
+          <CocoaState kind="empty" inline title="No hay incidencias registradas." />
+        ) : (
+          <CocoaTable
+            columns={INCIDENT_COLUMNS}
+            rows={incidents}
+            rowKey="id"
+            loading={loading && incidents.length === 0}
+            rowTone={(inc) => (inc.status === "resolved" ? undefined : severityTone(inc.severity) === "success" ? undefined : severityTone(inc.severity))}
+            rowActionsVisible="always"
+            rowActions={(inc) =>
+              inc.status !== "resolved" ? (
+                <>
+                  <CocoaButton variant="plain" size="small" tone="neutral" disabled={busy === inc.id} onClick={() => void assign(inc.id)}>
+                    {ACTIONS.assign}
+                  </CocoaButton>
+                  <CocoaButton variant="plain" size="small" tone="accent" disabled={busy === inc.id} onClick={() => setResolving(inc)}>
+                    Resolver
+                  </CocoaButton>
+                </>
+              ) : (
+                <CocoaButton variant="plain" size="small" tone="neutral" disabled={busy === inc.id} loading={busy === inc.id} onClick={() => void reopen(inc.id)}>
+                  {ACTIONS.reopen}
+                </CocoaButton>
+              )
+            }
+            caption="Incidencias de la IA"
+            aria-label="Incidencias de la IA"
+          />
+        )}
+      </CocoaSection>
 
-      {error ? <p className="bo-muted">No se pudieron cargar las incidencias. Pulsa Actualizar para reintentar.</p> : null}
-      <div className="rev-report-wrap">
-        <table className="cm-table">
-          <thead>
-            <tr><th>Gravedad</th><th>Título</th><th>Tipo</th><th>Estado</th><th>Asignada a</th><th>Creada</th><th /></tr>
-          </thead>
-          <tbody>
-            {incidents.map((inc) => (
-              <>
-                <tr key={inc.id} className={severityClass(inc.severity) === "error" ? "cm-row-error" : severityClass(inc.severity) === "warn" ? "cm-row-warn" : undefined}>
-                  <td>{severityPill(inc.severity)}</td>
-                  <td><strong>{inc.title}</strong>{inc.description ? <div className="bo-muted" style={{ fontSize: 12 }}>{inc.description}</div> : null}</td>
-                  <td>{inc.incidentType}</td>
-                  <td>{statusPill(inc.status)}</td>
-                  <td>{inc.assignedTo ?? <span className="bo-muted">—</span>}</td>
-                  <td>{fmtDateTime(inc.createdAt)}</td>
-                  <td style={{ whiteSpace: "nowrap" }}>
-                    {inc.status !== "resolved" ? (
-                      <>
-                        <button type="button" disabled={busy === inc.id} onClick={() => assign(inc.id)}>Asignar</button>{" "}
-                        <button type="button" className="primary" disabled={busy === inc.id} onClick={() => setResolving(resolving === inc.id ? null : inc.id)}>Resolver</button>
-                      </>
-                    ) : (
-                      <button type="button" className="ghost" disabled={busy === inc.id} onClick={() => reopen(inc.id)}>Reabrir</button>
-                    )}
-                  </td>
-                </tr>
-                {resolving === inc.id ? (
-                  <tr key={`${inc.id}-resolve`}>
-                    <td colSpan={7}>
-                      <div className="bo-row" style={{ gap: 8, flexWrap: "wrap" }}>
-                        <input value={rootCause} onChange={(e) => setRootCause(e.target.value)} placeholder="Causa raíz" style={{ flex: 1, minWidth: 200 }} />
-                        <input value={resolutionNotes} onChange={(e) => setResolutionNotes(e.target.value)} placeholder="Notas de resolución" style={{ flex: 2, minWidth: 240 }} />
-                        <button type="button" className="primary" disabled={busy === inc.id} onClick={() => resolve(inc.id)}>Confirmar resolución</button>
-                        <button type="button" className="ghost" onClick={() => setResolving(null)}>Cancelar</button>
-                      </div>
-                    </td>
-                  </tr>
-                ) : inc.status === "resolved" && (inc.rootCause || inc.resolutionNotes) ? (
-                  <tr key={`${inc.id}-resolved`}>
-                    <td colSpan={7} className="bo-muted" style={{ fontSize: 12 }}>
-                      Causa raíz: {inc.rootCause ?? "—"} · Notas: {inc.resolutionNotes ?? "—"} · Resuelta {fmtDateTime(inc.resolvedAt)}
-                    </td>
-                  </tr>
-                ) : null}
-              </>
-            ))}
-            {incidents.length === 0 && !loading ? <tr><td colSpan={7} className="bo-muted">No hay incidencias registradas.</td></tr> : null}
-          </tbody>
-        </table>
-      </div>
+      <CocoaDrawer
+        open={resolving !== null}
+        onClose={() => setResolving(null)}
+        title={resolving ? `Resolver: ${resolving.title}` : "Resolver incidencia"}
+        subtitle={resolving ? `${INCIDENT_TYPE_LABEL[resolving.incidentType] ?? resolving.incidentType} · gravedad ${SEVERITY_LABEL[resolving.severity.toLowerCase()] ?? resolving.severity}` : undefined}
+        side="right"
+        size="md"
+        footer={
+          <div className="cocoa-row" data-justify="end" data-gap="2">
+            <CocoaButton variant="bordered" tone="neutral" onClick={() => setResolving(null)}>
+              {ACTIONS.cancel}
+            </CocoaButton>
+            <CocoaButton variant="filled" tone="accent" disabled={busy === resolving?.id} loading={busy === resolving?.id} onClick={() => void resolve()}>
+              Confirmar resolución
+            </CocoaButton>
+          </div>
+        }
+      >
+        <CocoaFormSection title="Resolución" description="Qué la provocó y qué se ha hecho para que no se repita.">
+          <CocoaField label="Causa raíz" fullWidth>
+            <CocoaInput value={rootCause} onChange={setRootCause} placeholder="Causa raíz" />
+          </CocoaField>
+          <CocoaField label="Notas de resolución" fullWidth>
+            <CocoaInput value={resolutionNotes} onChange={setResolutionNotes} multiline rows={4} placeholder="Notas de resolución" />
+          </CocoaField>
+        </CocoaFormSection>
+      </CocoaDrawer>
     </>
   );
 }
 
 // =====================================================================================
-// Cost tab
+// Cost
 // =====================================================================================
 
+const WINDOW_OPTIONS = [
+  { value: "7", label: "7 días" },
+  { value: "30", label: "30 días" },
+  { value: "90", label: "90 días" }
+];
+
+type ToolCost = CostDashboard["byTool"][number];
+type ModelCost = CostDashboard["byModel"][number];
+
+const TOOL_COST_COLUMNS: CocoaTableColumn<ToolCost>[] = [
+  { key: "toolName", label: "Herramienta", minWidth: 160, render: (t) => <strong>{t.toolName}</strong> },
+  { key: "costEur", label: "Coste", align: "right", fit: true, render: (t) => money(t.costEur) },
+  { key: "tokens", label: "Tokens (uso del modelo)", align: "right", fit: true, hideOnNarrow: true, render: (t) => number(t.tokens) },
+  { key: "calls", label: "Llamadas", align: "right", fit: true, render: (t) => number(t.calls) }
+];
+
+const MODEL_COST_COLUMNS: CocoaTableColumn<ModelCost>[] = [
+  { key: "model", label: "Modelo", minWidth: 160, render: (m) => <strong>{m.model}</strong> },
+  { key: "costEur", label: "Coste", align: "right", fit: true, render: (m) => money(m.costEur) },
+  { key: "calls", label: "Llamadas", align: "right", fit: true, render: (m) => number(m.calls) }
+];
+
 function CostTab() {
-  const [days, setDays] = useState(30);
-  const { data, loading, error, refresh } = useApiData<CostDashboard>(`${GOV}/cost`, { query: { days } });
-  const maxDaily = useMemo(() => Math.max(1, ...(data?.dailyTrend ?? []).map((d) => d.costEur)), [data]);
-  const byTool = data?.byTool ?? [];
-  const byModel = data?.byModel ?? [];
-  const daily = data?.dailyTrend ?? [];
+  const [days, setDays] = useState("30");
+  const { data, loading, error, refresh } = useApiData<CostDashboard>(`${GOV}/cost`, { query: { days: Number(days) } });
+  const byTool = useMemo(() => toArray<ToolCost>(data?.byTool), [data]);
+  const byModel = useMemo(() => toArray<ModelCost>(data?.byModel), [data]);
+  const daily = useMemo(() => toArray<CostDashboard["dailyTrend"][number]>(data?.dailyTrend), [data]);
+  const bars: CocoaBarsDatum[] = useMemo(
+    () => daily.map((d) => ({ label: date(d.date, "dayMonth"), value: d.costEur, tone: "accent" as const, hint: plural(d.calls, "llamada", "llamadas") })),
+    [daily]
+  );
+  const windowDays = data?.windowDays ?? Number(days);
 
   return (
     <>
-      <div className="bo-card-head">
-        <div><p className="bo-muted">Gasto · últimos {data?.windowDays ?? days} días</p><h3>Panel de costes</h3></div>
-        <div className="bo-row" style={{ gap: 8 }}>
-          <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
-            <option value={7}>7 días</option>
-            <option value={30}>30 días</option>
-            <option value={90}>90 días</option>
-          </select>
-          <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
-        </div>
-      </div>
-      {error ? <p className="bo-muted">No se pudieron cargar los datos de coste. Pulsa Actualizar para reintentar.</p> : null}
-
-      <section className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Coste total</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : fmtEur(data?.totalCostEur)}</div>
-          <div className="rev-kpi-delta">Total del periodo</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tokens totales (uso del modelo)</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : fmtNum(data?.totalTokens)}</div>
-          <div className="rev-kpi-delta">Entrada + salida</div>
-        </article>
-        <article className="rev-kpi rev-kpi-warn">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Proyectado / mes</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : fmtEur(data?.projectedMonthlyEur)}</div>
-          <div className="rev-kpi-delta">Ritmo de gasto × 30 días</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Herramientas activas</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : byTool.length}</div>
-          <div className="rev-kpi-delta">Herramientas distintas con gasto</div>
-        </article>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head"><div><p className="bo-muted">Por herramienta</p><h3>Coste por herramienta</h3></div><span className="bo-chip">{byTool.length}</span></div>
-          {byTool.length === 0 ? <p className="bo-muted">Sin gasto en el periodo.</p> : (
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead><tr><th>Herramienta</th><th style={{ textAlign: "right" }}>Coste</th><th style={{ textAlign: "right" }}>Tokens (uso del modelo)</th><th style={{ textAlign: "right" }}>Llamadas</th></tr></thead>
-                <tbody>
-                  {byTool.map((t) => (
-                    <tr key={t.toolName}>
-                      <td><strong>{t.toolName}</strong></td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmtEur(t.costEur)}</td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmtNum(t.tokens)}</td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{t.calls}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head"><div><p className="bo-muted">Por modelo</p><h3>Coste por modelo</h3></div><span className="bo-chip">{byModel.length}</span></div>
-          {byModel.length === 0 ? <p className="bo-muted">Sin gasto en el periodo.</p> : (
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead><tr><th>Modelo</th><th style={{ textAlign: "right" }}>Coste</th><th style={{ textAlign: "right" }}>Llamadas</th></tr></thead>
-                <tbody>
-                  {byModel.map((m) => (
-                    <tr key={m.model}>
-                      <td><strong>{m.model}</strong></td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmtEur(m.costEur)}</td>
-                      <td style={{ textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{m.calls}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head"><div><p className="bo-muted">Tendencia diaria</p><h3>Coste por día</h3></div><span className="bo-chip">{daily.length} días</span></div>
-        {daily.length === 0 ? <p className="bo-muted">Sin gasto en el periodo.</p> : (
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 160, paddingTop: 8 }}>
-            {daily.map((d) => (
-              <div key={d.date} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end", height: "100%" }} title={`${d.date}: ${fmtEur(d.costEur)} (${d.calls} llamadas)`}>
-                <div style={{ width: "70%", background: "var(--accent)", borderRadius: "3px 3px 0 0", height: `${Math.max(2, (d.costEur / maxDaily) * 100)}%` }} />
-                <div style={{ fontSize: 9, color: "var(--ink-muted)", marginTop: 4, transform: "rotate(-45deg)", whiteSpace: "nowrap" }}>{d.date.slice(5)}</div>
-              </div>
-            ))}
+      <CocoaSection
+        title="Panel de costes"
+        meta={`Gasto · últimos ${plural(windowDays, "día", "días")}`}
+        action={
+          <div className="cocoa-row" data-gap="2">
+            <CocoaSelect value={days} onChange={setDays} options={WINDOW_OPTIONS} size="small" inline aria-label="Ventana de días" />
+            <CocoaButton variant="plain" tone="accent" size="small" onClick={refresh}>
+              {ACTIONS.refresh}
+            </CocoaButton>
           </div>
+        }
+      >
+        {error && !data ? (
+          <CocoaState kind="error" title="No se pudieron cargar los datos de coste" message={error} onRetry={refresh} />
+        ) : loading && !data ? (
+          <CocoaSkeleton.Strip count={4} />
+        ) : (
+          <CocoaKpiStrip aria-label="Coste de la IA">
+            <CocoaKpi label="Coste total" value={money(data?.totalCostEur)} caption="Total del periodo" polarity="neutral" status="ok" />
+            <CocoaKpi label="Tokens totales (uso del modelo)" value={number(data?.totalTokens)} caption="Entrada + salida" polarity="neutral" status="ok" />
+            <CocoaKpi label="Proyectado / mes" value={money(data?.projectedMonthlyEur)} caption="Ritmo de gasto × 30 días" polarity="neutral" status="warning" />
+            <CocoaKpi label="Herramientas activas" value={byTool.length} caption="Herramientas distintas con gasto" polarity="neutral" status="ok" />
+          </CocoaKpiStrip>
         )}
-      </section>
+      </CocoaSection>
+
+      <CocoaGrid align="start">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Coste por herramienta" meta={plural(byTool.length, "herramienta", "herramientas")} padding={byTool.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {byTool.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin gasto en el periodo." />
+            ) : (
+              <CocoaTable columns={TOOL_COST_COLUMNS} rows={byTool} rowKey="toolName" caption="Coste por herramienta" aria-label="Coste por herramienta" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Coste por modelo" meta={plural(byModel.length, "modelo", "modelos")} padding={byModel.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {byModel.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin gasto en el periodo." />
+            ) : (
+              <CocoaTable columns={MODEL_COST_COLUMNS} rows={byModel} rowKey="model" caption="Coste por modelo" aria-label="Coste por modelo" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+
+      <CocoaSection title="Coste por día" meta={plural(daily.length, "día", "días")}>
+        {daily.length === 0 ? (
+          <CocoaState kind="empty" inline title="Sin gasto en el periodo." />
+        ) : (
+          <CocoaChart.Bars data={bars} height={160} valueFormat={(v) => money(v)} aria-label={`Coste diario de la IA en los últimos ${plural(windowDays, "día", "días")}`} />
+        )}
+      </CocoaSection>
     </>
   );
 }
@@ -835,65 +1094,40 @@ function CostTab() {
 // Root screen
 // =====================================================================================
 
-const TABS: Array<{ id: TabId; label: string; subtitle: string }> = [
-  { id: "policies", label: "Políticas", subtitle: "Configuración de la regla" },
-  { id: "prompts", label: "Prompts (instrucciones a la IA)", subtitle: "Versiones (publicar/archivar)" },
-  { id: "evaluations", label: "Evaluaciones", subtitle: "Calidad y precisión" },
-  { id: "incidents", label: "Incidencias", subtitle: "Flujo de seguridad" },
-  { id: "cost", label: "Coste", subtitle: "Gasto y tokens (uso del modelo)" }
+const VIEWS: Array<{ value: TabId; label: string }> = [
+  { value: "policies", label: "Políticas" },
+  { value: "prompts", label: "Prompts" },
+  { value: "evaluations", label: "Evaluaciones" },
+  { value: "incidents", label: "Incidencias" },
+  { value: "cost", label: "Coste" }
 ];
 
 export function AiGovernanceScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
+  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
+  const hosted = useTabHost() !== null || embedded;
   const [tab, setTab] = useState<TabId>("policies");
-  const [banner, setBanner] = useState<string | null>(null);
+  const { showToast } = useToast();
+  const notify = useCallback<Notify>((message, variant = "success") => showToast(message, { variant }), [showToast]);
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : <div className="bo-page-eyebrow">IA · Gobernanza</div>}
-          {embedded ? null : <h1 className="bo-page-title">Gobernanza de la IA</h1>}
-          <p className="bo-page-subtitle">
-            Políticas, versiones de prompts (instrucciones a la IA), evaluaciones, gestión de incidencias y coste:
-            el panel de control de la IA para operar de forma segura en toda la cartera de hoteles.
-          </p>
-        </div>
-      </div>
-
-      <div className="bo-row" style={{ gap: 0, borderBottom: "1px solid var(--line)", paddingBottom: 0, marginBottom: 16 }}>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            onClick={() => setTab(t.id)}
-            style={{
-              border: "none",
-              borderRadius: 0,
-              borderBottom: t.id === tab ? "2px solid var(--accent)" : "2px solid transparent",
-              background: "transparent",
-              padding: "12px 18px",
-              cursor: "pointer",
-              color: t.id === tab ? "var(--ink)" : "var(--ink-muted)",
-              fontWeight: t.id === tab ? 700 : 500
-            }}
-          >
-            <div style={{ fontSize: 14 }}>{t.label}</div>
-            <div style={{ fontSize: 11, color: "var(--ink-muted)", fontWeight: 500 }}>{t.subtitle}</div>
-          </button>
-        ))}
-      </div>
-
-      <Banner message={banner} onDismiss={() => setBanner(null)} />
-
-      <section className="bo-card" style={{ marginTop: banner ? 12 : 0 }}>
-        {tab === "policies" ? <PoliciesTab notify={setBanner} /> : null}
-        {tab === "prompts" ? <PromptsTab notify={setBanner} /> : null}
-        {tab === "evaluations" ? <EvaluationsTab notify={setBanner} /> : null}
-        {tab === "incidents" ? <IncidentsTab notify={setBanner} /> : null}
-        {tab === "cost" ? <CostTab /> : null}
-      </section>
-    </>
+    <CocoaPage
+      eyebrow="Configuración · Inteligencia artificial"
+      title="Gobernanza de la IA"
+      subtitle={
+        hosted
+          ? undefined
+          : "Políticas, versiones de prompts (instrucciones a la IA), evaluaciones, gestión de incidencias y coste: el panel de control de la IA para operar de forma segura en toda la cartera de hoteles."
+      }
+      tabs={VIEWS}
+      activeTab={tab}
+      onTabChange={(value) => setTab(value as TabId)}
+    >
+      {tab === "policies" ? <PoliciesTab notify={notify} /> : null}
+      {tab === "prompts" ? <PromptsTab notify={notify} /> : null}
+      {tab === "evaluations" ? <EvaluationsTab notify={notify} /> : null}
+      {tab === "incidents" ? <IncidentsTab notify={notify} /> : null}
+      {tab === "cost" ? <CostTab /> : null}
+    </CocoaPage>
   );
 }
 

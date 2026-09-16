@@ -4,8 +4,9 @@ import { describe, it } from "node:test";
 
 // Cocoa 22 · shell contract (COCOA-22.md §2 tokens, §3.1 shell, §6
 // prohibitions, §9 rule 14). Source-level checks — no DOM — over the files of
-// the «shell» lot: layout, sidebar, provider, preferences sheet, onboarding
-// wizard and the public auth screens.
+// the «shell» lot: layout, sidebar, provider, preferences sheet and the public
+// auth screens. (The never-routed CocoaOnboardingWizard it also read was
+// retired as a dead file in Cocoa 22 · ola 10 · lote 10-C, plan §2.5.)
 
 const src = (path: string) => readFileSync(new URL(`../../${path}`, import.meta.url), "utf8");
 
@@ -13,7 +14,6 @@ const layout = src("layouts/BackOfficeLayout.tsx");
 const sidebar = src("navigation/Sidebar.tsx");
 const provider = src("providers/CocoaGlobalProvider.tsx");
 const sheet = src("components/cocoa-global/CocoaPreferencesSheet.tsx");
-const wizard = src("screens/onboarding/CocoaOnboardingWizard.tsx");
 const login = src("screens/auth/LoginScreen.tsx");
 const forgot = src("screens/auth/ForgotPasswordScreen.tsx");
 const cocoaGlobal = [
@@ -68,12 +68,6 @@ describe("§9 rule 14 · the accent is not a preference", () => {
     assert.doesNotMatch(sheet, /setProperty\(\s*["']--cocoa-accent/);
     assert.match(sheet, /label: "Apariencia"/);
     assert.doesNotMatch(sheet, /"Appearance"|"Notifications"|"Privacy"|"Advanced"|Proximamente|Automatico/);
-  });
-
-  it("the onboarding wizard no longer previews an accent on <html>", () => {
-    assert.doesNotMatch(wizard, /setProperty\(\s*["']--cocoa-accent|--cocoa-background-selection"\s*,/);
-    assert.doesNotMatch(wizard, /ACCENT_PRESETS|CocoaColorWell|accent: string/);
-    assert.match(wizard, /LEGACY_ACCENT_INLINE_PROPERTIES/);
   });
 });
 

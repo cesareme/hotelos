@@ -4,6 +4,7 @@ import {
   KPI_KEYS,
   KPI_LABEL_MAX_CHARS,
   QUARTER_OPTIONS,
+  SUBMISSION_STATUS_LABELS,
   TOTALES_LABELS,
   bookPeriodOptions,
   currentMonth,
@@ -23,6 +24,7 @@ import {
   periodHasEnded,
   resultadoCaption,
   settlementEntryLabel,
+  submissionStatusLabel,
   sumVatBookRows,
   vatBookCsv,
   yearOptions
@@ -158,6 +160,43 @@ describe("fiscal-shared · errores", () => {
     assert.equal(fiscalErrorText(new Error(""), "Nada"), "Nada");
     assert.equal(isFiscalYearClosed(new ApiError("x", 409, undefined, { code: "FISCAL_YEAR_CLOSED" })), true);
     assert.equal(isFiscalYearClosed(new ApiError("x", 409, undefined, { code: "PERIOD_CLOSED" })), false);
+  });
+});
+
+describe("fiscal-shared · estados de envío", () => {
+  // Union of the statuses the four submitters of the API write (verifactu, tbai, igic, ses).
+  const WIRE_STATUSES = [
+    "pending",
+    "queued",
+    "submitting",
+    "sent",
+    "retrying",
+    "network_error",
+    "accepted",
+    "accepted_with_errors",
+    "accepted_with_warnings",
+    "delivered",
+    "acknowledged",
+    "rejected",
+    "failed",
+    "abandoned",
+    "annulled"
+  ];
+
+  it("paints every wire status in Spanish (qa#2: «accepted» reached the badge untranslated)", () => {
+    for (const status of WIRE_STATUSES) {
+      const label = submissionStatusLabel(status);
+      assert.notEqual(label, status, `«${status}» llega crudo a la tabla`);
+      assert.match(label, /^[A-ZÁÉÍÓÚ][^_]*$/, `«${label}» (${status}) no es una etiqueta en español`);
+    }
+    assert.equal(submissionStatusLabel("accepted"), "Aceptado");
+    assert.equal(submissionStatusLabel("accepted_with_errors"), "Aceptado con errores");
+    assert.equal(submissionStatusLabel("failed"), "Fallido (máx. intentos)");
+    assert.deepEqual(Object.keys(SUBMISSION_STATUS_LABELS).sort(), [...WIRE_STATUSES].sort());
+  });
+
+  it("falls back to the raw value for a status the API adds later", () => {
+    assert.equal(submissionStatusLabel("estado_nuevo"), "estado_nuevo");
   });
 });
 

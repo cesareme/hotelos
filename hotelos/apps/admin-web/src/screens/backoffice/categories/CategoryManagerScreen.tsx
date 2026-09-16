@@ -1,11 +1,16 @@
+// Category manager (Configuración › Propiedad › Categorías). Cocoa 22 · ola 10 ·
+// lote 10-C: CocoaPage (hosted in PropiedadTabs) → 4/8 grid: the groups as a
+// section list and the categories in a CocoaTable whose rows open THEIR
+// category («Ver») or the new-option form («Añadir opción»). Fetch and
+// deep links are untouched.
 import { useEffect, useState } from "react";
 import { getActivePropertyId } from "../../../services/activeProperty";
-import { FormPage } from "../../../components/forms/FormComponents";
-import { openTabPath } from "../../../components/cocoa/CocoaRouteTabs";
 import { urlForScreen } from "../../../navigation/nav-tree";
-import { EmptyState, ErrorState, LoadingBlock } from "../../../components/States";
-import { ACTIONS, errorStateFor, loadingLabel } from "../../../content/actions";
-import { fetchConfigurationCategories, type ConfigurationCategoryGroup } from "../../../services/backofficeApi";
+import { ACTIONS, errorStateFor } from "../../../content/actions";
+import { plural } from "../../../lib/format";
+import { fetchConfigurationCategories, type ConfigurationCategory, type ConfigurationCategoryGroup } from "../../../services/backofficeApi";
+import { treeHeaderFor } from "../../tabs/tab-helpers";
+import { CocoaBadge, CocoaButton, CocoaGrid, CocoaPage, CocoaSection, CocoaSkeleton, CocoaSpan, CocoaTable, openTabPath, type CocoaTableColumn, type CocoaTone } from "../../../components/cocoa";
 
 // Spanish names of the category groups the API returns (its codes stay in English).
 const GROUP_LABELS: Record<string, string> = {
@@ -29,7 +34,8 @@ const GROUP_LABELS: Record<string, string> = {
 const MODE_LABELS: Record<string, string> = {
   property_editable: "Editable por la propiedad",
   property_extendable: "Ampliable por la propiedad",
-  system_controlled: "Controlada por el sistema"
+  system_controlled: "Controlada por el sistema",
+  read_only: "Solo lectura"
 };
 
 function groupLabel(group: string): string {
@@ -39,6 +45,14 @@ function groupLabel(group: string): string {
 function modeLabel(mode: string): string {
   return MODE_LABELS[mode] ?? mode;
 }
+
+function modeTone(mode: string): CocoaTone {
+  if (mode === "system_controlled") return "warning";
+  if (mode === "read_only") return "neutral";
+  return "success";
+}
+
+const HEADER = treeHeaderFor("CategoryManagerScreen", { eyebrow: "Configuración · Propiedad", title: "Categorías de la propiedad" });
 
 // Detail and «Nueva opción» are sub-URLs of Configuración › Propiedad › Categorías
 // (Tanda 5): the category code travels in the URL, so every row opens ITS category.
@@ -51,6 +65,25 @@ function openNewOption(code: string): void {
   const url = urlForScreen("CategoryOptionForm", { codigo: code });
   if (url) openTabPath(url);
 }
+
+type CategoryRow = ConfigurationCategory & { groupLabel: string };
+
+// Columns outside the component (§4.2 A5).
+const CATEGORY_COLUMNS: CocoaTableColumn<CategoryRow>[] = [
+  {
+    key: "name",
+    label: "Categoría",
+    minWidth: 180,
+    render: (category) => (
+      <span className="cocoa-stack" data-gap="1">
+        <strong>{category.name}</strong>
+        <span className="cocoa-note">{category.groupLabel}</span>
+      </span>
+    )
+  },
+  { key: "options", label: "Opciones", fit: true, hideOnNarrow: true, render: (category) => `${category.activeOptions} activas / ${category.inactiveOptions} inactivas` },
+  { key: "mode", label: "Modo", fit: true, render: (category) => <CocoaBadge tone={modeTone(category.mode)}>{modeLabel(category.mode)}</CocoaBadge> }
+];
 
 type LoadState = { status: "loading" } | { status: "error"; message: string } | { status: "ready"; groups: ConfigurationCategoryGroup[] };
 
@@ -82,68 +115,88 @@ export function CategoryManagerScreen() {
   }, [attempt]);
 
   const groups = state.status === "ready" ? state.groups : [];
-  const categoryCount = groups.reduce((total, group) => total + group.categories.length, 0);
+  const rows: CategoryRow[] = groups.flatMap((group) => group.categories.map((category) => ({ ...category, groupLabel: groupLabel(group.group) })));
+  const categoryCount = rows.length;
   const errorCopy = errorStateFor("las categorías");
+  const pageState = state.status === "loading" ? "loading" : state.status === "error" ? "error" : groups.length === 0 ? "empty" : "ready";
 
   return (
-    <FormPage
-      eyebrow="Configuración · Propiedad"
-      title="Categorías de la propiedad"
-      summary="Listas de valores que usan el resto de pantallas (características de habitación, tipos de cama, segmentos de mercado, tipos de documento…). Cada categoría se abre en su propia página para añadir o desactivar opciones sin tocar código."
-    >
-      {state.status === "loading" ? <LoadingBlock label={loadingLabel("categorías")} /> : null}
-      {state.status === "error" ? (
-        <ErrorState title={errorCopy.title} message={`${errorCopy.message} (${state.message})`} onRetry={() => setAttempt((n) => n + 1)} retryLabel={ACTIONS.retry} />
-      ) : null}
-      {state.status === "ready" && groups.length === 0 ? (
-        <EmptyState title="Sin categorías" message="Esta propiedad todavía no tiene categorías configuradas. Se crean con la puesta en marcha o desde el API." />
-      ) : null}
-      {state.status === "ready" && groups.length > 0 ? (
-        <section className="bo-grid two" data-source={source}>
-          <article className="bo-card">
-            <div className="bo-card-head">
-              <h3>Grupos</h3>
-              <span className="bo-chip">{groups.length} grupos</span>
-            </div>
-            <ul className="bo-list">
-              {groups.map((group) => (
-                <li className="bo-row" key={group.group}>
-                  <strong>{groupLabel(group.group)}</strong>
-                  <span className="bo-muted">{group.categories.length} categorías</span>
-                </li>
-              ))}
-            </ul>
-          </article>
-          <article className="bo-card">
-            <div className="bo-card-head">
-              <h3>Categorías</h3>
-              <span className="bo-chip">{categoryCount} en la base de datos</span>
-            </div>
-            <ul className="bo-list">
-              {groups.flatMap((group) =>
-                group.categories.map((category) => (
-                  <li className="bo-row" key={category.code}>
-                    <strong>{category.name}</strong>
-                    <span>
-                      {category.activeOptions} activas / {category.inactiveOptions} inactivas
-                    </span>
-                    <span className={`bo-status ${category.mode === "system_controlled" ? "warn" : "ok"}`}>{modeLabel(category.mode)}</span>
-                    <span className="bo-actions">
-                      <button type="button" onClick={() => openCategory(category.code)}>{ACTIONS.view}</button>
-                      {category.mode === "system_controlled" ? null : (
-                        <button type="button" onClick={() => openNewOption(category.code)}>Añadir opción</button>
-                      )}
-                    </span>
+    <div data-source={source}>
+      <CocoaPage
+        eyebrow={HEADER.eyebrow}
+        title={HEADER.title}
+        subtitle="Listas de valores que usan el resto de pantallas (características de habitación, tipos de cama, segmentos de mercado, tipos de documento…). Cada categoría se abre en su propia página para añadir o desactivar opciones sin tocar código."
+        state={pageState}
+        skeleton={<CocoaSkeleton.Grid rows={[[4, 8]]} height={320} />}
+        error={{ title: errorCopy.title, message: state.status === "error" ? `${errorCopy.message} (${state.message})` : undefined, onRetry: () => setAttempt((n) => n + 1) }}
+        empty={{ title: "Sin categorías", message: "Esta propiedad todavía no tiene categorías configuradas. Se crean con la puesta en marcha o desde el API." }}
+      >
+        <CocoaGrid align="start" aria-label="Grupos y categorías">
+          <CocoaSpan cols={4} min={240}>
+            <CocoaSection title="Grupos" meta={plural(groups.length, "grupo", "grupos")}>
+              <ul className="c22-section__list" aria-label="Grupos de categorías">
+                {groups.map((group) => (
+                  <li key={group.group}>
+                    <span>{groupLabel(group.group)}</span>
+                    <strong>{plural(group.categories.length, "categoría", "categorías")}</strong>
                   </li>
-                ))
-              )}
-            </ul>
-            <p className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
-              Las categorías controladas por el sistema (valores legales) se consultan pero no se renombran ni se eliminan; una opción en uso se desactiva y sigue visible en los registros históricos.
-            </p>
-          </article>
-        </section>
-      ) : null}
-    </FormPage>
+                ))}
+              </ul>
+            </CocoaSection>
+          </CocoaSpan>
+          <CocoaSpan cols={8} min={480}>
+            {/* padding="none" + overflow clip: the table clips to the radius without creating a scroll container (§4.2 D26). */}
+            <CocoaSection
+              title="Categorías"
+              meta={`${categoryCount} en la base de datos`}
+              padding="none"
+              style={{ overflow: "clip" }}
+              footer={
+                <span className="cocoa-note">
+                  Las categorías controladas por el sistema (valores legales) se consultan pero no se renombran ni se eliminan; una opción en uso se desactiva y sigue visible en los registros históricos.
+                </span>
+              }
+            >
+              <CocoaTable
+                columns={CATEGORY_COLUMNS}
+                rows={rows}
+                rowKey="code"
+                onSelect={(category) => openCategory(category.code)}
+                rowTitle={() => "Abrir la categoría"}
+                rowActions={(category) => (
+                  <>
+                    <CocoaButton
+                      variant="plain"
+                      size="small"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openCategory(category.code);
+                      }}
+                    >
+                      {ACTIONS.view}
+                    </CocoaButton>
+                    {category.mode === "system_controlled" ? null : (
+                      <CocoaButton
+                        variant="plain"
+                        size="small"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          openNewOption(category.code);
+                        }}
+                      >
+                        Añadir opción
+                      </CocoaButton>
+                    )}
+                  </>
+                )}
+                rowActionsVisible="always"
+                caption="Categorías de la propiedad"
+                aria-label="Categorías de la propiedad"
+              />
+            </CocoaSection>
+          </CocoaSpan>
+        </CocoaGrid>
+      </CocoaPage>
+    </div>
   );
 }

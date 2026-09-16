@@ -1,18 +1,49 @@
-import { getActivePropertyId } from "../../services/activeProperty";
+// Setup Center (Puesta en marcha): the single configuration hub of Tanda 5,
+// base tab of Configuración › Puesta en marcha. Cocoa 22 · ola 10 · lote 10-C
+// (dashboard archetype): CocoaPage with the two inner views («Resumen» ·
+// «Todos los ajustes») as segmented views of the head → progress + KPI strip →
+// readiness per area and guided tools on the 12-column grid → the manual index
+// as one section per area with a card per setup item (inline save form and
+// completion checks on demand). Data, save calls and navigation are untouched.
 import { useEffect, useState } from "react";
 import { MANUAL_SETUP_OPTIONS, type ManualSetupOption } from "@hotelos/product";
+import { getActivePropertyId } from "../../services/activeProperty";
 import { fetchManualSetupOptions, saveManualSetupOption, type ManualSetupSummary } from "../../services/backofficeApi";
-import { date, plural } from "../../lib/format";
-import { openTabPath } from "../../components/cocoa/CocoaRouteTabs";
+import { date, percent, plural } from "../../lib/format";
+import { A11Y_LABELS, ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
+import { shellNavigate } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaCard,
+  CocoaChart,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSpan,
+  openTabPath,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type ManualSetupOptionView = ManualSetupOption & {
   setupState?: "not_started" | "saved" | "failed";
   latestSubmission?: { id: string; status: "saved" | "failed"; createdAt: string; validationErrorsJson?: string[] };
 };
 
-function nav(screen: string) {
-  window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: screen }));
-}
+type SetupView = "overview" | "items";
+
+const VIEWS: Array<{ value: SetupView; label: string }> = [
+  { value: "overview", label: "Resumen" },
+  { value: "items", label: "Todos los ajustes" }
+];
+
 // Deep links open through the shared openTabPath (CocoaRouteTabs): one channel, no local pushState copy (code-review#12).
 const go = (path: string) => openTabPath(path);
 
@@ -35,14 +66,30 @@ function buildSetupSummary(options: ManualSetupOptionView[]): ManualSetupSummary
   };
 }
 
-function setupBadge(option: ManualSetupOptionView): { label: string; cls: "ok" | "warn" | "error" } {
-  if (option.setupState === "saved") return { label: "Configurado", cls: "ok" };
-  if (option.setupState === "failed") return { label: "Requiere atención", cls: "error" };
-  return { label: "Pendiente", cls: "warn" };
+function setupBadge(option: ManualSetupOptionView): { label: string; tone: CocoaTone } {
+  if (option.setupState === "saved") return { label: "Configurado", tone: "success" };
+  if (option.setupState === "failed") return { label: "Requiere atención", tone: "danger" };
+  return { label: "Pendiente", tone: "warning" };
 }
 
 function countConfigured(options: ManualSetupOptionView[]): number {
   return options.filter((o) => o.setupState === "saved").length;
+}
+
+/** Tone of an area by its progress: complete → success, started → warning, untouched → info. */
+function progressTone(done: number, total: number): CocoaTone {
+  if (total > 0 && done >= total) return "success";
+  return done > 0 ? "warning" : "info";
+}
+
+function severityTone(severity: string): CocoaTone {
+  if (severity === "blocking") return "danger";
+  return severity === "warning" ? "warning" : "info";
+}
+
+function severityLabel(severity: string): string {
+  if (severity === "blocking") return "Bloqueante";
+  return severity === "warning" ? "Aviso" : "Informativa";
 }
 
 // Curated guided tools — entry points that are not part of the per-item index.
@@ -60,7 +107,12 @@ function OptionCard({ option, onSaved }: { option: ManualSetupOptionView; onSave
   const [values, setValues] = useState<Record<string, string>>({});
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [showChecks, setShowChecks] = useState(false);
   const badge = setupBadge(option);
+  const saving = saveState === "saving";
+  const formId = `setup-option-form-${option.code}`;
+  const checksId = `setup-option-checks-${option.code}`;
 
   async function handleSave() {
     const missing = option.requiredInputs.filter((input) => !values[input]?.trim());
@@ -82,92 +134,86 @@ function OptionCard({ option, onSaved }: { option: ManualSetupOptionView; onSave
   }
 
   return (
-    <article className="bo-card bo-stack" style={{ gap: "var(--space-3)" }}>
-      <div className="bo-card-head" style={{ marginBottom: 0 }}>
-        <div style={{ minWidth: 0 }}>
-          <h3 style={{ margin: 0 }}>{option.label}</h3>
-          <p className="bo-option-desc">{option.description}</p>
-        </div>
-        <span className={`bo-status ${badge.cls}`}>{badge.label}</span>
-      </div>
+    <CocoaSection id={`setup-option-${option.code}`} title={option.label} meta={<CocoaBadge tone={badge.tone}>{badge.label}</CocoaBadge>}>
+      <p className="cocoa-note">{option.description}</p>
 
       {option.inputMethods.length ? (
-        <div className="bo-pill-row">
+        <div className="cocoa-cluster" aria-label="Formas de introducir los datos">
           {option.inputMethods.map((method) => (
-            <span className="bo-pill" key={method.code}>{method.label}</span>
+            <CocoaBadge key={method.code} tone="neutral" uppercase={false}>
+              {method.label}
+            </CocoaBadge>
           ))}
         </div>
       ) : null}
 
-      <div className="bo-actions">
-        <button type="button" className="primary" onClick={() => go(option.url)}>Configurar</button>
-        {option.latestSubmission ? (
-          <small className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>
-            Guardado el {date(option.latestSubmission.createdAt)}
-          </small>
+      <div className="cocoa-row" data-gap="2">
+        <CocoaButton variant="filled" tone="accent" size="small" onClick={() => go(option.url)}>
+          Configurar
+        </CocoaButton>
+        <CocoaButton variant="bordered" tone="neutral" size="small" aria-expanded={showForm} aria-controls={formId} onClick={() => setShowForm((open) => !open)}>
+          Rellenar aquí
+        </CocoaButton>
+        {option.completionChecks.length ? (
+          <CocoaButton variant="plain" tone="neutral" size="small" aria-expanded={showChecks} aria-controls={checksId} onClick={() => setShowChecks((open) => !open)}>
+            {plural(option.completionChecks.length, "comprobación", "comprobaciones", { withCount: true })}
+          </CocoaButton>
         ) : null}
+        {option.latestSubmission ? <span className="cocoa-note">Guardado el {date(option.latestSubmission.createdAt)}</span> : null}
       </div>
 
-      <details>
-        <summary style={{ cursor: "pointer", fontSize: "var(--fs-sm)", fontWeight: 600, color: "var(--ink-soft)" }}>
-          Rellenar aquí
-        </summary>
-        <div className="bo-stack" style={{ marginTop: "var(--space-3)" }}>
-          <div className="bo-grid two">
-            {option.requiredInputs.map((input) => (
-              <label className="bo-form-field" key={input}>
-                <span>{input}<strong> obligatorio</strong></span>
-                <input
-                  aria-label={input}
-                  value={values[input] ?? ""}
-                  onChange={(event) => setValues((current) => ({ ...current, [input]: event.currentTarget.value }))}
-                  placeholder={input}
-                />
-              </label>
-            ))}
+      {showForm ? (
+        <div id={formId} className="cocoa-stack" data-gap="3" role="group" aria-label={`Guardar ${option.label} desde aquí`}>
+          {option.requiredInputs.length > 0 ? (
+            <CocoaFormRow columns={2}>
+              {option.requiredInputs.map((input) => (
+                <CocoaField key={input} label={input} required>
+                  <CocoaInput value={values[input] ?? ""} onChange={(next) => setValues((current) => ({ ...current, [input]: next }))} placeholder={input} aria-label={input} />
+                </CocoaField>
+              ))}
+            </CocoaFormRow>
+          ) : (
+            <p className="cocoa-note">Este ajuste no pide datos aquí: guarda para registrarlo como configurado.</p>
+          )}
+          <div className="cocoa-row" data-gap="2">
+            <CocoaButton variant="filled" tone="accent" size="small" loading={saving} disabled={saving} onClick={() => void handleSave()}>
+              {saving ? STATUS_LABELS.saving : ACTIONS.save}
+            </CocoaButton>
           </div>
-          <div className="bo-actions">
-            <button className="primary" disabled={saveState === "saving"} onClick={handleSave} type="button">
-              {saveState === "saving" ? "Guardando…" : "Guardar"}
-            </button>
-            {saveMessage ? (
-              <small className={saveState === "error" ? "bo-field-error" : "bo-muted"} style={{ textTransform: "none", letterSpacing: 0 }}>
-                {saveMessage}
-              </small>
-            ) : null}
-          </div>
+          {saveMessage ? (
+            <CocoaCallout tone={saveState === "error" ? "danger" : "success"} role="status">
+              {saveMessage}
+            </CocoaCallout>
+          ) : null}
         </div>
-      </details>
-
-      {option.completionChecks.length ? (
-        <details>
-          <summary style={{ cursor: "pointer", fontSize: "var(--fs-xs)", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-muted)" }}>
-            Comprobaciones
-          </summary>
-          <ul className="bo-list" style={{ marginTop: "var(--space-3)", fontSize: "var(--fs-xs)", color: "var(--ink-muted)" }}>
-            {option.completionChecks.map((check) => (
-              <li key={check.code}>
-                <span className={`bo-status ${check.severity === "blocking" ? "error" : check.severity === "warning" ? "warn" : "ok"}`}>
-                  {check.severity}
-                </span>{" "}
-                {check.label}
-              </li>
-            ))}
-          </ul>
-        </details>
       ) : null}
-    </article>
+
+      {showChecks && option.completionChecks.length ? (
+        <ul id={checksId} className="c22-section__list" aria-label={`Comprobaciones de ${option.label}`}>
+          {option.completionChecks.map((check) => (
+            <li key={check.code}>
+              <span>{check.label}</span>
+              <CocoaBadge tone={severityTone(check.severity)} size="small">
+                {severityLabel(check.severity)}
+              </CocoaBadge>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </CocoaSection>
   );
 }
 
 // Setup Center (Puesta en marcha): the single configuration hub of Tanda 5. Rendered
 // as the base tab of Configuración › Puesta en marcha (`embedded`) or standalone.
-export function SetupCenter({ initialTab = "overview", embedded = false }: { initialTab?: "overview" | "items"; embedded?: boolean }) {
-  const [tab, setTab] = useState<"overview" | "items">(initialTab);
+export function SetupCenter({ initialTab = "overview", embedded = false }: { initialTab?: SetupView; embedded?: boolean }) {
+  // The host context decides the head (CocoaPage reads it); `embedded` is the L1c bridge the loader still passes.
+  const hosted = embedded || useTabHost() !== null;
+  const [tab, setTab] = useState<SetupView>(initialTab);
   const [options, setOptions] = useState<ManualSetupOptionView[]>(MANUAL_SETUP_OPTIONS);
   const [summary, setSummary] = useState<ManualSetupSummary>(() => buildSetupSummary(MANUAL_SETUP_OPTIONS));
   const [source, setSource] = useState<"static" | "api">("static");
-  const [focusGroup, setFocusGroup] = useState<string | null>(null);
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set(MANUAL_SETUP_OPTIONS.slice(0, 1).map((option) => option.group)));
   const groups = groupManualSetupOptions(options);
 
   useEffect(() => {
@@ -202,131 +248,152 @@ export function SetupCenter({ initialTab = "overview", embedded = false }: { ini
     });
   }
 
+  function toggleGroup(group: string) {
+    setOpenGroups((current) => {
+      const next = new Set(current);
+      if (next.has(group)) next.delete(group);
+      else next.add(group);
+      return next;
+    });
+  }
+
   function openGroup(group: string) {
-    setFocusGroup(group);
+    setOpenGroups((current) => new Set(current).add(group));
     setTab("items");
     window.scrollTo(0, 0);
   }
 
   const total = summary.totalOptions || 1;
   const pct = Math.round((summary.savedOptions / total) * 100);
+  const sourceNote = `${plural(summary.totalOptions, "elemento de configuración", "elementos de configuración", { withCount: true })} · origen: ${source === "api" ? "estado guardado en la base de datos" : "catálogo estático (sin conexión con el API)"}`;
 
   return (
-    <>
-      {/* Header + tabs */}
-      <section className="bo-card">
-        <div className="bo-card-head" style={{ marginBottom: "var(--space-2)" }}>
-          <div>
-            {embedded ? null : <p className="bo-page-eyebrow">Configuración</p>}
-            <h2 className="bo-page-title" style={{ fontSize: "var(--fs-2xl)" }}>{embedded ? "Estado de la configuración" : "Puesta en marcha"}</h2>
-          </div>
-          <div className="bo-row">
-            <button type="button" onClick={() => nav("PropertyProfileSetupForm")}>Propiedad</button>
-            <button type="button" onClick={() => nav("CategoryManagerScreen")}>Categorías</button>
-          </div>
-        </div>
-        <p className="bo-page-subtitle" style={{ marginTop: 0 }}>
-          Un único lugar para configurar la propiedad. <strong>Resumen</strong> muestra el estado de preparación para salir en vivo;{" "}
-          <strong>Todos los ajustes</strong> es el índice manual completo: abre un ajuste para configurarlo o rellénalo aquí mismo.
-        </p>
-
-        <div className="bo-row" style={{ marginTop: "var(--space-4)", gap: "var(--space-2)" }}>
-          <button type="button" className={tab === "overview" ? "primary" : ""} onClick={() => setTab("overview")}>Resumen</button>
-          <button type="button" className={tab === "items" ? "primary" : ""} onClick={() => setTab("items")}>Todos los ajustes</button>
-        </div>
-      </section>
-
+    <CocoaPage
+      eyebrow="Configuración"
+      title={hosted ? "Estado de la configuración" : "Puesta en marcha"}
+      subtitle="Un único lugar para configurar la propiedad. Resumen muestra el estado de preparación para salir en vivo; Todos los ajustes es el índice manual completo: abre un ajuste para configurarlo o rellénalo aquí mismo."
+      tabs={VIEWS}
+      activeTab={tab}
+      onTabChange={(value) => setTab(value === "items" ? "items" : "overview")}
+      actions={
+        <>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => shellNavigate("PropertyProfileSetupForm")}>
+            Propiedad
+          </CocoaButton>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => shellNavigate("CategoryManagerScreen")}>
+            Categorías
+          </CocoaButton>
+        </>
+      }
+      commands={[
+        { id: "setup-center-overview", label: "Puesta en marcha: resumen", run: () => setTab("overview") },
+        { id: "setup-center-items", label: "Puesta en marcha: todos los ajustes", run: () => setTab("items") }
+      ]}
+    >
       {tab === "overview" ? (
         <>
-          {/* Progress overview */}
-          <section className="bo-card">
-            <div className="bo-stack" style={{ gap: "var(--space-3)" }}>
-              <div className="bo-row" style={{ justifyContent: "space-between" }}>
-                <strong>{summary.savedOptions} de {summary.totalOptions} configurados</strong>
-                <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>{pct}%</span>
-              </div>
-              <div className={`bo-progress-bar${pct >= 100 ? " ok" : ""}`}><span style={{ width: `${pct}%` }} /></div>
-              <div className="bo-grid three" style={{ marginTop: "var(--space-2)" }}>
-                <article className="rev-kpi rev-kpi-ok"><span className="rev-kpi-label">Configurados</span><span className="rev-kpi-value">{summary.savedOptions}</span></article>
-                <article className="rev-kpi rev-kpi-warn"><span className="rev-kpi-label">Pendientes</span><span className="rev-kpi-value">{summary.notStartedOptions}</span></article>
-                <article className={`rev-kpi${summary.failedOptions ? " rev-kpi-error" : ""}`}><span className="rev-kpi-label">Requieren atención</span><span className="rev-kpi-value">{summary.failedOptions}</span></article>
-              </div>
-            </div>
-          </section>
+          <CocoaSection title="Estado de la configuración" meta={`${summary.savedOptions} de ${summary.totalOptions} configurados`}>
+            <CocoaChart.Progress
+              value={pct}
+              tone={pct >= 100 ? "success" : "accent"}
+              label="Elementos configurados"
+              valueLabel={percent(pct, { maximumFractionDigits: 0 })}
+              aria-label={`${summary.savedOptions} de ${summary.totalOptions} elementos configurados`}
+            />
+            <CocoaKpiStrip min={200} aria-label="Resumen de la configuración">
+              <CocoaKpi label="Configurados" value={summary.savedOptions} unit={`de ${summary.totalOptions}`} polarity="neutral" status="ok" />
+              <CocoaKpi label="Pendientes" value={summary.notStartedOptions} polarity="neutral" status={summary.notStartedOptions > 0 ? "warning" : "ok"} />
+              <CocoaKpi label="Requieren atención" value={summary.failedOptions} polarity="neutral" status={summary.failedOptions > 0 ? "critical" : "ok"} />
+            </CocoaKpiStrip>
+          </CocoaSection>
 
           {/* Readiness by area (live, derived from manual-setup progress) */}
-          <section className="bo-section">
-            <div className="bo-card-head"><h3>Preparación por área</h3><span className="bo-chip">{plural(groups.length, "área", "áreas", { withCount: true })}</span></div>
-            <div className="bo-grid three">
+          <CocoaSection title="Preparación por área" meta={plural(groups.length, "área", "áreas", { withCount: true })}>
+            <CocoaGrid aria-label="Preparación por área">
               {groups.map(([group, groupOptions]) => {
                 const done = countConfigured(groupOptions);
                 const gp = Math.round((done / (groupOptions.length || 1)) * 100);
-                const cls = gp >= 100 ? "ok" : done > 0 ? "warn" : "info";
+                const tone = progressTone(done, groupOptions.length);
                 return (
-                  <article className="bo-card bo-stack" key={group} style={{ gap: "var(--space-3)" }}>
-                    <div className="bo-card-head" style={{ marginBottom: 0 }}>
-                      <h3 style={{ margin: 0 }}>{group}</h3>
-                      <span className={`bo-status ${cls}`}>{done}/{groupOptions.length}</span>
-                    </div>
-                    <div className={`bo-progress-bar${gp >= 100 ? " ok" : done > 0 ? " warn" : ""}`}><span style={{ width: `${gp}%` }} /></div>
-                    <div className="bo-actions">
-                      <button type="button" onClick={() => openGroup(group)}>Ver elementos</button>
-                    </div>
-                  </article>
+                  <CocoaSpan cols={4} min={240} key={group}>
+                    <CocoaCard variant="bordered" padding="md" role="group" aria-label={group}>
+                      <div className="cocoa-stack" data-gap="3">
+                        <div className="cocoa-row" data-gap="2" data-justify="between">
+                          <strong>{group}</strong>
+                          <CocoaBadge tone={tone}>
+                            {done}/{groupOptions.length}
+                          </CocoaBadge>
+                        </div>
+                        <CocoaChart.Progress value={gp} tone={tone} showValue={false} aria-label={`${group}: ${done} de ${groupOptions.length} configurados`} />
+                        <CocoaButton variant="plain" tone="accent" size="small" align="start" onClick={() => openGroup(group)}>
+                          Ver elementos
+                        </CocoaButton>
+                      </div>
+                    </CocoaCard>
+                  </CocoaSpan>
                 );
               })}
-            </div>
-          </section>
+            </CocoaGrid>
+          </CocoaSection>
 
-          {/* Guided tools */}
-          <section className="bo-section">
-            <div className="bo-card-head"><h3>Herramientas guiadas</h3></div>
-            <div className="bo-grid three">
+          <CocoaSection title="Herramientas guiadas" meta={plural(GUIDED_TOOLS.length, "herramienta", "herramientas", { withCount: true })}>
+            <CocoaGrid aria-label="Herramientas guiadas">
               {GUIDED_TOOLS.map((tool) => (
-                <article className="bo-card bo-stack" key={tool.screen} style={{ gap: "var(--space-2)" }}>
-                  <h3 style={{ margin: 0 }}>{tool.label}</h3>
-                  <p className="bo-option-desc">{tool.hint}</p>
-                  <div className="bo-actions"><button type="button" className="primary" onClick={() => nav(tool.screen)}>Abrir</button></div>
-                </article>
+                <CocoaSpan cols={4} min={240} key={tool.screen}>
+                  <CocoaCard variant="bordered" padding="md" role="group" aria-label={tool.label}>
+                    <div className="cocoa-stack" data-gap="2">
+                      <strong>{tool.label}</strong>
+                      <p className="cocoa-note">{tool.hint}</p>
+                      <CocoaButton variant="filled" tone="accent" size="small" align="start" onClick={() => shellNavigate(tool.screen)}>
+                        Abrir
+                      </CocoaButton>
+                    </div>
+                  </CocoaCard>
+                </CocoaSpan>
               ))}
-            </div>
-          </section>
+            </CocoaGrid>
+          </CocoaSection>
 
-          <p className="bo-muted" style={{ textTransform: "none", letterSpacing: 0, textAlign: "center" }}>
-            {plural(summary.totalOptions, "elemento de configuración", "elementos de configuración", { withCount: true })} · origen: {source === "api" ? "estado guardado en la base de datos" : "catálogo estático (sin conexión con el API)"}
-          </p>
+          <p className="cocoa-note">{sourceNote}</p>
         </>
       ) : (
         <>
           {/* All setup items — grouped, collapsible index */}
-          {groups.map(([group, groupOptions], index) => {
+          {groups.map(([group, groupOptions]) => {
             const done = countConfigured(groupOptions);
-            const gp = Math.round((done / (groupOptions.length || 1)) * 100);
+            const open = openGroups.has(group);
+            const panelId = `setup-group-${group.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}`;
             return (
-              <details className="bo-section" key={group} open={index === 0 || group === focusGroup}>
-                <summary style={{ cursor: "pointer", listStyle: "none" }}>
-                  <div className="bo-card-head" style={{ marginBottom: 0, alignItems: "center" }}>
-                    <div className="bo-row" style={{ gap: "var(--space-3)" }}>
-                      <h3 style={{ margin: 0 }}>{group}</h3>
-                      <span className={`bo-status ${gp >= 100 ? "ok" : done > 0 ? "warn" : "info"}`}>{done}/{groupOptions.length} configurados</span>
-                    </div>
-                    <span className="bo-muted" style={{ textTransform: "none", letterSpacing: 0 }}>{plural(groupOptions.length, "elemento", "elementos", { withCount: true })}</span>
+              <CocoaSection
+                key={group}
+                title={group}
+                meta={<CocoaBadge tone={progressTone(done, groupOptions.length)}>{done}/{groupOptions.length} configurados</CocoaBadge>}
+                action={
+                  <CocoaButton variant="plain" tone="neutral" size="small" aria-expanded={open} aria-controls={panelId} onClick={() => toggleGroup(group)}>
+                    {open ? A11Y_LABELS.collapse : `${A11Y_LABELS.expand} · ${plural(groupOptions.length, "elemento", "elementos", { withCount: true })}`}
+                  </CocoaButton>
+                }
+              >
+                {open ? (
+                  <div id={panelId} role="region" aria-label={group}>
+                    <CocoaGrid>
+                      {groupOptions.map((option) => (
+                        <CocoaSpan cols={6} min={320} key={option.code}>
+                          <OptionCard option={option} onSaved={markOptionSaved} />
+                        </CocoaSpan>
+                      ))}
+                    </CocoaGrid>
                   </div>
-                </summary>
-                <div className="bo-grid two" style={{ marginTop: "var(--space-4)" }}>
-                  {groupOptions.map((option) => (
-                    <OptionCard key={option.code} option={option} onSaved={markOptionSaved} />
-                  ))}
-                </div>
-              </details>
+                ) : (
+                  <p className="cocoa-note">{plural(groupOptions.length, "elemento", "elementos", { withCount: true })} · despliega el área para configurarlos o rellenarlos aquí.</p>
+                )}
+              </CocoaSection>
             );
           })}
-          <p className="bo-muted" style={{ textTransform: "none", letterSpacing: 0, textAlign: "center" }}>
-            {plural(summary.totalOptions, "elemento de configuración", "elementos de configuración", { withCount: true })} · origen: {source === "api" ? "estado guardado en la base de datos" : "catálogo estático (sin conexión con el API)"}
-          </p>
+          <p className="cocoa-note">{sourceNote}</p>
         </>
       )}
-    </>
+    </CocoaPage>
   );
 }
 

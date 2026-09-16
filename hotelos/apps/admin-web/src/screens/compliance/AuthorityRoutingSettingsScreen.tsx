@@ -1,20 +1,24 @@
-// Enrutamiento a autoridades (Tanda 3 · lote front-fiscal).
+// Enrutamiento a autoridades — Cumplimiento › Registro de viajeros › Autoridades
+// (/cumplimiento/registro-viajeros/autoridades, hosted in RegistroViajerosTabs).
+// Cocoa 22 · ola 8 · lote 8-A, archetype «formulario / ajustes» (read only).
 //
-// Solo lectura sobre GET /compliance/spain/properties/:id/guest-register/settings
-// (routingRules). Las reglas viven hoy en el servidor como política global
-// (demoStore.authorityRoutingRules, sin PATCH por tenant): la pantalla lo dice
-// en vez de fingir un editor.
+// Read only over GET /compliance/spain/properties/:id/guest-register/settings
+// (routingRules). The rules live on the server as a global policy (no PATCH per
+// tenant): the screen says so instead of faking an editor. The head keeps
+// `pageHead(embedded)` (host context inside the container, CocoaPageHeader
+// standalone; the `embedded` prop is the L1c bridge the tabs contract still
+// asserts); the body is Cocoa 22: a callout and the table of rules.
+
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { fetchSesSettings } from "../../services/sesApi";
-import { EmptyState, ErrorState, LoadingBlock } from "../../components/States";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { pageHead } from "../tabs/configuracion/tab-helpers";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
+import { pageHead } from "../tabs/tab-helpers";
+import { useTabHost } from "../tabs/TabHost";
 import { toArray } from "../../utils/toArray";
 import { navigateTo } from "../../lib/navigate";
+import { number, plural } from "../../lib/format";
+import { STATUS_LABELS } from "../../content/actions";
+import { CocoaBadge, CocoaButton, CocoaCallout, CocoaSection, CocoaState, CocoaTable, type CocoaTableColumn } from "../../components/cocoa";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -43,9 +47,31 @@ const REGION_LABELS: Record<string, string> = {
   EUSK: "País Vasco"
 };
 
+const COLUMNS: CocoaTableColumn<RoutingRule>[] = [
+  { key: "country", label: "País", fit: true, render: (row) => <span className="cocoa-mono">{row.country}</span> },
+  { key: "regionCode", label: "Región", fit: true, render: (row) => (row.regionCode ? (REGION_LABELS[row.regionCode] ?? row.regionCode) : <CocoaBadge tone="neutral" size="small">todas</CocoaBadge>) },
+  { key: "authorityType", label: "Autoridad", minWidth: 200, render: (row) => AUTHORITY_LABELS[row.authorityType] ?? row.authorityType },
+  { key: "priority", label: "Prioridad", align: "right", fit: true, render: (row) => number(row.priority) },
+  {
+    key: "scope",
+    label: "Ámbito",
+    fit: true,
+    hideOnNarrow: true,
+    render: (row) => (row.propertyId ? <CocoaBadge tone="info" size="small">esta propiedad</CocoaBadge> : <CocoaBadge tone="neutral" size="small">global</CocoaBadge>)
+  },
+  {
+    key: "active",
+    label: "Activa",
+    fit: true,
+    render: (row) => <CocoaBadge tone={row.active ? "success" : "warning"}>{row.active ? STATUS_LABELS.yes : STATUS_LABELS.no}</CocoaBadge>
+  }
+];
+
 export function AuthorityRoutingSettingsScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: render a section head instead.
+  // Inside a tab container the page header belongs to the container: render a section head instead.
   const Head = pageHead(embedded);
+  const host = useTabHost();
+  const hosted = embedded || host !== null;
   const [rules, setRules] = useState<RoutingRule[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -68,78 +94,48 @@ export function AuthorityRoutingSettingsScreen({ embedded = false }: { embedded?
   }, [load]);
 
   const rows = useMemo(() => [...rules].sort((a, b) => b.priority - a.priority || a.id.localeCompare(b.id)), [rules]);
-
-  const columns = useMemo<CocoaTableColumn<RoutingRule>[]>(
-    () => [
-      { key: "country", label: "País", width: "80px", render: (row) => row.country },
-      { key: "regionCode", label: "Región", width: "140px", render: (row) => (row.regionCode ? (REGION_LABELS[row.regionCode] ?? row.regionCode) : <span className="bo-muted">todas</span>) },
-      { key: "authorityType", label: "Autoridad", render: (row) => AUTHORITY_LABELS[row.authorityType] ?? row.authorityType },
-      { key: "priority", label: "Prioridad", align: "right", width: "100px", render: (row) => String(row.priority) },
-      {
-        key: "scope",
-        label: "Ámbito",
-        width: "130px",
-        render: (row) => (row.propertyId ? <span className="bo-chip">esta propiedad</span> : <span className="bo-chip">global</span>)
-      },
-      {
-        key: "active",
-        label: "Activa",
-        width: "90px",
-        render: (row) => <span className={`bo-status ${row.active ? "ok" : "warn"}`} style={{ textTransform: "none" }}>{row.active ? "sí" : "no"}</span>
-      }
-    ],
-    []
-  );
-
-  if (loading && rules.length === 0 && !error) {
-    return (
-      <section className="bo-card">
-        <LoadingBlock label="Cargando reglas de enrutamiento…" />
-      </section>
-    );
-  }
-  if (error && rules.length === 0) {
-    return (
-      <section className="bo-card">
-        <ErrorState title="No se pudieron cargar las reglas" message={error} onRetry={() => void load()} />
-      </section>
-    );
-  }
+  const showTable = (loading && rules.length === 0 && !error) || rows.length > 0;
 
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-5)" }}>
+    <div className="cocoa-stack" data-gap="4">
       <Head
         eyebrow="Cumplimiento · Registro de viajeros"
         title="Enrutamiento a autoridades"
-        subtitle="A qué autoridad se envían los partes de viajeros según país y región"
+        subtitle={hosted ? undefined : "A qué autoridad se envían los partes de viajeros según país y región."}
         actions={
-          <span style={{ display: "inline-flex", gap: "var(--cocoa-space-2)", flexWrap: "wrap" }}>
-            <CocoaButton variant="plain" onClick={() => navigateTo("SesHospedajesSettings")}>
+          <>
+            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("SesHospedajesSettings")}>
               Conector SES.HOSPEDAJES
             </CocoaButton>
-            <CocoaButton variant="plain" onClick={() => navigateTo("GuestRegisterSettings")}>
+            <CocoaButton variant="plain" size="small" onClick={() => navigateTo("GuestRegisterSettings")}>
               Ajustes del registro
             </CocoaButton>
-          </span>
+          </>
         }
       />
 
-      <CocoaCard variant="bordered" padding="md">
-        <p style={{ margin: 0 }}>
-          Las reglas se evalúan de mayor a menor prioridad: la primera regla activa cuyo país y región coinciden con el establecimiento decide la
-          autoridad. La regla por defecto para España es SES.HOSPEDAJES (RD 933/2021).
-        </p>
-        <p className="bo-muted" style={{ margin: "var(--cocoa-space-2) 0 0" }}>
-          Política fija, no configurable todavía: las reglas se gestionan por soporte. Contacta con soporte para añadir una autoridad regional.
-        </p>
-      </CocoaCard>
+      <CocoaCallout tone="info" title="Política fija, no configurable todavía">
+        Las reglas se evalúan de mayor a menor prioridad: la primera regla activa cuyo país y región coinciden con el establecimiento decide la autoridad. La regla
+        por defecto para España es SES.HOSPEDAJES (RD 933/2021). Las reglas se gestionan por soporte: contacta con soporte para añadir una autoridad regional.
+      </CocoaCallout>
 
-      {rows.length === 0 ? (
-        <EmptyState title="Sin reglas de enrutamiento" message="El servidor no devolvió ninguna regla; los partes se enviarían por la ruta por defecto (SES.HOSPEDAJES)." />
-      ) : (
-        <CocoaTable<RoutingRule> columns={columns} rows={rows} rowKey="id" emptyState="Sin reglas." />
-      )}
-    </section>
+      <CocoaSection
+        title="Reglas de enrutamiento"
+        meta={rows.length > 0 ? plural(rows.length, "regla", "reglas") : undefined}
+        padding={showTable ? "none" : "md"}
+        style={{ overflow: "clip" }}
+      >
+        {loading && rules.length === 0 && !error ? (
+          <CocoaTable columns={COLUMNS} rows={[]} loading caption="Reglas de enrutamiento" aria-label="Reglas de enrutamiento" />
+        ) : error && rules.length === 0 ? (
+          <CocoaState kind="error" title="No se pudieron cargar las reglas" message={error} onRetry={() => void load()} />
+        ) : rows.length === 0 ? (
+          <CocoaState kind="empty" illustration="box" title="Sin reglas de enrutamiento" message="El servidor no devolvió ninguna regla; los partes se enviarían por la ruta por defecto (SES.HOSPEDAJES)." />
+        ) : (
+          <CocoaTable columns={COLUMNS} rows={rows} rowKey="id" density="compact" caption="Reglas de enrutamiento" aria-label="Reglas de enrutamiento" />
+        )}
+      </CocoaSection>
+    </div>
   );
 }
 

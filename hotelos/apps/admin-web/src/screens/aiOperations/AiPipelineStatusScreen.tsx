@@ -1,16 +1,42 @@
+// Actividad de la IA — /configuracion/ia/actividad (hosted in
+// InteligenciaArtificialTabs; Cocoa 22 · ola 10 · lote 10-B, plantilla
+// DashboardAlojado).
+//
+// Read-only dashboard over /ai-operations/pipeline/dashboard (polled every
+// 30 s): KPI strip, tool table with controlled sort, module table, status
+// breakdown, confidence distribution (CocoaChart.Progress), latency trend
+// (CocoaChart.Bars), recent actions and anomalies. The drill-down of an
+// action (input / output JSON) is fetched on demand from /calls/:id and opens
+// in a CocoaDrawer instead of the old inline card. Same endpoints and query.
+
 import { getActiveOrganizationId } from "../../services/activeProperty";
-import { useMemo, useState } from "react";
+import { callStatusLabel, callStatusTone } from "./ai-operations-labels";
+import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { DataPreview } from "../../components/forms/FormComponents";
-import { LoadingBlock } from "../../components/States";
-import { dateTime, money, number } from "../../lib/format";
-
-// ---- Sprint 48 — AI Pipeline Status (tool-call telemetry) ----
-// Read-only operations dashboard over /ai-operations/pipeline/dashboard.
-// Aurora v2 styling (rev-kpi / bo-card / cm-table / cm-pill), consistent with
-// the operations dashboards. Polls every 30s. Drill-down fetches the full
-// AiToolCall (input/output JSON) on demand from /calls/:id.
+import { toArray } from "../../utils/toArray";
+import { date, dateTime, money, number, percent, plural } from "../../lib/format";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { useTabHost } from "../tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaChart,
+  CocoaDrawer,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaTable,
+  type CocoaBarsDatum,
+  type CocoaTableColumn,
+  type CocoaTableSort,
+  type CocoaTone
+} from "../../components/cocoa";
 
 const ORGANIZATION_ID = getActiveOrganizationId();
 
@@ -78,57 +104,42 @@ type ToolCallDetail = {
   outputJson: Record<string, unknown> | null;
 };
 
-const EMPTY: PipelineDashboard = {
-  kpis: {
-    callsTotal: 0,
-    calls24h: 0,
-    successRatePct: 0,
-    avgLatencyMs: 0,
-    avgConfidence: 0,
-    awaitingConfirmation: 0,
-    failed24h: 0,
-    costMtdEur: 0,
-    tokensMtd: 0
-  },
-  byTool: [],
-  byModule: [],
-  byStatus: [],
-  confidenceBuckets: [],
-  latencyTrend: [],
-  recentCalls: [],
-  anomalies: []
-};
-
+type ToolRow = PipelineDashboard["byTool"][number];
+type ModuleRow = PipelineDashboard["byModule"][number];
+type RecentCall = PipelineDashboard["recentCalls"][number];
 type ToolSortKey = "calls" | "successRatePct" | "avgLatencyMs" | "avgConfidence" | "costEur";
 
-function statusPill(status: string) {
-  const s = status.toLowerCase();
-  const cls =
-    s === "succeeded"
-      ? "cm-pill-ok"
-      : s === "failed" || s === "rejected"
-        ? "cm-pill-error"
-        : "cm-pill-warn";
-  return <span className={`cm-pill ${cls}`}>{status}</span>;
+// ---- labels and tones (API values stay in English; the screen speaks Spanish) ----
+// Tool-call statuses (label + tone) live in ./ai-operations-labels so the
+// governance «completed» status renders like «succeeded» (qa#11).
+
+const SEVERITY_LABEL: Record<string, string> = { low: "baja", medium: "media", high: "alta", critical: "crítica" };
+const AUTOMATION_LABEL: Record<string, string> = { off: "Desactivado", suggest: "Sugerir", suggest_and_confirm: "Sugerir y confirmar", autonomous: "Autónomo" };
+
+function statusBadge(status: string) {
+  return (
+    <CocoaBadge tone={callStatusTone(status)} variant="tinted" size="small">
+      {callStatusLabel(status)}
+    </CocoaBadge>
+  );
 }
 
-function severityPill(severity: string) {
+function severityTone(severity: string): CocoaTone {
   const s = severity.toLowerCase();
-  const cls = s === "critical" || s === "high" ? "cm-pill-error" : s === "medium" ? "cm-pill-warn" : "cm-pill-ok";
-  return <span className={`cm-pill ${cls}`}>{severity}</span>;
+  return s === "critical" || s === "high" ? "danger" : s === "medium" ? "warning" : "success";
 }
 
-function fmtNumber(n: number | null | undefined, fractionDigits = 0): string {
-  return number(n, { maximumFractionDigits: fractionDigits });
+function severityBadge(severity: string) {
+  return (
+    <CocoaBadge tone={severityTone(severity)} variant="tinted" size="small">
+      {SEVERITY_LABEL[severity.toLowerCase()] ?? severity}
+    </CocoaBadge>
+  );
 }
 
 function fmtConfidence(n: number | null | undefined): string {
   if (n === null || n === undefined || !Number.isFinite(n)) return "—";
-  return n.toFixed(2);
-}
-
-function fmtEur(n: number | null | undefined): string {
-  return money(n);
+  return number(n, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function fmtMs(n: number | null | undefined): string {
@@ -136,92 +147,118 @@ function fmtMs(n: number | null | undefined): string {
   return `${number(n, { maximumFractionDigits: 0 })} ms`;
 }
 
-function fmtDateTime(iso?: string): string {
-  return dateTime(iso);
+function fmtPct(n: number | null | undefined): string {
+  return percent(n, { maximumFractionDigits: 1 });
 }
 
-function fmtDayShort(iso: string): string {
-  // iso is YYYY-MM-DD
-  const parts = iso.split("-");
-  return parts.length === 3 ? `${parts[1]}/${parts[2]}` : iso;
+function automationLabel(level: string | null | undefined): string {
+  return level ? (AUTOMATION_LABEL[level] ?? level) : "—";
 }
 
-function Bar(props: { fraction: number; label: string; danger?: boolean }) {
-  const pct = Math.max(0, Math.min(100, props.fraction * 100));
+// JSON of the action detail: tokens only (rule 6).
+const codeStyle: CSSProperties = {
+  margin: 0,
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  fontFamily: "var(--cocoa-font-mono)",
+  fontSize: "var(--cocoa-fs-caption)",
+  lineHeight: "var(--cocoa-leading-text)",
+  color: "var(--cocoa-label)",
+  background: "var(--cocoa-fill-quaternary)",
+  borderRadius: "var(--cocoa-radius-md)",
+  padding: "var(--cocoa-space-3)",
+  maxHeight: 320,
+  overflow: "auto"
+};
+
+// ---- columns (outside the component, typed with the row) ----
+
+const TOOL_COLUMNS: CocoaTableColumn<ToolRow>[] = [
+  { key: "toolName", label: "Herramienta", minWidth: 180, render: (r) => <strong>{r.toolName}</strong> },
+  { key: "calls", label: "Acciones", align: "right", fit: true, sortable: true, render: (r) => number(r.calls) },
+  { key: "successRatePct", label: "% éxito", align: "right", fit: true, sortable: true, render: (r) => fmtPct(r.successRatePct) },
+  { key: "avgLatencyMs", label: "Tiempo medio", align: "right", fit: true, sortable: true, hideOnNarrow: true, render: (r) => fmtMs(r.avgLatencyMs) },
+  { key: "avgConfidence", label: "Confianza media", align: "right", fit: true, sortable: true, showFrom: "laptop", render: (r) => fmtConfidence(r.avgConfidence) },
+  { key: "costEur", label: "Coste", align: "right", fit: true, sortable: true, render: (r) => money(r.costEur) }
+];
+
+const MODULE_COLUMNS: CocoaTableColumn<ModuleRow>[] = [
+  { key: "moduleCode", label: "Módulo", minWidth: 140, render: (r) => <strong>{r.moduleCode}</strong> },
+  { key: "calls", label: "Acciones", align: "right", fit: true, render: (r) => number(r.calls) },
+  { key: "successRatePct", label: "% éxito", align: "right", fit: true, render: (r) => fmtPct(r.successRatePct) }
+];
+
+const RECENT_COLUMNS: CocoaTableColumn<RecentCall>[] = [
+  { key: "toolName", label: "Herramienta", minWidth: 180, render: (c) => <strong>{c.toolName}</strong> },
+  { key: "status", label: "Estado", fit: true, render: (c) => statusBadge(c.status) },
+  { key: "confidence", label: "Confianza", align: "right", fit: true, hideOnNarrow: true, render: (c) => fmtConfidence(c.confidence) },
+  { key: "latencyMs", label: "Tiempo", align: "right", fit: true, render: (c) => fmtMs(c.latencyMs) },
+  { key: "costEur", label: "Coste", align: "right", fit: true, render: (c) => money(c.costEur) },
+  { key: "automationLevel", label: "Automatización", fit: true, showFrom: "laptop", render: (c) => automationLabel(c.automationLevel) },
+  { key: "createdAt", label: "Creada", fit: true, showFrom: "desktop", render: (c) => dateTime(c.createdAt) }
+];
+
+function PipelineSkeleton() {
   return (
-    <div
-      aria-label={props.label}
-      title={props.label}
-      style={{ width: "100%", height: 10, background: "var(--surface-2, #eee)", borderRadius: 4, overflow: "hidden" }}
-    >
-      <div
-        style={{
-          width: `${pct}%`,
-          height: "100%",
-          background: props.danger ? "var(--danger-ink, #c0392b)" : "var(--accent-ink, #2a7)"
-        }}
-      />
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={9} />
+      <CocoaSkeleton.Grid rows={[[12], [6, 6], [6, 6]]} height={220} />
     </div>
   );
 }
 
 export function AiPipelineStatusScreen({ embedded = false }: { embedded?: boolean } = {}) {
-  // Inside a tab container (Tanda 5) the page header belongs to the container: eyebrow and title are not painted.
+  // Hosted (InteligenciaArtificialTabs): the container paints eyebrow + H1; `embedded` is the L1c bridge prop.
+  const hosted = useTabHost() !== null || embedded;
   const state = useApiData<PipelineDashboard>("/ai-operations/pipeline/dashboard", {
     pollIntervalMs: 30000,
     query: { organizationId: ORGANIZATION_ID }
   });
 
-  const [sortKey, setSortKey] = useState<ToolSortKey>("calls");
-  const [sortDesc, setSortDesc] = useState(true);
+  const [sort, setSort] = useState<CocoaTableSort>({ key: "calls", direction: "desc" });
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<ToolCallDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
 
-  const data = state.data ?? EMPTY;
-  const { kpis } = data;
+  const data = state.data;
+  const kpis = data?.kpis;
+  const byTool = useMemo(() => toArray<ToolRow>(data?.byTool), [data]);
+  const byModule = useMemo(() => toArray<ModuleRow>(data?.byModule), [data]);
+  const byStatus = useMemo(() => toArray<PipelineDashboard["byStatus"][number]>(data?.byStatus), [data]);
+  const confidenceBuckets = useMemo(() => toArray<PipelineDashboard["confidenceBuckets"][number]>(data?.confidenceBuckets), [data]);
+  const latencyTrend = useMemo(() => toArray<PipelineDashboard["latencyTrend"][number]>(data?.latencyTrend), [data]);
+  const recentCalls = useMemo(() => toArray<RecentCall>(data?.recentCalls), [data]);
+  const anomalies = useMemo(() => toArray<PipelineDashboard["anomalies"][number]>(data?.anomalies), [data]);
 
+  // The table never sorts by itself: `sortBy` + `onSort` are controlled.
   const sortedTools = useMemo(() => {
-    const rows = [...data.byTool];
+    const key = sort.key as ToolSortKey;
+    const rows = [...byTool];
     rows.sort((a, b) => {
-      const av = a[sortKey];
-      const bv = b[sortKey];
-      const cmp = typeof av === "string" ? String(av).localeCompare(String(bv)) : (av as number) - (bv as number);
-      return sortDesc ? -cmp : cmp;
+      const av = a[key];
+      const bv = b[key];
+      const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
+      return sort.direction === "desc" ? -cmp : cmp;
     });
     return rows;
-  }, [data.byTool, sortKey, sortDesc]);
+  }, [byTool, sort]);
 
-  const maxToolCalls = useMemo(
-    () => Math.max(1, ...data.latencyTrend.map((d) => d.avgLatencyMs)),
-    [data.latencyTrend]
+  const maxConfBucket = useMemo(() => Math.max(1, ...confidenceBuckets.map((b) => b.count)), [confidenceBuckets]);
+  const latencyBars: CocoaBarsDatum[] = useMemo(
+    () =>
+      latencyTrend.map((d) => ({
+        label: date(d.date, "dayMonth"),
+        value: d.avgLatencyMs,
+        tone: d.calls === 0 ? ("neutral" as const) : ("accent" as const),
+        hint: plural(d.calls, "acción", "acciones")
+      })),
+    [latencyTrend]
   );
-  const maxConfBucket = useMemo(
-    () => Math.max(1, ...data.confidenceBuckets.map((b) => b.count)),
-    [data.confidenceBuckets]
-  );
-
-  function toggleSort(key: ToolSortKey) {
-    if (key === sortKey) {
-      setSortDesc((d) => !d);
-    } else {
-      setSortKey(key);
-      setSortDesc(true);
-    }
-  }
-
-  function sortIndicator(key: ToolSortKey): string {
-    if (key !== sortKey) return "";
-    return sortDesc ? " ↓" : " ↑";
-  }
+  const statusTotal = byStatus.reduce((s, r) => s + r.count, 0);
+  const confidenceTotal = confidenceBuckets.reduce((s, b) => s + b.count, 0);
 
   async function openDetail(id: string) {
-    if (selectedId === id) {
-      setSelectedId(null);
-      setDetail(null);
-      return;
-    }
     setSelectedId(id);
     setDetail(null);
     setDetailError(null);
@@ -240,349 +277,248 @@ export function AiPipelineStatusScreen({ embedded = false }: { embedded?: boolea
     }
   }
 
-  const successStatus =
-    kpis.callsTotal === 0
-      ? "rev-kpi-ok"
-      : kpis.successRatePct >= 90
-        ? "rev-kpi-ok"
-        : kpis.successRatePct >= 70
-          ? "rev-kpi-warn"
-          : "rev-kpi-error";
-  const failedStatus = kpis.failed24h > 0 ? "rev-kpi-error" : "rev-kpi-ok";
-  const awaitingStatus = kpis.awaitingConfirmation > 0 ? "rev-kpi-warn" : "rev-kpi-ok";
+  function closeDetail() {
+    setSelectedId(null);
+    setDetail(null);
+    setDetailError(null);
+  }
+
+  const successStatus = !kpis || kpis.callsTotal === 0 ? "ok" : kpis.successRatePct >= 90 ? "ok" : kpis.successRatePct >= 70 ? "warning" : "critical";
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : <div className="bo-page-eyebrow">IA · Actividad</div>}
-          {embedded ? null : <h1 className="bo-page-title">Estado de la IA</h1>}
-          <p className="bo-page-subtitle">
-            Actividad de la IA (solo lectura): volumen, tasa de éxito, tiempo de respuesta,
-            confianza, gasto en tokens (uso del modelo) y anomalías. Se actualiza solo cada 30 segundos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={() => state.refresh()}>↻ Actualizar</button>
-        </div>
-      </div>
-
-      {state.error ? (
-        <section className="bo-card">
-          <p style={{ color: "var(--danger-ink)" }}>No se ha podido cargar esta vista ahora mismo. Pulsa Actualizar para reintentar.</p>
-        </section>
+    <CocoaPage
+      eyebrow="Configuración · Inteligencia artificial"
+      title="Actividad de la IA"
+      subtitle={
+        hosted
+          ? undefined
+          : "Actividad de la IA (solo lectura): volumen, tasa de éxito, tiempo de respuesta, confianza, gasto en tokens (uso del modelo) y anomalías. Se actualiza sola cada 30 segundos."
+      }
+      actions={
+        <>
+          <CocoaBadge tone="neutral" variant="dot" size="small">
+            se actualiza cada 30 s
+          </CocoaBadge>
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={state.refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={state.loading && !data ? "loading" : state.error && !data ? "error" : "ready"}
+      skeleton={<PipelineSkeleton />}
+      error={{ title: STATUS_LABELS.loadError, message: state.error ?? undefined, onRetry: state.refresh }}
+      commands={[{ id: "ia-actividad-refresh", label: "Actualizar la actividad de la IA", run: state.refresh }]}
+    >
+      {kpis ? (
+        <CocoaKpiStrip stagger aria-label="Indicadores de la actividad de la IA">
+          <CocoaKpi label="Acciones totales" value={number(kpis.callsTotal)} caption="en el periodo" polarity="neutral" status="ok" />
+          <CocoaKpi label="Acciones (24 h)" value={number(kpis.calls24h)} caption="últimas 24 horas" polarity="neutral" status="ok" />
+          <CocoaKpi label="Tasa de éxito" value={fmtPct(kpis.successRatePct)} caption="completadas / total" polarity="positive-good" status={successStatus} />
+          <CocoaKpi label="Tiempo de respuesta medio" value={number(kpis.avgLatencyMs, { maximumFractionDigits: 0 })} unit="ms" caption="media de los valores disponibles" polarity="negative-good" status="ok" />
+          <CocoaKpi label="Confianza media" value={fmtConfidence(kpis.avgConfidence)} caption="confianza del modelo" polarity="positive-good" status="ok" />
+          <CocoaKpi label="Pendientes de confirmar" value={number(kpis.awaitingConfirmation)} caption="a la espera de una persona" polarity="negative-good" status={kpis.awaitingConfirmation > 0 ? "warning" : "ok"} />
+          <CocoaKpi label="Fallidas (24 h)" value={number(kpis.failed24h)} caption="fallos en las últimas 24 h" polarity="negative-good" status={kpis.failed24h > 0 ? "critical" : "ok"} />
+          <CocoaKpi label="Coste (mes en curso)" value={money(kpis.costMtdEur)} caption="mes natural actual" polarity="neutral" status="ok" />
+          <CocoaKpi label="Tokens (mes en curso)" value={number(kpis.tokensMtd)} caption="uso del modelo · entrada + salida" polarity="neutral" status="ok" />
+        </CocoaKpiStrip>
       ) : null}
 
-      <section className="rev-kpi-grid">
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Acciones totales</span></div>
-          <div className="rev-kpi-value">{fmtNumber(kpis.callsTotal)}</div>
-          <div className="rev-kpi-delta">en el periodo seleccionado</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Acciones (24h)</span></div>
-          <div className="rev-kpi-value">{fmtNumber(kpis.calls24h)}</div>
-          <div className="rev-kpi-delta">últimas 24 horas</div>
-        </article>
-        <article className={`rev-kpi ${successStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tasa de éxito</span></div>
-          <div className="rev-kpi-value">{fmtNumber(kpis.successRatePct, 1)}%</div>
-          <div className="rev-kpi-delta">completadas / total</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tiempo de respuesta medio</span></div>
-          <div className="rev-kpi-value">{fmtNumber(kpis.avgLatencyMs)} ms</div>
-          <div className="rev-kpi-delta">media de los valores disponibles</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Confianza media</span></div>
-          <div className="rev-kpi-value">{fmtConfidence(kpis.avgConfidence)}</div>
-          <div className="rev-kpi-delta">confianza del modelo</div>
-        </article>
-        <article className={`rev-kpi ${awaitingStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Pendientes de confirmar</span></div>
-          <div className="rev-kpi-value">{fmtNumber(kpis.awaitingConfirmation)}</div>
-          <div className="rev-kpi-delta">a la espera de confirmación de una persona</div>
-        </article>
-        <article className={`rev-kpi ${failedStatus}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Fallidas (24h)</span></div>
-          <div className="rev-kpi-value">{fmtNumber(kpis.failed24h)}</div>
-          <div className="rev-kpi-delta">fallos en las últimas 24h</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Coste (mes en curso)</span></div>
-          <div className="rev-kpi-value">{fmtEur(kpis.costMtdEur)}</div>
-          <div className="rev-kpi-delta">mes natural actual</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Tokens (uso del modelo, mes en curso)</span></div>
-          <div className="rev-kpi-value">{fmtNumber(kpis.tokensMtd)}</div>
-          <div className="rev-kpi-delta">entrada + salida</div>
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Por herramienta</h3>
-          <span className="bo-chip">{data.byTool.length} herramientas · top 20</span>
-        </div>
-        {data.byTool.length === 0 ? (
-          <p className="bo-muted">No se han registrado acciones de la IA en el periodo seleccionado.</p>
+      <CocoaSection title="Por herramienta" meta={`${plural(byTool.length, "herramienta", "herramientas")} · las 20 primeras`} padding={byTool.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {byTool.length === 0 ? (
+          <CocoaState kind="empty" inline title="No se han registrado acciones de la IA en el periodo." />
         ) : (
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Herramienta</th>
-                <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => toggleSort("calls")}>
-                  Acciones{sortIndicator("calls")}
-                </th>
-                <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => toggleSort("successRatePct")}>
-                  % éxito{sortIndicator("successRatePct")}
-                </th>
-                <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => toggleSort("avgLatencyMs")}>
-                  Tiempo medio{sortIndicator("avgLatencyMs")}
-                </th>
-                <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => toggleSort("avgConfidence")}>
-                  Confianza media{sortIndicator("avgConfidence")}
-                </th>
-                <th style={{ textAlign: "right", cursor: "pointer" }} onClick={() => toggleSort("costEur")}>
-                  Coste{sortIndicator("costEur")}
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedTools.map((row) => (
-                <tr key={row.toolName}>
-                  <td><strong>{row.toolName}</strong></td>
-                  <td style={{ textAlign: "right" }}>{fmtNumber(row.calls)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtNumber(row.successRatePct, 1)}%</td>
-                  <td style={{ textAlign: "right" }}>{fmtMs(row.avgLatencyMs)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtConfidence(row.avgConfidence)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtEur(row.costEur)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <CocoaTable columns={TOOL_COLUMNS} rows={sortedTools} rowKey="toolName" sortBy={sort} onSort={setSort} caption="Actividad por herramienta" aria-label="Actividad por herramienta" />
         )}
-      </section>
+      </CocoaSection>
 
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Por módulo</h3>
-            <span className="bo-chip">{data.byModule.length}</span>
-          </div>
-          {data.byModule.length === 0 ? (
-            <p className="bo-muted">No hay actividad por módulo en el periodo seleccionado.</p>
-          ) : (
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Módulo</th>
-                  <th style={{ textAlign: "right" }}>Acciones</th>
-                  <th style={{ textAlign: "right" }}>% éxito</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.byModule.map((row) => (
-                  <tr key={row.moduleCode}>
-                    <td><strong>{row.moduleCode}</strong></td>
-                    <td style={{ textAlign: "right" }}>{fmtNumber(row.calls)}</td>
-                    <td style={{ textAlign: "right" }}>{fmtNumber(row.successRatePct, 1)}%</td>
-                  </tr>
+      <CocoaGrid align="start">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Por módulo" meta={plural(byModule.length, "módulo", "módulos")} padding={byModule.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+            {byModule.length === 0 ? (
+              <CocoaState kind="empty" inline title="No hay actividad por módulo en el periodo." />
+            ) : (
+              <CocoaTable columns={MODULE_COLUMNS} rows={byModule} rowKey="moduleCode" caption="Actividad por módulo" aria-label="Actividad por módulo" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Desglose por estado" meta={plural(statusTotal, "acción", "acciones")}>
+            {byStatus.length === 0 ? (
+              <CocoaState kind="empty" inline title="No hay acciones que desglosar." />
+            ) : (
+              <ul className="c22-section__list" aria-label="Acciones por estado">
+                {byStatus.map((row) => (
+                  <li key={row.status}>
+                    {statusBadge(row.status)}
+                    <strong>{number(row.count)}</strong>
+                  </li>
                 ))}
-              </tbody>
-            </table>
-          )}
-        </article>
+              </ul>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Desglose por estado</h3>
-            <span className="bo-chip">{data.byStatus.reduce((s, r) => s + r.count, 0)} acciones</span>
-          </div>
-          {data.byStatus.length === 0 ? (
-            <p className="bo-muted">No hay acciones que desglosar.</p>
-          ) : (
-            <ul className="bo-list">
-              {data.byStatus.map((row) => (
-                <li key={row.status} style={{ display: "flex", alignItems: "center", gap: 8, justifyContent: "space-between" }}>
-                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    {statusPill(row.status)}
-                  </span>
-                  <strong>{fmtNumber(row.count)}</strong>
-                </li>
-              ))}
-            </ul>
-          )}
-        </article>
-      </section>
+      <CocoaGrid align="start">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Distribución de la confianza" meta={`${number(confidenceTotal)} con confianza`}>
+            {confidenceBuckets.length === 0 || confidenceBuckets.every((b) => b.count === 0) ? (
+              <CocoaState kind="empty" inline title="No hay acciones con confianza registrada en el periodo." />
+            ) : (
+              <div className="cocoa-stack" data-gap="2">
+                {confidenceBuckets.map((b) => (
+                  <CocoaChart.Progress key={b.bucket} label={b.bucket} value={b.count} max={maxConfBucket} valueLabel={number(b.count)} tone="accent" aria-label={`Confianza ${b.bucket}: ${plural(b.count, "acción", "acciones")}`} />
+                ))}
+              </div>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Evolución del tiempo de respuesta" meta="14 días · ms medios por día">
+            {latencyTrend.length === 0 ? (
+              <CocoaState kind="empty" inline title="No hay datos de tiempo de respuesta." />
+            ) : (
+              <CocoaChart.Bars data={latencyBars} height={120} valueFormat={fmtMs} aria-label="Tiempo de respuesta medio por día en los últimos 14 días" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
 
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Distribución de la confianza</h3>
-            <span className="bo-chip">{data.confidenceBuckets.reduce((s, b) => s + b.count, 0)} con confianza</span>
-          </div>
-          {data.confidenceBuckets.length === 0 || data.confidenceBuckets.every((b) => b.count === 0) ? (
-            <p className="bo-muted">No hay acciones con confianza registrada en el periodo.</p>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {data.confidenceBuckets.map((b) => (
-                <div key={b.bucket} style={{ display: "grid", gridTemplateColumns: "72px 1fr 40px", alignItems: "center", gap: 8 }}>
-                  <span className="bo-muted" style={{ fontVariantNumeric: "tabular-nums" }}>{b.bucket}</span>
-                  <Bar fraction={b.count / maxConfBucket} label={`${b.bucket}: ${b.count}`} />
-                  <span style={{ textAlign: "right" }}>{b.count}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <h3>Evolución del tiempo de respuesta (14 días)</h3>
-            <span className="bo-chip">ms medios / día</span>
-          </div>
-          {data.latencyTrend.length === 0 ? (
-            <p className="bo-muted">No hay datos de tiempo de respuesta.</p>
-          ) : (
-            <div style={{ display: "flex", alignItems: "flex-end", gap: 4, height: 120 }}>
-              {data.latencyTrend.map((d) => (
-                <div
-                  key={d.date}
-                  style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4, height: "100%", justifyContent: "flex-end" }}
-                  title={`${d.date}: ${d.avgLatencyMs} ms de media sobre ${d.calls} acción(es)`}
-                >
-                  <div
-                    style={{
-                      width: "100%",
-                      height: `${Math.max(2, (d.avgLatencyMs / maxToolCalls) * 100)}%`,
-                      background: d.calls === 0 ? "var(--surface-2, #ddd)" : "var(--accent-ink, #2a7)",
-                      borderRadius: "3px 3px 0 0",
-                      opacity: d.calls === 0 ? 0.4 : 1
-                    }}
-                  />
-                  <span className="bo-muted" style={{ fontSize: 10, transform: "rotate(-45deg)", whiteSpace: "nowrap" }}>
-                    {fmtDayShort(d.date)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Acciones recientes</h3>
-          <span className="bo-chip">{data.recentCalls.length} · últimas 25</span>
-        </div>
-        {data.recentCalls.length === 0 ? (
-          <p className="bo-muted">No hay acciones de la IA recientes.</p>
+      <CocoaSection title="Acciones recientes" meta={`${plural(recentCalls.length, "acción", "acciones")} · las 25 últimas`} padding={recentCalls.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {recentCalls.length === 0 ? (
+          <CocoaState kind="empty" inline title="No hay acciones de la IA recientes." />
         ) : (
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Herramienta</th>
-                <th>Estado</th>
-                <th style={{ textAlign: "right" }}>Confianza</th>
-                <th style={{ textAlign: "right" }}>Tiempo</th>
-                <th style={{ textAlign: "right" }}>Coste</th>
-                <th>Automatización</th>
-                <th>Creada</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {data.recentCalls.map((c) => (
-                <tr key={c.id} style={c.hasError ? { background: "var(--danger-bg, rgba(192,57,43,0.06))" } : undefined}>
-                  <td><strong>{c.toolName}</strong></td>
-                  <td>{statusPill(c.status)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtConfidence(c.confidence)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtMs(c.latencyMs)}</td>
-                  <td style={{ textAlign: "right" }}>{fmtEur(c.costEur)}</td>
-                  <td>{c.automationLevel ?? "—"}</td>
-                  <td>{fmtDateTime(c.createdAt)}</td>
-                  <td>
-                    <button type="button" className="ghost" onClick={() => openDetail(c.id)}>
-                      {selectedId === c.id ? "cerrar" : "ver"}
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <CocoaTable
+            columns={RECENT_COLUMNS}
+            rows={recentCalls}
+            rowKey="id"
+            selectedKey={selectedId ?? undefined}
+            onSelect={(c) => void openDetail(c.id)}
+            rowTone={(c) => (c.hasError ? "danger" : undefined)}
+            rowTitle={() => "Abrir el detalle de la acción"}
+            rowActions={(c) => (
+              <CocoaButton
+                variant="plain"
+                size="small"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void openDetail(c.id);
+                }}
+              >
+                {ACTIONS.view}
+              </CocoaButton>
+            )}
+            caption="Acciones recientes de la IA"
+            aria-label="Acciones recientes de la IA"
+          />
         )}
-      </section>
+      </CocoaSection>
 
-      {selectedId ? (
-        <section className="bo-card">
-          <div className="bo-card-head">
-            <h3>Detalle de la acción de la IA</h3>
-            <button type="button" className="ghost" onClick={() => { setSelectedId(null); setDetail(null); }}>Cerrar</button>
-          </div>
-          {detailLoading ? (
-            <LoadingBlock />
-          ) : detailError ? (
-            <p style={{ color: "var(--danger-ink)" }}>{detailError}</p>
-          ) : detail ? (
-            <div className="bo-grid two">
-              <div>
-                <h4>Información</h4>
-                <div className="dp-table">
-                  <div className="dp-row"><span className="dp-key">id</span><span className="dp-val mono">{detail.id}</span></div>
-                  <div className="dp-row"><span className="dp-key">herramienta</span><span className="dp-val">{detail.toolName}</span></div>
-                  <div className="dp-row"><span className="dp-key">estado</span><span className="dp-val">{statusPill(detail.status)}</span></div>
-                  <div className="dp-row"><span className="dp-key">modelo</span><span className="dp-val">{detail.model ?? "—"}</span></div>
-                  <div className="dp-row"><span className="dp-key">confianza</span><span className="dp-val">{fmtConfidence(detail.confidence)}</span></div>
-                  <div className="dp-row"><span className="dp-key">tiempo de respuesta</span><span className="dp-val">{fmtMs(detail.latencyMs)}</span></div>
-                  <div className="dp-row"><span className="dp-key">tokens (uso del modelo)</span><span className="dp-val">{fmtNumber(detail.tokensInput)} entrada / {fmtNumber(detail.tokensOutput)} salida</span></div>
-                  <div className="dp-row"><span className="dp-key">coste</span><span className="dp-val">{fmtEur(detail.costEur)}</span></div>
-                  <div className="dp-row"><span className="dp-key">automatización</span><span className="dp-val">{detail.automationLevel ?? "—"}</span></div>
-                  <div className="dp-row"><span className="dp-key">confirmación</span><span className="dp-val">{detail.requiredConfirmation ? `obligatoria${detail.confirmedBy ? ` · por ${detail.confirmedBy}` : ""}` : "no obligatoria"}</span></div>
-                  <div className="dp-row"><span className="dp-key">fecha de creación</span><span className="dp-val">{fmtDateTime(detail.createdAt)}</span></div>
-                  {detail.errorMessage ? (
-                    <div className="dp-row"><span className="dp-key">error</span><span className="dp-val" style={{ color: "var(--danger-ink)" }}>{detail.errorMessage}</span></div>
-                  ) : null}
-                </div>
-              </div>
-              <div>
-                <h4>Entrada</h4>
-                <DataPreview data={detail.inputJson} emptyMessage="Sin datos de entrada." />
-                <h4 style={{ marginTop: 12 }}>Salida</h4>
-                <DataPreview data={detail.outputJson} emptyMessage="Sin datos de salida." />
-              </div>
-            </div>
-          ) : (
-            <p className="bo-muted">No hay detalle disponible.</p>
-          )}
-        </section>
-      ) : null}
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <h3>Anomalías</h3>
-          <span className="bo-chip">{data.anomalies.length}</span>
-        </div>
-        {data.anomalies.length === 0 ? (
-          <p className="bo-muted">No se han detectado anomalías.</p>
+      <CocoaSection title="Anomalías" meta={plural(anomalies.length, "anomalía", "anomalías")}>
+        {anomalies.length === 0 ? (
+          <CocoaState kind="empty" inline title="No se han detectado anomalías." />
         ) : (
-          <ul className="bo-list">
-            {data.anomalies.map((a) => (
-              <li key={a.id} style={{ display: "flex", flexDirection: "column", gap: 4, paddingBottom: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                  {severityPill(a.severity)}
-                  <strong>{a.type}</strong>
-                  <span className="cm-pill cm-pill-warn">{a.status}</span>
+          <ul className="c22-section__list" aria-label="Anomalías detectadas">
+            {anomalies.map((a) => (
+              <li key={a.id}>
+                <div className="cocoa-stack" data-gap="1">
+                  <div className="cocoa-cluster">
+                    {severityBadge(a.severity)}
+                    <strong>{a.type}</strong>
+                    <CocoaBadge tone="warning" variant="outline" size="small">
+                      {a.status}
+                    </CocoaBadge>
+                  </div>
+                  <span>{a.description}</span>
+                  <span className="cocoa-note">detectada el {dateTime(a.detectedAt)}</span>
                 </div>
-                <span>{a.description}</span>
-                <small className="bo-muted">detectada el {fmtDateTime(a.detectedAt)}</small>
               </li>
             ))}
           </ul>
         )}
-      </section>
-    </>
+      </CocoaSection>
+
+      <CocoaDrawer
+        open={selectedId !== null}
+        onClose={closeDetail}
+        title="Detalle de la acción de la IA"
+        subtitle={detail?.toolName}
+        side="right"
+        size="lg"
+        footer={
+          <CocoaButton variant="bordered" tone="neutral" onClick={closeDetail}>
+            {ACTIONS.close}
+          </CocoaButton>
+        }
+      >
+        {detailLoading ? (
+          <CocoaSkeleton variant="text" lines={6} />
+        ) : detailError ? (
+          <CocoaState kind="error" title="No se pudo cargar el detalle" message={detailError} onRetry={selectedId ? () => void openDetail(selectedId) : undefined} />
+        ) : detail ? (
+          <div className="cocoa-stack" data-gap="4">
+            <CocoaSection title="Información" padding="sm">
+              <ul className="c22-section__list" aria-label="Datos de la acción">
+                <li>
+                  <span>Identificador</span>
+                  <strong className="cocoa-mono">{detail.id}</strong>
+                </li>
+                <li>
+                  <span>Herramienta</span>
+                  <strong>{detail.toolName}</strong>
+                </li>
+                <li>
+                  <span>Estado</span>
+                  {statusBadge(detail.status)}
+                </li>
+                <li>
+                  <span>Modelo</span>
+                  <strong>{detail.model ?? "—"}</strong>
+                </li>
+                <li>
+                  <span>Confianza</span>
+                  <strong>{fmtConfidence(detail.confidence)}</strong>
+                </li>
+                <li>
+                  <span>Tiempo de respuesta</span>
+                  <strong>{fmtMs(detail.latencyMs)}</strong>
+                </li>
+                <li>
+                  <span>Tokens (uso del modelo)</span>
+                  <strong>
+                    {number(detail.tokensInput)} entrada / {number(detail.tokensOutput)} salida
+                  </strong>
+                </li>
+                <li>
+                  <span>Coste</span>
+                  <strong>{money(detail.costEur)}</strong>
+                </li>
+                <li>
+                  <span>Automatización</span>
+                  <strong>{automationLabel(detail.automationLevel)}</strong>
+                </li>
+                <li>
+                  <span>Confirmación</span>
+                  <strong>{detail.requiredConfirmation ? `obligatoria${detail.confirmedBy ? ` · por ${detail.confirmedBy}` : ""}` : "no obligatoria"}</strong>
+                </li>
+                <li>
+                  <span>Fecha de creación</span>
+                  <strong>{dateTime(detail.createdAt)}</strong>
+                </li>
+              </ul>
+              {detail.errorMessage ? <CocoaState kind="error" inline title={detail.errorMessage} /> : null}
+            </CocoaSection>
+            <CocoaSection title="Entrada" padding="sm">
+              {detail.inputJson ? <pre style={codeStyle}>{JSON.stringify(detail.inputJson, null, 2)}</pre> : <CocoaState kind="empty" inline title="Sin datos de entrada." />}
+            </CocoaSection>
+            <CocoaSection title="Salida" padding="sm">
+              {detail.outputJson ? <pre style={codeStyle}>{JSON.stringify(detail.outputJson, null, 2)}</pre> : <CocoaState kind="empty" inline title="Sin datos de salida." />}
+            </CocoaSection>
+          </div>
+        ) : (
+          <CocoaState kind="empty" inline title="No hay detalle disponible." />
+        )}
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }

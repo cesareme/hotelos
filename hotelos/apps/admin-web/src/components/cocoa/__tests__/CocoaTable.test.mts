@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { CocoaTable, VIRTUALIZE_CHUNK, VIRTUALIZE_THRESHOLD, columnSizingStyle, defaultRender, densityRowPadding, isColumnVisible, isTableOverflowing, nextSort, resolveRowKey, visibleRowCount, wrapOverflowStyle } from "../CocoaTable.tsx";
+import { CocoaTable, VIRTUALIZE_CHUNK, VIRTUALIZE_THRESHOLD, columnSizingStyle, defaultRender, densityRowPadding, isColumnVisible, isTableOverflowing, nextSort, resolveRowKey, truncatedCellTitle, visibleRowCount, wrapOverflowStyle } from "../CocoaTable.tsx";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const cocoaCss = readFileSync(resolve(here, "../../../styles/cocoa-22.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
@@ -146,6 +146,39 @@ describe("CocoaTable · column sizing (qa#2)", () => {
     assert.deepEqual(columnSizingStyle({ align: "right", nowrap: false }), {});
     assert.deepEqual(columnSizingStyle({ fit: true, nowrap: false }), { width: 1 });
     assert.deepEqual(columnSizingStyle({ nowrap: true }), { whiteSpace: "nowrap" });
+  });
+});
+
+describe("CocoaTable · truncated cells (qa#1 8-A)", () => {
+  const token = "DNI v1.c32d4f97339618f6d4878799.e60b5b44ed93407a2a.9e621206364315d7a55f0c1b2d3e4f5a6b7c8d9e";
+  const columns = [
+    { key: "guest", label: "Huésped", minWidth: 180 },
+    { key: "document", label: "Documento", fit: true, truncate: 160 },
+    { key: "status", label: "Estado", fit: true, render: (r: { status: string }) => createElement("em", null, r.status) }
+  ];
+  const rows = [{ id: 1, guest: "Ana Pérez", document: token, status: "accepted" }];
+  const html = renderToStaticMarkup(createElement(CocoaTable, { columns, rows, rowKey: "id", "aria-label": "Partes" } as never));
+
+  it("the tooltip carries the full text of a scalar cell and nothing for JSX", () => {
+    assert.equal(truncatedCellTitle(token), token);
+    assert.equal(truncatedCellTitle(1234), "1234");
+    assert.equal(truncatedCellTitle(createElement("em", null, "x")), undefined);
+    assert.equal(truncatedCellTitle(null), undefined);
+  });
+
+  it("only the truncated column wraps its value in the capped inline-block, with the full value as tooltip", () => {
+    const cells = html.match(/<td\b[^>]*>[\s\S]*?<\/td>/g) ?? [];
+    assert.equal(cells.length, 3);
+    assert.doesNotMatch(cells[0], /c22-table__truncate/, `guest cell untouched: ${cells[0]}`);
+    assert.match(cells[1], /<span class="cocoa-truncate c22-table__truncate" style="display:inline-block;max-width:160px;vertical-align:bottom" title="DNI v1\.c32d4f97[^"]*">DNI v1\.c32d4f97/, `document cell capped: ${cells[1]}`);
+    assert.doesNotMatch(cells[2], /c22-table__truncate/, `status cell untouched: ${cells[2]}`);
+  });
+
+  it("fit still applies to the truncated column (min-content width, one line)", () => {
+    const cells = html.match(/<td\b[^>]*>/g) ?? [];
+    assert.match(cells[1], /width:1px/);
+    assert.match(cells[1], /white-space:nowrap/);
+    assert.match(cells[1], /data-fit="true"/);
   });
 });
 
