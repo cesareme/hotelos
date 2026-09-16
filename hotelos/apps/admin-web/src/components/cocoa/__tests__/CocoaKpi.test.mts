@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { KPI_STRIP_CSS_MINS, deltaArrow, deltaColors, deltaSentiment, deltaTone, formatDelta, kpiAriaLabel } from "../CocoaKpi.tsx";
 
+describe("CocoaKpi · caption (Tanda 6)", () => {
+  it("reads the caption after the value and before the delta; degraded drops it", () => {
+    assert.equal(kpiAriaLabel({ label: "Pendientes de cobro", value: "1.240,00 €", caption: "4 facturas", delta: 2, deltaUnit: "%", deltaLabel: "vs ayer" }), "Pendientes de cobro, 1.240,00 €, 4 facturas, +2 % vs ayer");
+    assert.equal(kpiAriaLabel({ label: "Borradores", value: 3, caption: "272,00 €" }), "Borradores, 3, 272,00 €");
+    assert.equal(kpiAriaLabel({ label: "Comp-set", value: "—", caption: "x", degraded: true }), "Comp-set, no disponible");
+  });
+});
+
 describe("CocoaKpi · delta polarity (§3.6)", () => {
   it("positive-good: ▲ success / ▼ danger", () => {
     assert.equal(deltaTone(3), "success");

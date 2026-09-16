@@ -1,14 +1,54 @@
-import { useTabHost } from "../tabs/TabHost";
-import type { CSSProperties } from "react";
+// Cierre de ejercicio — Finanzas › Contabilidad › Cierre de ejercicio
+// (/finanzas/contabilidad/cierre-ejercicio, hosted in ContabilidadTabs; the
+// legacy /backoffice/finance/year-end-close still redirects here). Cocoa 22 ·
+// lote 6-C (migrated from the legacy `.bo-*` screen), archetype «dashboard».
+//
+// GET /accounting/fiscal-years lists the years; the selected one loads GET
+// …/:id/status (open periods, drafts, blocking checks, result preview and the
+// regularisation entry preview). Actions, every one behind a CocoaDialog:
+// «Crear ejercicio» (POST /accounting/fiscal-years), «Cerrar ejercicio» (POST
+// …/:id/close — regularisation 6xx/7xx → 129, closing and opening entries;
+// critical, disabled while a blocking check remains) and «Reabrir» (POST
+// …/:id/reopen with a reason — marked reversal entries, nothing deleted).
+// Typed 4xx go through financeErrorMessage. Legacy amounts arrive as numbers.
+
 import { useMemo, useState } from "react";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { LoadingBlock } from "../../components/States";
+import { financeErrorMessage } from "../../services/finance-contracts";
+import { useNavGate } from "../../navigation/useEnabledModules";
+import { urlForScreen } from "../../navigation/nav-tree";
 import { useToast } from "../../components/Toast";
-import { money } from "../../lib/format";
+import { ACTIONS } from "../../content/actions";
+import { date, dateTime, money, number, plural } from "../../lib/format";
+import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaDialog,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  openTabPath,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
+import { canDo, signTone, withQuery } from "../accounting/accounting-ui";
 
-// Demo single-property fallback. Multi-property selection lives in another track.
-const PROPERTY_ID: string | undefined = undefined;
+type FiscalYearStatus = "open" | "closing" | "closed";
 
 type FiscalYear = {
   id: string;
@@ -17,26 +57,16 @@ type FiscalYear = {
   code: string;
   startDate: string;
   endDate: string;
-  status: "open" | "closing" | "closed";
+  status: FiscalYearStatus;
   closedAt?: string;
   closingEntryId?: string;
   openingEntryId?: string;
   netResult?: number;
 };
 
-type RegularizationLine = {
-  accountCode: string;
-  accountName: string;
-  accountType: string;
-  debit: number;
-  credit: number;
-};
+type RegularizationLine = { accountCode: string; accountName: string; accountType: string; debit: number; credit: number };
 
-type BlockingCheck = {
-  code: string;
-  message: string;
-  severity: "error" | "warn";
-};
+type BlockingCheck = { code: string; message: string; severity: "error" | "warn" };
 
 type FiscalYearStatusReport = FiscalYear & {
   openPeriods: number;
@@ -49,7 +79,7 @@ type FiscalYearStatusReport = FiscalYear & {
 
 type CloseResult = {
   fiscalYear: FiscalYear;
-  regularizationEntryId: string;
+  regularizationEntryId: string | null;
   closingEntryId: string;
   openingEntryId: string;
   nextFiscalYearId?: string;
@@ -57,383 +87,370 @@ type CloseResult = {
   followUps: string[];
 };
 
-function fmt(amount: number | undefined | null): string {
-  return money(amount);
-}
+const STATUS_LABEL: Record<FiscalYearStatus, string> = { open: "Abierto", closing: "En cierre", closed: "Cerrado" };
+const STATUS_TONE: Record<FiscalYearStatus, CocoaTone> = { open: "success", closing: "warning", closed: "neutral" };
 
-function statusPillStyle(status: FiscalYear["status"]): CSSProperties {
-  if (status === "closed") {
-    return { background: "var(--success-bg)", color: "var(--success-ink)", fontWeight: 600 };
-  }
-  if (status === "closing") {
-    return { background: "var(--warn-bg)", color: "var(--warn-ink)", fontWeight: 600 };
-  }
-  return { background: "var(--info-bg, #eef)", color: "var(--info-ink, #245)", fontWeight: 600 };
+const YEAR_COLUMNS: CocoaTableColumn<FiscalYear>[] = [
+  { key: "code", label: "Ejercicio", width: "12ch", render: (year) => <strong>{year.code}</strong> },
+  { key: "startDate", label: "Inicio", render: (year) => date(year.startDate, "short"), hideOnNarrow: true },
+  { key: "endDate", label: "Fin", render: (year) => date(year.endDate, "short") },
+  { key: "status", label: "Estado", render: (year) => <CocoaBadge tone={STATUS_TONE[year.status]}>{STATUS_LABEL[year.status]}</CocoaBadge> },
+  { key: "netResult", label: "Resultado", align: "right", render: (year) => (year.netResult !== undefined && year.netResult !== null ? money(year.netResult) : "—") }
+];
+
+const PREVIEW_COLUMNS: CocoaTableColumn<RegularizationLine>[] = [
+  { key: "accountCode", label: "Cuenta", width: "10ch", render: (line) => <strong>{line.accountCode}</strong> },
+  { key: "accountName", label: "Nombre", render: (line) => line.accountName },
+  { key: "debit", label: "Debe", align: "right", render: (line) => (line.debit > 0 ? money(line.debit) : "") },
+  { key: "credit", label: "Haber", align: "right", render: (line) => (line.credit > 0 ? money(line.credit) : "") }
+];
+
+function YearEndSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Grid rows={[[12]]} height={160} />
+      <CocoaSkeleton.Strip count={3} />
+      <CocoaSkeleton.Grid rows={[[6, 6]]} height={240} />
+    </div>
+  );
 }
 
 export function YearEndCloseScreen() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
+  const header = treeHeaderFor("YearEndCloseScreen", { eyebrow: "Finanzas · Contabilidad", title: "Cierre de ejercicio" });
   const { showToast } = useToast();
-  const query = useMemo(() => {
-    const q: Record<string, string> = {};
-    if (PROPERTY_ID) q.propertyId = PROPERTY_ID;
-    return q;
-  }, []);
+  const gate = useNavGate();
+  const canPost = canDo(gate, "accounting.journal.post");
 
-  const years = useApiData<FiscalYear[]>("/accounting/fiscal-years", { query, pollIntervalMs: 60000 });
+  const years = useApiData<FiscalYear[]>("/accounting/fiscal-years", { pollIntervalMs: 60_000 });
+  const yearRows = useMemo(() => [...(years.data ?? [])].sort((a, b) => b.startDate.localeCompare(a.startDate)), [years.data]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const effectiveSelectedId =
-    selectedId ?? years.data?.find((y: FiscalYear) => y.status !== "closed")?.id ?? years.data?.[0]?.id ?? null;
+  const effectiveId = selectedId ?? yearRows.find((year) => year.status !== "closed")?.id ?? yearRows[0]?.id ?? null;
+  const status = useApiData<FiscalYearStatusReport>(effectiveId ? `/accounting/fiscal-years/${effectiveId}/status` : null, { pollIntervalMs: 60_000 });
+  const selected = status.data && status.data.id === effectiveId ? status.data : null;
 
-  const status = useApiData<FiscalYearStatusReport>(
-    effectiveSelectedId ? `/accounting/fiscal-years/${effectiveSelectedId}/status` : null,
-    { pollIntervalMs: 60000 }
-  );
-
-  const [confirming, setConfirming] = useState(false);
-  const [closing, setClosing] = useState(false);
-  const [closeError, setCloseError] = useState<string | null>(null);
-  const [closeResult, setCloseResult] = useState<CloseResult | null>(null);
-
+  // ---- create ---------------------------------------------------------------------
+  const currentYear = new Date().getFullYear();
   const [createOpen, setCreateOpen] = useState(false);
-  const [newCode, setNewCode] = useState<string>(String(new Date().getFullYear()));
-  const [newStart, setNewStart] = useState<string>(`${new Date().getFullYear()}-01-01`);
-  const [newEnd, setNewEnd] = useState<string>(`${new Date().getFullYear()}-12-31`);
-  const [createError, setCreateError] = useState<string | null>(null);
+  const [newCode, setNewCode] = useState(String(currentYear));
+  const [newStart, setNewStart] = useState(`${currentYear}-01-01`);
+  const [newEnd, setNewEnd] = useState(`${currentYear}-12-31`);
   const [creating, setCreating] = useState(false);
+  const [createError, setCreateError] = useState<unknown>(null);
+  const createValid = newCode.trim() !== "" && /^\d{4}-\d{2}-\d{2}$/.test(newStart) && /^\d{4}-\d{2}-\d{2}$/.test(newEnd) && newStart <= newEnd;
 
-  async function handleCreate() {
-    setCreateError(null);
+  async function createYear() {
+    if (!createValid) return;
     setCreating(true);
+    setCreateError(null);
     try {
-      await apiRequest("/accounting/fiscal-years", {
-        method: "POST",
-        body: { code: newCode, startDate: newStart, endDate: newEnd, propertyId: PROPERTY_ID }
-      });
+      const created = await apiRequest<FiscalYear>("/accounting/fiscal-years", { method: "POST", body: { code: newCode.trim(), startDate: newStart, endDate: newEnd } });
       setCreateOpen(false);
       years.refresh();
-      showToast(`Ejercicio ${newCode} creado`, { variant: "success" });
+      setSelectedId(created.id);
+      showToast(`Ejercicio ${created.code} creado.`, { variant: "success" });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setCreateError(message);
-      showToast(message, { variant: "error" });
+      setCreateError(err);
     } finally {
       setCreating(false);
     }
   }
 
-  async function handleClose() {
-    if (!effectiveSelectedId) return;
-    setCloseError(null);
+  // ---- close ------------------------------------------------------------------------
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [createNextYear, setCreateNextYear] = useState(true);
+  const [closing, setClosing] = useState(false);
+  const [closeError, setCloseError] = useState<unknown>(null);
+  const [closeResult, setCloseResult] = useState<CloseResult | null>(null);
+
+  async function closeYear() {
+    if (!effectiveId) return;
     setClosing(true);
+    setCloseError(null);
     try {
-      const result = await apiRequest<CloseResult>(
-        `/accounting/fiscal-years/${effectiveSelectedId}/close`,
-        { method: "POST", body: {} }
-      );
+      const result = await apiRequest<CloseResult>(`/accounting/fiscal-years/${effectiveId}/close`, { method: "POST", body: createNextYear ? { createNextYear: true } : {} });
       setCloseResult(result);
-      setConfirming(false);
+      setConfirmClose(false);
       years.refresh();
       status.refresh();
-      showToast("Ejercicio cerrado", { variant: "success" });
+      showToast(`Ejercicio ${result.fiscalYear.code} cerrado con resultado ${money(result.netResult)}.`, { variant: "success" });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      setCloseError(message);
-      showToast(message, { variant: "error" });
+      setCloseError(err);
     } finally {
       setClosing(false);
     }
   }
 
-  const selected = status.data;
-  const canClose =
-    !!selected &&
-    selected.status === "open" &&
-    selected.blockingChecks.filter((c: BlockingCheck) => c.severity === "error").length === 0;
+  // ---- reopen -----------------------------------------------------------------------
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
+  const [reopening, setReopening] = useState(false);
+  const [reopenError, setReopenError] = useState<unknown>(null);
+
+  async function reopenYear() {
+    if (!effectiveId) return;
+    if (reopenReason.trim() === "") {
+      setReopenError(new Error("Indica el motivo de la reapertura."));
+      return;
+    }
+    setReopening(true);
+    setReopenError(null);
+    try {
+      await apiRequest(`/accounting/fiscal-years/${effectiveId}/reopen`, { method: "POST", body: { reason: reopenReason.trim() } });
+      setReopenOpen(false);
+      setReopenReason("");
+      setCloseResult(null);
+      years.refresh();
+      status.refresh();
+      showToast("Ejercicio reabierto: los asientos de cierre y apertura quedan anulados con su reverso.", { variant: "success" });
+    } catch (err) {
+      setReopenError(err);
+    } finally {
+      setReopening(false);
+    }
+  }
+
+  const blocking = selected ? selected.blockingChecks.filter((check) => check.severity === "error") : [];
+  const resultValue = selected ? (selected.status === "closed" ? selected.netResult : selected.netResultPreview) : undefined;
+  const canClose = !!selected && selected.status === "open" && blocking.length === 0 && canPost;
+  const journalUrl = urlForScreen("JournalScreen");
+  const preview = selected?.regularizationLinePreview ?? [];
+  const previewDebit = preview.reduce((sum, line) => sum + line.debit, 0);
+  const previewCredit = preview.reduce((sum, line) => sum + line.credit, 0);
+
+  const pageState = years.loading && !years.data ? "loading" : years.error && !years.data ? "error" : "ready";
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : (
-            <>
-              <div className="bo-page-eyebrow">Finanzas · Estados contables</div>
-              <h1 className="bo-page-title">Cierre de ejercicio</h1>
-            </>
-          )}
-          <p className="bo-page-subtitle">
-            Cierre del ejercicio según PGC: <strong>asiento de regularización</strong> (6xx/7xx vs. 129),
-            <strong> asiento de cierre</strong> al 31/12 y <strong>asiento de apertura</strong> al 1/1
-            del año siguiente.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" onClick={() => setCreateOpen(true)}>+ Crear ejercicio</button>
-          <button type="button" className="ghost" onClick={() => { years.refresh(); status.refresh(); }}>
-            ↻ Refrescar
-          </button>
-        </div>
-      </div>
-
-      {createOpen && (
-        <div className="bo-card" style={{ marginBottom: 16, borderLeft: "3px solid var(--accent, #357)" }}>
-          <h3 style={{ marginTop: 0 }}>Nuevo ejercicio fiscal</h3>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "end" }}>
-            <div>
-              <label style={{ display: "block", fontSize: 12, color: "var(--ink-muted)" }}>Código</label>
-              <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="2026" />
-            </div>
-            <div>
-              <label style={{ display: "block", fontSize: 12, color: "var(--ink-muted)" }}>Inicio</label>
-              <input type="date" value={newStart} onChange={(e) => setNewStart(e.target.value)} />
-            </div>
-            <div>
-              <label style={{ display: "block", fontSize: 12, color: "var(--ink-muted)" }}>Fin</label>
-              <input type="date" value={newEnd} onChange={(e) => setNewEnd(e.target.value)} />
-            </div>
-            <button type="button" onClick={handleCreate} disabled={creating}>
-              {creating ? "Creando…" : "Crear"}
-            </button>
-            <button type="button" className="ghost" onClick={() => setCreateOpen(false)} disabled={creating}>
-              Cancelar
-            </button>
-          </div>
-          {createError && (
-            <p style={{ color: "var(--danger-ink)", marginTop: 8 }}>{createError}</p>
-          )}
-        </div>
-      )}
-
-      <section className="bo-card" style={{ marginBottom: 16 }}>
-        <div className="bo-card-head">
-          <h2 style={{ fontSize: 20 }}>Ejercicios fiscales</h2>
-          <span className="bo-chip">{years.data?.length ?? 0} años</span>
-        </div>
-        {years.loading ? (
-          <LoadingBlock />
-        ) : years.error ? (
-          <p style={{ color: "var(--danger-ink)", padding: 12 }}>{years.error}</p>
-        ) : !years.data || years.data.length === 0 ? (
-          <p style={{ color: "var(--ink-muted)", padding: 12 }}>
-            Aún no hay ejercicios fiscales. Crea el primero con el botón "Crear ejercicio".
-          </p>
+    <CocoaPage
+      eyebrow={header.eyebrow}
+      title={header.title}
+      subtitle="Cierre según el PGC: asiento de regularización (6xx y 7xx contra 129), asiento de cierre al último día y asiento de apertura al primer día del ejercicio siguiente. Nada se borra: reabrir genera reversos."
+      actions={
+        canPost ? (
+          <CocoaButton variant="filled" tone="accent" size="small" icon={<PlusIcon size={14} aria-hidden="true" />} onClick={() => setCreateOpen(true)}>
+            Crear ejercicio
+          </CocoaButton>
+        ) : undefined
+      }
+      state={pageState}
+      skeleton={<YearEndSkeleton />}
+      error={{ title: "No se pudieron cargar los ejercicios", message: years.error ?? undefined, onRetry: years.refresh }}
+      commands={[
+        ...(canPost ? [{ id: "year-end-create", label: "Crear ejercicio fiscal", run: () => setCreateOpen(true) }] : []),
+        {
+          id: "year-end-refresh",
+          label: "Actualizar los ejercicios",
+          run: () => {
+            years.refresh();
+            status.refresh();
+          }
+        }
+      ]}
+      id="year-end-close-screen"
+    >
+      <CocoaSection title="Ejercicios fiscales" meta={yearRows.length > 0 ? plural(yearRows.length, "ejercicio", "ejercicios") : undefined} padding={yearRows.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+        {yearRows.length === 0 ? (
+          <CocoaState
+            kind="empty"
+            illustration="box"
+            title="Aún no hay ejercicios fiscales"
+            message="Sin ejercicio, los asientos se numeran por año natural y no se puede cerrar ni regularizar. Crea el primero con su código y sus fechas."
+            primaryAction={canPost ? { label: "Crear ejercicio", onClick: () => setCreateOpen(true) } : undefined}
+          />
         ) : (
-          <table className="cm-table">
-            <thead>
-              <tr>
-                <th>Código</th>
-                <th>Inicio</th>
-                <th>Fin</th>
-                <th>Estado</th>
-                <th style={{ textAlign: "right" }}>Resultado del ejercicio</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {years.data.map((y: FiscalYear) => (
-                <tr
-                  key={y.id}
-                  style={{ background: y.id === effectiveSelectedId ? "var(--row-hover, #f6f8fa)" : undefined }}
-                >
-                  <td><strong>{y.code}</strong></td>
-                  <td>{y.startDate}</td>
-                  <td>{y.endDate}</td>
-                  <td>
-                    <span className="bo-chip" style={statusPillStyle(y.status)}>{y.status}</span>
-                  </td>
-                  <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
-                    {y.netResult != null ? fmt(y.netResult) : "—"}
-                  </td>
-                  <td style={{ textAlign: "right" }}>
-                    <button type="button" className="ghost" onClick={() => setSelectedId(y.id)}>
-                      Ver
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <CocoaTable columns={YEAR_COLUMNS} rows={yearRows} rowKey="id" selectedKey={effectiveId ?? undefined} onSelect={(year) => setSelectedId(year.id)} rowTitle={() => "Ver el estado del ejercicio"} caption="Ejercicios fiscales" aria-label="Ejercicios fiscales" />
         )}
-      </section>
+      </CocoaSection>
 
-      {selected && (
-        <section className="bo-card" style={{ marginBottom: 16 }}>
-          <div className="bo-card-head">
-            <h2 style={{ fontSize: 20 }}>Ejercicio {selected.code}</h2>
-            <span className="bo-chip" style={statusPillStyle(selected.status)}>{selected.status}</span>
-          </div>
+      {effectiveId && status.loading && !selected ? <CocoaSkeleton.Strip count={3} label="Cargando el estado del ejercicio…" /> : null}
+      {effectiveId && status.error && !selected ? <CocoaState kind="error" title="No se pudo cargar el estado del ejercicio" message={status.error} onRetry={status.refresh} /> : null}
 
-          <div className="rev-kpi-grid" style={{ marginBottom: 16 }}>
-            <article className={`rev-kpi ${selected.openPeriods === 0 ? "rev-kpi-ok" : "rev-kpi-warn"}`}>
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Periodos abiertos</span></div>
-              <div className="rev-kpi-value">{selected.openPeriods}</div>
-              <div className="rev-kpi-delta">
-                {selected.openPeriods === 0 ? "Todos cerrados" : "Bloqueante"}
-              </div>
-            </article>
-            <article className={`rev-kpi ${selected.draftJournals === 0 ? "rev-kpi-ok" : "rev-kpi-warn"}`}>
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Asientos en borrador</span></div>
-              <div className="rev-kpi-value">{selected.draftJournals}</div>
-              <div className="rev-kpi-delta">
-                {selected.draftJournals === 0 ? "Sin pendientes" : "Bloqueante"}
-              </div>
-            </article>
-            <article className="rev-kpi">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Resultado previsto</span></div>
-              <div className="rev-kpi-value">{fmt(selected.netResultPreview)}</div>
-              <div className="rev-kpi-delta">
-                {selected.netResultPreview != null && selected.netResultPreview >= 0 ? "Beneficio" : "Pérdida"}
-              </div>
-            </article>
-          </div>
+      {selected ? (
+        <>
+          <CocoaKpiStrip stagger aria-label={`Estado del ejercicio ${selected.code}`}>
+            <CocoaKpi label="Estado" value={STATUS_LABEL[selected.status]} deltaLabel={`${date(selected.startDate, "short")} – ${date(selected.endDate, "short")}`} polarity="neutral" status={selected.status === "closed" ? "ok" : selected.status === "closing" ? "warning" : undefined} />
+            <CocoaKpi label="Periodos abiertos" value={number(selected.openPeriods)} deltaLabel={selected.openPeriods === 0 ? "todos cerrados" : "bloquea el cierre"} polarity="negative-good" status={selected.openPeriods === 0 ? "ok" : "warning"} />
+            <CocoaKpi label="Asientos en borrador" value={number(selected.draftJournals)} deltaLabel={selected.draftJournals === 0 ? "sin pendientes" : "bloquea el cierre"} polarity="negative-good" status={selected.draftJournals === 0 ? "ok" : "warning"} />
+            <CocoaKpi label={selected.status === "closed" ? "Resultado del ejercicio" : "Resultado previsto"} value={money(resultValue)} deltaLabel={resultValue === undefined || resultValue === null ? "sin ingresos ni gastos" : resultValue < 0 ? "pérdida" : "beneficio"} polarity="neutral" tone={signTone(resultValue)} />
+          </CocoaKpiStrip>
 
-          {selected.blockingChecks.length > 0 && (
-            <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)", marginBottom: 12 }}>
-              <h4 style={{ marginTop: 0 }}>Comprobaciones</h4>
-              <ul style={{ margin: 0, paddingLeft: 20 }}>
-                {selected.blockingChecks.map((c: BlockingCheck) => (
-                  <li
-                    key={c.code}
-                    style={{ color: c.severity === "error" ? "var(--danger-ink)" : "var(--warn-ink)" }}
+          <CocoaGrid align="start" aria-label="Comprobaciones y regularización">
+            <CocoaSpan cols={5} min={320}>
+              <CocoaSection title="Comprobaciones" meta={selected.blockingChecks.length > 0 ? `${number(blocking.length)} bloqueantes` : "sin incidencias"}>
+                {selected.blockingChecks.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Ninguna comprobación pendiente: el ejercicio puede cerrarse." />
+                ) : (
+                  <ul className="c22-section__list">
+                    {selected.blockingChecks.map((check) => (
+                      <li key={check.code}>
+                        <span>{check.message}</span>
+                        <CocoaBadge tone={check.severity === "error" ? "danger" : "warning"}>{check.severity === "error" ? "Bloqueante" : "Aviso"}</CocoaBadge>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {selected.status === "closed" ? (
+                  <CocoaCallout
+                    tone="success"
+                    title={`Cerrado ${selected.closedAt ? dateTime(selected.closedAt) : ""}`}
+                    role="status"
+                    actions={
+                      journalUrl && selected.closingEntryId ? (
+                        <CocoaButton variant="plain" size="small" onClick={() => openTabPath(withQuery(journalUrl, { asiento: selected.closingEntryId }))}>
+                          Ver asiento de cierre
+                        </CocoaButton>
+                      ) : undefined
+                    }
                   >
-                    <strong>{c.code}</strong> · {c.message}
+                    Resultado {money(selected.netResult)}. El asiento de apertura del ejercicio siguiente replica los saldos patrimoniales.
+                  </CocoaCallout>
+                ) : null}
+                <div className="cocoa-row" data-gap="2" data-justify="end">
+                  {selected.status === "closed" && canPost ? (
+                    <CocoaButton variant="bordered" tone="destructive" size="small" onClick={() => setReopenOpen(true)}>
+                      {ACTIONS.reopen}
+                    </CocoaButton>
+                  ) : null}
+                  {selected.status !== "closed" ? (
+                    <CocoaButton variant="filled" tone="accent" size="small" disabled={!canClose} title={canClose ? undefined : "Resuelve las comprobaciones bloqueantes antes de cerrar."} onClick={() => setConfirmClose(true)}>
+                      Cerrar ejercicio {selected.code}
+                    </CocoaButton>
+                  ) : null}
+                </div>
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={7} min={320}>
+              <CocoaSection title="Vista previa de la regularización" meta={preview.length > 0 ? plural(preview.length, "línea", "líneas") : undefined} padding={preview.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
+                {preview.length > 0 ? (
+                  <CocoaTable columns={PREVIEW_COLUMNS} rows={preview} rowKey="accountCode" density="compact" footer={{ accountName: "Totales", debit: money(previewDebit), credit: money(previewCredit) }} caption="Asiento de regularización previsto" aria-label="Asiento de regularización previsto" />
+                ) : (
+                  <CocoaState kind="empty" inline title={selected.status === "closed" ? "El ejercicio ya está regularizado." : "Sin ingresos ni gastos que regularizar en el ejercicio."} />
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
+
+          {closeResult ? (
+            <CocoaCallout
+              tone="success"
+              title={`Cierre completado · resultado ${money(closeResult.netResult)}`}
+              role="status"
+              actions={
+                journalUrl ? (
+                  <CocoaButton variant="plain" size="small" onClick={() => openTabPath(withQuery(journalUrl, { asiento: closeResult.closingEntryId }))}>
+                    Ver asiento de cierre
+                  </CocoaButton>
+                ) : undefined
+              }
+            >
+              <ul className="c22-section__list">
+                <li>
+                  <span>Regularización</span>
+                  <strong>{closeResult.regularizationEntryId ?? "sin ingresos ni gastos"}</strong>
+                </li>
+                <li>
+                  <span>Cierre</span>
+                  <strong>{closeResult.closingEntryId}</strong>
+                </li>
+                <li>
+                  <span>Apertura</span>
+                  <strong>{closeResult.openingEntryId}</strong>
+                </li>
+                {closeResult.followUps.map((followUp) => (
+                  <li key={followUp}>
+                    <span>{followUp}</span>
+                    <CocoaBadge tone="warning">Pendiente</CocoaBadge>
                   </li>
                 ))}
               </ul>
-            </div>
-          )}
+            </CocoaCallout>
+          ) : null}
+        </>
+      ) : null}
 
-          {selected.regularizationLinePreview && selected.regularizationLinePreview.length > 0 && (
-            <details open style={{ marginBottom: 12 }}>
-              <summary style={{ cursor: "pointer", fontWeight: 600 }}>
-                Vista previa del asiento de regularización ({selected.regularizationLinePreview.length} líneas)
-              </summary>
-              <table className="cm-table" style={{ marginTop: 8 }}>
-                <thead>
-                  <tr>
-                    <th>Cuenta</th>
-                    <th>Nombre</th>
-                    <th style={{ textAlign: "right" }}>Debe</th>
-                    <th style={{ textAlign: "right" }}>Haber</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {selected.regularizationLinePreview.map((l: RegularizationLine, idx: number) => (
-                    <tr key={`${l.accountCode}-${idx}`}>
-                      <td><strong>{l.accountCode}</strong></td>
-                      <td>{l.accountName}</td>
-                      <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
-                        {l.debit > 0 ? fmt(l.debit) : ""}
-                      </td>
-                      <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>
-                        {l.credit > 0 ? fmt(l.credit) : ""}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </details>
-          )}
+      {/* ---- Create -------------------------------------------------------- */}
+      <CocoaDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        title="Nuevo ejercicio fiscal"
+        description="El código nombra el ejercicio (normalmente el año); los asientos fechados entre el inicio y el fin se numeran en él."
+        confirmLabel={ACTIONS.create}
+        cancelLabel={ACTIONS.cancel}
+        busy={creating}
+        onConfirm={createYear}
+        size="md"
+      >
+        <div className="cocoa-stack" data-gap="3">
+          <CocoaFormRow columns={3} min={120}>
+            <CocoaField label="Código" required>
+              <CocoaInput value={newCode} onChange={setNewCode} placeholder={String(currentYear)} maxLength={40} />
+            </CocoaField>
+            <CocoaField label="Inicio" required>
+              <CocoaDatePicker value={newStart} onChange={setNewStart} />
+            </CocoaField>
+            <CocoaField label="Fin" required error={newStart > newEnd ? "El fin no puede ser anterior al inicio." : undefined}>
+              <CocoaDatePicker value={newEnd} onChange={setNewEnd} />
+            </CocoaField>
+          </CocoaFormRow>
+          {createError ? (
+            <CocoaCallout tone="danger" title="No se pudo crear el ejercicio" role="alert">
+              {financeErrorMessage(createError)}
+            </CocoaCallout>
+          ) : null}
+        </div>
+      </CocoaDialog>
 
-          {selected.status === "closed" ? (
-            <div className="bo-card" style={{ borderLeft: "3px solid var(--success-ink)" }}>
-              <h4 style={{ marginTop: 0 }}>Ejercicio cerrado</h4>
-              <p style={{ margin: "4px 0" }}>Cerrado el: {selected.closedAt}</p>
-              <p style={{ margin: "4px 0" }}>Resultado: <strong>{fmt(selected.netResult)}</strong></p>
-              <ul style={{ margin: 0, paddingLeft: 20 }}>
-                <li>
-                  Asiento de cierre · <code>{selected.closingEntryId ?? "—"}</code>
-                </li>
-                <li>
-                  Asiento de apertura (año siguiente) · <code>{selected.openingEntryId ?? "—"}</code>
-                </li>
-              </ul>
-            </div>
-          ) : (
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                type="button"
-                disabled={!canClose}
-                onClick={() => setConfirming(true)}
-                title={canClose ? "" : "Resuelve las comprobaciones bloqueantes antes de cerrar."}
-              >
-                Cerrar ejercicio {selected.code}
-              </button>
-            </div>
-          )}
+      {/* ---- Close (critical) -------------------------------------------------- */}
+      <CocoaDialog
+        open={confirmClose}
+        onClose={() => setConfirmClose(false)}
+        tone="destructive"
+        title={selected ? `¿Cerrar el ejercicio ${selected.code}?` : "¿Cerrar el ejercicio?"}
+        description={`Operación crítica: se contabilizan el asiento de regularización (resultado previsto ${money(selected?.netResultPreview)}), el de cierre a ${selected ? date(selected.endDate, "long") : "la fecha de fin"} y el de apertura del ejercicio siguiente. Después, ningún asiento admite fechas dentro del ejercicio salvo que lo reabras.`}
+        confirmLabel="Confirmar cierre"
+        cancelLabel={ACTIONS.cancel}
+        busy={closing}
+        onConfirm={closeYear}
+        size="md"
+      >
+        <div className="cocoa-stack" data-gap="3">
+          <CocoaField label="Crear el ejercicio siguiente si no existe" inline help="La apertura necesita un ejercicio destino.">
+            <CocoaSwitch checked={createNextYear} onChange={setCreateNextYear} size="small" />
+          </CocoaField>
+          <p className="cocoa-caption">El traspaso del resultado a reservas (113 / 1130) se hace después con un asiento manual en el diario.</p>
+          {closeError ? (
+            <CocoaCallout tone="danger" title="No se pudo cerrar" role="alert">
+              {financeErrorMessage(closeError)}
+            </CocoaCallout>
+          ) : null}
+        </div>
+      </CocoaDialog>
 
-          {confirming && (
-            <div
-              className="bo-card"
-              style={{
-                marginTop: 12,
-                borderLeft: "3px solid var(--warn-ink)",
-                background: "var(--warn-bg, #fff7e0)"
-              }}
-            >
-              <h4 style={{ marginTop: 0 }}>Confirmar cierre de {selected.code}</h4>
-              <p>
-                Esta acción es <strong>crítica</strong> y creará 3 asientos contables irreversibles
-                de forma automática:
-              </p>
-              <ol>
-                <li>
-                  <strong>Asiento de regularización</strong> · cierra 6xx/7xx contra la cuenta 129. Resultado
-                  previsto <strong>{fmt(selected.netResultPreview)}</strong>.
-                </li>
-                <li>
-                  <strong>Asiento de cierre</strong> · lleva a cero todas las cuentas patrimoniales al 31/12.
-                </li>
-                <li>
-                  <strong>Asiento de apertura</strong> · replica los saldos al 1/1 del año siguiente.
-                </li>
-              </ol>
-              <p style={{ fontSize: 13, color: "var(--ink-muted)" }}>
-                Nota: el traspaso del resultado a reservas (113/1130) se realiza posteriormente como
-                un asiento manual.
-              </p>
-              <div style={{ display: "flex", gap: 8 }}>
-                <button type="button" onClick={handleClose} disabled={closing}>
-                  {closing ? "Cerrando…" : "Confirmar cierre"}
-                </button>
-                <button type="button" className="ghost" onClick={() => setConfirming(false)} disabled={closing}>
-                  Cancelar
-                </button>
-              </div>
-              {closeError && <p style={{ color: "var(--danger-ink)", marginTop: 8 }}>{closeError}</p>}
-            </div>
-          )}
-
-          {closeResult && (
-            <div className="bo-card" style={{ marginTop: 12, borderLeft: "3px solid var(--success-ink)" }}>
-              <h4 style={{ marginTop: 0 }}>Cierre completado</h4>
-              <p>Resultado del ejercicio: <strong>{fmt(closeResult.netResult)}</strong></p>
-              <ul style={{ paddingLeft: 20 }}>
-                <li>
-                  Regularización · <code>{closeResult.regularizationEntryId}</code>
-                </li>
-                <li>
-                  Cierre · <code>{closeResult.closingEntryId}</code>
-                </li>
-                <li>
-                  Apertura · <code>{closeResult.openingEntryId}</code>
-                </li>
-              </ul>
-              {closeResult.followUps.length > 0 && (
-                <>
-                  <p style={{ fontWeight: 600, marginBottom: 4 }}>Tareas pendientes:</p>
-                  <ul style={{ paddingLeft: 20 }}>
-                    {closeResult.followUps.map((f: string) => (
-                      <li key={f}>{f}</li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </div>
-          )}
-        </section>
-      )}
-    </>
+      {/* ---- Reopen -------------------------------------------------------- */}
+      <CocoaDialog
+        open={reopenOpen}
+        onClose={() => setReopenOpen(false)}
+        tone="destructive"
+        title={selected ? `¿Reabrir el ejercicio ${selected.code}?` : "¿Reabrir el ejercicio?"}
+        description="Los asientos de regularización, cierre y apertura se anulan con reversos marcados (nunca se borran) y el ejercicio vuelve a admitir asientos."
+        confirmLabel={ACTIONS.reopen}
+        cancelLabel={ACTIONS.cancel}
+        busy={reopening}
+        onConfirm={reopenYear}
+        size="md"
+      >
+        <div className="cocoa-stack" data-gap="3">
+          <CocoaField label="Motivo" required error={reopenError && reopenReason.trim() === "" ? "Indica el motivo de la reapertura." : undefined}>
+            <CocoaInput value={reopenReason} onChange={setReopenReason} multiline rows={3} placeholder="Factura de diciembre recibida tras el cierre…" maxLength={1000} />
+          </CocoaField>
+          {reopenError && reopenReason.trim() !== "" ? (
+            <CocoaCallout tone="danger" title="No se pudo reabrir" role="alert">
+              {financeErrorMessage(reopenError)}
+            </CocoaCallout>
+          ) : null}
+        </div>
+      </CocoaDialog>
+    </CocoaPage>
   );
 }
+
+export default YearEndCloseScreen;

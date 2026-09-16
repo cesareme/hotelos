@@ -36,7 +36,7 @@ git 78edb35:routes/backoffice.routes.tsx (205 rutas antiguas → legacyRoutes) �
    bajo `/desarrollo/*`, etiquetas ≤ 28 caracteres) y falla en voz alta si algo no cuadra. `--check` no escribe:
    sale con 1 si el JSON está desactualizado (el test de contrato lo ejecuta cuando el CSV existe en local).
    El orden de ítems y pestañas se lee de las tablas §1 del `.md` (el CSV no tiene columna de orden); si el `.md`
-   no está, se usa el orden del CSV. Cifras actuales: 9 categorías · 64 ítems · 80 pestañas · 20 dev-only ·
+   no está, se usa el orden del CSV. Cifras actuales: 9 categorías · 66 ítems · 94 pestañas · 20 dev-only ·
    2 públicas · 205 redirecciones · 24 alias · 72 retiradas.
 3. **Forma del JSON**:
    ```
@@ -116,7 +116,7 @@ git 78edb35:routes/backoffice.routes.tsx (205 rutas antiguas → legacyRoutes) �
    esté en `SCREEN_COMPONENTS` y viceversa. Si sustituye a una antigua, la fila `retire` del CSV y la redirección
    `/backoffice/*` → URL nueva quedan en `legacyRoutes`.
 4. **Pestaña nueva** (`merge-into`): el ítem padre es un contenedor `NavItemTabs` (`screens/tabs/<categoría>/<Item>Tabs.tsx`,
-   35 hoy). El contenedor solo aporta el loader perezoso de cada clave; etiquetas, URLs, roles, `modulesAny`,
+   37 hoy). El contenedor solo aporta el loader perezoso de cada clave; etiquetas, URLs, roles, `modulesAny`,
    `detail` y el aterrizaje por rol salen del JSON (`screens/tabs/nav-item-tabs.ts`: `buildItemTabs`,
    `landingKeysFor`, `detailParamsFor`):
 
@@ -142,6 +142,14 @@ git 78edb35:routes/backoffice.routes.tsx (205 rutas antiguas → legacyRoutes) �
      `isVisible = gate.isVisible` y `defaultTab`/`mobileDefaultTab` de `landingKeysFor`. Una tira con una sola pestaña
      pintada se oculta por CSS (una pestaña no es una elección). `baseRoles` estrecha los roles de la pestaña base
      («Recepción» de Mi día no es para pisos/fnb); `tabFilter` descarta pestañas en una URL concreta.
+   - **Contenedor sin pestañas visibles** (qa#12): `emptyTabsReason` (`nav-item-tabs.ts`) distingue la causa y el
+     contenedor pinta un `CocoaState kind="empty"` en lugar de la tira (atributo `data-nav-empty="module|modules_unknown|role"`
+     en `.anf-nav-tabs` para las sondas): módulo desactivado para un perfil al que el ítem sí va → «Módulo no activado»
+     con «Activar módulo» si el usuario tiene `modules.enable` (mismo destino que el Sidebar, `ModuleManager#modulo=<código>`)
+     o «Pide a dirección que lo active…» si no; lista de módulos ilegible (403 o fallo de carga) → «Secciones no disponibles»
+     sin afirmar que el módulo esté apagado (con fallo de carga solo se pinta el `ErrorState` con «Reintentar»); ningún
+     rol del perfil en el ítem → `UI_STATES.forbidden` («Sin acceso»). El texto genérico de `CocoaRouteTabs` («No hay
+     secciones disponibles para tu perfil») ya no se alcanza desde un contenedor.
    - **Pantalla alojada: UNA convención** (`screens/tabs/TabHost.tsx`). Dentro del contenedor la pantalla lee
      `useTabHost()` (null si va sola; `{ screenKey, basePath, title }` dentro) y, si hay host, no pinta ni eyebrow ni H1
      —el contenedor ya los lleva— y conserva subtítulo, vistas internas y su fila de acciones (`HOSTED_ACTIONS_ROW`
@@ -275,7 +283,7 @@ Si algún día se quiere el filtro estricto por permiso, va como columna `permis
 
 **Router** (`apps/admin-web/src/routes/backoffice.routes.tsx`, módulo puro; `App.tsx` lo consume):
 
-- `BACKOFFICE_ROUTES` = `allUrls()` del árbol (166 rutas `{ path, screen, kind: item|tab|dev-only|public, devOnly,
+- `BACKOFFICE_ROUTES` = `allUrls()` del árbol (183 rutas `{ path, screen, kind: item|tab|dev-only|public, devOnly,
   public }`; la URL base de cada contenedor va ANTES que las de sus pestañas). `LEGACY_ROUTES` = `NAV_TREE.legacyRoutes`
   (205), `LEGACY_SCREEN_KEYS` = `aliases` (24), `RETIRED_SCREEN_KEYS` (72, `retiredScreenUrl()` da la cobertura),
   `DEV_ONLY_ROUTES` (20), `PUBLIC_ROUTES` (2). No hay tabla escrita a mano.
@@ -297,7 +305,7 @@ Si algún día se quiere el filtro estricto por permiso, va como columna `permis
   con `reservationId`, `TenantDetailScreen#org=…`, `ModuleManager#modulo=<código>`); los resultados de entidad de ⌘K
   (`layouts/BackOfficeLayout.tsx`, `buildHitPath`) derivan la URL de `hit.screen` con `urlForScreenWithParams` /
   `itemUrlForScreen`.
-- **Registro**: `SCREEN_COMPONENTS` (App.tsx, 190 claves) = pantallas (`lazyNamed`) + contenedores (`lazyTab`, una
+- **Registro**: `SCREEN_COMPONENTS` (App.tsx, 207 claves) = pantallas (`lazyNamed`) + contenedores (`lazyTab`, una
   entrada por clave de ítem y de pestaña) + alias; sin las 72 retiradas.
 - **Guardas de commit** (`node scripts/check-discoverability.mjs`, en `.husky/pre-commit`):
   `check-sidebar-coverage.mjs` (cobertura por URL del árbol: toda URL resuelve a un componente vía App.tsx o loader de

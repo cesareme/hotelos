@@ -17,7 +17,9 @@ import {
   type NavItem,
   type NavTab
 } from "../../navigation/nav-tree";
-import { canSee, moduleAllows, type NavGate, type RoleHomeOptions, type RoleToken } from "../../navigation/role-tokens";
+import { canSee, moduleAllows, roleAllows, type NavGate, type RoleHomeOptions, type RoleToken } from "../../navigation/role-tokens";
+import { UI_STATES } from "../../content/actions";
+import { moduleDisabledCopy } from "../operations/module-gate";
 
 /** Lazy loader per screen key of the tree (`{ FrontDeskDashboard: () => import(...) }`). */
 export type TabLoaders = Readonly<Record<string, LazyTabLoader>>;
@@ -140,6 +142,79 @@ export function missingLoaders(item: NavItem, loaders: TabLoaders): string[] {
  */
 export function isTabVisible(gate: NavGate, tokens: readonly RoleToken[], modules: readonly string[]): boolean {
   return tokens.length === 0 ? moduleAllows(gate, modules) : canSee(gate, tokens, modules);
+}
+
+// ----------------------------------------------------------------- empty container (qa#12)
+
+export type EmptyTabsReason =
+  /** Some tab passes the role gate, but none of those has an enabled module (paint «Módulo no activado»). */
+  | "module"
+  /** Idem, but the module list is not readable (403 on GET /modules, or it failed to load): unknown, never «no activado». */
+  | "modules_unknown"
+  /** No tab passes the role gate: the item is not for this profile. */
+  | "role";
+
+export type EmptyTabsOptions = {
+  /** GET /modules answered 403 (or failed) for this user: the list is unknown, not empty. */
+  listUnavailable?: boolean;
+};
+
+/**
+ * Why a container paints no tab, or null when at least one is visible
+ * (`isTabVisible`, the gate NavItemTabs injects). The role gate is judged
+ * first: a profile with no tab in the item reads «Sin acceso» even if the
+ * module is off too, while a profile the item IS for (the platform admin in
+ * prop_123 with outlet_pos disabled, qa#12) reads that the module is not
+ * enabled — never «para tu perfil». With no token only the module gate
+ * applies (custom role, §8), so the reason is never `role` there.
+ */
+export function emptyTabsReason(
+  tabs: readonly CocoaRouteTab[],
+  tokens: readonly RoleToken[],
+  modules: readonly string[],
+  options: EmptyTabsOptions = {}
+): EmptyTabsReason | null {
+  if (tabs.some((tab) => isTabVisible(tab, tokens, modules))) return null;
+  const roleAllowed = tokens.length === 0 ? tabs : tabs.filter((tab) => roleAllows(tab, tokens));
+  if (roleAllowed.length === 0) return "role";
+  return options.listUnavailable ? "modules_unknown" : "module";
+}
+
+/** Module codes that would unlock a tab of the container for these tokens, in tree order and deduplicated («Activar módulo» preselects the first). */
+export function unlockingModulesFor(tabs: readonly CocoaRouteTab[], tokens: readonly RoleToken[]): string[] {
+  const codes = new Set<string>();
+  for (const tab of tabs) {
+    if (tokens.length > 0 && !roleAllows(tab, tokens)) continue;
+    for (const code of tab.modulesAny ?? []) codes.add(code);
+  }
+  return [...codes];
+}
+
+export type EmptyTabsCopy = {
+  title: string;
+  message: string;
+  /** «Activar módulo», only for `module` and only when the user holds `modules.enable`. */
+  cta?: string;
+};
+
+/**
+ * Copy of the empty container per reason: the canonical UI_STATES entries
+ * (`moduleDisabled` through `moduleDisabledCopy`, the same the module-gated
+ * dashboards paint; `forbidden` for a role gap) plus an honest sentence when
+ * the module list could not be read.
+ */
+export function emptyTabsCopy(reason: EmptyTabsReason, options: { canEnable: boolean }): EmptyTabsCopy {
+  switch (reason) {
+    case "module":
+      return moduleDisabledCopy(options.canEnable);
+    case "modules_unknown":
+      return {
+        title: "Secciones no disponibles",
+        message: "No hemos podido comprobar qué módulos están activos en la propiedad, así que estas secciones quedan ocultas. Pide a dirección que revise tu acceso."
+      };
+    case "role":
+      return { title: UI_STATES.forbidden.title, message: UI_STATES.forbidden.message };
+  }
 }
 
 export type LandingKeys = { defaultTab: string; mobileDefaultTab: string };

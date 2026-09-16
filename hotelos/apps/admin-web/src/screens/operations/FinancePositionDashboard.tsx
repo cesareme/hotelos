@@ -1,306 +1,582 @@
-import { useTabHost } from "../tabs/TabHost";
-import { getActivePropertyId } from "../../services/activeProperty";
+// Tesorería — Finanzas › Tesorería (/finanzas/tesoreria, base tab of TesoreriaTabs).
+//
+// Cocoa 22 (docs/design/COCOA-22.md §4, «DashboardAlojado»): KPI strip → grid
+// 8/4 (previsión 30 · 60 · 90 días · cuentas bancarias) → 6/6 (cuentas a
+// cobrar · cuentas a pagar, con antigüedad y documentos) → 6/6 (principales
+// deudores · últimos cobros). Hosted, the container paints eyebrow and title.
+//
+// Data (Tanda 6 · módulo treasury, banking.read): GET /treasury/position
+// (caja 570 + bancos 572 desde el libro y el último extracto, `source` y
+// `warnings` dicen cuán honesta es la cifra), /treasury/receivables,
+// /treasury/payables (aging + documentos, `method` explica el cálculo) and
+// /treasury/forecast (30/60/90, `assumptions`). The legacy GET
+// /dashboards/finance-position (analytics.read) keeps feeding `labels`,
+// `kpis.monthCollectedPct`, top debtors and the latest payments. Money on the
+// treasury contract travels as decimal strings ("1234.50"): lib/format turns
+// it into es-ES text only when painting. Everything polls every 60 s as before.
+
+import { useState, type CSSProperties } from "react";
+import type { ForecastBucket, ForecastBucketLabel, PayableItem, ReceivableItem, TreasuryAgingBuckets, TreasuryBankRow } from "@hotelos/shared";
 import { useApiData } from "../../hooks/useApiData";
-import { EmptyState } from "../../components/States";
-import { dateTime, money, percent } from "../../lib/format";
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import type { TreasuryForecast, TreasuryPayables, TreasuryPosition, TreasuryReceivables } from "../../services/treasuryApi";
+import { navigateTo } from "../../lib/navigate";
+import { useTabHost } from "../tabs/TabHost";
+import { toArray } from "../../utils/toArray";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { date, dateTime, money, number, percent, plural, toNumber } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaStat,
+  CocoaState,
+  CocoaTable,
+  toneInk,
+  type CocoaBarsDatum,
+  type CocoaKpiStatus,
+  type CocoaTableColumn,
+  type CocoaTone
+} from "../../components/cocoa";
 
-const PROPERTY_ID = getActivePropertyId();
+// ---------------------------------------------------------------------------
+// Legacy dashboard (labels, % cobrado del mes, top debtors, últimos cobros).
+// ---------------------------------------------------------------------------
 
-type AgingBuckets = {
-  current: number;
-  days0_30: number;
-  days31_60: number;
-  days61_90: number;
-  days90Plus: number;
-};
+type LegacyAging = { current: number; days0_30: number; days31_60: number; days61_90: number; days90Plus: number };
 
-type FinancePositionDashboardData = {
-  kpis: {
-    accountsReceivableTotal: number;
-    accountsPayableTotal: number;
-    cashOnHand: number;
-    monthCollectedPct: number;
-  };
-  arAging: AgingBuckets;
-  apAging: AgingBuckets;
+type LegacyDashboard = {
+  kpis: { accountsReceivableTotal: number; accountsPayableTotal: number; cashOnHand: number; monthCollectedPct: number; pendingSettlements?: number };
+  arAging: LegacyAging;
+  apAging: LegacyAging;
   topDebtors: Array<{ guestOrAccount: string; invoiceCount: number; outstanding: number }>;
   topCreditors: Array<{ supplierName: string; billCount: number; outstanding: number }>;
-  recentPayments: Array<{ id: string; amount: number; method: string; capturedAt?: string; reference?: string }>;
+  recentPayments: Array<{ id: string; amount: number; method: string; methodLabel?: string; capturedAt?: string; reference?: string }>;
+  source?: string;
+  warnings?: string[];
+  labels?: Record<string, string>;
 };
 
-function pct(value: number | null | undefined): string {
-  return percent(value);
+type Debtor = LegacyDashboard["topDebtors"][number];
+type RecentPayment = LegacyDashboard["recentPayments"][number];
+
+const POLL_MS = 60000;
+const MAX_DOCUMENTS = 8;
+
+// Spanish fallbacks for the `labels` the legacy dashboard sends.
+const LABELS: Record<string, string> = {
+  accountsReceivableTotal: "Pendiente de cobro",
+  accountsPayableTotal: "Pendiente de pago",
+  cashOnHand: "Caja y bancos",
+  monthCollectedPct: "% cobrado del mes",
+  arAging: "Antigüedad de cobros",
+  apAging: "Antigüedad de pagos",
+  topDebtors: "Principales deudores",
+  topCreditors: "Principales acreedores",
+  recentPayments: "Últimos cobros",
+  banks: "Cuentas bancarias",
+  current: "No vencido",
+  days0_30: "0-30 días",
+  days31_60: "31-60 días",
+  days61_90: "61-90 días",
+  days90Plus: "> 90 días"
+};
+
+const BUCKET_LABEL: Record<ForecastBucketLabel, string> = { overdue: "Vencido", "0-30": "0-30 días", "31-60": "31-60 días", "61-90": "61-90 días", "90+": "> 90 días" };
+
+const RECEIVABLE_KIND: Record<ReceivableItem["kind"], string> = { invoice: "Factura", folio: "Folio abierto" };
+const PAYABLE_KIND: Record<PayableItem["kind"], string> = { supplier_bill: "Factura recibida", payroll_period: "Nómina", commission_accrual: "Comisión de canal", tax_liability: "Obligación fiscal" };
+
+// Text styles (tokens only; layout comes from the utility classes).
+const secondaryStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
+const captionStyle: CSSProperties = { display: "block", fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-secondary)" };
+const growStyle: CSSProperties = { flex: "1 1 auto", minWidth: 0 };
+
+/** Small toned amount (≤ 13 px): AA ink of the tone, plain label for neutral. */
+function amountStyle(value: number | null): CSSProperties {
+  const tone: CocoaTone = value === null || Math.abs(value) < 0.005 ? "neutral" : value < 0 ? "danger" : "success";
+  return { color: tone === "neutral" ? "var(--cocoa-label)" : toneInk(tone) };
 }
 
-function formatDateTime(value?: string): string {
-  return dateTime(value);
+function agingStatus(aging: TreasuryAgingBuckets | undefined): CocoaKpiStatus {
+  if (!aging) return "ok";
+  if ((toNumber(aging.days90Plus) ?? 0) > 0) return "critical";
+  if ((toNumber(aging.days61_90) ?? 0) > 0) return "warning";
+  return "ok";
 }
 
-function bucketTotal(buckets: AgingBuckets | undefined): number {
-  if (!buckets) return 0;
+function collectedStatus(pct: number | undefined): CocoaKpiStatus {
+  if (pct === undefined) return "ok";
+  return pct >= 80 ? "ok" : pct >= 50 ? "warning" : "critical";
+}
+
+function signedTone(value: number): CocoaTone {
+  return Math.abs(value) < 0.005 ? "neutral" : value > 0 ? "success" : "danger";
+}
+
+// ---------------------------------------------------------------------------
+// Columns (outside the component, typed with the row).
+// ---------------------------------------------------------------------------
+
+const RECEIVABLE_COLUMNS: CocoaTableColumn<ReceivableItem>[] = [
+  {
+    key: "reference",
+    label: "Documento",
+    render: (r) => (
+      <>
+        <strong>{r.reference}</strong>
+        <span style={captionStyle}>
+          {RECEIVABLE_KIND[r.kind] ?? r.kind} · {r.counterparty}
+        </span>
+      </>
+    )
+  },
+  {
+    key: "expectedOn",
+    label: "Cobro previsto",
+    hideOnNarrow: true,
+    render: (r) => (
+      <span className="cocoa-cluster">
+        {date(r.expectedOn, "short")}
+        {r.assumedDate ? <CocoaBadge tone="neutral" size="small" title="Fecha estimada: emisión más 30 días">estimada</CocoaBadge> : null}
+        {r.daysOverdue > 0 ? <CocoaBadge tone="danger" size="small">{plural(r.daysOverdue, "día vencido", "días vencido")}</CocoaBadge> : null}
+      </span>
+    )
+  },
+  { key: "outstanding", label: "Pendiente", align: "right", render: (r) => <strong>{money(r.outstanding)}</strong> }
+];
+
+const PAYABLE_COLUMNS: CocoaTableColumn<PayableItem>[] = [
+  {
+    key: "reference",
+    label: "Documento",
+    render: (r) => (
+      <>
+        <strong>{r.reference}</strong>
+        <span style={captionStyle}>
+          {PAYABLE_KIND[r.kind] ?? r.kind} · {r.counterparty}
+        </span>
+      </>
+    )
+  },
+  {
+    key: "expectedOn",
+    label: "Pago previsto",
+    hideOnNarrow: true,
+    render: (r) => (
+      <span className="cocoa-cluster">
+        {date(r.expectedOn, "short")}
+        {r.assumedDate ? <CocoaBadge tone="neutral" size="small" title="Fecha estimada por convención">estimada</CocoaBadge> : null}
+        {r.daysOverdue > 0 ? <CocoaBadge tone="danger" size="small">{plural(r.daysOverdue, "día vencido", "días vencido")}</CocoaBadge> : null}
+      </span>
+    )
+  },
+  { key: "outstanding", label: "Pendiente", align: "right", render: (r) => <strong>{money(r.outstanding)}</strong> }
+];
+
+const DEBTOR_COLUMNS: CocoaTableColumn<Debtor>[] = [
+  { key: "guestOrAccount", label: "Cliente", render: (d) => <strong>{d.guestOrAccount}</strong> },
+  { key: "invoiceCount", label: "Facturas", align: "right", hideOnNarrow: true, render: (d) => number(d.invoiceCount) },
+  { key: "outstanding", label: "Pendiente", align: "right", render: (d) => <strong>{money(d.outstanding)}</strong> }
+];
+
+// ---------------------------------------------------------------------------
+// Pieces
+// ---------------------------------------------------------------------------
+
+/** Five aging buckets as a list; the > 90 bucket is painted in danger when it holds money. */
+function AgingList({ aging, labels }: { aging: TreasuryAgingBuckets; labels: (key: string) => string }) {
+  const rows: Array<[string, string]> = [
+    ["current", aging.current],
+    ["days0_30", aging.days0_30],
+    ["days31_60", aging.days31_60],
+    ["days61_90", aging.days61_90],
+    ["days90Plus", aging.days90Plus]
+  ];
   return (
-    (buckets.current ?? 0) +
-    (buckets.days0_30 ?? 0) +
-    (buckets.days31_60 ?? 0) +
-    (buckets.days61_90 ?? 0) +
-    (buckets.days90Plus ?? 0)
+    <ul className="c22-section__list" aria-label="Antigüedad de los saldos">
+      {rows.map(([key, value]) => {
+        const amount = toNumber(value) ?? 0;
+        const late = (key === "days90Plus" || key === "days61_90") && amount > 0;
+        return (
+          <li key={key}>
+            <span style={secondaryStyle}>{labels(key)}</span>
+            <strong style={amountStyle(late ? -amount : null)}>{money(value)}</strong>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
+
+/** «Cómo se calcula» — the `method` / `assumptions` sentences of the API, folded by default. */
+function MethodNote({ id, items }: { id: string; items: string[] }) {
+  const [open, setOpen] = useState(false);
+  if (items.length === 0) return null;
+  return (
+    <div className="cocoa-stack" data-gap="2">
+      <div className="cocoa-row" data-gap="2">
+        <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setOpen((v) => !v)} aria-expanded={open} aria-controls={id}>
+          {open ? "Ocultar el método de cálculo" : "Cómo se calcula"}
+        </CocoaButton>
+      </div>
+      {open ? (
+        <ul id={id} className="c22-section__list" aria-label="Método de cálculo">
+          {items.map((item, index) => (
+            <li key={index}>
+              <span style={secondaryStyle}>{item}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </div>
+  );
+}
+
+function SectionError({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return <CocoaState kind="error" inline title="No se pudo cargar este bloque." message={message} onRetry={onRetry} />;
+}
+
+// Mirror skeleton: the KPI strip and the three grid rows, same spans.
+function TreasurySkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={6} />
+      <CocoaSkeleton.Grid rows={[[8, 4], [6, 6], [6, 6]]} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Screen
+// ---------------------------------------------------------------------------
 
 export function FinancePositionDashboard() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
-  const { data, loading, error, refresh } = useApiData<FinancePositionDashboardData>(
-    "/dashboards/finance-position",
-    { pollIntervalMs: 60000, query: { propertyId: PROPERTY_ID } }
-  );
+  const hosted = useTabHost() !== null;
+  const propertyId = getActivePropertyId();
+  const propertyName = getActiveProperty().propertyName;
+  const query = { propertyId };
 
-  const kpis = data?.kpis;
-  const arAging = data?.arAging;
-  const apAging = data?.apAging;
-  const topDebtors = data?.topDebtors ?? [];
-  const topCreditors = data?.topCreditors ?? [];
-  const recentPayments = data?.recentPayments ?? [];
+  const dash = useApiData<LegacyDashboard>("/dashboards/finance-position", { pollIntervalMs: POLL_MS, query });
+  const position = useApiData<TreasuryPosition>("/treasury/position", { pollIntervalMs: POLL_MS, query });
+  const receivables = useApiData<TreasuryReceivables>("/treasury/receivables", { pollIntervalMs: POLL_MS, query });
+  const payables = useApiData<TreasuryPayables>("/treasury/payables", { pollIntervalMs: POLL_MS, query });
+  const forecast = useApiData<TreasuryForecast>("/treasury/forecast", { pollIntervalMs: POLL_MS, query });
 
-  const collectedStatus: "ok" | "warn" | "error" =
-    !kpis ? "warn"
-      : kpis.monthCollectedPct >= 80 ? "ok"
-      : kpis.monthCollectedPct >= 50 ? "warn"
-      : "error";
+  const refreshAll = () => {
+    dash.refresh();
+    position.refresh();
+    receivables.refresh();
+    payables.refresh();
+    forecast.refresh();
+  };
 
-  const arStatus: "ok" | "warn" | "error" =
-    !arAging ? "warn"
-      : arAging.days90Plus > 0 ? "error"
-      : arAging.days61_90 > 0 ? "warn"
-      : "ok";
+  const pos = position.data;
+  const legacy = dash.data;
+  const labels = (key: string) => legacy?.labels?.[key] ?? LABELS[key] ?? key;
 
-  const apStatus: "ok" | "warn" | "error" =
-    !apAging ? "warn"
-      : apAging.days90Plus > 0 ? "error"
-      : apAging.days61_90 > 0 ? "warn"
-      : "ok";
+  const banks = toArray<TreasuryBankRow>(pos?.banks);
+  const warnings = toArray<string>(pos?.warnings);
+  const topDebtors = toArray<Debtor>(legacy?.topDebtors);
+  const recentPayments = toArray<RecentPayment>(legacy?.recentPayments);
+  const receivableItems = toArray<ReceivableItem>(receivables.data?.items);
+  const payableItems = toArray<PayableItem>(payables.data?.items);
+  const buckets = toArray<ForecastBucket>(forecast.data?.buckets);
+  const horizons = toArray<TreasuryForecast["horizons"][number]>(forecast.data?.horizons);
+
+  const anyLoading = dash.loading || position.loading || receivables.loading || payables.loading || forecast.loading;
+  const state = !pos && !legacy ? (position.loading || dash.loading ? "loading" : "error") : "ready";
+  const fatalError = position.error ?? dash.error ?? undefined;
+
+  const cashAndBanks = toNumber(pos?.totals.cashAndBanks);
+  const monthCollected = legacy?.kpis.monthCollectedPct;
+
+  const forecastBars: CocoaBarsDatum[] = buckets.map((bucket) => {
+    const net = toNumber(bucket.net) ?? 0;
+    return {
+      label: BUCKET_LABEL[bucket.label] ?? bucket.label,
+      value: net,
+      tone: signedTone(net),
+      hint: `Cobros ${money(bucket.inflows)} · Pagos ${money(bucket.outflows)}`
+    };
+  });
+
+  const asOfLabel = pos ? `datos a ${date(pos.asOf, "short")}` : undefined;
+  const subtitle = hosted ? undefined : `Caja, bancos, cobros y pagos pendientes desde el libro contable, con previsión a 30, 60 y 90 días.${asOfLabel ? ` Se actualiza cada minuto · ${asOfLabel}.` : ""}`;
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : (
-            <>
-              <div className="bo-page-eyebrow">Finanzas · Tesorería</div>
-              <h1 className="bo-page-title">Tesorería</h1>
-            </>
-          )}
-          <p className="bo-page-subtitle">
-            Monitor de salud financiera en tiempo real: cuentas a cobrar, cuentas a pagar, tesorería disponible
-            y porcentaje de cobro del mes en curso. Solo lectura; refresca automáticamente cada 60 segundos.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" className="ghost" onClick={refresh}>↻ Actualizar</button>
-        </div>
-      </div>
-
-      {error ? (
-        <section className="bo-card" style={{ borderColor: "var(--danger-ink)" }}>
-          Couldn't load this view right now. Refresh to retry.
-        </section>
-      ) : null}
-
-      <section className="rev-kpi-grid">
-        <article className={`rev-kpi ${arStatus === "error" ? "rev-kpi-error" : arStatus === "warn" ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Accounts Receivable</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.accountsReceivableTotal)}</div>
-          <div className="rev-kpi-delta">{topDebtors.length} deudores activos</div>
-        </article>
-        <article className={`rev-kpi ${apStatus === "error" ? "rev-kpi-error" : apStatus === "warn" ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Accounts Payable</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.accountsPayableTotal)}</div>
-          <div className="rev-kpi-delta">{topCreditors.length} proveedores con saldo</div>
-        </article>
-        <article className="rev-kpi rev-kpi-ok">
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Cash on hand</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : money(kpis?.cashOnHand)}</div>
-          <div className="rev-kpi-delta">Pagos capturados menos reembolsos</div>
-        </article>
-        <article className={`rev-kpi ${collectedStatus === "error" ? "rev-kpi-error" : collectedStatus === "warn" ? "rev-kpi-warn" : "rev-kpi-ok"}`}>
-          <div className="rev-kpi-head"><span className="rev-kpi-label">Cobrado este mes</span></div>
-          <div className="rev-kpi-value">{loading && !data ? "…" : pct(kpis?.monthCollectedPct)}</div>
-          <div className="rev-kpi-delta">Cobrado / facturado mes en curso</div>
-        </article>
-      </section>
-
-      <section className="bo-grid two">
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Aging</p>
-              <h3>Cuentas a cobrar (AR)</h3>
-            </div>
-            <span className="bo-chip">{money(bucketTotal(arAging))}</span>
-          </div>
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>No vencido</th>
-                  <th>0 – 30 días</th>
-                  <th>31 – 60 días</th>
-                  <th>61 – 90 días</th>
-                  <th>90+ días</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>{money(arAging?.current)}</td>
-                  <td>{money(arAging?.days0_30)}</td>
-                  <td>{money(arAging?.days31_60)}</td>
-                  <td>{money(arAging?.days61_90)}</td>
-                  <td className={(arAging?.days90Plus ?? 0) > 0 ? "cm-row-error" : undefined}>
-                    <strong>{money(arAging?.days90Plus)}</strong>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </article>
-
-        <article className="bo-card">
-          <div className="bo-card-head">
-            <div>
-              <p className="bo-muted">Aging</p>
-              <h3>Cuentas a pagar (AP)</h3>
-            </div>
-            <span className="bo-chip">{money(bucketTotal(apAging))}</span>
-          </div>
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>No vencido</th>
-                  <th>0 – 30 días</th>
-                  <th>31 – 60 días</th>
-                  <th>61 – 90 días</th>
-                  <th>90+ días</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>{money(apAging?.current)}</td>
-                  <td>{money(apAging?.days0_30)}</td>
-                  <td>{money(apAging?.days31_60)}</td>
-                  <td>{money(apAging?.days61_90)}</td>
-                  <td className={(apAging?.days90Plus ?? 0) > 0 ? "cm-row-error" : undefined}>
-                    <strong>{money(apAging?.days90Plus)}</strong>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </article>
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Top 10</p>
-            <h3>Principales deudores</h3>
-          </div>
-          <span className="bo-chip">{topDebtors.length} filas</span>
-        </div>
-        {topDebtors.length === 0 ? (
-          <EmptyState
-            title="No hay deudores con saldo abierto"
-            message="Todos los clientes están al día con los cobros. Si aparecen saldos pendientes los verás aquí ordenados por importe."
-          />
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Cuenta / Cliente</th>
-                  <th>Facturas</th>
-                  <th style={{ textAlign: "right" }}>Saldo pendiente</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topDebtors.map((debtor: FinancePositionDashboardData["topDebtors"][number], idx: number) => (
-                  <tr key={`${debtor.guestOrAccount}-${idx}`}>
-                    <td>{debtor.guestOrAccount}</td>
-                    <td>{debtor.invoiceCount}</td>
-                    <td style={{ textAlign: "right" }}><strong>{money(debtor.outstanding)}</strong></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Top 10</p>
-            <h3>Principales acreedores</h3>
-          </div>
-          <span className="bo-chip">{topCreditors.length} filas</span>
-        </div>
-        {topCreditors.length === 0 ? (
-          <EmptyState
-            title="No hay facturas de proveedor abiertas"
-            message="No hay deuda con proveedores en este momento. Aparecerán aquí las facturas pendientes de pago si las hubiera."
-          />
-        ) : (
-          <div className="rev-report-wrap">
-            <table className="cm-table">
-              <thead>
-                <tr>
-                  <th>Proveedor</th>
-                  <th>Facturas</th>
-                  <th style={{ textAlign: "right" }}>Saldo pendiente</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topCreditors.map((creditor: FinancePositionDashboardData["topCreditors"][number], idx: number) => (
-                  <tr key={`${creditor.supplierName}-${idx}`}>
-                    <td>{creditor.supplierName}</td>
-                    <td>{creditor.billCount}</td>
-                    <td style={{ textAlign: "right" }}><strong>{money(creditor.outstanding)}</strong></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className="bo-card">
-        <div className="bo-card-head">
-          <div>
-            <p className="bo-muted">Tesorería</p>
-            <h3>Pagos recientes</h3>
-          </div>
-          <span className="bo-chip">{recentPayments.length} capturados</span>
-        </div>
-        {recentPayments.length === 0 ? (
-          <p className="bo-muted">No se han capturado pagos.</p>
-        ) : (
-          <ul className="bo-list">
-            {recentPayments.map((payment: FinancePositionDashboardData["recentPayments"][number]) => (
-              <li key={payment.id}>
-                <strong>{money(payment.amount)}</strong> · {payment.method}
-                {" · "}
-                <span className="bo-muted">{formatDateTime(payment.capturedAt)}</span>
-                {payment.reference ? (
-                  <>
-                    {" · "}
-                    <code>{payment.reference}</code>
-                  </>
-                ) : null}
+    <CocoaPage
+      eyebrow={`Finanzas · ${propertyName}`}
+      title="Tesorería"
+      subtitle={subtitle}
+      actions={
+        <>
+          {pos ? (
+            <CocoaBadge tone={pos.source === "ledger+statements" ? "success" : "info"} title="Origen de la posición de tesorería">
+              {pos.source === "ledger+statements" ? "Libro y extractos" : "Solo libro contable"}
+            </CocoaBadge>
+          ) : null}
+          {anyLoading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll} title={ACTIONS.refresh}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={state}
+      skeleton={<TreasurySkeleton />}
+      error={{ title: "No se pudo cargar la tesorería", message: fatalError, onRetry: refreshAll }}
+      commands={[{ id: "treasury-refresh", label: "Actualizar la tesorería", run: refreshAll }]}
+    >
+      {warnings.length > 0 ? (
+        <CocoaCallout tone="info" title="Lo que hay detrás de las cifras">
+          <ul className="c22-section__list">
+            {warnings.map((warning, index) => (
+              <li key={index}>
+                <span>{warning}</span>
               </li>
             ))}
           </ul>
-        )}
-      </section>
-    </>
+        </CocoaCallout>
+      ) : null}
+
+      <CocoaKpiStrip stagger aria-label="Indicadores de tesorería">
+        <CocoaKpi
+          label={labels("cashOnHand")}
+          value={money(pos?.totals.cashAndBanks)}
+          polarity="neutral"
+          status={cashAndBanks !== null && cashAndBanks < 0 ? "critical" : "ok"}
+          degraded={!pos}
+        />
+        <CocoaKpi
+          label={labels("accountsReceivableTotal")}
+          value={money(receivables.data?.total ?? pos?.totals.receivables)}
+          polarity="neutral"
+          status={agingStatus(receivables.data?.aging)}
+          degraded={!receivables.data && !pos}
+        />
+        <CocoaKpi
+          label={labels("accountsPayableTotal")}
+          value={money(payables.data?.total ?? pos?.totals.payables)}
+          polarity="neutral"
+          status={agingStatus(payables.data?.aging)}
+          degraded={!payables.data && !pos}
+        />
+        {/* Fixed short headline: the legacy `labels.pendingSettlements` is a full sentence («Datáfono y pasarela pendientes de liquidar») that overflows a six-tile strip (qa#7); the qualifier goes to the caption. */}
+        <CocoaKpi label="Datáfono y pasarela" caption="pendiente de liquidar" value={money(pos?.pendingSettlements.total)} polarity="neutral" status="ok" degraded={!pos} />
+        <CocoaKpi label={labels("monthCollectedPct")} value={percent(monthCollected, { maximumFractionDigits: 1 })} polarity="positive-good" status={collectedStatus(monthCollected)} degraded={!legacy} />
+        <CocoaKpi
+          label="Posición neta"
+          value={money(pos?.totals.net)}
+          polarity="neutral"
+          status={(toNumber(pos?.totals.net) ?? 0) < 0 ? "warning" : "ok"}
+          degraded={!pos}
+        />
+      </CocoaKpiStrip>
+
+      <CocoaGrid align="start" aria-label="Previsión y bancos">
+        <CocoaSpan cols={8} min={480}>
+          <CocoaSection title="Previsión de tesorería" meta="30 · 60 · 90 días" headingLevel={2}>
+            {forecast.error && !forecast.data ? (
+              <SectionError message={forecast.error} onRetry={forecast.refresh} />
+            ) : !forecast.data ? (
+              <CocoaSkeleton variant="chart" />
+            ) : (
+              <>
+                <div className="cocoa-row" data-gap="4" data-align="start">
+                  <CocoaStat label="Saldo de partida" value={money(forecast.data.opening)} hint={`a ${date(forecast.data.asOf, "short")}`} />
+                  {horizons.map((horizon) => (
+                    <CocoaStat
+                      key={horizon.days}
+                      label={`Saldo previsto a ${number(horizon.days)} días`}
+                      value={money(horizon.projectedBalance)}
+                      tone={signedTone(toNumber(horizon.projectedBalance) ?? 0)}
+                      hint={`cobros ${money(horizon.inflows)} · pagos ${money(horizon.outflows)}`}
+                    />
+                  ))}
+                </div>
+                {forecastBars.length > 0 ? (
+                  <CocoaChart.Bars data={forecastBars} height={140} valueFormat={(value) => money(value)} aria-label="Flujo neto previsto por tramo de vencimiento" />
+                ) : (
+                  <CocoaState kind="empty" inline title="Sin cobros ni pagos previstos." />
+                )}
+                <MethodNote id="treasury-forecast-method" items={toArray<string>(forecast.data.assumptions)} />
+              </>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+
+        <CocoaSpan cols={4} min={320}>
+          <CocoaSection title={labels("banks")} meta={pos ? plural(banks.length, "cuenta", "cuentas") : undefined} headingLevel={2}>
+            {pos ? (
+              <CocoaStat label={`Caja (${pos.cash.ledgerAccountCode})`} value={money(pos.cash.balance)} hint="saldo contable" />
+            ) : null}
+            {banks.length === 0 ? (
+              <CocoaState
+                kind="empty"
+                dashed
+                title="Sin cuentas bancarias"
+                message="Da de alta las cuentas del hotel e importa sus extractos para comparar el saldo del banco con el libro."
+                primaryAction={{ label: "Abrir conciliación bancaria", onClick: () => navigateTo("BankReconciliationScreen") }}
+              />
+            ) : (
+              <ul className="c22-section__list" aria-label="Cuentas bancarias">
+                {banks.map((bank) => {
+                  const drift = toNumber(bank.drift) ?? 0;
+                  return (
+                    <li key={bank.bankAccountId}>
+                      <div className="cocoa-stack" data-gap="1" style={growStyle}>
+                        <strong>{bank.name}</strong>
+                        <span style={captionStyle}>
+                          {bank.ibanMasked ?? "sin IBAN"} · cuenta {bank.ledgerAccountCode}
+                          {bank.statementDate ? ` · extracto a ${date(bank.statementDate, "short")}` : " · sin extractos"}
+                        </span>
+                        {bank.unmatchedLines > 0 ? (
+                          <span style={captionStyle}>{plural(bank.unmatchedLines, "movimiento sin conciliar", "movimientos sin conciliar")} · {money(bank.unmatchedAmount)}</span>
+                        ) : null}
+                      </div>
+                      <div className="cocoa-stack" data-gap="1">
+                        <strong>{money(bank.ledgerBalance)}</strong>
+                        {bank.statementClosing !== null ? (
+                          <CocoaBadge tone={Math.abs(drift) < 0.01 ? "success" : Math.abs(drift) < 10 ? "warning" : "danger"} size="small" title="Saldo del extracto menos saldo del libro">
+                            dif. {money(bank.drift)}
+                          </CocoaBadge>
+                        ) : null}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+
+      <CocoaGrid align="start" aria-label="Cuentas a cobrar y a pagar">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Cuentas a cobrar" meta={receivables.data ? money(receivables.data.total) : undefined} headingLevel={2}>
+            {receivables.error && !receivables.data ? (
+              <SectionError message={receivables.error} onRetry={receivables.refresh} />
+            ) : !receivables.data ? (
+              <CocoaSkeleton variant="card" height={200} />
+            ) : (
+              <>
+                <div className="cocoa-row" data-gap="4">
+                  <CocoaStat label="Facturas emitidas" value={money(receivables.data.invoices)} />
+                  <CocoaStat label="Folios abiertos" value={money(receivables.data.openFolios)} />
+                </div>
+                <AgingList aging={receivables.data.aging} labels={labels} />
+                {receivableItems.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Nada pendiente de cobro." />
+                ) : (
+                  <CocoaTable
+                    columns={RECEIVABLE_COLUMNS}
+                    rows={receivableItems.slice(0, MAX_DOCUMENTS)}
+                    rowKey="id"
+                    density="compact"
+                    caption="Documentos pendientes de cobro"
+                    aria-label="Documentos pendientes de cobro"
+                  />
+                )}
+                {receivableItems.length > MAX_DOCUMENTS ? <span style={captionStyle}>Se muestran {number(MAX_DOCUMENTS)} de {plural(receivableItems.length, "documento", "documentos")}.</span> : null}
+                <MethodNote id="treasury-receivables-method" items={toArray<string>(receivables.data.method)} />
+              </>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title="Cuentas a pagar" meta={payables.data ? money(payables.data.total) : undefined} headingLevel={2}>
+            {payables.error && !payables.data ? (
+              <SectionError message={payables.error} onRetry={payables.refresh} />
+            ) : !payables.data ? (
+              <CocoaSkeleton variant="card" height={200} />
+            ) : (
+              <>
+                <div className="cocoa-row" data-gap="4">
+                  <CocoaStat label="Facturas recibidas" value={money(payables.data.supplierBills)} />
+                  <CocoaStat label="Nóminas" value={money(payables.data.payroll)} />
+                  <CocoaStat label="Comisiones" value={money(payables.data.commissions)} />
+                  <CocoaStat label="Obligaciones fiscales" value={money(payables.data.taxLiabilities)} />
+                </div>
+                <AgingList aging={payables.data.aging} labels={labels} />
+                {payableItems.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Nada pendiente de pago." />
+                ) : (
+                  <CocoaTable
+                    columns={PAYABLE_COLUMNS}
+                    rows={payableItems.slice(0, MAX_DOCUMENTS)}
+                    rowKey="id"
+                    density="compact"
+                    caption="Documentos pendientes de pago"
+                    aria-label="Documentos pendientes de pago"
+                  />
+                )}
+                {payableItems.length > MAX_DOCUMENTS ? <span style={captionStyle}>Se muestran {number(MAX_DOCUMENTS)} de {plural(payableItems.length, "documento", "documentos")}.</span> : null}
+                <MethodNote id="treasury-payables-method" items={toArray<string>(payables.data.method)} />
+              </>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+
+      <CocoaGrid align="start" aria-label="Deudores y últimos cobros">
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection
+            title={labels("topDebtors")}
+            meta={legacy ? plural(topDebtors.length, "cliente", "clientes") : undefined}
+            headingLevel={2}
+            padding={topDebtors.length > 0 ? "none" : "md"}
+            style={{ overflow: "clip" }}
+          >
+            {dash.error && !legacy ? (
+              <SectionError message={dash.error} onRetry={dash.refresh} />
+            ) : !legacy ? (
+              <CocoaSkeleton variant="card" height={160} />
+            ) : topDebtors.length === 0 ? (
+              <CocoaState kind="empty" inline title="No hay clientes con saldo pendiente." />
+            ) : (
+              <CocoaTable columns={DEBTOR_COLUMNS} rows={topDebtors} rowKey={(d) => `${d.guestOrAccount}-${d.outstanding}`} caption="Principales deudores" aria-label="Principales deudores" />
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+
+        <CocoaSpan cols={6} min={320}>
+          <CocoaSection title={labels("recentPayments")} meta={legacy ? plural(recentPayments.length, "cobro", "cobros") : undefined} headingLevel={2}>
+            {dash.error && !legacy ? (
+              <SectionError message={dash.error} onRetry={dash.refresh} />
+            ) : !legacy ? (
+              <CocoaSkeleton variant="card" height={160} />
+            ) : recentPayments.length === 0 ? (
+              <CocoaState kind="empty" inline title="Todavía no se ha registrado ningún cobro." />
+            ) : (
+              <ul className="c22-section__list" aria-label="Últimos cobros">
+                {recentPayments.map((payment) => (
+                  <li key={payment.id}>
+                    <div className="cocoa-stack" data-gap="1" style={growStyle}>
+                      <span>{payment.methodLabel ?? payment.method}</span>
+                      <span style={captionStyle}>
+                        {dateTime(payment.capturedAt)}
+                        {payment.reference ? ` · ref. ${payment.reference}` : ""}
+                      </span>
+                    </div>
+                    <strong>{money(payment.amount)}</strong>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CocoaSection>
+        </CocoaSpan>
+      </CocoaGrid>
+    </CocoaPage>
   );
 }
+
+export default FinancePositionDashboard;

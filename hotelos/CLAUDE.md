@@ -166,6 +166,20 @@ final; working tree sin commit, :3000/:5173 sin reiniciar):
   lockfile regenerado con `install --offline` al declarar `qrcode-terminal`)
 - `rbac:sync -- --dry-run`: catálogo 221 · +0 · 8 roles por completar (no aplicado)
 
+Estado verificado (cierre Tanda 6 · Finanzas front / Cocoa 22 ola 6 + 8-B,
+2026-09-16, integrador final; working tree sin commit, :3000/:5173 sin reiniciar):
+- 217 screens alcanzables · 183/183 URLs · 0 broken links · placeholders 16/20
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · `.husky/pre-commit` OK
+- contratos 410/410 · unitarios api 1.233 (1.232 pass · 1 skipped) · unitarios
+  front 692/692 · `build-nav-tree --check` al día (66 ítems · 94 pestañas · 205
+  redirecciones) · `cocoa-22-api.mjs --check` al día · `--typecheck-examples`
+  11 plantillas · 0 errores
+- inventario Cocoa 22 regenerado: 217 pantallas · 86.883 líneas · 3.833 puntos
+  (4.600 en `31bccc9`); `NOT_MIGRATED` 125 = `ALLOWLIST_CEILING`; techos
+  `GLOBAL_CEILING` 589 · 419 · 91 · 409 · 402 · 3.223; §6 del plan al día
+- integración NO repetida (escribe en org_123/prop_123 y los API sirven el
+  código anterior): pendiente tras el reinicio, como la verificación visual §5
+
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).
@@ -634,12 +648,39 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     de test, no cuenta), duplicado residual de F2 entre DOS instancias del API
     cerrando la misma comanda a la vez; (e) los API :3000/:5173 NO se han
     reiniciado: sirven el código anterior hasta que el integrador humano lo
-    haga (después: `test:integration` de nuevo y recorrido en navegador); (f)
-    el front no consume ninguna ruta nueva (siguiente workflow: lista en
-    `docs/audits/TANDA-6-FINANZAS-BACKEND-2026-09-15.md` §5). Runbook
+    haga (después: `test:integration` de nuevo y recorrido en navegador; los
+    textos del preflight del cierre del día y «RES-00081 · Huésped» en
+    Tesorería solo se ven tras el reinicio); (f) `GET /invoices/:id` no expone
+    `InvoiceLine.id`: la rectificativa «Ajuste de líneas por diferencias (I)»
+    queda bloqueada en la UI con aviso hasta añadir `id: l.id` en
+    `invoice.service.ts` `hydrateInvoiceRecords`. Runbook
     completo: `docs/runbooks/finanzas-contabilidad.md` (§11 integración, §12
     correcciones, §13 rutas y permisos, §14 comandos, §15 límites, §16
     puertas); rutas en `docs/api-contracts.md` «Finanzas · módulos».
+    **Front (2026-09-16, Cocoa 22 · lotes 6-A/6-B/6-C/6-D/6-E/6-F/8-B + 11
+    correcciones de QA; cierre `docs/audits/TANDA-6-FINANZAS-FRONT-2026-09-16.md`):**
+    36 URL consumen el backend: Finanzas (8 ítems · 18 pestañas: Facturación y
+    cobros, Tesorería, Conciliación bancaria, Contabilidad [nuevo: diario,
+    mayor, plan, ajustes, cierre de ejercicio, gestoría], Estados contables
+    [+ PyG, cuentas anuales, USALI], Proveedores y gastos [nuevo: facturas
+    recibidas, gastos, proveedores, inmovilizado], Comisiones, Nóminas),
+    Cumplimiento › Modelos AEAT (303/390/347/111/115/180 sobre un cuerpo
+    común `fiscal/FiscalModelReport.tsx`, libros de IVA, liquidación),
+    Operaciones › TPV › Cierre de caja y Hoy › Cierre del día. 19 ficheros
+    nuevos en `screens/` (17 pantallas o cuerpos + 2 contenedores), 26
+    pantallas/contenedores migrados y 2 muertos retirados; 10 clientes tipados
+    `services/{accounting,assets,cashClosure,commissions,financialStatements,
+    fiscal,payables,payroll,treasury}Api.ts` + `finance-contracts.ts`
+    (`FINANCE_ERROR_MESSAGES` por `details.code`); cobros y devoluciones solo
+    por `components/billing/{PaymentDialog,RefundDialog}.tsx`
+    (`clientRequestId`, 202 → PSP, 409 `PSP_NOT_CONFIGURED` mostrado);
+    primitivas nuevas `CocoaFileInput`, `CocoaKpi caption`, `CocoaTable
+    fit/nowrap/showFrom`; permisos de escritura gateados con
+    `canDo(useNavGate(), clave)` sobre las concesiones reales (nunca
+    `getUser()?.permissions`). Deuda Cocoa 22: 4.600 → 3.833 puntos;
+    Finanzas 618 → 36. **Sin navegador en la construcción**: la verificación
+    visual §5 de las 36 URL y la integración tras el reinicio quedan
+    pendientes (informe §6-§7); `test:integration` no repetido.
 
 ## Docs prioritarios
 
@@ -654,6 +695,7 @@ Antes de tomar decisiones de producto, lee:
 - `docs/channel-manager-connectivity.md` + `docs/booking-adapter.md` — estado honesto de la conectividad OTA (Booking OTA XML, Expedia EQC, Channex): simulador estructural, credenciales, procedimiento de certificación Channex
 - `docs/audits/RATE-GRID-V2-CIERRE-2026-09-15.md` — cierre de la verificación adversarial de Rate Grid v2: qué se construyó, cómo se verificó, límites y lo que solo César puede aportar
 - `docs/audits/TANDA-6-FINANZAS-BACKEND-2026-09-15.md` — cierre de la Tanda 6 · Finanzas backend: qué era mock y qué es real, cifras de Faranda tras el replay, los 15 hallazgos de la revisión y su estado, lo que el front debe consumir y lo que solo César puede aportar
+- `docs/audits/TANDA-6-FINANZAS-FRONT-2026-09-16.md` — cierre de la Tanda 6 · Finanzas front (Cocoa 22): las 36 URL nuevas y migradas, qué puede hacer ya un contable paso a paso, los 11 hallazgos de QA y su estado, puertas y pendientes (reinicio, verificación visual, `InvoiceLine.id`)
 - `docs/runbooks/finanzas-contabilidad.md` — contrato de datos PGC/USALI, reglas canónicas con ejemplos de asiento, rutas y permisos por módulo, comandos (plan, replay, cierre, amortización, IVA, exportaciones) y límites
 - `docs/director-dashboard/DESIGN-PROPOSAL.md`
 - `deploy/README-HOSTINGER.md` — playbook deploy producción

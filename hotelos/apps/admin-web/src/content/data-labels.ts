@@ -120,3 +120,28 @@ export function dataKeyLabel(key: string, overrides?: Record<string, string>): s
 export function booleanLabel(value: boolean): string {
   return value ? STATUS_LABELS.yes : STATUS_LABELS.no;
 }
+
+// Folio labels (qa#6). The API opens every primary folio with the technical
+// label "guest" (GET /reservations/:id/folios returns it verbatim) and
+// documents «company» / «travel_agent» as the canonical secondary labels; the
+// operator may type anything else («Empresa», «Agencia»). Screens paint the
+// Spanish word for the system values and pass free text through. The API
+// keeps the same dictionary in modules/folio/folio-labels.ts for the
+// references it composes itself (Tesorería › cuentas a cobrar).
+export const FOLIO_LABELS: Readonly<Record<string, string>> = {
+  guest: "Huésped",
+  company: "Empresa",
+  travel_agent: "Agencia de viajes"
+};
+
+/** Spanish text of a folio label: system values translated, free text untouched, empty → `fallback`. */
+export function folioLabelText(label: string | null | undefined, fallback = "—"): string {
+  const raw = label?.trim() ?? "";
+  if (!raw) return fallback;
+  return FOLIO_LABELS[raw] ?? raw;
+}
+
+/** Folio name with its role for pickers and cross-references: «Huésped (principal)», «Empresa». */
+export function folioDisplayName(folio: { label: string | null | undefined; isPrimary?: boolean }, fallback = "—"): string {
+  return `${folioLabelText(folio.label, fallback)}${folio.isPrimary ? " (principal)" : ""}`;
+}

@@ -28,6 +28,7 @@ export * from "./CocoaSelect";
 export * from "./CocoaSwitch";
 export * from "./CocoaDatePicker";
 export * from "./CocoaStepper";
+export * from "./CocoaFileInput";
 export * from "./CocoaSearchInput";
 export * from "./CocoaSegmentedControl";
 export * from "./CocoaTable";

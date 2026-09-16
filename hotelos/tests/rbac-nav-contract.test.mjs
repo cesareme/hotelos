@@ -88,6 +88,53 @@ const TOKEN_TEMPLATES = {
 // folios, TPV, tasa turística, VeriFactu y registro de viajeros llevan ya
 // claves de lectura (ver READ_GATED_GETS más abajo).
 const JUSTIFIED_GAPS = [
+  // --- Tanda 6 · Finanzas (lote nav-services): pantallas nuevas -------------
+  // Contabilidad › Exportar a gestoría y Proveedores y gastos › Proveedores /
+  // Inmovilizado read routes gated by keys the accountant template got in
+  // t6#10 (procurement.read, assets.read, analytics.export) that manager and
+  // compliance do not hold. Classified, not hidden.
+  {
+    templates: ["compliance"],
+    permission: "procurement.read",
+    screens: /^SuppliersScreen$/,
+    kind: "sister",
+    evidence: "payablesApi.listSuppliers → GET /organizations/:p/payables/suppliers [procurement.read]; accountant la tiene (plantilla Contabilidad completa, t6#10)",
+    reason: "el directorio de proveedores es de Contabilidad (procurement.read/manage); Cumplimiento consulta facturas recibidas y libros, no da de alta proveedores"
+  },
+  {
+    templates: ["manager"],
+    permission: "procurement.read",
+    screens: /^SuppliersScreen$/,
+    kind: "pending",
+    evidence: "payablesApi.listSuppliers → GET /organizations/:p/payables/suppliers [procurement.read]; manager no la tiene (owner sí, pero no cuenta como hermana)",
+    reason: "un director sin rol Propietario abre Proveedores y gastos pero la pestaña Proveedores le devuelve 403",
+    handoff: "añadir procurement.read a manager en ROLE_PERMISSION_MAP (packages/shared/src/permissions.ts, después rbac:sync) o quitar direccion de la fila SuppliersScreen de pilots/tanda5-nav-tree.csv"
+  },
+  {
+    templates: ["compliance"],
+    permission: "assets.read",
+    screens: /^FixedAssetsScreen$/,
+    kind: "sister",
+    evidence: "assetsApi.listFixedAssets → GET /properties/:p/asset-register [assets.read]; accountant y manager la tienen",
+    reason: "el registro de inmovilizado y su amortización son de Contabilidad; Cumplimiento consulta los estados contables, no los elementos"
+  },
+  {
+    templates: ["compliance"],
+    permission: "analytics.export",
+    screens: /^GestoriaExportScreen$/,
+    kind: "sister",
+    evidence: "financialStatementsApi.listGestoriaFormats / listGestoriaExports → GET /accounting/gestoria-exports/formats · GET /accounting/gestoria-exports [analytics.export]; accountant la tiene",
+    reason: "exportar asientos y libros a la gestoría es de Contabilidad (analytics.export); Cumplimiento no exporta"
+  },
+  {
+    templates: ["manager"],
+    permission: "analytics.export",
+    screens: /^GestoriaExportScreen$/,
+    kind: "pending",
+    evidence: "financialStatementsApi.listGestoriaFormats / listGestoriaExports → GET /accounting/gestoria-exports/formats · GET /accounting/gestoria-exports [analytics.export]; manager no la tiene",
+    reason: "un director sin rol Propietario abre Contabilidad pero la pestaña Exportar a gestoría le devuelve 403",
+    handoff: "añadir analytics.export a manager en ROLE_PERMISSION_MAP (packages/shared/src/permissions.ts, después rbac:sync) o quitar direccion de la fila GestoriaExportScreen de pilots/tanda5-nav-tree.csv"
+  },
   // --- write -------------------------------------------------------------
   {
     // Finanzas (2026-09-16, FIN-17): the import is gated by banking.reconcile

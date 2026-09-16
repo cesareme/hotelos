@@ -8,15 +8,27 @@
 // read `useTabHost()` to drop their own page header. A strip with a single
 // painted tab (Huéspedes on the list, Compras with the module off) is hidden
 // with CSS: one tab is not a choice.
+//
+// When NO tab passes the gate the container says why (qa#12): «Módulo no
+// activado» with «Activar módulo» (same target as the Sidebar, §6.3) when the
+// item is for this profile but its module is off, an honest «no hemos podido
+// comprobar los módulos» when the list is not readable, and «Sin acceso» only
+// when the role gate is the cause — never the generic text of CocoaRouteTabs.
 
 import { useCallback, useMemo, type ReactNode } from "react";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
 import { CocoaRouteTabs, CocoaTabSkeleton, type CocoaRouteTab } from "../../components/cocoa/CocoaRouteTabs";
+import { CocoaState } from "../../components/cocoa/CocoaState";
 import { ErrorState } from "../../components/States";
 import { errorStateFor } from "../../content/actions";
+import { navigateTo } from "../../lib/navigate";
 import { useNavGate } from "../../navigation/useEnabledModules";
+// Kept apart from the line above: tests/sidebar-nav-contract asserts the gate import literally (L1c).
+import { forbiddenModuleLists } from "../../navigation/useEnabledModules";
+import { getActivePropertyId } from "../../services/activeProperty";
+import { enableModuleHash } from "../operations/module-gate";
 import { TabHostProvider } from "./TabHost";
-import { buildItemTabs, itemForScreen, landingKeysFor, type TabLoaders } from "./nav-item-tabs";
+import { buildItemTabs, emptyTabsCopy, emptyTabsReason, itemForScreen, landingKeysFor, unlockingModulesFor, type TabLoaders } from "./nav-item-tabs";
 import { usePathname } from "./usePathname";
 
 export type NavItemTabsProps = {
@@ -39,7 +51,9 @@ const stackStyle = { display: "flex", flexDirection: "column", gap: "var(--cocoa
 export function NavItemTabs(props: NavItemTabsProps) {
   const { screenKey, loaders, baseRoles, subtitle, actions, tabFilter } = props;
   const { category, item } = useMemo(() => itemForScreen(screenKey), [screenKey]);
-  const gate = useNavGate();
+  // Same property the gate reads, so the remembered 403 of GET /modules is looked up for it (as useScreenModuleGate does).
+  const propertyId = getActivePropertyId();
+  const gate = useNavGate(propertyId);
   const pathname = usePathname();
 
   const tabs = useMemo(() => {
@@ -56,9 +70,19 @@ export function NavItemTabs(props: NavItemTabsProps) {
   const hostInfo = useMemo(() => ({ screenKey, basePath: item.url, title: item.label }), [screenKey, item.url, item.label]);
   const modulesError = gate.error ? errorStateFor("los módulos activos de la propiedad") : null;
 
+  // Empty container (qa#12): why no tab is visible, and the copy for it. A
+  // module list that failed to load is already explained by `modulesError`
+  // with its «Reintentar», so the unknown-modules state is not repeated below it.
+  const listUnavailable = gate.error !== null || forbiddenModuleLists.has(propertyId);
+  const emptyReason = gate.loading ? null : emptyTabsReason(tabs, gate.tokens, gate.modules, { listUnavailable });
+  const emptyCopy = emptyReason && !(emptyReason === "modules_unknown" && modulesError) ? emptyTabsCopy(emptyReason, { canEnable: gate.canEnableModules }) : null;
+  const unlockCodes = useMemo(() => unlockingModulesFor(tabs, gate.tokens), [tabs, gate.tokens]);
+  // «Activar módulo»: Módulos e integraciones with the first missing module preselected (§6.3, Sidebar's target).
+  const enableModule = useCallback(() => navigateTo("ModuleManager", enableModuleHash(unlockCodes)), [unlockCodes]);
+
   return (
     <TabHostProvider value={hostInfo}>
-      <div className="anf-nav-tabs" style={stackStyle} data-nav-item={screenKey}>
+      <div className="anf-nav-tabs" style={stackStyle} data-nav-item={screenKey} data-nav-empty={emptyReason ?? undefined}>
         <style>{STRIP_CSS}</style>
         <CocoaPageHeader eyebrow={category.label} title={item.label} subtitle={subtitle} actions={actions} />
         {modulesError ? (
@@ -66,7 +90,14 @@ export function NavItemTabs(props: NavItemTabsProps) {
         ) : null}
         {gate.loading ? (
           <CocoaTabSkeleton />
-        ) : (
+        ) : emptyCopy ? (
+          <CocoaState
+            kind="empty"
+            title={emptyCopy.title}
+            message={emptyCopy.message}
+            primaryAction={emptyCopy.cta ? { label: emptyCopy.cta, onClick: enableModule } : undefined}
+          />
+        ) : emptyReason ? null : (
           <CocoaRouteTabs
             basePath={item.url}
             tabs={tabs}

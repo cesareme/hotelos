@@ -82,7 +82,11 @@ const REQUIRED: ReadonlyArray<{ label: string; pattern: RegExp }> = [
   { label: "CocoaDrawer focusKey={…}", pattern: usage("CocoaDrawer", "\\bfocusKey=\\{") },
   { label: "CocoaChart.Progress max={…}", pattern: usage("CocoaChart.Progress", "\\bmax=\\{") },
   { label: "CocoaSection variant=\"plain\" padding=\"none\"", pattern: usage("CocoaSection", 'variant="plain" padding="none"') },
-  { label: ".cocoa-caption + .cocoa-link utilities", pattern: /className="cocoa-caption"[\s\S]*className="cocoa-link"/ }
+  { label: ".cocoa-caption + .cocoa-link utilities", pattern: /className="cocoa-caption"[\s\S]*className="cocoa-link"/ },
+  // Cocoa 22 · Tanda 6 · integración de finanzas (handoffs de primitivas)
+  { label: "CocoaFileInput onReject={…}", pattern: usage("CocoaFileInput", "\\bonReject=\\{") },
+  { label: "CocoaKpi caption=", pattern: usage("CocoaKpi", "\\bcaption=") },
+  { label: "CocoaDialog confirmDisabled={…}", pattern: usage("CocoaDialog", "\\bconfirmDisabled=\\{") }
 ];
 
 describe("style guide · coverage of the primitives (review#27)", () => {

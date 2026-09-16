@@ -344,7 +344,7 @@ export type FixedAssetRequest = {
 
 export type FixedAssetPatchRequest = Partial<Pick<FixedAssetRequest, "name" | "coefficientPct" | "residualValue" | "startDate" | "depreciationAccountCode" | "expenseAccountCode" | "usefulLifeMonths" | "assetId">>;
 
-export type DisposeFixedAssetRequest = { date: IsoDay; saleAmount?: number | string; counterAccountCode?: "572" | "570" | "430"; reason?: string };
+export type DisposeFixedAssetRequest = { date: IsoDay; saleAmount?: number | string; counterAccountCode?: "572" | "570" | "4300"; reason?: string };
 
 export type FixedAssetDto = {
   id: string;

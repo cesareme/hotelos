@@ -15,14 +15,10 @@ const CONTAINERS: Record<string, string> = {
 // Screens merged here that still take the `embedded` prop (bridge of L1c, see TabHost.tsx):
 // PropertyTaxesScreen, AuthorityRoutingSettingsScreen and GuestRegisterRetentionSettingsScreen
 // are built on `pageHead(embedded)` (already on the host context); the rest branch on the
-// prop by hand and keep `embed()` in their loader (EMBED_BRIDGE).
+// prop by hand and keep `embed()` in their loader (EMBED_BRIDGE). The five Modelo*Screen
+// left the bridge in Cocoa 22 · lote 8-B (they read useTabHost() through CocoaPage).
 const EMBEDDED_SCREENS = [
   "fiscal/FiscalDashboard.tsx",
-  "fiscal/Modelo303Screen.tsx",
-  "fiscal/Modelo111Screen.tsx",
-  "fiscal/Modelo115Screen.tsx",
-  "fiscal/Modelo180Screen.tsx",
-  "fiscal/Modelo390Screen.tsx",
   "compliance/PropertyTaxesScreen.tsx",
   "compliance/AuthorityRoutingSettingsScreen.tsx",
   "compliance/GuestRegisterRetentionSettingsScreen.tsx",
@@ -30,7 +26,7 @@ const EMBEDDED_SCREENS = [
 ];
 
 /** Loader export names that must still go through `embed()` (they read `embedded` by hand, not `useTabHost()`). */
-const EMBED_BRIDGE = new Set(["FiscalDashboard", "Modelo303Screen", "Modelo111Screen", "Modelo115Screen", "Modelo180Screen", "Modelo390Screen", "SustainabilityDashboard"]);
+const EMBED_BRIDGE = new Set(["FiscalDashboard", "SustainabilityDashboard"]);
 
 const noop = () => Promise.reject(new Error("loader not meant to run in tests"));
 const loadersFor = (item: { screenKey: string; tabs: readonly { screenKey: string }[] }): TabLoaders =>
@@ -61,11 +57,11 @@ describe("tabs-c · Cumplimiento · containers wire every screen of the tree", (
 });
 
 describe("tabs-c · Cumplimiento · tabs from the tree", () => {
-  it("Modelos AEAT: base «Modelo 303» then 111 · 115 · 180 · 390", () => {
+  it("Modelos AEAT: base «Modelo 303» then 390 · 347 · 111 · 115 · 180 · Libros de IVA · Liquidación de IVA (Tanda 6)", () => {
     const { item } = itemForScreen("Modelo303Screen");
     const tabs = buildItemTabs(item, loadersFor(item));
-    assert.deepEqual(tabs.map((tab) => tab.key), ["modelos-aeat", "111", "115", "180", "390"]);
-    assert.deepEqual(tabs.map((tab) => tab.label), ["Modelo 303", "Modelo 111", "Modelo 115", "Modelo 180", "Modelo 390"]);
+    assert.deepEqual(tabs.map((tab) => tab.key), ["modelos-aeat", "390", "347", "111", "115", "180", "libros-iva", "liquidacion-iva"]);
+    assert.deepEqual(tabs.map((tab) => tab.label), ["Modelo 303", "Modelo 390", "Modelo 347", "Modelo 111", "Modelo 115", "Modelo 180", "Libros de IVA", "Liquidación de IVA"]);
     assert.equal(tabs[0].path, "/cumplimiento/modelos-aeat");
     assert.ok(tabs.every((tab) => !tab.hidden));
   });
@@ -119,6 +115,14 @@ describe("tabs-c · Cumplimiento · registration and hosted screens", () => {
       // sees it through the tree and the temporary whitelist entry of L1a is gone.
       assert.match(app, new RegExp(`lazyTab\\("${name}"\\)`), `${name} not registered in App.tsx`);
       assert.ok(!whitelist.screens.includes(name), `${name} must leave the whitelist once App.tsx registers it`);
+    }
+  });
+
+  it("the eight Modelos AEAT screens read the host context (useTabHost) and take no `embedded` prop (Cocoa 22 · lote 8-B)", () => {
+    for (const name of ["Modelo303Screen", "Modelo390Screen", "Modelo347Screen", "Modelo111Screen", "Modelo115Screen", "Modelo180Screen", "VatBooksScreen", "VatSettlementScreen"]) {
+      const source = read(`../../../fiscal/${name}.tsx`);
+      assert.match(source, /useTabHost\(\)/, `${name}: must read the tab host context`);
+      assert.doesNotMatch(source, /embedded\?: boolean/, `${name}: the embedded bridge prop must be gone`);
     }
   });
 

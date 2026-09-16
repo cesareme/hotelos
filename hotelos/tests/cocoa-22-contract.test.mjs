@@ -45,7 +45,7 @@ const toPosix = (p) => p.split(sep).join("/");
  * Pilot lot (2026-09-15): GeneralManagerScreen (canon), GuestsListScreen,
  * PropertySetupForms, ShiftManagerScreen and LoginScreen (shell lot) are out.
  */
-export const ALLOWLIST_CEILING = 153;
+export const ALLOWLIST_CEILING = 125;
 
 export const NOT_MIGRATED = [
   "AccountingSettings.tsx",
@@ -66,7 +66,6 @@ export const NOT_MIGRATED = [
   "UserRoleManager.tsx",
   "admin/AllotmentsScreen.tsx",
   "admin/CancellationPoliciesScreen.tsx",
-  "admin/FolioRoutingScreen.tsx",
   "admin/InviteUserDialog.tsx",
   "admin/NewTenantWizardDialog.tsx",
   "admin/RatePlansScreen.tsx",
@@ -83,14 +82,7 @@ export const NOT_MIGRATED = [
   "backoffice/categories/CategoryDetailScreen.tsx",
   "backoffice/categories/CategoryManagerScreen.tsx",
   "backoffice/categories/CategoryOptionForm.tsx",
-  "banking/BankReconciliationScreen.tsx",
-  "banking/BankingSpainScreen.tsx",
-  "billing/BillingCenterScreen.tsx",
-  "billing/FolioDetailScreen.tsx",
-  "billing/InvoiceDetailScreen.tsx",
-  "billing/SplitFolioDialog.tsx",
   "channelManager/ChannelAggregatorHub.tsx",
-  "commissions/CommissionsScreen.tsx",
   "compliance/AuthorityRoutingSettingsScreen.tsx",
   "compliance/ComplianceCenterScreen.tsx",
   "compliance/GdprRequestsScreen.tsx",
@@ -105,27 +97,14 @@ export const NOT_MIGRATED = [
   "developer/DeveloperAppsScreen.tsx",
   "developer/WebhooksAdminScreen.tsx",
   "esrs/EsrsReportScreen.tsx",
-  "finance/BalanceSheetScreen.tsx",
-  "finance/CashFlowScreen.tsx",
-  "finance/ExchangeRatesScreen.tsx",
-  "finance/TrialBalanceScreen.tsx",
-  "finance/YearEndCloseScreen.tsx",
   "fiscal/ComplianceInbox.tsx",
   "fiscal/FiscalDashboard.tsx",
   "fiscal/FiscalSubmissionsCenter.tsx",
-  "fiscal/Modelo111Screen.tsx",
-  "fiscal/Modelo115Screen.tsx",
-  "fiscal/Modelo180Screen.tsx",
-  "fiscal/Modelo303Screen.tsx",
-  "fiscal/Modelo390Screen.tsx",
-  "fiscal/ReportErrorCard.tsx",
   "fiscal/TbaiForalScreen.tsx",
   "guest-portal/GuestPortalSettingsScreen.tsx",
   "guestJourney/GuestJourneyWorkspace.tsx",
   "guests/GuestProfileScreen.tsx",
   "guests/GuestTimelineScreen.tsx",
-  "invoicing/InvoiceRectificationsScreen.tsx",
-  "invoicing/InvoiceRectifyDialog.tsx",
   "loyalty/LoyaltyProgramScreen.tsx",
   "marketing/CampaignManagerScreen.tsx",
   "marketplace/MarketplaceCatalogScreen.tsx",
@@ -135,7 +114,6 @@ export const NOT_MIGRATED = [
   "onboarding/OnboardingScreens.tsx",
   "operations/ConciergeInboxDashboard.tsx",
   "operations/CrmDashboard.tsx",
-  "operations/FinancePositionDashboard.tsx",
   "operations/GroupDetailDialog.tsx",
   "operations/GroupsCalendarScreen.tsx",
   "operations/GroupsEventsDashboard.tsx",
@@ -152,7 +130,6 @@ export const NOT_MIGRATED = [
   "operations/SurveysDashboard.tsx",
   "operations/SustainabilityDashboard.tsx",
   "operations/UpsellsDashboard.tsx",
-  "payroll/PayrollScreen.tsx",
   "preview/CocoaGalleryScreen.tsx",
   "reservations/QuickActionsDialogs.tsx",
   "reservations/ReservationAgentScreen.tsx",
@@ -184,14 +161,9 @@ export const NOT_MIGRATED = [
   "tabs/configuracion/SistemaTabs.tsx",
   "tabs/configuracion/tab-helpers.tsx",
   "tabs/cumplimiento/ImpuestosTabs.tsx",
-  "tabs/cumplimiento/ModelosAeatTabs.tsx",
   "tabs/cumplimiento/RegistroViajerosTabs.tsx",
   "tabs/cumplimiento/SostenibilidadTabs.tsx",
   "tabs/cumplimiento/VerifactuTabs.tsx",
-  "tabs/finanzas/ConciliacionTabs.tsx",
-  "tabs/finanzas/EstadosContablesTabs.tsx",
-  "tabs/finanzas/FacturacionTabs.tsx",
-  "tabs/finanzas/TesoreriaTabs.tsx",
   "tabs/recepcion/GruposEventosTabs.tsx",
   "tabs/recepcion/HuespedesTabs.tsx",
   "tabs/recepcion/NuevaReservaTabs.tsx",
@@ -219,16 +191,42 @@ const STYLE_BUDGET = {
   "auth/LoginScreen.tsx": 15,
   // Cocoa 22 · ola 4 · lote 4-B (workspace)
   "operations/PosDashboard.tsx": 40,
+  // Tanda 6 · lote 6-E (workspace: cierre de caja)
+  "pos/CashClosureScreen.tsx": 40,
   // Cocoa 22 · ola 4 · lote 4-C (workspace)
   "operations/WorkforceDashboard.tsx": 40,
   "operations/SafetyDashboard.tsx": 40,
   // Cocoa 22 · ola 4 · lote 4-A (workspace)
-  "operations/MaintenanceDashboard.tsx": 40
+  "operations/MaintenanceDashboard.tsx": 40,
+  // Cocoa 22 · Tanda 6 · lote 6-E (Proveedores, gastos e inmovilizado · lista)
+  "payables/SupplierBillsScreen.tsx": 15,
+  "payables/ExpensesScreen.tsx": 15,
+  "payables/SuppliersScreen.tsx": 15,
+  "payables/FixedAssetsScreen.tsx": 15,
+  // Cocoa 22 · Tanda 6 · lote 6-F (USALI y cuentas anuales · dashboard; nacen sin estilos en línea)
+  "finance/AnnualAccountsScreen.tsx": 25,
+  "finance/UsaliScreen.tsx": 25,
+  // Cocoa 22 · Tanda 6 · lote 6-C (Contabilidad y estados contables: listas y formularios; PyG, Sumas y saldos y Cierre de ejercicio son dashboard, 25 por defecto)
+  "accounting/JournalScreen.tsx": 15,
+  "accounting/LedgerScreen.tsx": 15,
+  "accounting/ChartOfAccountsScreen.tsx": 15,
+  "accounting/AccountingSettingsScreen.tsx": 15,
+  "accounting/GestoriaExportScreen.tsx": 15,
+  "finance/BalanceSheetScreen.tsx": 15,
+  "finance/ExchangeRatesScreen.tsx": 15,
+  // Cocoa 22 · ola 8 · lote 8-B (Modelos AEAT: lista y formulario; los seis Modelo*Screen y FiscalModelReport son dashboard, 25 por defecto)
+  "fiscal/ReportErrorCard.tsx": 15,
+  "fiscal/VatBooksScreen.tsx": 15,
+  "fiscal/VatSettlementScreen.tsx": 15,
+  // Cocoa 22 · ola 6 · lote 6-A (Facturación y cobros: formulario · detalle · diálogo)
+  "admin/FolioRoutingScreen.tsx": 15,
+  "billing/FolioDetailScreen.tsx": 15,
+  "invoicing/InvoiceRectifyDialog.tsx": 15
 };
 const DEFAULT_STYLE_BUDGET = 25;
 
-/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788). */
-const GLOBAL_CEILING = { boCard: 762, rawButtons: 488, rawTables: 121, rawInputs: 491, colourLiterals: 419, inlineStyles: 3788 };
+/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223). */
+const GLOBAL_CEILING = { boCard: 589, rawButtons: 419, rawTables: 91, rawInputs: 409, colourLiterals: 402, inlineStyles: 3223 };
 
 // ----------------------------------------------------------------- helpers
 
@@ -523,8 +521,9 @@ function definedTokens() {
   return defined;
 }
 
-// Sub-views without a head of their own (plan §2.3): FrontDeskActionQueue is painted inside /hoy.
-const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$)/;
+// Sub-views without a head of their own (plan §2.3): FrontDeskActionQueue is painted inside /hoy;
+// fiscal/ReportErrorCard is the error card the AEAT report screens paint inside their body (lote 8-B).
+const HEADER_EXEMPT = /^(tabs\/|.*(Dialog|Drawer)\.tsx$|ScreenScaffold\.tsx$|ModuleSettingsPlaceholder\.tsx$|operations\/FrontDeskActionQueue\.tsx$|fiscal\/ReportErrorCard\.tsx$)/;
 const COLOUR_EXEMPT = /^(auth|preview|developer)\//;
 
 // ----------------------------------------------------------------- data

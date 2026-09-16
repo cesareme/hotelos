@@ -1,946 +1,591 @@
-// FolioDetailScreen — DEV FOLIO1
+// Folio — Finanzas › Facturación y cobros › Folio (/finanzas/facturacion/folios/:id).
 //
-// Workspace para un folio concreto con cuatro pestañas:
-//   • Cargos: lista de FolioLines con drag-and-drop nativo. El usuario puede
-//     arrastrar uno o varios cargos seleccionados sobre otro folio visible
-//     (lista lateral de "otros folios" de la misma reserva). Al soltar se
-//     dispara PATCH /folios/:sourceId/move-charges con el array chargeIds[].
-//   • Pagos: lista de pagos capturados con totales y balance.
-//   • Routing rules: lista de reglas + botón Nueva regla (placeholder).
-//   • Notas: textarea libre persistida en sessionStorage como fallback.
-//
-// El header (CocoaPageHeader) muestra título / subtítulo y acciones de alto
-// nivel (Split folio + Cerrar folio). El balance pendiente vive en un
-// CocoaCard variant="elevated" debajo del header.
-//
-// useToast da feedback a todas las mutaciones. El typecheck se ejecuta vía
-// `npm run typecheck` en apps/admin-web.
+// Cocoa 22 pilot of the «detalle» archetype (docs/design/COCOA-22.md §4,
+// plantilla `Detalle`): CocoaPage with a status badge and the folio actions
+// in the header, inner views (Cargos · Cobros · Enrutamiento) as `tabs`,
+// grid 8/4 (body + aside with CocoaStat) and Cocoa dialogs for every write:
+//   · Cobrar → PaymentDialog (POST /folios/:id/payments, enum + clientRequestId)
+//   · Devolver → RefundDialog (POST /payments/:id/refund; refund rows are
+//     `kind: "refund"` in the balance and are never offered again)
+//   · Dividir folio → POST /reservations/:id/folios (secondary folio)
+//   · Mover cargo → POST /folios/:id/move-charges (one charge to a sibling)
+//   · Cerrar folio → POST /folios/:id/close (only with balance 0)
+// Reads GET /folios/:id/balance (payments carry kind / refundedAmount /
+// methodCode), GET /reservations/:id/folios, GET /reservations/:id/routing-rules
+// and, best effort, GET /reservations/:id for the reservation code (RES-xxxxx),
+// holder and stay dates of the «Reserva» card (the folio only carries the id).
+// Charge types are labelled by components/billing/charge-types (never raw).
+// Hosted inside FacturacionTabs the `:id` comes from the sub-URL (the
+// container remounts the screen per folio); standalone it reads the same
+// route parameter. Without an id the page offers a lookup by identifier.
 
-import { useEffect, useMemo, useState, type CSSProperties, type DragEvent } from "react";
-import {
-  fetchReservationFolios,
-  fetchRoutingRules,
-  createSecondaryFolio,
-  type Folio,
-  type FolioLine,
-  type FolioRoutingRule
-} from "../../services/folioRoutingApi";
+import { useEffect, useMemo, useState } from "react";
+import { fetchReservationFolios, fetchRoutingRules, createSecondaryFolio, type Folio, type FolioLine, type FolioRoutingRule } from "../../services/folioRoutingApi";
+import { fetchReservation, type AdminReservation, type FolioPaymentRow } from "../../services/pmsCommerceApi";
 import { apiRequest } from "../../services/api-client";
+import { financeErrorMessage } from "../../services/finance-contracts";
+import { getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
 import { logBreadcrumb } from "../../lib/breadcrumb";
-import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
-import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedControl";
-import { CocoaCard } from "../../components/cocoa/CocoaCard";
-import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
-import { CocoaButton } from "../../components/cocoa/CocoaButton";
-import { CocoaInput } from "../../components/cocoa/CocoaInput";
-import { dateTime, DEFAULT_CURRENCY, money, type CurrencyInput } from "../../lib/format";
+import { dateRange, dateTime, money, plural } from "../../lib/format";
+import { ACTIONS, FIELD_LABELS } from "../../content/actions";
+import { folioDisplayName, folioLabelText } from "../../content/data-labels";
+import { fillParams, urlForScreen } from "../../navigation/nav-tree";
+import { useTabHost } from "../tabs/TabHost";
+import { useRouteParam } from "../tabs/tab-helpers";
+import { PaymentDialog } from "../../components/billing/PaymentDialog";
+import { RefundDialog } from "../../components/billing/RefundDialog";
+import { paymentKind, paymentKindLabel, paymentMethodLabel, paymentStatusLabel, paymentStatusTone, refundableAmount, refundablePayments } from "../../components/billing/payment-flow";
+import { chargeTypeLabel } from "../../components/billing/charge-types";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaDialog,
+  CocoaField,
+  CocoaFormRow,
+  CocoaGrid,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaStat,
+  CocoaState,
+  CocoaTable,
+  openTabPath,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
-type FolioTab = "charges" | "payments" | "routing" | "notes";
-
-type PaymentRecord = {
-  id: string;
-  amount: number;
-  currency: string;
-  method: string;
-  status: string;
-  pspReference?: string;
-  capturedAt?: string;
-};
+const FOLIO_URL = urlForScreen("FolioDetail") ?? "/finanzas/facturacion/folios/:id";
+const ROUTING_URL = urlForScreen("FolioRouting") ?? "/finanzas/facturacion/enrutamiento";
 
 type FolioBalanceResponse = {
   folio: Folio;
   lines: FolioLine[];
-  payments: PaymentRecord[];
+  payments: FolioPaymentRow[];
   chargesTotal: number;
   paymentsTotal: number;
+  refundsTotal?: number;
   balanceDue: number;
 };
 
-type MoveChargesResponse = {
-  ok: boolean;
-  sourceFolioId: string;
-  targetFolioId: string;
-  moved: string[];
-};
+type MoveChargesResponse = { ok: boolean; sourceFolioId: string; targetFolioId: string; moved: string[] };
 
-function fmtMoney(n: number, currency?: CurrencyInput): string {
-  return money(n, currency);
-}
+type FolioView = "cargos" | "cobros" | "enrutamiento";
 
-function noteStorageKey(folioId: string): string {
-  return `hotelos.folio.note.${folioId}`;
-}
+const VIEWS: Array<{ value: FolioView; label: string }> = [
+  { value: "cargos", label: "Cargos" },
+  { value: "cobros", label: "Cobros" },
+  { value: "enrutamiento", label: "Enrutamiento" }
+];
 
-function readNote(folioId: string): string {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.sessionStorage.getItem(noteStorageKey(folioId)) ?? "";
-  } catch {
-    return "";
-  }
-}
-
-function writeNote(folioId: string, value: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.setItem(noteStorageKey(folioId), value);
-  } catch {
-    /* ignore quota errors */
-  }
+function folioStatusLabel(status: string): string {
+  return status === "open" ? "Abierto" : status === "closed" ? "Cerrado" : status;
 }
 
 export interface FolioDetailScreenProps {
-  /**
-   * ID del folio a mostrar. Si no se pasa, el screen intenta leerlo del
-   * hash de la URL (#folio=fol_xxx) para soportar deep-linking sin router.
-   */
+  /** Folio to show; when omitted the screen reads `:id` from the URL. */
   folioId?: string;
 }
 
 export function FolioDetailScreen({ folioId: folioIdProp }: FolioDetailScreenProps = {}) {
+  const host = useTabHost();
+  const hosted = host !== null;
   const { showToast } = useToast();
+  const routeId = useRouteParam(FOLIO_URL, "id");
+  const [manualId, setManualId] = useState<string | null>(null);
+  const folioId = folioIdProp ?? routeId ?? manualId;
 
-  const initialFolioId = useMemo<string | null>(() => {
-    if (folioIdProp) return folioIdProp;
-    if (typeof window === "undefined") return null;
-    const match = window.location.hash.match(/folio=([\w-]+)/);
-    return match?.[1] ?? null;
-  }, [folioIdProp]);
-
-  const [folioId, setFolioId] = useState<string | null>(initialFolioId);
-  const [folio, setFolio] = useState<Folio | null>(null);
-  const [lines, setLines] = useState<FolioLine[]>([]);
-  const [payments, setPayments] = useState<PaymentRecord[]>([]);
-  const [chargesTotal, setChargesTotal] = useState<number>(0);
-  const [paymentsTotal, setPaymentsTotal] = useState<number>(0);
-  const [balanceDue, setBalanceDue] = useState<number>(0);
-  const [siblingFolios, setSiblingFolios] = useState<Folio[]>([]);
+  const [balance, setBalance] = useState<FolioBalanceResponse | null>(null);
+  const [siblings, setSiblings] = useState<Folio[]>([]);
   const [rules, setRules] = useState<FolioRoutingRule[]>([]);
-  const [activeTab, setActiveTab] = useState<FolioTab>("charges");
-  const [note, setNote] = useState<string>("");
-  const [loading, setLoading] = useState<boolean>(false);
+  // Reservation behind the folio (code, holder, dates); null when unreadable.
+  const [reservation, setReservation] = useState<AdminReservation | null>(null);
+  const [loading, setLoading] = useState<boolean>(Boolean(folioId));
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<boolean>(false);
+  const [view, setView] = useState<FolioView>("cargos");
+  const [busy, setBusy] = useState(false);
 
-  // Drag selection (multi-select cargos antes de arrastrar).
-  const [selectedChargeIds, setSelectedChargeIds] = useState<Set<string>>(new Set());
-  const [draggedChargeIds, setDraggedChargeIds] = useState<string[]>([]);
-  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [lookup, setLookup] = useState("");
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [refundFor, setRefundFor] = useState<{ open: boolean; paymentId?: string }>({ open: false });
+  const [splitOpen, setSplitOpen] = useState(false);
+  const [splitLabel, setSplitLabel] = useState("");
+  const [closeOpen, setCloseOpen] = useState(false);
+  const [moveLine, setMoveLine] = useState<FolioLine | null>(null);
+  const [moveTarget, setMoveTarget] = useState("");
 
-  // Diálogos placeholder.
-  const [splitOpen, setSplitOpen] = useState<boolean>(false);
-  const [splitLabel, setSplitLabel] = useState<string>("");
-  const [closeConfirmOpen, setCloseConfirmOpen] = useState<boolean>(false);
-
-  // Lookup manual cuando el screen se monta sin folioId.
-  const [folioLookup, setFolioLookup] = useState<string>("");
-
-  async function loadFolio(id: string) {
+  async function load(id: string) {
     setLoading(true);
     setError(null);
     try {
-      const balance = await apiRequest<FolioBalanceResponse>(`/folios/${id}/balance`);
-      setFolio(balance.folio);
-      setLines(balance.lines);
-      setPayments(balance.payments ?? []);
-      setChargesTotal(balance.chargesTotal);
-      setPaymentsTotal(balance.paymentsTotal);
-      setBalanceDue(balance.balanceDue);
-      setNote(readNote(id));
-
-      // Folios hermanos (drop targets) y reglas — best-effort, no bloquean.
-      const reservationId = balance.folio.reservationId;
-      const [siblings, ruleList] = await Promise.all([
+      const response = await apiRequest<FolioBalanceResponse>(`/folios/${id}/balance`);
+      setBalance(response);
+      // Siblings, rules and the reservation are best effort: they never block
+      // the balance (a role without pms.reservation.read keeps the raw id).
+      const reservationId = response.folio.reservationId;
+      const [folios, ruleList, booking] = await Promise.all([
         fetchReservationFolios(reservationId).catch(() => [] as Folio[]),
-        fetchRoutingRules(reservationId).catch(() => [] as FolioRoutingRule[])
+        fetchRoutingRules(reservationId).catch(() => [] as FolioRoutingRule[]),
+        fetchReservation(reservationId).catch(() => null)
       ]);
-      setSiblingFolios(siblings.filter((f) => f.id !== id));
+      setSiblings(folios.filter((folio) => folio.id !== id));
       setRules(ruleList);
+      setReservation(booking);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "No se pudo cargar el folio";
-      setError(message);
-      showToast(message, { variant: "error" });
+      setBalance(null);
+      setReservation(null);
+      setError(financeErrorMessage(err, "No se pudo cargar el folio."));
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    if (folioId) void loadFolio(folioId);
+    if (folioId) void load(folioId);
+    else {
+      setBalance(null);
+      setReservation(null);
+      setLoading(false);
+    }
   }, [folioId]);
 
-  function handleLookup() {
-    const id = folioLookup.trim();
-    if (!id) {
-      showToast("Indica un ID de folio", { variant: "error" });
-      return;
-    }
-    setFolioId(id);
+  const folio = balance?.folio ?? null;
+  const currency = folio?.currency;
+  const lines = balance?.lines ?? [];
+  const payments = balance?.payments ?? [];
+  const refundable = useMemo(() => refundablePayments(payments), [payments]);
+  const isOpen = folio?.status === "open";
+  const balanceDue = balance?.balanceDue ?? 0;
+
+  function openFolio(id: string) {
+    const trimmed = id.trim();
+    if (!trimmed) return;
+    if (hosted) openTabPath(fillParams(FOLIO_URL, { id: trimmed }));
+    else setManualId(trimmed);
   }
 
-  function toggleSelect(chargeId: string) {
-    setSelectedChargeIds((current) => {
-      const next = new Set(current);
-      if (next.has(chargeId)) next.delete(chargeId);
-      else next.add(chargeId);
-      return next;
-    });
-  }
-
-  function handleDragStart(event: DragEvent<HTMLDivElement>, chargeId: string) {
-    // Si la fila arrastrada no estaba seleccionada, arrastramos solo esa.
-    const ids = selectedChargeIds.has(chargeId)
-      ? Array.from(selectedChargeIds)
-      : [chargeId];
-    setDraggedChargeIds(ids);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("application/x-hotelos-charges", JSON.stringify(ids));
-    event.dataTransfer.setData("text/plain", ids.join(","));
-    logBreadcrumb("folio.charge.dragStart", "ui", { count: ids.length });
-  }
-
-  function handleDragEnd() {
-    setDraggedChargeIds([]);
-    setDropTargetId(null);
-  }
-
-  function handleDragOver(event: DragEvent<HTMLDivElement>, targetFolioId: string) {
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    if (dropTargetId !== targetFolioId) setDropTargetId(targetFolioId);
-  }
-
-  function handleDragLeave(targetFolioId: string) {
-    if (dropTargetId === targetFolioId) setDropTargetId(null);
-  }
-
-  async function handleDrop(event: DragEvent<HTMLDivElement>, targetFolioId: string) {
-    event.preventDefault();
-    setDropTargetId(null);
+  async function run(label: string, action: () => Promise<unknown>, after?: () => void) {
     if (!folioId) return;
-    let chargeIds: string[] = [];
-    try {
-      const raw = event.dataTransfer.getData("application/x-hotelos-charges");
-      if (raw) chargeIds = JSON.parse(raw) as string[];
-    } catch {
-      /* fall back to dragged state */
-    }
-    if (chargeIds.length === 0) chargeIds = draggedChargeIds;
-    if (chargeIds.length === 0) {
-      showToast("No hay cargos seleccionados para mover", { variant: "info" });
-      return;
-    }
     setBusy(true);
-    logBreadcrumb("folio.charges.move", "mutation", {
-      sourceFolioId: folioId,
-      targetFolioId,
-      count: chargeIds.length
-    });
     try {
-      await apiRequest<MoveChargesResponse>(`/folios/${folioId}/move-charges`, {
-        method: "POST",
-        body: { chargeIds, targetFolioId }
-      });
-      showToast(`Movidos ${chargeIds.length} cargo(s) al folio destino`, { variant: "success" });
-      setSelectedChargeIds(new Set());
-      setDraggedChargeIds([]);
-      await loadFolio(folioId);
+      await action();
+      showToast(label, { variant: "success" });
+      after?.();
+      await load(folioId);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "No se pudieron mover los cargos";
-      showToast(message, { variant: "error" });
+      showToast(financeErrorMessage(err, "No se pudo completar la operación."), { variant: "error" });
     } finally {
       setBusy(false);
     }
   }
 
-  function handleNoteChange(value: string) {
-    setNote(value);
-    if (folioId) writeNote(folioId, value);
-  }
-
-  function handleNoteSave() {
-    if (!folioId) return;
-    logBreadcrumb("folio.note.save", "mutation", { folioId });
-    showToast("Nota guardada (sessionStorage; persistencia backend pendiente)", { variant: "success" });
-  }
-
-  function openSplitDialog() {
-    setSplitLabel("");
-    setSplitOpen(true);
-  }
-
-  async function confirmSplit() {
-    if (!folio) return;
-    const label = splitLabel.trim();
-    if (!label) {
-      showToast("Indica una etiqueta para el folio nuevo", { variant: "error" });
-      return;
-    }
-    setBusy(true);
-    try {
-      const created = await createSecondaryFolio(folio.reservationId, {
-        label,
-        currency: folio.currency
-      });
-      showToast(`Folio "${created.label}" creado`, { variant: "success" });
-      setSplitOpen(false);
-      if (folioId) await loadFolio(folioId);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "No se pudo crear el folio";
-      showToast(message, { variant: "error" });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function openCloseDialog() {
-    if (balanceDue !== 0) {
-      showToast("El folio debe tener saldo 0 para cerrarse", { variant: "error" });
-      return;
-    }
-    setCloseConfirmOpen(true);
-  }
-
-  async function confirmClose() {
-    if (!folioId) return;
-    setBusy(true);
-    logBreadcrumb("folio.close", "mutation", { folioId });
-    try {
-      await apiRequest<{ ok: boolean }>(`/folios/${folioId}/close`, { method: "POST" });
-      showToast("Folio cerrado", { variant: "success" });
-      setCloseConfirmOpen(false);
-      await loadFolio(folioId);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : "No se pudo cerrar el folio";
-      showToast(message, { variant: "error" });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function handleNewRulePlaceholder() {
-    logBreadcrumb("folio.routing.newRule.intent", "ui", { folioId });
-    showToast("Editor de reglas de routing: disponible en pantalla dedicada", { variant: "info" });
-  }
-
-  const currency = folio?.currency ?? DEFAULT_CURRENCY;
-
-  const tabOptions = useMemo(
+  const chargeColumns = useMemo<CocoaTableColumn<FolioLine>[]>(
     () => [
-      { value: "charges", label: `Cargos (${lines.length})` },
-      { value: "payments", label: `Pagos (${payments.length})` },
-      { value: "routing", label: `Routing rules (${rules.length})` },
-      { value: "notes", label: "Notas" }
+      { key: "description", label: FIELD_LABELS.description, render: (line) => <strong>{line.description}</strong> },
+      { key: "type", label: FIELD_LABELS.type, render: (line) => chargeTypeLabel(line.type), hideOnNarrow: true },
+      { key: "quantity", label: "Cantidad × precio", align: "right", render: (line) => `${line.quantity} × ${money(line.unitPrice, currency)}`, hideOnNarrow: true },
+      { key: "postedAt", label: FIELD_LABELS.date, render: (line) => dateTime(line.postedAt, { style: "dayMonth" }), hideOnNarrow: true },
+      { key: "total", label: FIELD_LABELS.total, align: "right", render: (line) => <strong>{money(line.total, currency)}</strong> }
     ],
-    [lines.length, payments.length, rules.length]
+    [currency]
   );
 
-  const paymentColumns = useMemo<CocoaTableColumn<PaymentRecord>[]>(
+  const paymentColumns = useMemo<CocoaTableColumn<FolioPaymentRow>[]>(
     () => [
+      { key: "createdAt", label: FIELD_LABELS.date, render: (row) => dateTime(row.createdAt ?? row.capturedAt, { style: "dayMonth" }), hideOnNarrow: true },
       {
-        key: "capturedAt",
-        label: "Capturado",
-        render: (payment) =>
-          dateTime(payment.capturedAt)
+        key: "kind",
+        label: "Movimiento",
+        render: (row) => {
+          const kind = paymentKind(row);
+          return <CocoaBadge tone={kind === "refund" ? "info" : "neutral"}>{paymentKindLabel(kind)}</CocoaBadge>;
+        }
       },
+      { key: "method", label: "Método", render: (row) => paymentMethodLabel(row.method, row.methodCode) },
+      { key: "pspReference", label: "Referencia", render: (row) => row.pspReference ?? "—", hideOnNarrow: true },
       {
-        key: "method",
-        label: "Método",
-        render: (payment) => <strong>{payment.method}</strong>
+        key: "status",
+        label: FIELD_LABELS.status,
+        render: (row) => {
+          const kind = paymentKind(row);
+          const refunded = kind === "capture" && (row.refundedAmount ?? 0) > 0 && refundableAmount(row) > 0;
+          return (
+            <span className="cocoa-cluster">
+              <CocoaBadge tone={paymentStatusTone(row.status, kind)}>{paymentStatusLabel(row.status)}</CocoaBadge>
+              {refunded ? <CocoaBadge tone="warning">devuelto {money(row.refundedAmount, row.currency || currency)}</CocoaBadge> : null}
+            </span>
+          );
+        }
       },
       {
         key: "amount",
-        label: "Importe",
+        label: FIELD_LABELS.amount,
         align: "right",
-        render: (payment) => fmtMoney(payment.amount, payment.currency || currency)
-      },
-      {
-        key: "status",
-        label: "Estado",
-        render: (payment) => payment.status
-      },
-      {
-        key: "pspReference",
-        label: "Ref. PSP",
-        render: (payment) => payment.pspReference ?? "—"
+        render: (row) => <strong>{paymentKind(row) === "refund" ? `−${money(row.amount, row.currency || currency)}` : money(row.amount, row.currency || currency)}</strong>
       }
     ],
     [currency]
   );
 
-  const routingColumns = useMemo<CocoaTableColumn<FolioRoutingRule>[]>(
+  const ruleColumns = useMemo<CocoaTableColumn<FolioRoutingRule>[]>(
     () => [
-      {
-        key: "sourceType",
-        label: "Origen",
-        render: (rule) => <strong>{rule.sourceType}</strong>
-      },
+      { key: "sourceType", label: "Origen", render: (rule) => <strong>{chargeTypeLabel(rule.sourceType)}</strong> },
       {
         key: "targetFolioId",
         label: "Folio destino",
-        render: (rule) => rule.targetFolioId
+        render: (rule) => {
+          const target = rule.targetFolioId === folioId ? folio : siblings.find((candidate) => candidate.id === rule.targetFolioId);
+          return target ? folioDisplayName(target) : rule.targetFolioId;
+        }
       },
-      {
-        key: "priority",
-        label: "Prioridad",
-        align: "right",
-        render: (rule) => String(rule.priority)
-      },
-      {
-        key: "active",
-        label: "Estado",
-        render: (rule) => (rule.active ? "Activa" : "Pausada")
-      }
+      { key: "priority", label: "Prioridad", align: "right", render: (rule) => rule.priority, hideOnNarrow: true },
+      { key: "active", label: FIELD_LABELS.status, render: (rule) => <CocoaBadge tone={rule.active ? "success" : "neutral"}>{rule.active ? "Activa" : "Pausada"}</CocoaBadge> }
     ],
-    []
+    [folioId, folio, siblings]
   );
 
-  // Render del lookup si aún no hay folioId.
-  if (!folioId) {
-    return (
-      <section className="bo-card">
-        <CocoaPageHeader
-          eyebrow="Facturación"
-          title="Detalle de folio"
-          subtitle="Indica el ID del folio que quieres abrir."
-        />
-        <p
-          className="bo-muted"
-          style={{ marginTop: "var(--cocoa-space-4)" }}
-        >
-          Indica el ID del folio que quieres abrir. También puedes navegar con el
-          parámetro <code>#folio=fol_xxx</code> en la URL.
-        </p>
-        <div
-          style={{
-            display: "flex",
-            gap: "var(--cocoa-space-2)",
-            alignItems: "flex-end",
-            flexWrap: "wrap",
-            marginTop: "var(--cocoa-space-3)"
-          }}
-        >
-          <label
-            className="bo-form-field"
-            style={{ flex: "1 1 280px", minWidth: 240 }}
-          >
-            <span>ID del folio</span>
-            <CocoaInput
-              value={folioLookup}
-              onChange={setFolioLookup}
-              placeholder="fol_abc123"
-            />
-          </label>
-          <CocoaButton variant="filled" tone="accent" onClick={handleLookup}>
-            Abrir folio
-          </CocoaButton>
-        </div>
-      </section>
-    );
-  }
+  const title = folio ? `Folio ${folioLabelText(folio.label, folio.isPrimary ? "principal" : folio.id)}` : "Folio";
+  // RES-xxxxx when the reservation is readable; the internal id only as a fallback.
+  const reservationRef = reservation?.code ?? folio?.reservationId ?? "";
+  const reservationHolder = reservation ? (reservation.bookerName?.trim() || reservation.companyName?.trim() || reservation.travelAgentName?.trim() || null) : null;
+  const reservationStay = reservation ? dateRange(reservation.arrivalDate, reservation.departureDate, { style: "dayMonth" }) : null;
+  const subtitle = folio ? `Reserva ${reservationRef} · ${plural(lines.length, "cargo", "cargos")} · ${plural(payments.length, "movimiento de caja", "movimientos de caja")}` : "Cargos, cobros y devoluciones de un folio.";
+  const reservationUrl = folio ? urlForScreen("ReservationDetailWorkspace", { id: folio.reservationId }) : null;
+  const routingUrl = folio ? `${ROUTING_URL}?reserva=${encodeURIComponent(folio.reservationId)}` : ROUTING_URL;
 
-  // Estilos del balance hero: el plan indica usar accent cuando hay saldo y
-  // success cuando saldo es 0. Los estilos quedan inline contra tokens.
-  const balanceColor: string =
-    balanceDue === 0
-      ? "var(--cocoa-success, var(--cocoa-label))"
-      : "var(--cocoa-accent)";
+  const pageState = !folioId ? "ready" : loading && !balance ? "loading" : error && !balance ? "error" : "ready";
 
   return (
-    <section className="bo-card">
-      <CocoaPageHeader
-        eyebrow={`Folio ${folio?.label ?? folioId}${folio ? ` · ${folio.status}` : ""}`}
-        title="Detalle de folio"
-        subtitle={folio ? `Reserva ${folio.reservationId}` : undefined}
-        actions={
-          <span
-            style={{
-              display: "inline-flex",
-              gap: "var(--cocoa-space-2)",
-              flexWrap: "wrap"
-            }}
-          >
-            <CocoaButton
-              variant="plain"
-              onClick={openSplitDialog}
-              disabled={busy || !folio}
-            >
-              Split folio
+    <CocoaPage
+      eyebrow="Finanzas · Facturación y cobros"
+      title={title}
+      subtitle={hosted ? undefined : subtitle}
+      tabs={folio ? VIEWS : undefined}
+      activeTab={view}
+      onTabChange={(value) => setView(value as FolioView)}
+      actions={
+        folio ? (
+          <>
+            <CocoaBadge tone={isOpen ? "success" : "neutral"}>{folioStatusLabel(folio.status)}</CocoaBadge>
+            {folio.isPrimary ? <CocoaBadge tone="info">Principal</CocoaBadge> : null}
+            <CocoaButton variant="filled" tone="accent" size="small" disabled={busy || !isOpen} onClick={() => setPaymentOpen(true)}>
+              Cobrar
+            </CocoaButton>
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy || refundable.length === 0} onClick={() => setRefundFor({ open: true })}>
+              Devolver
+            </CocoaButton>
+            <CocoaButton variant="plain" tone="neutral" size="small" disabled={busy || !isOpen} onClick={() => { setSplitLabel(""); setSplitOpen(true); }}>
+              Dividir folio
             </CocoaButton>
             <CocoaButton
-              variant="filled"
-              tone="accent"
-              onClick={openCloseDialog}
-              disabled={busy || !folio || folio.status === "closed" || balanceDue !== 0}
-              aria-label={
-                folio?.status === "closed"
-                  ? "Folio ya cerrado"
-                  : balanceDue !== 0
-                    ? "Cerrar folio (requiere saldo 0)"
-                    : "Cerrar folio"
-              }
+              variant="bordered"
+              tone="destructive"
+              size="small"
+              disabled={busy || !isOpen || balanceDue !== 0}
+              title={!isOpen ? "El folio ya está cerrado" : balanceDue !== 0 ? "Solo se cierra con saldo cero" : undefined}
+              onClick={() => setCloseOpen(true)}
             >
               Cerrar folio
             </CocoaButton>
-          </span>
-        }
-      />
-
-      {/* Balance hero — CocoaCard elevated */}
-      <div style={{ margin: "var(--cocoa-space-4) 0", maxWidth: 480 }}>
-        <CocoaCard variant="elevated" padding="lg">
-          <span
-            style={{
-              color: "var(--cocoa-label-secondary)",
-              fontSize: "var(--cocoa-fs-caption)",
-              textTransform: "uppercase",
-              letterSpacing: "var(--cocoa-tracking-wide)"
-            }}
-          >
-            Balance pendiente
-          </span>
-          <div
-            style={{
-              fontSize: "var(--cocoa-fs-large-title)",
-              fontWeight: 700,
-              lineHeight: 1.1,
-              marginTop: "var(--cocoa-space-2)",
-              color: balanceColor,
-              fontVariantNumeric: "tabular-nums",
-              opacity: loading ? 0.5 : 1
-            }}
-          >
-            {fmtMoney(balanceDue, currency)}
+          </>
+        ) : undefined
+      }
+      state={pageState}
+      skeleton={<CocoaSkeleton.Grid rows={[[8, 4]]} height={280} />}
+      error={{ title: "No se pudo cargar el folio", message: error ?? undefined, onRetry: () => (folioId ? void load(folioId) : undefined) }}
+      commands={folio && isOpen ? [{ id: "folio-cobrar", label: `Cobrar en ${title}`, run: () => setPaymentOpen(true) }] : undefined}
+    >
+      {!folioId ? (
+        <CocoaSection title="Abrir un folio" aria-label="Abrir un folio">
+          <p>Los folios se abren desde Facturación y cobros (reserva → folio) o desde la ficha de la reserva. También puedes indicar su identificador.</p>
+          <CocoaFormRow columns={2} min={240}>
+            <CocoaField label="Identificador del folio">
+              <CocoaInput value={lookup} onChange={setLookup} placeholder="cmu1j7yer00aqfywhw1d0hh6x" autoComplete="off" onKeyDown={(event) => { if (event.key === "Enter") openFolio(lookup); }} />
+            </CocoaField>
+          </CocoaFormRow>
+          <div className="cocoa-row" data-gap="2">
+            <CocoaButton variant="filled" tone="accent" disabled={!lookup.trim()} onClick={() => openFolio(lookup)}>
+              Abrir folio
+            </CocoaButton>
+            <CocoaButton variant="plain" tone="neutral" onClick={() => openTabPath(urlForScreen("BillingCenter") ?? "/finanzas/facturacion")}>
+              Ir a Facturación y cobros
+            </CocoaButton>
           </div>
-          <p
-            style={{
-              marginTop: "var(--cocoa-space-2)",
-              color: "var(--cocoa-label-secondary)",
-              fontSize: "var(--cocoa-fs-caption)"
-            }}
-          >
-            Cargos {fmtMoney(chargesTotal, currency)} · Pagos {fmtMoney(paymentsTotal, currency)}
-          </p>
-        </CocoaCard>
-      </div>
-
-      {/* CocoaSegmentedControl tabs */}
-      <div style={{ marginBottom: "var(--cocoa-space-4)" }}>
-        <CocoaSegmentedControl
-          value={activeTab}
-          options={tabOptions}
-          onChange={(value) => setActiveTab(value as FolioTab)}
-          aria-label="Secciones del folio"
-        />
-      </div>
-
-      {error ? <p className="bo-muted">{error}</p> : null}
-
-      {activeTab === "charges" ? (
-        <div className="bo-grid two" style={{ gap: "var(--cocoa-space-4)" }}>
-          {/* Lista DRAGGABLE de cargos — drag-drop preservado */}
-          <section>
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-                marginBottom: "var(--cocoa-space-2)"
-              }}
-            >
-              <h3 style={{ margin: 0 }}>Cargos ({lines.length})</h3>
-              <span
-                style={{
-                  color: "var(--cocoa-label-secondary)",
-                  fontSize: "var(--cocoa-fs-caption)"
-                }}
+        </CocoaSection>
+      ) : folio ? (
+        <CocoaGrid align="start" aria-label="Detalle del folio">
+          <CocoaSpan cols={8} min={480}>
+            {view === "cargos" ? (
+              <CocoaSection
+                title="Cargos"
+                meta={plural(lines.length, "línea", "líneas")}
+                padding={lines.length > 0 ? "none" : "md"}
+                style={{ overflow: "clip" }}
+                footer={lines.length > 0 ? <span>Total cargos {money(balance?.chargesTotal, currency)}</span> : undefined}
               >
-                {selectedChargeIds.size > 0
-                  ? `${selectedChargeIds.size} seleccionado(s) — arrastra al folio destino`
-                  : "Clic para seleccionar · arrastra para mover"}
-              </span>
+                {lines.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Sin cargos registrados." />
+                ) : (
+                  <CocoaTable
+                    columns={chargeColumns}
+                    rows={lines}
+                    rowKey="id"
+                    caption="Cargos del folio"
+                    aria-label="Cargos del folio"
+                    rowActions={
+                      siblings.length > 0 && isOpen
+                        ? (line) => (
+                            <CocoaButton
+                              variant="plain"
+                              size="small"
+                              disabled={busy}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setMoveTarget(siblings[0]?.id ?? "");
+                                setMoveLine(line);
+                              }}
+                            >
+                              Mover
+                            </CocoaButton>
+                          )
+                        : undefined
+                    }
+                  />
+                )}
+              </CocoaSection>
+            ) : null}
+
+            {view === "cobros" ? (
+              <CocoaSection
+                title="Cobros y devoluciones"
+                meta={plural(payments.length, "movimiento", "movimientos")}
+                padding={payments.length > 0 ? "none" : "md"}
+                style={{ overflow: "clip" }}
+                action={
+                  isOpen ? (
+                    <CocoaButton variant="plain" size="small" onClick={() => setPaymentOpen(true)}>
+                      Cobrar
+                    </CocoaButton>
+                  ) : undefined
+                }
+                footer={payments.length > 0 ? <span>Cobrado neto {money(balance?.paymentsTotal, currency)}{(balance?.refundsTotal ?? 0) > 0 ? ` · devuelto ${money(balance?.refundsTotal, currency)}` : ""}</span> : undefined}
+              >
+                {payments.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Sin cobros registrados." message={isOpen ? "Registra el primero con «Cobrar»." : undefined} />
+                ) : (
+                  <CocoaTable
+                    columns={paymentColumns}
+                    rows={payments}
+                    rowKey="id"
+                    caption="Cobros y devoluciones del folio"
+                    aria-label="Cobros y devoluciones del folio"
+                    rowTone={(row) => (paymentKind(row) === "refund" ? "info" : undefined)}
+                    rowActions={(row) =>
+                      refundableAmount(row) > 0 ? (
+                        <CocoaButton
+                          variant="plain"
+                          size="small"
+                          disabled={busy}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setRefundFor({ open: true, paymentId: row.id });
+                          }}
+                        >
+                          Devolver
+                        </CocoaButton>
+                      ) : null
+                    }
+                  />
+                )}
+              </CocoaSection>
+            ) : null}
+
+            {view === "enrutamiento" ? (
+              <CocoaSection
+                title="Reglas de enrutamiento"
+                meta={plural(rules.length, "regla", "reglas")}
+                padding={rules.length > 0 ? "none" : "md"}
+                style={{ overflow: "clip" }}
+                action={
+                  <CocoaButton variant="plain" size="small" onClick={() => openTabPath(routingUrl)}>
+                    Gestionar reglas
+                  </CocoaButton>
+                }
+              >
+                {rules.length === 0 ? (
+                  <CocoaState
+                    kind="empty"
+                    inline
+                    title="Sin reglas para esta reserva."
+                    message="Las reglas envían cada nuevo cargo (minibar, restauración…) al folio de la empresa o de la agencia."
+                  />
+                ) : (
+                  <CocoaTable columns={ruleColumns} rows={rules} rowKey="id" caption="Reglas de enrutamiento de la reserva" aria-label="Reglas de enrutamiento de la reserva" />
+                )}
+              </CocoaSection>
+            ) : null}
+          </CocoaSpan>
+
+          <CocoaSpan cols={4} min={240}>
+            <div className="cocoa-stack" data-gap="3">
+              <CocoaSection title="Saldo" meta={isOpen ? (balanceDue > 0 ? "pendiente de cobro" : balanceDue < 0 ? "a favor del cliente" : "liquidado") : "folio cerrado"}>
+                <div className="cocoa-stack" data-gap="3">
+                  <CocoaStat label="Saldo pendiente" value={money(balanceDue, currency)} tone={balanceDue > 0 ? "warning" : balanceDue < 0 ? "info" : "success"} size="large" />
+                  <CocoaStat label="Cargos" value={money(balance?.chargesTotal, currency)} hint={plural(lines.length, "línea", "líneas")} />
+                  <CocoaStat label="Cobrado neto" value={money(balance?.paymentsTotal, currency)} hint={(balance?.refundsTotal ?? 0) > 0 ? `Devuelto ${money(balance?.refundsTotal, currency)}` : undefined} />
+                </div>
+              </CocoaSection>
+
+              <CocoaSection title="Reserva" meta={reservationRef}>
+                <div className="cocoa-stack" data-gap="2">
+                  {reservation ? (
+                    <p>
+                      {reservationHolder ? <strong>{reservationHolder}</strong> : null}
+                      {reservationHolder && reservationStay ? " · " : null}
+                      {reservationStay}
+                    </p>
+                  ) : null}
+                  <div className="cocoa-row" data-gap="2">
+                    {reservationUrl ? (
+                      <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => openTabPath(reservationUrl)}>
+                        Abrir reserva
+                      </CocoaButton>
+                    ) : null}
+                    <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => openTabPath(urlForScreen("BillingCenter") ?? "/finanzas/facturacion")}>
+                      Facturación y cobros
+                    </CocoaButton>
+                  </div>
+                </div>
+              </CocoaSection>
+
+              <CocoaSection title="Otros folios de la reserva" meta={plural(siblings.length, "folio", "folios")}>
+                {siblings.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Solo hay un folio." message={isOpen ? "Divide el folio para separar los cargos de la empresa o de un acompañante." : undefined} />
+                ) : (
+                  <ul className="c22-section__list">
+                    {siblings.map((sibling) => (
+                      <li key={sibling.id}>
+                        <span className="cocoa-cluster">
+                          <strong>{folioLabelText(sibling.label)}</strong>
+                          <CocoaBadge tone={sibling.status === "open" ? "success" : "neutral"} size="small">
+                            {folioStatusLabel(sibling.status)}
+                          </CocoaBadge>
+                          {sibling.isPrimary ? (
+                            <CocoaBadge tone="info" size="small">
+                              Principal
+                            </CocoaBadge>
+                          ) : null}
+                        </span>
+                        <CocoaButton variant="plain" size="small" onClick={() => openFolio(sibling.id)}>
+                          {ACTIONS.view}
+                        </CocoaButton>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CocoaSection>
             </div>
-            {lines.length === 0 ? (
-              <CocoaCard variant="bordered" padding="lg">
-                <p
-                  style={{
-                    margin: 0,
-                    textAlign: "center",
-                    color: "var(--cocoa-label-secondary)"
-                  }}
-                >
-                  Sin cargos registrados.
-                </p>
-              </CocoaCard>
-            ) : (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--cocoa-space-1)"
-                }}
-              >
-                {lines.map((line) => {
-                  const isSelected = selectedChargeIds.has(line.id);
-                  const isDragging = draggedChargeIds.includes(line.id);
-                  const chargeStyle: CSSProperties = {
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    gap: "var(--cocoa-space-3)",
-                    padding: "var(--cocoa-space-2) var(--cocoa-space-3)",
-                    border: `1px solid ${
-                      isSelected
-                        ? "var(--cocoa-accent)"
-                        : "var(--cocoa-separator)"
-                    }`,
-                    borderRadius: "var(--cocoa-radius-md)",
-                    background: isSelected
-                      ? "var(--cocoa-background-selection)"
-                      : isDragging
-                        ? "var(--cocoa-background-control)"
-                        : "var(--cocoa-background-content)",
-                    color: isSelected ? "var(--cocoa-accent-contrast)" : "var(--cocoa-label)",
-                    cursor: "grab",
-                    opacity: isDragging ? 0.6 : 1,
-                    transition:
-                      "background var(--cocoa-duration-base) var(--cocoa-ease-out), border-color var(--cocoa-duration-base) var(--cocoa-ease-out)"
-                  };
-                  return (
-                    <div
-                      key={line.id}
-                      role="button"
-                      tabIndex={0}
-                      draggable
-                      onDragStart={(event) => handleDragStart(event, line.id)}
-                      onDragEnd={handleDragEnd}
-                      onClick={() => toggleSelect(line.id)}
-                      onKeyDown={(event) => {
-                        if (event.key === " " || event.key === "Enter") {
-                          event.preventDefault();
-                          toggleSelect(line.id);
-                        }
-                      }}
-                      aria-grabbed={isDragging}
-                      aria-selected={isSelected}
-                      style={chargeStyle}
-                    >
-                      <span style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-                        <strong
-                          style={{
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                            whiteSpace: "nowrap"
-                          }}
-                        >
-                          {line.description}
-                        </strong>
-                        <small
-                          style={{
-                            color: isSelected
-                              ? "var(--cocoa-accent-contrast)"
-                              : "var(--cocoa-label-secondary)"
-                          }}
-                        >
-                          {line.type} · {line.quantity} × {fmtMoney(line.unitPrice, currency)}
-                          {line.taxCode ? ` · ${line.taxCode}` : ""}
-                        </small>
-                      </span>
-                      <strong style={{ fontVariantNumeric: "tabular-nums" }}>
-                        {fmtMoney(line.total, currency)}
-                      </strong>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </section>
-
-          {/* Drop targets: otros folios visibles */}
-          <aside>
-            <h3 style={{ margin: "0 0 var(--cocoa-space-2) 0" }}>Mover a otro folio</h3>
-            {siblingFolios.length === 0 ? (
-              <CocoaCard variant="bordered" padding="lg">
-                <p
-                  style={{
-                    margin: 0,
-                    color: "var(--cocoa-label-secondary)"
-                  }}
-                >
-                  No hay otros folios en esta reserva. Crea uno con "Split folio" para habilitar el destino.
-                </p>
-              </CocoaCard>
-            ) : (
-              <div
-                style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "var(--cocoa-space-2)"
-                }}
-              >
-                {siblingFolios.map((target) => {
-                  const isActive = dropTargetId === target.id;
-                  const dropStyle: CSSProperties = {
-                    padding: "var(--cocoa-space-4)",
-                    border: `2px dashed ${
-                      isActive ? "var(--cocoa-accent)" : "var(--cocoa-separator)"
-                    }`,
-                    borderRadius: "var(--cocoa-radius-lg)",
-                    background: isActive
-                      ? "var(--cocoa-background-selection)"
-                      : "var(--cocoa-background-control)",
-                    transition:
-                      "all var(--cocoa-duration-base) var(--cocoa-ease-out)"
-                  };
-                  return (
-                    <div
-                      key={target.id}
-                      data-dropzone={isActive ? "active" : "idle"}
-                      onDragOver={(event) => handleDragOver(event, target.id)}
-                      onDragLeave={() => handleDragLeave(target.id)}
-                      onDrop={(event) => void handleDrop(event, target.id)}
-                      style={dropStyle}
-                    >
-                      <strong>{target.label}</strong>
-                      <div
-                        style={{
-                          color: "var(--cocoa-label-secondary)",
-                          fontSize: "var(--cocoa-fs-caption)",
-                          marginTop: "var(--cocoa-space-1)"
-                        }}
-                      >
-                        {target.isPrimary ? "Primario · " : ""}
-                        {target.status} · {target.currency}
-                      </div>
-                      <p
-                        style={{
-                          color: "var(--cocoa-label-secondary)",
-                          fontSize: "var(--cocoa-fs-caption)",
-                          marginTop: "var(--cocoa-space-2)",
-                          marginBottom: 0
-                        }}
-                      >
-                        Suelta aquí los cargos seleccionados.
-                      </p>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </aside>
-        </div>
+          </CocoaSpan>
+        </CocoaGrid>
       ) : null}
 
-      {activeTab === "payments" ? (
-        <div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "var(--cocoa-space-2)"
+      {folio ? (
+        <>
+          <PaymentDialog
+            open={paymentOpen}
+            onClose={() => setPaymentOpen(false)}
+            folioId={folio.id}
+            propertyId={getActivePropertyId()}
+            currency={folio.currency}
+            balanceDue={balanceDue}
+            subject={title}
+            onCaptured={() => {
+              logBreadcrumb("folio.payment.captured", "mutation", { folioId: folio.id });
+              void load(folio.id);
             }}
-          >
-            <h3 style={{ margin: 0 }}>Pagos ({payments.length})</h3>
-            <span style={{ color: "var(--cocoa-label-secondary)" }}>
-              Total pagado: <strong style={{ color: "var(--cocoa-label)" }}>{fmtMoney(paymentsTotal, currency)}</strong> · Balance:{" "}
-              <strong style={{ color: "var(--cocoa-label)" }}>{fmtMoney(balanceDue, currency)}</strong>
-            </span>
-          </div>
-          <CocoaTable<PaymentRecord>
-            columns={paymentColumns}
-            rows={payments}
-            rowKey="id"
-            emptyState="Sin pagos registrados."
+            onIntent={() => logBreadcrumb("folio.payment.intent", "mutation", { folioId: folio.id })}
           />
-        </div>
-      ) : null}
-
-      {activeTab === "routing" ? (
-        <div>
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "var(--cocoa-space-2)"
+          <RefundDialog
+            open={refundFor.open}
+            onClose={() => setRefundFor({ open: false })}
+            payments={payments}
+            initialPaymentId={refundFor.paymentId}
+            currency={folio.currency}
+            onRefunded={() => {
+              logBreadcrumb("folio.payment.refunded", "mutation", { folioId: folio.id });
+              void load(folio.id);
             }}
-          >
-            <h3 style={{ margin: 0 }}>Reglas de routing ({rules.length})</h3>
-            <CocoaButton
-              variant="plain"
-              onClick={handleNewRulePlaceholder}
-            >
-              Nueva regla
-            </CocoaButton>
-          </div>
-          <CocoaTable<FolioRoutingRule>
-            columns={routingColumns}
-            rows={rules}
-            rowKey="id"
-            emptyState="No hay reglas de routing definidas para esta reserva."
           />
-          <p
-            style={{
-              marginTop: "var(--cocoa-space-3)",
-              color: "var(--cocoa-label-secondary)"
+
+          <CocoaDialog
+            open={splitOpen}
+            onClose={() => setSplitOpen(false)}
+            title="Dividir folio"
+            description="Crea un folio secundario en la misma reserva. Después mueve a él los cargos que correspondan o define una regla de enrutamiento."
+            confirmLabel={busy ? "Creando…" : "Crear folio"}
+            cancelLabel={ACTIONS.cancel}
+            busy={busy}
+            initialFocus={() => document.getElementById("folio-split-label")}
+            onConfirm={async () => {
+              const label = splitLabel.trim();
+              if (!label) {
+                showToast("Indica una etiqueta para el folio nuevo.", { variant: "error" });
+                return;
+              }
+              await run(`Folio «${label}» creado.`, () => createSecondaryFolio(folio.reservationId, { label, currency: folio.currency }), () => setSplitOpen(false));
             }}
           >
-            El editor completo de reglas vive en la pantalla{" "}
-            <CocoaButton
-              variant="plain"
-              size="small"
-              onClick={() => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: "FolioRouting" }))}
-            >
-              FolioRouting
-            </CocoaButton>
-            .
-          </p>
-        </div>
-      ) : null}
+            <CocoaField label="Etiqueta del folio nuevo" required help="Por ejemplo «Empresa», «Agencia» o el nombre del acompañante.">
+              <CocoaInput id="folio-split-label" value={splitLabel} onChange={setSplitLabel} placeholder="Empresa" maxLength={80} autoComplete="off" />
+            </CocoaField>
+          </CocoaDialog>
 
-      {activeTab === "notes" ? (
-        <div>
-          <h3 style={{ marginTop: 0 }}>Notas internas</h3>
-          <label className="bo-form-field">
-            <span>Nota sobre este folio</span>
-            <textarea
-              rows={10}
-              value={note}
-              onChange={(event) => handleNoteChange(event.target.value)}
-              placeholder="Anotaciones para el equipo de facturación…"
-            />
-          </label>
-          <div className="bo-actions">
-            <CocoaButton variant="filled" tone="accent" onClick={handleNoteSave}>
-              Guardar nota
-            </CocoaButton>
-          </div>
-        </div>
-      ) : null}
+          <CocoaDialog
+            open={closeOpen}
+            onClose={() => setCloseOpen(false)}
+            tone="destructive"
+            title={`¿Cerrar el folio ${folioLabelText(folio.label, folio.isPrimary ? "principal" : folio.id)}?`}
+            description="Un folio cerrado no admite más cargos ni cobros. Solo se cierra con saldo cero."
+            confirmLabel={busy ? "Cerrando…" : "Cerrar folio"}
+            cancelLabel={ACTIONS.cancel}
+            busy={busy}
+            onConfirm={() => run("Folio cerrado.", () => apiRequest<{ ok: boolean }>(`/folios/${folio.id}/close`, { method: "POST" }), () => setCloseOpen(false))}
+          />
 
-      {/* Split folio dialog (placeholder UI mínima) */}
-      {splitOpen ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Split folio"
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.4)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1100
-          }}
-          onClick={() => setSplitOpen(false)}
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            style={{
-              background: "var(--cocoa-background-content)",
-              padding: "var(--cocoa-space-5)",
-              borderRadius: "var(--cocoa-radius-lg)",
-              minWidth: 320,
-              maxWidth: 480,
-              boxShadow: "var(--cocoa-shadow-modal)"
+          <CocoaDialog
+            open={moveLine !== null}
+            onClose={() => setMoveLine(null)}
+            title="Mover cargo a otro folio"
+            description={moveLine ? `${moveLine.description} · ${money(moveLine.total, currency)}` : undefined}
+            confirmLabel={busy ? "Moviendo…" : "Mover"}
+            cancelLabel={ACTIONS.cancel}
+            busy={busy}
+            onConfirm={async () => {
+              if (!moveLine || !moveTarget) {
+                showToast("Elige el folio de destino.", { variant: "error" });
+                return;
+              }
+              await run(
+                "Cargo movido.",
+                () => apiRequest<MoveChargesResponse>(`/folios/${folio.id}/move-charges`, { method: "POST", body: { chargeIds: [moveLine.id], targetFolioId: moveTarget } }),
+                () => setMoveLine(null)
+              );
             }}
           >
-            <h3 style={{ marginTop: 0 }}>Split folio</h3>
-            <p style={{ color: "var(--cocoa-label-secondary)" }}>
-              Crea un folio secundario en la misma reserva. Los cargos podrán arrastrarse desde el folio actual.
-            </p>
-            <label className="bo-form-field">
-              <span>Etiqueta del folio nuevo</span>
-              <CocoaInput
-                value={splitLabel}
-                onChange={setSplitLabel}
-                placeholder="ej. Empresa, Acompañante…"
+            <CocoaField label="Folio de destino" required>
+              <CocoaSelect
+                value={moveTarget}
+                onChange={setMoveTarget}
+                placeholder="Elige un folio"
+                options={siblings.filter((sibling) => sibling.status === "open").map((sibling) => ({ value: sibling.id, label: folioDisplayName(sibling) }))}
               />
-            </label>
-            <div
-              className="bo-actions"
-              style={{
-                display: "flex",
-                gap: "var(--cocoa-space-2)",
-                justifyContent: "flex-end"
-              }}
-            >
-              <CocoaButton variant="plain" onClick={() => setSplitOpen(false)} disabled={busy}>
-                Cancelar
-              </CocoaButton>
-              <CocoaButton
-                variant="filled"
-                tone="accent"
-                onClick={() => void confirmSplit()}
-                disabled={busy}
-              >
-                Crear folio
-              </CocoaButton>
-            </div>
-          </div>
-        </div>
+            </CocoaField>
+          </CocoaDialog>
+        </>
       ) : null}
-
-      {/* Cerrar folio confirm */}
-      {closeConfirmOpen ? (
-        <div
-          role="dialog"
-          aria-modal="true"
-          aria-label="Cerrar folio"
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.4)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1100
-          }}
-          onClick={() => setCloseConfirmOpen(false)}
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            style={{
-              background: "var(--cocoa-background-content)",
-              padding: "var(--cocoa-space-5)",
-              borderRadius: "var(--cocoa-radius-lg)",
-              minWidth: 320,
-              maxWidth: 420,
-              boxShadow: "var(--cocoa-shadow-modal)"
-            }}
-          >
-            <h3 style={{ marginTop: 0 }}>Cerrar folio</h3>
-            <p>
-              ¿Confirmas el cierre del folio? Esta acción evita posteriores cargos o pagos. Solo
-              se permite cuando el balance es cero.
-            </p>
-            <div
-              className="bo-actions"
-              style={{
-                display: "flex",
-                gap: "var(--cocoa-space-2)",
-                justifyContent: "flex-end"
-              }}
-            >
-              <CocoaButton variant="plain" onClick={() => setCloseConfirmOpen(false)} disabled={busy}>
-                Cancelar
-              </CocoaButton>
-              <CocoaButton
-                variant="filled"
-                tone="destructive"
-                onClick={() => void confirmClose()}
-                disabled={busy}
-              >
-                Cerrar folio
-              </CocoaButton>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </section>
+    </CocoaPage>
   );
 }
 

@@ -6,7 +6,13 @@
 // con el gate abierto, se ejecutaban como el super-usuario demo (traza de
 // auditoría corrupta). Ahora TODO pasa por `apiRequest` (JWT + manejo de 401 +
 // extracción de mensaje de error). No añadir `fetch` crudo aquí.
-import { apiRequest, ApiError } from "./api-client";
+import type { InvoiceCancellationPayments, InvoiceEmailResponse, InvoiceSnapshotV1, PaymentIntentWire, PaymentLinkResponse, PaymentMethodCode, PspStatusWire, RefundResponse } from "@hotelos/shared";
+import { apiRequest, apiRequestBlob, ApiError } from "./api-client";
+import { downloadFilename, type FolioPaymentResult } from "./finance-contracts";
+
+/** Legacy wire values of a payment method the API still normalises (LEGACY_PAYMENT_METHOD_ALIASES). */
+export type LegacyPaymentMethodAlias = "card" | "ota_virtual_card" | "transfer" | "link" | "online";
+export type { FolioPaymentResult, PaymentIntentWire, PaymentLinkResponse, PspStatusWire, RefundResponse };
 
 // --- Cursor pagination contract (Tanda 2 · REC-05 / QC-04) ------------------
 // Mirrors apps/api/src/lib/pagination.ts. List endpoints keep answering a bare
@@ -197,12 +203,36 @@ export type AvailabilityQuote = {
   cancellationPolicy: string;
 };
 
+/**
+ * Payment row of a folio balance (Finanzas · Tanda 6, folio.service
+ * FolioPaymentRecord): `kind: "refund"` rows reverse a capture
+ * (`reversalOfId`), `refundedAmount` is what has already been returned on a
+ * capture, `methodCode` is the canonical method (legacy `method` label kept).
+ */
+export type FolioPaymentRow = {
+  id: string;
+  amount: number;
+  currency: string;
+  method: string;
+  methodCode?: PaymentMethodCode | null;
+  status: string;
+  pspReference?: string;
+  kind?: "capture" | "refund";
+  refundedAmount?: number;
+  reversalOfId?: string | null;
+  invoiceId?: string | null;
+  createdAt?: string;
+  capturedAt?: string;
+};
+
 export type FolioBalance = {
-  folio: { id: string; reservationId: string; guestId?: string; status: string; currency: string };
-  lines: Array<{ id: string; type: string; description: string; quantity: number; unitPrice: number; taxCode?: string; total: number }>;
-  payments: Array<{ id: string; amount: number; currency: string; method: string; status: string; pspReference?: string }>;
+  folio: { id: string; reservationId: string; guestId?: string | null; status: string; currency: string; label?: string | null; isPrimary?: boolean };
+  lines: Array<{ id: string; type: string; description: string; quantity: number; unitPrice: number; taxCode?: string | null; taxCategory?: string | null; total: number; postedAt?: string }>;
+  payments: FolioPaymentRow[];
   chargesTotal: number;
   paymentsTotal: number;
+  /** Σ partial refunds already subtracted from paymentsTotal (informational). */
+  refundsTotal?: number;
   balanceDue: number;
 };
 
@@ -220,6 +250,12 @@ export type InvoiceDraft = {
   invoiceType: "full" | "simplified" | "rectifying" | "credit_note";
   customerType: "guest" | "company" | "agency";
   customerTaxId?: string;
+  customerName?: string | null;
+  currencyCode?: string;
+  rectifyingForId?: string | null;
+  rectifyingReasonCode?: RectifyingReasonCode | null;
+  rectificationType?: "I" | "S" | null;
+  cancelledAt?: string | null;
   total: number;
   taxTotal: number;
   issuedAt?: string;
@@ -484,11 +520,80 @@ export function postFolioLine(
   return apiRequest<unknown>(`/folios/${folioId}/lines`, { method: "POST", body });
 }
 
-export function postFolioPayment(
+// --- cobros y devoluciones (Finanzas · Tanda 6) -----------------------------
+// POST /folios/:id/payments is idempotent by `clientRequestId` (one uuid per
+// attempt, reused on retries): cash · card_terminal · bank_transfer · other
+// answer 201 (200 on replay) with `kind: "payment"`; card_online ·
+// payment_link answer 202 with `kind: "payment_intent"` and the PSP redirect
+// (GET url or POST fields) — nothing is «cobrado» until the PSP confirms.
+// Without PSP credentials the API answers 409 PSP_NOT_CONFIGURED
+// (`details.psp.message`, shown by financeErrorMessage). Legacy wire values of
+// `method` ("card", "transfer", "link", "online", "ota_virtual_card") are still
+// accepted and normalised by the API.
+export type FolioPaymentMethod = PaymentMethodCode | LegacyPaymentMethodAlias;
+
+export type FolioPaymentInput = {
+  amount: number;
+  currency?: string;
+  method: FolioPaymentMethod;
+  /** Bank / terminal / PSP reference of the collection. */
+  reference?: string;
+  /** @deprecated alias of `reference`. */
+  pspReference?: string;
+  /** Idempotency key of the attempt (finance-contracts.newClientRequestId). */
+  clientRequestId?: string;
+  /** Link the capture to an issued invoice of this folio. */
+  invoiceId?: string;
+  /** payment_link / card_online: where the customer lands afterwards. */
+  returnUrl?: string;
+};
+
+/**
+ * @deprecated Pre-Tanda 6 shape (free-text `method`, no idempotency key) still
+ * used by ReservationWorkspaceScreen «Cobrar»; lot 6-A / reservations migrates
+ * it to FolioPaymentInput (enum method + clientRequestId + reference) and
+ * branches on `kind` (payment · payment_intent).
+ */
+export type LegacyFolioPaymentInput = { amount: number; currency?: string; method: string; pspReference?: string };
+
+export function postFolioPayment(folioId: string, body: FolioPaymentInput): Promise<FolioPaymentResult>;
+/** @deprecated see LegacyFolioPaymentInput. */
+export function postFolioPayment(folioId: string, body: LegacyFolioPaymentInput): Promise<FolioPaymentResult>;
+export function postFolioPayment(folioId: string, body: FolioPaymentInput | LegacyFolioPaymentInput): Promise<FolioPaymentResult> {
+  return apiRequest<FolioPaymentResult>(`/folios/${folioId}/payments`, { method: "POST", body });
+}
+
+export type RefundFolioPaymentInput = {
+  reason?: string;
+  /** Partial refund; default: the remaining captured amount. */
+  amount?: number;
+  /** Idempotency key of the refund attempt. */
+  clientRequestId?: string;
+  /** How the money goes back (default: the original method). */
+  refundMethod?: FolioPaymentMethod;
+};
+
+/** Refund of a captured payment: a reversal Payment row (`reversal`, `kind: "refund"` in the folio); `idempotent` on replay. */
+export function refundFolioPayment(paymentId: string, body: RefundFolioPaymentInput = {}): Promise<RefundResponse> {
+  return apiRequest<RefundResponse>(`/payments/${paymentId}/refund`, { method: "POST", body });
+}
+
+/** 202: hosted-page intent for the guest (Stripe Checkout / Redsys); 409 PSP_NOT_CONFIGURED without credentials. */
+export function createFolioPaymentLink(
   folioId: string,
-  body: { amount: number; currency?: string; method: string; pspReference?: string }
-): Promise<unknown> {
-  return apiRequest<unknown>(`/folios/${folioId}/payments`, { method: "POST", body });
+  body: { amount?: number; currency?: string; method?: "card_online" | "payment_link"; clientRequestId?: string; returnUrl?: string } = {}
+): Promise<PaymentLinkResponse> {
+  return apiRequest<PaymentLinkResponse>(`/folios/${folioId}/payment-links`, { method: "POST", body });
+}
+
+/** Tenancy-gated: an intent of another organisation is an opaque 404. */
+export function fetchPaymentIntent(intentId: string): Promise<PaymentIntentWire> {
+  return apiRequest<PaymentIntentWire>(`/payment-intents/${encodeURIComponent(intentId)}`);
+}
+
+/** Whether card_online / payment_link can be taken (`configured`, `provider`, `mode`, honest `message`). */
+export function fetchPspStatus(propertyId: string): Promise<PspStatusWire> {
+  return apiRequest<PspStatusWire>(`/properties/${propertyId}/payments/psp-status`);
 }
 
 export type ScanIdResult = {
@@ -600,6 +705,8 @@ export type InvoiceLineFull = {
 
 export type InvoiceFull = InvoiceDraft & {
   issuer?: InvoiceIssuer & { warnings?: string[] };
+  /** Frozen document of an issued invoice (Invoice.snapshotJson); null on drafts and pre-Tanda 6 rows. */
+  snapshot?: InvoiceSnapshotV1 | null;
   rectifyingForId?: string;
   rectifyingReasonCode?: RectifyingReasonCode;
   cancelledAt?: string;
@@ -616,18 +723,46 @@ export function fetchInvoice(invoiceId: string): Promise<InvoiceFull> {
   return apiRequest<InvoiceFull>(`/invoices/${invoiceId}`);
 }
 
-export function cancelInvoice(invoiceId: string, reason?: string): Promise<InvoiceFull> {
-  return apiRequest<InvoiceFull>(`/invoices/${invoiceId}/cancel`, { method: "POST", body: { reason } });
+/**
+ * Cancellation: the invoice is unlinked from its payments (they stay on the
+ * folio); `refundPayments: true` also reverses them. Finanzas · Tanda 6: the
+ * answer carries `payments` (unlinked / refunded ids, folio balance).
+ */
+export type CancelInvoiceOptions = { refundPayments?: boolean };
+
+export type CancelInvoiceResponse = InvoiceFull & { payments?: InvoiceCancellationPayments };
+
+export function cancelInvoice(invoiceId: string, reason?: string, options: CancelInvoiceOptions = {}): Promise<CancelInvoiceResponse> {
+  return apiRequest<CancelInvoiceResponse>(`/invoices/${invoiceId}/cancel`, { method: "POST", body: { reason, ...options } });
 }
 
-export function rectifyInvoice(
-  invoiceId: string,
-  payload: {
-    reasonCode: RectifyingReasonCode;
-    lineAdjustments?: Array<{ lineId: string; quantity?: number; unitPrice?: number }>;
-    fullReversal?: boolean;
-  }
-): Promise<InvoiceFull> {
+/**
+ * Real PDF of an issued invoice (QR VeriFactu included) as a Blob: the screen
+ * opens an object URL or saves it — never `window.print()`. `download: true`
+ * asks for `Content-Disposition: attachment`.
+ */
+export async function getInvoicePdf(invoiceId: string, options: { download?: boolean } = {}): Promise<{ blob: Blob; filename: string; contentType: string }> {
+  const response = await apiRequestBlob(`/invoices/${invoiceId}/pdf`, { query: options.download ? { download: 1 } : undefined });
+  return { blob: response.blob, filename: downloadFilename(response.contentDisposition, `factura-${invoiceId}.pdf`), contentType: response.contentType };
+}
+
+/** Substitute line of a rectificativa «S» (RectifyInvoiceSchema.substituteLines[]): gross unit price, folio convention. */
+export type RectifySubstituteLine = { description: string; quantity: number; unitPrice: number; lineType?: string; taxCategory?: string };
+
+/**
+ * POST /invoices/:id/rectify (RectifyInvoiceSchema, strict): «I» (por
+ * diferencias, default) with `fullReversal` or `lineAdjustments[{ lineId,
+ * quantity?, unitPrice? }]`; «S» (sustitución) with `substituteLines`.
+ */
+export type RectifyInvoicePayload = {
+  reasonCode: RectifyingReasonCode;
+  rectificationType?: "I" | "S";
+  lineAdjustments?: Array<{ lineId: string; quantity?: number; unitPrice?: number }>;
+  substituteLines?: RectifySubstituteLine[];
+  fullReversal?: boolean;
+};
+
+export function rectifyInvoice(invoiceId: string, payload: RectifyInvoicePayload): Promise<InvoiceFull> {
   return apiRequest<InvoiceFull>(`/invoices/${invoiceId}/rectify`, { method: "POST", body: payload });
 }
 
@@ -636,14 +771,17 @@ export function fetchInvoiceRectifications(invoiceId: string): Promise<InvoiceFu
 }
 
 // --- invoice actions (mark paid / send by email) ---------------------------
-// These call POST /invoices/:id/mark-paid and POST /invoices/:id/send-email
-// (already implemented server-side in apps/api). They are designed so the
-// UI can request the action with minimal arguments — the server fills the
-// defaults (e.g. method=card, amount=invoiceTotal).
-// `method` aligned with the API PaymentRecord.method union (the server stores
-// the string as-is, so an off-union value would leak into the ledger).
+// POST /invoices/:id/mark-paid and POST /invoices/:id/send-email.
+// Finanzas · Tanda 6: «Marcar pagada» needs `method` (PaymentMethod enum;
+// legacy aliases still normalised) AND `reference` — the API answers 400
+// without them, so the screens ask for both in a dialog (the pre-Tanda 6 call
+// without arguments is kept compilable for the billing screens until lot 6-A
+// migrates them, but it is a 400 at runtime).
 export type MarkInvoicePaidPayload = {
-  method?: "cash" | "card" | "bank_transfer" | "payment_link" | "ota_virtual_card";
+  method?: FolioPaymentMethod;
+  /** Bank / terminal / PSP reference of the collection (required by the API). */
+  reference?: string;
+  /** @deprecated alias of `reference`. */
   pspReference?: string;
   amount?: number;
 };
@@ -672,12 +810,13 @@ export type SendInvoiceEmailPayload = {
   message?: string;
 };
 
-export type SendInvoiceEmailResponse = {
-  acknowledged: true;
-  recipient: string;
-  invoiceId: string;
-  sentAt: string;
-};
+/**
+ * Finanzas · Tanda 6: the email carries the PDF; `status: "simulated"` /
+ * `simulated: true` means no email provider is configured and nothing left the
+ * box — the screen says «Simulado: proveedor de correo no configurado», never
+ * «enviado». (`acknowledged` is the pre-Tanda 6 field, kept optional.)
+ */
+export type SendInvoiceEmailResponse = InvoiceEmailResponse & { acknowledged?: true };
 
 export function sendInvoiceEmail(invoiceId: string, payload: SendInvoiceEmailPayload): Promise<SendInvoiceEmailResponse> {
   return apiRequest<SendInvoiceEmailResponse>(`/invoices/${invoiceId}/send-email`, { method: "POST", body: payload });

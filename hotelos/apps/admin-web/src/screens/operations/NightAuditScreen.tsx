@@ -12,24 +12,36 @@
 //   - ok / warning / blocker summary as a CocoaKpiStrip
 //   - checks as stacked CocoaCallout cards (status icon, count badge, affected
 //     items expandable, fix action → typed navigateTo)
-//   - previous runs in a CocoaTable (sticky head, stacked cards under 600 px)
-// Data: GET /properties/:id/night-audit/preflight (30 s poll) and
-// GET /properties/:id/night-audit/runs; POST /properties/:id/night-audit/run.
+//   - previous runs in a CocoaTable (sticky head, stacked cards under 600 px);
+//     a row opens the PERSISTED REPORT of that run in a CocoaDrawer (Tanda 6 ·
+//     lote 6-E: NightAuditReportWire — steps with their status, room charges
+//     from the rate grid, no-shows, revenue by type, the payments_summary step
+//     by method, cash closures of the day and the warnings of reservations
+//     without a rate), fetched fresh from GET …/night-audit/runs/:runId; the
+//     run just executed opens its report at once.
+// Data: GET /properties/:id/night-audit/preflight (30 s poll),
+// GET /properties/:id/night-audit/runs, GET …/runs/:runId;
+// POST /properties/:id/night-audit/run (409 NIGHT_AUDIT_ALREADY_COMPLETED /
+// NIGHT_AUDIT_IN_PROGRESS mapped by posErrorMessage).
 
-import { useState, type CSSProperties } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
+// CF-05 (tests/admin-web-no-raw-fetch): this screen keeps its POST on
+// apiRequest from api-client; the typed readers come from services/posApi.
 import { apiRequest } from "../../services/api-client";
+import { fetchNightAuditRun, posErrorMessage, type NightAuditReportWire, type NightAuditRunWire } from "../../services/posApi";
 import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
 import { useToast } from "../../components/Toast";
 import { toArray } from "../../utils/toArray";
 import { navigateTo, type ScreenKey } from "../../lib/navigate";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
-import { date, dateTime, number, plural } from "../../lib/format";
+import { date, dateTime, money, number, plural } from "../../lib/format";
 import { CheckCircleIcon, ExclamationCircleIcon, XCircleIcon } from "../../components/cocoa-icons/StatusIcons";
 import {
   CocoaBadge,
   CocoaButton,
   CocoaCallout,
+  CocoaDrawer,
   CocoaKpi,
   CocoaKpiStrip,
   CocoaPage,
@@ -37,10 +49,25 @@ import {
   CocoaSkeleton,
   CocoaState,
   CocoaTable,
-  toneFromStatus,
   type CocoaTableColumn,
   type CocoaTone
 } from "../../components/cocoa";
+import { closureOutletLabel, closureStatusLabel, closureStatusTone, differenceKind } from "../pos/cash-closure-helpers";
+import {
+  PRICE_SOURCE_LABELS,
+  ROOM_CHARGE_OUTCOME_LABELS,
+  labelledAmounts,
+  paymentMethodLabel,
+  reportSummary,
+  revenueTypeLabel,
+  roomChargeOutcomeTone,
+  runStatusLabel,
+  runStatusTone,
+  stepLabel,
+  stepStatusLabel,
+  stepTone,
+  unchargedReservations
+} from "./night-audit-report";
 
 type Status = "ok" | "warning" | "blocker";
 
@@ -50,7 +77,8 @@ type Check = {
   id: string;
   title: string;
   status: Status;
-  count: number;
+  /** Affected items; `null` when the check itself could not run (the API explains it in `detail`). */
+  count: number | null;
   detail: string;
   items?: CheckItem[];
 };
@@ -65,24 +93,8 @@ type PreflightData = {
   summary: { ok: number; warning: number; blocker: number };
 };
 
-type RunRecord = {
-  id: string;
-  businessDate: string;
-  status: string;
-  completedAt?: string;
-  stepResults?: Array<{ step: string; status: string; detail?: string }>;
-};
-
 const STATUS_TONE: Record<Status, CocoaTone> = { ok: "success", warning: "warning", blocker: "danger" };
-const STATUS_LABEL: Record<Status, string> = { ok: "OK", warning: "Atención", blocker: "Bloquea" };
-
-// Run status → Spanish label (the API speaks English).
-const RUN_STATUS_LABEL: Record<string, string> = {
-  completed: STATUS_LABELS.completed,
-  failed: STATUS_LABELS.failed,
-  running: STATUS_LABELS.inProgress,
-  pending: STATUS_LABELS.pending
-};
+const STATUS_LABEL: Record<Status, string> = { ok: "Correcto", warning: "Atención", blocker: "Bloquea" };
 
 const MAX_RUNS = 10;
 
@@ -96,7 +108,7 @@ function fixActionFor(checkId: string): { label: string; screen: ScreenKey } | n
     case "dirty_in_house_rooms":
       return { label: "Abrir tablero de habitaciones", screen: "RoomRackScreen" };
     case "unposted_room_charges":
-      return { label: "Postear ahora", screen: "FrontDeskDashboard" };
+      return { label: "Cargar ahora", screen: "FrontDeskDashboard" };
     case "invoices_pending":
       return { label: "Ver facturas", screen: "FiscalSubmissionsCenter" };
     default:
@@ -116,23 +128,28 @@ const detailStyle: CSSProperties = {
   color: "var(--cocoa-label-secondary)"
 };
 
-const secondaryStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
-
 const growStyle: CSSProperties = { flex: "1 1 auto", minWidth: 0 };
 
-const RUN_COLUMNS: CocoaTableColumn<RunRecord>[] = [
+const RUN_COLUMNS: CocoaTableColumn<NightAuditRunWire>[] = [
   { key: "businessDate", label: "Fecha de negocio", render: (r) => <strong>{date(r.businessDate, "short")}</strong> },
   {
     key: "status",
     label: "Estado",
     render: (r) => (
-      <CocoaBadge tone={toneFromStatus(r.status === "completed" ? "ok" : r.status === "failed" ? "error" : "info")} size="small">
-        {RUN_STATUS_LABEL[r.status] ?? r.status}
+      <CocoaBadge tone={runStatusTone(r.status)} size="small">
+        {runStatusLabel(r.status)}
       </CocoaBadge>
     )
   },
   { key: "steps", label: "Pasos", align: "right", hideOnNarrow: true, render: (r) => number(r.stepResults?.length ?? 0) },
-  { key: "completedAt", label: "Completado", render: (r) => <span style={secondaryStyle}>{dateTime(r.completedAt)}</span> }
+  {
+    key: "warnings",
+    label: "Avisos",
+    align: "right",
+    hideOnNarrow: true,
+    render: (r) => (r.report ? (r.report.warnings.length > 0 ? <CocoaBadge tone="warning" variant="tinted" size="small">{number(r.report.warnings.length)}</CocoaBadge> : number(0)) : "—")
+  },
+  { key: "completedAt", label: "Completado", render: (r) => dateTime(r.completedAt) }
 ];
 
 export function NightAuditScreen() {
@@ -143,15 +160,44 @@ export function NightAuditScreen() {
     `/properties/${propertyId}/night-audit/preflight`,
     { pollIntervalMs: 30000 }
   );
-  const { data: runsData } = useApiData<RunRecord[]>(`/properties/${propertyId}/night-audit/runs`);
+  const { data: runsData, refresh: refreshRuns } = useApiData<NightAuditRunWire[]>(`/properties/${propertyId}/night-audit/runs`);
 
   const [busy, setBusy] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
+  // Report drawer: the selected run (list row or the run just executed) and
+  // its fresh detail from GET …/runs/:runId.
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [runDetail, setRunDetail] = useState<NightAuditRunWire | null>(null);
+  const [runLoading, setRunLoading] = useState(false);
+  const [runError, setRunError] = useState<string | null>(null);
+
   const checks = toArray<Check>(preflight?.checks);
-  const runs = toArray<RunRecord>(runsData);
+  const runs = toArray<NightAuditRunWire>(runsData);
   const shownRuns = runs.slice(0, MAX_RUNS);
   const state = !preflight ? (perror ? "error" : "loading") : "ready";
+  const selectedRow = runs.find((r) => r.id === selectedRunId) ?? null;
+  const shownRun = runDetail && runDetail.id === selectedRunId ? runDetail : selectedRow;
+
+  useEffect(() => {
+    if (!selectedRunId) return;
+    let cancelled = false;
+    setRunLoading(true);
+    setRunError(null);
+    void fetchNightAuditRun(selectedRunId, propertyId)
+      .then((run) => {
+        if (!cancelled) setRunDetail(run);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setRunError(posErrorMessage(err, "No se pudo cargar el informe del cierre."));
+      })
+      .finally(() => {
+        if (!cancelled) setRunLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRunId, propertyId]);
 
   function toggle(id: string) {
     setExpanded((prev) => {
@@ -166,14 +212,25 @@ export function NightAuditScreen() {
     if (!preflight?.canClose) return;
     setBusy(true);
     try {
-      await apiRequest<unknown>(`/properties/${encodeURIComponent(propertyId)}/night-audit/run`, { method: "POST" });
-      showToast("Cierre del día ejecutado. Día cerrado.", { variant: "success" });
+      // Same route as posApi.runNightAudit (POST …/night-audit/run, 409 NIGHT_AUDIT_ALREADY_COMPLETED / IN_PROGRESS).
+      const run = await apiRequest<NightAuditRunWire>(`/properties/${encodeURIComponent(propertyId)}/night-audit/run`, { method: "POST" });
+      const warnings = run.report?.warnings.length ?? 0;
+      showToast(
+        run.status === "failed"
+          ? `El cierre del día ha fallado: ${run.errorMessage ?? "revisa el informe."}`
+          : warnings > 0
+            ? `Cierre del día ejecutado con ${plural(warnings, "aviso", "avisos")}. Revisa el informe.`
+            : "Cierre del día ejecutado. Día cerrado.",
+        { variant: run.status === "failed" ? "error" : warnings > 0 ? "warning" : "success" }
+      );
+      setRunDetail(run);
+      setSelectedRunId(run.id);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Error";
-      showToast(message, { variant: "error" });
+      showToast(posErrorMessage(err, "No se pudo ejecutar el cierre del día."), { variant: "error" });
     } finally {
       setBusy(false);
       refresh();
+      refreshRuns();
     }
   }
 
@@ -224,16 +281,16 @@ export function NightAuditScreen() {
           </CocoaCallout>
 
           <CocoaKpiStrip min={200} stagger aria-label="Resumen de comprobaciones">
-            <CocoaKpi label="Comprobaciones OK" value={preflight.summary.ok} polarity="neutral" status="ok" />
+            <CocoaKpi label="Comprobaciones correctas" value={preflight.summary.ok} polarity="neutral" status="ok" />
             <CocoaKpi label="Avisos" value={preflight.summary.warning} polarity="neutral" status={preflight.summary.warning > 0 ? "warning" : "ok"} />
             <CocoaKpi label="Bloqueos" value={preflight.summary.blocker} polarity="neutral" status={preflight.summary.blocker > 0 ? "critical" : "ok"} />
           </CocoaKpiStrip>
 
-          <CocoaSection title="Checklist pre-cierre" meta={plural(checks.length, "chequeo", "chequeos")}>
+          <CocoaSection title="Comprobaciones previas al cierre" meta={plural(checks.length, "comprobación", "comprobaciones")}>
             {checks.length === 0 ? (
               <CocoaState kind="empty" inline title="Sin comprobaciones para la fecha de negocio actual." />
             ) : (
-              <div className="cocoa-stack" data-gap="2" role="list" aria-label="Checklist pre-cierre">
+              <div className="cocoa-stack" data-gap="2" role="list" aria-label="Comprobaciones previas al cierre">
                 {checks.map((check) => {
                   const tone = STATUS_TONE[check.status];
                   const items = check.items ?? [];
@@ -287,13 +344,217 @@ export function NightAuditScreen() {
           </CocoaSection>
 
           {shownRuns.length > 0 ? (
-            <CocoaSection title="Historial de cierres" meta={`Últimos ${number(shownRuns.length)}`} padding="none" style={{ overflow: "clip" }}>
-              <CocoaTable columns={RUN_COLUMNS} rows={shownRuns} rowKey="id" caption="Historial de cierres" aria-label="Historial de cierres" />
+            <CocoaSection title="Historial de cierres" meta={`Últimos ${number(shownRuns.length)} · una fila abre su informe`} padding="none" style={{ overflow: "clip" }}>
+              <CocoaTable
+                columns={RUN_COLUMNS}
+                rows={shownRuns}
+                rowKey="id"
+                selectedKey={selectedRunId ?? undefined}
+                onSelect={(r) => setSelectedRunId(r.id)}
+                rowTitle={() => "Abrir el informe del cierre"}
+                caption="Historial de cierres"
+                aria-label="Historial de cierres"
+              />
             </CocoaSection>
-          ) : null}
+          ) : (
+            <CocoaSection title="Historial de cierres">
+              <CocoaState kind="empty" inline title="Todavía no se ha ejecutado ningún cierre del día en esta propiedad." />
+            </CocoaSection>
+          )}
         </>
       ) : null}
+
+      <CocoaDrawer
+        open={selectedRunId !== null}
+        onClose={() => setSelectedRunId(null)}
+        title={shownRun ? `Informe del cierre · ${date(shownRun.businessDate, "short")}` : "Informe del cierre"}
+        subtitle={shownRun ? `${runStatusLabel(shownRun.status)}${shownRun.completedAt ? ` · ${dateTime(shownRun.completedAt)}` : ""}` : undefined}
+        side="right"
+        size="lg"
+        focusKey={shownRun?.id}
+      >
+        {runError && !shownRun ? (
+          <CocoaState kind="error" title="No se pudo cargar el informe" message={runError} onRetry={() => setSelectedRunId((id) => id)} />
+        ) : shownRun ? (
+          <RunReport run={shownRun} loading={runLoading} error={runError} />
+        ) : runLoading ? (
+          <CocoaSkeleton variant="card" height={320} />
+        ) : null}
+      </CocoaDrawer>
     </CocoaPage>
+  );
+}
+
+// ── report of a run ──────────────────────────────────────────────────────────
+
+function RunReport({ run, loading, error }: { run: NightAuditRunWire; loading: boolean; error: string | null }) {
+  const report: NightAuditReportWire | null = run.report;
+  const summary = report ? reportSummary(report) : null;
+  const uncharged = unchargedReservations(report);
+  const payments = labelledAmounts(report?.payments.byMethod, paymentMethodLabel);
+  const revenue = labelledAmounts(report?.revenue.byType, revenueTypeLabel);
+  return (
+    <div className="cocoa-stack" data-gap="4">
+      {error ? (
+        <CocoaCallout tone="warning" role="status">
+          {error} Se muestra la copia del historial.
+        </CocoaCallout>
+      ) : null}
+      {loading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+      {run.status === "failed" ? (
+        <CocoaCallout tone="danger" title="La corrida falló">
+          {run.errorMessage ?? "Sin detalle del error. Puede volver a ejecutarse: los pasos son idempotentes."}
+        </CocoaCallout>
+      ) : null}
+
+      {summary && report ? (
+        <>
+          <CocoaKpiStrip min={200} aria-label="Cifras del cierre">
+            <CocoaKpi label="Cargos de alojamiento" value={summary.posted} deltaLabel={`${money(summary.totalPosted)} cargados`} polarity="neutral" status={summary.withoutRate > 0 ? "warning" : "ok"} />
+            <CocoaKpi label="Producción del día" value={money(summary.revenueTotal)} deltaLabel={plural(summary.revenueLines, "cargo", "cargos")} polarity="neutral" status="ok" />
+            <CocoaKpi label="Cobros del día" value={money(summary.paymentsTotal)} deltaLabel={plural(summary.paymentsCount, "cobro", "cobros")} polarity="neutral" status="ok" />
+            <CocoaKpi label="No-shows" value={summary.noShows} deltaLabel={summary.noShows > 0 ? `${money(summary.noShowsCharged)} de penalización` : "ninguno"} polarity="neutral" status="ok" />
+          </CocoaKpiStrip>
+
+          {report.warnings.length > 0 ? (
+            <CocoaCallout tone="warning" icon={<ExclamationCircleIcon size={16} />} title={plural(report.warnings.length, "aviso", "avisos")}>
+              <ul className="c22-section__list" aria-label="Avisos del cierre">
+                {report.warnings.map((warning, index) => (
+                  <li key={index}>
+                    <span>{warning}</span>
+                  </li>
+                ))}
+              </ul>
+            </CocoaCallout>
+          ) : null}
+        </>
+      ) : (
+        <CocoaState kind="empty" inline title="Esta corrida no guardó informe (anterior a la contabilidad de la Tanda 6): solo se conservan sus pasos." />
+      )}
+
+      <CocoaSection title="Pasos de la corrida" meta={plural(run.stepResults.length, "paso", "pasos")}>
+        {run.stepResults.length === 0 ? (
+          <CocoaState kind="empty" inline title="Sin pasos registrados." />
+        ) : (
+          <ol className="c22-section__list" aria-label="Pasos de la corrida">
+            {run.stepResults.map((step) => (
+              <li key={step.step}>
+                <div className="cocoa-stack" data-gap="1">
+                  <strong>{stepLabel(step.step)}</strong>
+                  {step.detail ? <span>{step.detail}</span> : null}
+                </div>
+                <CocoaBadge tone={stepTone(step.status)} variant="tinted" size="small">
+                  {stepStatusLabel(step.status)}
+                </CocoaBadge>
+              </li>
+            ))}
+          </ol>
+        )}
+      </CocoaSection>
+
+      {uncharged.length > 0 ? (
+        <CocoaSection title="Reservas sin cargo de alojamiento" meta={plural(uncharged.length, "reserva", "reservas")}>
+          <ul className="c22-section__list" aria-label="Reservas sin cargo de alojamiento">
+            {uncharged.map((item) => (
+              <li key={item.reservationId}>
+                <div className="cocoa-stack" data-gap="1">
+                  <strong>{item.reservationCode}</strong>
+                  <span>{item.detail ?? `Origen del precio: ${PRICE_SOURCE_LABELS[item.priceSource]}.`}</span>
+                </div>
+                <CocoaBadge tone={roomChargeOutcomeTone(item.outcome)} variant="tinted" size="small">
+                  {ROOM_CHARGE_OUTCOME_LABELS[item.outcome]}
+                </CocoaBadge>
+              </li>
+            ))}
+          </ul>
+        </CocoaSection>
+      ) : null}
+
+      {report ? (
+        <>
+          <CocoaSection title="Cobros por método" meta="Resumen, no conciliación: el arqueo es el recuento">
+            {payments.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin cobros capturados ese día." />
+            ) : (
+              <ul className="c22-section__list" aria-label="Cobros por método">
+                {payments.map((row) => (
+                  <li key={row.key}>
+                    <span>{row.label}</span>
+                    <strong>{money(row.amount)}</strong>
+                  </li>
+                ))}
+                <li>
+                  <span>Total</span>
+                  <strong>{money(report.payments.total)}</strong>
+                </li>
+              </ul>
+            )}
+          </CocoaSection>
+
+          <CocoaSection title="Producción por concepto" meta={plural(report.revenue.lines, "cargo", "cargos")}>
+            {revenue.length === 0 ? (
+              <CocoaState kind="empty" inline title="Sin cargos posteados ese día." />
+            ) : (
+              <ul className="c22-section__list" aria-label="Producción por concepto">
+                {revenue.map((row) => (
+                  <li key={row.key}>
+                    <span>{row.label}</span>
+                    <strong>{money(row.amount)}</strong>
+                  </li>
+                ))}
+                <li>
+                  <span>Total</span>
+                  <strong>{money(report.revenue.total)}</strong>
+                </li>
+              </ul>
+            )}
+          </CocoaSection>
+
+          <CocoaSection
+            title="Cierres de caja del día"
+            meta={report.cashClosures.length > 0 ? plural(report.cashClosures.length, "caja", "cajas") : undefined}
+            action={
+              <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("CashClosureScreen")}>
+                Ir al cierre de caja
+              </CocoaButton>
+            }
+          >
+            {report.cashClosures.length === 0 ? (
+              <CocoaState kind="empty" inline title="Ningún cierre de caja registrado para esa fecha de negocio." />
+            ) : (
+              <ul className="c22-section__list" aria-label="Cierres de caja del día">
+                {report.cashClosures.map((closure) => (
+                  <li key={closure.outletId}>
+                    <span>{closureOutletLabel({ outletId: closure.outletId, outletName: null })}</span>
+                    <span className="cocoa-cluster">
+                      <CocoaBadge tone={closureStatusTone(closure.status)} size="small">
+                        {closureStatusLabel(closure.status)}
+                      </CocoaBadge>
+                      {closure.difference !== null ? <strong>{differenceKind(closure.difference) === "balanced" ? "Cuadra" : money(closure.difference, { signDisplay: "exceptZero" })}</strong> : null}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CocoaSection>
+
+          <ul className="c22-section__list" aria-label="Fechas de la corrida">
+            <li>
+              <span>Fecha de negocio cerrada</span>
+              <strong>{date(report.businessDate, "medium")}</strong>
+            </li>
+            <li>
+              <span>Nueva fecha de negocio</span>
+              <strong>{date(report.nextBusinessDate, "medium")}</strong>
+            </li>
+            <li>
+              <span>Reservas alojadas</span>
+              <strong>{number(report.inHouseReservations)}</strong>
+            </li>
+          </ul>
+        </>
+      ) : null}
+    </div>
   );
 }
 

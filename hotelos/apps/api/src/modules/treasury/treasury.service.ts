@@ -27,6 +27,7 @@ import { NotFoundError } from "../../lib/http-error.js";
 import { ledgerBalances } from "./ledger-bridge.js";
 import { addDays, dayUtc, daysBetween, dec, isoDay, money, round2, sum, type Dec } from "./money.js";
 import { DEFAULT_BANK_LEDGER_CODE } from "../banking/bank-account.service.js";
+import { folioDisplayLabel } from "../folio/folio-labels.js";
 
 export const CASH_CODE = "570";
 export const CARD_PENDING_CODE = "5721";
@@ -353,7 +354,7 @@ export async function treasuryReceivables(input: { propertyId: string; asOf?: Da
       items.push({
         kind: "folio",
         id: folio.id,
-        reference: `${reservation?.code ?? folio.reservationId} · ${folio.label}`,
+        reference: folioReceivableReference(reservation?.code ?? folio.reservationId, folio.label),
         counterparty: reservation?.companyName ?? reservation?.bookerName ?? "Huésped",
         date: isoDay(departure),
         expectedOn: isoDay(expectedOn),
@@ -462,6 +463,16 @@ export async function treasuryPayables(input: { propertyId: string; asOf?: Date 
 }
 
 // ---- Forecast -------------------------------------------------------------------------
+
+/**
+ * `reference` of an uninvoiced open folio in the receivables list:
+ * «RES-00081 · Huésped». The reservation code (or its id when the reservation
+ * is gone) plus the folio label in Spanish — the primary folio is stored as
+ * "guest", so the raw value must never reach the screen (qa#6).
+ */
+export function folioReceivableReference(reservationRef: string, folioLabel: string | null | undefined): string {
+  return `${reservationRef} · ${folioDisplayLabel(folioLabel)}`;
+}
 
 export function bucketFor(asOf: Date, expectedOn: Date): ForecastBucket["label"] {
   const days = daysBetween(expectedOn, asOf);

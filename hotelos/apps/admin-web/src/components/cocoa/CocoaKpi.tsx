@@ -12,7 +12,9 @@
 // neutral (secondary, «•»). The delta TEXT (11 px) uses the AA-safe tone ink
 // (`toneInk`, §2.1 rule c: hue ≤ 13 px fails AA in light — success 3.13:1,
 // danger 3.55:1); the hue is kept for the arrow glyph (a graphic, 3:1) and
-// the sparkline. Status paints the bar and the sparkline (ok →
+// the sparkline. `caption` is a footnote line under the figure («4 facturas»)
+// for context that is not a unit (the aria-label reads it after the value).
+// Status paints the bar and the sparkline (ok →
 // success, warning, critical → danger); without status there is no bar and the
 // sparkline is tertiary. `tone` forces the colour of the figure (≥ 24 px, so
 // the tone hue is allowed). `degraded` paints «—» with the DEGRADED_HINT
@@ -21,7 +23,7 @@
 // Cocoa 22 normalises the surface to radius 12 + --cocoa-shadow-card (the
 // canon painted `plain` rectangles without radius, §3.5 finding). Hooks for
 // the css lot: root `c22-kpi` + data-status/size/tone/degraded, parts
-// `c22-kpi__head/__icon/__label/__value-row/__value/__unit/__foot/__spark`,
+// `c22-kpi__head/__icon/__label/__value-row/__value/__unit/__caption/__foot/__spark`,
 // delta `c22-delta[data-sentiment]`.
 
 import { useMemo, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
@@ -39,6 +41,8 @@ export interface CocoaKpiProps {
   label: string;
   value: string | number;
   unit?: string;
+  /** Secondary line under the figure («272,00 €», «4 facturas»): context of the value, not its unit (Tanda 6). */
+  caption?: string;
   delta?: number;
   deltaUnit?: CocoaKpiDeltaUnit;
   /** «vs LY», «vs ayer». */
@@ -120,6 +124,7 @@ export function kpiAriaLabel(input: {
   label: string;
   value: string | number;
   unit?: string;
+  caption?: string;
   delta?: number;
   deltaUnit?: string;
   deltaLabel?: string;
@@ -131,6 +136,7 @@ export function kpiAriaLabel(input: {
     return parts.join(", ");
   }
   parts.push(input.unit ? `${input.value} ${input.unit}` : String(input.value));
+  if (input.caption) parts.push(input.caption);
   if (typeof input.delta === "number" && Number.isFinite(input.delta)) {
     const sign = input.delta > 0 ? "+" : input.delta < 0 ? "−" : "";
     parts.push(`${sign}${formatDelta(input.delta)}${input.deltaUnit ? ` ${input.deltaUnit}` : ""}${input.deltaLabel ? ` ${input.deltaLabel}` : ""}`);
@@ -194,6 +200,7 @@ export function CocoaKpi({
   label,
   value,
   unit,
+  caption,
   delta,
   deltaUnit,
   deltaLabel,
@@ -217,8 +224,8 @@ export function CocoaKpi({
   const hasBottomRow = hasDelta || (!degraded && Boolean(deltaLabel)) || hasSparkline;
 
   const ariaLabel = useMemo(
-    () => kpiAriaLabel({ label, value, unit, delta, deltaUnit, deltaLabel, degraded }),
-    [label, value, unit, delta, deltaUnit, deltaLabel, degraded]
+    () => kpiAriaLabel({ label, value, unit, caption, delta, deltaUnit, deltaLabel, degraded }),
+    [label, value, unit, caption, delta, deltaUnit, deltaLabel, degraded]
   );
 
   const rootStyle: CSSProperties = {
@@ -279,6 +286,17 @@ export function CocoaKpi({
     fontVariantNumeric: "tabular-nums"
   };
 
+  const captionStyle: CSSProperties = {
+    fontSize: "var(--cocoa-fs-footnote)",
+    color: "var(--cocoa-label-secondary)",
+    fontVariantNumeric: "tabular-nums",
+    lineHeight: 1.2,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    minWidth: 0
+  };
+
   const onKeyDown = isInteractive
     ? (event: ReactKeyboardEvent<HTMLDivElement>) => {
         if (event.target !== event.currentTarget) return;
@@ -335,6 +353,12 @@ export function CocoaKpi({
           </>
         )}
       </div>
+
+      {caption && !degraded ? (
+        <span className="c22-kpi__caption" style={captionStyle} title={caption}>
+          {caption}
+        </span>
+      ) : null}
 
       {hasBottomRow ? (
         <div className="c22-kpi__foot" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "var(--cocoa-space-2)", marginTop: "auto", minWidth: 0 }}>

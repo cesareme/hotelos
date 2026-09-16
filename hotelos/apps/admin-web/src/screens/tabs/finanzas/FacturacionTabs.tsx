@@ -9,6 +9,9 @@
 //
 // L1b registers: screenKey BillingCenter · url /finanzas/facturacion · tabs
 // /finanzas/facturacion/folios/:id, /rectificativas, /enrutamiento.
+//
+// Cocoa 22 · lote 6-A: the four screens are migrated (CocoaPage inside; this
+// container only paints the CocoaPageHeader + CocoaRouteTabs through NavItemTabs).
 
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";

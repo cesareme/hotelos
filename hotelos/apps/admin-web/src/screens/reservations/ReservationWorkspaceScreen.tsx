@@ -20,7 +20,6 @@ import {
   noShowReservation,
   pickInitialReservation,
   postFolioLine,
-  postFolioPayment,
   reservationTabQuery,
   todayIsoLocal,
   type ActivityItem,
@@ -43,6 +42,12 @@ import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedCont
 import { CocoaSearchInput } from "../../components/cocoa/CocoaSearchInput";
 import { CocoaTable, type CocoaTableColumn } from "../../components/cocoa/CocoaTable";
 import { money } from "../../lib/format";
+// Cocoa 22 · lote 6-A: «Cobrar» / «Devolver» go through the Tanda 6 dialogs
+// (enum method, clientRequestId per attempt, 202 payment_intent → PSP, 409
+// PSP_NOT_CONFIGURED honest message). The rest of this screen belongs to ola 3.
+import { PaymentDialog } from "../../components/billing/PaymentDialog";
+import { RefundDialog } from "../../components/billing/RefundDialog";
+import { refundablePayments } from "../../components/billing/payment-flow";
 
 const PROPERTY_ID = getActivePropertyId();
 
@@ -593,15 +598,9 @@ export function ReservationWorkspaceScreen() {
 const CHARGE_TYPES = [
   { value: "minibar", label: "Minibar" },
   { value: "breakfast", label: "Desayuno" },
-  { value: "parking", label: "Parking" },
+  { value: "parking", label: "Aparcamiento" },
   { value: "room", label: "Alojamiento" },
   { value: "adjustment", label: "Ajuste" }
-];
-const PAYMENT_METHODS = [
-  { value: "card", label: "Tarjeta" },
-  { value: "cash", label: "Efectivo" },
-  { value: "bank_transfer", label: "Transferencia" },
-  { value: "payment_link", label: "Link de pago" }
 ];
 
 // Internal tabs inside the reservation detail workspace. Routing is local (no URL
@@ -654,8 +653,8 @@ export function ReservationDetailWorkspaceScreen() {
   const [chargeType, setChargeType] = useState("minibar");
   const [chargeDesc, setChargeDesc] = useState("Minibar");
   const [chargeAmount, setChargeAmount] = useState("12");
-  const [payMethod, setPayMethod] = useState("card");
-  const [payAmount, setPayAmount] = useState("");
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [refundOpen, setRefundOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<DetailTab>("summary");
   // Activity feed is fetched lazily on tab open to avoid pulling the audit log when
   // the user is just glancing at the summary. Failure is treated as "empty" — the
@@ -1053,50 +1052,54 @@ export function ReservationDetailWorkspaceScreen() {
                   </div>
 
                   <h3 style={{ margin: 0, marginTop: "var(--cocoa-space-3)", fontSize: "var(--cocoa-fs-headline)", color: "var(--cocoa-label)" }}>
-                    Registrar pago
+                    Cobros y devoluciones
                   </h3>
-                  <div
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
-                      gap: "var(--cocoa-space-3)",
-                      marginTop: "var(--cocoa-space-2)"
-                    }}
-                  >
-                    <label style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-1)" }}>
-                      <span style={{ fontSize: "var(--cocoa-fs-subheadline)", color: "var(--cocoa-label-secondary)" }}>Método</span>
-                      <CocoaSelect value={payMethod} onChange={setPayMethod} options={PAYMENT_METHODS} disabled={busy} />
-                    </label>
-                    <label style={{ display: "flex", flexDirection: "column", gap: "var(--cocoa-space-1)" }}>
-                      <span style={{ fontSize: "var(--cocoa-fs-subheadline)", color: "var(--cocoa-label-secondary)" }}>Importe (€)</span>
-                      <CocoaInput
-                        value={payAmount}
-                        onChange={setPayAmount}
-                        type="number"
-                        inputMode="decimal"
-                        placeholder={String(folio.balanceDue)}
-                        disabled={busy}
-                      />
-                    </label>
-                  </div>
-                  <div style={{ display: "flex", gap: "var(--cocoa-space-2)", marginTop: "var(--cocoa-space-2)" }}>
-                    <CocoaButton
-                      variant="filled"
-                      tone="accent"
-                      disabled={busy || !folioId || !folioOpen}
-                      onClick={() =>
-                        void runAction("Pago registrado", () =>
-                          postFolioPayment(folioId!, {
-                            amount: Number(payAmount) || folio.balanceDue,
-                            method: payMethod,
-                            currency: folio.folio.currency
-                          })
-                        )
-                      }
-                    >
+                  <p style={{ color: "var(--cocoa-label-secondary)", marginTop: "var(--cocoa-space-1)" }}>
+                    {folio.payments.length > 0
+                      ? `${folio.payments.length} movimientos · cobrado neto ${money(folio.paymentsTotal, folio.folio.currency)}`
+                      : "Sin cobros registrados en el folio."}
+                  </p>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "var(--cocoa-space-2)", marginTop: "var(--cocoa-space-2)" }}>
+                    <CocoaButton variant="filled" tone="accent" disabled={busy || !folioId || !folioOpen} onClick={() => setPaymentOpen(true)}>
                       Cobrar
                     </CocoaButton>
+                    <CocoaButton
+                      variant="bordered"
+                      tone="neutral"
+                      disabled={busy || refundablePayments(folio.payments).length === 0}
+                      onClick={() => setRefundOpen(true)}
+                    >
+                      Devolver un cobro
+                    </CocoaButton>
                   </div>
+                  {folioId ? (
+                    <>
+                      <PaymentDialog
+                        open={paymentOpen}
+                        onClose={() => setPaymentOpen(false)}
+                        folioId={folioId}
+                        propertyId={reservation.propertyId}
+                        currency={folio.folio.currency}
+                        balanceDue={folio.balanceDue}
+                        subject={`Reserva ${reservation.code}`}
+                        onCaptured={() => {
+                          setMessage("Cobro registrado");
+                          void reload();
+                        }}
+                        onIntent={() => setMessage("Intento de cobro creado: pendiente de la pasarela")}
+                      />
+                      <RefundDialog
+                        open={refundOpen}
+                        onClose={() => setRefundOpen(false)}
+                        payments={folio.payments}
+                        currency={folio.folio.currency}
+                        onRefunded={() => {
+                          setMessage("Devolución registrada");
+                          void reload();
+                        }}
+                      />
+                    </>
+                  ) : null}
                 </>
               ) : folioError ? (
                 <ErrorState

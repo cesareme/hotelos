@@ -1,10 +1,41 @@
-import { useTabHost } from "../tabs/TabHost";
-import { getActivePropertyId } from "../../services/activeProperty";
-import { useMemo, useState } from "react";
-import { useApiData } from "../../hooks/useApiData";
-import { money } from "../../lib/format";
+// Flujos de efectivo — Finanzas › Estados contables › Flujos de efectivo
+// (/finanzas/estados-contables/flujos, hosted in EstadosContablesTabs).
+//
+// Cocoa 22 (docs/design/COCOA-22.md §4, «DashboardAlojado»): content toolbar
+// with the period (desde · hasta · «Mes actual») → KPI strip (tesorería
+// inicial · variación · final · resultado) → grid 8/4 (explotación por el
+// método indirecto · flujo por actividad) → 6/6 (inversión · financiación).
+// Data: GET /accounting/reports/cash-flow?propertyId&fromDate&toDate
+// (accounting.reports.read; `reconciled` says whether the closing cash agrees
+// with the ledger), polled every 5 minutes as before. Hosted: the container
+// paints eyebrow and title; the page adds its toolbar and actions.
 
-const PROPERTY_ID = getActivePropertyId();
+import { useMemo, useState, type CSSProperties } from "react";
+import { useApiData } from "../../hooks/useApiData";
+import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { useTabHost } from "../tabs/TabHost";
+import { toArray } from "../../utils/toArray";
+import { STATUS_LABELS } from "../../content/actions";
+import { date, dateRange, dateTime, money } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaChart,
+  CocoaDatePicker,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaToolbar,
+  toneInk,
+  type CocoaBarsDatum,
+  type CocoaTone
+} from "../../components/cocoa";
 
 type Item = { description: string; amount: number };
 type WorkingCapitalChange = { category: string; amount: number };
@@ -24,207 +55,228 @@ type CashFlowStatement = {
   netChangeInCash: number;
   openingCash: number;
   closingCash: number;
+  /** true when openingCash + netChangeInCash equals the ledger's closing cash. */
+  reconciled?: boolean;
 };
 
-function defaultPeriod(): { from: string; to: string } {
+const POLL_MS = 300000;
+
+function currentMonth(): { from: string; to: string } {
   const now = new Date();
   const year = now.getUTCFullYear();
   const month = now.getUTCMonth();
-  const from = `${year}-${String(month + 1).padStart(2, "0")}-01`;
   const lastDay = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-  const to = `${year}-${String(month + 1).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
-  return { from, to };
+  const mm = String(month + 1).padStart(2, "0");
+  return { from: `${year}-${mm}-01`, to: `${year}-${mm}-${String(lastDay).padStart(2, "0")}` };
 }
 
-function fmt(amount: number): string {
-  return money(amount);
+function signedTone(value: number): CocoaTone {
+  return Math.abs(value) < 0.005 ? "neutral" : value > 0 ? "success" : "danger";
 }
 
-function amountColor(n: number): string {
-  if (Math.abs(n) < 0.005) return "var(--ink-muted)";
-  return n >= 0 ? "var(--success-ink)" : "var(--danger-ink)";
+// Text styles (tokens only).
+const secondaryStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
+const totalRowStyle: CSSProperties = { fontWeight: "var(--cocoa-fw-semibold)" as CSSProperties["fontWeight"] };
+
+/** Small toned amount (≤ 13 px): AA ink of its sign, plain label at zero. */
+function amountStyle(value: number): CSSProperties {
+  const tone = signedTone(value);
+  return { color: tone === "neutral" ? "var(--cocoa-label)" : toneInk(tone) };
 }
 
-function SectionHeader({ title, subtotal }: { title: string; subtotal: number }) {
+function Amount({ value }: { value: number }) {
+  return <strong style={amountStyle(value)}>{money(value)}</strong>;
+}
+
+/** One line of the statement: label at the left, toned amount at the right. */
+function LineRow({ label, amount, total = false }: { label: string; amount: number; total?: boolean }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        alignItems: "center",
-        padding: "12px 0",
-        borderBottom: "1px solid var(--line)",
-        marginBottom: 8
-      }}
-    >
-      <h3 style={{ margin: 0, fontSize: 16 }}>{title}</h3>
-      <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700, color: amountColor(subtotal) }}>
-        {fmt(subtotal)}
-      </span>
-    </div>
+    <li style={total ? totalRowStyle : undefined}>
+      <span style={total ? undefined : secondaryStyle}>{label}</span>
+      <Amount value={amount} />
+    </li>
   );
 }
 
-function LineRow({ label, amount, bold = false }: { label: string; amount: number; bold?: boolean }) {
+// Mirror skeleton: KPI strip, 8/4 row and 6/6 row.
+function CashFlowSkeleton() {
   return (
-    <div
-      style={{
-        display: "flex",
-        justifyContent: "space-between",
-        padding: "6px 0",
-        fontWeight: bold ? 700 : 400
-      }}
-    >
-      <span>{label}</span>
-      <span style={{ fontFamily: "var(--font-mono)", color: amountColor(amount) }}>{fmt(amount)}</span>
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton.Grid rows={[[8, 4], [6, 6]]} height={200} />
     </div>
   );
 }
 
 export function CashFlowScreen() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
-  const initial = useMemo(defaultPeriod, []);
+  const hosted = useTabHost() !== null;
+  const propertyId = getActivePropertyId();
+  const propertyName = getActiveProperty().propertyName;
+  const initial = useMemo(currentMonth, []);
   const [fromDate, setFromDate] = useState(initial.from);
   const [toDate, setToDate] = useState(initial.to);
+  const rangeInverted = fromDate !== "" && toDate !== "" && fromDate > toDate;
 
-  const { data, loading, error, refresh } = useApiData<CashFlowStatement>(
-    "/accounting/reports/cash-flow",
-    { query: { propertyId: PROPERTY_ID, fromDate, toDate }, pollIntervalMs: 300000 }
-  );
+  const { data, loading, error, refresh } = useApiData<CashFlowStatement>(rangeInverted ? null : "/accounting/reports/cash-flow", {
+    query: { propertyId, fromDate, toDate },
+    pollIntervalMs: POLL_MS
+  });
+
+  const changes = toArray<WorkingCapitalChange>(data?.operating.workingCapitalChanges);
+  const investing = toArray<Item>(data?.investing.items);
+  const financing = toArray<Item>(data?.financing.items);
+  const workingCapitalTotal = changes.reduce((sum, change) => sum + change.amount, 0);
+
+  const activityBars: CocoaBarsDatum[] = data
+    ? [
+        { label: "Explotación", value: data.operating.subtotal, tone: signedTone(data.operating.subtotal) },
+        { label: "Inversión", value: data.investing.subtotal, tone: signedTone(data.investing.subtotal) },
+        { label: "Financiación", value: data.financing.subtotal, tone: signedTone(data.financing.subtotal) }
+      ]
+    : [];
+
+  const state = rangeInverted ? "ready" : !data ? (loading ? "loading" : error ? "error" : "ready") : "ready";
+  const periodLabel = data ? dateRange(data.periodStart, data.periodEnd) : dateRange(fromDate, toDate);
+
+  function resetToCurrentMonth() {
+    const month = currentMonth();
+    setFromDate(month.from);
+    setToDate(month.to);
+  }
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : (
-            <>
-              <div className="bo-page-eyebrow">Finanzas · Estados contables</div>
-              <h1 className="bo-page-title">Flujos de efectivo</h1>
-            </>
-          )}
-          <p className="bo-page-subtitle">
-            Método indirecto: parte del resultado del ejercicio, ajusta partidas no monetarias (amortización 68x)
-            y variaciones del capital circulante (clientes, existencias, proveedores), y separa actividades de
-            inversión y financiación.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" onClick={refresh}>↻ Recalcular</button>
-        </div>
-      </div>
-
-      <div className="rev-toolbar">
-        <div className="rev-toolbar-group">
-          <label>Desde</label>
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-        </div>
-        <div className="rev-toolbar-group">
-          <label>Hasta</label>
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-        </div>
-        <div className="rev-toolbar-spacer" />
-      </div>
-
-      {loading ? (
-        <div className="bo-card" style={{ textAlign: "center", padding: 48, color: "var(--ink-muted)" }}>
-          Calculando flujos…
-        </div>
-      ) : error ? (
-        <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)" }}>
-          <h3>Error</h3>
-          <p>{error}</p>
-        </div>
-      ) : !data ? null : (
+    <CocoaPage
+      eyebrow={`Finanzas · ${propertyName}`}
+      title="Flujos de efectivo"
+      subtitle={hosted ? undefined : "Método indirecto: del resultado del periodo a la variación de tesorería, ajustando amortizaciones y capital circulante y separando inversión y financiación."}
+      actions={
         <>
-          <section className="rev-kpi-grid">
-            <article className="rev-kpi">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Tesorería inicial</span></div>
-              <div className="rev-kpi-value">{fmt(data.openingCash)}</div>
-              <div className="rev-kpi-delta">a {data.periodStart}</div>
-            </article>
-            <article className={`rev-kpi ${data.netChangeInCash >= 0 ? "rev-kpi-ok" : "rev-kpi-warn"}`}>
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Variación neta</span></div>
-              <div className="rev-kpi-value">{fmt(data.netChangeInCash)}</div>
-              <div className="rev-kpi-delta">durante el período</div>
-            </article>
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Tesorería final</span></div>
-              <div className="rev-kpi-value">{fmt(data.closingCash)}</div>
-              <div className="rev-kpi-delta">a {data.periodEnd}</div>
-            </article>
-            <article className="rev-kpi">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Resultado neto</span></div>
-              <div className="rev-kpi-value">{fmt(data.operating.netIncome)}</div>
-              <div className="rev-kpi-delta">punto de partida</div>
-            </article>
-          </section>
-
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 20 }}>Actividades de explotación</h2>
-              <span className="bo-chip">{fmt(data.operating.subtotal)}</span>
-            </div>
-            <SectionHeader title="Resultado y ajustes no monetarios" subtotal={data.operating.netIncome + data.operating.depreciation} />
-            <LineRow label="Resultado del ejercicio (P&L)" amount={data.operating.netIncome} />
-            <LineRow label="(+) Amortización del inmovilizado (68x)" amount={data.operating.depreciation} />
-
-            <SectionHeader
-              title="Variaciones del capital circulante"
-              subtotal={data.operating.workingCapitalChanges.reduce((s, c) => s + c.amount, 0)}
-            />
-            {data.operating.workingCapitalChanges.map((wc) => (
-              <LineRow key={wc.category} label={wc.category} amount={wc.amount} />
-            ))}
-
-            <div style={{ borderTop: "2px solid var(--ink)", marginTop: 12, paddingTop: 12 }}>
-              <LineRow label="Subtotal flujos de explotación" amount={data.operating.subtotal} bold />
-            </div>
-          </section>
-
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 20 }}>Actividades de inversión</h2>
-              <span className="bo-chip">{fmt(data.investing.subtotal)}</span>
-            </div>
-            {data.investing.items.length === 0 ? (
-              <p style={{ color: "var(--ink-muted)" }}>Sin movimientos de inversión en el período.</p>
-            ) : (
-              data.investing.items.map((item) => (
-                <LineRow key={item.description} label={item.description} amount={item.amount} />
-              ))
-            )}
-            <div style={{ borderTop: "2px solid var(--ink)", marginTop: 12, paddingTop: 12 }}>
-              <LineRow label="Subtotal flujos de inversión" amount={data.investing.subtotal} bold />
-            </div>
-          </section>
-
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 20 }}>Actividades de financiación</h2>
-              <span className="bo-chip">{fmt(data.financing.subtotal)}</span>
-            </div>
-            {data.financing.items.length === 0 ? (
-              <p style={{ color: "var(--ink-muted)" }}>Sin movimientos de financiación en el período.</p>
-            ) : (
-              data.financing.items.map((item) => (
-                <LineRow key={item.description} label={item.description} amount={item.amount} />
-              ))
-            )}
-            <div style={{ borderTop: "2px solid var(--ink)", marginTop: 12, paddingTop: 12 }}>
-              <LineRow label="Subtotal flujos de financiación" amount={data.financing.subtotal} bold />
-            </div>
-          </section>
-
-          <section className="bo-card" style={{ background: "var(--surface)" }}>
-            <LineRow label="Tesorería inicial" amount={data.openingCash} />
-            <LineRow label="(+) Variación neta del efectivo" amount={data.netChangeInCash} />
-            <div style={{ borderTop: "2px solid var(--ink)", marginTop: 12, paddingTop: 12 }}>
-              <LineRow label="= Tesorería final" amount={data.closingCash} bold />
-            </div>
-          </section>
+          {data ? (
+            <CocoaBadge tone={data.reconciled === false ? "warning" : "success"} title="Comprobación: tesorería inicial más variación neta frente al saldo final del libro">
+              {data.reconciled === false ? "No cuadra con el libro" : "Cuadra con el libro"}
+            </CocoaBadge>
+          ) : null}
+          {loading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} title="Recalcular el estado con el periodo elegido">
+            Recalcular
+          </CocoaButton>
         </>
-      )}
-    </>
+      }
+      state={state}
+      skeleton={<CashFlowSkeleton />}
+      error={{ title: "No se pudieron calcular los flujos de efectivo", message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "cash-flow-refresh", label: "Recalcular los flujos de efectivo", run: refresh }]}
+    >
+      <CocoaToolbar
+        variant="content"
+        aria-label="Periodo del estado de flujos"
+        leftSlot={
+          <div className="cocoa-row" data-gap="4">
+            <div className="cocoa-row" data-gap="2">
+              <span className="cocoa-caption" style={secondaryStyle}>Desde</span>
+              <CocoaDatePicker value={fromDate} onChange={setFromDate} max={toDate || undefined} aria-label="Inicio del periodo" />
+            </div>
+            <div className="cocoa-row" data-gap="2">
+              <span className="cocoa-caption" style={secondaryStyle}>Hasta</span>
+              <CocoaDatePicker value={toDate} onChange={setToDate} min={fromDate || undefined} aria-label="Fin del periodo" />
+            </div>
+          </div>
+        }
+        rightSlot={
+          <CocoaButton variant="plain" tone="neutral" size="small" onClick={resetToCurrentMonth}>
+            Mes actual
+          </CocoaButton>
+        }
+      />
+
+      {rangeInverted ? (
+        <CocoaCallout tone="warning" title="Revisa el periodo">
+          La fecha de inicio ({date(fromDate, "short")}) es posterior a la de fin ({date(toDate, "short")}). Corrige las fechas para calcular el estado.
+        </CocoaCallout>
+      ) : null}
+
+      {data ? (
+        <>
+          <CocoaKpiStrip stagger aria-label="Resumen de tesorería del periodo">
+            <CocoaKpi label="Tesorería inicial" value={money(data.openingCash)} polarity="neutral" deltaLabel={`a ${date(data.periodStart, "short")}`} />
+            <CocoaKpi label="Variación neta" value={money(data.netChangeInCash)} polarity="neutral" status={data.netChangeInCash >= 0 ? "ok" : "warning"} tone={signedTone(data.netChangeInCash)} />
+            <CocoaKpi label="Tesorería final" value={money(data.closingCash)} polarity="neutral" deltaLabel={`a ${date(data.periodEnd, "short")}`} status={data.reconciled === false ? "warning" : "ok"} />
+            <CocoaKpi label="Resultado del periodo" value={money(data.operating.netIncome)} polarity="neutral" tone={signedTone(data.operating.netIncome)} />
+          </CocoaKpiStrip>
+
+          <CocoaGrid align="start" aria-label="Explotación y flujo por actividad">
+            <CocoaSpan cols={8} min={480}>
+              <CocoaSection title="Actividades de explotación" meta={periodLabel} headingLevel={2} action={<Amount value={data.operating.subtotal} />}>
+                <ul className="c22-section__list" aria-label="Resultado y ajustes no monetarios">
+                  <LineRow label="Resultado del periodo (pérdidas y ganancias)" amount={data.operating.netIncome} />
+                  <LineRow label="(+) Amortización del inmovilizado (68x)" amount={data.operating.depreciation} />
+                  <LineRow label="Resultado ajustado" amount={data.operating.netIncome + data.operating.depreciation} total />
+                </ul>
+                <ul className="c22-section__list" aria-label="Variaciones del capital circulante">
+                  {changes.map((change) => (
+                    <LineRow key={change.category} label={change.category} amount={change.amount} />
+                  ))}
+                  <LineRow label="Variación del capital circulante" amount={workingCapitalTotal} total />
+                </ul>
+                <ul className="c22-section__list" aria-label="Subtotal de explotación">
+                  <LineRow label="Flujos de efectivo de las actividades de explotación" amount={data.operating.subtotal} total />
+                </ul>
+              </CocoaSection>
+            </CocoaSpan>
+
+            <CocoaSpan cols={4} min={320}>
+              <CocoaSection title="Flujo por actividad" meta="explotación · inversión · financiación" headingLevel={2}>
+                <CocoaChart.Bars data={activityBars} height={140} valueFormat={(value) => money(value)} aria-label="Flujo neto de efectivo por actividad" />
+                <ul className="c22-section__list" aria-label="Conciliación de la tesorería">
+                  <LineRow label="Tesorería inicial" amount={data.openingCash} />
+                  <LineRow label="(+) Variación neta del efectivo" amount={data.netChangeInCash} />
+                  <LineRow label="Tesorería final" amount={data.closingCash} total />
+                </ul>
+                {data.reconciled === false ? (
+                  <CocoaState kind="degraded" inline title="El saldo final no coincide con el libro." message="Revisa asientos de tesorería fechados fuera del periodo o cuentas 57x sin clasificar." />
+                ) : null}
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
+
+          <CocoaGrid align="start" aria-label="Inversión y financiación">
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Actividades de inversión" headingLevel={2} action={<Amount value={data.investing.subtotal} />}>
+                {investing.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Sin movimientos de inversión en el periodo." />
+                ) : (
+                  <ul className="c22-section__list" aria-label="Movimientos de inversión">
+                    {investing.map((item) => (
+                      <LineRow key={item.description} label={item.description} amount={item.amount} />
+                    ))}
+                    <LineRow label="Flujos de efectivo de las actividades de inversión" amount={data.investing.subtotal} total />
+                  </ul>
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Actividades de financiación" headingLevel={2} action={<Amount value={data.financing.subtotal} />}>
+                {financing.length === 0 ? (
+                  <CocoaState kind="empty" inline title="Sin movimientos de financiación en el periodo." />
+                ) : (
+                  <ul className="c22-section__list" aria-label="Movimientos de financiación">
+                    {financing.map((item) => (
+                      <LineRow key={item.description} label={item.description} amount={item.amount} />
+                    ))}
+                    <LineRow label="Flujos de efectivo de las actividades de financiación" amount={data.financing.subtotal} total />
+                  </ul>
+                )}
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
+
+          <p className="cocoa-caption" style={secondaryStyle}>
+            Calculado el {dateTime(data.generatedAt)} para el periodo {periodLabel}. Se recalcula cada cinco minutos.
+          </p>
+        </>
+      ) : null}
+    </CocoaPage>
   );
 }
+
+export default CashFlowScreen;

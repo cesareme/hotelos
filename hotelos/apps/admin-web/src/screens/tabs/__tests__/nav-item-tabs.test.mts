@@ -1,16 +1,20 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, it } from "node:test";
+import { ACTIONS, UI_STATES } from "../../../content/actions.ts";
 import {
   baseKeyFor,
   buildItemTabs,
   detailParamsFor,
+  emptyTabsCopy,
+  emptyTabsReason,
   isTabVisible,
   itemForScreen,
   landingKeysFor,
   missingLoaders,
   slugify,
   tabKeyFor,
+  unlockingModulesFor,
   type TabLoaders
 } from "../nav-item-tabs.ts";
 
@@ -98,8 +102,9 @@ describe("nav-item-tabs · buildItemTabs", () => {
     const { item } = itemForScreen("PosDashboard");
     const partial = loadersFor("PosDashboard", "FnbMenu");
     assert.deepEqual(buildItemTabs(item, partial).map((tab) => tab.key), ["tpv", "cartas"]);
-    assert.deepEqual(missingLoaders(item, partial), ["FnbInventory"]);
-    assert.deepEqual(missingLoaders(item, loadersFor("FnbMenu", "FnbInventory")), ["PosDashboard"]);
+    // Tanda 6: the Punto de venta item gained the Cierre de caja tab (CashClosureScreen).
+    assert.deepEqual(missingLoaders(item, partial), ["FnbInventory", "CashClosureScreen"]);
+    assert.deepEqual(missingLoaders(item, loadersFor("FnbMenu", "FnbInventory")), ["PosDashboard", "CashClosureScreen"]);
   });
 
   it("every container wires a loader for its base screen and every tab of the tree", () => {
@@ -171,5 +176,71 @@ describe("nav-item-tabs · landing per role (§1/§3)", () => {
     // No token: module gate only.
     assert.equal(isTabVisible(tabs[1], [], ["outlet_pos"]), true);
     assert.equal(isTabVisible(tabs[1], [], []), false);
+  });
+});
+
+// qa#12 (fix:nav · Tanda 5): with outlet_pos disabled in prop_123 the platform
+// admin used to read «No hay secciones disponibles para tu perfil» in Punto de
+// venta, although the cause was the module, not the profile.
+describe("nav-item-tabs · empty container tells module from role (qa#12)", () => {
+  const tpv = itemForScreen("PosDashboard").item;
+  const tpvTabs = buildItemTabs(tpv, loadersFor("PosDashboard", "FnbMenu", "FnbInventory", "CashClosureScreen"));
+
+  it("Punto de venta with outlet_pos off: the module is the reason for the platform admin and for recepción", () => {
+    assert.equal(emptyTabsReason(tpvTabs, ["admin"], []), "module");
+    assert.equal(emptyTabsReason(tpvTabs, ["recepcion"], ["pms_core"]), "module");
+    // «Ver como…» recepción or a custom role without token: module gate only.
+    assert.equal(emptyTabsReason(tpvTabs, [], []), "module");
+    // Module on → at least one tab is visible → nothing to explain.
+    assert.equal(emptyTabsReason(tpvTabs, ["admin"], ["outlet_pos"]), null);
+    assert.equal(emptyTabsReason(tpvTabs, [], ["outlet_pos"]), null);
+  });
+
+  it("a profile with no tab in the item reads the role gap, even when the module is off too", () => {
+    assert.equal(emptyTabsReason(tpvTabs, ["pisos"], ["outlet_pos"]), "role");
+    assert.equal(emptyTabsReason(tpvTabs, ["pisos"], []), "role");
+    assert.equal(emptyTabsReason(tpvTabs, ["pisos", "mantenimiento"], []), "role");
+  });
+
+  it("an unreadable module list (403 on GET /modules, or load failure) is unknown, never «no activado»", () => {
+    assert.equal(emptyTabsReason(tpvTabs, ["admin"], [], { listUnavailable: true }), "modules_unknown");
+    assert.equal(emptyTabsReason(tpvTabs, ["pisos"], [], { listUnavailable: true }), "role");
+    assert.equal(emptyTabsReason(tpvTabs, ["admin"], ["outlet_pos"], { listUnavailable: true }), null);
+  });
+
+  it("core items are never empty for a role the item is for", () => {
+    const miDia = itemForScreen("FrontDeskDashboard").item;
+    const tabs = buildItemTabs(miDia, loadersFor("FrontDeskDashboard", "OperationsDirectorScreen", "GeneralManagerScreen", "OwnerHome"), {
+      baseRoles: ["recepcion", "direccion", "admin"]
+    });
+    for (const token of ["recepcion", "pisos", "fnb", "direccion", "finanzas", "admin"] as const) assert.equal(emptyTabsReason(tabs, [token], []), null);
+    assert.equal(emptyTabsReason(tabs, [], []), null);
+  });
+
+  it("lists the modules «Activar módulo» may preselect, only from the tabs the role may see", () => {
+    assert.deepEqual(unlockingModulesFor(tpvTabs, ["admin"]), ["outlet_pos"]);
+    assert.deepEqual(unlockingModulesFor(tpvTabs, ["recepcion"]), ["outlet_pos"]);
+    assert.deepEqual(unlockingModulesFor(tpvTabs, []), ["outlet_pos"]);
+    assert.deepEqual(unlockingModulesFor(tpvTabs, ["pisos"]), []);
+    const compras = itemForScreen("ProcurementDashboard").item;
+    const comprasTabs = buildItemTabs(compras, loadersFor(compras.screenKey, ...compras.tabs.map((tab) => tab.screenKey)));
+    assert.deepEqual(unlockingModulesFor(comprasTabs, ["direccion"]), ["procurement_inventory"]);
+  });
+
+  it("copies: canonical «Módulo no activado» with the CTA only for modules.enable, «Sin acceso» for a role gap, honest text when unknown", () => {
+    const withCta = emptyTabsCopy("module", { canEnable: true });
+    assert.equal(withCta.title, UI_STATES.moduleDisabled.title);
+    assert.equal(withCta.message, UI_STATES.moduleDisabled.message);
+    assert.equal(withCta.cta, ACTIONS.enableModule);
+    const withoutCta = emptyTabsCopy("module", { canEnable: false });
+    assert.equal(withoutCta.title, UI_STATES.moduleDisabled.title);
+    assert.match(withoutCta.message, /Módulos e integraciones/);
+    assert.equal(withoutCta.cta, undefined);
+    const role = emptyTabsCopy("role", { canEnable: true });
+    assert.deepEqual(role, { title: UI_STATES.forbidden.title, message: UI_STATES.forbidden.message });
+    const unknown = emptyTabsCopy("modules_unknown", { canEnable: true });
+    assert.match(unknown.message, /módulos/);
+    assert.equal(unknown.cta, undefined, "no «Activar módulo» when we do not know whether the module is off");
+    for (const copy of [withCta, withoutCta, role, unknown]) assert.doesNotMatch(`${copy.title} ${copy.message}`, /para tu perfil/);
   });
 });

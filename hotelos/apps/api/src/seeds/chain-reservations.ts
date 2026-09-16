@@ -20,6 +20,7 @@
 // Idempotente: borra primero todas las reservas con código IBSEED-* antes de regenerar.
 
 import { prisma } from "@hotelos/database";
+import { PRIMARY_FOLIO_LABEL } from "../modules/folio/folio-labels.js";
 
 const ORG_ID = "org_chain_iberia";
 const SEED_PREFIX = "IBSEED";
@@ -408,7 +409,7 @@ async function seedForHotel(propertyId: string, count: number, today: Date) {
           guestId: primaryGuest.id,
           status: plan.status === "checked_out" ? "closed" : "open",
           currency: "EUR",
-          label: "guest",
+          label: PRIMARY_FOLIO_LABEL,
           isPrimary: true
         }
       });

@@ -11,6 +11,13 @@
 // CocoaTable whose row opens the ticket in a CocoaDrawer (bottom sheet on
 // phones). Endpoints, polling (20 s) and actions are the legacy ones.
 //
+// Tanda 6 · lote 6-E (contract packages/shared/src/pos-types.ts): the board
+// asks GET …/pos/tickets?status=open|closed|all through a segmented view
+// (KPIs only paint what the view fetched); closed tickets show their
+// simplified invoice (FS series), tax included, business day, journal entry
+// and cash closure; a cash/card sale refused with 409 CASH_CLOSURE_CLOSED is
+// explained by posErrorMessage and offers the jump to Cierre de caja.
+//
 // Hosted inside PuntoVentaTabs the container paints the title and the
 // subtitle; standalone the page paints eyebrow · h1 · subtitle.
 
@@ -23,14 +30,18 @@ import {
   fetchPosCashSummary,
   fetchPosOutlets,
   openPosTicket,
+  posErrorMessage,
   type PosCashSummary,
   type PosCashSummaryOutlet,
   type PosOutlet,
-  type PosTicket
+  type PosTicket,
+  type PosTicketsInput
 } from "../../services/posApi";
+import { financeErrorCode } from "../../services/finance-contracts";
 import { todayIsoLocal } from "../../services/pmsCommerceApi";
 import { toArray } from "../../utils/toArray";
 import { useTabHost } from "../tabs/TabHost";
+import { navigateTo } from "../../lib/navigate";
 import { date, money, number, plural, time } from "../../lib/format";
 import { ACTIONS, FIELD_LABELS, STATUS_LABELS, TIME_LABELS } from "../../content/actions";
 import {
@@ -47,6 +58,7 @@ import {
   CocoaKpiStrip,
   CocoaPage,
   CocoaSection,
+  CocoaSegmentedControl,
   CocoaSelect,
   CocoaSkeleton,
   CocoaSpan,
@@ -59,6 +71,16 @@ import {
 import { cashSummaryWindow } from "./pos-cash-window";
 
 const PROPERTY_ID = getActivePropertyId();
+
+type TicketView = NonNullable<PosTicketsInput["status"]>;
+const VIEW_OPTIONS: Array<{ value: TicketView; label: string }> = [
+  { value: "all", label: "Todas" },
+  { value: "open", label: "Abiertas" },
+  { value: "closed", label: "Cerradas" }
+];
+function isTicketView(value: string): value is TicketView {
+  return value === "all" || value === "open" || value === "closed";
+}
 
 /** Closed tickets painted in the board (the rest stay reachable through the cash summary). */
 const CLOSED_LIMIT = 15;
@@ -82,7 +104,7 @@ function closedAtLabel(iso: string | undefined, todayIso: string): string {
 const SETTLE_LABEL: Record<string, string> = { room: "a la habitación", cash: "efectivo", card: "tarjeta" };
 
 type Draft = { name: string; qty: string; price: string };
-type Message = { text: string; tone: CocoaTone };
+type Message = { text: string; tone: CocoaTone; action?: { label: string; onClick: () => void } };
 
 // Secondary text in tables and lists (never inside a `style={{…}}` literal, rule 6).
 const mutedStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
@@ -114,11 +136,13 @@ function closedColumns(todayIso: string): CocoaTableColumn<PosTicket>[] {
       label: "Cobro",
       render: (t) => (t.settlement ? <CocoaBadge tone="success">{SETTLE_LABEL[t.settlement] ?? t.settlement}</CocoaBadge> : <span style={mutedStyle}>sin registrar</span>)
     },
+    // Simplified invoice (series FS) of a cash/card sale; a room charge has none (the folio invoices it).
+    { key: "invoiceNumber", label: "Factura", hideOnNarrow: true, render: (t) => (t.invoiceNumber ? <span className="cocoa-tabular">{t.invoiceNumber}</span> : t.settlement === "room" ? "en el folio" : "—") },
     { key: "closedAt", label: "Cierre", hideOnNarrow: true, render: (t) => closedAtLabel(t.closedAt, todayIso) }
   ];
 }
 
-/** Ticket lines with the total as the last row (board cards and the drawer). */
+/** Ticket lines with the total (and the tax it includes, when known) as the last rows (board cards and the drawer). */
 function TicketLines({ ticket, label }: { ticket: PosTicket; label: string }) {
   if (ticket.lines.length === 0) return <CocoaState kind="empty" inline title="Sin consumos todavía." />;
   return (
@@ -135,6 +159,12 @@ function TicketLines({ ticket, label }: { ticket: PosTicket; label: string }) {
         <span>{FIELD_LABELS.total}</span>
         <strong>{money(ticket.total)}</strong>
       </li>
+      {ticket.taxTotal > 0 ? (
+        <li>
+          <span>IVA incluido</span>
+          <strong>{money(ticket.taxTotal)}</strong>
+        </li>
+      ) : null}
     </ul>
   );
 }
@@ -147,9 +177,12 @@ function BoardSkeleton() {
 export function PosDashboard() {
   const hosted = useTabHost() !== null;
   const propertyName = getActiveProperty().propertyName;
+  // View of the board = `?status=` of the API (open · closed · all); the
+  // closed half is bounded by the API to the current business day.
+  const [view, setView] = useState<TicketView>("all");
   const { data, loading, error, refresh } = useApiData<PosTicket[]>(
     `/properties/${PROPERTY_ID}/pos/tickets`,
-    { pollIntervalMs: 20000 }
+    { pollIntervalMs: 20000, query: { status: view } }
   );
   const tickets = useMemo(() => toArray<PosTicket>(data), [data]);
 
@@ -234,7 +267,15 @@ export function PosDashboard() {
       refresh();
       void loadCashSummary();
     } catch (e) {
-      setMsg({ text: e instanceof Error ? e.message : "No se pudo completar la acción.", tone: "danger" });
+      // details.code → Spanish (CASH_CLOSURE_CLOSED, POS_TICKET_CLOSED,
+      // POS_ROOM_NOT_OCCUPIED, SIMPLIFIED_INVOICE_LIMIT…); a closed cash offers
+      // the jump to the closure so the cashier sees who closed it and when.
+      const closedCash = financeErrorCode(e) === "CASH_CLOSURE_CLOSED";
+      setMsg({
+        text: posErrorMessage(e, "No se pudo completar la acción."),
+        tone: closedCash ? "warning" : "danger",
+        action: closedCash ? { label: "Ir al cierre de caja", onClick: () => navigateTo("CashClosureScreen") } : undefined
+      });
     } finally {
       setBusy(false);
     }
@@ -265,20 +306,40 @@ export function PosDashboard() {
       }
       commands={[
         { id: "pos-refresh", label: "Actualizar comandas", run: refresh },
-        { id: "pos-cash-refresh", label: "Recalcular el arqueo de caja", run: () => void loadCashSummary() }
+        { id: "pos-cash-refresh", label: "Recalcular el arqueo de caja", run: () => void loadCashSummary() },
+        { id: "pos-cash-closure", label: "Ir al cierre de caja", run: () => navigateTo("CashClosureScreen") }
       ]}
     >
       {msg ? (
-        <CocoaCallout tone={msg.tone} role="status">
+        <CocoaCallout
+          tone={msg.tone}
+          role="status"
+          actions={
+            msg.action ? (
+              <CocoaButton variant="tinted" tone="accent" size="small" onClick={msg.action.onClick}>
+                {msg.action.label}
+              </CocoaButton>
+            ) : undefined
+          }
+        >
           {msg.text}
         </CocoaCallout>
       ) : null}
 
+      <div className="cocoa-row" data-gap="2" data-justify="between">
+        <CocoaSegmentedControl value={view} onChange={(v) => setView(isTicketView(v) ? v : "all")} options={VIEW_OPTIONS} size="small" aria-label="Comandas que se muestran" />
+        <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("CashClosureScreen")}>
+          Ir al cierre de caja
+        </CocoaButton>
+      </div>
+
+      {/* Only the half the view fetched is counted: with `?status=closed` the open board is not in the payload. */}
       <CocoaKpiStrip stagger aria-label="Comandas de hoy">
-        <CocoaKpi label="Comandas abiertas" value={open.length} deltaLabel={open.length > 0 ? "en curso" : "ninguna"} polarity="neutral" status={open.length > 0 ? "warning" : "ok"} />
-        <CocoaKpi label="Total abierto" value={money(openTotal)} deltaLabel="por cobrar" polarity="neutral" status="ok" />
+        {view !== "closed" ? <CocoaKpi label="Comandas abiertas" value={open.length} deltaLabel={open.length > 0 ? "en curso" : "ninguna"} polarity="neutral" status={open.length > 0 ? "warning" : "ok"} /> : null}
+        {view !== "closed" ? <CocoaKpi label="Total abierto" value={money(openTotal)} deltaLabel="por cobrar" polarity="neutral" status="ok" /> : null}
         {/* Counted by real closedAt (persisted), not "every closed ticket in memory". */}
-        <CocoaKpi label="Comandas cerradas" value={closedToday.length} deltaLabel="hoy" polarity="neutral" status="ok" />
+        {view !== "open" ? <CocoaKpi label="Comandas cerradas" value={closedToday.length} deltaLabel="hoy" polarity="neutral" status="ok" /> : null}
+        {view !== "open" ? <CocoaKpi label="IVA de las ventas al contado" value={money(closedToday.reduce((s, t) => s + (t.settlement === "room" ? 0 : t.taxTotal), 0))} deltaLabel="incluido en las facturas simplificadas de hoy" polarity="neutral" status="ok" /> : null}
       </CocoaKpiStrip>
 
       {/* Arqueo */}
@@ -389,7 +450,7 @@ export function PosDashboard() {
         </CocoaSection>
       ) : (
         <>
-          {open.length === 0 ? (
+          {view === "closed" ? null : open.length === 0 ? (
             <CocoaSection aria-label="Comandas abiertas">
               <CocoaState kind="empty" illustration="box" title="Sin comandas abiertas" message="Abre una comanda arriba para empezar a registrar consumos." />
             </CocoaSection>
@@ -451,6 +512,11 @@ export function PosDashboard() {
             </CocoaGrid>
           )}
 
+          {view === "closed" && closed.length === 0 ? (
+            <CocoaSection aria-label="Comandas cerradas">
+              <CocoaState kind="empty" inline title="Sin comandas cerradas en el día de negocio actual." />
+            </CocoaSection>
+          ) : null}
           {closed.length > 0 ? (
             <CocoaSection
               title="Comandas cerradas"
@@ -485,33 +551,69 @@ export function PosDashboard() {
           <div className="cocoa-stack" data-gap="4">
             <ul className="c22-section__list" aria-label="Datos de la comanda">
               <li>
-                <span style={mutedStyle}>{FIELD_LABELS.status}</span>
+                <span>{FIELD_LABELS.status}</span>
                 {selected.status === "open" ? <CocoaBadge tone="warning">Abierta</CocoaBadge> : <CocoaBadge tone="success">Cerrada</CocoaBadge>}
               </li>
               <li>
-                <span style={mutedStyle}>Punto de venta</span>
+                <span>Punto de venta</span>
                 <strong>{selected.outletName}</strong>
               </li>
               <li>
-                <span style={mutedStyle}>{FIELD_LABELS.room}</span>
+                <span>{FIELD_LABELS.room}</span>
                 <strong>{selected.roomNumber ? `Hab. ${selected.roomNumber}` : "—"}</strong>
               </li>
               <li>
-                <span style={mutedStyle}>Abierta</span>
+                <span>Abierta</span>
                 <strong>{fmtTime(selected.createdAt)}</strong>
               </li>
               {selected.closedAt ? (
                 <li>
-                  <span style={mutedStyle}>Cerrada</span>
+                  <span>Cerrada</span>
                   <strong>
                     {date(selected.closedAt)} {fmtTime(selected.closedAt)}
                   </strong>
                 </li>
               ) : null}
+              {selected.businessDate ? (
+                <li>
+                  <span>Día de negocio</span>
+                  <strong>{date(selected.businessDate, "short")}</strong>
+                </li>
+              ) : null}
               {selected.settlement ? (
                 <li>
-                  <span style={mutedStyle}>Cobro</span>
+                  <span>Cobro</span>
                   <strong>{SETTLE_LABEL[selected.settlement] ?? selected.settlement}</strong>
+                </li>
+              ) : null}
+              {selected.status === "closed" && selected.settlement !== "room" ? (
+                <li>
+                  <span>Factura simplificada</span>
+                  <strong>{selected.invoiceNumber ?? "sin emitir"}</strong>
+                </li>
+              ) : null}
+              {selected.status === "closed" && selected.settlement !== "room" ? (
+                <li>
+                  <span>Asiento contable</span>
+                  {selected.journalEntryId ? (
+                    <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("JournalScreen", selected.journalEntryId ?? undefined)}>
+                      Ver en el diario
+                    </CocoaButton>
+                  ) : (
+                    <strong>sin asiento</strong>
+                  )}
+                </li>
+              ) : null}
+              {selected.status === "closed" && selected.settlement !== "room" ? (
+                <li>
+                  <span>Cierre de caja</span>
+                  {selected.cashClosureId ? (
+                    <CocoaButton variant="plain" tone="accent" size="small" onClick={() => navigateTo("CashClosureScreen")}>
+                      Contada en el cierre del día
+                    </CocoaButton>
+                  ) : (
+                    <strong>caja aún abierta</strong>
+                  )}
                 </li>
               ) : null}
             </ul>

@@ -73,6 +73,8 @@ const FacturacionTabs = lazyTab("FacturacionTabs");
 const TesoreriaTabs = lazyTab("TesoreriaTabs");
 const ConciliacionTabs = lazyTab("ConciliacionTabs");
 const EstadosContablesTabs = lazyTab("EstadosContablesTabs");
+const ContabilidadTabs = lazyTab("ContabilidadTabs");
+const ProveedoresTabs = lazyTab("ProveedoresTabs");
 const VerifactuTabs = lazyTab("VerifactuTabs");
 const ModelosAeatTabs = lazyTab("ModelosAeatTabs");
 const ImpuestosTabs = lazyTab("ImpuestosTabs");
@@ -158,7 +160,7 @@ const ForecastSettingsModule = makeModulePlaceholder({ moduleName: "Ajustes de f
 const ComplianceInboxWired = () => <ComplianceInbox onNavigate={(s) => window.dispatchEvent(new CustomEvent("hotelos-nav", { detail: s }))} />;
 
 // Screen registry (Tanda 5 · L1b). One entry per screen key of
-// navigation/nav-tree.generated.json — 64 items, 80 tabs, 21 dev-only and 2
+// navigation/nav-tree.generated.json — 66 items, 94 tabs, 20 dev-only and 2
 // public — plus the 24 aliases (LEGACY_SCREEN_KEYS). A tab key maps to the
 // container of its item; the 72 retired keys are gone (an orphan `hotelos-nav`
 // to one of them is redirected by `resolveScreenTarget`). Every key has a URL
@@ -204,6 +206,7 @@ const SCREEN_COMPONENTS = {
   PosDashboard: PuntoVentaTabs,
   FnbMenu: PuntoVentaTabs,
   FnbInventory: PuntoVentaTabs,
+  CashClosureScreen: PuntoVentaTabs,
   WorkforceDashboard,
   SafetyDashboard,
   ProcurementDashboard: ComprasInventarioTabs,
@@ -248,10 +251,24 @@ const SCREEN_COMPONENTS = {
   ExchangeRatesScreen: TesoreriaTabs,
   BankReconciliationScreen: ConciliacionTabs,
   BankingSpain: ConciliacionTabs,
+  // Contabilidad (Tanda 6): diario · mayor · plan · ajustes · cierre de ejercicio · gestoría
+  JournalScreen: ContabilidadTabs,
+  LedgerScreen: ContabilidadTabs,
+  ChartOfAccountsScreen: ContabilidadTabs,
+  AccountingSettingsScreen: ContabilidadTabs,
+  YearEndCloseScreen: ContabilidadTabs,
+  GestoriaExportScreen: ContabilidadTabs,
   TrialBalanceScreen: EstadosContablesTabs,
   BalanceSheetScreen: EstadosContablesTabs,
+  ProfitAndLossScreen: EstadosContablesTabs,
   CashFlowScreen: EstadosContablesTabs,
-  YearEndCloseScreen: EstadosContablesTabs,
+  AnnualAccountsScreen: EstadosContablesTabs,
+  UsaliScreen: EstadosContablesTabs,
+  // Proveedores y gastos (Tanda 6): facturas recibidas · gastos · proveedores · inmovilizado
+  SupplierBillsScreen: ProveedoresTabs,
+  ExpensesScreen: ProveedoresTabs,
+  SuppliersScreen: ProveedoresTabs,
+  FixedAssetsScreen: ProveedoresTabs,
   CommissionsScreen,
   PayrollScreen,
   // --- Cumplimiento ---
@@ -265,6 +282,9 @@ const SCREEN_COMPONENTS = {
   Modelo115Screen: ModelosAeatTabs,
   Modelo180Screen: ModelosAeatTabs,
   Modelo390Screen: ModelosAeatTabs,
+  Modelo347Screen: ModelosAeatTabs,
+  VatBooksScreen: ModelosAeatTabs,
+  VatSettlementScreen: ModelosAeatTabs,
   PropertyTaxesScreen: ImpuestosTabs,
   TouristTax: ImpuestosTabs,
   GuestRegisterSettings: RegistroViajerosTabs,

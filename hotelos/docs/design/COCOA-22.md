@@ -163,7 +163,7 @@ Polaridad: `positive-good` (▲ verde / ▼ rojo), `negative-good` (invertida), 
 
 ### 3.7 Tabla — `CocoaTable` (leído)
 
-`thead` sticky sobre `background-sidebar` con sombra `0 1px 0 separator, 0 2px 6px rgb(0 0 0/.04)` (**sin blur**); `th` caption 600 uppercase +0,012 em secondary, padding 8 12, `aria-sort`; `td` body, padding 8 12, borde inferior separator; columnas `align="right"` con `tnum lnum`; zebra `color-mix(label 3 %)`; hover `accent 8 %`; selección `accent 15 %` + barra inset 3 px accent (WCAG 1.4.1); vacío centrado padding 32 secondary; < 600 px → tarjetas apiladas etiqueta/valor (radio 12, borde separator, sombra control). Cocoa 22 añade: `density`, `stickyFirstColumn`, `rowActions`, `footer` (totales sobre `--inverse-surface`), `virtualize` (> 200 filas).
+`thead` sticky sobre `background-sidebar` con sombra `0 1px 0 separator, 0 2px 6px rgb(0 0 0/.04)` (**sin blur**); `th` caption 600 uppercase +0,012 em secondary, padding 8 12, `aria-sort`; `td` body, padding 8 12, borde inferior separator; columnas `align="right"` con `tnum lnum`; zebra `color-mix(label 3 %)`; hover `accent 8 %`; selección `accent 15 %` + barra inset 3 px accent (WCAG 1.4.1); vacío centrado padding 32 secondary; < 600 px → tarjetas apiladas etiqueta/valor (radio 12, borde separator, sombra control). Cocoa 22 añade: `density`, `stickyFirstColumn`, `rowActions`, `footer` (totales sobre `--inverse-surface`), `virtualize` (> 200 filas), `fit` (columna ajustada a su contenido en una sola línea: fecha, número, importe, estado; el ancho libre va a la columna de texto) y `showFrom` (columna secundaria visible solo desde un tier: `"desktop"` ≥ 1200); las columnas `align="right"` no parten nunca la cifra.
 
 ### 3.8 Formulario (leído: `CocoaInput`/`Select`/`Switch`/`DatePicker`, `FormComponents`, `.fp-*`)
 
@@ -238,6 +238,7 @@ Cada arquetipo tiene una pantalla piloto migrada que sirve de plantilla real (co
 | **Lista / tabla** | `screens/guests/GuestsListScreen.tsx` | `/recepcion/huespedes` (alojada en Huéspedes) | `CocoaPage` → `CocoaToolbar variant="content"` + `CocoaSearchInput` → `CocoaSection padding="none"` (+ `overflow: clip` para recortar al radio 12 sin crear un scroll container: `hidden` capturaría el `thead` sticky, que se ancla al scroller de página) → `CocoaTable` (`rowKey`, `onSelect` abre la ficha, Enter/Espacio) → `footer` con recuento y «Cargar más» (`loading`) → `CocoaState empty` con acción primaria; `< 600` tarjetas apiladas | 3 `style={`. La barra de búsqueda sigue visible en los estados vacío/error/carga (no se delega el estado a `CocoaPage`); la acción «Nuevo huésped» solo se pinta standalone (el contenedor ya la lleva); `CocoaSearchInput` sin `debounceMs` (la pantalla conserva su debounce de 250 ms). |
 | **Formulario / ajustes** | `screens/propertySetup/PropertySetupForms.tsx` (14 formularios, un renderizador) | `/configuracion/propiedad` (alojada en Propiedad) y hermanos | `CocoaPage` → `CocoaGrid` 6/6 de `CocoaSection` («Sobre este formulario», «Estado actual» con `CocoaCallout` del guardado) → `CocoaFormSection columns={2}` con `CocoaField` + `CocoaInput/Select/Switch/DatePicker`, `multiline` para textarea, `fullWidth` en textarea y chips → `ValidationSummary` (lista + `CocoaBadge warning`) → `CocoaActionBar` (solo Cancelar + Guardar, `publishToastOffset`, ⌘/Ctrl+Enter; el estado del guardado vive en el `CocoaCallout` de «Estado actual»); «Guardar y añadir otro» e «Historial de auditoría» viven en el pie `actions` de la `CocoaFormSection` | 4 `style={`. `multi_select` pasa de un input separado por comas a un grupo de chips `CocoaButton` con `aria-pressed`. Alojada, la descripción del formulario va como primer párrafo del panel «Sobre este formulario» (no como `subtitle`). Medido a 390: con cuatro botones la barra fija desbordaba (primaria a 44 px de ancho); con dos botones estirados cabe — máximo dos acciones en la barra, el resto en la sección. `DataPreview` (componente legacy) sigue pintando «Valores actuales» hasta que el lote de componentes lo lleve a `CocoaTable`. |
 | **Dashboard operativo (Hoy)** | `screens/operations/ShiftManagerScreen.tsx` | `/hoy/turno` (standalone) | `CocoaPage` con `state`/`skeleton`/`error`/`commands` → `CocoaSection` «Productividad» y «Caja» con `CocoaKpiStrip min={200}` de `CocoaKpi` (unidad «de N», `deltaLabel` con el ratio) → flags como `CocoaCallout` en una tira `min={240}` con iconos de estado → cronología en `ol.c22-section__list` con `CocoaBadge variant="dot"` por importancia (sin emoji) | 4 `style={`. Los KPI dentro de una `CocoaSection` anidan sombra de tarjeta sobre tarjeta bordered (como el canon `.rev-kpi` dentro de `.bo-card`); el color de la hora sigue la importancia con `toneInk`. |
+| **Detalle** | `screens/billing/FolioDetailScreen.tsx` (Cocoa 22 · lote 6-A) | `/finanzas/facturacion/folios/:id` (alojada en Facturación y cobros; `useRouteParam` del `:id`) | `CocoaPage` con badge de estado y acciones (Cobrar · Devolver · Dividir · Cerrar) en la cabecera y vistas internas `tabs` (Cargos · Cobros · Enrutamiento) → `CocoaGrid align="start"` 8/4: cuerpo con `CocoaSection padding="none"` + `CocoaTable` (`rowActions` «Mover» / «Devolver», `rowTone` para las devoluciones) y aside con `CocoaStat` (saldo `size="large"` con tono, cargos, cobrado neto) y lista `c22-section__list` de los otros folios → `CocoaDialog` con `busy` para cerrar (destructivo), dividir y mover (`initialFocus` en el campo) → `components/billing/PaymentDialog` y `RefundDialog` (Tanda 6: método enum, `clientRequestId`, 202 → pasarela, 409 honesto) | 3 `style={` (presupuesto 15). Sin `:id` la página ofrece un `CocoaFormRow` de búsqueda por identificador en vez de un `CocoaState empty` (el operador llega desde Facturación y cobros o la reserva). Los `<div draggable>` con estilos de color del legacy se sustituyen por la acción «Mover» por fila (accesible por teclado; mismo `POST /folios/:id/move-charges`). La pestaña «Notas» (sessionStorage sin API) se retira. |
 
 Contrato de salida de un piloto: 0 `.bo-*`, 0 `<button>`/`<table>`/`<input>` crudos, 0 colores literales, `style={` ≤ presupuesto y solo de layout en literales, cabecera Cocoa, sin emoji, `docs/design/cocoa-22-inventory.json` regenerado (`node scripts/cocoa-22-inventory.mjs`) y la pantalla fuera de `NOT_MIGRATED` (el techo `ALLOWLIST_CEILING` baja con ella).
 
@@ -249,7 +250,7 @@ Lo que §8 no dice por sí solo y que ha roto (o casi) los pilotos. Cada regla c
 
 1. **Imports.** Todo lo Cocoa sale del barrel `../../components/cocoa` (`index.ts`, §8.2), incluidos `openTabPath`, `useIsNarrow`, `useViewportTier`, `toneInk`, `toneFromStatus`, `thresholdTone`, `DegradedValue/*` y `CocoaEmptyState`. Fuera del barrel: `useTabHost` de `../tabs/TabHost`; `useRouteParam`/`treeHeaderFor` de `../tabs/tab-helpers`; `useToast` de `../../components/Toast`; formato de `../../lib/format`; copy de `../../content/actions`; `navigateTo(screenKey)` de `../../lib/navigate` (claves = `SCREEN_COMPONENTS` de `App.tsx`); `urlForScreen(screenKey, params)` de `../../navigation/nav-tree`; iconos de `../../components/cocoa-icons/{ActionIcons,NavigationIcons,StatusIcons}`; datos con `useApiData<T>(path | null, { pollIntervalMs })` de `../../hooks/useApiData` y `toArray<T>()` de `../../utils/toArray` para cualquier array del payload.
 2. **`CocoaPage.title` es obligatorio también alojada** (`Pick<CocoaPageHeaderProps, "title">`, `title: string`): alojada no se pinta, pero nombra `data-hosted-head` y el `aria-label` del control segmentado de vistas internas.
-3. **Controles controlados de valor primitivo.** `CocoaInput`, `CocoaSelect`, `CocoaDatePicker`, `CocoaSearchInput` y `CocoaSegmentedControl` → `value: string` + `onChange(v: string)`; `CocoaSwitch` → `checked: boolean` + `onChange(v: boolean)`; `CocoaStepper` → `value: number` + `onChange(v: number)`. No hay `event.target`: los números viajan como cadena y se parsean al guardar (`toNumber` de `lib/format`). `CocoaInput type="number"` sigue entregando `string`.
+3. **Controles controlados de valor primitivo.** `CocoaInput`, `CocoaSelect`, `CocoaDatePicker`, `CocoaSearchInput` y `CocoaSegmentedControl` → `value: string` + `onChange(v: string)`; `CocoaSwitch` → `checked: boolean` + `onChange(v: boolean)`; `CocoaStepper` → `value: number` + `onChange(v: number)`; `CocoaFileInput` → `onPick(file: File)` (+ `onReject(message)`), el único `<input type="file">` vive en la primitiva. No hay `event.target`: los números viajan como cadena y se parsean al guardar (`toNumber` de `lib/format`). `CocoaInput type="number"` sigue entregando `string`.
 4. **`CocoaField` exige UN hijo `ReactElement`** (`Children.only`): un fragmento, dos controles o texto suelto lanzan en tiempo de ejecución. El hijo recibe `id`, `aria-describedby`, `aria-invalid` y, si es un control Cocoa, `error`/`required`; no pongas otro `<label>` dentro.
 5. **`CocoaTable<Row>`**: `columns: CocoaTableColumn<Row>[]` declaradas fuera del componente; `rowKey` (clave o función) para selección estable; **la tabla no ordena**: `sortBy` + `onSort` son controlados (`nextSort` ya calcula el siguiente estado); `rows: Row[]` mutable (nada de `as const`).
 6. **`CocoaSkeleton.Grid rows`** es `ReadonlyArray<ReadonlyArray<CocoaSpanCols>>` (literales 1…12): escríbelo inline en JSX (`rows={[[8, 2, 2], [4, 4, 2, 2]]}`); una constante `const rows = [[8, 2, 2]]` se ensancha a `number[][]` y no compila (`as const` lo arregla).
@@ -275,13 +276,13 @@ Lo que §8 no dice por sí solo y que ha roto (o casi) los pilotos. Cada regla c
 
 **D · Layout y comportamiento (medido en los pilotos)**
 
-20. **Alojada** (`useTabHost() !== null`): el contenedor pinta eyebrow + H1; la página aporta acciones y vistas internas (`tabs`). **No pases `subtitle` alojada** hasta que `screens/tabs/tab-helpers.tsx:41` cambie `flex: "1 1 320px"` → `flex: "0 0 auto"` (medido: `HostedHead` de 320 px de alto; los pilotos usan `subtitle={hosted ? undefined : …}`); la acción «Nuevo…» que ya pinta el contenedor tampoco se repite (`actions={hosted ? undefined : …}`). Una página alojada sin subtítulo, acciones ni `tabs` no pinta cabecera alguna.
+20. **Alojada** (`useTabHost() !== null`): el contenedor pinta eyebrow + H1; la página aporta acciones y vistas internas (`tabs`). **No pases `subtitle` alojada** (los pilotos usan `subtitle={hosted ? undefined : …}`): `screens/tabs/tab-helpers.tsx:42` ya lleva `flex: "0 0 auto"` en `subtitleStyle` (`leadStyle` conserva `1 1 320px` en el contenedor), pero la regla sigue vigente hasta que la QA visual de la Tanda 6 mida un `HostedHead` con subtítulo; la acción «Nuevo…» que ya pinta el contenedor tampoco se repite (`actions={hosted ? undefined : …}`). Una página alojada sin subtítulo, acciones ni `tabs` no pinta cabecera alguna.
 21. **`CocoaSection` es flex column** (raíz `display:flex; flex-direction:column; height:100%`, cuerpo `.c22-section__body` flex column con gap 8): los hijos se apilan y se estiran a lo ancho; dos controles en fila necesitan `<div className="cocoa-row" data-gap="2">`; `<p>` y `<ul className="c22-section__list">` no llevan márgenes propios. Una celda `CocoaSpan` estira su sección a `height: 100%` (filas alineadas); si el contenido debe quedar arriba, `CocoaGrid align="start"`.
 22. **`CocoaGrid/CocoaSpan`**: 12 columnas, gap 12; `min` se redondea al bucket 200/240/320/480 (`minBucket`); < 600 px → 1 columna; 600–899 → spans < 6 pasan a 6; rejilla < 912 px → un `min` que no cabe promociona a 6 y luego a 12; ≥ 912 spans reales (el canon 8/2/2 a 1120 px se conserva). Todo por clase (`c22-span-N`, `c22-min-B`), nunca `grid-column` inline.
 23. **`CocoaKpiStrip`**: `min` 180 (canon), 200 (ops) y 240 (callouts) los resuelve la hoja; otros valores viajan como `--c22-kpi-min` inline; < 600 una columna. Los KPI dentro de una `CocoaSection` anidan sombra de tarjeta sobre tarjeta (aceptado, como el canon).
 24. **`CocoaPage fullBleed`** cancela el gutter (`--cocoa-content-padding` 24 / 16) solo en el cuerpo; `density="compact"` conmuta `--cocoa-density-*` (padding de tarjeta, filas 28 px, controles) en todo el subárbol; `gap` 3 | 4 | 5 = 12 / 16 / 24 px entre secciones.
 25. **Capas.** `CocoaDrawer` en teléfono siempre es hoja inferior (`drawerGeometry`); `CocoaDialog` `sm` 440 · `md` 560; ambos bloquean scroll, atrapan foco, cierran con Esc y clic en el scrim (`dismissible`). `CocoaActionBar` fija en < 600 con safe-area: **máximo dos acciones** (medido a 390: con cuatro la primaria queda en 44 px); el resto va al pie `actions` de la `CocoaFormSection`; `publishToastOffset` aparta los toasts.
-26. **Tablas en tarjeta.** `CocoaSection padding="none"` + `style={{ overflow: "clip" }}` (recorta al radio 12 **sin** crear un scroll container: `overflow: hidden` en cualquier ancestro captura el `thead` sticky de `CocoaTable`, que se ancla al scroller de página `main.cocoa-content`); cabecera y pie conservan su inset de 16. `CocoaTable` apila tarjetas por sí sola en < 600 (`hideOnNarrow` oculta columnas secundarias); `loading` pinta filas skeleton; `onSelect` hace la fila foco + Enter/Espacio; `rowActions` debe parar la propagación (`event.stopPropagation()`) para no abrir la fila.
+26. **Tablas en tarjeta.** `CocoaSection padding="none"` + `style={{ overflow: "clip" }}` (recorta al radio 12 **sin** crear un scroll container: `overflow: hidden` en cualquier ancestro captura el `thead` sticky de `CocoaTable`, que se ancla al scroller de página `main.cocoa-content`); cabecera y pie conservan su inset de 16. `CocoaTable` apila tarjetas por sí sola en < 600 (`hideOnNarrow` oculta columnas secundarias en teléfono); con 7 o más columnas, las cortas —fecha, número, importe, estado— llevan `fit` (ajustadas a su contenido, una línea) y las secundarias `showFrom: "desktop"`, para que en un portátil de 1024 el ancho libre vaya a la columna de texto (medido sin ello: «Concepto» cae a 117 px y parte en 6 líneas); `minWidth` en la de texto es el suelo bajo el cual la tabla pasa a scroll horizontal; `loading` pinta filas skeleton; `onSelect` hace la fila foco + Enter/Espacio; `rowActions` debe parar la propagación (`event.stopPropagation()`) para no abrir la fila.
 27. **Estados.** `CocoaState inline` dentro de tarjeta = una línea caption («Sin anomalías detectadas.»); `dashed` = caja punteada con CTA (comp-set); `kind="degraded"` para «—» con explicación; `CocoaPage state="empty" | "error"` sustituye TODO el cuerpo (la barra de búsqueda desaparece: las listas pintan su vacío/error dentro de la sección, como GuestsList, y solo delegan `loading`).
 28. **⌘K.** `commands` se registran mientras la página está montada: ids únicos por pantalla (`<pantalla>-<acción>`), `run` puede cambiar de clausura (la primitiva lee la última); `shortcut` es solo indicativo (nadie lo enlaza).
 29. **Accesibilidad.** `CocoaKpi` calcula su `aria-label` («Ocupación, 71 %, +3 % vs LY»); los gráficos llevan `aria-label` descriptivo o son decorativos (`CocoaSparkline` sin etiqueta); `CocoaLiveRegion` una por página; los iconos solo decorativos van `aria-hidden` y con texto al lado.
@@ -296,7 +297,7 @@ Cada plantilla es un fichero completo que **compila contra las primitivas del wo
 | Dashboard | `DashboardAlojado` | alojada (contenedor Mi día) | `operations/GeneralManagerScreen.tsx` |
 | Dashboard | `DashboardStandalone` | standalone (ruta propia) | `operations/ShiftManagerScreen.tsx` |
 | Lista / tabla | `ListaTabla` | alojada y standalone (búsqueda, orden controlado, drawer) | `guests/GuestsListScreen.tsx` |
-| Detalle | `Detalle` | standalone `/…/:id` y alojada como pestaña `:id` (`useRouteParam`) | — (ola 6: FolioDetail) |
+| Detalle | `Detalle` | standalone `/…/:id` y alojada como pestaña `:id` (`useRouteParam`) | `screens/billing/FolioDetailScreen.tsx` (lote 6-A) |
 | Formulario / ajustes | `Formulario` | alojada y standalone | `propertySetup/PropertySetupForms.tsx` |
 | Asistente / wizard | `Asistente` | standalone | — (ola 3: ReservationCreate) |
 | Workspace split | `Workspace` | standalone (rejilla 4/8; < 900 lista + drawer) | — (ola 8: ComplianceInbox) |
@@ -334,7 +335,7 @@ export function PlantillaBaseScreen() {
     <CocoaPage
       eyebrow="Operaciones · Ejemplo"
       title="Ejemplo"
-      // Hasta que tab-helpers.tsx:41 corrija `flex: "1 1 320px"`, alojada NO se pasa subtítulo.
+      // Alojada NO se pasa subtítulo (D20): el contenedor pinta la cabecera; pendiente de medir en la QA visual.
       subtitle={hosted ? undefined : "Qué muestra esta pantalla, en una frase."}
       actions={
         <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh}>
@@ -1564,6 +1565,7 @@ Ubicación: `apps/admin-web/src/components/cocoa/` (39 ficheros + barrel `index.
 | Interruptor | `CocoaSwitch` | `CocoaSwitch.tsx` | `checked`, `onChange` |
 | Fecha | `CocoaDatePicker` | `CocoaDatePicker.tsx` | `value`, `onChange` |
 | Contador numérico ± (no es un indicador de pasos) | `CocoaStepper` | `CocoaStepper.tsx` | `value`, `onChange` |
+| Fichero (extracto, adjunto): botón + `<input type="file">` oculto, nombre cargado, rechazo por tipo o peso | `CocoaFileInput` | `CocoaFileInput.tsx` | `onPick` |
 | Búsqueda con debounce y limpiar | `CocoaSearchInput` | `CocoaSearchInput.tsx` | `value`, `onChange` |
 | Vistas ≤ 4 opciones | `CocoaSegmentedControl` | `CocoaSegmentedControl.tsx` | `value`, `onChange`, `options` |
 | Tabla (orden controlado, selección, pie, apilado < 600) | `CocoaTable<Row>` | `CocoaTable.tsx` | `columns`, `rows` |
@@ -1621,6 +1623,7 @@ export * from "./CocoaSelect";
 export * from "./CocoaSwitch";
 export * from "./CocoaDatePicker";
 export * from "./CocoaStepper";
+export * from "./CocoaFileInput";
 export * from "./CocoaSearchInput";
 export * from "./CocoaSegmentedControl";
 export * from "./CocoaTable";
@@ -2106,6 +2109,8 @@ export interface CocoaKpiProps {
   label: string;
   value: string | number;
   unit?: string;
+  /** Secondary line under the figure («272,00 €», «4 facturas»): context of the value, not its unit (Tanda 6). */
+  caption?: string;
   delta?: number;
   deltaUnit?: CocoaKpiDeltaUnit;
   /** «vs LY», «vs ayer». */
@@ -2162,11 +2167,11 @@ export function formatDelta(delta: number): string
 export function deltaColors(tone: "success" | "danger" | "neutral"): { text: string; arrow: string }
 
 /** Accessible name «etiqueta, valor unidad, +delta unidad vs LY» (pure). */
-export function kpiAriaLabel(input: { label: string; value: string | number; unit?: string; delta?: number; deltaUnit?: string; deltaLabel?: string; degraded?: boolean; }): string
+export function kpiAriaLabel(input: { label: string; value: string | number; unit?: string; caption?: string; delta?: number; deltaUnit?: string; deltaLabel?: string; degraded?: boolean; }): string
 
 /** Delta chip: «▲ 100 % vs LY» in the polarity colour; decorative (the KPI's aria-label carries the value). */
 export function CocoaDelta({ delta, unit, label, polarity = "positive-good", className, style }: CocoaDeltaProps)
-export function CocoaKpi({ label, value, unit, delta, deltaUnit, deltaLabel, polarity = "positive-good", sparkline, status, tone, size = "regular", icon, onClick, degraded = false, id, className, style }: CocoaKpiProps)
+export function CocoaKpi({ label, value, unit, caption, delta, deltaUnit, deltaLabel, polarity = "positive-good", sparkline, status, tone, size = "regular", icon, onClick, degraded = false, id, className, style }: CocoaKpiProps)
 
 /** `data-min` values the stylesheet resolves by itself; other minimums travel as an inline variable. */
 export const KPI_STRIP_CSS_MINS: readonly number[] = [180, 200, 240]
@@ -2628,6 +2633,45 @@ export function clampStep(value: number, min: number, max: number): number
 export function CocoaStepper({ value, onChange, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY, step = 1, size = "regular", disabled = false, error = false, id, name, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-invalid": ariaInvalid, className, style }: CocoaStepperProps)
 ```
 
+#### `CocoaFileInput.tsx`
+
+```ts
+export interface CocoaFileInputProps {
+  /** Native `accept` list: extensions and/or MIME types, comma-separated (`.n43,.txt,text/plain`). */
+  accept?: string;
+  /** Upper bound in bytes; a heavier file is refused before `onPick`. */
+  maxBytes?: number;
+  /** The chosen file (already within `accept` and `maxBytes`). */
+  onPick: (file: File) => void;
+  /** Spanish reason a file was refused (type or size); without it the refusal is silent. */
+  onReject?: (message: string) => void;
+  /** Button label; default «Elegir fichero». */
+  label?: string;
+  /** Name of the file currently loaded, painted next to the button (the caller owns it). */
+  fileName?: string | null;
+  disabled?: boolean;
+  /** Button size; default `small` (the picker sits in a row of small actions). */
+  size?: CocoaButtonSize;
+  /** Button icon; default `UploadIcon`. */
+  icon?: ReactNode;
+  id?: string;
+  "aria-describedby"?: string;
+  className?: string;
+  /** Layout escape hatch only. */
+  style?: CSSProperties;
+}
+
+/** «812 B» · «512 KB» · «2,5 MB» (pure, es-ES, base 1024). */
+export function formatFileSize(bytes: number): string
+
+/** Whether a file satisfies a native `accept` list (pure): `.ext` by name, `type/*` or `type/sub` by MIME; an empty list accepts everything. */
+export function fileMatchesAccept(file: { name: string; type: string }, accept: string | undefined): boolean
+
+/** Spanish rejection for a file outside `accept` or over `maxBytes`; null when it passes (pure). */
+export function fileInputRejection(file: { name: string; size: number; type: string }, limits: { accept?: string; maxBytes?: number }): string | null
+export function CocoaFileInput({ accept, maxBytes, onPick, onReject, label = "Elegir fichero", fileName, disabled = false, size = "small", icon, id, "aria-describedby": ariaDescribedBy, className, style }: CocoaFileInputProps)
+```
+
 #### `CocoaSearchInput.tsx`
 
 ```ts
@@ -2705,11 +2749,25 @@ export interface CocoaTableColumn<Row> {
   align?: "left" | "right" | "center";
   width?: string;
   minWidth?: number;
+  /**
+   * Shrink the column to its content on one line (dates, numbers, identifiers,
+   * badges, short enums): the free width goes to the text columns instead of
+   * being shared out. Implies `nowrap`; an explicit `width` still wins.
+   */
+  fit?: boolean;
+  /** Keep the cells on one line. Default: `true` for `fit` and for `align: "right"` (a number never splits). */
+  nowrap?: boolean;
   render?: (row: Row) => ReactNode;
   /** Cell of the totals row (`footer` prop must be true or an object). */
   footer?: ReactNode;
-  /** Hide on phones (secondary columns). */
+  /** Hide on phones (secondary columns). Same as `showFrom: "tablet"`. */
   hideOnNarrow?: boolean;
+  /**
+   * First viewport tier that shows the column (`"tablet"` ≥ 600 · `"laptop"`
+   * ≥ 900 · `"desktop"` ≥ 1200): secondary columns of wide tables (7+ columns)
+   * that would crush the text column on a 1024 laptop.
+   */
+  showFrom?: CocoaViewportTier;
 }
 
 export interface CocoaTableSort {
@@ -2762,6 +2820,12 @@ export function wrapOverflowStyle(input: { maxHeight?: number; overflowing: bool
 
 /** True when the table needs more width than its wrapper offers (pure; 0.5 px tolerance for subpixel layouts). */
 export function isTableOverflowing(tableWidth: number, wrapWidth: number): boolean
+
+/** Whether a column is shown at a viewport tier (pure): `hideOnNarrow` hides it on phones, `showFrom` below that tier. */
+export function isColumnVisible(column: Pick<CocoaTableColumn<unknown>, "hideOnNarrow" | "showFrom">, tier: CocoaViewportTier): boolean
+
+/** Sizing of a column's cells (pure). `fit` shrinks the column to its content on one line — a 1 px `width` in `table-layout: auto` resolves to the min-content width, the trick the actions cell already uses — unless an explicit `width` is given; `nowrap` defaults to true for `fit` and for right-aligned (numeric) columns. Only the keys that apply are returned so the caller can spread it under its own `whiteSpace`. */
+export function columnSizingStyle(column: Pick<CocoaTableColumn<unknown>, "width" | "minWidth" | "fit" | "nowrap" | "align">): CSSProperties
 
 /** Cell padding for a density (pure); undefined → inherited page density or comfortable. */
 export function densityRowPadding(density: CocoaTableDensity | undefined): string
@@ -2924,6 +2988,8 @@ export interface CocoaDialogProps {
   onConfirm: () => void | Promise<void>;
   /** External busy flag (the caller awaits its own request). */
   busy?: boolean;
+  /** Keeps Confirm disabled (a prompt whose field is still invalid); Cancel, Esc and the overlay keep working. */
+  confirmDisabled?: boolean;
   /** Extra content between the description and the buttons (lists, notes). */
   children?: ReactNode;
   size?: CocoaDialogSize;
@@ -2937,7 +3003,7 @@ export const DIALOG_WIDTH: Record<CocoaDialogSize, number> = { sm: 440, md: 560 
 
 /** Which button takes the initial focus (pure): the safe one for destructive dialogs. */
 export function dialogInitialFocus(tone: CocoaDialogTone, hideCancel = false): "confirm" | "cancel"
-export function CocoaDialog({ open, onClose, title, description, tone = "primary", confirmLabel = "Confirmar", cancelLabel = "Cancelar", onConfirm, busy = false, children, size = "sm", hideCancel = false, initialFocus }: CocoaDialogProps)
+export function CocoaDialog({ open, onClose, title, description, tone = "primary", confirmLabel = "Confirmar", cancelLabel = "Cancelar", onConfirm, busy = false, confirmDisabled = false, children, size = "sm", hideCancel = false, initialFocus }: CocoaDialogProps)
 ```
 
 #### `CocoaToast.tsx`

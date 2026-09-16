@@ -14,6 +14,7 @@ import { prisma } from "@hotelos/database";
 import { NotFoundError, BadRequestError, ConflictError } from "../../lib/http-error.js";
 import type { UserContext } from "../../lib/demo-store.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
+import { PRIMARY_FOLIO_LABEL } from "./folio-labels.js";
 
 export async function listReservationFolios(reservationId: string) {
   // Hot-fix: cap defensively. A reservation has at most a handful of folios.
@@ -50,7 +51,7 @@ export async function createSecondaryFolio(input: {
   // Ensure a primary folio exists; the first folio is always primary.
   const existingPrimary = await prisma.folio.findFirst({ where: { reservationId: input.reservationId, isPrimary: true, deletedAt: null } });
   if (!existingPrimary) {
-    await prisma.folio.create({ data: { reservationId: input.reservationId, status: "open", currency: r.currency ?? "EUR", label: "guest", isPrimary: true } });
+    await prisma.folio.create({ data: { reservationId: input.reservationId, status: "open", currency: r.currency ?? "EUR", label: PRIMARY_FOLIO_LABEL, isPrimary: true } });
   }
   return prisma.folio.create({
     data: {

@@ -1,19 +1,20 @@
-// FolioRouting workspace — split folios + routing rules per reservation.
+// Enrutamiento de folios — Finanzas › Facturación y cobros › Enrutamiento
+// (/finanzas/facturacion/enrutamiento). Cocoa 22 · lote 6-A, archetype
+// «formulario» (docs/design/COCOA-22.md §4, plantilla `Formulario`).
 //
-// Standard PMS feature. From this screen the user can:
-//   1. Lookup a reservation by ID.
-//   2. See its folios (primary + secondary). Open a secondary folio for the
-//      same reservation (e.g. "company", "travel_agent").
-//   3. Declare routing rules: "every line of type X goes to folio Y". When the
-//      next FolioLine is posted on the primary folio, it is auto-moved.
-//   4. Inspect each folio's lines and transfer a single line to another folio
-//      manually (override).
-//
-// All endpoints already exist on the API (folio-routing.service.ts + folio
-// service GET /folios/:id/balance). This is a read-write workspace; mutations
-// trigger refresh of the affected queries.
+// Split folios and routing rules of ONE reservation:
+//   1. pick the reservation (selector of the property's reservations, a typed
+//      identifier, or `?reserva=` in the URL — FolioDetail links here);
+//   2. see its folios (primary + secondary) and open a secondary one
+//      (POST /reservations/:id/folios);
+//   3. declare rules «every charge of type X goes to folio Y»
+//      (POST /reservations/:id/routing-rules · DELETE /routing-rules/:id);
+//   4. inspect the charges of every folio and transfer one by hand
+//      (POST /folio-lines/:id/transfer).
+// Reads GET /properties/:id/reservations, GET /reservations/:id/folios,
+// GET /reservations/:id/routing-rules and GET /folios/:id/balance per folio.
+// Hosted inside FacturacionTabs the container paints the head.
 
-import { useTabHost } from "../tabs/TabHost";
 import { useEffect, useMemo, useState } from "react";
 import {
   fetchReservationFolios,
@@ -27,425 +28,495 @@ import {
   type FolioLine,
   type FolioRoutingRule
 } from "../../services/folioRoutingApi";
-import { LoadingBlock, ErrorState, EmptyState, Spinner } from "../../components/States";
-import { dateTime, money, type CurrencyInput } from "../../lib/format";
+import { fetchReservations, type AdminReservation } from "../../services/pmsCommerceApi";
+import { chargeTypeLabel, routingSourceOptions } from "../../components/billing/charge-types";
+import { financeErrorMessage } from "../../services/finance-contracts";
+import { getActivePropertyId } from "../../services/activeProperty";
+import { useToast } from "../../components/Toast";
+import { date, dateTime, money, plural } from "../../lib/format";
+import { ACTIONS, FIELD_LABELS, confirmDelete } from "../../content/actions";
+import { folioDisplayName, folioLabelText } from "../../content/data-labels";
+import { fillParams, urlForScreen } from "../../navigation/nav-tree";
+import { useTabHost } from "../tabs/TabHost";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDialog,
+  CocoaField,
+  CocoaFormRow,
+  CocoaFormSection,
+  CocoaGrid,
+  CocoaInput,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaState,
+  CocoaStepper,
+  CocoaTable,
+  openTabPath,
+  type CocoaTableColumn
+} from "../../components/cocoa";
 
-// Source types the auto-router can match on. "*" = catch-all.
-const SOURCE_TYPES = [
-  { code: "*", label: "Cualquier cargo (*)" },
-  { code: "room", label: "Habitación (room)" },
-  { code: "tax", label: "Impuestos (tax)" },
-  { code: "city_tax", label: "Tasa turística (city_tax)" },
-  { code: "f_and_b", label: "F&B (f_and_b)" },
-  { code: "minibar", label: "Minibar (minibar)" },
-  { code: "spa", label: "Spa / wellness (spa)" },
-  { code: "laundry", label: "Lavandería (laundry)" },
-  { code: "telephone", label: "Teléfono (telephone)" },
-  { code: "parking", label: "Parking (parking)" },
-  { code: "service_charge", label: "Cargo por servicio (service_charge)" },
-  { code: "adjustment", label: "Ajuste (adjustment)" }
-];
+const FOLIO_URL = urlForScreen("FolioDetail") ?? "/finanzas/facturacion/folios/:id";
+// Reservations offered in the selector (most recent arrivals first; the API caps at 500).
+const RESERVATION_PAGE_SIZE = 200;
 
-function fmtMoney(n: number, currency?: CurrencyInput): string {
-  return money(n, currency);
+// Charge types the router can match on ("*" is the catch-all); labels shared
+// with FolioDetailScreen through components/billing/charge-types.
+const SOURCE_TYPES: Array<{ value: string; label: string }> = routingSourceOptions();
+const sourceTypeLabel = chargeTypeLabel;
+
+function folioStatusLabel(status: string): string {
+  return status === "open" ? "Abierto" : status === "closed" ? "Cerrado" : status;
 }
-function fmtDateTime(iso: string): string {
-  return dateTime(iso, { style: "dayMonth" });
+
+/** `?reserva=` of the current URL (FolioDetail and BillingCenter link here with the reservation preselected). */
+function reservationFromUrl(): string | null {
+  if (typeof window === "undefined") return null;
+  const value = new URLSearchParams(window.location.search).get("reserva");
+  return value && value.trim() ? value.trim() : null;
 }
+
+type FolioBucket = { lines: FolioLine[]; total: number; balanceDue: number };
 
 export function FolioRoutingScreen() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
-  // Reservation lookup state
-  const [reservationInput, setReservationInput] = useState<string>("");
-  const [reservationId, setReservationId] = useState<string | null>(null);
+  const hosted = useTabHost() !== null;
+  const { showToast } = useToast();
+  const propertyId = getActivePropertyId();
 
-  // Folios + rules state
+  const [reservations, setReservations] = useState<AdminReservation[]>([]);
+  const [reservationsError, setReservationsError] = useState<string | null>(null);
+  const [selectedReservation, setSelectedReservation] = useState("");
+  const [manualId, setManualId] = useState("");
+  const [reservationId, setReservationId] = useState<string | null>(() => reservationFromUrl());
+
   const [folios, setFolios] = useState<Folio[]>([]);
   const [rules, setRules] = useState<FolioRoutingRule[]>([]);
-  const [linesByFolio, setLinesByFolio] = useState<Record<string, { lines: FolioLine[]; total: number; balanceDue: number }>>({});
+  const [buckets, setBuckets] = useState<Record<string, FolioBucket>>({});
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  // New secondary folio form
-  const [newFolioLabel, setNewFolioLabel] = useState<string>("");
-  const [newFolioCurrency, setNewFolioCurrency] = useState<string>("EUR");
+  const [newFolioLabel, setNewFolioLabel] = useState("");
+  const [newFolioCurrency, setNewFolioCurrency] = useState("");
+  const [ruleSource, setRuleSource] = useState("minibar");
+  const [ruleTarget, setRuleTarget] = useState("");
+  const [rulePriority, setRulePriority] = useState(100);
+  const [ruleNotes, setRuleNotes] = useState("");
+  const [ruleToDelete, setRuleToDelete] = useState<FolioRoutingRule | null>(null);
+  const [transfer, setTransfer] = useState<{ line: FolioLine; from: Folio } | null>(null);
+  const [transferTarget, setTransferTarget] = useState("");
 
-  // New routing rule form
-  const [newRuleSource, setNewRuleSource] = useState<string>("minibar");
-  const [newRuleTarget, setNewRuleTarget] = useState<string>("");
-  const [newRulePriority, setNewRulePriority] = useState<number>(100);
-  const [newRuleNotes, setNewRuleNotes] = useState<string>("");
-
-  // Transfer line modal-state (simple inline)
-  const [transferring, setTransferring] = useState<string | null>(null);
-  const [transferTarget, setTransferTarget] = useState<string>("");
-
-  const [busy, setBusy] = useState<boolean>(false);
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const primaryFolio = useMemo(() => folios.find((f) => f.isPrimary) ?? folios[0] ?? null, [folios]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchReservations(propertyId, { limit: RESERVATION_PAGE_SIZE })
+      .then((page) => {
+        if (cancelled) return;
+        setReservations(page.items);
+        setReservationsError(null);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setReservationsError(financeErrorMessage(err, "No se pudieron cargar las reservas."));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [propertyId]);
 
   async function loadAll(id: string) {
     setLoading(true);
     setError(null);
-    setLinesByFolio({});
     try {
-      const [fols, rls] = await Promise.all([fetchReservationFolios(id), fetchRoutingRules(id)]);
-      setFolios(fols);
-      setRules(rls);
-      // Fetch lines per folio in parallel (best-effort, ignore individual errors)
-      const lineResults = await Promise.all(
-        fols.map((f) =>
-          fetchFolioLines(f.id)
-            .then((r) => ({ id: f.id, ok: true as const, value: r }))
-            .catch((e) => ({ id: f.id, ok: false as const, error: e instanceof Error ? e.message : String(e) }))
+      const [folioList, ruleList] = await Promise.all([fetchReservationFolios(id), fetchRoutingRules(id)]);
+      setFolios(folioList);
+      setRules(ruleList);
+      // Lines per folio, best effort: a folio whose balance fails shows «—».
+      const results = await Promise.all(
+        folioList.map((folio) =>
+          fetchFolioLines(folio.id)
+            .then((result) => ({ id: folio.id, bucket: { lines: result.lines, total: result.total, balanceDue: result.balanceDue } as FolioBucket }))
+            .catch(() => null)
         )
       );
-      const map: Record<string, { lines: FolioLine[]; total: number; balanceDue: number }> = {};
-      for (const r of lineResults) {
-        if (r.ok) {
-          map[r.id] = { lines: r.value.lines, total: r.value.total, balanceDue: r.value.balanceDue };
-        }
-      }
-      setLinesByFolio(map);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudieron cargar los folios.");
+      const next: Record<string, FolioBucket> = {};
+      for (const result of results) if (result) next[result.id] = result.bucket;
+      setBuckets(next);
+    } catch (err) {
+      setFolios([]);
+      setRules([]);
+      setBuckets({});
+      setError(financeErrorMessage(err, "No se pudieron cargar los folios de la reserva."));
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    if (reservationId) {
-      void loadAll(reservationId);
-    } else {
+    if (reservationId) void loadAll(reservationId);
+    else {
       setFolios([]);
       setRules([]);
-      setLinesByFolio({});
+      setBuckets({});
     }
   }, [reservationId]);
 
-  function lookup(e: React.FormEvent) {
-    e.preventDefault();
-    const id = reservationInput.trim();
+  const reservationOptions = useMemo(
+    () =>
+      reservations.map((reservation) => ({
+        value: reservation.id,
+        label: `${reservation.code} · ${reservation.bookerName ?? reservation.companyName ?? "Huésped"} · ${date(reservation.arrivalDate, "dayMonth")}`
+      })),
+    [reservations]
+  );
+  const selected = reservations.find((reservation) => reservation.id === reservationId) ?? null;
+  const primary = folios.find((folio) => folio.isPrimary) ?? folios[0] ?? null;
+  const secondaries = folios.filter((folio) => !folio.isPrimary);
+
+  function openReservation() {
+    const id = (manualId.trim() || selectedReservation).trim();
     if (!id) return;
     setReservationId(id);
   }
 
-  async function addSecondaryFolio(e: React.FormEvent) {
-    e.preventDefault();
-    if (!reservationId || !newFolioLabel.trim()) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      await createSecondaryFolio(reservationId, { label: newFolioLabel.trim(), currency: newFolioCurrency || undefined });
-      setNewFolioLabel("");
-      setMsg(`Folio «${newFolioLabel.trim()}» creado.`);
-      await loadAll(reservationId);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "No se pudo crear el folio.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function addRule(e: React.FormEvent) {
-    e.preventDefault();
-    if (!reservationId || !newRuleTarget) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      await createRoutingRule(reservationId, {
-        sourceType: newRuleSource,
-        targetFolioId: newRuleTarget,
-        priority: newRulePriority,
-        notes: newRuleNotes || undefined,
-        active: true
-      });
-      setNewRuleNotes("");
-      setMsg(`Regla añadida: ${newRuleSource} → folio destino.`);
-      await loadAll(reservationId);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "No se pudo crear la regla.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function removeRule(ruleId: string) {
+  async function run(label: string, action: () => Promise<unknown>, after?: () => void) {
     if (!reservationId) return;
     setBusy(true);
-    setMsg(null);
     try {
-      await deleteRoutingRule(ruleId);
-      setMsg("Regla eliminada.");
+      await action();
+      showToast(label, { variant: "success" });
+      after?.();
       await loadAll(reservationId);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "No se pudo eliminar la regla.");
+    } catch (err) {
+      showToast(financeErrorMessage(err, "No se pudo completar la operación."), { variant: "error" });
     } finally {
       setBusy(false);
     }
   }
 
-  async function doTransfer(lineId: string) {
-    if (!transferTarget || !reservationId) return;
-    setBusy(true);
-    setMsg(null);
-    try {
-      await transferFolioLine(lineId, transferTarget);
-      setMsg("Cargo transferido.");
-      setTransferring(null);
-      setTransferTarget("");
-      await loadAll(reservationId);
-    } catch (e) {
-      setMsg(e instanceof Error ? e.message : "No se pudo transferir el cargo.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  // Helpers
-  const folioLabel = (id: string | undefined | null): string => {
+  const folioLabel = (id: string | null | undefined): string => {
     if (!id) return "—";
-    const f = folios.find((x) => x.id === id);
-    return f ? `${f.label}${f.isPrimary ? " (principal)" : ""}` : id;
+    const folio = folios.find((candidate) => candidate.id === id);
+    return folio ? folioDisplayName(folio) : id;
   };
 
+  const folioColumns = useMemo<CocoaTableColumn<Folio>[]>(
+    () => [
+      { key: "label", label: "Folio", render: (folio) => <strong>{folioLabelText(folio.label)}</strong> },
+      { key: "kind", label: FIELD_LABELS.type, render: (folio) => <CocoaBadge tone={folio.isPrimary ? "info" : "neutral"}>{folio.isPrimary ? "Principal" : "Secundario"}</CocoaBadge> },
+      { key: "status", label: FIELD_LABELS.status, render: (folio) => <CocoaBadge tone={folio.status === "open" ? "success" : "neutral"}>{folioStatusLabel(folio.status)}</CocoaBadge> },
+      { key: "currency", label: FIELD_LABELS.currency, render: (folio) => folio.currency, hideOnNarrow: true },
+      { key: "total", label: "Cargos", align: "right", render: (folio) => (buckets[folio.id] ? money(buckets[folio.id].total, folio.currency) : "—") },
+      { key: "balanceDue", label: "Pendiente", align: "right", render: (folio) => (buckets[folio.id] ? money(buckets[folio.id].balanceDue, folio.currency) : "—") }
+    ],
+    [buckets]
+  );
+
+  const ruleColumns = useMemo<CocoaTableColumn<FolioRoutingRule>[]>(
+    () => [
+      { key: "sourceType", label: "Origen", render: (rule) => <strong>{sourceTypeLabel(rule.sourceType)}</strong> },
+      { key: "targetFolioId", label: "Folio destino", render: (rule) => folioLabel(rule.targetFolioId) },
+      { key: "priority", label: "Prioridad", align: "right", render: (rule) => rule.priority, hideOnNarrow: true },
+      { key: "active", label: FIELD_LABELS.status, render: (rule) => <CocoaBadge tone={rule.active ? "success" : "neutral"}>{rule.active ? "Activa" : "Pausada"}</CocoaBadge> },
+      { key: "notes", label: FIELD_LABELS.notes, render: (rule) => rule.notes ?? "—", hideOnNarrow: true },
+      { key: "createdAt", label: "Creada", render: (rule) => dateTime(rule.createdAt, { style: "dayMonth" }), hideOnNarrow: true }
+    ],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [folios]
+  );
+
+  const lineColumns = useMemo<CocoaTableColumn<FolioLine & { currency: string }>[]>(
+    () => [
+      { key: "type", label: FIELD_LABELS.type, render: (line) => sourceTypeLabel(line.type), hideOnNarrow: true },
+      { key: "description", label: FIELD_LABELS.description, render: (line) => line.description },
+      { key: "total", label: FIELD_LABELS.total, align: "right", render: (line) => <strong>{money(line.total, line.currency)}</strong> }
+    ],
+    []
+  );
+
+  const deleteCopy = confirmDelete(ruleToDelete ? `la regla «${sourceTypeLabel(ruleToDelete.sourceType)} → ${folioLabel(ruleToDelete.targetFolioId)}»` : "la regla");
+
   return (
-    <section className="bo-card" style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      <header className="bo-card-head">
-        <div>
-          {embedded ? null : (
-            <>
-              <p className="bo-muted" style={{ textTransform: "uppercase", letterSpacing: "0.08em", fontSize: 12 }}>Finanzas · Facturación y cobros</p>
-              <h2 style={{ color: "var(--ink)" }}>Folios divididos y enrutamiento</h2>
-            </>
-          )}
-          <p className="bo-muted" style={{ marginTop: 4, textTransform: "none" }}>
-            Divide los cargos de una reserva entre el huésped, la empresa o la agencia de viajes. Las reglas envían automáticamente
-            cada nuevo cargo (p. ej. <em>minibar → folio company</em>) al folio adecuado. Pulsa <strong>Transferir</strong> para mover
-            un cargo concreto a otro folio.
-          </p>
-        </div>
-      </header>
-
-      {/* Reservation lookup */}
-      <article className="bo-card" style={{ background: "var(--surface)" }}>
-        <div className="bo-card-head">
-          <h3 style={{ color: "var(--ink)" }}>Reserva</h3>
-          {reservationId ? <span className="bo-chip">{reservationId}</span> : null}
-        </div>
-        <form className="bo-row" onSubmit={lookup} style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-          <label className="bo-muted" htmlFor="folio-routing-res" style={{ textTransform: "none" }}>ID de reserva:</label>
-          <input
-            id="folio-routing-res"
-            type="text"
-            value={reservationInput}
-            onChange={(e) => setReservationInput(e.target.value)}
-            placeholder="cmpl4k5hq00x0fyf1y4trooaq"
-            className="mono"
-            style={{ minWidth: 320 }}
-          />
-          <button type="submit" className="primary" disabled={!reservationInput.trim()}>Cargar</button>
-          {reservationId ? (
-            <button type="button" onClick={() => { setReservationId(null); setReservationInput(""); }}>Limpiar</button>
-          ) : null}
-          {reservationId ? (
-            <button type="button" onClick={() => void loadAll(reservationId)} disabled={busy || loading}>↻ Actualizar</button>
-          ) : null}
-        </form>
-      </article>
-
-      {msg ? <p className="bo-status ok" style={{ textTransform: "none" }}>{msg}</p> : null}
-      {error ? <ErrorState title="Error" message={error} /> : null}
-
+    <CocoaPage
+      eyebrow="Finanzas · Facturación y cobros"
+      title="Enrutamiento de folios"
+      subtitle={hosted ? undefined : "Divide los cargos de una reserva entre el huésped, la empresa o la agencia; las reglas envían cada nuevo cargo al folio adecuado."}
+      actions={
+        reservationId ? (
+          <>
+            <CocoaBadge tone="neutral">{selected ? selected.code : reservationId}</CocoaBadge>
+            <CocoaButton variant="bordered" tone="neutral" size="small" disabled={busy || loading} onClick={() => void loadAll(reservationId)}>
+              {ACTIONS.refresh}
+            </CocoaButton>
+            <CocoaButton
+              variant="plain"
+              tone="neutral"
+              size="small"
+              disabled={busy}
+              onClick={() => {
+                setReservationId(null);
+                setSelectedReservation("");
+                setManualId("");
+              }}
+            >
+              Cambiar de reserva
+            </CocoaButton>
+          </>
+        ) : undefined
+      }
+    >
       {!reservationId ? (
-        <EmptyState title="Empieza por una reserva" message="Introduce el ID de una reserva para gestionar sus folios y reglas de enrutamiento." />
-      ) : loading && folios.length === 0 ? (
-        <LoadingBlock label="Cargando folios y reglas…" />
+        <CocoaFormSection title="Reserva" description="Elige una reserva de la propiedad o indica su identificador.">
+          <CocoaFormRow columns={2}>
+            <CocoaField label={FIELD_LABELS.reservation} help={reservationsError ?? undefined}>
+              <CocoaSelect value={selectedReservation} onChange={setSelectedReservation} options={reservationOptions} placeholder={reservations.length === 0 ? "Sin reservas cargadas" : "Elige una reserva"} disabled={reservations.length === 0} />
+            </CocoaField>
+            <CocoaField label="Identificador de la reserva" hint="opcional">
+              <CocoaInput value={manualId} onChange={setManualId} placeholder="cmu1j7yem00amfywhevs8xvn4" autoComplete="off" onKeyDown={(event) => { if (event.key === "Enter") openReservation(); }} />
+            </CocoaField>
+          </CocoaFormRow>
+          <div className="cocoa-row" data-gap="2" data-justify="end">
+            <CocoaButton variant="filled" tone="accent" disabled={!manualId.trim() && !selectedReservation} onClick={openReservation}>
+              Cargar folios
+            </CocoaButton>
+          </div>
+        </CocoaFormSection>
+      ) : loading && folios.length === 0 && !error ? (
+        <CocoaSkeleton.Grid rows={[[12], [12]]} height={180} />
+      ) : error ? (
+        <CocoaSection aria-label="Error al cargar la reserva">
+          <CocoaState kind="error" title="No se pudieron cargar los folios" message={error} onRetry={() => void loadAll(reservationId)} />
+        </CocoaSection>
       ) : (
         <>
-          {/* Folios list + create */}
-          <article className="bo-card" style={{ background: "var(--surface)" }}>
-            <div className="bo-card-head">
-              <h3 style={{ color: "var(--ink)" }}>Folios de la reserva</h3>
-              <span className="bo-chip">{folios.length}</span>
-              {busy ? <Spinner size="sm" /> : null}
-            </div>
-
+          <CocoaSection
+            title="Folios de la reserva"
+            meta={selected ? `${selected.code} · ${selected.bookerName ?? selected.companyName ?? ""}`.trim() : plural(folios.length, "folio", "folios")}
+            padding={folios.length > 0 ? "none" : "md"}
+            style={{ overflow: "clip" }}
+          >
             {folios.length === 0 ? (
-              <EmptyState title="Sin folios" message="Esta reserva todavía no tiene folios. Crea el principal al postear el primer cargo." />
+              <CocoaState kind="empty" inline title="Esta reserva todavía no tiene folios." message="El folio principal se crea al registrar el primer cargo o al hacer el check-in." />
             ) : (
-              <div className="rev-report-wrap">
-                <table className="cm-table">
-                  <thead>
-                    <tr><th>Etiqueta</th><th>Tipo</th><th>Estado</th><th>Moneda</th><th>Cargos</th><th>Pendiente</th><th>ID</th></tr>
-                  </thead>
-                  <tbody>
-                    {folios.map((f) => {
-                      const bal = linesByFolio[f.id];
-                      return (
-                        <tr key={f.id}>
-                          <td><strong>{f.label}</strong></td>
-                          <td><span className={`bo-status ${f.isPrimary ? "info" : "ok"}`} style={{ fontSize: 10 }}>{f.isPrimary ? "principal" : "secundario"}</span></td>
-                          <td><span className={`bo-status ${f.status === "open" ? "ok" : "info"}`} style={{ fontSize: 10 }}>{f.status}</span></td>
-                          <td className="mono">{f.currency}</td>
-                          <td className="mono">{bal ? fmtMoney(bal.total, f.currency) : "—"}</td>
-                          <td className="mono">{bal ? fmtMoney(bal.balanceDue, f.currency) : "—"}</td>
-                          <td className="mono" style={{ fontSize: 11 }}>{f.id}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
+              <CocoaTable
+                columns={folioColumns}
+                rows={folios}
+                rowKey="id"
+                caption="Folios de la reserva"
+                aria-label="Folios de la reserva"
+                onSelect={(folio) => openTabPath(fillParams(FOLIO_URL, { id: folio.id }))}
+                rowActions={(folio) => (
+                  <CocoaButton
+                    variant="plain"
+                    size="small"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openTabPath(fillParams(FOLIO_URL, { id: folio.id }));
+                    }}
+                  >
+                    {ACTIONS.view}
+                  </CocoaButton>
+                )}
+              />
             )}
+          </CocoaSection>
 
-            <form className="bo-row" onSubmit={addSecondaryFolio} style={{ gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
-              <label className="bo-muted" style={{ textTransform: "none" }}>Crear folio secundario:</label>
-              <input
-                type="text"
-                value={newFolioLabel}
-                onChange={(e) => setNewFolioLabel(e.target.value)}
-                placeholder="company, travel_agent, group_master…"
-                style={{ minWidth: 240 }}
-              />
-              <input
-                type="text"
-                value={newFolioCurrency}
-                onChange={(e) => setNewFolioCurrency(e.target.value.toUpperCase())}
-                placeholder="EUR"
-                style={{ width: 80 }}
-                maxLength={3}
-                className="mono"
-              />
-              <button type="submit" disabled={busy || !newFolioLabel.trim()}>+ Añadir folio</button>
-            </form>
-          </article>
+          <CocoaFormSection
+            title="Nuevo folio secundario"
+            description="Para la empresa, la agencia o un acompañante. Después, una regla o «Transferir» le envían sus cargos."
+            actions={
+              <CocoaButton
+                variant="filled"
+                tone="accent"
+                size="small"
+                disabled={busy || !newFolioLabel.trim()}
+                onClick={() =>
+                  void run(`Folio «${newFolioLabel.trim()}» creado.`, () => createSecondaryFolio(reservationId, { label: newFolioLabel.trim(), currency: newFolioCurrency.trim() || undefined }), () => {
+                    setNewFolioLabel("");
+                    setNewFolioCurrency("");
+                  })
+                }
+              >
+                Añadir folio
+              </CocoaButton>
+            }
+          >
+            <CocoaFormRow columns={2}>
+              <CocoaField label="Etiqueta" required help="Por ejemplo «Empresa» o «Agencia».">
+                <CocoaInput value={newFolioLabel} onChange={setNewFolioLabel} placeholder="Empresa" maxLength={80} autoComplete="off" disabled={busy} />
+              </CocoaField>
+              <CocoaField label={FIELD_LABELS.currency} hint="opcional" help={`Vacío: la del folio principal${primary ? ` (${primary.currency})` : ""}.`}>
+                <CocoaInput value={newFolioCurrency} onChange={(value) => setNewFolioCurrency(value.toUpperCase())} placeholder={primary?.currency ?? ""} maxLength={3} autoComplete="off" disabled={busy} />
+              </CocoaField>
+            </CocoaFormRow>
+          </CocoaFormSection>
 
-          {/* Routing rules */}
-          <article className="bo-card" style={{ background: "var(--surface)" }}>
-            <div className="bo-card-head">
-              <h3 style={{ color: "var(--ink)" }}>Reglas de enrutamiento</h3>
-              <span className="bo-chip">{rules.length}</span>
-            </div>
-            <p className="bo-muted" style={{ marginTop: 0, marginBottom: 12, textTransform: "none" }}>
-              Cada regla mueve los nuevos cargos del folio principal al folio destino indicado. Si varias reglas coinciden, gana la de
-              menor <strong>prioridad</strong>. <code>*</code> hace de comodín (todos los cargos).
-            </p>
-
+          <CocoaSection title="Reglas de enrutamiento" meta={plural(rules.length, "regla", "reglas")} padding={rules.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
             {rules.length === 0 ? (
-              <EmptyState title="Sin reglas" message="No hay reglas activas. Crea una para que los cargos de minibar/F&B vayan a la empresa, por ejemplo." />
+              <CocoaState kind="empty" inline title="Sin reglas activas." message="Cada regla mueve los nuevos cargos del folio principal al folio destino; si varias coinciden gana la de menor prioridad." />
             ) : (
-              <div className="rev-report-wrap">
-                <table className="cm-table">
-                  <thead>
-                    <tr><th>Origen</th><th>Folio destino</th><th>Prioridad</th><th>Activa</th><th>Notas</th><th>Creada</th><th></th></tr>
-                  </thead>
-                  <tbody>
-                    {rules.map((r) => (
-                      <tr key={r.id}>
-                        <td className="mono"><strong>{r.sourceType}</strong></td>
-                        <td>{folioLabel(r.targetFolioId)}</td>
-                        <td className="mono">{r.priority}</td>
-                        <td><span className={`bo-status ${r.active ? "ok" : "info"}`} style={{ fontSize: 10 }}>{r.active ? "activa" : "inactiva"}</span></td>
-                        <td>{r.notes ?? "—"}</td>
-                        <td className="mono" style={{ fontSize: 11 }}>{fmtDateTime(r.createdAt)}</td>
-                        <td><button type="button" onClick={() => void removeRule(r.id)} disabled={busy}>Eliminar</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <CocoaTable
+                columns={ruleColumns}
+                rows={rules}
+                rowKey="id"
+                caption="Reglas de enrutamiento"
+                aria-label="Reglas de enrutamiento"
+                rowActions={(rule) => (
+                  <CocoaButton
+                    variant="plain"
+                    tone="destructive"
+                    size="small"
+                    disabled={busy}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setRuleToDelete(rule);
+                    }}
+                  >
+                    {ACTIONS.delete}
+                  </CocoaButton>
+                )}
+              />
             )}
+          </CocoaSection>
 
-            {folios.length >= 2 ? (
-              <form className="bo-row" onSubmit={addRule} style={{ gap: 8, marginTop: 12, alignItems: "center", flexWrap: "wrap" }}>
-                <label className="bo-muted" style={{ textTransform: "none" }}>Origen:</label>
-                <select value={newRuleSource} onChange={(e) => setNewRuleSource(e.target.value)}>
-                  {SOURCE_TYPES.map((s) => <option key={s.code} value={s.code}>{s.label}</option>)}
-                </select>
-                <label className="bo-muted" style={{ textTransform: "none" }}>Destino:</label>
-                <select value={newRuleTarget} onChange={(e) => setNewRuleTarget(e.target.value)}>
-                  <option value="">— elige folio —</option>
-                  {folios.filter((f) => !f.isPrimary).map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
-                </select>
-                <label className="bo-muted" style={{ textTransform: "none" }}>Prioridad:</label>
-                <input type="number" value={newRulePriority} onChange={(e) => setNewRulePriority(Number(e.target.value))} style={{ width: 80 }} />
-                <input type="text" value={newRuleNotes} onChange={(e) => setNewRuleNotes(e.target.value)} placeholder="notas (opcional)" style={{ minWidth: 200 }} />
-                <button type="submit" className="primary" disabled={busy || !newRuleTarget}>+ Añadir regla</button>
-              </form>
-            ) : (
-              <p className="bo-muted" style={{ textTransform: "none", marginTop: 8 }}>
-                Necesitas al menos un folio secundario para crear reglas. Crea uno arriba (por ejemplo «company»).
-              </p>
-            )}
-          </article>
+          {secondaries.length === 0 ? (
+            <CocoaCallout tone="info" title="Las reglas necesitan un folio secundario">
+              Crea uno arriba (por ejemplo «Empresa») para poder enviarle cargos.
+            </CocoaCallout>
+          ) : (
+            <CocoaFormSection
+              title="Nueva regla"
+              description="«Cualquier cargo» hace de comodín; una prioridad menor gana cuando varias reglas coinciden."
+              actions={
+                <CocoaButton
+                  variant="filled"
+                  tone="accent"
+                  size="small"
+                  disabled={busy || !ruleTarget}
+                  onClick={() =>
+                    void run(
+                      `Regla añadida: ${sourceTypeLabel(ruleSource)} → ${folioLabel(ruleTarget)}.`,
+                      () => createRoutingRule(reservationId, { sourceType: ruleSource, targetFolioId: ruleTarget, priority: rulePriority, notes: ruleNotes.trim() || undefined, active: true }),
+                      () => setRuleNotes("")
+                    )
+                  }
+                >
+                  Añadir regla
+                </CocoaButton>
+              }
+            >
+              <CocoaFormRow columns={4} min={180}>
+                <CocoaField label="Origen" required>
+                  <CocoaSelect value={ruleSource} onChange={setRuleSource} options={SOURCE_TYPES} disabled={busy} />
+                </CocoaField>
+                <CocoaField label="Folio destino" required>
+                  <CocoaSelect value={ruleTarget} onChange={setRuleTarget} placeholder="Elige un folio" options={secondaries.map((folio) => ({ value: folio.id, label: folioLabelText(folio.label) }))} disabled={busy} />
+                </CocoaField>
+                <CocoaField label="Prioridad" help="Menor gana.">
+                  <CocoaStepper value={rulePriority} onChange={setRulePriority} min={1} max={999} step={10} disabled={busy} />
+                </CocoaField>
+                <CocoaField label={FIELD_LABELS.notes} hint="opcional">
+                  <CocoaInput value={ruleNotes} onChange={setRuleNotes} placeholder="Acuerdo con la agencia" maxLength={200} autoComplete="off" disabled={busy} />
+                </CocoaField>
+              </CocoaFormRow>
+            </CocoaFormSection>
+          )}
 
-          {/* Folio lines per folio */}
-          {primaryFolio && folios.length >= 2 ? (
-            <article className="bo-card" style={{ background: "var(--surface)" }}>
-              <div className="bo-card-head">
-                <h3 style={{ color: "var(--ink)" }}>Cargos por folio</h3>
-                <span className="bo-chip">{folios.length} folios</span>
-              </div>
-              <p className="bo-muted" style={{ marginTop: 0, marginBottom: 12, textTransform: "none" }}>
-                Pulsa <strong>Transferir</strong> en un cargo para moverlo manualmente a otro folio de la reserva.
-              </p>
-              <div style={{ display: "grid", gap: 16, gridTemplateColumns: "repeat(auto-fit, minmax(360px, 1fr))" }}>
-                {folios.map((f) => {
-                  const bucket = linesByFolio[f.id];
-                  const lines = bucket?.lines ?? [];
-                  return (
-                    <article key={f.id} className="bo-card" style={{ background: "var(--surface-2, var(--surface))" }}>
-                      <div className="bo-card-head">
-                        <h4 style={{ color: "var(--ink)" }}>{f.label}{f.isPrimary ? " (principal)" : ""}</h4>
-                        <span className="bo-chip">{lines.length}</span>
-                      </div>
-                      {lines.length === 0 ? (
-                        <p className="bo-muted" style={{ textTransform: "none" }}>Sin cargos.</p>
+          {folios.length >= 2 ? (
+            <CocoaGrid align="start" aria-label="Cargos por folio">
+              {folios.map((folio) => {
+                const bucket = buckets[folio.id];
+                const rows = (bucket?.lines ?? []).map((line) => ({ ...line, currency: folio.currency }));
+                return (
+                  <CocoaSpan key={folio.id} cols={6} min={320}>
+                    <CocoaSection
+                      title={folioDisplayName(folio)}
+                      meta={plural(rows.length, "cargo", "cargos")}
+                      padding={rows.length > 0 ? "none" : "md"}
+                      style={{ overflow: "clip" }}
+                      footer={bucket ? <span>Cargos {money(bucket.total, folio.currency)} · pendiente {money(bucket.balanceDue, folio.currency)}</span> : undefined}
+                    >
+                      {!bucket ? (
+                        <CocoaState kind="degraded" inline title="Saldo no disponible." />
+                      ) : rows.length === 0 ? (
+                        <CocoaState kind="empty" inline title="Sin cargos." />
                       ) : (
-                        <table className="cm-table">
-                          <thead><tr><th>Tipo</th><th>Descripción</th><th>Total</th><th></th></tr></thead>
-                          <tbody>
-                            {lines.map((ln) => (
-                              <tr key={ln.id}>
-                                <td className="mono">{ln.type}</td>
-                                <td>{ln.description}</td>
-                                <td className="mono">{fmtMoney(ln.total, f.currency)}</td>
-                                <td>
-                                  {transferring === ln.id ? (
-                                    <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
-                                      <select value={transferTarget} onChange={(e) => setTransferTarget(e.target.value)}>
-                                        <option value="">→ folio…</option>
-                                        {folios.filter((x) => x.id !== f.id).map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
-                                      </select>
-                                      <button type="button" onClick={() => void doTransfer(ln.id)} disabled={busy || !transferTarget}>OK</button>
-                                      <button type="button" onClick={() => { setTransferring(null); setTransferTarget(""); }}>×</button>
-                                    </span>
-                                  ) : (
-                                    <button type="button" onClick={() => { setTransferring(ln.id); setTransferTarget(""); }} disabled={busy}>Transferir</button>
-                                  )}
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                        <CocoaTable
+                          columns={lineColumns}
+                          rows={rows}
+                          rowKey="id"
+                          caption={`Cargos del folio ${folioLabelText(folio.label)}`}
+                          aria-label={`Cargos del folio ${folioLabelText(folio.label)}`}
+                          rowActions={
+                            folio.status === "open"
+                              ? (line) => (
+                                  <CocoaButton
+                                    variant="plain"
+                                    size="small"
+                                    disabled={busy}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setTransferTarget(folios.find((candidate) => candidate.id !== folio.id && candidate.status === "open")?.id ?? "");
+                                      setTransfer({ line, from: folio });
+                                    }}
+                                  >
+                                    Transferir
+                                  </CocoaButton>
+                                )
+                              : undefined
+                          }
+                        />
                       )}
-                      {bucket ? (
-                        <p className="bo-muted" style={{ textTransform: "none", marginTop: 8 }}>
-                          Cargos: <strong>{fmtMoney(bucket.total, f.currency)}</strong> · Pendiente: <strong>{fmtMoney(bucket.balanceDue, f.currency)}</strong>
-                        </p>
-                      ) : null}
-                    </article>
-                  );
-                })}
-              </div>
-            </article>
+                    </CocoaSection>
+                  </CocoaSpan>
+                );
+              })}
+            </CocoaGrid>
           ) : null}
         </>
       )}
-    </section>
+
+      <CocoaDialog
+        open={ruleToDelete !== null}
+        onClose={() => setRuleToDelete(null)}
+        tone="destructive"
+        title={deleteCopy.title}
+        description="Los cargos ya movidos se quedan donde están; solo dejan de enrutarse los nuevos."
+        confirmLabel={busy ? "Eliminando…" : deleteCopy.confirmLabel}
+        cancelLabel={deleteCopy.cancelLabel}
+        busy={busy}
+        onConfirm={() => (ruleToDelete ? run("Regla eliminada.", () => deleteRoutingRule(ruleToDelete.id), () => setRuleToDelete(null)) : undefined)}
+      />
+
+      <CocoaDialog
+        open={transfer !== null}
+        onClose={() => setTransfer(null)}
+        title="Transferir cargo"
+        description={transfer ? `${transfer.line.description} · ${money(transfer.line.total, transfer.from.currency)} · desde «${transfer.from.label}»` : undefined}
+        confirmLabel={busy ? "Transfiriendo…" : "Transferir"}
+        cancelLabel={ACTIONS.cancel}
+        busy={busy}
+        onConfirm={() => {
+          if (!transfer || !transferTarget) {
+            showToast("Elige el folio de destino.", { variant: "error" });
+            return;
+          }
+          return run("Cargo transferido.", () => transferFolioLine(transfer.line.id, transferTarget), () => setTransfer(null));
+        }}
+      >
+        <CocoaField label="Folio de destino" required>
+          <CocoaSelect
+            value={transferTarget}
+            onChange={setTransferTarget}
+            placeholder="Elige un folio"
+            options={folios.filter((folio) => folio.id !== transfer?.from.id && folio.status === "open").map((folio) => ({ value: folio.id, label: folioDisplayName(folio) }))}
+          />
+        </CocoaField>
+      </CocoaDialog>
+    </CocoaPage>
   );
 }
+
+export default FolioRoutingScreen;

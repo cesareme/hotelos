@@ -25,9 +25,20 @@
 //   - items: lista accionable opcional (top N) con id de la entidad
 //
 // Si CUALQUIER check es blocker → canClose = false.
+//
+// Every visible text (title, detail, item hint) comes from
+// night-audit-preflight.texts.ts: Spanish without raw enum values or jargon
+// and money in es-ES (qa#4 of the Cocoa 22 walkthrough).
 
 import { prisma } from "@hotelos/database";
 import { computeBalancesForReservations } from "../folio/folio-balance.service.js";
+import {
+  PREFLIGHT_TEXTS as T,
+  arrivalTimeHint,
+  blockingMessage as composeBlockingMessage,
+  expectedArrivalHint,
+  expectedDepartureHint
+} from "./night-audit-preflight.texts.js";
 
 export type PreflightStatus = "ok" | "warning" | "blocker";
 
@@ -103,17 +114,15 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   });
   const checkArrivals: PreflightCheck = {
     id: "arrivals_pending",
-    title: "Llegadas pendientes",
+    title: T.arrivals_pending.title,
     status: arrivalsPending.length === 0 ? "ok" : arrivalsPending.length > 3 ? "blocker" : "warning",
     count: arrivalsPending.length,
-    detail: arrivalsPending.length === 0
-      ? "Todas las llegadas del día han sido procesadas (check-in o no-show)."
-      : `${arrivalsPending.length} reserva${arrivalsPending.length === 1 ? "" : "s"} confirmada${arrivalsPending.length === 1 ? "" : "s"} sin check-in.`,
+    detail: arrivalsPending.length === 0 ? T.arrivals_pending.ok : T.arrivals_pending.some(arrivalsPending.length),
     items: await Promise.all(
       arrivalsPending.slice(0, 5).map(async (r) => ({
         ref: r.id,
         label: `${r.code} · ${await nameForReservation(r.id)}`,
-        detail: r.eta ? `ETA ${r.eta}` : "Sin ETA"
+        detail: arrivalTimeHint(r.eta)
       }))
     )
   };
@@ -126,17 +135,15 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   });
   const checkNoShows: PreflightCheck = {
     id: "unresolved_no_shows",
-    title: "No-shows sin resolver",
+    title: T.unresolved_no_shows.title,
     status: unresolvedNoShows.length === 0 ? "ok" : "blocker",
     count: unresolvedNoShows.length,
-    detail: unresolvedNoShows.length === 0
-      ? "Sin no-shows pendientes de marcar."
-      : `${unresolvedNoShows.length} reservas pasadas siguen como "confirmed". Decide check-in tardío o no-show antes del cierre.`,
+    detail: unresolvedNoShows.length === 0 ? T.unresolved_no_shows.ok : T.unresolved_no_shows.some(unresolvedNoShows.length),
     items: await Promise.all(
       unresolvedNoShows.slice(0, 5).map(async (r) => ({
         ref: r.id,
         label: `${r.code} · ${await nameForReservation(r.id)}`,
-        detail: `Llegada prevista ${r.arrivalDate.toISOString().slice(0, 10)}`
+        detail: expectedArrivalHint(r.arrivalDate)
       }))
     )
   };
@@ -152,17 +159,15 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   const totalOwed = foliosWithBalance.reduce((s, f) => s + (balances.get(f.reservationId) ?? 0), 0);
   const checkFolios: PreflightCheck = {
     id: "open_folios_with_balance",
-    title: "Folios abiertos con saldo",
+    title: T.open_folios_with_balance.title,
     status: foliosWithBalance.length === 0 ? "ok" : "blocker",
     count: foliosWithBalance.length,
-    detail: foliosWithBalance.length === 0
-      ? "Sin folios con saldo pendiente."
-      : `${foliosWithBalance.length} folios con €${totalOwed.toFixed(2)} sin cobrar. Cobra o regulariza antes de cerrar.`,
+    detail: foliosWithBalance.length === 0 ? T.open_folios_with_balance.ok : T.open_folios_with_balance.some(foliosWithBalance.length, totalOwed),
     items: await Promise.all(
       foliosWithBalance.slice(0, 5).map(async (f) => ({
         ref: f.reservationId,
         label: await nameForReservation(f.reservationId),
-        detail: `Saldo €${(balances.get(f.reservationId) ?? 0).toFixed(2)}`
+        detail: T.open_folios_with_balance.balance(balances.get(f.reservationId) ?? 0)
       }))
     )
   };
@@ -187,12 +192,10 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   }
   const checkUnposted: PreflightCheck = {
     id: "unposted_room_charges",
-    title: "Cargos de habitación sin postear",
+    title: T.unposted_room_charges.title,
     status: unpostedCount === 0 ? "ok" : "warning",
     count: unpostedCount,
-    detail: unpostedCount === 0
-      ? "Todas las estancias in-house tienen su cargo de noche posteado."
-      : `${unpostedCount} estancia${unpostedCount === 1 ? "" : "s"} sin cargo de noche del día. El night audit los postea al ejecutar.`
+    detail: unpostedCount === 0 ? T.unposted_room_charges.ok : T.unposted_room_charges.some(unpostedCount)
   };
 
   // ---- 5) Habitaciones in-house con HK status sucio (discrepancia) ----
@@ -212,13 +215,11 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   });
   const checkDirty: PreflightCheck = {
     id: "dirty_in_house_rooms",
-    title: "Habitaciones ocupadas marcadas sucias",
+    title: T.dirty_in_house_rooms.title,
     status: dirtyOccupied.length === 0 ? "ok" : "warning",
     count: dirtyOccupied.length,
-    detail: dirtyOccupied.length === 0
-      ? "Sin discrepancias entre ocupación y housekeeping."
-      : `${dirtyOccupied.length} habitación${dirtyOccupied.length === 1 ? "" : "es"} ocupada${dirtyOccupied.length === 1 ? "" : "s"} con HK sucio. Revisa antes de cerrar.`,
-    items: dirtyOccupied.slice(0, 5).map((r) => ({ ref: r.id, label: `Hab. ${r.number}`, detail: `HK: ${r.housekeepingStatus ?? r.status}` }))
+    detail: dirtyOccupied.length === 0 ? T.dirty_in_house_rooms.ok : T.dirty_in_house_rooms.some(dirtyOccupied.length),
+    items: dirtyOccupied.slice(0, 5).map((r) => ({ ref: r.id, label: `Hab. ${r.number}`, detail: T.dirty_in_house_rooms.room(r.housekeepingStatus ?? r.status) }))
   };
 
   // ---- 6) Departures sin check-out -----------------------------------
@@ -232,17 +233,15 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   });
   const checkDepartures: PreflightCheck = {
     id: "departures_not_checked_out",
-    title: "Salidas sin check-out",
+    title: T.departures_not_checked_out.title,
     status: departuresNotCheckedOut.length === 0 ? "ok" : "blocker",
     count: departuresNotCheckedOut.length,
-    detail: departuresNotCheckedOut.length === 0
-      ? "Todas las salidas previstas se han cerrado."
-      : `${departuresNotCheckedOut.length} reserva${departuresNotCheckedOut.length === 1 ? "" : "s"} con salida pasada todavía in-house. Cierra el check-out o amplía la estancia.`,
+    detail: departuresNotCheckedOut.length === 0 ? T.departures_not_checked_out.ok : T.departures_not_checked_out.some(departuresNotCheckedOut.length),
     items: await Promise.all(
       departuresNotCheckedOut.slice(0, 5).map(async (r) => ({
         ref: r.id,
         label: `${r.code} · ${await nameForReservation(r.id)}`,
-        detail: `Salida prevista ${r.departureDate.toISOString().slice(0, 10)}`
+        detail: expectedDepartureHint(r.departureDate)
       }))
     )
   };
@@ -252,10 +251,10 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   // En el demo no hay módulo POS detallado conectado a folios; devolvemos OK.
   const checkPos: PreflightCheck = {
     id: "unsynced_pos_charges",
-    title: "Cargos POS sin sincronizar",
+    title: T.unsynced_pos_charges.title,
     status: "ok",
     count: 0,
-    detail: "Sin cargos POS pendientes de pasar a folios."
+    detail: T.unsynced_pos_charges.ok
   };
 
   // ---- 8) Facturas pendientes ----------------------------------------
@@ -277,22 +276,20 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
     const invoicesPending = invoices.filter((i) => i.status === "draft").length;
     checkInvoices = {
       id: "invoices_pending",
-      title: "Facturas pendientes",
+      title: T.invoices_pending.title,
       status: invoicesPending === 0 ? "ok" : "warning",
       count: invoicesPending,
-      detail: invoicesPending === 0
-        ? "Sin facturas en draft sin emitir."
-        : `${invoicesPending} facturas en estado draft. Emite antes del cierre para que entren en la producción del día.`
+      detail: invoicesPending === 0 ? T.invoices_pending.ok : T.invoices_pending.some(invoicesPending)
     };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     console.warn("[night-audit.preflight] invoices_pending check failed", { propertyId, error: reason });
     checkInvoices = {
       id: "invoices_pending",
-      title: "Facturas pendientes",
+      title: T.invoices_pending.title,
       status: "warning",
       count: null,
-      detail: `No se pudo comprobar las facturas pendientes: ${reason}`
+      detail: T.invoices_pending.failed(reason)
     };
   }
   void closedFolios;
@@ -303,12 +300,10 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   });
   const checkPayments: PreflightCheck = {
     id: "payments_pending_capture",
-    title: "Pre-autorizaciones sin capturar",
+    title: T.payments_pending_capture.title,
     status: pendingPayments === 0 ? "ok" : "warning",
     count: pendingPayments,
-    detail: pendingPayments === 0
-      ? "Sin preautorizaciones colgadas."
-      : `${pendingPayments} pago${pendingPayments === 1 ? "" : "s"} en estado pending. Captúralos o cancélalos para no perder garantías.`
+    detail: pendingPayments === 0 ? T.payments_pending_capture.ok : T.payments_pending_capture.some(pendingPayments)
   };
 
   // ---- Compose --------------------------------------------------------
@@ -325,9 +320,7 @@ export async function buildPreflight(input: { propertyId: string }): Promise<Pre
   ];
   const blockers = checks.filter((c) => c.status === "blocker");
   const canClose = blockers.length === 0;
-  const blockingMessage = canClose
-    ? undefined
-    : `No puedes cerrar todavía: ${blockers.map((b) => `${b.count} ${b.title.toLowerCase()}`).join(", ")}.`;
+  const blockingMessage = canClose ? undefined : composeBlockingMessage(blockers);
 
   // Business date (best effort): the preflight is still useful without it, so
   // a failed lookup leaves it undefined — but logged, never silent.

@@ -133,7 +133,9 @@ const ITEM_NARRATION: Record<string, string> = {
   BillingCenter: "Folios, cargos, cobros y facturas. Desde aquí emites facturas y rectificativas y defines a qué folio va cada cargo.",
   FinancePositionDashboard: "Tesorería: lo que te deben, lo que debes y la posición de caja, con los tipos de cambio.",
   BankReconciliationScreen: "Cuadra los movimientos del banco con los apuntes contables; extractos y remesas SEPA.",
-  TrialBalanceScreen: "Balance de sumas y saldos, balance de situación, flujos de efectivo y cierre de ejercicio.",
+  JournalScreen: "Contabilidad del PGC de Pymes: diario de asientos, mayor de cada cuenta, plan de cuentas, ajustes, cierre del ejercicio y exportación a la gestoría.",
+  TrialBalanceScreen: "Sumas y saldos, balance de situación, pérdidas y ganancias, flujos de efectivo, cuentas anuales y la presentación USALI para comparar con otros hoteles.",
+  SupplierBillsScreen: "Facturas de proveedores por líneas, gastos menores, directorio de proveedores e inmovilizado con su amortización mensual.",
   CommissionsScreen: "Comisiones que cobra cada canal de venta y su devengo automático al facturar.",
   PayrollScreen: "Contratos y periodos de nómina para exportar a la gestoría.",
   // Cumplimiento

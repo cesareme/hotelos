@@ -23,6 +23,15 @@
 //           `virtualize` (progressive rendering in chunks of 100 past 200 rows),
 //           `maxHeight` (own scroller), horizontal scroll wrapper
 //   loading CocoaSkeleton rows (no `.bo-*`) · empty centred secondary
+//   sizing  `table-layout: auto`. A column with `fit` shrinks to its content on
+//           one line (1 px width + nowrap, the trick the actions cell already
+//           uses) so the free width goes to the text columns; right-aligned
+//           (numeric) cells never wrap («2.595,00 / €»; `nowrap` overrides);
+//           `showFrom` hides a secondary column below a viewport tier
+//           (`"desktop"` = only ≥ 1200: qa#2 measured 7–9 columns at 1024
+//           crushing the text column to 117 px) and `hideOnNarrow` is its
+//           `"tablet"` case. `minWidth` on the text column is the floor below
+//           which the wrapper scrolls horizontally instead of wrapping.
 //   < 600   stacked label/value cards (radius 12, hairline, control shadow)
 //
 // Density can also be inherited from `CocoaPage density` (the
@@ -39,7 +48,7 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as 
 import { CocoaButton } from "./CocoaButton";
 import { CocoaSkeleton } from "./CocoaState";
 import { toneBg, type CocoaTone } from "./cocoa-tones";
-import { useIsNarrow } from "./cocoa-viewport";
+import { useViewportTier, type CocoaViewportTier } from "./cocoa-viewport";
 
 export type CocoaTableSortDirection = "asc" | "desc";
 export type CocoaTableDensity = "comfortable" | "compact";
@@ -51,11 +60,25 @@ export interface CocoaTableColumn<Row> {
   align?: "left" | "right" | "center";
   width?: string;
   minWidth?: number;
+  /**
+   * Shrink the column to its content on one line (dates, numbers, identifiers,
+   * badges, short enums): the free width goes to the text columns instead of
+   * being shared out. Implies `nowrap`; an explicit `width` still wins.
+   */
+  fit?: boolean;
+  /** Keep the cells on one line. Default: `true` for `fit` and for `align: "right"` (a number never splits). */
+  nowrap?: boolean;
   render?: (row: Row) => ReactNode;
   /** Cell of the totals row (`footer` prop must be true or an object). */
   footer?: ReactNode;
-  /** Hide on phones (secondary columns). */
+  /** Hide on phones (secondary columns). Same as `showFrom: "tablet"`. */
   hideOnNarrow?: boolean;
+  /**
+   * First viewport tier that shows the column (`"tablet"` ≥ 600 · `"laptop"`
+   * ≥ 900 · `"desktop"` ≥ 1200): secondary columns of wide tables (7+ columns)
+   * that would crush the text column on a 1024 laptop.
+   */
+  showFrom?: CocoaViewportTier;
 }
 
 export interface CocoaTableSort {
@@ -128,6 +151,33 @@ export function isTableOverflowing(tableWidth: number, wrapWidth: number): boole
   return tableWidth > wrapWidth + 0.5;
 }
 
+const TIER_RANK: Record<CocoaViewportTier, number> = { phone: 0, tablet: 1, laptop: 2, desktop: 3 };
+
+/** Whether a column is shown at a viewport tier (pure): `hideOnNarrow` hides it on phones, `showFrom` below that tier. */
+export function isColumnVisible(column: Pick<CocoaTableColumn<unknown>, "hideOnNarrow" | "showFrom">, tier: CocoaViewportTier): boolean {
+  if (column.hideOnNarrow && tier === "phone") return false;
+  if (column.showFrom && TIER_RANK[tier] < TIER_RANK[column.showFrom]) return false;
+  return true;
+}
+
+/**
+ * Sizing of a column's cells (pure). `fit` shrinks the column to its content
+ * on one line — a 1 px `width` in `table-layout: auto` resolves to the
+ * min-content width, the trick the actions cell already uses — unless an
+ * explicit `width` is given; `nowrap` defaults to true for `fit` and for
+ * right-aligned (numeric) columns. Only the keys that apply are returned so
+ * the caller can spread it under its own `whiteSpace`.
+ */
+export function columnSizingStyle(column: Pick<CocoaTableColumn<unknown>, "width" | "minWidth" | "fit" | "nowrap" | "align">): CSSProperties {
+  const style: CSSProperties = {};
+  const width = column.width ?? (column.fit ? 1 : undefined);
+  if (width !== undefined) style.width = width;
+  if (column.minWidth !== undefined) style.minWidth = column.minWidth;
+  const nowrap = column.nowrap ?? (column.fit === true || column.align === "right");
+  if (nowrap) style.whiteSpace = "nowrap";
+  return style;
+}
+
 /** Cell padding for a density (pure); undefined → inherited page density or comfortable. */
 export function densityRowPadding(density: CocoaTableDensity | undefined): string {
   if (density === "compact") return "var(--cocoa-space-1) 10px";
@@ -197,10 +247,12 @@ export function CocoaTable<Row>({
   const sentinelRef = useRef<HTMLTableRowElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const tableRef = useRef<HTMLTableElement | null>(null);
-  const isNarrow = useIsNarrow();
+  const tier = useViewportTier();
+  const isNarrow = tier === "phone";
   const isClickable = typeof onSelect === "function";
   const hasSelection = selectedKey !== undefined;
   const cellPadding = densityRowPadding(density);
+  const visibleColumns = columns.filter((col) => isColumnVisible(col, tier));
 
   // Progressive rendering: reset when the data changes, grow when the sentinel shows.
   useEffect(() => {
@@ -223,7 +275,7 @@ export function CocoaTable<Row>({
     observer.observe(table);
     measure();
     return () => observer.disconnect();
-  }, [maxHeight, loading, isNarrow, rows.length, columns.length]);
+  }, [maxHeight, loading, isNarrow, rows.length, visibleColumns.length]);
 
   useEffect(() => {
     if (!virtualize || !hasMore || typeof IntersectionObserver === "undefined") return undefined;
@@ -246,7 +298,6 @@ export function CocoaTable<Row>({
     );
   }
 
-  const visibleColumns = isNarrow ? columns.filter((col) => !col.hideOnNarrow) : columns;
   const shownRows = rows.slice(0, shownCount);
   const footerCells: Record<string, ReactNode> | null =
     footer === true ? Object.fromEntries(columns.map((col) => [col.key, col.footer])) : footer && typeof footer === "object" ? footer : null;
@@ -363,15 +414,14 @@ export function CocoaTable<Row>({
                 letterSpacing: "var(--cocoa-tracking-wide)",
                 color: "var(--cocoa-label-secondary)",
                 borderBottom: "1px solid var(--cocoa-separator)",
+                ...columnSizingStyle(col),
                 whiteSpace: "nowrap",
-                width: col.width,
-                minWidth: col.minWidth,
                 userSelect: "none",
                 zIndex: stickyFirstColumn && index === 0 ? 3 : undefined
               });
               const inner: CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: align === "right" ? "flex-end" : align === "center" ? "center" : "flex-start" };
               return (
-                <th key={col.key} style={thStyle} scope="col" data-align={align} aria-sort={isSorted ? (sortBy.direction === "asc" ? "ascending" : "descending") : col.sortable ? "none" : undefined}>
+                <th key={col.key} style={thStyle} scope="col" data-align={align} data-fit={col.fit ? "true" : undefined} aria-sort={isSorted ? (sortBy.direction === "asc" ? "ascending" : "descending") : col.sortable ? "none" : undefined}>
                   {col.sortable && onSort ? (
                     <button
                       type="button"
@@ -440,13 +490,12 @@ export function CocoaTable<Row>({
                       textAlign: align,
                       verticalAlign: "middle",
                       fontSize: "var(--cocoa-fs-body)",
-                      width: col.width,
-                      minWidth: col.minWidth,
+                      ...columnSizingStyle(col),
                       color: "inherit",
                       ...(align === "right" ? numericCell : {})
                     });
                     return (
-                      <td key={col.key} style={tdStyle} data-align={align}>
+                      <td key={col.key} style={tdStyle} data-align={align} data-fit={col.fit ? "true" : undefined}>
                         {col.render ? col.render(row) : defaultRender(row, col.key)}
                       </td>
                     );
@@ -479,7 +528,7 @@ export function CocoaTable<Row>({
               {visibleColumns.map((col, index) => {
                 const align = col.align ?? "left";
                 return (
-                  <td key={col.key} data-align={align} style={stickyFirst(index, { padding: cellPadding, textAlign: align, ...(align === "right" ? numericCell : {}) })}>
+                  <td key={col.key} data-align={align} data-fit={col.fit ? "true" : undefined} style={stickyFirst(index, { padding: cellPadding, textAlign: align, ...columnSizingStyle(col), ...(align === "right" ? numericCell : {}) })}>
                     {footerCells[col.key] ?? null}
                   </td>
                 );

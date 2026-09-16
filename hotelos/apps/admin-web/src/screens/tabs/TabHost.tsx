@@ -9,12 +9,13 @@
 // The container passes nothing down: the context is the source of truth, so a
 // screen behaves the same whichever container hosts it.
 //
-// Bridge still in place (L1c): 15 screens branch on an `embedded` prop by hand
+// Bridge still in place (L1c): 10 screens branch on an `embedded` prop by hand
 // (`{embedded ? null : <h1>…}`) and their loaders wrap them with `embed()` of
 // tab-helpers.tsx — SetupCenterScreen, NotificationsScreen, ModuleHealthCenter,
 // PropertyAiScreen, AiToolRegistryScreen, AiPipelineStatusScreen,
-// AiGovernanceScreen, ApiReferenceScreen, FiscalDashboard, Modelo303/111/115/
-// 180/390Screen and SustainabilityDashboard. Migrating one = read
+// AiGovernanceScreen, ApiReferenceScreen, FiscalDashboard and
+// SustainabilityDashboard (Modelo303/111/115/180/390Screen left it in lote
+// 8-B, Tanda 6). Migrating one = read
 // `useTabHost()` instead of the prop, drop the prop, and change its loader to
 // `{ default: m.Screen }`. Screens built on `pageHead(embedded)` are already on
 // the context (pageHead reads it) and only carry a dead prop.

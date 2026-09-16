@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { VIRTUALIZE_CHUNK, VIRTUALIZE_THRESHOLD, defaultRender, densityRowPadding, isTableOverflowing, nextSort, resolveRowKey, visibleRowCount, wrapOverflowStyle } from "../CocoaTable.tsx";
+import { VIRTUALIZE_CHUNK, VIRTUALIZE_THRESHOLD, columnSizingStyle, defaultRender, densityRowPadding, isColumnVisible, isTableOverflowing, nextSort, resolveRowKey, visibleRowCount, wrapOverflowStyle } from "../CocoaTable.tsx";
 
 describe("CocoaTable · sorting", () => {
   it("toggles asc → desc on the same key and starts asc on a new key", () => {
@@ -68,5 +68,59 @@ describe("CocoaTable · wrapper overflow vs sticky head (§3.7, review#4)", () =
     assert.equal(isTableOverflowing(800, 800), false);
     assert.equal(isTableOverflowing(800.4, 800), false);
     assert.equal(isTableOverflowing(801, 800), true);
+  });
+});
+
+describe("CocoaTable · column visibility by tier (qa#2)", () => {
+  it("shows every column everywhere by default", () => {
+    for (const tier of ["phone", "tablet", "laptop", "desktop"] as const) assert.equal(isColumnVisible({}, tier), true);
+  });
+  it("hideOnNarrow hides only on phones (< 600, the card layout)", () => {
+    assert.equal(isColumnVisible({ hideOnNarrow: true }, "phone"), false);
+    assert.equal(isColumnVisible({ hideOnNarrow: true }, "tablet"), true);
+    assert.equal(isColumnVisible({ hideOnNarrow: true }, "laptop"), true);
+    assert.equal(isColumnVisible({ hideOnNarrow: true }, "desktop"), true);
+  });
+  it("showFrom hides the column below that tier: «desktop» hides it on a 1024 laptop", () => {
+    assert.equal(isColumnVisible({ showFrom: "desktop" }, "laptop"), false);
+    assert.equal(isColumnVisible({ showFrom: "desktop" }, "tablet"), false);
+    assert.equal(isColumnVisible({ showFrom: "desktop" }, "phone"), false);
+    assert.equal(isColumnVisible({ showFrom: "desktop" }, "desktop"), true);
+    assert.equal(isColumnVisible({ showFrom: "laptop" }, "tablet"), false);
+    assert.equal(isColumnVisible({ showFrom: "laptop" }, "laptop"), true);
+    assert.equal(isColumnVisible({ showFrom: "tablet" }, "phone"), false);
+    assert.equal(isColumnVisible({ showFrom: "tablet" }, "tablet"), true);
+    assert.equal(isColumnVisible({ showFrom: "phone" }, "phone"), true);
+  });
+  it("hideOnNarrow and showFrom combine (the stricter one wins at each tier)", () => {
+    assert.equal(isColumnVisible({ hideOnNarrow: true, showFrom: "desktop" }, "phone"), false);
+    assert.equal(isColumnVisible({ hideOnNarrow: true, showFrom: "desktop" }, "laptop"), false);
+    assert.equal(isColumnVisible({ hideOnNarrow: true, showFrom: "desktop" }, "desktop"), true);
+  });
+});
+
+describe("CocoaTable · column sizing (qa#2)", () => {
+  it("a plain text column has no sizing: it takes the free width and wraps", () => {
+    assert.deepEqual(columnSizingStyle({}), {});
+    assert.deepEqual(columnSizingStyle({ align: "left" }), {});
+    assert.deepEqual(columnSizingStyle({ align: "center" }), {});
+  });
+  it("fit shrinks the column to its content on one line (1 px width = min-content in auto layout, like the actions cell)", () => {
+    assert.deepEqual(columnSizingStyle({ fit: true }), { width: 1, whiteSpace: "nowrap" });
+  });
+  it("an explicit width wins over fit; minWidth passes through", () => {
+    assert.deepEqual(columnSizingStyle({ fit: true, width: "11ch" }), { width: "11ch", whiteSpace: "nowrap" });
+    assert.deepEqual(columnSizingStyle({ width: "11ch" }), { width: "11ch" });
+    assert.deepEqual(columnSizingStyle({ minWidth: 200 }), { minWidth: 200 });
+    assert.deepEqual(columnSizingStyle({ fit: true, minWidth: 96 }), { width: 1, minWidth: 96, whiteSpace: "nowrap" });
+  });
+  it("right-aligned (numeric) cells never wrap by default: «2.595,00 €» stays on one line", () => {
+    assert.deepEqual(columnSizingStyle({ align: "right" }), { whiteSpace: "nowrap" });
+    assert.deepEqual(columnSizingStyle({ align: "right", fit: true }), { width: 1, whiteSpace: "nowrap" });
+  });
+  it("nowrap is an explicit override in both directions", () => {
+    assert.deepEqual(columnSizingStyle({ align: "right", nowrap: false }), {});
+    assert.deepEqual(columnSizingStyle({ fit: true, nowrap: false }), { width: 1 });
+    assert.deepEqual(columnSizingStyle({ nowrap: true }), { whiteSpace: "nowrap" });
   });
 });

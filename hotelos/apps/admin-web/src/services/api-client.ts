@@ -214,6 +214,83 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 export function apiBase(): string { return API_BASE; }
 
 // ---------------------------------------------------------------------------
+// Binary / text downloads (Finanzas · Tanda 6): invoice PDFs, AEAT summaries,
+// journal and ledger CSV, statements in PDF/XLSX/CSV. Same session, tenant and
+// 401 handling as apiRequest; the body is returned as a Blob instead of JSON.
+// The caller materialises the download (object URL) and names the file with
+// `contentDisposition` (services/finance-contracts.ts · downloadFilename).
+// ---------------------------------------------------------------------------
+export type BlobRequestOptions = Pick<RequestOptions, "query" | "signal"> & {
+  method?: "GET" | "POST";
+  body?: unknown;
+};
+
+export type BlobResponse = {
+  blob: Blob;
+  status: number;
+  contentType: string;
+  /** Raw `Content-Disposition` header (`attachment; filename="diario.csv"`), or null. */
+  contentDisposition: string | null;
+};
+
+async function readApiError(response: Response): Promise<ApiError> {
+  const text = await response.text();
+  let message = text;
+  let correlationId: string | undefined;
+  let details: unknown;
+  try {
+    const parsed = JSON.parse(text) as { message?: string; correlationId?: string; details?: unknown };
+    message = parsed.message ?? text;
+    correlationId = parsed.correlationId;
+    details = parsed.details;
+  } catch {
+    /* keep raw body as the message */
+  }
+  if (response.status === 403 && isPasswordChangeRequiredDetails(details)) {
+    markPasswordChangeRequired();
+  }
+  return new ApiError(message || `HTTP ${response.status}`, response.status, correlationId, details);
+}
+
+export async function apiRequestBlob(path: string, options: BlobRequestOptions = {}): Promise<BlobResponse> {
+  const token = await getToken();
+  const url = new URL(path.startsWith("http") ? path : `${API_BASE}${path}`);
+  if (options.query) {
+    for (const [key, value] of Object.entries(options.query)) {
+      if (value !== undefined) url.searchParams.set(key, String(value));
+    }
+  }
+  const method = options.method ?? "GET";
+  logBreadcrumb(`api.${method}.${path}`, "api", { method, path });
+  const response = await fetch(url.toString(), {
+    method,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      ...(options.body ? { "Content-Type": "application/json" } : {})
+    },
+    body: options.body ? JSON.stringify(options.body) : undefined,
+    signal: options.signal
+  });
+  logBreadcrumb(`api.${method}.${path}`, "api", { method, path, status: response.status });
+  if (response.status === 401) {
+    cachedToken = null;
+    cachedPermissions = null;
+    inFlightLogin = null;
+    passwordChangeRequired = false;
+    clearSession();
+    throw new ApiError("Authentication expired. Refresh the page.", 401);
+  }
+  if (!response.ok) throw await readApiError(response);
+  const blob = await response.blob();
+  return {
+    blob,
+    status: response.status,
+    contentType: response.headers.get("Content-Type") ?? blob.type,
+    contentDisposition: response.headers.get("Content-Disposition")
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Public requests (no session, no demo fallback): invitations, password reset.
 // Kept here so the no-raw-fetch contract test has a single fetch() owner.
 // ---------------------------------------------------------------------------

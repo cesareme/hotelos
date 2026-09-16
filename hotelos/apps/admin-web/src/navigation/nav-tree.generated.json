@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 263,
+      "csvRows": 279,
       "categories": 9,
-      "items": 64,
-      "tabs": 80,
+      "items": 66,
+      "tabs": 94,
       "devOnly": 21,
       "retired": 72,
       "aliases": 24,
@@ -466,6 +466,21 @@
               "url": "/operaciones/tpv/existencias",
               "roles": [
                 "fnb",
+                "direccion",
+                "finanzas",
+                "admin"
+              ],
+              "modulesAny": [
+                "outlet_pos"
+              ]
+            },
+            {
+              "screenKey": "CashClosureScreen",
+              "label": "Cierre de caja",
+              "url": "/operaciones/tpv/cierre-de-caja",
+              "roles": [
+                "fnb",
+                "recepcion",
                 "direccion",
                 "finanzas",
                 "admin"
@@ -1072,10 +1087,79 @@
           ]
         },
         {
+          "screenKey": "JournalScreen",
+          "label": "Contabilidad",
+          "url": "/finanzas/contabilidad",
+          "baseTab": "Diario",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "LedgerScreen",
+              "label": "Mayor",
+              "url": "/finanzas/contabilidad/mayor",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "ChartOfAccountsScreen",
+              "label": "Plan de cuentas",
+              "url": "/finanzas/contabilidad/plan-de-cuentas",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "AccountingSettingsScreen",
+              "label": "Ajustes",
+              "url": "/finanzas/contabilidad/ajustes",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "YearEndCloseScreen",
+              "label": "Cierre de ejercicio",
+              "url": "/finanzas/contabilidad/cierre-ejercicio",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "GestoriaExportScreen",
+              "label": "Exportar a gestoría",
+              "url": "/finanzas/contabilidad/exportar-gestoria",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
           "screenKey": "TrialBalanceScreen",
           "label": "Estados contables",
           "url": "/finanzas/estados-contables",
-          "baseTab": "Balance de comprobación",
+          "baseTab": "Sumas y saldos",
           "roles": [
             "finanzas",
             "direccion",
@@ -1095,6 +1179,17 @@
               "modulesAny": []
             },
             {
+              "screenKey": "ProfitAndLossScreen",
+              "label": "Pérdidas y ganancias",
+              "url": "/finanzas/estados-contables/perdidas-y-ganancias",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
               "screenKey": "CashFlowScreen",
               "label": "Flujos de efectivo",
               "url": "/finanzas/estados-contables/flujos",
@@ -1106,9 +1201,67 @@
               "modulesAny": []
             },
             {
-              "screenKey": "YearEndCloseScreen",
-              "label": "Cierre de ejercicio",
-              "url": "/finanzas/estados-contables/cierre-ejercicio",
+              "screenKey": "AnnualAccountsScreen",
+              "label": "Cuentas anuales",
+              "url": "/finanzas/estados-contables/cuentas-anuales",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "UsaliScreen",
+              "label": "USALI",
+              "url": "/finanzas/estados-contables/usali",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "SupplierBillsScreen",
+          "label": "Proveedores y gastos",
+          "url": "/finanzas/proveedores",
+          "baseTab": "Facturas recibidas",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "ExpensesScreen",
+              "label": "Gastos",
+              "url": "/finanzas/proveedores/gastos",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "SuppliersScreen",
+              "label": "Proveedores",
+              "url": "/finanzas/proveedores/directorio",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "FixedAssetsScreen",
+              "label": "Inmovilizado",
+              "url": "/finanzas/proveedores/inmovilizado",
               "roles": [
                 "finanzas",
                 "direccion",
@@ -1230,6 +1383,28 @@
           "modulesAny": [],
           "tabs": [
             {
+              "screenKey": "Modelo390Screen",
+              "label": "Modelo 390",
+              "url": "/cumplimiento/modelos-aeat/390",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "Modelo347Screen",
+              "label": "Modelo 347",
+              "url": "/cumplimiento/modelos-aeat/347",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
               "screenKey": "Modelo111Screen",
               "label": "Modelo 111",
               "url": "/cumplimiento/modelos-aeat/111",
@@ -1263,9 +1438,20 @@
               "modulesAny": []
             },
             {
-              "screenKey": "Modelo390Screen",
-              "label": "Modelo 390",
-              "url": "/cumplimiento/modelos-aeat/390",
+              "screenKey": "VatBooksScreen",
+              "label": "Libros de IVA",
+              "url": "/cumplimiento/modelos-aeat/libros-iva",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "VatSettlementScreen",
+              "label": "Liquidación de IVA",
+              "url": "/cumplimiento/modelos-aeat/liquidacion-iva",
               "roles": [
                 "finanzas",
                 "direccion",
@@ -2243,7 +2429,7 @@
     },
     {
       "from": "/backoffice/finance/year-end-close",
-      "to": "/finanzas/estados-contables/cierre-ejercicio"
+      "to": "/finanzas/contabilidad/cierre-ejercicio"
     },
     {
       "from": "/backoffice/fiscal",

@@ -7,7 +7,9 @@
 //   Esc and overlay click cancel (never while busy) · initial focus on CANCEL
 //   for destructive dialogs (Enter must not discard by accident) and on
 //   CONFIRM otherwise · `onConfirm` may return a promise: the confirm button
-//   spins and the cancel button is disabled until it settles.
+//   spins and the cancel button is disabled until it settles · `confirmDisabled`
+//   keeps Confirm disabled while a prompt's field is invalid (Cancel and Esc
+//   still work; the initial focus falls back to Cancel).
 //
 // Hooks for the css lot: overlay `c22-dialog-layer`, card `c22-dialog` +
 // data-size/tone, parts `c22-dialog__title/__description/__body/__actions`
@@ -32,6 +34,8 @@ export interface CocoaDialogProps {
   onConfirm: () => void | Promise<void>;
   /** External busy flag (the caller awaits its own request). */
   busy?: boolean;
+  /** Keeps Confirm disabled (a prompt whose field is still invalid); Cancel, Esc and the overlay keep working. */
+  confirmDisabled?: boolean;
   /** Extra content between the description and the buttons (lists, notes). */
   children?: ReactNode;
   size?: CocoaDialogSize;
@@ -59,6 +63,7 @@ export function CocoaDialog({
   cancelLabel = "Cancelar",
   onConfirm,
   busy = false,
+  confirmDisabled = false,
   children,
   size = "sm",
   hideCancel = false,
@@ -73,7 +78,8 @@ export function CocoaDialog({
   const isBusy = busy || pending;
   const { mounted, visible } = useMountedTransition(open, EXIT_MS);
 
-  const onKeyDown = useFocusTrap(dialogRef, mounted, () => initialFocus?.() ?? (dialogInitialFocus(tone, hideCancel) === "cancel" ? cancelRef.current : confirmRef.current));
+  // A disabled Confirm cannot take the focus: fall back to Cancel (or the dialog itself).
+  const onKeyDown = useFocusTrap(dialogRef, mounted, () => initialFocus?.() ?? (dialogInitialFocus(tone, hideCancel) === "cancel" || confirmDisabled ? cancelRef.current : confirmRef.current));
   const close = useCallback(() => {
     if (!isBusy) onClose();
   }, [isBusy, onClose]);
@@ -81,13 +87,13 @@ export function CocoaDialog({
   useScrollLock(mounted);
 
   const handleConfirm = useCallback(() => {
-    if (isBusy) return;
+    if (isBusy || confirmDisabled) return;
     const result = onConfirm();
     if (result && typeof (result as Promise<void>).then === "function") {
       setPending(true);
       (result as Promise<void>).finally(() => setPending(false));
     }
-  }, [isBusy, onConfirm]);
+  }, [isBusy, confirmDisabled, onConfirm]);
 
   if (!mounted || typeof document === "undefined") return null;
 
@@ -170,7 +176,7 @@ export function CocoaDialog({
               {cancelLabel}
             </CocoaButton>
           )}
-          <CocoaButton ref={confirmRef} variant="filled" tone={tone === "destructive" ? "destructive" : "accent"} onClick={handleConfirm} loading={isBusy}>
+          <CocoaButton ref={confirmRef} variant="filled" tone={tone === "destructive" ? "destructive" : "accent"} onClick={handleConfirm} loading={isBusy} disabled={confirmDisabled}>
             {confirmLabel}
           </CocoaButton>
         </div>

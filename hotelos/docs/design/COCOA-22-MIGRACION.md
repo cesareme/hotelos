@@ -24,6 +24,8 @@ Tanda A = olas 1 · 2 · 4 · 9 y sus correcciones `fix:*`; informe de cierre en
 
 Referencia de esfuerzo (§10 de la spec): S ≈ ½ día · M ≈ 1 día · L ≈ 2–3 días · XL ≈ 4–5 días por persona con las primitivas ya disponibles. Suma de §6: **≈ 162,5–187,5 días·persona** para los 153 ficheros pendientes (en la fundación: ≈ 204–233 para 197) (los contenedores y las muertas cuentan ½ día por el trámite; en la práctica son minutos).
 
+**Estado tras la Tanda 6 · Finanzas (2026-09-16, working tree sin commit sobre `31bccc9`; informe `docs/audits/TANDA-6-FINANZAS-FRONT-2026-09-16.md`):** ola 6 completa (lotes 6-A · 6-B · 6-C · 6-D · 6-F, 33 pantallas de Finanzas a 36 puntos), lote 8-B (Modelos AEAT a 0) y el cierre de caja (4-B/2-B) hechos con 11 correcciones de QA; inventario 217 pantallas · 86.883 líneas · **3.833 puntos** (19 ficheros nuevos nacidos Cocoa, 2 muertos retirados) · `NOT_MIGRATED` = 125 = `ALLOWLIST_CEILING` · techos 589 · 419 · 91 · 409 · 402 · 3.223 · `STYLE_BUDGET` 33 entradas · `HEADER_EXEMPT` + `fiscal/ReportErrorCard.tsx` · primitivas nuevas `CocoaFileInput`, `CocoaKpi caption`, `CocoaTable fit/nowrap/showFrom`. Pendientes en §6: **125 ficheros · 51.744 líneas · 3.735 puntos** (olas 3 · 5 · 7 · 8 · 10 · 11). Verificación visual §5 pendiente para toda la tanda (lotes sin navegador).
+
 ---
 
 ## §1 · Cómo se usa este plan (un lote = una persona o un agente)
@@ -270,22 +272,22 @@ Para pantallas donde la paridad visual importa (canon, listas con muchos datos),
 Orden dentro de cada lote: más puntos primero; diálogos/drawers antes que la pantalla que los abre; contenedores al final. Columnas: **Deuda a cero** = recuentos del inventario que deben quedar en 0 (`card` = `.bo-card`, `bo` = otras `.bo-*`, `btn`/`tbl`/`inp` = elementos crudos, `col` = colores literales, `st` = `style={` que debe bajar al presupuesto, `emj` = emoji, `h1` = `<h1>` crudos); **`STYLE_BUDGET`** = entrada a añadir en el contrato al sacar la pantalla de `NOT_MIGRATED` (25 es el valor por defecto y no necesita entrada). Regenerar con `node scripts/cocoa-22-waves.mjs --write`.
 
 <!-- cocoa-22-waves:start -->
-_Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 200 pantallas · 77.083 líneas · 4600 puntos · allowlist `NOT_MIGRATED` = 153 (techo 153) · pendientes: **153 ficheros · 4538 puntos** · migradas: `admin/FnbInventoryScreen.tsx`, `admin/FnbMenuScreen.tsx`, `aiOperations/AiHumanReviewQueueScreen.tsx`, `aiOperations/AiOwnerSummaryScreen.tsx`, `assistant/AssistantChatScreen.tsx`, `auth/AcceptInviteScreen.tsx`, `auth/ChangePasswordScreen.tsx`, `auth/ForgotPasswordScreen.tsx`, `auth/LoginScreen.tsx`, `auth/ResetPasswordScreen.tsx`, `errors/CocoaNotFoundScreen.tsx`, `guests/GuestsListScreen.tsx`, `operations/AnalyticsCenterDashboard.tsx`, `operations/AssetsDashboard.tsx`, `operations/ChannelPerformanceDashboard.tsx`, `operations/EnergyDashboard.tsx`, `operations/FrontDeskActionQueue.tsx`, `operations/FrontDeskDashboard.tsx`, `operations/GeneralManagerScreen.tsx`, `operations/HousekeepingDashboard.tsx`, `operations/HousekeepingMobileScreen.tsx`, `operations/InventoryDashboard.tsx`, `operations/MaintenanceDashboard.tsx`, `operations/MaintenanceMobileScreen.tsx`, `operations/NightAuditScreen.tsx`, `operations/OperationsDirectorScreen.tsx`, `operations/PortfolioDashboard.tsx`, `operations/PosDashboard.tsx`, `operations/ProcurementDashboard.tsx`, `operations/PropertyDetailScreen.tsx`, `operations/QuickCheckInDrawer.tsx`, `operations/QuickCheckOutDrawer.tsx`, `operations/RoomProfitabilityDashboard.tsx`, `operations/SafetyDashboard.tsx`, `operations/ShiftManagerScreen.tsx`, `operations/WorkforceDashboard.tsx`, `owner/OwnerHomeScreen.tsx`, `propertySetup/PropertySetupForms.tsx`, `reports/ReportingCenterScreen.tsx`, `revenue/RevenueExportCenter.tsx`, `tabs/hoy/MiDiaTabs.tsx`, `tabs/informes/CarteraTabs.tsx`, `tabs/informes/CentroInformesTabs.tsx`, `tabs/operaciones/ComprasInventarioTabs.tsx`, `tabs/operaciones/MantenimientoTabs.tsx`, `tabs/operaciones/PisosTabs.tsx`, `tabs/operaciones/PuntoVentaTabs.tsx`._
+_Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 217 pantallas · 86.883 líneas · 3833 puntos · allowlist `NOT_MIGRATED` = 125 (techo 125) · pendientes: **125 ficheros · 3735 puntos** · migradas: `accounting/AccountingSettingsScreen.tsx`, `accounting/ChartOfAccountsScreen.tsx`, `accounting/GestoriaExportScreen.tsx`, `accounting/JournalScreen.tsx`, `accounting/LedgerScreen.tsx`, `admin/FnbInventoryScreen.tsx`, `admin/FnbMenuScreen.tsx`, `admin/FolioRoutingScreen.tsx`, `aiOperations/AiHumanReviewQueueScreen.tsx`, `aiOperations/AiOwnerSummaryScreen.tsx`, `assistant/AssistantChatScreen.tsx`, `auth/AcceptInviteScreen.tsx`, `auth/ChangePasswordScreen.tsx`, `auth/ForgotPasswordScreen.tsx`, `auth/LoginScreen.tsx`, `auth/ResetPasswordScreen.tsx`, `banking/BankingSpainScreen.tsx`, `banking/BankReconciliationScreen.tsx`, `billing/BillingCenterScreen.tsx`, `billing/FolioDetailScreen.tsx`, `commissions/CommissionsScreen.tsx`, `errors/CocoaNotFoundScreen.tsx`, `finance/AnnualAccountsScreen.tsx`, `finance/BalanceSheetScreen.tsx`, `finance/CashFlowScreen.tsx`, `finance/ExchangeRatesScreen.tsx`, `finance/ProfitAndLossScreen.tsx`, `finance/TrialBalanceScreen.tsx`, `finance/UsaliScreen.tsx`, `finance/YearEndCloseScreen.tsx`, `fiscal/FiscalModelReport.tsx`, `fiscal/Modelo111Screen.tsx`, `fiscal/Modelo115Screen.tsx`, `fiscal/Modelo180Screen.tsx`, `fiscal/Modelo303Screen.tsx`, `fiscal/Modelo347Screen.tsx`, `fiscal/Modelo390Screen.tsx`, `fiscal/ReportErrorCard.tsx`, `fiscal/VatBooksScreen.tsx`, `fiscal/VatSettlementScreen.tsx`, `guests/GuestsListScreen.tsx`, `invoicing/InvoiceRectificationsScreen.tsx`, `invoicing/InvoiceRectifyDialog.tsx`, `operations/AnalyticsCenterDashboard.tsx`, `operations/AssetsDashboard.tsx`, `operations/ChannelPerformanceDashboard.tsx`, `operations/EnergyDashboard.tsx`, `operations/FinancePositionDashboard.tsx`, `operations/FrontDeskActionQueue.tsx`, `operations/FrontDeskDashboard.tsx`, `operations/GeneralManagerScreen.tsx`, `operations/HousekeepingDashboard.tsx`, `operations/HousekeepingMobileScreen.tsx`, `operations/InventoryDashboard.tsx`, `operations/MaintenanceDashboard.tsx`, `operations/MaintenanceMobileScreen.tsx`, `operations/NightAuditScreen.tsx`, `operations/OperationsDirectorScreen.tsx`, `operations/PortfolioDashboard.tsx`, `operations/PosDashboard.tsx`, `operations/ProcurementDashboard.tsx`, `operations/PropertyDetailScreen.tsx`, `operations/QuickCheckInDrawer.tsx`, `operations/QuickCheckOutDrawer.tsx`, `operations/RoomProfitabilityDashboard.tsx`, `operations/SafetyDashboard.tsx`, `operations/ShiftManagerScreen.tsx`, `operations/WorkforceDashboard.tsx`, `owner/OwnerHomeScreen.tsx`, `payables/ExpensesScreen.tsx`, `payables/FixedAssetsScreen.tsx`, `payables/SupplierBillsScreen.tsx`, `payables/SuppliersScreen.tsx`, `payroll/PayrollScreen.tsx`, `pos/CashClosureScreen.tsx`, `propertySetup/PropertySetupForms.tsx`, `reports/ReportingCenterScreen.tsx`, `revenue/RevenueExportCenter.tsx`, `tabs/cumplimiento/ModelosAeatTabs.tsx`, `tabs/finanzas/ConciliacionTabs.tsx`, `tabs/finanzas/ContabilidadTabs.tsx`, `tabs/finanzas/EstadosContablesTabs.tsx`, `tabs/finanzas/FacturacionTabs.tsx`, `tabs/finanzas/ProveedoresTabs.tsx`, `tabs/finanzas/TesoreriaTabs.tsx`, `tabs/hoy/MiDiaTabs.tsx`, `tabs/informes/CarteraTabs.tsx`, `tabs/informes/CentroInformesTabs.tsx`, `tabs/operaciones/ComprasInventarioTabs.tsx`, `tabs/operaciones/MantenimientoTabs.tsx`, `tabs/operaciones/PisosTabs.tsx`, `tabs/operaciones/PuntoVentaTabs.tsx`._
 
 | Ola | Alcance | Ficheros | Líneas | Puntos | S · M · L · XL | Esfuerzo | Lotes | Contenedores | Muertas |
 |---|---|---|---|---|---|---|---|---|---|
 | 1 | Público (acceso y errores) | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
 | 2 | Hoy | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
-| 3 | Recepción | 24 | 15.062 | **1008** | 4 · 12 · 8 · 0 | ≈ 30–38 días·persona | 3 | 4 | 1 |
+| 3 | Recepción | 24 | 15.065 | **1007** | 4 · 12 · 8 · 0 | ≈ 30–38 días·persona | 3 | 4 | 1 |
 | 4 | Operaciones | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
 | 5 | Revenue | 15 | 6365 | **380** | 3 · 11 · 0 · 1 | ≈ 16,5–17,5 días·persona | 3 | 2 | 0 |
-| 6 | Finanzas | 21 | 8584 | **618** | 4 · 13 · 3 · 1 | ≈ 25–29 días·persona | 3 | 4 | 2 |
+| 6 | Finanzas | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
 | 7 | Comercial | 18 | 5997 | **591** | 4 · 13 · 0 · 1 | ≈ 19–20 días·persona | 3 | 4 | 0 |
-| 8 | Cumplimiento | 25 | 6975 | **787** | 9 · 11 · 5 · 0 | ≈ 25,5–30,5 días·persona | 3 | 5 | 0 |
+| 8 | Cumplimiento | 18 | 5717 | **602** | 7 · 6 · 5 · 0 | ≈ 19,5–24,5 días·persona | 3 | 4 | 0 |
 | 9 | Informes | 0 | 0 | **0** | 0 · 0 · 0 · 0 | ≈ 0 días·persona | 0 | 0 | 0 |
 | 10 | Configuración | 40 | 12.881 | **1025** | 17 · 20 · 3 · 0 | ≈ 34,5–37,5 días·persona | 4 | 10 | 1 |
-| 11 | Compartido, desarrollo y limpieza | 10 | 5677 | **129** | 6 · 1 · 2 · 1 | ≈ 12–15 días·persona | 1 | 3 | 2 |
-| **Total** | | **153** | **61.541** | **4538** | 47 · 81 · 21 · 4 | ≈ 162,5–187,5 días·persona | 20 | 32 | 6 |
+| 11 | Compartido, desarrollo y limpieza | 10 | 5720 | **130** | 6 · 1 · 2 · 1 | ≈ 12–15 días·persona | 1 | 3 | 2 |
+| **Total** | | **125** | **51.745** | **3735** | 41 · 63 · 18 · 3 | ≈ 131,5–152,5 días·persona | 17 | 27 | 4 |
 
 ### Ola 1 · Público (acceso y errores)
 
@@ -297,15 +299,15 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 200 panta
 
 ### Ola 3 · Recepción
 
-**24 ficheros** · 15.062 líneas · **1008 puntos** · S 4 · M 12 · L 8 · XL 0 · ≈ 30–38 días·persona · 4 contenedores (0 código) · 1 muerta (retirar, no migrar) · ya migradas: `guests/GuestsListScreen.tsx`
+**24 ficheros** · 15.065 líneas · **1007 puntos** · S 4 · M 12 · L 8 · XL 0 · ≈ 30–38 días·persona · 4 contenedores (0 código) · 1 muerta (retirar, no migrar) · ya migradas: `guests/GuestsListScreen.tsx`
 
-#### Lote 3-A · Reservas (workspace, lista, nueva, agente, tablero, cronograma) — 8 ficheros · 273 pts
+#### Lote 3-A · Reservas (workspace, lista, nueva, agente, tablero, cronograma) — 8 ficheros · 272 pts
 
 | # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `timeline/LiveTimelineWorkspace.tsx` | `LiveTimelineWorkspace` · alojada en ReservationWorkspace | `/recepcion/reservas/cronograma` | calendario · Calendario | L · 1126 · **80** | card 1 · bo 28 · btn 9 · inp 2 · col 39 · st 58 · h1 1 | 40 |  |
 | 2 | `operations/RoomRackScreen.tsx` | `RoomRackScreen` · alojada en ReservationWorkspace | `/recepcion/reservas/tablero` | dashboard · DashboardAlojado / DashboardStandalone | L · 589 · **70** | card 4 · bo 25 · btn 12 · inp 2 · col 27 · st 40 · emj 10 · h1 2 | 25 (defecto) |  |
-| 3 | `reservations/ReservationWorkspaceScreen.tsx` | `ReservationDetailWorkspace` · alojada en ReservationWorkspace | `/recepcion/reservas/:id` | workspace · Workspace | L · 1290 · **49** | card 8 · bo 16 · btn 2 · tbl 2 · st 79 · emj 1 | 40 |  |
+| 3 | `reservations/ReservationWorkspaceScreen.tsx` | `ReservationDetailWorkspace` · alojada en ReservationWorkspace | `/recepcion/reservas/:id` | workspace · Workspace | L · 1293 · **48** | card 8 · bo 16 · btn 2 · tbl 2 · st 75 · emj 1 | 40 |  |
 | 4 | `reservations/ReservationAgentScreen.tsx` | `ReservationAgent` · alojada en ReservationCreate | `/recepcion/reservas/nueva/dictar` | formulario · Formulario | M · 345 · **44** | card 6 · bo 31 · btn 7 · inp 11 · st 18 | 15 |  |
 | 5 | `reservations/ReservationCreateScreen.tsx` | `ReservationCreate` · standalone | `/recepcion/reservas/nueva` | asistente · Asistente | L · 1474 · **24** | card 3 · bo 2 · inp 4 · st 63 | 25 (defecto) |  |
 | 6 | `reservations/ReservationsListScreen.tsx` | `ReservationsListScreen` · alojada en ReservationWorkspace | `/recepcion/reservas/lista` | dashboard · DashboardAlojado / DashboardStandalone | M · 571 · **6** | bo 1 · btn 1 · col 7 · st 11 | 25 (defecto) |  |
@@ -340,7 +342,7 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 200 panta
 
 ### Ola 4 · Operaciones
 
-**0 ficheros** · 0 líneas · **0 puntos** · S 0 · M 0 · L 0 · XL 0 · ≈ 0 días·persona · ya migradas: `admin/FnbInventoryScreen.tsx`, `admin/FnbMenuScreen.tsx`, `operations/AssetsDashboard.tsx`, `operations/EnergyDashboard.tsx`, `operations/HousekeepingDashboard.tsx`, `operations/HousekeepingMobileScreen.tsx`, `operations/InventoryDashboard.tsx`, `operations/MaintenanceDashboard.tsx`, `operations/MaintenanceMobileScreen.tsx`, `operations/PosDashboard.tsx`, `operations/ProcurementDashboard.tsx`, `operations/SafetyDashboard.tsx`, `operations/WorkforceDashboard.tsx`, `tabs/operaciones/ComprasInventarioTabs.tsx`, `tabs/operaciones/MantenimientoTabs.tsx`, `tabs/operaciones/PisosTabs.tsx`, `tabs/operaciones/PuntoVentaTabs.tsx`
+**0 ficheros** · 0 líneas · **0 puntos** · S 0 · M 0 · L 0 · XL 0 · ≈ 0 días·persona · ya migradas: `admin/FnbInventoryScreen.tsx`, `admin/FnbMenuScreen.tsx`, `operations/AssetsDashboard.tsx`, `operations/EnergyDashboard.tsx`, `operations/HousekeepingDashboard.tsx`, `operations/HousekeepingMobileScreen.tsx`, `operations/InventoryDashboard.tsx`, `operations/MaintenanceDashboard.tsx`, `operations/MaintenanceMobileScreen.tsx`, `operations/PosDashboard.tsx`, `operations/ProcurementDashboard.tsx`, `operations/SafetyDashboard.tsx`, `operations/WorkforceDashboard.tsx`, `pos/CashClosureScreen.tsx`, `tabs/operaciones/ComprasInventarioTabs.tsx`, `tabs/operaciones/MantenimientoTabs.tsx`, `tabs/operaciones/PisosTabs.tsx`, `tabs/operaciones/PuntoVentaTabs.tsx`
 
 ### Ola 5 · Revenue
 
@@ -378,43 +380,7 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 200 panta
 
 ### Ola 6 · Finanzas
 
-**21 ficheros** · 8584 líneas · **618 puntos** · S 4 · M 13 · L 3 · XL 1 · ≈ 25–29 días·persona · 4 contenedores (0 código) · 2 muertas (retirar, no migrar)
-
-#### Lote 6-A · Facturación (centro, folios, rectificativas, enrutado) — 8 ficheros · 251 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `billing/BillingCenterScreen.tsx` | `BillingCenter` · standalone | `/finanzas/facturacion` | dashboard · DashboardAlojado / DashboardStandalone | XL · 1560 · **71** | card 14 · bo 61 · tbl 1 · inp 2 · st 84 · emj 1 | 25 (defecto) |  |
-| 2 | `admin/FolioRoutingScreen.tsx` | `FolioRouting` · alojada en BillingCenter | `/finanzas/facturacion/enrutamiento` | formulario · Formulario | L · 452 · **60** | card 12 · bo 24 · btn 9 · tbl 3 · inp 8 · st 40 | 15 |  |
-| 3 | `invoicing/InvoiceRectifyDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 301 · **26** | card 6 · bo 19 · btn 3 · inp 5 · st 10 | 15 | diálogo de InvoiceRectificationsScreen (`/finanzas/facturacion/rectificativas`) |
-| 4 | `billing/FolioDetailScreen.tsx` | `FolioDetail` · alojada en BillingCenter | `/finanzas/facturacion/folios/:id` | detalle · Detalle | L · 948 · **21** | card 2 · bo 9 · inp 1 · col 2 · st 44 | 15 |  |
-| 5 | `invoicing/InvoiceRectificationsScreen.tsx` | `InvoiceRectificationsScreen` · alojada en BillingCenter | `/finanzas/facturacion/rectificativas` | otro · PlantillaBase | M · 198 · **21** | card 9 · bo 20 · inp 1 · st 3 · h1 1 | 25 (defecto) |  |
-| 6 | `billing/InvoiceDetailScreen.tsx` | — · sin ruta | — | detalle · Detalle | L · 836 · **26** | card 6 · bo 18 · inp 1 · st 38 | 15 | **MUERTA** — 0 importadores (solo un comentario en billing/invoiceStatus.ts:2); sin clave ni URL |
-| 7 | `billing/SplitFolioDialog.tsx` | — · componente (diálogo/drawer) | — | dialogo · DialogoDrawer | M · 343 · **26** | card 2 · bo 11 · btn 3 · inp 4 · col 8 · st 31 | 15 | **MUERTA** — 0 importadores |
-| 8 | `tabs/finanzas/FacturacionTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 40 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-
-#### Lote 6-B · Tesorería, conciliación, nóminas y comisiones — 8 ficheros · 251 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `banking/BankingSpainScreen.tsx` | `BankingSpain` · alojada en BankReconciliationScreen | `/finanzas/conciliacion/extractos-remesas` | dashboard · DashboardAlojado / DashboardStandalone | M · 346 · **59** | card 15 · bo 14 · btn 7 · tbl 1 · inp 14 · col 1 · st 45 · emj 3 | 25 (defecto) |  |
-| 2 | `payroll/PayrollScreen.tsx` | `PayrollScreen` · standalone | `/finanzas/nominas` | dashboard · DashboardAlojado / DashboardStandalone | M · 744 · **55** | card 10 · bo 8 · btn 13 · tbl 3 · inp 6 · st 52 | 25 (defecto) |  |
-| 3 | `banking/BankReconciliationScreen.tsx` | `BankReconciliationScreen` · standalone | `/finanzas/conciliacion` | dashboard · DashboardAlojado / DashboardStandalone | M · 579 · **46** | card 7 · bo 20 · btn 7 · tbl 1 · inp 8 · col 1 · st 44 · h1 1 | 25 (defecto) |  |
-| 4 | `commissions/CommissionsScreen.tsx` | `CommissionsScreen` · standalone | `/finanzas/comisiones` | dashboard · DashboardAlojado / DashboardStandalone | M · 458 · **35** | card 6 · bo 5 · btn 5 · tbl 3 · inp 3 · st 37 | 25 (defecto) |  |
-| 5 | `operations/FinancePositionDashboard.tsx` | `FinancePositionDashboard` · standalone | `/finanzas/tesoreria` | dashboard · DashboardAlojado / DashboardStandalone | M · 307 · **35** | card 11 · bo 20 · btn 1 · tbl 4 · st 5 · h1 1 | 25 (defecto) |  |
-| 6 | `finance/CashFlowScreen.tsx` | `CashFlowScreen` · alojada en TrialBalanceScreen | `/finanzas/estados-contables/flujos` | dashboard · DashboardAlojado / DashboardStandalone | M · 231 · **21** | card 9 · bo 9 · btn 1 · inp 2 · st 17 · h1 1 | 25 (defecto) |  |
-| 7 | `tabs/finanzas/ConciliacionTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 24 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-| 8 | `tabs/finanzas/TesoreriaTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 23 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-
-#### Lote 6-C · Estados contables y cierre — 5 ficheros · 116 pts
-
-| # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
-|---|---|---|---|---|---|---|---|---|
-| 1 | `finance/YearEndCloseScreen.tsx` | `YearEndCloseScreen` · alojada en TrialBalanceScreen | `/finanzas/estados-contables/cierre-ejercicio` | dashboard · DashboardAlojado / DashboardStandalone | M · 440 · **44** | card 9 · bo 9 · btn 8 · tbl 2 · inp 3 · col 5 · st 47 · h1 1 | 25 (defecto) |  |
-| 2 | `finance/ExchangeRatesScreen.tsx` | `ExchangeRatesScreen` · alojada en FinancePositionDashboard | `/finanzas/tesoreria/tipos-de-cambio` | formulario · Formulario | M · 283 · **28** | card 7 · bo 8 · btn 2 · tbl 1 · inp 8 · st 14 · h1 1 | 15 |  |
-| 3 | `finance/BalanceSheetScreen.tsx` | `BalanceSheetScreen` · alojada en TrialBalanceScreen | `/finanzas/estados-contables/balance` | dialogo · DialogoDrawer | M · 249 · **23** | card 6 · bo 10 · btn 2 · tbl 1 · inp 1 · st 19 · emj 2 · h1 1 | 15 |  |
-| 4 | `finance/TrialBalanceScreen.tsx` | `TrialBalanceScreen` · standalone | `/finanzas/estados-contables` | dashboard · DashboardAlojado / DashboardStandalone | M · 195 · **21** | card 5 · bo 8 · btn 1 · tbl 1 · inp 3 · st 16 · emj 2 · h1 1 | 25 (defecto) |  |
-| 5 | `tabs/finanzas/EstadosContablesTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 27 · **0** | — | — | solo salir de `NOT_MIGRATED` |
+**0 ficheros** · 0 líneas · **0 puntos** · S 0 · M 0 · L 0 · XL 0 · ≈ 0 días·persona · ya migradas: `accounting/AccountingSettingsScreen.tsx`, `accounting/ChartOfAccountsScreen.tsx`, `accounting/GestoriaExportScreen.tsx`, `accounting/JournalScreen.tsx`, `accounting/LedgerScreen.tsx`, `admin/FolioRoutingScreen.tsx`, `banking/BankingSpainScreen.tsx`, `banking/BankReconciliationScreen.tsx`, `billing/BillingCenterScreen.tsx`, `billing/FolioDetailScreen.tsx`, `commissions/CommissionsScreen.tsx`, `finance/AnnualAccountsScreen.tsx`, `finance/BalanceSheetScreen.tsx`, `finance/CashFlowScreen.tsx`, `finance/ExchangeRatesScreen.tsx`, `finance/ProfitAndLossScreen.tsx`, `finance/TrialBalanceScreen.tsx`, `finance/UsaliScreen.tsx`, `finance/YearEndCloseScreen.tsx`, `invoicing/InvoiceRectificationsScreen.tsx`, `invoicing/InvoiceRectifyDialog.tsx`, `operations/FinancePositionDashboard.tsx`, `payables/ExpensesScreen.tsx`, `payables/FixedAssetsScreen.tsx`, `payables/SupplierBillsScreen.tsx`, `payables/SuppliersScreen.tsx`, `payroll/PayrollScreen.tsx`, `tabs/finanzas/ConciliacionTabs.tsx`, `tabs/finanzas/ContabilidadTabs.tsx`, `tabs/finanzas/EstadosContablesTabs.tsx`, `tabs/finanzas/FacturacionTabs.tsx`, `tabs/finanzas/ProveedoresTabs.tsx`, `tabs/finanzas/TesoreriaTabs.tsx`
 
 ### Ola 7 · Comercial
 
@@ -455,7 +421,7 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 200 panta
 
 ### Ola 8 · Cumplimiento
 
-**25 ficheros** · 6975 líneas · **787 puntos** · S 9 · M 11 · L 5 · XL 0 · ≈ 25,5–30,5 días·persona · 5 contenedores (0 código)
+**18 ficheros** · 5717 líneas · **602 puntos** · S 7 · M 6 · L 5 · XL 0 · ≈ 19,5–24,5 días·persona · 4 contenedores (0 código) · ya migradas: `fiscal/FiscalModelReport.tsx`, `fiscal/Modelo111Screen.tsx`, `fiscal/Modelo115Screen.tsx`, `fiscal/Modelo180Screen.tsx`, `fiscal/Modelo303Screen.tsx`, `fiscal/Modelo347Screen.tsx`, `fiscal/Modelo390Screen.tsx`, `fiscal/ReportErrorCard.tsx`, `fiscal/VatBooksScreen.tsx`, `fiscal/VatSettlementScreen.tsx`, `tabs/cumplimiento/ModelosAeatTabs.tsx`
 
 #### Lote 8-A · Registro de viajeros, GDPR y centro de cumplimiento — 7 ficheros · 324 pts
 
@@ -469,22 +435,15 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 200 panta
 | 6 | `compliance/AuthorityRoutingSettingsScreen.tsx` | `AuthorityRoutingSettings` · alojada en GuestRegisterSettings | `/cumplimiento/registro-viajeros/autoridades` | formulario · Formulario | S · 147 · **7** | card 3 · bo 5 · st 5 | 15 |  |
 | 7 | `tabs/cumplimiento/RegistroViajerosTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 32 · **0** | — | — | solo salir de `NOT_MIGRATED` |
 
-#### Lote 8-B · VeriFactu, TicketBAI y modelos AEAT — 12 ficheros · 314 pts
+#### Lote 8-B · VeriFactu, TicketBAI y modelos AEAT — 5 ficheros · 129 pts
 
 | # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `fiscal/FiscalDashboard.tsx` | `FiscalDashboard` · standalone | `/cumplimiento/verifactu` | dashboard · DashboardAlojado / DashboardStandalone | L · 315 · **68** | card 16 · bo 51 · btn 12 · tbl 1 · st 24 · h1 1 | 25 (defecto) |  |
-| 2 | `fiscal/Modelo180Screen.tsx` | `Modelo180Screen` · alojada en Modelo303Screen | `/cumplimiento/modelos-aeat/180` | dashboard · DashboardAlojado / DashboardStandalone | M · 266 · **45** | card 9 · bo 13 · btn 1 · tbl 3 · inp 2 · st 44 · emj 2 · h1 1 | 25 (defecto) |  |
-| 3 | `fiscal/Modelo390Screen.tsx` | `Modelo390Screen` · alojada en Modelo303Screen | `/cumplimiento/modelos-aeat/390` | dashboard · DashboardAlojado / DashboardStandalone | M · 248 · **44** | card 9 · bo 12 · btn 1 · tbl 3 · inp 2 · st 42 · emj 2 · h1 1 | 25 (defecto) |  |
-| 4 | `fiscal/Modelo111Screen.tsx` | `Modelo111Screen` · alojada en Modelo303Screen | `/cumplimiento/modelos-aeat/111` | dashboard · DashboardAlojado / DashboardStandalone | M · 246 · **30** | card 6 · bo 15 · btn 1 · tbl 1 · inp 3 · st 19 · h1 1 | 25 (defecto) |  |
-| 5 | `fiscal/Modelo303Screen.tsx` | `Modelo303Screen` · standalone | `/cumplimiento/modelos-aeat` | dashboard · DashboardAlojado / DashboardStandalone | M · 185 · **29** | card 6 · bo 15 · btn 1 · tbl 1 · inp 3 · st 15 · h1 1 | 25 (defecto) |  |
-| 6 | `fiscal/Modelo115Screen.tsx` | `Modelo115Screen` · alojada en Modelo303Screen | `/cumplimiento/modelos-aeat/115` | dashboard · DashboardAlojado / DashboardStandalone | M · 223 · **28** | card 6 · bo 11 · btn 1 · tbl 1 · inp 3 · st 19 · h1 1 | 25 (defecto) |  |
-| 7 | `fiscal/TbaiForalScreen.tsx` | `TbaiForal` · alojada en FiscalDashboard | `/cumplimiento/verifactu/ticketbai` | dashboard · DashboardAlojado / DashboardStandalone | M · 192 · **28** | card 6 · bo 9 · btn 3 · tbl 1 · st 22 · emj 2 | 25 (defecto) |  |
-| 8 | `fiscal/FiscalSubmissionsCenter.tsx` | `FiscalSubmissionsCenter` · standalone | `/cumplimiento/envios` | dashboard · DashboardAlojado / DashboardStandalone | M · 295 · **21** | card 6 · bo 3 · btn 3 · tbl 1 · col 2 · st 27 | 25 (defecto) |  |
-| 9 | `fiscal/ComplianceInbox.tsx` | — · standalone | `/cumplimiento/bandeja` | workspace · Workspace | S · 275 · **12** | card 2 · bo 5 · btn 4 · st 13 | 40 | App.tsx:158 la envuelve en `ComplianceInboxWired` (clave `ComplianceInbox`) |
-| 10 | `fiscal/ReportErrorCard.tsx` | — · componente (tarjeta) | — | lista · ListaTabla | S · 59 · **9** | card 1 · bo 1 · btn 2 · st 2 | 15 | tarjeta de Modelo111/115/180/303/390 (`/cumplimiento/modelos-aeat/*`) |
-| 11 | `tabs/cumplimiento/ModelosAeatTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 31 · **0** | — | — | solo salir de `NOT_MIGRATED` |
-| 12 | `tabs/cumplimiento/VerifactuTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 27 · **0** | — | — | solo salir de `NOT_MIGRATED` |
+| 2 | `fiscal/TbaiForalScreen.tsx` | `TbaiForal` · alojada en FiscalDashboard | `/cumplimiento/verifactu/ticketbai` | dashboard · DashboardAlojado / DashboardStandalone | M · 192 · **28** | card 6 · bo 9 · btn 3 · tbl 1 · st 22 · emj 2 | 25 (defecto) |  |
+| 3 | `fiscal/FiscalSubmissionsCenter.tsx` | `FiscalSubmissionsCenter` · standalone | `/cumplimiento/envios` | dashboard · DashboardAlojado / DashboardStandalone | M · 295 · **21** | card 6 · bo 3 · btn 3 · tbl 1 · col 2 · st 27 | 25 (defecto) |  |
+| 4 | `fiscal/ComplianceInbox.tsx` | — · standalone | `/cumplimiento/bandeja` | workspace · Workspace | S · 275 · **12** | card 2 · bo 5 · btn 4 · st 13 | 40 | App.tsx:158 la envuelve en `ComplianceInboxWired` (clave `ComplianceInbox`) |
+| 5 | `tabs/cumplimiento/VerifactuTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 27 · **0** | — | — | solo salir de `NOT_MIGRATED` |
 
 #### Lote 8-C · Impuestos y sostenibilidad — 6 ficheros · 149 pts
 
@@ -567,22 +526,22 @@ _Generado por `node scripts/cocoa-22-waves.mjs --write` · inventario: 200 panta
 
 ### Ola 11 · Compartido, desarrollo y limpieza
 
-**10 ficheros** · 5677 líneas · **129 puntos** · S 6 · M 1 · L 2 · XL 1 · ≈ 12–15 días·persona · 3 contenedores (0 código) · 2 muertas (retirar, no migrar)
+**10 ficheros** · 5720 líneas · **130 puntos** · S 6 · M 1 · L 2 · XL 1 · ≈ 12–15 días·persona · 3 contenedores (0 código) · 2 muertas (retirar, no migrar)
 
-#### Lote 11-A · Compartido y desarrollo — 10 ficheros · 129 pts
+#### Lote 11-A · Compartido y desarrollo — 10 ficheros · 130 pts
 
 | # | Fichero (`apps/admin-web/src/screens/`) | Clave(s) · modo | URL | Arquetipo · plantilla §4.3 | Tam. · líneas · pts | Deuda a cero | `STYLE_BUDGET` | Notas |
 |---|---|---|---|---|---|---|---|---|
 | 1 | `onboarding/OnboardingInteractive.tsx` | — · sub-vista | — | asistente · Asistente | L · 677 · **60** | card 19 · bo 36 · btn 8 · tbl 1 · inp 3 · st 17 · h1 2 | 25 (defecto) | solo lo monta OnboardingScreens (dev-only, `/desarrollo/migracion`) |
 | 2 | `ModuleSettingsPlaceholder.tsx` | — · fábrica | — | formulario · Formulario | S · 179 · **16** | card 3 · bo 10 · btn 3 · st 18 · h1 1 | 15 | `makeModulePlaceholder` (App.tsx; 16 placeholders, presupuesto 20 de check-discoverability) |
-| 3 | `dev/StyleGuideScreen.tsx` | `StyleGuideScreen` · dev-only · alojada en AuditLogViewer | `/desarrollo/guia-estilo` | asistente · Asistente | XL · 2467 · **10** | st 39 | 25 (defecto) | ya en `CocoaPage` (37 `style={` de muestras): `STYLE_BUDGET` 40 y salir de `NOT_MIGRATED` en cuanto el integrador lo decida (puede ir con la ola 1) |
+| 3 | `dev/StyleGuideScreen.tsx` | `StyleGuideScreen` · dev-only · alojada en AuditLogViewer | `/desarrollo/guia-estilo` | asistente · Asistente | XL · 2478 · **11** | inp 1 · st 39 | 25 (defecto) | ya en `CocoaPage` (37 `style={` de muestras): `STYLE_BUDGET` 40 y salir de `NOT_MIGRATED` en cuanto el integrador lo decida (puede ir con la ola 1) |
 | 4 | `ScreenScaffold.tsx` | — · sub-vista | — | otro · PlantillaBase | S · 132 · **9** | card 4 · bo 6 · btn 1 · st 2 | 25 (defecto) | solo lo usa OnboardingScreens |
 | 5 | `onboarding/OnboardingScreens.tsx` | `AIExtractionReview`, `FileUploadAndClassification`, `ImportReview`, `MigrationBatches`, `OnboardingProjects` · dev-only · alojada en OnboardingProjects (+3 rutas) | `/desarrollo/migracion/revision` · `/desarrollo/migracion/ficheros` · `/desarrollo/migracion/lotes` · `/desarrollo/migracion` | asistente · Asistente | S · 112 · **5** | — | 25 (defecto) |  |
 | 6 | `developer/CocoaShowcaseScreen.tsx` | — · sin ruta | — | asistente · Asistente | L · 1076 · **16** | inp 1 · col 1 · st 56 | 25 (defecto) | **MUERTA** — 0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:36 (borrar la línea) |
 | 7 | `preview/CocoaGalleryScreen.tsx` | — · sin ruta | — | asistente · Asistente | M · 748 · **12** | col 1 · st 22 · h1 1 | 25 (defecto) | **MUERTA** — 0 importadores ni ruta; exención en tests/admin-web-spanish-copy-contract.test.mjs:37 (borrar la línea) |
 | 8 | `tabs/tab-helpers.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 140 · **1** | st 4 · h1 1 | — | pinta el `<h1>` alojado (`HostedHead`): exención de la regla 8 o traslado a `components/` antes de salir de `NOT_MIGRATED` |
-| 9 | `tabs/NavItemTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 85 · **0** | st 1 | — | ya Cocoa (`CocoaPageHeader` + `CocoaRouteTabs`); solo salir de `NOT_MIGRATED` |
-| 10 | `tabs/TabHost.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 61 · **0** | h1 1 | — | pinta el `<h1>` alojado: misma exención de la regla 8 que `tab-helpers.tsx` |
+| 9 | `tabs/NavItemTabs.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 116 · **0** | st 1 | — | ya Cocoa (`CocoaPageHeader` + `CocoaRouteTabs`); solo salir de `NOT_MIGRATED` |
+| 10 | `tabs/TabHost.tsx` | — · contenedor de pestañas | — | contenedor · — (NavItemTabs) | S · 62 · **0** | h1 1 | — | pinta el `<h1>` alojado: misma exención de la regla 8 que `tab-helpers.tsx` |
 <!-- cocoa-22-waves:end -->
 
 

@@ -10,6 +10,7 @@ import { derivePaymentStatus, type InvoicePaymentStatus } from "../invoicing/inv
 import { getLedgerPort } from "../invoicing/ledger.port.js";
 import { CUSTOMER_ACCOUNT_CODE } from "../invoicing/invoice-snapshot.js";
 import { normalizePaymentMethod } from "../payments/payment-method.js";
+import { PRIMARY_FOLIO_LABEL } from "./folio-labels.js";
 import { PAYMENT_METHOD_ACCOUNT_CODES, PAYMENT_METHOD_LABELS_ES, type PaymentMethodCode } from "../../../../../packages/shared/src/payments-types.js";
 
 // Transitional dual-write helpers; see pms.service.ts for context.
@@ -371,7 +372,7 @@ export async function ensurePrimaryFolio(input: {
         guestId: primaryGuest?.guestId ?? null,
         status: "open",
         currency: reservation.currency ?? "EUR",
-        label: "guest",
+        label: PRIMARY_FOLIO_LABEL,
         isPrimary: true
       }
     });

@@ -30,6 +30,7 @@ import {
   CocoaDialog,
   CocoaDrawer,
   CocoaField,
+  CocoaFileInput,
   CocoaFormRow,
   CocoaFormSection,
   CocoaGrid,
@@ -902,6 +903,7 @@ const FIELDS_SAMPLE = `<CocoaField label="Nombre comercial" required help="Como 
 <CocoaField label="Inicio del turno"><CocoaDatePicker value={start} onChange={setStart} withTime /></CocoaField>   // datetime-local («YYYY-MM-DDTHH:mm»)
 <CocoaField label="Noches mínimas"><CocoaStepper value={minNights} onChange={setMinNights} min={1} max={14} /></CocoaField>
 <CocoaField label="Categoría"><CocoaInput value={category} onChange={setCategory} suggestions={CATEGORIES} /></CocoaField>   // datalist nativo, texto libre permitido
+<CocoaField label="Extracto"><CocoaFileInput accept=".n43,.txt" maxBytes={512 * 1024} fileName={fileName} onPick={loadFile} onReject={(m) => showToast(m, { variant: "error" })} /></CocoaField>   // el único <input type="file"> vive en la primitiva
 <span className="cocoa-caption">Categorías habituales</span>   // etiqueta de grupo sin control
 <a className="cocoa-link" href={url} download>Descargar el informe</a>   // enlace en línea con tinta AA y anillo de foco`;
 
@@ -928,8 +930,10 @@ function FieldsSection() {
   const [small, setSmall] = useState(false);
   const [query, setQuery] = useState("");
   const [view, setView] = useState("lista");
+  const [fileName, setFileName] = useState<string | null>(null);
+  const { showToast } = useToast();
   return (
-    <CocoaSection id="guia-campos" headingLevel={2} title="Campos · CocoaField + controles" meta="Input, textarea, select, switch, fecha (y hora), stepper, búsqueda, segmented y sugerencias; 16 px en táctil">
+    <CocoaSection id="guia-campos" headingLevel={2} title="Campos · CocoaField + controles" meta="Input, textarea, select, switch, fecha (y hora), stepper, fichero, búsqueda, segmented y sugerencias; 16 px en táctil">
       <div className="cocoa-stack" data-gap="4">
         <CocoaFormRow columns={3} min={220}>
           <CocoaField label="Texto" help="Ayuda en callout secondary">
@@ -982,6 +986,9 @@ function FieldsSection() {
           </CocoaField>
           <CocoaField inline label="Interruptor deshabilitado">
             <CocoaSwitch checked onChange={() => undefined} disabled />
+          </CocoaField>
+          <CocoaField label="Fichero" hint="CocoaFileInput" help="≤ 512 KB · .csv, .txt o .pdf; fuera de eso, onReject">
+            <CocoaFileInput accept=".csv,.txt,.pdf,text/plain,text/csv,application/pdf" maxBytes={512 * 1024} fileName={fileName} onPick={(file) => setFileName(file.name)} onReject={(message) => showToast(message, { variant: "error" })} />
           </CocoaField>
           <CocoaField label="Texto largo" fullWidth>
             <CocoaInput value={notes} onChange={setNotes} multiline rows={3} placeholder="Notas internas (textarea = CocoaInput multiline)" />
@@ -1219,6 +1226,7 @@ const KPI_SAMPLE = `<CocoaKpiStrip stagger>
   <CocoaKpi label="Cancelaciones" value={number(12)} delta={-8} deltaUnit="%" polarity="negative-good" status="ok" />
   <CocoaKpi label="Comp-set" value="—" degraded />                               // «—» con tooltip, nunca un 0 verde
   <CocoaKpi label="Pendientes" value={number(4)} size="compact" icon={<ClockIcon size={14} />} onClick={openQueue} />
+  <CocoaKpi label="Pendientes de cobro" value={money(3180)} caption="4 facturas" status="warning" />   // caption = contexto bajo la cifra (no es unidad)
 </CocoaKpiStrip>
 <CocoaDelta delta={12} unit="%" label="vs ayer" polarity="positive-good" />
 <CocoaStat label="Ingresos" value={money(48210, { decimals: 0 })} hint="Mes en curso" tone="success" />`;
@@ -1241,6 +1249,7 @@ function KpiSection() {
           <CocoaKpi label="Llegadas hoy" value={number(23)} size="compact" delta={0} deltaUnit="%" deltaLabel="vs ayer" polarity="neutral" />
           <CocoaKpi label="Sin estado" value={percent(12.5)} size="compact" sparkline={SPARK_FLAT} />
           <CocoaKpi label="Cifra en tono" value={money(1240)} size="compact" tone="danger" delta={18} deltaUnit="%" polarity="negative-good" />
+          <CocoaKpi label="Pendientes de cobro" value={money(3180)} caption="4 facturas" size="compact" polarity="negative-good" status="warning" />
         </CocoaKpiStrip>
         <div className="cocoa-row" data-gap="4">
           <Caption minWidth={72}>delta</Caption>
@@ -1510,9 +1519,10 @@ function GridSection() {
 const TABLE_SAMPLE = `const columns: CocoaTableColumn<Row>[] = [
   { key: "id", label: "Reserva", sortable: true },
   { key: "guest", label: "Huésped", sortable: true },
-  { key: "arrival", label: "Llegada", render: (r) => date(r.arrival, "short"), hideOnNarrow: true },
-  { key: "amount", label: "Importe", align: "right", render: (r) => money(r.amount), footer: money(total) },
-  { key: "status", label: "Estado", render: (r) => <CocoaBadge tone={STATUS_TONE[r.status]}>{r.status}</CocoaBadge> }
+  { key: "arrival", label: "Llegada", fit: true, render: (r) => date(r.arrival, "short"), hideOnNarrow: true },   // fit: la columna se ajusta a su contenido en una línea
+  { key: "amount", label: "Importe", align: "right", render: (r) => money(r.amount), footer: money(total) },      // align="right" nunca parte la cifra
+  { key: "channel", label: "Canal", showFrom: "desktop" },                                                          // secundaria: solo ≥ 1200 px
+  { key: "status", label: "Estado", fit: true, render: (r) => <CocoaBadge tone={STATUS_TONE[r.status]}>{r.status}</CocoaBadge> }
 ];
 <CocoaSection title="Reservas" padding="none">
   <CocoaTable columns={columns} rows={rows} rowKey="id" sortBy={sort} onSort={setSort}
@@ -1543,10 +1553,10 @@ function TablesSection() {
   const columns: CocoaTableColumn<ReservationRow>[] = [
     { key: "id", label: "Reserva", sortable: true, minWidth: 110, render: (row) => <Mono>{row.id}</Mono> },
     { key: "guest", label: "Huésped", sortable: true, minWidth: 140 },
-    { key: "arrival", label: "Llegada", sortable: true, hideOnNarrow: true, render: (row) => date(row.arrival, "short") },
+    { key: "arrival", label: "Llegada", sortable: true, fit: true, hideOnNarrow: true, render: (row) => date(row.arrival, "short") },
     { key: "nights", label: "Noches", align: "right", sortable: true, render: (row) => number(row.nights), footer: number(RESERVATIONS.reduce((sum, row) => sum + row.nights, 0)) },
     { key: "amount", label: "Importe", align: "right", sortable: true, render: (row) => money(row.amount), footer: money(total) },
-    { key: "channel", label: "Canal", hideOnNarrow: true },
+    { key: "channel", label: "Canal", showFrom: "desktop" },
     {
       key: "status",
       label: "Estado",
@@ -1741,8 +1751,8 @@ const OVERLAY_SAMPLE = `<CocoaDrawer open={open} onClose={close} title="Reserva 
   footer={<><CocoaButton variant="bordered" tone="neutral" onClick={close}>Cerrar</CocoaButton><CocoaButton ref={checkInRef} onClick={checkIn}>Hacer check-in</CocoaButton></>}>…</CocoaDrawer>
 <CocoaDialog open={ask} onClose={cancel} tone="destructive" title="¿Eliminar el plan tarifario?"
   description="Se retirará de los canales conectados. Esta acción no se puede deshacer." confirmLabel="Eliminar" onConfirm={remove} busy={removing} />
-<CocoaDialog open={noteOpen} onClose={closeNote} title="Añadir nota" confirmLabel="Guardar nota" onConfirm={saveNote}
-  initialFocus={() => document.getElementById(noteId)}>   // prompt de un campo: el foco entra en el campo, no en Confirmar
+<CocoaDialog open={noteOpen} onClose={closeNote} title="Añadir nota" confirmLabel="Guardar nota" onConfirm={saveNote} confirmDisabled={!note.trim()}
+  initialFocus={() => document.getElementById(noteId)}>   // prompt de un campo: el foco entra en el campo, no en Confirmar; Confirmar espera al campo
   <CocoaField label="Nota"><CocoaInput id={noteId} value={note} onChange={setNote} multiline rows={3} /></CocoaField>
 </CocoaDialog>
 <CocoaSheet open={preview} onClose={closePreview} title="Vista previa de la importación" size="lg">…</CocoaSheet>
@@ -1885,6 +1895,7 @@ function OverlaysSection() {
       <CocoaDialog
         open={dialogOpen}
         onClose={() => setDialogOpen(false)}
+        confirmDisabled={dialogTone === "prompt" && note.trim() === ""}
         initialFocus={dialogTone === "prompt" ? () => document.getElementById(noteInputId) : undefined}
         tone={dialogTone === "destructive" ? "destructive" : "primary"}
         hideCancel={dialogTone === "ack"}
@@ -1895,7 +1906,7 @@ function OverlaysSection() {
             : dialogTone === "ack"
               ? "Recibirás un aviso cuando el fichero esté listo."
               : dialogTone === "prompt"
-                ? "La nota se guarda en la orden de trabajo. El foco entra en el campo (initialFocus), no en «Guardar nota»."
+                ? "La nota se guarda en la orden de trabajo. El foco entra en el campo (initialFocus), no en «Guardar nota», que sigue deshabilitado (confirmDisabled) hasta que escribas algo."
                 : "Los precios nuevos se publican en todos los canales conectados."
         }
         confirmLabel={dialogTone === "destructive" ? "Eliminar" : dialogTone === "ack" ? "Entendido" : dialogTone === "prompt" ? "Guardar nota" : "Aplicar"}

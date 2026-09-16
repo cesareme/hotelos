@@ -1,248 +1,317 @@
-import { useTabHost } from "../tabs/TabHost";
-import { getActivePropertyId } from "../../services/activeProperty";
-import { useMemo, useState } from "react";
-import { useApiData } from "../../hooks/useApiData";
-import { money } from "../../lib/format";
+// Balance de situación — Finanzas › Estados contables › Balance
+// (/finanzas/estados-contables/balance, hosted in EstadosContablesTabs).
+// Cocoa 22 · lote 6-C (migrated from the legacy `.bo-*` screen).
+//
+// Consumes the ledger statement GET /accounting/annual-accounts/balance
+// ?from&to[&propertyId][&comparative=1] (PGC Pymes model computed from the
+// journal with the single reading rule; replaces the legacy
+// /accounting/reports/balance-sheet). Toolbar: preset or free inclusive
+// period, propiedad, comparative. CocoaKpiStrip (activo · patrimonio neto ·
+// pasivo · cuadre · resultado) → CocoaGrid 6/6 with the two sides of the
+// balance as CocoaTable (a row opens the drawer with its PGC accounts) →
+// warnings and the unregularised prior result as callouts. «Descargar»
+// fetches pdf / xlsx / csv from the API.
 
-const PROPERTY_ID = getActivePropertyId();
+import { useEffect, useMemo, useState } from "react";
+import type { PgcBalanceSheet, StatementAccountAmount, StatementLine } from "@hotelos/shared";
+import { downloadStatement, getBalanceSheet, statementsErrorMessage } from "../../services/financialStatementsApi";
+import { useToast } from "../../components/Toast";
+import { ACTIONS, STATUS_LABELS } from "../../content/actions";
+import { date, dateTime, money, plural } from "../../lib/format";
+import { DownloadIcon } from "../../components/cocoa-icons/ActionIcons";
+import { treeHeaderFor } from "../tabs/tab-helpers";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaCallout,
+  CocoaDatePicker,
+  CocoaDrawer,
+  CocoaField,
+  CocoaGrid,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaSpan,
+  CocoaStat,
+  CocoaState,
+  CocoaSwitch,
+  CocoaTable,
+  CocoaToolbar,
+  type CocoaTableColumn
+} from "../../components/cocoa";
+import { firstDayOfYear, lastDayOfYear, readQueryParam, saveDownload, scopeLabel, signTone, usePropertyScopeOptions } from "../accounting/accounting-ui";
+import { DOWNLOAD_FORMAT_OPTIONS, PERIOD_PRESET_OPTIONS, isDownloadFormat, isMeaningfulLine, presetOf, presetRange, statementColumns, type DateRange, type PeriodPresetKey } from "./statement-ui";
 
-type Item = { accountCode: string; accountName: string; amount: number };
+const ACCOUNT_COLUMNS: CocoaTableColumn<StatementAccountAmount>[] = [
+  { key: "code", label: "Cuenta", width: "10ch", render: (row) => row.code },
+  { key: "name", label: "Nombre", render: (row) => row.name },
+  { key: "amount", label: "Importe", align: "right", render: (row) => money(row.amount) }
+];
 
-type FormalBalanceSheet = {
-  asOf: string;
-  generatedAt: string;
-  assets: { nonCurrent: Item[]; current: Item[]; total: number };
-  liabilities: { nonCurrent: Item[]; current: Item[]; total: number };
-  equity: { items: Item[]; retainedEarnings: number; total: number };
-  totalLiabPlusEquity: number;
-  balanced: boolean;
-};
-
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
+/** One side of the balance: its epigraphs as pseudo-lines (level 0) followed by the model lines. */
+function sideRows(groups: Array<{ id: string; label: string; lines: StatementLine[]; total: string }>, showZero: boolean): StatementLine[] {
+  const rows: StatementLine[] = [];
+  for (const group of groups) {
+    rows.push({ id: group.id, label: group.label, level: 0, amount: group.total, accounts: [] });
+    for (const line of group.lines) if (showZero || isMeaningfulLine(line)) rows.push(line);
+  }
+  return rows;
 }
 
-function fmt(amount: number): string {
-  return money(amount);
-}
-
-function Section({
-  title,
-  items,
-  initiallyOpen = true
-}: {
-  title: string;
-  items: Item[];
-  initiallyOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(initiallyOpen);
-  const subtotal = items.reduce((s, i) => s + i.amount, 0);
+function BalanceSkeleton() {
   return (
-    <div style={{ marginBottom: 12, border: "1px solid var(--line)", borderRadius: "var(--radius-md)" }}>
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          width: "100%",
-          padding: "10px 14px",
-          background: "var(--surface)",
-          border: "none",
-          cursor: "pointer",
-          borderRadius: "var(--radius-md)",
-          fontWeight: 600
-        }}
-      >
-        <span>
-          <span style={{ marginRight: 8 }}>{open ? "▾" : "▸"}</span>
-          {title}
-          <span style={{ marginLeft: 8, color: "var(--ink-muted)", fontWeight: 400 }}>
-            ({items.length})
-          </span>
-        </span>
-        <span style={{ fontFamily: "var(--font-mono)", fontWeight: 700 }}>{fmt(subtotal)}</span>
-      </button>
-      {open && items.length > 0 && (
-        <table className="cm-table" style={{ borderTop: "1px solid var(--line)" }}>
-          <tbody>
-            {items.map((item) => (
-              <tr key={item.accountCode}>
-                <td style={{ width: 100 }}><strong>{item.accountCode}</strong></td>
-                <td>{item.accountName}</td>
-                <td
-                  style={{
-                    textAlign: "right",
-                    fontFamily: "var(--font-mono)",
-                    width: 160
-                  }}
-                >
-                  {fmt(item.amount)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-      {open && items.length === 0 && (
-        <p style={{ padding: 12, color: "var(--ink-muted)", margin: 0 }}>Sin saldos en esta sección.</p>
-      )}
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={5} />
+      <CocoaSkeleton.Grid rows={[[6, 6]]} height={420} />
     </div>
   );
 }
 
 export function BalanceSheetScreen() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
-  const initialAsOf = useMemo(todayIso, []);
-  const [asOf, setAsOf] = useState(initialAsOf);
+  const header = treeHeaderFor("BalanceSheetScreen", { eyebrow: "Finanzas · Estados contables", title: "Balance de situación" });
+  const { showToast } = useToast();
+  const scopeOptions = usePropertyScopeOptions();
 
-  const { data, loading, error, refresh } = useApiData<FormalBalanceSheet>(
-    "/accounting/reports/balance-sheet",
-    { query: { propertyId: PROPERTY_ID, asOf }, pollIntervalMs: 300000 }
+  const [range, setRange] = useState<DateRange>(() => ({ from: readQueryParam("desde") ?? firstDayOfYear(), to: readQueryParam("hasta") ?? lastDayOfYear() }));
+  const [comparative, setComparative] = useState(false);
+  const [propertyId, setPropertyId] = useState(readQueryParam("propiedad") ?? "");
+  const [showZero, setShowZero] = useState(false);
+  const preset = presetOf(range);
+
+  const [report, setReport] = useState<PgcBalanceSheet | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<unknown>(null);
+  const [nonce, setNonce] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    getBalanceSheet({ from: range.from, to: range.to, propertyId: propertyId || undefined, comparative })
+      .then((view) => {
+        if (!cancelled) setReport(view);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [range.from, range.to, propertyId, comparative, nonce]);
+
+  const [format, setFormat] = useState("pdf");
+  const [downloading, setDownloading] = useState(false);
+  async function download() {
+    if (!isDownloadFormat(format)) return;
+    setDownloading(true);
+    try {
+      saveDownload(await downloadStatement("balance", { from: range.from, to: range.to, propertyId: propertyId || undefined, comparative }, format));
+    } catch (err) {
+      showToast(statementsErrorMessage(err, "No se pudo descargar el balance."), { variant: "error" });
+    } finally {
+      setDownloading(false);
+    }
+  }
+
+  const [selected, setSelected] = useState<StatementLine | null>(null);
+  const columns = useMemo(() => statementColumns(comparative), [comparative]);
+  const k = report;
+  const assetRows = useMemo(
+    () =>
+      k
+        ? sideRows(
+            [
+              { id: "A", label: "A) Activo no corriente", lines: k.assets.nonCurrent, total: k.assets.totalNonCurrent },
+              { id: "B", label: "B) Activo corriente", lines: k.assets.current, total: k.assets.totalCurrent }
+            ],
+            showZero
+          )
+        : [],
+    [k, showZero]
   );
+  const equityRows = useMemo(
+    () =>
+      k
+        ? sideRows(
+            [
+              { id: "PN", label: "A) Patrimonio neto", lines: k.equity.lines, total: k.equity.total },
+              { id: "PNC", label: "B) Pasivo no corriente", lines: k.liabilities.nonCurrent, total: k.liabilities.totalNonCurrent },
+              { id: "PC", label: "C) Pasivo corriente", lines: k.liabilities.current, total: k.liabilities.totalCurrent }
+            ],
+            showZero
+          )
+        : [],
+    [k, showZero]
+  );
+  const difference = k ? Math.round((Number(k.totalAssets) - Number(k.totalEquityAndLiabilities)) * 100) / 100 : 0;
+  const priorUnregularised = k ? Number(k.priorUnregularisedResult) : 0;
+  const state = loading && !k ? "loading" : error && !k ? "error" : "ready";
 
+  // Header actions: the balanced/unbalanced badge is a direct child of the
+  // (wrapping) actions row, never a sibling of the select inside the nowrap
+  // cluster. CocoaSelect's wrapper is `width: 100%`, so in a nowrap row it
+  // claims the whole line and the badge — the only shrinkable sibling — was
+  // squeezed to «CUA…» (qa#3). Format + download stay together as one cluster.
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : (
-            <>
-              <div className="bo-page-eyebrow">Finanzas · Estados contables</div>
-              <h1 className="bo-page-title">Balance de situación</h1>
-            </>
-          )}
-          <p className="bo-page-subtitle">
-            Activo, Pasivo y Patrimonio neto clasificado conforme al Plan General Contable español.
-            La igualdad fundamental es: <strong>Activo = Pasivo + Patrimonio neto</strong>.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" onClick={refresh}>↻ Recalcular</button>
-        </div>
-      </div>
-
-      <div className="rev-toolbar">
-        <div className="rev-toolbar-group">
-          <label>Fecha de cierre</label>
-          <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} />
-        </div>
-        <div className="rev-toolbar-spacer" />
-        <div className="rev-toolbar-actions">
-          {data && (
-            <span
-              className="bo-chip"
-              style={{
-                background: data.balanced ? "var(--success-bg)" : "var(--danger-bg)",
-                color: data.balanced ? "var(--success-ink)" : "var(--danger-ink)",
-                fontWeight: 600
-              }}
-            >
-              {data.balanced ? "✓ Balanced" : "✗ Unbalanced"}
-            </span>
-          )}
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="bo-card" style={{ textAlign: "center", padding: 48, color: "var(--ink-muted)" }}>
-          Calculando balance…
-        </div>
-      ) : error ? (
-        <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)" }}>
-          <h3>Error</h3>
-          <p>{error}</p>
-        </div>
-      ) : !data ? null : (
+    <CocoaPage
+      eyebrow={header.eyebrow}
+      title={header.title}
+      subtitle={k ? `Modelo de Pymes a ${date(k.asOf, "long")} · ${scopeLabel(scopeOptions, k.propertyId)} · generado ${dateTime(k.generatedAt)}` : "Activo, patrimonio neto y pasivo del PGC de Pymes calculados desde el libro diario: Activo = Patrimonio neto + Pasivo."}
+      actions={
         <>
-          <section className="rev-kpi-grid">
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Total Activo</span></div>
-              <div className="rev-kpi-value">{fmt(data.assets.total)}</div>
-              <div className="rev-kpi-delta">No corriente + Corriente</div>
-            </article>
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Total Pasivo</span></div>
-              <div className="rev-kpi-value">{fmt(data.liabilities.total)}</div>
-              <div className="rev-kpi-delta">No corriente + Corriente</div>
-            </article>
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Patrimonio Neto</span></div>
-              <div className="rev-kpi-value">{fmt(data.equity.total)}</div>
-              <div className="rev-kpi-delta">incl. resultado del ejercicio</div>
-            </article>
-            <article className={`rev-kpi ${data.balanced ? "rev-kpi-ok" : "rev-kpi-warn"}`}>
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Diferencia</span></div>
-              <div className="rev-kpi-value">{fmt(data.assets.total - data.totalLiabPlusEquity)}</div>
-              <div className="rev-kpi-delta">{data.balanced ? "Cuadrado" : "Descuadre"}</div>
-            </article>
-          </section>
-
-          <div
-            className="bo-grid"
-            style={{ gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 24 }}
-          >
-            <section className="bo-card">
-              <div className="bo-card-head">
-                <h2 style={{ fontSize: 20 }}>Activo</h2>
-                <span className="bo-chip">{fmt(data.assets.total)}</span>
-              </div>
-              <Section title="Activo no corriente (2xx · inmovilizado)" items={data.assets.nonCurrent} />
-              <Section title="Activo corriente (3xx, 43x, 44x, 57x)" items={data.assets.current} />
-              <div
-                style={{
-                  marginTop: 8,
-                  padding: 12,
-                  borderTop: "2px solid var(--ink)",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontWeight: 700
-                }}
-              >
-                <span>TOTAL ACTIVO</span>
-                <span style={{ fontFamily: "var(--font-mono)" }}>{fmt(data.assets.total)}</span>
-              </div>
-            </section>
-
-            <section className="bo-card">
-              <div className="bo-card-head">
-                <h2 style={{ fontSize: 20 }}>Pasivo + Patrimonio Neto</h2>
-                <span className="bo-chip">{fmt(data.totalLiabPlusEquity)}</span>
-              </div>
-              <Section
-                title="Patrimonio neto (10x, 11x, 12x)"
-                items={[
-                  ...data.equity.items,
-                  {
-                    accountCode: "129",
-                    accountName: "Resultado del ejercicio (calculado)",
-                    amount: data.equity.retainedEarnings
-                  }
-                ]}
-              />
-              <Section title="Pasivo no corriente (17x · deuda largo plazo)" items={data.liabilities.nonCurrent} />
-              <Section
-                title="Pasivo corriente (40x, 41x, 47x, 52x)"
-                items={data.liabilities.current}
-              />
-              <div
-                style={{
-                  marginTop: 8,
-                  padding: 12,
-                  borderTop: "2px solid var(--ink)",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  fontWeight: 700
-                }}
-              >
-                <span>TOTAL PASIVO + PATRIMONIO NETO</span>
-                <span style={{ fontFamily: "var(--font-mono)" }}>{fmt(data.totalLiabPlusEquity)}</span>
-              </div>
-            </section>
+          {k ? <CocoaBadge tone={k.balanced ? "success" : "danger"}>{k.balanced ? "Cuadrado" : "Descuadrado"}</CocoaBadge> : null}
+          <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
+            <CocoaSelect value={format} onChange={setFormat} options={[...DOWNLOAD_FORMAT_OPTIONS]} size="small" aria-label="Formato de descarga" />
+            <CocoaButton variant="bordered" tone="neutral" size="small" icon={<DownloadIcon size={14} aria-hidden="true" />} loading={downloading} disabled={!k} onClick={() => void download()}>
+              {ACTIONS.download}
+            </CocoaButton>
           </div>
         </>
-      )}
-    </>
+      }
+      state={state}
+      skeleton={<BalanceSkeleton />}
+      error={{ title: "No se pudo calcular el balance", message: statementsErrorMessage(error), onRetry: () => setNonce((n) => n + 1) }}
+      commands={[
+        { id: "balance-download", label: "Descargar el balance de situación", run: () => void download() },
+        { id: "balance-refresh", label: "Recalcular el balance de situación", run: () => setNonce((n) => n + 1) }
+      ]}
+      id="balance-sheet-screen"
+    >
+      <CocoaToolbar
+        variant="content"
+        wrap
+        aria-label="Periodo y ámbito"
+        leftSlot={
+          <div className="cocoa-row" data-gap="2" data-align="end">
+            <CocoaField label="Periodo">
+              <CocoaSelect value={preset} onChange={(value) => setRange((current) => presetRange(value as PeriodPresetKey, current))} options={[...PERIOD_PRESET_OPTIONS]} size="small" aria-label="Periodo predefinido" />
+            </CocoaField>
+            <CocoaField label="Desde">
+              <CocoaDatePicker value={range.from} onChange={(value) => setRange((current) => ({ ...current, from: value }))} size="small" aria-label="Fecha de inicio" />
+            </CocoaField>
+            <CocoaField label="Fecha de cierre">
+              <CocoaDatePicker value={range.to} onChange={(value) => setRange((current) => ({ ...current, to: value }))} size="small" aria-label="Fecha de cierre del balance (incluida)" />
+            </CocoaField>
+            <CocoaField label="Propiedad">
+              <CocoaSelect value={propertyId} onChange={setPropertyId} options={scopeOptions} size="small" aria-label="Propiedad" />
+            </CocoaField>
+          </div>
+        }
+        rightSlot={
+          <div className="cocoa-row" data-gap="4">
+            <CocoaField label="Comparar con el periodo anterior" inline>
+              <CocoaSwitch checked={comparative} onChange={setComparative} size="small" />
+            </CocoaField>
+            <CocoaField label="Partidas a cero" inline>
+              <CocoaSwitch checked={showZero} onChange={setShowZero} size="small" />
+            </CocoaField>
+          </div>
+        }
+      />
+
+      {k ? (
+        <>
+          <CocoaKpiStrip stagger aria-label="Totales del balance">
+            <CocoaKpi label="Total activo" value={money(k.totalAssets)} deltaLabel={`no corriente ${money(k.assets.totalNonCurrent)}`} polarity="neutral" />
+            <CocoaKpi label="Patrimonio neto" value={money(k.equity.total)} deltaLabel={`resultado ${money(k.periodResult)}`} polarity="neutral" tone={signTone(k.equity.total)} />
+            <CocoaKpi label="Total pasivo" value={money(k.liabilities.total)} deltaLabel={`corriente ${money(k.liabilities.totalCurrent)}`} polarity="neutral" />
+            <CocoaKpi label="Cuadre" value={money(difference)} deltaLabel={k.balanced ? "activo = patrimonio neto + pasivo" : "diferencia entre ambos lados"} polarity="neutral" status={k.balanced ? "ok" : "critical"} />
+            <CocoaKpi label="Resultado del periodo" value={money(k.periodResult)} deltaLabel={Number(k.periodResult) >= 0 ? "beneficio" : "pérdida"} polarity="neutral" tone={signTone(k.periodResult)} />
+          </CocoaKpiStrip>
+
+          {!k.balanced ? (
+            <CocoaCallout tone="danger" title="El balance no cuadra" role="alert">
+              Activo y patrimonio neto más pasivo difieren en {money(difference)}. Revisa los avisos del cálculo y los asientos del periodo en el diario antes de dar el estado por bueno.
+            </CocoaCallout>
+          ) : null}
+
+          {priorUnregularised !== 0 ? (
+            <CocoaCallout tone="warning" title="Resultado de ejercicios anteriores sin regularizar" role="status">
+              Hay {money(k.priorUnregularisedResult)} de ingresos y gastos anteriores al periodo que nunca se regularizaron: se muestran en su propia partida del patrimonio neto. Cierra esos ejercicios en Contabilidad › Cierre de ejercicio.
+            </CocoaCallout>
+          ) : null}
+
+          {k.warnings.length > 0 ? (
+            <CocoaCallout tone="warning" title={plural(k.warnings.length, "aviso del cálculo", "avisos del cálculo")} role="status">
+              <ul className="c22-section__list">
+                {k.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            </CocoaCallout>
+          ) : null}
+
+          <CocoaGrid align="start" aria-label="Activo y patrimonio neto más pasivo">
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Activo" meta={money(k.totalAssets)} padding="none" style={{ overflow: "clip" }}>
+                <CocoaTable
+                  columns={columns}
+                  rows={assetRows}
+                  rowKey="id"
+                  density="compact"
+                  rowTone={(line) => (line.level === 0 ? "neutral" : undefined)}
+                  onSelect={(line) => setSelected(line)}
+                  selectedKey={selected?.id}
+                  footer={{ label: "Total activo (A + B)", amount: money(k.totalAssets) }}
+                  caption="Partidas del activo"
+                  aria-label="Partidas del activo"
+                />
+              </CocoaSection>
+            </CocoaSpan>
+            <CocoaSpan cols={6} min={320}>
+              <CocoaSection title="Patrimonio neto y pasivo" meta={money(k.totalEquityAndLiabilities)} padding="none" style={{ overflow: "clip" }}>
+                <CocoaTable
+                  columns={columns}
+                  rows={equityRows}
+                  rowKey="id"
+                  density="compact"
+                  rowTone={(line) => (line.level === 0 ? "neutral" : undefined)}
+                  onSelect={(line) => setSelected(line)}
+                  selectedKey={selected?.id}
+                  footer={{ label: "Total patrimonio neto y pasivo (A + B + C)", amount: money(k.totalEquityAndLiabilities) }}
+                  caption="Partidas del patrimonio neto y del pasivo"
+                  aria-label="Partidas del patrimonio neto y del pasivo"
+                />
+              </CocoaSection>
+            </CocoaSpan>
+          </CocoaGrid>
+        </>
+      ) : null}
+
+      <CocoaDrawer
+        open={selected !== null}
+        onClose={() => setSelected(null)}
+        title={selected ? selected.label : "Partida"}
+        subtitle={selected ? `${money(selected.amount)}${selected.previousAmount !== undefined ? ` · periodo anterior ${money(selected.previousAmount)}` : ""}` : undefined}
+        side="right"
+        size="md"
+        footer={
+          <CocoaButton variant="bordered" tone="neutral" onClick={() => setSelected(null)}>
+            {ACTIONS.close}
+          </CocoaButton>
+        }
+      >
+        {selected ? (
+          selected.accounts.length > 0 ? (
+            <CocoaTable columns={ACCOUNT_COLUMNS} rows={selected.accounts} rowKey="code" density="compact" footer={{ name: "Suma", amount: money(selected.amount) }} caption="Cuentas de la partida" aria-label="Cuentas de la partida" />
+          ) : (
+            <div className="cocoa-stack" data-gap="3">
+              <CocoaStat label="Importe" value={money(selected.amount)} size="large" />
+              <CocoaState kind="empty" inline title={selected.level === 0 ? "Total del epígrafe: abre una partida para ver sus cuentas." : "Ninguna cuenta del plan tiene saldo en esta partida a la fecha de cierre."} />
+            </div>
+          )
+        ) : (
+          <CocoaState kind="loading" inline title={STATUS_LABELS.loading} />
+        )}
+      </CocoaDrawer>
+    </CocoaPage>
   );
 }
+
+export default BalanceSheetScreen;

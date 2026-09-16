@@ -3,7 +3,16 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { allocateProportional, dayUtc, daysBetween, dec, fromCents, money, parseDecimal, percentOf, round2, sameAmount, sum, toCents } from "../money.js";
-import { bucketFor, buildForecast } from "../treasury.service.js";
+import { bucketFor, buildForecast, folioReceivableReference } from "../treasury.service.js";
+
+describe("receivables · reference of an uninvoiced open folio", () => {
+  it("paints the primary folio as «Huésped», never the stored \"guest\" (qa#6)", () => {
+    assert.equal(folioReceivableReference("RES-00081", "guest"), "RES-00081 · Huésped");
+    assert.equal(folioReceivableReference("RES-00077", "company"), "RES-00077 · Empresa");
+    assert.equal(folioReceivableReference("RES-00077", "Agencia"), "RES-00077 · Agencia");
+    assert.equal(folioReceivableReference("cmu1cmrs0000sfyol89h5d8bb", ""), "cmu1cmrs0000sfyol89h5d8bb · Folio");
+  });
+});
 
 describe("money · Decimal helpers", () => {
   it("never accumulates float drift: 0.1 + 0.2 = 0.30 and 1.005 rounds HALF_UP to 1.01", () => {

@@ -1,4 +1,5 @@
-// Lote tabs-b (Comercial · Revenue · Finanzas · Informes): the twelve containers
+// Lote tabs-b (Comercial · Revenue · Finanzas · Informes): the fourteen containers
+// (twelve of Tanda 5 plus Contabilidad and Proveedores y gastos of Tanda 6)
 // against nav-tree.generated.json through the shared helpers of screens/tabs.
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -19,7 +20,9 @@ const CONTAINERS: Record<string, string> = {
   BillingCenter: "finanzas/FacturacionTabs.tsx",
   FinancePositionDashboard: "finanzas/TesoreriaTabs.tsx",
   BankReconciliationScreen: "finanzas/ConciliacionTabs.tsx",
+  JournalScreen: "finanzas/ContabilidadTabs.tsx",
   TrialBalanceScreen: "finanzas/EstadosContablesTabs.tsx",
+  SupplierBillsScreen: "finanzas/ProveedoresTabs.tsx",
   ReportingCenter: "informes/CentroInformesTabs.tsx",
   PortfolioDashboard: "informes/CarteraTabs.tsx"
 };
@@ -50,10 +53,12 @@ describe("tabs-b · coverage", () => {
     }
     assert.equal(itemForScreen("CrmDashboard").item.baseTab, "Clientes");
     assert.equal(itemForScreen("ReputationDashboard").item.baseTab, "Reseñas");
-    assert.equal(itemForScreen("TrialBalanceScreen").item.baseTab, "Balance de comprobación");
+    assert.equal(itemForScreen("TrialBalanceScreen").item.baseTab, "Sumas y saldos");
+    assert.equal(itemForScreen("JournalScreen").item.baseTab, "Diario");
+    assert.equal(itemForScreen("SupplierBillsScreen").item.baseTab, "Facturas recibidas");
   });
 
-  it("the lot folders hold exactly the twelve containers", () => {
+  it("the lot folders hold exactly the fourteen containers", () => {
     const files = ["comercial", "revenue", "finanzas", "informes"].flatMap((folder) =>
       readdirSync(new URL(`../../${folder}`, import.meta.url))
         .filter((entry) => entry.endsWith(".tsx"))

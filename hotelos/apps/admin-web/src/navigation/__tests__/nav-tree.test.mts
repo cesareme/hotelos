@@ -44,8 +44,9 @@ describe("nav-tree · generated tree shape", () => {
       NAV_CATEGORIES.map((category) => category.key),
       ["hoy", "recepcion", "operaciones", "comercial", "revenue", "finanzas", "cumplimiento", "informes", "configuracion"]
     );
-    assert.equal(NAV_TREE.meta.counts.items, 64);
-    assert.equal(NAV_TREE.meta.counts.tabs, 80);
+    // Tanda 5: 64 items · 80 tabs. Tanda 6 (Finanzas): +2 items (Contabilidad, Proveedores y gastos) · +14 tabs.
+    assert.equal(NAV_TREE.meta.counts.items, 66);
+    assert.equal(NAV_TREE.meta.counts.tabs, 94);
     assert.equal(NAV_TREE.devOnly.length, 21);
     assert.equal(NAV_TREE.publicScreens.length, 2);
   });
@@ -128,7 +129,7 @@ describe("nav-tree · lookups", () => {
 
   it("lists every URL the router must register, unique and without /backoffice", () => {
     const urls = allUrls();
-    assert.equal(urls.length, 64 + 80 + 21 + 2);
+    assert.equal(urls.length, 66 + 94 + 21 + 2);
     assert.equal(new Set(urls).size, urls.length);
     assert.ok(urls.every((url) => !url.startsWith("/backoffice")));
   });
@@ -164,15 +165,16 @@ describe("nav-tree · legacy redirects (§5)", () => {
 
 describe("nav-tree · visibility per role (§3 counts)", () => {
   const expected: Record<Exclude<RoleToken, "publico">, { items: number; categories: number }> = {
-    direccion: { items: 64, categories: 9 },
+    // Tanda 6 (Finanzas): Contabilidad and Proveedores y gastos add 2 items for direccion, finanzas and admin.
+    direccion: { items: 66, categories: 9 },
     recepcion: { items: 22, categories: 9 },
     pisos: { items: 5, categories: 3 },
     mantenimiento: { items: 8, categories: 3 },
     revenue: { items: 20, categories: 5 },
-    finanzas: { items: 28, categories: 6 },
+    finanzas: { items: 30, categories: 6 },
     comercial: { items: 14, categories: 5 },
     fnb: { items: 5, categories: 2 },
-    admin: { items: 64, categories: 9 }
+    admin: { items: 66, categories: 9 }
   };
 
   for (const [token, counts] of Object.entries(expected) as Array<[RoleToken, { items: number; categories: number }]>) {
@@ -185,7 +187,7 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
 
   it("hides the 14 entries that would open 403 in Faranda (§6) and nothing else", () => {
     const visible = countVisible(["direccion"], FARANDA_MODULES);
-    assert.equal(visible.items, 58);
+    assert.equal(visible.items, 60);
     const upsells = visibleCategories(["direccion"], FARANDA_MODULES)
       .find((category) => category.key === "comercial")
       ?.items.find((entry) => entry.label === "Ventas adicionales");
@@ -208,7 +210,7 @@ describe("nav-tree · visibility per role (§3 counts)", () => {
         for (const tab of entry.tabs) assert.deepEqual(tab.modulesAny, [], `${tab.label} is gated`);
       }
     }
-    assert.equal(countVisible(["admin"], []).items, 48);
+    assert.equal(countVisible(["admin"], []).items, 50);
   });
 
   it("filters tabs by role inside a visible item", () => {

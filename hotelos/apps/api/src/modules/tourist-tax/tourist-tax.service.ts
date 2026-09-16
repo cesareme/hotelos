@@ -20,6 +20,7 @@ import type { Prisma } from "@hotelos/database";
 import type { UserContext } from "../../lib/demo-store.js";
 import { requirePermissions } from "../auth/auth.service.js";
 import { BadRequestError, NotFoundError } from "../../lib/http-error.js";
+import { PRIMARY_FOLIO_LABEL } from "../folio/folio-labels.js";
 
 const MS_PER_DAY = 86_400_000;
 
@@ -238,7 +239,7 @@ export async function applyTouristTaxToFolio(input: {
         reservationId: input.reservationId,
         status: "open",
         currency: reservation.currency ?? "EUR",
-        label: "guest",
+        label: PRIMARY_FOLIO_LABEL,
         isPrimary: true
       }
     });

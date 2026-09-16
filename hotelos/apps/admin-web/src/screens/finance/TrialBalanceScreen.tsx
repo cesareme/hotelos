@@ -1,194 +1,217 @@
-import { useTabHost } from "../tabs/TabHost";
-import { getActivePropertyId } from "../../services/activeProperty";
-import { useMemo, useState } from "react";
-import { useApiData } from "../../hooks/useApiData";
-import { money } from "../../lib/format";
+// Sumas y saldos — Finanzas › Estados contables (/finanzas/estados-contables;
+// base tab «Sumas y saldos» of EstadosContablesTabs). Cocoa 22 · lote 6-C
+// (migrated from the legacy «Balance de comprobación» screen), archetype
+// «dashboard».
+//
+// GET /accounting/reports/trial-balance?asOf[&fromDate&toDate][&propertyId]:
+// the sums and balances by account computed from the ledger with the same
+// reading rule as the statements (aggregateAccountBalances). Toolbar: fecha de
+// corte, desde/hasta opcionales, propiedad. CocoaKpiStrip (Σ debe · Σ haber ·
+// diferencia · cuentas) → CocoaTable (código · cuenta · debe · haber · saldo
+// deudor · saldo acreedor; a row opens the Mayor of the account with the same
+// window) → footer with the totals and the «cuadra / no cuadra» verdict.
 
-const PROPERTY_ID = getActivePropertyId();
+import { useMemo, useState, type CSSProperties } from "react";
+import { useApiData } from "../../hooks/useApiData";
+import { urlForScreen } from "../../navigation/nav-tree";
+import { ACTIONS } from "../../content/actions";
+import { date, dateTime, money, number, plural } from "../../lib/format";
+import {
+  CocoaBadge,
+  CocoaButton,
+  CocoaDatePicker,
+  CocoaField,
+  CocoaKpi,
+  CocoaKpiStrip,
+  CocoaPage,
+  CocoaSection,
+  CocoaSelect,
+  CocoaSkeleton,
+  CocoaState,
+  CocoaTable,
+  CocoaToolbar,
+  openTabPath,
+  type CocoaTableColumn
+} from "../../components/cocoa";
+import { kindLabel, kindTone, readQueryParam, todayIso, usePropertyScopeOptions, withQuery } from "../accounting/accounting-ui";
 
 type TrialBalanceRow = {
   accountCode: string;
   accountName: string;
+  kind: string;
   debitTotal: number;
   creditTotal: number;
   balance: number;
+  debitBalance: number;
+  creditBalance: number;
 };
 
 type TrialBalance = {
+  organizationId: string;
+  propertyId?: string | null;
   asOf: string;
   fromDate?: string;
   toDate?: string;
   generatedAt: string;
   rows: TrialBalanceRow[];
-  totals: { debit: number; credit: number };
+  totals: { debit: number; credit: number; debitBalance: number; creditBalance: number };
   balanced: boolean;
 };
 
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+const codeStyle: CSSProperties = { fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" };
 
-function fmt(amount: number): string {
-  return money(amount);
+const COLUMNS: CocoaTableColumn<TrialBalanceRow>[] = [
+  { key: "accountCode", label: "Código", width: "10ch", render: (row) => <strong style={codeStyle}>{row.accountCode}</strong> },
+  { key: "accountName", label: "Cuenta", render: (row) => row.accountName },
+  { key: "kind", label: "Naturaleza", render: (row) => <CocoaBadge tone={kindTone(row.kind)}>{kindLabel(row.kind)}</CocoaBadge>, hideOnNarrow: true },
+  { key: "debitTotal", label: "Suma del debe", align: "right", render: (row) => money(row.debitTotal) },
+  { key: "creditTotal", label: "Suma del haber", align: "right", render: (row) => money(row.creditTotal) },
+  { key: "debitBalance", label: "Saldo deudor", align: "right", render: (row) => (row.debitBalance !== 0 ? money(row.debitBalance) : ""), hideOnNarrow: true },
+  { key: "creditBalance", label: "Saldo acreedor", align: "right", render: (row) => (row.creditBalance !== 0 ? money(row.creditBalance) : ""), hideOnNarrow: true }
+];
+
+function TrialBalanceSkeleton() {
+  return (
+    <div className="cocoa-stack" data-gap="4" aria-hidden="true">
+      <CocoaSkeleton.Strip count={4} />
+      <CocoaSkeleton.Grid rows={[[12]]} height={420} />
+    </div>
+  );
 }
 
 export function TrialBalanceScreen() {
-  // Hosted inside a routed tab container (Tanda 5): the container paints the page header.
-  const embedded = useTabHost() !== null;
-  const initialAsOf = useMemo(todayIso, []);
-  const [asOf, setAsOf] = useState(initialAsOf);
-  const [fromDate, setFromDate] = useState<string>("");
-  const [toDate, setToDate] = useState<string>("");
+  // Base tab of the item: the container paints «Finanzas» + «Estados contables»; standalone the page names the tab.
+  const header = { eyebrow: "Finanzas · Estados contables", title: "Sumas y saldos" };
+  const scopeOptions = usePropertyScopeOptions();
+  const [asOf, setAsOf] = useState(() => readQueryParam("hasta") ?? todayIso());
+  const [fromDate, setFromDate] = useState(() => readQueryParam("desde") ?? "");
+  const [toDate, setToDate] = useState("");
+  const [propertyId, setPropertyId] = useState(() => readQueryParam("propiedad") ?? "");
 
   const query = useMemo(() => {
-    const q: Record<string, string> = { propertyId: PROPERTY_ID, asOf };
+    const q: Record<string, string> = { asOf };
+    if (propertyId) q.propertyId = propertyId;
     if (fromDate) q.fromDate = fromDate;
     if (toDate) q.toDate = toDate;
     return q;
-  }, [asOf, fromDate, toDate]);
+  }, [asOf, fromDate, toDate, propertyId]);
 
-  const { data, loading, error, refresh } = useApiData<TrialBalance>(
-    "/accounting/reports/trial-balance",
-    { query, pollIntervalMs: 300000 }
-  );
+  const { data, loading, error, refresh } = useApiData<TrialBalance>("/accounting/reports/trial-balance", { query, pollIntervalMs: 300_000 });
+  const k = data;
+  const rows = k?.rows ?? [];
+  const difference = k ? Math.round((k.totals.debit - k.totals.credit) * 100) / 100 : 0;
+  const ledgerUrl = urlForScreen("LedgerScreen");
+  const windowLabel = k ? (k.fromDate ? `${date(k.fromDate, "short")} – ${date(k.toDate ?? k.asOf, "short")}` : `acumulado hasta ${date(k.asOf, "short")}`) : "";
+
+  function openLedger(row: TrialBalanceRow) {
+    if (!ledgerUrl) return;
+    openTabPath(withQuery(ledgerUrl, { cuenta: row.accountCode, desde: fromDate || undefined, hasta: toDate || asOf, propiedad: propertyId || undefined }));
+  }
 
   return (
-    <>
-      <div className="bo-page-head">
-        <div className="bo-page-head-text">
-          {embedded ? null : (
-            <>
-              <div className="bo-page-eyebrow">Finanzas · Estados contables</div>
-              <h1 className="bo-page-title">Balance de comprobación</h1>
-            </>
-          )}
-          <p className="bo-page-subtitle">
-            Agregación de los movimientos del libro diario por cuenta del Plan General Contable. Verifica
-            que la partida doble cuadra: <strong>Total Debe = Total Haber</strong>.
-          </p>
-        </div>
-        <div className="bo-page-head-actions">
-          <button type="button" onClick={refresh}>↻ Recalcular</button>
-        </div>
-      </div>
-
-      <div className="rev-toolbar">
-        <div className="rev-toolbar-group">
-          <label>Fecha de corte (asOf)</label>
-          <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} />
-        </div>
-        <div className="rev-toolbar-group">
-          <label>Desde (opcional)</label>
-          <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} />
-        </div>
-        <div className="rev-toolbar-group">
-          <label>Hasta (opcional)</label>
-          <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} />
-        </div>
-        <div className="rev-toolbar-spacer" />
-        <div className="rev-toolbar-actions">
-          {data && (
-            <span
-              className="bo-chip"
-              style={{
-                background: data.balanced ? "var(--success-bg)" : "var(--danger-bg)",
-                color: data.balanced ? "var(--success-ink)" : "var(--danger-ink)",
-                fontWeight: 600
+    <CocoaPage
+      eyebrow={header.eyebrow}
+      title={header.title}
+      subtitle={k ? `Sumas y saldos por cuenta desde el libro diario · ${windowLabel} · calculado ${dateTime(k.generatedAt)}` : "Suma del debe y del haber de cada cuenta del PGC con su saldo: comprueba que la partida doble cuadra."}
+      actions={
+        <>
+          {k ? <CocoaBadge tone={k.balanced ? "success" : "danger"}>{k.balanced ? "Cuadra" : "No cuadra"}</CocoaBadge> : null}
+          <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} loading={loading && !!k}>
+            {ACTIONS.refresh}
+          </CocoaButton>
+        </>
+      }
+      state={loading && !k ? "loading" : error && !k ? "error" : "ready"}
+      skeleton={<TrialBalanceSkeleton />}
+      error={{ title: "No se pudo calcular el balance de sumas y saldos", message: error ?? undefined, onRetry: refresh }}
+      commands={[{ id: "trial-balance-refresh", label: "Recalcular sumas y saldos", run: refresh }]}
+      id="trial-balance-screen"
+    >
+      <CocoaToolbar
+        variant="content"
+        wrap
+        aria-label="Fechas y ámbito"
+        leftSlot={
+          <div className="cocoa-row" data-gap="2" data-align="end">
+            <CocoaField label="Fecha de corte" required>
+              <CocoaDatePicker value={asOf} onChange={setAsOf} size="small" aria-label="Fecha de corte" />
+            </CocoaField>
+            <CocoaField label="Desde" hint="opcional">
+              <CocoaDatePicker value={fromDate} onChange={setFromDate} size="small" aria-label="Movimientos desde" />
+            </CocoaField>
+            <CocoaField label="Hasta" hint="opcional">
+              <CocoaDatePicker value={toDate} onChange={setToDate} size="small" aria-label="Movimientos hasta" />
+            </CocoaField>
+            <CocoaField label="Propiedad">
+              <CocoaSelect value={propertyId} onChange={setPropertyId} options={scopeOptions} size="small" aria-label="Propiedad" />
+            </CocoaField>
+          </div>
+        }
+        rightSlot={
+          fromDate || toDate ? (
+            <CocoaButton
+              variant="plain"
+              tone="neutral"
+              size="small"
+              onClick={() => {
+                setFromDate("");
+                setToDate("");
               }}
             >
-              {data.balanced ? "✓ Balanced" : "✗ Unbalanced"}
-            </span>
-          )}
-        </div>
-      </div>
+              {ACTIONS.clearFilters}
+            </CocoaButton>
+          ) : undefined
+        }
+      />
 
-      {loading ? (
-        <div className="bo-card" style={{ textAlign: "center", padding: 48, color: "var(--ink-muted)" }}>
-          Calculando saldos…
-        </div>
-      ) : error ? (
-        <div className="bo-card" style={{ borderLeft: "3px solid var(--danger-ink)" }}>
-          <h3>Error</h3>
-          <p>{error}</p>
-        </div>
-      ) : !data || data.rows.length === 0 ? (
-        <div className="bo-card" style={{ textAlign: "center", padding: 48 }}>
-          <h3>Sin movimientos contables</h3>
-          <p>
-            No hay asientos contabilizados {fromDate ? `entre ${fromDate} y ${toDate || asOf}` : `hasta ${asOf}`}.
-          </p>
-        </div>
-      ) : (
+      {k ? (
         <>
-          <section className="rev-kpi-grid">
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Total Debe</span></div>
-              <div className="rev-kpi-value">{fmt(data.totals.debit)}</div>
-              <div className="rev-kpi-delta">{data.rows.length} cuentas</div>
-            </article>
-            <article className="rev-kpi rev-kpi-ok">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Total Haber</span></div>
-              <div className="rev-kpi-value">{fmt(data.totals.credit)}</div>
-              <div className="rev-kpi-delta">{data.rows.length} cuentas</div>
-            </article>
-            <article className={`rev-kpi ${data.balanced ? "rev-kpi-ok" : "rev-kpi-warn"}`}>
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Diferencia</span></div>
-              <div className="rev-kpi-value">{fmt(data.totals.debit - data.totals.credit)}</div>
-              <div className="rev-kpi-delta">{data.balanced ? "Cuadrado" : "Descuadre detectado"}</div>
-            </article>
-            <article className="rev-kpi">
-              <div className="rev-kpi-head"><span className="rev-kpi-label">Fecha de corte</span></div>
-              <div className="rev-kpi-value" style={{ fontSize: 20 }}>{data.asOf}</div>
-              <div className="rev-kpi-delta">{data.fromDate ? `desde ${data.fromDate}` : "acumulado"}</div>
-            </article>
-          </section>
+          <CocoaKpiStrip stagger aria-label="Totales de sumas y saldos">
+            <CocoaKpi label="Suma del debe" value={money(k.totals.debit)} deltaLabel={plural(rows.length, "cuenta con movimiento", "cuentas con movimiento")} polarity="neutral" />
+            <CocoaKpi label="Suma del haber" value={money(k.totals.credit)} deltaLabel={plural(rows.length, "cuenta con movimiento", "cuentas con movimiento")} polarity="neutral" />
+            <CocoaKpi label="Diferencia" value={money(difference)} deltaLabel={k.balanced ? "la partida doble cuadra" : "descuadre: revisa el diario"} polarity="neutral" status={k.balanced ? "ok" : "critical"} />
+            <CocoaKpi label="Saldos" value={money(k.totals.debitBalance)} unit="deudores" deltaLabel={`acreedores ${money(k.totals.creditBalance)}`} polarity="neutral" />
+          </CocoaKpiStrip>
 
-          <section className="bo-card">
-            <div className="bo-card-head">
-              <h2 style={{ fontSize: 20 }}>Detalle por cuenta</h2>
-              <span className="bo-chip">{data.rows.length} cuentas</span>
-            </div>
-            <div className="rev-report-wrap">
-              <table className="cm-table">
-                <thead>
-                  <tr>
-                    <th>Código</th>
-                    <th>Cuenta</th>
-                    <th style={{ textAlign: "right" }}>Debe</th>
-                    <th style={{ textAlign: "right" }}>Haber</th>
-                    <th style={{ textAlign: "right" }}>Saldo</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.rows.map((row) => (
-                    <tr key={row.accountCode}>
-                      <td><strong>{row.accountCode}</strong></td>
-                      <td>{row.accountName}</td>
-                      <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(row.debitTotal)}</td>
-                      <td style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(row.creditTotal)}</td>
-                      <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
-                        {fmt(row.balance)}
-                      </td>
-                    </tr>
-                  ))}
-                  <tr style={{ borderTop: "2px solid var(--line)" }}>
-                    <td colSpan={2}><strong>TOTALES</strong></td>
-                    <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700 }}>
-                      {fmt(data.totals.debit)}
-                    </td>
-                    <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700 }}>
-                      {fmt(data.totals.credit)}
-                    </td>
-                    <td style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700 }}>
-                      {fmt(data.totals.debit - data.totals.credit)}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </section>
+          <CocoaSection
+            title="Detalle por cuenta"
+            meta={windowLabel}
+            padding={rows.length > 0 ? "none" : "md"}
+            footer={rows.length > 0 ? <span>{plural(rows.length, "cuenta", "cuentas")} · una fila abre el mayor de la cuenta</span> : undefined}
+            style={{ overflow: "clip" }}
+          >
+            {rows.length > 0 ? (
+              <CocoaTable
+                columns={COLUMNS}
+                rows={rows}
+                rowKey="accountCode"
+                density="compact"
+                onSelect={ledgerUrl ? openLedger : undefined}
+                rowTitle={() => "Abrir el mayor de la cuenta"}
+                footer={{
+                  accountName: "Totales",
+                  debitTotal: money(k.totals.debit),
+                  creditTotal: money(k.totals.credit),
+                  debitBalance: money(k.totals.debitBalance),
+                  creditBalance: money(k.totals.creditBalance)
+                }}
+                caption="Sumas y saldos por cuenta"
+                aria-label="Sumas y saldos por cuenta"
+              />
+            ) : (
+              <CocoaState
+                kind="empty"
+                illustration="box"
+                title="Sin movimientos contables"
+                message={fromDate ? `No hay asientos contabilizados entre ${date(fromDate, "short")} y ${date(toDate || asOf, "short")}.` : `No hay asientos contabilizados hasta ${date(asOf, "short")}${propertyId ? " en esta propiedad" : ""}. Los asientos nacen al emitir facturas, registrar cobros y cerrar comandas.`}
+              />
+            )}
+          </CocoaSection>
+          <p className="cocoa-caption">{number(rows.length)} cuentas · saldos deudores en positivo, acreedores en su columna; las parejas de anulación se excluyen como en el resto de estados.</p>
         </>
-      )}
-    </>
+      ) : null}
+    </CocoaPage>
   );
 }
+
+export default TrialBalanceScreen;
