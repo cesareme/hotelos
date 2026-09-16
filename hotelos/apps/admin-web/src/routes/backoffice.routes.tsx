@@ -4,10 +4,11 @@
 // nav-tree.generated.json, built from pilots/tanda5-nav-tree.csv): nothing is
 // typed twice.
 //
-//   - BACKOFFICE_ROUTES  = allUrls() of the tree: 66 items + 94 tabs/sub-URLs +
-//                          21 dev-only + 2 public = 183 URLs (Tanda 5: 167;
+//   - BACKOFFICE_ROUTES  = allUrls() of the tree: 67 items + 98 tabs/sub-URLs +
+//                          21 dev-only + 2 public = 188 URLs (Tanda 5: 167;
 //                          Tanda 6 added Contabilidad, Proveedores y gastos and
-//                          14 finance/fiscal/TPV tabs). The base URL of a
+//                          14 finance/fiscal/TPV tabs; Tanda 6b added
+//                          Estructura societaria and its 4 tabs). The base URL of a
 //                          tab container always precedes its tabs, so
 //                          `pathForScreen` returns the first static route.
 //   - LEGACY_ROUTES      = the 205 old /backoffice/* paths (NAV_TREE.legacyRoutes),
@@ -80,7 +81,7 @@ function buildRoutes(): BackofficeRoute[] {
   return routes;
 }
 
-/** The 183 URLs the shell serves, in tree order (base URL before its tabs). */
+/** The 188 URLs the shell serves, in tree order (base URL before its tabs). */
 export const BACKOFFICE_ROUTES: readonly BackofficeRoute[] = buildRoutes();
 
 /** The 205 old /backoffice/* paths and the tree URL each one lands on (§5 of the plan). */

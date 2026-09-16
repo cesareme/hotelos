@@ -59,7 +59,7 @@ export const FINANCE_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.f
   PAN_NOT_ACCEPTED: "No se admite el número de tarjeta en claro: usa el token de la pasarela de pago.",
   PSP_TOKEN_REQUIRED: "Falta el token de la pasarela de pago.",
   FOLIO_CHANGED_SINCE_DRAFT: "El folio ha cambiado desde que se preparó el borrador: revisa la factura antes de emitirla.",
-  ISSUER_TAX_ID_SERIES_MISMATCH: "La serie de facturación pertenece a otro NIF emisor.",
+  ISSUER_TAX_ID_SERIES_MISMATCH: "La serie ya emitió facturas con el NIF anterior de la sociedad y no puede seguir numerando con el nuevo: cierra la serie y abre otra con distinto prefijo, o restablece el NIF anterior en Datos fiscales. Nunca se renumera.",
   SIMPLIFIED_LIMIT_EXCEEDED: SIMPLIFIED_LIMIT,
   INVOICE_NOT_ISSUED: "La factura aún no está emitida.",
   EMAIL_DELIVERY_FAILED: "El proveedor de correo no pudo entregar el mensaje.",
@@ -141,7 +141,42 @@ export const FINANCE_ERROR_MESSAGES: Readonly<Record<string, string>> = Object.f
   // --- estados y gestoría ---
   EXPORT_FORMAT_NOT_IMPLEMENTED: "Ese formato de exportación aún no está disponible: usa el CSV universal de asientos.",
   USALI_LINE_NOT_ADMITTED: "La línea no se admite en ese departamento USALI.",
-  SNAPSHOT_NOT_FOUND: "No existe esa instantánea de los estados contables."
+  SNAPSHOT_NOT_FOUND: "No existe esa instantánea de los estados contables.",
+  // --- estructura societaria (Tanda 6b: LegalStructureErrorCode, lib/finance-scope.ts, fiscal y estados) ---
+  MULTI_ENTITY_NOT_ENABLED: "La organización ya tiene su sociedad: en esta versión solo hay una sociedad por organización.",
+  SERIES_PREFIX_CLASH: "Otro centro de la misma sociedad ya usa ese prefijo de serie este año: elige otro prefijo (por ejemplo con el código del centro).",
+  INVOICE_NUMBER_DUPLICATE: "Otro centro de la misma sociedad ya emitió una factura con ese número: la numeración es única por NIF. Revisa los prefijos de las series.",
+  WORK_CENTER_CODE_REQUIRED: "La sociedad factura desde varios centros y este no tiene código: asigna un código al centro en Configuración › Estructura societaria antes de emitir.",
+  SERIES_CLOSED: "La serie está cerrada y no vuelve a numerar: abre otra serie con distinto prefijo. Nunca se renumera.",
+  WORK_CENTER_REQUIRED: "Indica el hotel o la oficina central: los gastos, ingresos, retenciones y nóminas llevan siempre un centro de trabajo.",
+  FISCAL_YEAR_IS_ENTITY_SCOPED: "Los ejercicios contables son de la sociedad, no de un centro: quita el filtro por centro.",
+  ENTITY_SCOPE_REQUIRED: "Tu perfil solo ve las finanzas de sus centros: elige un centro en «Ámbito» o pide a dirección el permiso «Finanzas de toda la sociedad».",
+  PROPERTY_NOT_FOUND: "Ese centro de trabajo no existe en tu organización.",
+  JOURNAL_ENTRY_NOT_FOUND: "El asiento no existe o no pertenece a tu organización.",
+  PERIODICITY_FORCED_BY_REGIME: "La periodicidad la fija el régimen de la sociedad (SII o gran empresa): los modelos son mensuales mientras esté marcado.",
+  ALLOCATION_WEIGHTS_REQUIRED: "El reparto por porcentajes necesita un peso por hotel.",
+  ALLOCATION_DUPLICATE_PROPERTY: "Un hotel aparece dos veces en el reparto.",
+  ALLOCATION_UNKNOWN_PROPERTY: "Uno de los centros del reparto no pertenece a la sociedad.",
+  ALLOCATION_TARGET_NOT_HOTEL: "El reparto solo se distribuye entre hoteles, no entre oficinas u otros centros.",
+  ALLOCATION_WEIGHT_INVALID: "Cada peso del reparto debe ser un número entre 0 y 100.",
+  ALLOCATION_WEIGHTS_SUM: "Los pesos del reparto deben sumar 100.",
+  ALLOCATION_WEIGHTS_NOT_ALLOWED: "Solo el reparto por porcentajes admite pesos; las otras claves los calculan solas.",
+  HIGH_RISK_CONFIRMATION_REQUIRED: "Este cambio afecta a todas las facturas y modelos futuros de la sociedad: confírmalo expresamente para aplicarlo.",
+  VERIFACTU_SUBMISSIONS_PENDING: "Hay registros VeriFactu reales sin respuesta de la AEAT: espera a que se resuelvan antes de cambiar el régimen de la sociedad.",
+  VERIFACTU_EXCLUDED_BY_SII: "La sociedad está en el SII: la factura se expide sin registro VeriFactu (sin huella ni QR), como establece el RD 1007/2023.",
+  LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY: "El NIF y la razón social se editan en Configuración › Estructura societaria › Datos fiscales, no en el perfil del establecimiento.",
+  CODE_IN_USE: "Ese código ya está en uso: elige otro de 2 a 6 letras o números.",
+  PROPERTY_KIND_CHANGE_BLOCKED: "Un hotel con habitaciones no puede pasar a oficina u otro centro.",
+  PROPERTY_NAME_IN_USE: "Ya existe un centro con ese nombre en la organización.",
+  WORK_CENTER_NOT_OPERATIONAL: "La oficina central no tiene operación hotelera: esa acción solo aplica a un hotel.",
+  STRUCTURE_DISABLED: "La estructura societaria no está activada en este entorno.",
+  TAX_ID_INVALID: "El NIF no supera el dígito de control: revísalo.",
+  TAX_ID_IN_USE: "Ese NIF ya pertenece a otra sociedad.",
+  CHAIN_ALREADY_STARTED: "La cadena VeriFactu ya tiene registros reales enviados: la política de cadena no se puede cambiar.",
+  LEGAL_ENTITY_REQUIRED: "La organización tiene varias sociedades: elige la sociedad activa antes de continuar.",
+  LEGAL_ENTITY_NOT_FOUND: "La sociedad no existe en tu organización.",
+  ISSUER_TAX_ID_MISSING: "La sociedad no tiene NIF válido: complétalo en Configuración › Estructura societaria › Datos fiscales antes de emitir.",
+  INSTALLATION_NOT_DECLARED: "El centro no tiene una instalación VeriFactu declarada: el envío queda en espera hasta que exista."
 });
 
 export const FINANCE_ERROR_FALLBACK = "No se pudo completar la operación. Inténtalo de nuevo.";
@@ -194,12 +229,81 @@ export function financeErrorMessage(error: unknown, fallback: string = FINANCE_E
       const pending = details?.pendingPeriods;
       return Array.isArray(pending) && pending.length > 0 ? `${base} Contabiliza antes: ${pending.map(String).join(", ")}.` : base;
     }
-    return base;
+    return withStructureDetails(code, base, details);
   }
   const message = asErrorLike(error)?.message;
   if (typeof message === "string" && message.trim()) return message.trim();
   if (typeof error === "string" && error.trim()) return error.trim();
   return fallback;
+}
+
+function detailString(details: Record<string, unknown> | null, key: string): string | null {
+  const value = details?.[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/**
+ * Tanda 6b: the structure codes carry the datum the sentence needs — the
+ * clashing `prefix` (SERIES_PREFIX_CLASH · INVOICE_NUMBER_DUPLICATE ·
+ * ISSUER_TAX_ID_SERIES_MISMATCH), the `screen` / `legalIdentityScreen` /
+ * `seriesScreen` the API names, the high-risk `fields`, the VeriFactu
+ * exclusion `motivo`. Pure; unit-tested.
+ */
+export function withStructureDetails(code: string, base: string, details: Record<string, unknown> | null): string {
+  switch (code) {
+    case "SERIES_PREFIX_CLASH":
+    case "INVOICE_NUMBER_DUPLICATE": {
+      const prefix = detailString(details, "prefix");
+      return prefix ? `${base} Prefijo en conflicto: ${prefix}.` : base;
+    }
+    case "ISSUER_TAX_ID_SERIES_MISMATCH": {
+      const prefix = detailString(details, "prefix");
+      const legalIdentityScreen = detailString(details, "legalIdentityScreen");
+      const seriesScreen = detailString(details, "seriesScreen");
+      const parts = [prefix ? `Serie afectada: ${prefix}.` : null, seriesScreen ? `Series: ${seriesScreen}.` : null, legalIdentityScreen ? `Datos fiscales: ${legalIdentityScreen}.` : null].filter(Boolean);
+      return parts.length > 0 ? `${base} ${parts.join(" ")}` : base;
+    }
+    case "WORK_CENTER_CODE_REQUIRED": {
+      const screen = detailString(details, "screen");
+      return screen ? `${base} Pantalla: ${screen}.` : base;
+    }
+    case "LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY": {
+      const route = detailString(details, "route");
+      return route ? `${base} Ruta: ${route}.` : base;
+    }
+    case "HIGH_RISK_CONFIRMATION_REQUIRED": {
+      const fields = details?.fields;
+      return Array.isArray(fields) && fields.length > 0 ? `${base} Campos: ${fields.map(String).join(", ")}.` : base;
+    }
+    case "VERIFACTU_EXCLUDED_BY_SII": {
+      const motivo = detailString(details, "motivo");
+      return motivo ? `${base} ${motivo}` : base;
+    }
+    case "ENTITY_SCOPE_REQUIRED": {
+      const permission = detailString(details, "requiredPermission");
+      return permission ? `${base} Permiso: ${permission}.` : base;
+    }
+    default:
+      return base;
+  }
+}
+
+/** The opaque 404 the finance readers answer when the sociedad scope is outside the caller's grants (R11). */
+export function isEntityScopeRequired(error: unknown): boolean {
+  return financeErrorCode(error) === "ENTITY_SCOPE_REQUIRED";
+}
+
+/** Prefix the API puts on the invoice warning when the sociedad is in the SII (fix t6b#2). */
+export const VERIFACTU_EXCLUDED_WARNING_PREFIX = "VERIFACTU_EXCLUDED_BY_SII:";
+
+/** The SII exclusion sentence of an issued document's warnings, or null (also accepts the `issuer.verifactuExclusion` block). */
+export function verifactuExclusionText(input: { warnings?: readonly string[] | null; verifactuExclusion?: { motivo?: string | null } | null } | null | undefined): string | null {
+  const direct = input?.verifactuExclusion?.motivo;
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+  const warning = (input?.warnings ?? []).find((row) => typeof row === "string" && row.startsWith(VERIFACTU_EXCLUDED_WARNING_PREFIX));
+  if (!warning) return null;
+  const text = warning.slice(VERIFACTU_EXCLUDED_WARNING_PREFIX.length).trim();
+  return text || FINANCE_ERROR_MESSAGES.VERIFACTU_EXCLUDED_BY_SII;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,8 +494,11 @@ export function fixedAssetListQuery(input: FixedAssetListInput = {}): FinanceQue
 
 // ---- tesorería ----------------------------------------------------------------
 
-export type TreasuryScope = { propertyId?: string; asOf?: string };
+/** A centre (`propertyId`) or the whole sociedad (`scope: "entity"`, Tanda 6b: `GET /treasury/*?scope=entity`). */
+export type TreasuryScope = { propertyId?: string; asOf?: string; scope?: "entity" | "property" };
 export function treasuryScopeQuery(scope: TreasuryScope = {}): FinanceQuery {
+  // The sociedad scope never sends a propertyId (the route would read the centre first).
+  if (scope.scope === "entity") return compactQuery({ scope: "entity", asOf: scope.asOf });
   return compactQuery({ propertyId: scope.propertyId, asOf: scope.asOf });
 }
 

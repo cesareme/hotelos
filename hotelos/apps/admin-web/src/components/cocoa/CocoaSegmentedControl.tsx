@@ -167,6 +167,9 @@ export function CocoaSegmentedControl({ value, onChange, options, size = "regula
       background: "var(--cocoa-background-control)",
       borderRadius: "var(--cocoa-radius-md)",
       fontFamily: "var(--cocoa-font)",
+      // Border-box so `maxWidth: 100%` caps the OUTER width: a strip that is not stretched by its
+      // column (HostedHead aligns it to the start) would otherwise overflow by its 2 px padding.
+      boxSizing: "border-box",
       maxWidth: "100%",
       overflowX: "auto",
       WebkitAppearance: "none",

@@ -37,7 +37,8 @@ import {
   type FixedAssetDto,
   type FixedAssetRequest
 } from "../../services/assetsApi";
-import { getActivePropertyId, getActivePropertyName } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { centreNameFor, financeScopePolicy, useFinanceScope, type FinanceStructure } from "../../services/financeScope";
 import { useToast } from "../../components/Toast";
 import { useTabHost } from "../tabs/TabHost";
 import { date, dateTime, money, percent, plural, toNumber } from "../../lib/format";
@@ -97,8 +98,6 @@ const subStyle: CSSProperties = {
 const mutedStyle: CSSProperties = { color: "var(--cocoa-label-secondary)" };
 // A form-row cell that holds a button: sit it at the end of the track so it shares the inputs' baseline.
 const bottomAligned: CSSProperties = { display: "flex", alignItems: "flex-end", alignSelf: "end", minWidth: 0 };
-
-const PROPERTY_ID = getActivePropertyId();
 
 const STATUS_OPTIONS = (["active", "fully_depreciated", "disposed"] as FixedAssetStatus[]).map((value) => ({ value, label: ASSET_STATUS_LABELS[value] }));
 const CATEGORY_OPTIONS = FIXED_ASSET_CATEGORIES.map((value) => ({ value, label: `${ASSET_CATEGORY_LABELS[value]} · máx. ${maxCoefficientLabel(value)}` }));
@@ -233,14 +232,15 @@ const COLUMNS: CocoaTableColumn<FixedAssetDto>[] = [
   }
 ];
 
-const PREVIEW_COLUMNS: CocoaTableColumn<DepreciationRunDto["lines"][number]>[] = [
+/** Depreciation runs are society-wide: the centre of each element is named (Tanda 6b: hotel or oficina central). */
+const PREVIEW_COLUMNS = (structure: FinanceStructure | null): CocoaTableColumn<DepreciationRunDto["lines"][number]>[] => [
   {
     key: "name",
     label: "Elemento",
     render: (l) => (
       <>
         {l.name}
-        <span style={subStyle}>{l.propertyId === PROPERTY_ID ? "Esta propiedad" : "Otra propiedad de la organización"}</span>
+        <span style={subStyle}>{centreNameFor(structure, l.propertyId)}</span>
       </>
     )
   },
@@ -327,15 +327,19 @@ function AssetFields({ form, mode, errors, disabled, accountOptionsList, chartEr
 export function FixedAssetsScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
+  // Tanda 6b · L7: the asset register hangs from a centre (the oficina central included); the depreciation runs are society-wide.
+  const finance = useFinanceScope(financeScopePolicy("FixedAssetsScreen"));
+  const propertyId = finance.propertyId ?? finance.active.propertyId;
+  const previewColumns = useMemo(() => PREVIEW_COLUMNS(finance.structure), [finance.structure]);
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
-  const assets = useLoader(() => listFixedAssets({ q: search.trim() || undefined, status: (status || undefined) as FixedAssetStatus | undefined, limit: 500 }), `${search}|${status}`, "No se pudo cargar el registro de inmovilizado.");
+  const assets = useLoader(() => listFixedAssets({ q: search.trim() || undefined, status: (status || undefined) as FixedAssetStatus | undefined, limit: 500 }, propertyId), `${propertyId}|${search}|${status}`, "No se pudo cargar el registro de inmovilizado.");
   const chart = useChartAccounts();
   const investmentOptions = useMemo(() => accountOptions(chart.accounts, isInvestmentAccount), [chart.accounts]);
 
   // Detail drawer (+ edit mode + disposal)
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const detail = useLoader<FixedAssetDetailDto | null>(() => (selectedId ? getFixedAsset(selectedId) : Promise.resolve(null)), selectedId ?? "", "No se pudo cargar el elemento.");
+  const detail = useLoader<FixedAssetDetailDto | null>(() => (selectedId ? getFixedAsset(selectedId, propertyId) : Promise.resolve(null)), `${propertyId}|${selectedId ?? ""}`, "No se pudo cargar el elemento.");
   const [editMode, setEditMode] = useState(false);
   const [busy, setBusy] = useState(false);
   const [actionFailure, setActionFailure] = useState<string | null>(null);
@@ -424,7 +428,7 @@ export function FixedAssetsScreen() {
     setSaving(true);
     setSaveFailure(null);
     try {
-      const created = await createFixedAsset(createBody(form));
+      const created = await createFixedAsset(createBody(form), propertyId);
       showToast(`Elemento ${created.name} registrado.`, { variant: "success" });
       setCreating(false);
       refreshAll();
@@ -448,7 +452,7 @@ export function FixedAssetsScreen() {
     setSaving(true);
     setSaveFailure(null);
     try {
-      await updateFixedAsset(selected.id, body);
+      await updateFixedAsset(selected.id, body, propertyId);
       showToast("Elemento actualizado.", { variant: "success" });
       setEditMode(false);
       refreshAll();
@@ -483,7 +487,7 @@ export function FixedAssetsScreen() {
     setActionFailure(null);
     try {
       const body = { date: disposeDate, ...(sale ? { saleAmount: sale } : {}), counterAccountCode: counterAccount, ...(disposeReason.trim() ? { reason: disposeReason.trim() } : {}) };
-      await disposeFixedAsset(selected.id, body);
+      await disposeFixedAsset(selected.id, body, propertyId);
       showToast("Elemento dado de baja: asiento de baja contabilizado.", { variant: "success" });
       setAskDispose(false);
       refreshAll();
@@ -561,13 +565,16 @@ export function FixedAssetsScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${getActivePropertyName()}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Inmovilizado"
-      subtitle={hosted ? undefined : "Elementos del inmovilizado de la propiedad, coeficientes de amortización y corridas mensuales sin huecos para toda la organización."}
+      subtitle={hosted ? undefined : "Elementos del inmovilizado del centro de trabajo, coeficientes de amortización y corridas mensuales sin huecos para toda la sociedad."}
       actions={
-        <CocoaButton variant="filled" tone="accent" size={hosted ? "small" : "regular"} onClick={openNew}>
-          {newAssetLabel}
-        </CocoaButton>
+        <>
+          <FinanceScopeSelector scope={finance} />
+          <CocoaButton variant="filled" tone="accent" size={hosted ? "small" : "regular"} onClick={openNew}>
+            {newAssetLabel}
+          </CocoaButton>
+        </>
       }
       commands={[
         { id: "fixed-assets-new", label: newAssetLabel, run: openNew },
@@ -646,7 +653,7 @@ export function FixedAssetsScreen() {
               {previewData.lines.length === 0 ? (
                 <CocoaState kind="empty" inline title={`Nada que amortizar en ${periodLabel(period)}.`} />
               ) : (
-                <CocoaTable columns={PREVIEW_COLUMNS} rows={previewData.lines} rowKey="fixedAssetId" footer={{ name: plural(previewData.lines.length, "elemento", "elementos"), amount: <strong>{money(previewData.totalAmount)}</strong> }} caption="Vista previa de la amortización" aria-label="Vista previa de la amortización" />
+                <CocoaTable columns={previewColumns} rows={previewData.lines} rowKey="fixedAssetId" footer={{ name: plural(previewData.lines.length, "elemento", "elementos"), amount: <strong>{money(previewData.totalAmount)}</strong> }} caption="Vista previa de la amortización" aria-label="Vista previa de la amortización" />
               )}
               {previewData.skipped.length > 0 ? (
                 <CocoaCallout tone="neutral" title={`${plural(previewData.skipped.length, "elemento omitido", "elementos omitidos")}`}>

@@ -17,7 +17,9 @@
 
 import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { getActiveOrganizationId, getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { getActiveOrganizationId } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   PAYROLL_CONTRACT_TYPES,
   PAYROLL_CONTRACT_TYPE_LABELS_ES,
@@ -206,8 +208,10 @@ function PayrollSkeleton() {
 }
 
 export function PayrollScreen() {
-  const propertyId = getActivePropertyId();
-  const propertyName = getActiveProperty().propertyName;
+  // Tanda 6b · L7: the sociedad is the employer (one NIF): the «Ámbito» lists the contracts of every centre by
+  // default and filters one centre (the oficina central included) on demand.
+  const finance = useFinanceScope(financeScopePolicy("PayrollScreen"));
+  const propertyId = finance.propertyId;
   const { showToast } = useToast();
 
   const [view, setView] = useState<View>("contracts");
@@ -425,15 +429,18 @@ export function PayrollScreen() {
   const state = nothingLoaded ? (anyLoading ? "loading" : "error") : "ready";
   const newContractLabel = newLabel("m", "contrato");
   const exportWarnings = toArray<string>(lastExport?.warnings);
+  // Tanda 6b: the export carries the employer block (sociedad NIF · razón social · CCC) — additive on the wire.
+  const employer = (lastExport as (PayrollExportResult & { employer?: { legalName: string; taxId: string | null; taxIdValid: boolean; ccc: string | null; cccSource: string | null } }) | null)?.employer ?? null;
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${propertyName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Nóminas"
       subtitle="Contratos, periodos mensuales y exportación a la gestoría. El cálculo bruto → IRPF → Seguridad Social → neto usa los porcentajes del régimen general y se contabiliza (640/642 contra 465/4751/476); el pago asienta 465 contra tesorería."
       actions={
         <>
           {anyLoading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll}>
             {ACTIONS.refresh}
           </CocoaButton>
@@ -486,6 +493,7 @@ export function PayrollScreen() {
           }
         >
           {lastExport.filename} · {plural(lastExport.slipCount, "recibo", "recibos")}
+          {employer ? ` · empleador ${employer.legalName} · NIF ${employer.taxId ?? "pendiente"}${employer.ccc ? ` · CCC ${employer.ccc}` : " · sin CCC"}` : ""}
           {exportWarnings.length > 0 ? (
             <ul className="c22-section__list">
               {exportWarnings.map((warning, index) => (

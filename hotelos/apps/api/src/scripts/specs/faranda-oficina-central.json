@@ -1,0 +1,105 @@
+{
+  "_notes": {
+    "purpose": "Spec de alta de la OFICINA CENTRAL de CELUISMA S.A. (org cmrhw9jy30002fyvb6tsdiugt) como centro de trabajo no alojativo (kind office, code OC) para apps/api/src/scripts/migrate-faranda-celuisma.ts (paso 4 de §5.5). Sin edificio, habitaciones, tipos, tarifas, SES ni series (no factura): nóminas, gastos, bancos e inmovilizado de la sede (R6). Solo dry-run por defecto.",
+    "sources": {
+      "brief": "Datos confirmados por César el 2026-09-16 (lista de los 7 hoteles que explota CELUISMA S.A., A33615980; consentimiento para usar el CIF real SOLO en la demo local, nunca en envíos a la AEAT).",
+      "web": "https://www.farandahotels.com/en/country/espana (web oficial: nombre comercial, dirección, categoría y número de habitaciones; consultada 2026-09-16)",
+      "ine": "Nomenclátor INE de municipios (códigos de 5 dígitos: provincia + municipio): https://www.ine.es/daco/daco42/codmun/codmunmapa.htm",
+      "design": "docs/design/FINANZAS-ESTRUCTURA-SOCIETARIA.md §5.5 paso 5 (specs parametrizados, prefijos FAC-<COD>-2026- / FS-<COD>-2026- / REC-<COD>-2026-) y docs/audits/TANDA-6B-ESTRUCTURA-BACKEND-2026-09-16.md §8 fila 3.",
+      "registry": "Extracto registral vía Empresia (https://www.empresia.es/empresa/celuisma/, consultada 2026-09-16): CELUISMA SA, A33615980, constituida 10/02/1981, CNAE 5510, «PORTUGAL, 7 33207 GIJON» (sin tipo de vía; Yelp / Páginas Amarillas / Anuario: «Avenida de Portugal, 7 (Bajo)»), inscrita en el Registro Mercantil de MADRID, con cambio de domicilio en 2014 desde «C/ GENERAL AMPUDIA 8 - BAJO A-DERECHA (MADRID)». eInforma (https://www.einforma.com/informacion-empresa/celuisma, consultada 2026-09-16): domicilio «PASEO FLORIDA, 5 28008 MADRID», Registro Mercantil de Madrid, General Ampudia 8 como dirección anterior, 62 empleados (2024), capital social 4.735.729,75 €. Que ambas fuentes den el RM de Madrid es incompatible con un domicilio social en Gijón: por eso ninguna opción es el valor por defecto de la sociedad.",
+      "operations": "Oficina operativa según fuentes públicas (Alimarket https://www.alimarket.es/hoteles/empresa/222661/faranda-hotels---celuisma--s-a-, misma dirección que Faranda International Hotels SL, B87303095): General Ampudia 8, bajo A-dcha, 28003 Madrid."
+    },
+    "addressOptions": {
+      "_confirm": "PENDIENTE de confirmar por César dónde está la oficina central (Madrid, Gijón o el propio Florida Norte). Por defecto el script usa `madrid` (General Ampudia 8, oficina operativa según Alimarket); `--office-city gijon|florida` sustituye property.address/municipality/province/postalCode/ineMunicipalityCode por esa opción. El domicilio FISCAL y el SOCIAL de la sociedad son otra decisión (--fiscal-address / --registered-office, SIN valor por defecto: --apply se niega sin ellos).",
+      "madrid": {
+        "address": "Calle General Ampudia, 8, bajo A-dcha",
+        "municipality": "Madrid",
+        "province": "Madrid",
+        "postalCode": "28003",
+        "ineMunicipalityCode": "28079",
+        "autonomousCommunity": "Comunidad de Madrid"
+      },
+      "gijon": {
+        "address": "Avenida de Portugal, 7",
+        "municipality": "Gijón",
+        "province": "Asturias",
+        "postalCode": "33207",
+        "ineMunicipalityCode": "33024",
+        "autonomousCommunity": "Asturias"
+      },
+      "florida": {
+        "address": "Paseo de la Florida, 5",
+        "municipality": "Madrid",
+        "province": "Madrid",
+        "postalCode": "28008",
+        "ineMunicipalityCode": "28079",
+        "autonomousCommunity": "Comunidad de Madrid"
+      }
+    },
+    "notInvented": [
+      "Superficie (IAE por superficie), CCC provincial de la sede, referencia catastral y epígrafe IAE: NO se conocen (census.* null); los aporta Faranda (informe §8 fila 4).",
+      "La oficina NO factura: sin invoiceSequences ni instalación VeriFactu (R3: no cuenta como centro facturador). Si algún día emite, se abren series FAC-OC-2026-… con PATCH billing-settings y el prefijo se comprueba contra los hoteles (SERIES_PREFIX_CLASH).",
+      "Sin módulos operativos (modules: []): la oficina no aparece en night audit, portfolio, pace, SES ni schedulers (listOperationalProperties filtra kind = hotel).",
+      "Contratos laborales y nóminas de la sede → propertyId = OC (paso 10 de §5.5): los asigna el integrador tras el apply; este spec no toca personas ni contratos.",
+      "property.legalName no se escribe: la razón social y el NIF son de la sociedad."
+    ],
+    "fields": {
+      "organizationId": "Organización EXISTENTE (Faranda Hotels & Resorts → sociedad CELUISMA S.A. tras L8). El script nunca crea ni modifica organizations.*.",
+      "property": "kind = office, code = OC (fijo, propuesto en §5.5 paso 4), tradeName «Oficina central». Dirección parametrizada (ver addressOptions). CP e INE coherentes en ambas opciones (28003/28079 · 33207/33024).",
+      "profile": "Vacío: un centro no alojativo no tiene perfil hotelero (columnas has* a false por defecto).",
+      "owners": "user_property_roles: Carmen (direccion@farandariasaltas.es) con el rol Owner de la organización (222 permisos, incluye accounting.entity.read y organization.structure.manage).",
+      "departments": "departments por (propertyId, code) + user_departments (roleLabel)."
+    }
+  },
+  "organizationId": "cmrhw9jy30002fyvb6tsdiugt",
+  "property": {
+    "name": "CELUISMA S.A. · Oficina central",
+    "kind": "office",
+    "code": "OC",
+    "tradeName": "Oficina central",
+    "legalName": null,
+    "address": "Calle General Ampudia, 8, bajo A-dcha",
+    "municipality": "Madrid",
+    "province": "Madrid",
+    "country": "ES",
+    "postalCode": "28003",
+    "ineMunicipalityCode": "28079",
+    "taxRegion": "ES_PENINSULA_BALEARES",
+    "fiscalTerritory": "common",
+    "timezone": "Europe/Madrid",
+    "sesHospedajesEnabled": false,
+    "verifactuEnabled": false,
+    "census": {
+      "cadastralReference": null,
+      "surfaceM2": null,
+      "iaeEpigraph": null,
+      "socialSecurityCcc": null,
+      "laborCenterCode": null
+    }
+  },
+  "profile": {
+    "hotelType": null,
+    "autonomousCommunity": "Comunidad de Madrid"
+  },
+  "owners": [
+    {
+      "userId": "cmrhw9jyb0005fyvb4ykaumyc",
+      "roleId": "cmrhw9jy60004fyvbjvur0uqt"
+    }
+  ],
+  "modules": [],
+  "ratePlans": [],
+  "invoiceSequences": [],
+  "departments": [
+    {
+      "code": "MGMT",
+      "name": "Management",
+      "users": [
+        {
+          "userId": "cmrhw9jyb0005fyvb4ykaumyc",
+          "roleLabel": "owner"
+        }
+      ]
+    }
+  ]
+}

@@ -27,6 +27,8 @@ import { CocoaInput } from "../../components/cocoa/CocoaInput";
 import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
 import { createTenant, reissueTenantInvitation, type CreateTenantResponse } from "../../services/tenantAdminApi";
 import { copyText, describeDelivery, formatExpiry, type InvitationResult } from "../../services/authApi";
+// Tanda 6b (L6): the tenant is born with its implicit sociedad (NIF optional, checked live) and a typed first centre.
+import { LEGAL_FORM_OPTIONS, PROPERTY_KIND_OPTIONS, normalizeStructureCode, normalizeTaxId, propertyKindLabel, structureCodeError, taxIdValidationMessage } from "../structure/structure-ui";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -44,8 +46,16 @@ interface WizardState {
   organizationName: string;
   country: string;
   contactEmail: string;
+  /** Tanda 6b: the implicit sociedad of the tenant (all optional; the razón social defaults to the organization name). */
+  legalName: string;
+  taxId: string;
+  legalEntityCode: string;
+  legalForm: string;
   propertyName: string;
   propertyType: string;
+  /** Tanda 6b: work-centre type and 2-6 character code of the first centre (derived from the name when empty). */
+  propertyKind: string;
+  propertyCode: string;
   municipality: string;
   province: string;
   ownerEmail: string;
@@ -127,17 +137,21 @@ function modulesForPlan(plan: Plan): Record<string, boolean> {
 function makeInitialState(): WizardState {
   return {
     organizationName: "", country: "ES", contactEmail: "",
-    propertyName: "", propertyType: "urban", municipality: "", province: "",
+    legalName: "", taxId: "", legalEntityCode: "", legalForm: "",
+    propertyName: "", propertyType: "urban", propertyKind: "hotel", propertyCode: "", municipality: "", province: "",
     ownerEmail: "", ownerFullName: "", ownerPhone: "",
     plan: "pro", modules: modulesForPlan("pro"),
   };
 }
 
 function isStepValid(step: number, s: WizardState): boolean {
-  if (step === 1) return s.organizationName.trim().length > 0 && s.country.length > 0 && isEmail(s.contactEmail);
+  if (step === 1) {
+    const taxIdOk = s.taxId.trim() === "" || taxIdValidationMessage(s.taxId) === null;
+    return s.organizationName.trim().length > 0 && s.country.length > 0 && isEmail(s.contactEmail) && taxIdOk && structureCodeError(s.legalEntityCode) === null;
+  }
   if (step === 2) {
     return s.propertyName.trim().length > 0 && s.propertyType.length > 0 &&
-      s.municipality.trim().length > 0 && s.province.trim().length > 0;
+      s.municipality.trim().length > 0 && s.province.trim().length > 0 && structureCodeError(s.propertyCode) === null;
   }
   if (step === 3) return isEmail(s.ownerEmail) && s.ownerFullName.trim().length > 0;
   if (step === 4) return Boolean(s.plan);
@@ -152,7 +166,6 @@ function isStepValid(step: number, s: WizardState): boolean {
 const S = {
   label: { fontFamily: "var(--cocoa-font)", fontSize: "var(--cocoa-fs-subheadline)", fontWeight: 500, color: "var(--cocoa-label)", margin: 0 } as CSSProperties,
   hint: { fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-tertiary)", margin: 0 } as CSSProperties,
-  col: { display: "flex", flexDirection: "column", gap: 16 } as CSSProperties,
   field: { display: "flex", flexDirection: "column", gap: 4 } as CSSProperties,
   row: { display: "flex", justifyContent: "space-between", gap: 12, padding: "8px 0", borderBottom: "1px solid var(--cocoa-separator)", fontSize: "var(--cocoa-fs-body)" } as CSSProperties,
   rowK: { color: "var(--cocoa-label-secondary)" } as CSSProperties,
@@ -203,7 +216,7 @@ interface StepProps { state: WizardState; setState: (next: WizardState) => void 
 
 function StepOrganization({ state, setState }: StepProps) {
   return (
-    <div style={S.col}>
+    <div className="cocoa-stack" data-gap="4">
       <Field label="Nombre de la organización">
         <CocoaInput value={state.organizationName} onChange={(v) => setState({ ...state, organizationName: v })} placeholder="Hoteles Mediterránea SL" required />
       </Field>
@@ -213,15 +226,33 @@ function StepOrganization({ state, setState }: StepProps) {
       <Field label="Email de contacto" hint="Usado para facturación y comunicaciones críticas.">
         <CocoaInput value={state.contactEmail} onChange={(v) => setState({ ...state, contactEmail: v })} placeholder="cuentas@mediterranea.com" type="email" inputMode="email" required />
       </Field>
+      <Field label="Razón social de la sociedad (opcional)" hint="Quien factura. Vacío = el nombre de la organización; se edita después en Configuración › Estructura societaria › Datos fiscales.">
+        <CocoaInput value={state.legalName} onChange={(v) => setState({ ...state, legalName: v })} placeholder="Hoteles Mediterránea S.L." maxLength={200} />
+      </Field>
+      <Field label="NIF de la sociedad (opcional)" hint={state.taxId.trim() === "" ? "Sin NIF la sociedad nace con «NIF pendiente»: no podrá emitir factura en modo fiscal real hasta indicarlo." : taxIdValidationMessage(state.taxId) ?? "Carácter de control correcto."}>
+        <CocoaInput value={state.taxId} onChange={(v) => setState({ ...state, taxId: v.toUpperCase().replace(/[\s.-]/g, "") })} placeholder="B12345674" maxLength={20} error={state.taxId.trim() !== "" && taxIdValidationMessage(state.taxId) !== null} />
+      </Field>
+      <Field label="Código de la sociedad (opcional)" hint={structureCodeError(state.legalEntityCode) ?? "De 2 a 6 letras o dígitos; vacío = se deriva de la razón social."}>
+        <CocoaInput value={state.legalEntityCode} onChange={(v) => setState({ ...state, legalEntityCode: normalizeStructureCode(v) })} placeholder="HM" maxLength={6} />
+      </Field>
+      <Field label="Forma jurídica">
+        <CocoaSelect value={state.legalForm} onChange={(v) => setState({ ...state, legalForm: v })} options={[...LEGAL_FORM_OPTIONS]} />
+      </Field>
     </div>
   );
 }
 
 function StepProperty({ state, setState }: StepProps) {
   return (
-    <div style={S.col}>
+    <div className="cocoa-stack" data-gap="4">
       <Field label="Nombre de la propiedad">
         <CocoaInput value={state.propertyName} onChange={(v) => setState({ ...state, propertyName: v })} placeholder="Hotel Palacio del Mar" required />
+      </Field>
+      <Field label="Tipo de centro" hint={state.propertyKind === "hotel" ? "Hotel: habitaciones, tarifas, recepción, tasa turística y SES." : "Sin operación hotelera: solo Finanzas y Configuración (nóminas, gastos, bancos, inmovilizado)."}>
+        <CocoaSelect value={state.propertyKind} onChange={(v) => setState({ ...state, propertyKind: v })} options={[...PROPERTY_KIND_OPTIONS]} />
+      </Field>
+      <Field label="Código del centro (opcional)" hint={structureCodeError(state.propertyCode) ?? "De 2 a 6 letras o dígitos; vacío = se deriva del nombre."}>
+        <CocoaInput value={state.propertyCode} onChange={(v) => setState({ ...state, propertyCode: normalizeStructureCode(v) })} placeholder="RA" maxLength={6} />
       </Field>
       <Field label="Tipo">
         <CocoaSelect value={state.propertyType} onChange={(v) => setState({ ...state, propertyType: v })} options={PROPERTY_TYPES} />
@@ -240,7 +271,7 @@ function StepProperty({ state, setState }: StepProps) {
 
 function StepOwner({ state, setState }: StepProps) {
   return (
-    <div style={S.col}>
+    <div className="cocoa-stack" data-gap="4">
       <Field label="Email del propietario">
         <CocoaInput value={state.ownerEmail} onChange={(v) => setState({ ...state, ownerEmail: v })} placeholder="director@palaciodelmar.com" type="email" inputMode="email" required />
       </Field>
@@ -268,7 +299,7 @@ function StepModules({ state, setState }: StepProps) {
     setState({ ...state, modules: { ...state.modules, [code]: !state.modules[code] } });
   };
   return (
-    <div style={S.col}>
+    <div className="cocoa-stack" data-gap="4">
       <Field label="Plan">
         <CocoaSelect value={state.plan} onChange={onPlanChange} options={PLAN_OPTIONS} />
       </Field>
@@ -306,16 +337,21 @@ function StepConfirm({ state }: { state: WizardState }) {
   const ptype = PROPERTY_TYPES.find((p) => p.value === state.propertyType)?.label ?? state.propertyType;
   const enabledModules = MODULES.filter((m) => state.modules[m.code]).map((m) => m.label);
   return (
-    <div style={S.col}>
+    <div className="cocoa-stack" data-gap="4">
       <section>
         <p style={{ ...S.label, marginBottom: 4 }}>Organización</p>
         <SummaryRow k="Nombre" v={state.organizationName} />
         <SummaryRow k="País" v={country} />
         <SummaryRow k="Email contacto" v={state.contactEmail} />
+        <SummaryRow k="Sociedad" v={state.legalName.trim() || `${state.organizationName.trim()} (mismo nombre)`} />
+        <SummaryRow k="NIF" v={normalizeTaxId(state.taxId) ?? "pendiente"} />
+        {state.legalEntityCode.trim() ? <SummaryRow k="Código de sociedad" v={state.legalEntityCode.trim()} /> : null}
+        {state.legalForm ? <SummaryRow k="Forma jurídica" v={LEGAL_FORM_OPTIONS.find((option) => option.value === state.legalForm)?.label ?? state.legalForm} /> : null}
       </section>
       <section>
         <p style={{ ...S.label, marginBottom: 4 }}>Propiedad</p>
         <SummaryRow k="Nombre" v={state.propertyName} />
+        <SummaryRow k="Tipo de centro" v={`${propertyKindLabel(state.propertyKind)}${state.propertyCode.trim() ? ` · ${state.propertyCode.trim()}` : ""}`} />
         <SummaryRow k="Tipo" v={ptype} />
         <SummaryRow k="Ubicación" v={`${state.municipality}, ${state.province}`} />
       </section>
@@ -410,7 +446,7 @@ function SuccessPanel({ result, ownerEmail, onClose }: { result: CreateTenantRes
   const showLink = Boolean(invitation?.inviteUrl) && invitation?.delivery?.status !== "sent";
 
   return (
-    <div style={S.col}>
+    <div className="cocoa-stack" data-gap="4">
       <div>
         <h3 style={{ margin: 0, fontSize: "var(--cocoa-fs-title-2)", fontWeight: 700, color: "var(--cocoa-label)" }}>
           Cliente creado
@@ -486,6 +522,18 @@ export function NewTenantWizardDialog({ open, onClose, onCompleted }: NewTenantW
         propertyType: state.propertyType,
         municipality: state.municipality.trim(),
         province: state.province.trim(),
+        // Tanda 6b (L6): kind / code of the first centre and the implicit sociedad (server bridge: body.property.*, body.legalEntity).
+        property: { kind: state.propertyKind, ...(state.propertyCode.trim() ? { code: state.propertyCode.trim() } : {}) },
+        ...(state.legalName.trim() || state.taxId.trim() || state.legalEntityCode.trim() || state.legalForm
+          ? {
+              legalEntity: {
+                ...(state.legalName.trim() ? { legalName: state.legalName.trim() } : {}),
+                ...(normalizeTaxId(state.taxId) ? { taxId: normalizeTaxId(state.taxId) } : {}),
+                ...(state.legalEntityCode.trim() ? { code: state.legalEntityCode.trim() } : {}),
+                ...(state.legalForm ? { legalForm: state.legalForm } : {})
+              }
+            }
+          : {}),
         modulesEnabled,
       });
       setResult(res);

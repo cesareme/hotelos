@@ -53,4 +53,6 @@ export { default as ContabilidadFiscalTabs } from "./configuracion/ContabilidadF
 export { default as ModulosTabs } from "./configuracion/ModulosTabs";
 export { default as InteligenciaArtificialTabs } from "./configuracion/InteligenciaArtificialTabs";
 export { default as SistemaTabs } from "./configuracion/SistemaTabs";
+// Tanda 6b · L6: Configuración › Estructura societaria (Datos fiscales · Centros · Series y VeriFactu · IVA y ejercicio · Reparto).
+export { default as EstructuraSocietariaTabs } from "./configuracion/EstructuraSocietariaTabs";
 

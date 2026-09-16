@@ -22,6 +22,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 const stylesDir = resolve(here, "../../../styles");
 const layoutCss = readFileSync(join(stylesDir, "cocoa-22-layout.css"), "utf8");
 const cocoaCss = readFileSync(join(stylesDir, "cocoa-22.css"), "utf8");
+const baseCss = readFileSync(join(stylesDir, "cocoa-base.css"), "utf8");
 
 const LONG_META = "Comandas cerradas en el rango, por punto de venta y medio de cobro";
 
@@ -107,5 +108,43 @@ describe("cocoa-22.css · CocoaField hint is informative text (qa#13)", () => {
     const hint = ruleBody(cocoaCss, ".c22-field__hint");
     assert.match(hint, /color: var\(--cocoa-label-secondary\);/);
     assert.doesNotMatch(hint, /label-tertiary/);
+  });
+});
+
+// At 390 the inline field («Gran empresa» + switch + a 90-character help) was
+// a flex ROW with the help as its third item: the label shrank to 28 px and
+// broke mid-word («Gran / empr / esa», qa#2 L6). The inline field is a grid
+// now: label column minmax(0, 1fr), control column auto, help and error under
+// the label in the first column.
+describe("cocoa-22.css · inline CocoaField keeps the help out of the label row (qa#2)", () => {
+  it(".c22-field[data-inline=\"true\"] is a two-column grid whose label column takes the free width", () => {
+    const inline = ruleBody(cocoaCss, '.c22-field[data-inline="true"]');
+    assert.match(inline, /display: grid;/);
+    assert.match(inline, /grid-template-columns: minmax\(0, 1fr\) auto;/);
+    assert.doesNotMatch(inline, /flex-direction: row/, "a flex row shares the line with the help and starves the label");
+  });
+  it("the help and the error wrap under the label (first column) and the control stays on the first row", () => {
+    const clean = cocoaCss.replace(/\/\*[\s\S]*?\*\//g, "");
+    assert.match(clean, /\.c22-field\[data-inline="true"\] \.c22-field__help,\s*\.c22-field\[data-inline="true"\] \.c22-field__error \{ grid-column: 1; \}/);
+    assert.match(clean, /\.c22-field\[data-inline="true"\] \.c22-field__control \{ grid-column: 2; grid-row: 1; \}/);
+  });
+});
+
+// A 199-character legal sentence at 10 px uppercase (`.cocoa-caption` in a
+// section footer) measured unreadable (qa#5 L6): `.cocoa-note` is the prose
+// note — callout 12 px, secondary, sentence case — and the caption stays a
+// short label.
+describe("cocoa-base.css · .cocoa-note is prose, .cocoa-caption a short label (qa#5)", () => {
+  it(".cocoa-note reads at callout size in secondary without uppercase", () => {
+    const note = ruleBody(baseCss, ".cocoa-note");
+    assert.match(note, /font-size: var\(--cocoa-fs-callout\);/);
+    assert.match(note, /color: var\(--cocoa-label-secondary\);/);
+    assert.match(note, /text-transform: none;/);
+    assert.doesNotMatch(note, /uppercase/);
+  });
+  it(".cocoa-caption keeps the uppercase caption metrics (the label of a group)", () => {
+    const caption = ruleBody(baseCss, ".cocoa-caption");
+    assert.match(caption, /font-size: var\(--cocoa-fs-caption\);/);
+    assert.match(caption, /text-transform: uppercase;/);
   });
 });

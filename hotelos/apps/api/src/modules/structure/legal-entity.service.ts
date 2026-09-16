@@ -126,7 +126,7 @@ export const VERIFACTU_RESOLVED_STATUSES = ["accepted", "rejected"] as const;
 
 const LEGAL_ENTITY_NOT_FOUND = "Sociedad no encontrada.";
 const ORGANIZATION_NOT_FOUND = "Organización no encontrada.";
-const STRUCTURE_ROUTE = "/configuracion/estructura";
+const STRUCTURE_ROUTE = "/configuracion/estructura-societaria";
 
 type Db = Prisma.TransactionClient | typeof prisma;
 type LegalEntityRow = NonNullable<Awaited<ReturnType<typeof prisma.legalEntity.findFirst>>>;

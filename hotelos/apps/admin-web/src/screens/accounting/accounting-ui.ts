@@ -3,18 +3,16 @@
 // estados contables). No JSX: this module is not a screen (the discoverability
 // walker and the Cocoa contract only read `.tsx`), so it can hold the Spanish
 // vocabularies, the chart-of-accounts option builders, the money parsing of
-// the manual entry form, the blob download and the property-scope hook that
-// every screen of the lot repeats.
+// the manual entry form and the blob download every screen of the lot repeats
+// (the «Ámbito» of a money screen lives in services/financeScope.ts since L7).
 //
 // Formatting still goes through lib/format (money · number · date); nothing
 // here formats a figure on its own.
 
-import { useEffect, useMemo, useState } from "react";
 import type { ChartAccountView, JournalEntryView } from "@hotelos/shared";
 import type { CocoaSelectOption } from "../../components/cocoa";
 import type { CocoaTone } from "../../components/cocoa";
 import type { NamedDownload } from "../../services/accountingApi";
-import { getActiveProperty, loadSwitchableProperties } from "../../services/activeProperty";
 import { isoDate } from "../../lib/format";
 import type { NavGateState } from "../../navigation/useEnabledModules";
 
@@ -296,41 +294,6 @@ export function canDo(gate: Pick<NavGateState, "grantedPermissions" | "isPlatfor
   if (gate.isPlatformAdmin) return true;
   if (gate.grantedPermissions === null) return true;
   return gate.grantedPermissions.includes(permission);
-}
-
-export const ORGANIZATION_SCOPE_LABEL = "Toda la organización";
-
-/**
- * Options of the property filter of an accounting screen: the whole
- * organisation (accounting is kept per organisation) plus each property of the
- * active organisation the user can switch to. Before the list loads, the
- * active property alone is offered.
- */
-export function usePropertyScopeOptions(): CocoaSelectOption[] {
-  const active = useMemo(() => getActiveProperty(), []);
-  const [properties, setProperties] = useState<Array<{ id: string; name: string }>>([{ id: active.propertyId, name: active.propertyName }]);
-  useEffect(() => {
-    let mounted = true;
-    loadSwitchableProperties()
-      .then((rows) => {
-        if (!mounted) return;
-        const own = rows.filter((row) => row.organizationId === active.organizationId).map((row) => ({ id: row.id, name: row.name }));
-        if (own.length > 0) setProperties(own);
-      })
-      .catch(() => {
-        /* the active property stays as the only option */
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [active.organizationId]);
-  return useMemo(() => [{ value: "", label: ORGANIZATION_SCOPE_LABEL }, ...properties.map((property) => ({ value: property.id, label: property.name }))], [properties]);
-}
-
-/** Label of a propertyId inside the scope options («Toda la organización» for null). */
-export function scopeLabel(options: readonly CocoaSelectOption[], propertyId: string | null | undefined): string {
-  if (!propertyId) return ORGANIZATION_SCOPE_LABEL;
-  return options.find((option) => option.value === propertyId)?.label ?? propertyId;
 }
 
 /** Calendar day of today in the hotel's zone (Europe/Madrid), for default filters. */

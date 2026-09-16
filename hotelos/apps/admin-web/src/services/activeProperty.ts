@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError, apiRequest } from "./api-client";
 import { onAuthChange, type AuthUser } from "./auth-storage";
+import type { PropertyKind } from "@hotelos/shared";
 
 /**
  * Active-property context shared by every back-office screen.
@@ -59,6 +60,11 @@ export type SwitchableProperty = {
   municipality?: string | null;
   province?: string | null;
   status?: string | null;
+  // Tanda 6b (additive): centre kind and code plus its sociedad, for the grouped switcher and the finance scope.
+  kind?: PropertyKind;
+  code?: string | null;
+  legalEntityId?: string | null;
+  legalEntityName?: string | null;
 };
 
 function readStorage(key: string, fallback: string): string {

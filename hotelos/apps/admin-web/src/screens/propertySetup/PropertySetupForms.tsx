@@ -99,13 +99,16 @@ const forms: FormDefinition[] = [
     title: "Perfil de la propiedad",
     route: "/configuracion/propiedad",
     endpoint: backOfficeEndpoints.propertySetupForm,
-    description: "Perfil legal, identidad fiscal, dirección, zona horaria, moneda, idioma, región fiscal y reglas de fecha de negocio.",
+    description: "Perfil del establecimiento: nombre comercial y código del centro, dirección, zona horaria, moneda, región fiscal y reglas de fecha de negocio. El NIF y la razón social son de la sociedad (Estructura societaria).",
     targetTable: "properties + property_setup_form_submissions",
-    inputCategories: ["Perfil de la propiedad", "Perfil legal", "Reglas de fecha de negocio"],
+    inputCategories: ["Perfil de la propiedad", "Establecimiento", "Reglas de fecha de negocio"],
     fields: [
       { key: "name", label: "Nombre de la propiedad", inputType: "text", required: true },
-      { key: "legalName", label: "Razón social", inputType: "text", required: true },
-      { key: "taxId", label: "NIF / CIF", inputType: "text", required: true },
+      // Tanda 6b (L6): the profile no longer writes the NIF nor the razón social — they belong to
+      // the legal entity (Configuración › Estructura societaria › Datos fiscales). The
+      // establishment keeps its trade name (invoice block «Establecimiento») and centre code.
+      { key: "tradeName", label: "Nombre comercial (en factura)", inputType: "text" },
+      { key: "code", label: "Código del centro", inputType: "text" },
       { key: "address", label: "Dirección", inputType: "textarea", required: true },
       { key: "country", label: "País", inputType: "select", options: ["ES", "PT", "FR", "IT"], required: true },
       { key: "province", label: "Provincia", inputType: "text" },
@@ -126,7 +129,7 @@ const forms: FormDefinition[] = [
       { key: "tourismTaxRegion", label: "Región de tasa turística", inputType: "select", options: TOURISM_TAX_FIELD_OPTIONS },
       { key: "businessDateRules", label: "Reglas de fecha de negocio", inputType: "textarea" }
     ],
-    checks: ["La razón social, el NIF/CIF y la dirección deben estar completos.", "La región fiscal determina la figura del impuesto (IVA, IGIC o IPSI) y provisiona los tipos del catálogo al guardar.", "El código INE y el código postal los exige SES.HOSPEDAJES para dar de alta el establecimiento.", "La zona horaria y las reglas de fecha de negocio determinan la hora del cierre nocturno (night audit)."]
+    checks: ["El nombre comercial, el código del centro y la dirección deben estar completos; el NIF y la razón social se gestionan en Estructura societaria.", "La región fiscal determina la figura del impuesto (IVA, IGIC o IPSI) y provisiona los tipos del catálogo al guardar.", "El código INE y el código postal los exige SES.HOSPEDAJES para dar de alta el establecimiento.", "La zona horaria y las reglas de fecha de negocio determinan la hora del cierre nocturno (night audit)."]
   },
   {
     code: "building",
@@ -454,13 +457,15 @@ function initialValuesFor(formCode: string, existingData: unknown): Record<strin
   const data = asRecord(existingData);
   if (formCode === "property_profile") {
     const property = asRecord(data.property);
-    const organization = asRecord(data.organization);
     const compliance = asRecord(data.compliance);
     const complianceCfg = asRecord(compliance.configurationJson);
+    // Tanda 6b: `values` is the API's form-key map (tradeName, code, and the read-only
+    // legalName / taxId of the sociedad, which the form shows but never sends back).
+    const current = asRecord(data.values);
     const values: Record<string, unknown> = {
       name: pickText(property, "name"),
-      legalName: pickText(property, "legalName") || pickText(organization, "legalName"),
-      taxId: pickText(organization, "taxId"),
+      tradeName: pickText(current, "tradeName") || pickText(property, "tradeName"),
+      code: pickText(current, "code") || pickText(property, "code"),
       address: pickText(property, "address"),
       country: pickText(property, "country") || "ES",
       province: pickText(property, "province"),
@@ -505,23 +510,46 @@ function initialValuesFor(formCode: string, existingData: unknown): Record<strin
   return {};
 }
 
+/**
+ * Read-only identity of the sociedad the property bills as (Tanda 6b): the API
+ * mirrors `legalName` / `taxId` in `values` so the profile can SHOW them next
+ * to the establishment fields, but the form never sends them back — they are
+ * edited in Configuración › Estructura societaria › Datos fiscales.
+ */
+function legalIdentityOf(formCode: string, existingData: unknown): { legalName: string; taxId: string } | null {
+  if (formCode !== "property_profile") return null;
+  const current = asRecord(asRecord(existingData).values);
+  const legalName = pickText(current, "legalName");
+  const taxId = pickText(current, "taxId");
+  return legalName || taxId ? { legalName, taxId } : null;
+}
+
+/** 409 LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY: the body tried to change the NIF / razón social from the profile. */
+function isLegalIdentityConflict(error: unknown): boolean {
+  const details = (error as { details?: unknown } | null)?.details;
+  return typeof details === "object" && details !== null && (details as { code?: unknown }).code === "LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY";
+}
+
+const STRUCTURE_PATH = urlForScreen("StructureScreen") ?? "/configuracion/estructura-societaria";
+
 // Input constraints for free-text fields the API validates strictly. The
 // field catalog (PropertySetupFormField) carries no pattern/hint, so they are
-// keyed here by field key. FISC-03: the issuer NIF/CIF/NIE feeds VeriFactu
-// hash/QR, so it is normalized (uppercase, no spaces/dashes) and checked
-// against the Spanish tax-id shape client-side; the checksum is validated
-// server-side (isValidSpanishTaxId) and answers 400 with the reason.
-const SPANISH_TAX_ID_PATTERN = "^(?:[0-9]{8}[A-Za-z]|[XYZxyz][0-9]{7}[A-Za-z]|[A-HJNPQRSUVWa-hjnpqrsuvw][0-9]{7}[0-9A-Ja-j])$";
-
+// keyed here by field key. Tanda 6b: the NIF left this form (it is the
+// sociedad's); the centre code is normalised to the 2-6 upper-case pattern of
+// Property.code and checked for uniqueness server-side (409 CODE_IN_USE).
 const TEXT_FIELD_CONSTRAINTS: Record<
   string,
   { pattern?: string; hint?: string; placeholder?: string; normalize?: (value: string) => string }
 > = {
-  taxId: {
-    pattern: SPANISH_TAX_ID_PATTERN,
-    hint: "NIF/CIF/NIE español: 8 dígitos + letra (12345678Z), letra + 7 dígitos + control (B12345678) o NIE (X1234567L). El dígito de control se valida al guardar; sin NIF válido no se puede emitir factura en modo fiscal.",
-    placeholder: "B12345678",
-    normalize: (value) => value.toUpperCase().replace(/[\s-]/g, "")
+  code: {
+    pattern: "^[A-Z0-9]{2,6}$",
+    hint: "De 2 a 6 letras o dígitos (RA, LT, OC). Identifica el centro en las series de factura cuando la sociedad factura desde varios centros.",
+    placeholder: "RA",
+    normalize: (value) => value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 6)
+  },
+  tradeName: {
+    hint: "Se imprime en el bloque «Establecimiento» de la factura; la razón social es la de la sociedad.",
+    placeholder: "Nombre comercial del establecimiento"
   }
 };
 
@@ -671,6 +699,8 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveMessage, setSaveMessage] = useState("Aún no se ha guardado ningún envío.");
+  // Tanda 6b: 409 LEGAL_IDENTITY_MANAGED_BY_LEGAL_ENTITY → callout with the link to Estructura societaria.
+  const [legalIdentityConflict, setLegalIdentityConflict] = useState(false);
 
   useEffect(() => {
     let mounted = true;
@@ -720,10 +750,12 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
       return;
     }
     setSaveState("saving");
+    setLegalIdentityConflict(false);
     try {
       // Never send "" for untouched fields: the API keeps the current value
       // when a key is absent, but persists an empty string when it is present.
-      const payload = Object.fromEntries(Object.entries(values).filter(([, v]) => !(typeof v === "string" && v.trim() === "")));
+      // Tanda 6b: the NIF and the razón social never travel from the profile.
+      const payload = Object.fromEntries(Object.entries(values).filter(([key, v]) => key !== "legalName" && key !== "taxId" && !(typeof v === "string" && v.trim() === "")));
       const response = await savePropertySetupForm(getActivePropertyId(), form.code, payload);
       setSaveState("saved");
       void response;
@@ -733,6 +765,11 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
       }
     } catch (error) {
       setSaveState("error");
+      if (isLegalIdentityConflict(error)) {
+        setLegalIdentityConflict(true);
+        setSaveMessage("El NIF y la razón social se gestionan en Configuración › Estructura societaria › Datos fiscales, no en el perfil del establecimiento.");
+        return;
+      }
       setSaveMessage(error instanceof Error ? error.message : "No se pudo guardar el formulario de configuración.");
     }
   }
@@ -744,6 +781,7 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
   const saveStateLabel = saveState === "saved" ? "Guardado" : saveState === "error" ? "Error" : saving ? "Guardando" : "Pendiente";
   const saveTone: CocoaTone = saveState === "saved" ? "success" : saveState === "error" ? "danger" : saveState === "saving" ? "info" : "neutral";
   const requiredCount = form.fields.filter((field) => field.required).length;
+  const legalIdentity = legalIdentityOf(form.code, form.existingData);
   const submissions = form.submissions?.length ?? 0;
   const existingEntries = form.existingData && typeof form.existingData === "object" ? Object.keys(form.existingData as Record<string, unknown>).length : 0;
 
@@ -779,12 +817,37 @@ function PropertySetupFormScreen({ formCode }: { formCode: string }) {
             <p style={mutedStyle}>
               {form.checks.length > 0 ? `${plural(form.checks.length, "comprobación de validación", "comprobaciones de validación")} más abajo.` : "No hay incidencias de validación pendientes."}
             </p>
-            <CocoaCallout tone={saveTone} title={saveStateLabel} role="status">
+            <CocoaCallout
+              tone={saveTone}
+              title={saveStateLabel}
+              role="status"
+              actions={
+                legalIdentityConflict ? (
+                  <CocoaButton variant="plain" tone="accent" size="small" onClick={() => openTabPath(STRUCTURE_PATH)}>
+                    Abrir Estructura societaria
+                  </CocoaButton>
+                ) : undefined
+              }
+            >
               {saveMessage}
             </CocoaCallout>
           </CocoaSection>
         </CocoaSpan>
       </CocoaGrid>
+
+      {legalIdentity ? (
+        <CocoaCallout
+          tone="info"
+          title={`Factura como ${legalIdentity.legalName || "sociedad sin razón social"}${legalIdentity.taxId ? ` · ${legalIdentity.taxId}` : " · NIF pendiente"}`}
+          actions={
+            <CocoaButton variant="plain" tone="accent" size="small" onClick={() => openTabPath(STRUCTURE_PATH)}>
+              Se gestiona en Estructura societaria
+            </CocoaButton>
+          }
+        >
+          El NIF y la razón social son de la sociedad y se editan en Configuración › Estructura societaria › Datos fiscales. Aquí solo cambias el nombre comercial y el código del establecimiento.
+        </CocoaCallout>
+      ) : null}
 
       <CocoaFormSection
         title="Datos de configuración requeridos"

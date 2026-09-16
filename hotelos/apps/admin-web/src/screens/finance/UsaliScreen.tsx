@@ -21,9 +21,17 @@
 // lib/format turns them into text («—» for null, never a fake 0). The «Sin
 // asignar» block is always painted (runbook §8) and the PGC reconciliation is
 // shown next to it.
+//
+// Tanda 6b · L7 (design §5.3): the header carries the ONE «Ámbito» (sociedad by
+// default, a centre as filter → `propertyId`); the «Por centro» view asks
+// GET /accounting/usali/compare?includeCorporate=1[&allocation=none] so the
+// hotels come with the «Oficina central» and «Sin asignar» columns, the
+// rollup «Total sociedad = Σ hoteles + Oficina central + Sin asignar» and the
+// informative allocation row (never posted) behind a CocoaSwitch.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
+  CorporateAllocationResult,
   UsaliAccountAmount,
   UsaliAccountResolution,
   UsaliCoverage,
@@ -36,15 +44,17 @@ import type {
   UsaliPeriodComparison,
   UsaliPnl,
   UsaliPropertyComparison,
+  UsaliRollupLine,
   UsaliUndistributedDepartment
 } from "@hotelos/shared";
 import { useNavGate } from "../../navigation/useEnabledModules";
-import { getActiveOrganizationId, loadSwitchableProperties, type SwitchableProperty } from "../../services/activeProperty";
+import { apiRequest } from "../../services/api-client";
 import type { NamedDownload } from "../../services/accountingApi";
-import { financeErrorCode, financeErrorDetails, financeErrorStatus } from "../../services/finance-contracts";
+import { compactQuery, financeErrorCode, financeErrorDetails, financeErrorStatus } from "../../services/finance-contracts";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { ALLOCATION_ROW_LABEL, CORPORATE_COLUMN_LABEL, ENTITY_TOTAL_FOOTNOTE, ENTITY_TOTAL_LABEL, UNASSIGNED_COLUMN_LABEL, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   compareUsaliPeriods,
-  compareUsaliProperties,
   deleteUsaliMapping,
   downloadStatement,
   getUsaliCoverage,
@@ -97,10 +107,17 @@ type View = "explotacion" | "propiedades" | "periodos" | "mapeo";
 
 const VIEWS: Array<{ value: View; label: string }> = [
   { value: "explotacion", label: "Cuenta de explotación" },
-  { value: "propiedades", label: "Comparar propiedades" },
+  { value: "propiedades", label: "Por centro" },
   { value: "periodos", label: "Comparar periodos" },
   { value: "mapeo", label: "Mapeo de cuentas" }
 ];
+
+/** GET /accounting/usali/compare?from&to&includeCorporate=1[&allocation=none] (Tanda 6b): hotels + «Oficina central» + «Sin asignar» + rollup + informative allocation. */
+function compareUsaliCentres(window: { from: string; to: string; applyAllocation: boolean }): Promise<UsaliPropertyComparison> {
+  return apiRequest<UsaliPropertyComparison>("/accounting/usali/compare", {
+    query: compactQuery({ from: window.from, to: window.to, includeCorporate: "1", allocation: window.applyAllocation ? undefined : "none" })
+  });
+}
 
 type Preset = "mes" | "trimestre" | "anio" | "personalizado";
 
@@ -218,24 +235,6 @@ function saveDownload(file: NamedDownload): void {
   URL.revokeObjectURL(url);
 }
 
-function useOrganizationScope() {
-  const organizationId = getActiveOrganizationId();
-  const [properties, setProperties] = useState<SwitchableProperty[]>([]);
-  useEffect(() => {
-    let alive = true;
-    loadSwitchableProperties()
-      .then((list) => {
-        if (alive) setProperties(list.filter((property) => property.organizationId === organizationId));
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [organizationId]);
-  const organizationName = properties.find((property) => property.organizationName)?.organizationName ?? "Organización";
-  return { organizationId, organizationName, properties };
-}
-
 function validWindow(from: string, to: string): boolean {
   return ISO_DAY.test(from) && ISO_DAY.test(to) && from <= to;
 }
@@ -313,7 +312,9 @@ function WarningList({ items, title }: { items: string[]; title: string }) {
 export function UsaliScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
-  const { organizationName, properties } = useOrganizationScope();
+  // Tanda 6b · L7: the «Ámbito» of the header (sociedad by default, a centre as filter) is the `propertyId` of the statement.
+  const finance = useFinanceScope(financeScopePolicy("UsaliScreen"));
+  const propertyId = finance.propertyId ?? "";
   // Real grants of the active property (never the demo union of the login payload):
   // unknown while the profile loads → enabled, the API answers 403 if it must.
   const configurable = canDo(useNavGate(), "accounting.configure");
@@ -322,16 +323,16 @@ export function UsaliScreen() {
   const [view, setView] = useState<View>("explotacion");
   const [preset, setPreset] = useState<Preset>("anio");
   const [range, setRange] = useState(() => presetWindow("anio", today));
-  const [propertyId, setPropertyId] = useState("");
+  const [applyAllocation, setApplyAllocation] = useState(false);
   const [downloading, setDownloading] = useState<string | null>(null);
 
   const windowOk = validWindow(range.from, range.to);
   const scopeKey = windowOk ? `${range.from}..${range.to}:${propertyId}` : null;
-  const property = properties.find((row) => row.id === propertyId) ?? null;
+  const property = finance.centre;
 
   const pnl = useStatement<UsaliPnl>(view === "explotacion" ? scopeKey : null, () => getUsaliPnl({ from: range.from, to: range.to, propertyId: propertyId || undefined }));
   const coverage = useStatement<UsaliCoverage>(view === "explotacion" && windowOk ? `${range.from}..${range.to}` : null, () => getUsaliCoverage({ from: range.from, to: range.to }));
-  const comparison = useStatement<UsaliPropertyComparison>(view === "propiedades" && windowOk ? `${range.from}..${range.to}` : null, () => compareUsaliProperties({ from: range.from, to: range.to }));
+  const comparison = useStatement<UsaliPropertyComparison>(view === "propiedades" && windowOk ? `${range.from}..${range.to}:${applyAllocation ? "reparto" : "sin-reparto"}` : null, () => compareUsaliCentres({ from: range.from, to: range.to, applyAllocation }));
   const mappings = useStatement<UsaliMappingsResponse>(view === "mapeo" && windowOk ? `${range.from}..${range.to}` : null, () => getUsaliMappings({ from: range.from, to: range.to }));
 
   function choosePreset(value: string) {
@@ -357,11 +358,12 @@ export function UsaliScreen() {
   const activePending = Boolean(active && active.loading && !active.data);
   const activeFailed = Boolean(active && active.error && !active.data);
   const loadErrorMessage = active?.error ? errorText(active.error, "No se pudo generar la información USALI.") : undefined;
-  const scopeLabel = `${dateRange(range.from, range.to)} · ${property ? property.name : "toda la organización"}`;
+  const scopeLabel = `${dateRange(range.from, range.to)} · ${finance.scope.label}`;
 
   const actions = (
     <>
       {active && active.loading && active.data ? <CocoaBadge tone="info">actualizando</CocoaBadge> : null}
+      <FinanceScopeSelector scope={finance} />
       {view === "explotacion"
         ? DOWNLOAD_FORMATS.map((format) => (
             <CocoaButton key={format} variant="bordered" tone="neutral" size="small" disabled={!pnl.data} loading={downloading === format} onClick={() => void download(format)}>
@@ -379,7 +381,7 @@ export function UsaliScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${organizationName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="USALI"
       subtitle={hosted ? undefined : `Cuenta de explotación por departamentos según USALI (11.ª edición), ratios por habitación disponible y ocupada, y mapeo de cuentas PGC · ${scopeLabel}`}
       actions={actions}
@@ -395,7 +397,7 @@ export function UsaliScreen() {
       <CocoaSection
         title="Periodo y ámbito"
         meta={pnl.data ? `generado ${dateTime(pnl.data.generatedAt)}` : undefined}
-        footer={view === "propiedades" ? "La comparación entre propiedades usa el periodo y recorre todas las propiedades de la organización." : view === "mapeo" ? "El periodo sirve para señalar las cuentas sin mapeo que además tienen movimientos." : undefined}
+        footer={view === "propiedades" ? "La vista por centro usa el periodo y recorre todos los centros de la sociedad: hoteles, oficina central y asientos sin centro." : view === "mapeo" ? "El periodo sirve para señalar las cuentas sin mapeo que además tienen movimientos." : undefined}
       >
         <div className="cocoa-stack" data-gap="3">
           <CocoaSegmentedControl value={preset} onChange={choosePreset} options={PRESETS} aria-label="Periodo" />
@@ -418,9 +420,11 @@ export function UsaliScreen() {
                 }}
               />
             </CocoaField>
-            <CocoaField label={FIELD_LABELS.property} help={view === "propiedades" ? "No aplica a la comparación entre propiedades." : undefined}>
-              <CocoaSelect value={propertyId} onChange={setPropertyId} disabled={view === "propiedades"} options={[{ value: "", label: "Toda la organización" }, ...properties.map((row) => ({ value: row.id, label: row.name }))]} />
-            </CocoaField>
+            {view === "propiedades" ? (
+              <CocoaField label="Aplicar reparto de oficina central (informativo)" inline help="Reparte el coste de la oficina entre los hoteles con la clave configurada en Estructura societaria › Reparto. Nunca se contabiliza.">
+                <CocoaSwitch checked={applyAllocation} onChange={setApplyAllocation} size="small" />
+              </CocoaField>
+            ) : null}
           </CocoaFormRow>
         </div>
       </CocoaSection>
@@ -430,7 +434,7 @@ export function UsaliScreen() {
       {windowOk && activeFailed ? <CocoaState kind="error" title={STATUS_LABELS.loadError} message={loadErrorMessage} onRetry={active?.refresh} /> : null}
 
       {windowOk && view === "explotacion" && pnl.data ? <OperatingStatementView pnl={pnl.data} coverage={coverage.data} onOpenMapping={() => setView("mapeo")} /> : null}
-      {windowOk && view === "propiedades" && comparison.data ? <PropertiesComparisonView comparison={comparison.data} /> : null}
+      {windowOk && view === "propiedades" && comparison.data ? <PropertiesComparisonView comparison={comparison.data} applyAllocation={applyAllocation} /> : null}
       {windowOk && view === "periodos" ? <PeriodsComparisonView range={range} propertyId={propertyId} propertyName={property?.name ?? null} /> : null}
       {windowOk && view === "mapeo" && mappings.data ? <MappingEditorView response={mappings.data} configurable={configurable} onReplace={mappings.replace} /> : null}
     </CocoaPage>
@@ -777,13 +781,21 @@ function OperatingStatementView({ pnl, coverage, onOpenMapping }: { pnl: UsaliPn
 }
 
 // ---------------------------------------------------------------------------
-// Comparar propiedades
+// Por centro (hoteles · Oficina central · Sin asignar · Total sociedad)
 // ---------------------------------------------------------------------------
 
 type MetricRow = { key: string; label: string; values: Record<string, string> };
 
+/** Extra columns of the Tanda 6b comparison (`includeCorporate=1`): the office / other centres and the society-level entries. */
+function extraColumns(comparison: UsaliPropertyComparison): Array<{ key: string; pnl: UsaliPnl }> {
+  const out: Array<{ key: string; pnl: UsaliPnl }> = [];
+  if (comparison.corporate) out.push({ key: "corporate", pnl: comparison.corporate.pnl });
+  if (comparison.unassigned) out.push({ key: "unassigned", pnl: comparison.unassigned });
+  return out;
+}
+
 function metricRows(comparison: UsaliPropertyComparison): MetricRow[] {
-  const columns = [...comparison.properties.map((entry) => ({ key: entry.propertyId, pnl: entry.pnl })), { key: "consolidated", pnl: comparison.consolidated }];
+  const columns = [...comparison.properties.map((entry) => ({ key: entry.propertyId, pnl: entry.pnl })), ...extraColumns(comparison), { key: "consolidated", pnl: comparison.consolidated }];
   const metric = (key: string, label: string, pick: (pnl: UsaliPnl) => string): MetricRow => ({
     key,
     label,
@@ -806,20 +818,67 @@ function metricRows(comparison: UsaliPropertyComparison): MetricRow[] {
   ];
 }
 
-function PropertiesComparisonView({ comparison }: { comparison: UsaliPropertyComparison }) {
+// The currency comes from the statement (`consolidated.currency`), never a literal.
+const ROLLUP_COLUMNS = (currency: string): CocoaTableColumn<UsaliRollupLine>[] => [
+  { key: "label", label: "Indicador", render: (row) => <strong>{row.label}</strong> },
+  { key: "hotels", label: "Σ hoteles", align: "right", render: (row) => amountCell(row.hotels, currency) },
+  { key: "corporate", label: CORPORATE_COLUMN_LABEL, align: "right", hideOnNarrow: true, render: (row) => amountCell(row.corporate, currency) },
+  { key: "unassigned", label: UNASSIGNED_COLUMN_LABEL, align: "right", hideOnNarrow: true, render: (row) => amountCell(row.unassigned, currency) },
+  { key: "total", label: ENTITY_TOTAL_LABEL, align: "right", render: (row) => <strong className="cocoa-tabular">{money(row.total, currency)}</strong> },
+  { key: "ok", label: "Cuadra", render: (row) => <CocoaBadge tone={row.ok ? "success" : "danger"} variant="dot">{row.ok ? "Sí" : "No"}</CocoaBadge> }
+];
+
+type AllocationShareRow = { propertyId: string; name: string; allocated: string; gopAfter: string; ebitdaAfter: string };
+
+const ALLOCATION_COLUMNS = (currency: string): CocoaTableColumn<AllocationShareRow>[] => [
+  { key: "name", label: "Hotel", render: (row) => <strong>{row.name}</strong> },
+  { key: "allocated", label: "Coste repartido", align: "right", render: (row) => amountCell(row.allocated, currency) },
+  { key: "gopAfter", label: "GOP tras reparto", align: "right", render: (row) => amountCell(row.gopAfter, currency) },
+  { key: "ebitdaAfter", label: "EBITDA tras reparto", align: "right", hideOnNarrow: true, render: (row) => amountCell(row.ebitdaAfter, currency) }
+];
+
+function AllocationSection({ comparison, allocation, applied }: { comparison: UsaliPropertyComparison; allocation: CorporateAllocationResult | null | undefined; applied: boolean }) {
+  const currency = comparison.consolidated.currency;
+  const columns = useMemo(() => ALLOCATION_COLUMNS(currency), [currency]);
+  const rows: AllocationShareRow[] = comparison.properties.filter((entry) => entry.allocation).map((entry) => ({ propertyId: entry.propertyId, name: entry.propertyName, allocated: entry.allocation!.allocated, gopAfter: entry.allocation!.gopAfterAllocation, ebitdaAfter: entry.allocation!.ebitdaAfterAllocation }));
+  return (
+    <CocoaSection title={ALLOCATION_ROW_LABEL} meta={allocation ? allocation.basisLabel : undefined} footer="Solo cambia esta vista: el Diario y los impuestos no se tocan (R5).">
+      {!applied ? (
+        <CocoaState kind="empty" inline title="Reparto desactivado: activa «Aplicar reparto de oficina central» para ver el GOP de cada hotel tras absorber el coste de la oficina." />
+      ) : !allocation || allocation.method === "none" ? (
+        <CocoaState kind="empty" inline title="La clave de reparto de la sociedad es «ninguno»: se configura en Configuración › Estructura societaria › Reparto." />
+      ) : (
+        <div className="cocoa-stack" data-gap="3">
+          <div className="cocoa-row" data-gap="4" data-align="start">
+            <CocoaStat label="Coste corporativo" value={money(allocation.corporateCost, currency)} hint={allocation.applied ? `${allocation.basisLabel} · repartido ${money(allocation.allocated, currency)}` : "no se ha repartido nada"} />
+            <CocoaStat label="Contabilizado" value={<CocoaBadge tone="info">No: solo informativo</CocoaBadge>} tabular={false} />
+          </div>
+          {rows.length > 0 ? <CocoaTable columns={columns} rows={rows} rowKey="propertyId" density="compact" caption="Reparto informativo por hotel" aria-label="Reparto informativo por hotel" /> : null}
+          {allocation.warnings.length > 0 ? <WarningList items={allocation.warnings} title="Avisos del reparto" /> : null}
+        </div>
+      )}
+    </CocoaSection>
+  );
+}
+
+function PropertiesComparisonView({ comparison, applyAllocation }: { comparison: UsaliPropertyComparison; applyAllocation: boolean }) {
   const rows = useMemo(() => metricRows(comparison), [comparison]);
+  const rollupColumns = useMemo(() => ROLLUP_COLUMNS(comparison.consolidated.currency), [comparison.consolidated.currency]);
+  const withStructure = comparison.corporate !== undefined || comparison.unassigned !== undefined;
   const columns = useMemo<CocoaTableColumn<MetricRow>[]>(
     () => [
       { key: "label", label: "Indicador", render: (row) => <strong>{row.label}</strong> },
       ...comparison.properties.map<CocoaTableColumn<MetricRow>>((entry) => ({
         key: entry.propertyId,
-        label: entry.propertyName,
+        label: entry.propertyCode ? `${entry.propertyName} (${entry.propertyCode})` : entry.propertyName,
         align: "right",
         render: (row) => <span className="cocoa-tabular">{row.values[entry.propertyId] ?? "—"}</span>
       })),
-      { key: "consolidated", label: "Consolidado", align: "right", render: (row) => <strong className="cocoa-tabular">{row.values.consolidated ?? "—"}</strong> }
+      ...(comparison.corporate ? [{ key: "corporate", label: CORPORATE_COLUMN_LABEL, align: "right" as const, hideOnNarrow: true, render: (row: MetricRow) => <span className="cocoa-tabular">{row.values.corporate ?? "—"}</span> }] : []),
+      ...(comparison.unassigned ? [{ key: "unassigned", label: UNASSIGNED_COLUMN_LABEL, align: "right" as const, hideOnNarrow: true, render: (row: MetricRow) => <span className="cocoa-tabular">{row.values.unassigned ?? "—"}</span> }] : []),
+      { key: "consolidated", label: withStructure ? ENTITY_TOTAL_LABEL : "Consolidado", align: "right", render: (row) => <strong className="cocoa-tabular">{row.values.consolidated ?? "—"}</strong> }
     ],
-    [comparison.properties]
+    [comparison.properties, comparison.corporate, comparison.unassigned, withStructure]
   );
   const gopBars: CocoaBarsDatum[] = comparison.properties.map((entry) => ({ label: entry.propertyName, value: toNumber(entry.pnl.gop) ?? 0, hint: `${entry.propertyName} · ingresos ${money(entry.pnl.totalOperatingRevenue, entry.pnl.currency)}` }));
   const revparBars: CocoaBarsDatum[] = comparison.properties.map((entry) => ({ label: entry.propertyName, value: toNumber(entry.pnl.ratios.revpar) ?? 0, hint: entry.pnl.ratios.revpar === null ? `${entry.propertyName} · sin habitaciones disponibles` : entry.propertyName }));
@@ -827,21 +886,31 @@ function PropertiesComparisonView({ comparison }: { comparison: UsaliPropertyCom
   const unassigned = comparison.properties.filter((entry) => entry.pnl.unassigned.accounts.length > 0);
 
   if (comparison.properties.length === 0) {
-    return <CocoaState kind="empty" title="Sin propiedades que comparar" message="La organización no tiene propiedades con actividad en el periodo." />;
+    return <CocoaState kind="empty" title="Sin hoteles que comparar" message="La sociedad no tiene hoteles con actividad en el periodo." />;
   }
+
+  const entityName = comparison.entity?.legalName ?? "la sociedad";
+  const totalLabel = withStructure ? ENTITY_TOTAL_LABEL.toLowerCase() : "consolidado";
 
   return (
     <>
       <WarningList items={unassigned.map((entry) => `${entry.propertyName}: ${plural(entry.pnl.unassigned.accounts.length, "cuenta sin asignar", "cuentas sin asignar")} (${money(entry.pnl.unassigned.net, entry.pnl.currency)} netos)`)} title="Cuentas sin línea USALI en el periodo" />
-      <CocoaKpiStrip stagger aria-label="Consolidado de la organización">
-        <CocoaKpi label="Ingresos operativos" value={money(comparison.consolidated.totalOperatingRevenue, currency)} deltaLabel="consolidado" polarity="neutral" />
-        <CocoaKpi label="GOP" value={money(comparison.consolidated.gop, currency)} deltaLabel="consolidado" polarity="positive-good" />
-        <CocoaKpi label="EBITDA" value={money(comparison.consolidated.ebitda, currency)} deltaLabel="consolidado" polarity="positive-good" />
-        <CocoaKpi label="Propiedades" value={number(comparison.properties.length)} deltaLabel={dateRange(comparison.period.from, comparison.period.to)} polarity="neutral" />
+      <CocoaKpiStrip stagger aria-label={`Total de ${entityName}`}>
+        <CocoaKpi label="Ingresos operativos" value={money(comparison.consolidated.totalOperatingRevenue, currency)} deltaLabel={totalLabel} polarity="neutral" />
+        <CocoaKpi label="GOP" value={money(comparison.consolidated.gop, currency)} deltaLabel={totalLabel} polarity="positive-good" />
+        <CocoaKpi label="EBITDA" value={money(comparison.consolidated.ebitda, currency)} deltaLabel={totalLabel} polarity="positive-good" />
+        {comparison.corporate ? <CocoaKpi label={CORPORATE_COLUMN_LABEL} caption={plural(comparison.corporate.centres.length, "centro no alojativo", "centros no alojativos")} value={money(comparison.corporate.pnl.gop, currency)} deltaLabel="GOP" polarity="neutral" /> : null}
+        <CocoaKpi label="Hoteles" value={number(comparison.properties.length)} deltaLabel={dateRange(comparison.period.from, comparison.period.to)} polarity="neutral" />
       </CocoaKpiStrip>
-      <CocoaSection title="Propiedades comparadas" meta={`generado ${dateTime(comparison.generatedAt)}`} footer="El consolidado es el libro completo de la organización cuando se comparan todas las propiedades.">
-        <CocoaTable columns={columns} rows={rows} rowKey="key" density="compact" caption="Comparación entre propiedades" aria-label="Comparación entre propiedades" />
+      <CocoaSection title="Centros comparados" meta={`generado ${dateTime(comparison.generatedAt)}`} footer={withStructure ? ENTITY_TOTAL_FOOTNOTE : "El consolidado es el libro completo de la sociedad cuando se comparan todos los centros."}>
+        <CocoaTable columns={columns} rows={rows} rowKey="key" density="compact" stickyFirstColumn caption="Comparación entre centros de trabajo" aria-label="Comparación entre centros de trabajo" />
       </CocoaSection>
+      {comparison.rollup && comparison.rollup.length > 0 ? (
+        <CocoaSection title={ENTITY_TOTAL_LABEL} meta="Σ hoteles + Oficina central + Sin asignar">
+          <CocoaTable columns={rollupColumns} rows={comparison.rollup} rowKey="metric" density="compact" caption="Comprobación del total de la sociedad" aria-label="Comprobación del total de la sociedad" />
+        </CocoaSection>
+      ) : null}
+      {withStructure ? <AllocationSection comparison={comparison} allocation={comparison.allocation} applied={applyAllocation} /> : null}
       <CocoaGrid aria-label="Gráficos de la comparación" align="start">
         <CocoaSpan cols={6} min={320}>
           <CocoaSection title="GOP por propiedad">
@@ -913,7 +982,7 @@ function PeriodsComparisonView({ range, propertyId, propertyName }: { range: Per
 
   return (
     <>
-      <CocoaSection title="Periodos a comparar" meta={`${plural(periods.length, "periodo", "periodos")} · el primero es la base`} footer={propertyName ? `Ámbito: ${propertyName}.` : "Ámbito: toda la organización."}>
+      <CocoaSection title="Periodos a comparar" meta={`${plural(periods.length, "periodo", "periodos")} · el primero es la base`} footer={propertyName ? `Ámbito: ${propertyName}.` : "Ámbito: toda la sociedad."}>
         <div className="cocoa-stack" data-gap="3">
           {periods.map((period, index) => (
             <CocoaFormRow key={index} columns={3} min={200}>
@@ -1134,7 +1203,7 @@ function MappingEditorView({ response, configurable, onReplace }: { response: Us
       )}
 
       <CocoaSection
-        title="Reglas propias de la organización"
+        title="Reglas propias de la sociedad"
         meta={mappings.length > 0 ? plural(mappings.length, "regla", "reglas") : undefined}
         action={
           <CocoaButton variant="plain" tone="accent" size="small" disabled={!configurable} onClick={() => openForm({})}>

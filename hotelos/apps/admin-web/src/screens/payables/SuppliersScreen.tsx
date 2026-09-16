@@ -18,6 +18,7 @@ import type { RetentionRowCode } from "@hotelos/shared";
 import { createSupplier, listSuppliers, updateSupplier, type SupplierDto, type SupplierUpsertRequest } from "../../services/payablesApi";
 import { useToast } from "../../components/Toast";
 import { useTabHost } from "../tabs/TabHost";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { percent, plural } from "../../lib/format";
 import { ACTIONS, FIELD_LABELS, STATUS_LABELS, newLabel } from "../../content/actions";
 import {
@@ -218,6 +219,8 @@ const COLUMNS: CocoaTableColumn<SupplierDto>[] = [
 
 export function SuppliersScreen() {
   const hosted = useTabHost() !== null;
+  // Tanda 6b · L7: the supplier directory belongs to the sociedad (forced scope; the selector is not painted here).
+  const finance = useFinanceScope(financeScopePolicy("SuppliersScreen"));
   const { showToast } = useToast();
   const [search, setSearch] = useState("");
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("active");
@@ -313,9 +316,9 @@ export function SuppliersScreen() {
 
   return (
     <CocoaPage
-      eyebrow="Finanzas · Organización"
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Proveedores"
-      subtitle={hosted ? undefined : "Directorio de proveedores de la organización: NIF e IBAN validados, plazo de pago, cuenta de gasto habitual y retención."}
+      subtitle={hosted ? undefined : "Directorio de proveedores de la sociedad, compartido por todos sus centros: NIF e IBAN validados, plazo de pago, cuenta de gasto habitual y retención."}
       actions={
         <CocoaButton variant="filled" tone="accent" size={hosted ? "small" : "regular"} onClick={openNew}>
           {newSupplierLabel}

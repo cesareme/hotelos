@@ -26,7 +26,10 @@ export const SYSTEM_ACTOR_LABELS: Readonly<Record<string, string>> = Object.free
   usr_system_demo_refresh: "refresco de los datos de demostración",
   usr_system_pilot_provision: "alta de la propiedad piloto",
   usr_system_pms_import: "importación del histórico del PMS",
-  usr_system_channels_seed: "carga de canales de prueba"
+  usr_system_channels_seed: "carga de canales de prueba",
+  // Tanda 6b: backfill of the sociedad, centre codes and VeriFactu installations, and the Faranda → CELUISMA migration CLI (L8).
+  usr_system_legal_structure: "alta de la estructura societaria",
+  usr_system_faranda_celuisma: "migración de Faranda a CELUISMA"
 });
 
 export const SYSTEM_ACTOR_FALLBACK_LABEL = "Sistema";

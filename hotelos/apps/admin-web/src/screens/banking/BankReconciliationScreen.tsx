@@ -27,7 +27,8 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { BankLineSuggestion, MatchConfidence, ReconcileTargetType } from "@hotelos/shared";
 import { useApiData } from "../../hooks/useApiData";
 import { apiRequest } from "../../services/api-client";
-import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   autoReconcileStatement,
   getBankLineSuggestions,
@@ -259,8 +260,10 @@ function ReconciliationSkeleton() {
 
 export function BankReconciliationScreen() {
   const hosted = useTabHost() !== null;
-  const propertyId = getActivePropertyId();
-  const propertyName = getActiveProperty().propertyName;
+  // Tanda 6b · L7: bank accounts hang from a hotel today (`bank_accounts.property_id` NOT NULL): the «Ámbito» offers the
+  // centres (never the oficina central) and defaults to the active hotel.
+  const finance = useFinanceScope(financeScopePolicy("BankReconciliationScreen"), { excludeOffice: true });
+  const propertyId = finance.propertyId ?? finance.active.propertyId;
   const { showToast } = useToast();
   const tier = useViewportTier();
   const compact = tier === "phone" || tier === "tablet";
@@ -737,12 +740,13 @@ export function BankReconciliationScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${propertyName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Conciliación bancaria"
       subtitle={hosted ? undefined : "Importa los extractos del banco, casa cada movimiento con los cobros, liquidaciones de datáfono, facturas recibidas, nóminas y comisiones, y compara el saldo del banco con la cuenta 572 del libro."}
       actions={
         <>
           {accountsState.loading || statementState.loading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAccount}>
             {ACTIONS.refresh}
           </CocoaButton>

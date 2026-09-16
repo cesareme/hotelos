@@ -11,14 +11,21 @@
 // /fiscal/vat-books/rebuild, accounting.configure, confirmed) that
 // materialises a period from its documents. Errors map details.code through
 // fiscalErrorText; nothing is written without the dialog.
+//
+// Tanda 6b · L7 (design §5.3): the books are FORCED to the sociedad («Ámbito»
+// disabled, services/financeScope.ts), the badge «Declarante: <razón social> ·
+// <NIF>» comes from `settings.sociedad`, a centre can be picked as «Desglose
+// por centro» (informative partial book) and the SII / gran empresa regime
+// paints a warning callout.
 
 import { useMemo, useState, type ReactNode } from "react";
 import type { VatBookName, VatBookResponse, VatBookRowDto, VatBookTotalsByRate } from "@hotelos/shared";
 import { useToast } from "../../components/Toast";
 import { ACTIONS, UI_STATES } from "../../content/actions";
 import { date, money, number, percent, plural } from "../../lib/format";
-import { getActiveProperty } from "../../services/activeProperty";
+import { FinanceDeclaranteBadge, FinanceRegimeCallout, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
 import { getVatBook, getVatSettings, rebuildVatBooks } from "../../services/fiscalApi";
+import { centreNameFor, centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { useTabHost } from "../tabs/TabHost";
 import {
   CocoaBadge,
@@ -60,7 +67,8 @@ import {
 } from "./fiscal-shared";
 import { useFiscalResource } from "./useFiscalResource";
 
-type Scope = "organization" | "property";
+/** «Desglose por centro»: the whole book of the sociedad (default) or the informative partial book of one centre. */
+const WHOLE_BOOK_OPTION = { value: "", label: "Libro de la sociedad" };
 
 const BOOK_OPTIONS = BOOK_ORDER.map((book) => ({ value: book, label: BOOK_LABELS[book] }));
 
@@ -137,16 +145,18 @@ function columnsFor(book: VatBookName): CocoaTableColumn<VatBookRowDto>[] {
 export function VatBooksScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
-  const property = getActiveProperty();
+  const finance = useFinanceScope(financeScopePolicy("VatBooksScreen"));
 
   const settings = useFiscalResource("vat-settings", getVatSettings);
   const periodicity = settings.data?.periodicity ?? "quarterly";
+  const sociedad = settings.data?.sociedad ?? null;
 
   const years = useMemo(() => yearOptions(), []);
   const [book, setBook] = useState<VatBookName>("emitidas");
   const [year, setYear] = useState(() => years[0]?.value ?? String(new Date().getUTCFullYear()));
   const [period, setPeriod] = useState(() => `${years[0]?.value ?? String(new Date().getUTCFullYear())}-Q${currentQuarter()}`);
-  const [scope, setScope] = useState<Scope>("organization");
+  // Informative breakdown of one centre («vista parcial»); "" = the whole book of the sociedad.
+  const [breakdown, setBreakdown] = useState("");
   const [search, setSearch] = useState("");
   const [sortBy, setSortBy] = useState<CocoaTableSort>({ key: "date", direction: "asc" });
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -154,7 +164,9 @@ export function VatBooksScreen() {
   const [rebuilding, setRebuilding] = useState(false);
 
   const periodOptions = useMemo(() => bookPeriodOptions(year, periodicity), [year, periodicity]);
-  const propertyId = scope === "property" ? property.propertyId : undefined;
+  const breakdownOptions = useMemo(() => [WHOLE_BOOK_OPTION, ...centreSelectOptions(finance.structure, finance.active).map((option) => ({ ...option, label: `Desglose · ${option.label}` }))], [finance.structure, finance.active]);
+  const propertyId = breakdown || undefined;
+  const breakdownName = centreNameFor(finance.structure, propertyId);
   const key = `${book}|${period}|${propertyId ?? ""}`;
   const resource = useFiscalResource<VatBookResponse>(key, () => getVatBook({ book, period, propertyId }));
   const data = resource.data;
@@ -214,8 +226,9 @@ export function VatBooksScreen() {
 
   const actions = (
     <>
+      <FinanceDeclaranteBadge sociedad={sociedad} />
       {settings.data ? (
-        <CocoaBadge tone={settings.data.persisted ? "neutral" : "warning"} variant="outline" uppercase={false} title={settings.data.persisted ? "Ajustes de IVA de la organización" : "La organización aún no ha guardado sus ajustes de IVA: se aplican los valores por defecto."}>
+        <CocoaBadge tone={settings.data.persisted ? "neutral" : "warning"} variant="outline" uppercase={false} title={settings.data.persisted ? "Ajustes de IVA de la sociedad" : "La sociedad aún no ha guardado sus ajustes de IVA: se aplican los valores por defecto."}>
           {settings.data.taxFigure} · {PERIODICITY_LABELS[settings.data.periodicity]} · {REGIME_LABELS[settings.data.regime]}
           {settings.data.prorrataPct !== null ? ` · prorrata ${percent(settings.data.prorrataPct, { maximumFractionDigits: 2 })}` : ""}
           {settings.data.persisted ? "" : " · por defecto"}
@@ -232,7 +245,7 @@ export function VatBooksScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Cumplimiento · ${property.propertyName}`}
+      eyebrow={finance.eyebrow("Cumplimiento")}
       title="Libros de IVA"
       subtitle={hosted ? undefined : "Libros registro de facturas emitidas, recibidas y bienes de inversión por periodo: la fuente única de los modelos 303, 390 y 347."}
       actions={actions}
@@ -253,21 +266,20 @@ export function VatBooksScreen() {
         }
         rightSlot={
           <>
-            <CocoaSelect size="small" aria-label="Periodo" value={period} onChange={setPeriod} options={periodOptions} />
-            <CocoaSelect size="small" aria-label="Ejercicio" value={year} onChange={changeYear} options={years} />
-            <CocoaSelect
-              size="small"
-              aria-label="Ámbito"
-              value={scope}
-              onChange={(value) => setScope(value === "property" ? "property" : "organization")}
-              options={[
-                { value: "organization", label: "Toda la organización" },
-                { value: "property", label: `Solo ${property.propertyName}` }
-              ]}
-            />
+            <CocoaSelect size="small" inline aria-label="Periodo" value={period} onChange={setPeriod} options={periodOptions} />
+            <CocoaSelect size="small" inline aria-label="Ejercicio" value={year} onChange={changeYear} options={years} />
+            <FinanceScopeSelector scope={finance} />
+            {breakdownOptions.length > 1 ? <CocoaSelect size="small" inline aria-label="Desglose por centro" value={breakdown} onChange={setBreakdown} options={breakdownOptions} /> : null}
           </>
         }
       />
+
+      <FinanceRegimeCallout regimen={sociedad?.regimen} />
+      {propertyId ? (
+        <CocoaCallout tone="warning" title="Desglose por centro: vista parcial, no liquidable">
+          El libro de {breakdownName} es un auxiliar informativo: los libros registro y los modelos son de la sociedad {sociedad?.legalName ?? finance.entityName} por todos sus centros.
+        </CocoaCallout>
+      ) : null}
 
       {data && data.origen === "documentos" ? (
         <CocoaCallout
@@ -379,7 +391,7 @@ export function VatBooksScreen() {
             <CocoaStat label="Figura impositiva" value={selected.taxFigure} tabular={false} />
             <CocoaStat label="Deducible" value={selected.deductible ? "Sí" : "No"} tone={selected.deductible ? undefined : "warning"} tabular={false} />
             <CocoaStat label="Periodo de liquidación" value={selected.period} />
-            <CocoaStat label="Establecimiento" value={selected.propertyId === property.propertyId ? property.propertyName : selected.propertyId ?? "Toda la organización"} tabular={false} />
+            <CocoaStat label="Centro de trabajo" value={centreNameFor(finance.structure, selected.propertyId)} tabular={false} />
             <CocoaStat label="Fila" value={selected.id ? "Materializada en el libro" : "Derivada del documento (sin materializar)"} tone={selected.id ? undefined : "warning"} tabular={false} />
           </div>
         ) : null}
@@ -390,7 +402,7 @@ export function VatBooksScreen() {
         onClose={() => setAskRebuild(false)}
         tone="destructive"
         title={`¿Reconstruir los libros de ${period}?`}
-        description={`Se eliminan las filas materializadas de los tres libros en ${periodRangeLabel(period) ?? period}${propertyId ? ` para ${property.propertyName}` : ""} y se vuelven a generar desde los documentos. Los modelos leerán después las filas guardadas; los importes solo cambian si los documentos han cambiado.`}
+        description={`Se eliminan las filas materializadas de los tres libros en ${periodRangeLabel(period) ?? period}${propertyId ? ` para ${breakdownName}` : " de toda la sociedad"} y se vuelven a generar desde los documentos. Los modelos leerán después las filas guardadas; los importes solo cambian si los documentos han cambiado.`}
         confirmLabel="Reconstruir libros"
         busy={rebuilding}
         onConfirm={rebuild}

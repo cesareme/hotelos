@@ -28,15 +28,16 @@ const FARANDA_MODULES = ["pms_core", "distribution_hub", "compliance_hub", "gues
 // pilots/tanda5-nav-tree.md §3 — items / categories per role with every module on.
 const EXPECTED: Record<Exclude<RoleToken, "publico">, { items: number; categories: number }> = {
   // Tanda 6 (Finanzas): Contabilidad and Proveedores y gastos add 2 items for direccion, finanzas and admin.
-  direccion: { items: 66, categories: 9 },
+  // Tanda 6b: Estructura societaria adds 1 item for direccion, finanzas and admin.
+  direccion: { items: 67, categories: 9 },
   recepcion: { items: 22, categories: 9 },
   pisos: { items: 5, categories: 3 },
   mantenimiento: { items: 8, categories: 3 },
   revenue: { items: 20, categories: 5 },
-  finanzas: { items: 30, categories: 6 },
+  finanzas: { items: 31, categories: 6 },
   comercial: { items: 14, categories: 5 },
   fnb: { items: 5, categories: 2 },
-  admin: { items: 66, categories: 9 }
+  admin: { items: 67, categories: 9 }
 };
 
 function screenKeys(categories: readonly MenuCategory[]): string[] {
@@ -94,10 +95,11 @@ describe("Sidebar menu · visibility per role (§3 of the tree)", () => {
 });
 
 describe("Sidebar menu · module gates (§6)", () => {
-  it("Faranda's six modules hide the six module-gated items for dirección (60 visible)", () => {
+  it("Faranda's six modules hide the six module-gated items for dirección (61 visible)", () => {
     const categories = menuCategories(["direccion"], FARANDA_MODULES);
     const counts = countMenu(categories);
-    assert.equal(counts.items, 60);
+    // Tanda 6b: Estructura societaria (core) adds one visible item.
+    assert.equal(counts.items, 61);
     assert.equal(counts.locked, 0);
     const keys = new Set(screenKeys(categories));
     for (const hidden of ["WorkforceDashboard", "SafetyDashboard", "ProcurementDashboard", "CrmDashboard", "ReputationDashboard", "AnalyticsCenterDashboard"]) {
@@ -110,7 +112,7 @@ describe("Sidebar menu · module gates (§6)", () => {
   it("with modules.enable the same six items are painted locked with «Activar módulo»", () => {
     const categories = menuCategories(["direccion"], FARANDA_MODULES, { canEnableModules: true });
     const counts = countMenu(categories);
-    assert.equal(counts.items, 66);
+    assert.equal(counts.items, 67);
     assert.equal(counts.locked, 6);
     const crm = categories.flatMap((category) => category.items).find((item) => item.screenKey === "CrmDashboard");
     assert.ok(crm);

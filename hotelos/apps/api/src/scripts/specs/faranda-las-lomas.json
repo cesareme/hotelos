@@ -1,0 +1,584 @@
+{
+  "_notes": {
+    "purpose": "Spec de alta de «Hotel Faranda Express Las Lomas» (código LL) como centro de trabajo de CELUISMA S.A. (org cmrhw9jy30002fyvb6tsdiugt) para apps/api/src/scripts/migrate-faranda-celuisma.ts (paso 5 de §5.5) y para apps/api/src/scripts/provision-pilot-property.ts. Solo dry-run por defecto; --apply --confirm <organizationId> escribe.",
+    "sources": {
+      "brief": "Datos confirmados por César el 2026-09-16 (lista de los 7 hoteles que explota CELUISMA S.A., A33615980; consentimiento para usar el CIF real SOLO en la demo local, nunca en envíos a la AEAT).",
+      "web": "https://www.farandahotels.com/en/country/espana (web oficial: nombre comercial, dirección, categoría y número de habitaciones; consultada 2026-09-16)",
+      "ine": "Nomenclátor INE de municipios (códigos de 5 dígitos: provincia + municipio): https://www.ine.es/daco/daco42/codmun/codmunmapa.htm",
+      "design": "docs/design/FINANZAS-ESTRUCTURA-SOCIETARIA.md §5.5 paso 5 (specs parametrizados, prefijos FAC-<COD>-2026- / FS-<COD>-2026- / REC-<COD>-2026-) y docs/audits/TANDA-6B-ESTRUCTURA-BACKEND-2026-09-16.md §8 fila 3.",
+      "identity": "Web oficial farandahotels.com (consultada 2026-09-16): «Hotel Faranda Express Las Lomas», Prolongación Calle Tenderina Baja, 634, 33010 Oviedo (Asturias), 3★, 102 habitaciones. INE municipio 33044 = Oviedo verificado contra el nomenclátor INE.",
+      "rooms": "102 habitaciones: 16 individuales, 83 dobles y 3 suites (web oficial, 2026-09-16); reparto por tipo PÚBLICO, numeración determinista."
+    },
+    "notInvented": [
+      "property.legalName no se escribe (columna deprecada, Tanda 6b): el emisor de TODAS las facturas es la sociedad (CELUISMA S.A., A33615980 tras la migración L8) y el hotel solo aporta el bloque «Establecimiento» (tradeName + code + dirección) vía resolveIssuerIdentity.",
+      "Registro turístico autonómico y código SES.HOSPEDAJES: NO se conocen (census.tourismRegistryNumber y sesEstablishmentCode quedan null; sesHospedajesEnabled = false).",
+      "Referencia catastral, superficie (IAE), epígrafe IAE y CCC provincial: NO se conocen (census.* null); los aporta Faranda (informe de cierre §8 fila 3).",
+      "Tarifario real: no hay datos de PMS. Se crea el plan BAR sin rate_days (mismo soporte que Los Tilos); el importador del History & Forecast puede derivar la BAR de referencia cuando Faranda facilite el CSV.",
+      "Rooming list real: no se conoce; numeración determinista de planRooms (ver roomNumbering).",
+      "Servicios del hotel (hasRestaurant, hasBar, hasParking…): sin confirmar → todos false hasta que Faranda lo indique (no se inventan).",
+      "Plazas (bedCapacity): ESTIMADAS como Σ count × baseCapacity del reparto estimado (misma regla con la que Los Tilos cuadró 176 = REAT); corregir con el registro turístico.",
+      "Nombre comercial: la lista de César dice «Hotel Faranda Express Las Lomas» (web oficial) y el diseño §5.5 lo llamaba «City House Las Lomas»: se usa el de la web; cambiar tradeName con PATCH /properties/:id/establishment si Faranda prefiere el otro."
+    ],
+    "fields": {
+      "organizationId": "Organización EXISTENTE (Faranda Hotels & Resorts → sociedad CELUISMA S.A. tras L8). El script nunca crea ni modifica organizations.*.",
+      "property": "Columnas 1:1 de Property. code = código de centro (único por sociedad; prefijo de series). tradeName = nombre comercial del bloque establecimiento de la factura. taxRegion canónica ES_PENINSULA_BALEARES, fiscalTerritory common (→ VeriFactu), CP e INE con el mismo prefijo de provincia (regla assertFiscalLocationCoherent). census.* = columnas censales de la Tanda 6b (fill-only al converger).",
+      "profile": "Columnas de CompliancePropertyProfile (hotelType, autonomousCommunity, has*) + resto (starRating, brandAffiliation, plazas, source) → property_compliance_settings.configurationJson.pilotProfile.",
+      "owners": "user_property_roles: Carmen (direccion@farandariasaltas.es) con el rol Owner de la organización (222 permisos, incluye accounting.entity.read y organization.structure.manage).",
+      "modules": "property_modules enabled: mismo conjunto que Rías Altas y Los Tilos.",
+      "building": "1 edificio con `floors` plantas: Planta 1..N (floorNumber n, code P<n>).",
+      "totalRooms": "Habitaciones totales según la web oficial. validateSpec exige Σ roomTypes.items[].count == totalRooms y (sin `rooms` explícito) totalRooms divisible entre building.floors.",
+      "roomTypes": "Upsert por code. Reparto ESTIMADO salvo Las Lomas (ver _estimated / _estimatedReason).",
+      "ratePlans": "rate_plans por code; BAR sin precios.",
+      "invoiceSequences": "invoice_sequences por (sequenceCode, year): FAC↔F1, REC↔R1, SIM↔F2 (regla assertSeriesCodeMatchesType). Prefijo con el código del centro (R3: varios centros facturadores bajo el mismo NIF): FAC-<COD>-2026-, REC-<COD>-2026-, FS-<COD>-2026- (la serie de simplificadas se llama SIM en la BD y se imprime FS-…).",
+      "departments": "departments por (propertyId, code) + user_departments (roleLabel).",
+      "roomNumbering": "rooms explícito: 3 plantas × 34 = 101-134, 201-234, 301-334. IND: 101-106 (6), 201-205 (5), 301-305 (5) = 16. SUI: 134, 234, 334 = 3. Resto → DBL (83). floorNumber se deriva del número (planRooms)."
+    }
+  },
+  "organizationId": "cmrhw9jy30002fyvb6tsdiugt",
+  "property": {
+    "name": "Hotel Faranda Express Las Lomas",
+    "kind": "hotel",
+    "code": "LL",
+    "tradeName": "Hotel Faranda Express Las Lomas",
+    "legalName": null,
+    "address": "Prolongación Calle Tenderina Baja, 634",
+    "municipality": "Oviedo",
+    "province": "Asturias",
+    "country": "ES",
+    "postalCode": "33010",
+    "ineMunicipalityCode": "33044",
+    "taxRegion": "ES_PENINSULA_BALEARES",
+    "fiscalTerritory": "common",
+    "timezone": "Europe/Madrid",
+    "sesHospedajesEnabled": false,
+    "verifactuEnabled": false,
+    "census": {
+      "starRating": 3,
+      "bedCapacity": 188,
+      "tourismRegistryNumber": null,
+      "sesEstablishmentCode": null,
+      "cadastralReference": null,
+      "surfaceM2": null,
+      "iaeEpigraph": null,
+      "socialSecurityCcc": null
+    }
+  },
+  "profile": {
+    "hotelType": "hotel",
+    "autonomousCommunity": "Asturias",
+    "hasRestaurant": false,
+    "hasKitchen": false,
+    "hasPool": false,
+    "hasSpa": false,
+    "hasParking": false,
+    "hasEvents": false,
+    "hasTerrace": false,
+    "hasLaundry": false,
+    "buildingProtected": false,
+    "starRating": 3,
+    "brandAffiliation": "Faranda Express (la web corporativa también lo lista como City House Las Lomas by Faranda: confirmar el nombre comercial en factura)",
+    "plazas": 188,
+    "plazasEstimated": true,
+    "source": "farandahotels.com · 2026-09-16"
+  },
+  "owners": [
+    {
+      "userId": "cmrhw9jyb0005fyvb4ykaumyc",
+      "roleId": "cmrhw9jy60004fyvbjvur0uqt"
+    }
+  ],
+  "modules": [
+    "pms_core",
+    "compliance_hub",
+    "distribution_hub",
+    "guest_experience",
+    "outlet_pos",
+    "revenue_profit_engine"
+  ],
+  "building": {
+    "name": "Edificio principal",
+    "code": "PRINCIPAL",
+    "floors": 3
+  },
+  "totalRooms": 102,
+  "roomTypes": {
+    "_estimated": false,
+    "_estimatedReason": "Reparto PÚBLICO (web oficial: 16 individuales, 83 dobles, 3 suites = 102). Lo único no público es la NUMERACIÓN: rooming list determinista explícita en `rooms` (3 plantas × 34) porque 16 individuales no son divisibles entre plantas que dividan 102 y 3 suites superan 2 plantas (planRooms exige `rooms` en ese caso). Sustituir por la rooming list real cuando Faranda la facilite (mismos conteos).",
+    "items": [
+      {
+        "code": "IND",
+        "name": "Individual Estándar",
+        "baseCapacity": 1,
+        "maxOccupancy": 1,
+        "count": 16,
+        "defaultRateCategory": "Standard"
+      },
+      {
+        "code": "DBL",
+        "name": "Doble Estándar 2 camas",
+        "baseCapacity": 2,
+        "maxOccupancy": 3,
+        "count": 83,
+        "defaultRateCategory": "Standard"
+      },
+      {
+        "code": "SUI",
+        "name": "Suite",
+        "baseCapacity": 2,
+        "maxOccupancy": 3,
+        "count": 3,
+        "defaultRateCategory": "Suite"
+      }
+    ]
+  },
+  "rooms": [
+    {
+      "number": "101",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "102",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "103",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "104",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "105",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "106",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "107",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "108",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "109",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "110",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "111",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "112",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "113",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "114",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "115",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "116",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "117",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "118",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "119",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "120",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "121",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "122",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "123",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "124",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "125",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "126",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "127",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "128",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "129",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "130",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "131",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "132",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "133",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "134",
+      "roomTypeCode": "SUI"
+    },
+    {
+      "number": "201",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "202",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "203",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "204",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "205",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "206",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "207",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "208",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "209",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "210",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "211",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "212",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "213",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "214",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "215",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "216",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "217",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "218",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "219",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "220",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "221",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "222",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "223",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "224",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "225",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "226",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "227",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "228",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "229",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "230",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "231",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "232",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "233",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "234",
+      "roomTypeCode": "SUI"
+    },
+    {
+      "number": "301",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "302",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "303",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "304",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "305",
+      "roomTypeCode": "IND"
+    },
+    {
+      "number": "306",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "307",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "308",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "309",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "310",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "311",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "312",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "313",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "314",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "315",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "316",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "317",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "318",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "319",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "320",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "321",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "322",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "323",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "324",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "325",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "326",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "327",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "328",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "329",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "330",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "331",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "332",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "333",
+      "roomTypeCode": "DBL"
+    },
+    {
+      "number": "334",
+      "roomTypeCode": "SUI"
+    }
+  ],
+  "ratePlans": [
+    {
+      "code": "BAR",
+      "name": "BAR Flexible",
+      "ratePlanType": "bar",
+      "mealPlan": "room_only"
+    }
+  ],
+  "invoiceSequences": [
+    {
+      "sequenceCode": "FAC",
+      "invoiceType": "F1",
+      "prefix": "FAC-LL-2026-",
+      "year": 2026
+    },
+    {
+      "sequenceCode": "REC",
+      "invoiceType": "R1",
+      "prefix": "REC-LL-2026-",
+      "year": 2026
+    },
+    {
+      "sequenceCode": "SIM",
+      "invoiceType": "F2",
+      "prefix": "FS-LL-2026-",
+      "year": 2026
+    }
+  ],
+  "departments": [
+    {
+      "code": "MGMT",
+      "name": "Management",
+      "users": [
+        {
+          "userId": "cmrhw9jyb0005fyvb4ykaumyc",
+          "roleLabel": "owner"
+        }
+      ]
+    }
+  ]
+}

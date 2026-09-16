@@ -116,7 +116,7 @@ git 78edb35:routes/backoffice.routes.tsx (205 rutas antiguas → legacyRoutes) �
    esté en `SCREEN_COMPONENTS` y viceversa. Si sustituye a una antigua, la fila `retire` del CSV y la redirección
    `/backoffice/*` → URL nueva quedan en `legacyRoutes`.
 4. **Pestaña nueva** (`merge-into`): el ítem padre es un contenedor `NavItemTabs` (`screens/tabs/<categoría>/<Item>Tabs.tsx`,
-   37 hoy). El contenedor solo aporta el loader perezoso de cada clave; etiquetas, URLs, roles, `modulesAny`,
+   38 hoy). El contenedor solo aporta el loader perezoso de cada clave; etiquetas, URLs, roles, `modulesAny`,
    `detail` y el aterrizaje por rol salen del JSON (`screens/tabs/nav-item-tabs.ts`: `buildItemTabs`,
    `landingKeysFor`, `detailParamsFor`):
 
@@ -137,7 +137,10 @@ git 78edb35:routes/backoffice.routes.tsx (205 rutas antiguas → legacyRoutes) �
    }
    ```
 
-   - `NavItemTabs` pinta UNA `CocoaPageHeader` (eyebrow = categoría, título = etiqueta del ítem), el error de la
+   - `NavItemTabs` pinta UNA `CocoaPageHeader` (eyebrow = categoría —o «Categoría · <sociedad o centro>» cuando la
+     pantalla alojada registra un eyebrow que prolonga esa misma categoría: `useHostedEyebrow` desde `CocoaPage` /
+     `HostedHead`, `containerEyebrow` de `nav-item-tabs.ts`; cualquier otro eyebrow se ignora (Tanda 6b · L7, diseño
+     §5.3 «FINANZAS · <sociedad>»)—, título = etiqueta del ítem), el error de la
      lista de módulos si no se pudo leer, un `CocoaTabSkeleton` mientras el gate carga y `CocoaRouteTabs` con
      `isVisible = gate.isVisible` y `defaultTab`/`mobileDefaultTab` de `landingKeysFor`. Una tira con una sola pestaña
      pintada se oculta por CSS (una pestaña no es una elección). `baseRoles` estrecha los roles de la pestaña base

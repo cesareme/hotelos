@@ -45,7 +45,8 @@ Inventario de pantallas: `docs/design/cocoa-22-inventory.json` (generado por `sc
 | Acento único | `--accent` = `--cocoa-accent` | `#0d8a5f` (4,36:1 sobre blanco) | `#2bb37f` (6,24:1) | Esmeralda. Para texto pequeño en claro usar `--accent-strong` `#086b48` (6,55:1). |
 | Acento fuerte / hover | `--accent-strong` | `#086b48` | `#4dca96` | Nav activo, enlaces, hover de filled. |
 | Acento suave | `--accent-soft` | `#e6f4ef` | `#122e25` | Fondo del ítem de menú activo. |
-| Tinta sobre acento | `--accent-ink` | `#ffffff` (4,36:1) | `#07140e` (7,0:1) | Texto de botones filled. |
+| Tinta sobre acento | `--accent-ink` | `#ffffff` (5,35:1 sobre `--cocoa-accent-fill`; solo 4,36:1 sobre `--accent`) | `#07140e` (7,0:1) | Texto de botones filled, siempre sobre `--cocoa-accent-fill`. |
+| Acento de relleno | `--cocoa-accent-fill` | `#0b7a54` (5,35:1 bajo `--accent-ink`; 5,02:1 con el hover `brightness(1.04)`) | `= --accent` `#2bb37f` | Fondo del `CocoaButton` filled accent: el acento puro no llega a AA bajo blanco a 11–15 px (qa#7). Barras, iconos, foco y selección siguen en `--accent`. |
 | Success | `--cocoa-success` | `#28A745` | `#30D158` | Barras, deltas, iconos. Como **texto** en claro solo 3,1:1 → usar `--ok-ink` `#0a6b46` (6,55:1). |
 | Warning | `--cocoa-warning` | `#FF9500` | `#FF9F0A` | Texto en claro 2,2:1 → `--warn-ink` `#8a4a09` (6,85:1). |
 | Danger | `--cocoa-danger` | `#FF3B30` | `#FF453A` | Texto en claro 3,55:1 → `--danger-ink` `#8d1b1b` (9,1:1). |
@@ -171,7 +172,7 @@ Polaridad: `positive-good` (▲ verde / ▼ rojo), `negative-good` (invertida), 
 |---|---|
 | Sección | `CocoaFormSection`: título title-3 600 + descripción caption, tarjeta `bordered` padding 24, secciones separadas 16 |
 | Fila | `CocoaFormRow`: grid `repeat(auto-fit, minmax(240px, 1fr))` gap 12; 1 columna < 600 |
-| Campo | `CocoaField`: label 11 px 600 secondary (uppercase opcional) + `*` danger si requerido; control 28 px (small 22, large 34) fondo control, borde separator, radio 8, foco `0 0 0 3px focus-ring`, error borde danger + halo `danger 45 %`; ayuda callout secondary; error callout `--danger-ink` 600 + `aria-describedby` |
+| Campo | `CocoaField`: label 11 px 600 secondary (uppercase opcional) + `*` danger si requerido; control 28 px (small 22, large 34) fondo control, borde separator, radio 8, foco `0 0 0 3px focus-ring`, error borde danger + halo `danger 45 %`; ayuda callout secondary; error callout `--danger-ink` 600 + `aria-describedby`. `inline` (interruptores): rejilla `minmax(0, 1fr) auto` — etiqueta a la izquierda, control a la derecha, ayuda y error DEBAJO de la etiqueta (en fila flex la ayuda larga encogía la etiqueta hasta partir palabras a 390, qa#2 L6) |
 | Controles | `CocoaInput` (icono, rightSlot, inputMode), `CocoaSelect` nativo con chevron, `CocoaSwitch` 52×32 / 32×20 (thumb spring), `CocoaDatePicker`, `CocoaSegmentedControl` para ≤ 4 opciones, textarea = `CocoaInput multiline` (nuevo) |
 | Acciones | Barra inferior sticky (`fp-sticky-actions` → `CocoaActionBar`): cancelar bordered neutral + guardar filled accent; en móvil ocupa todo el ancho sobre safe-area |
 | Touch | inputs 16 px en `pointer: coarse` (evita zoom iOS), 44 px de alto |
@@ -1491,7 +1492,7 @@ Otros umbrales existentes que se conservan: 700 (`MOBILE_BREAKPOINT_PX`, landing
 
 | Regla | Estado hoy (medido) | Cocoa 22 |
 |---|---|---|
-| Contraste texto ≥ 4,5:1 | `label` 15,1 ✓ · `label-secondary` claro **3,98 ✗** (oscuro 5,9 ✓) · `label-tertiary` **1,9 ✗** (eyebrow, ejes) · `--accent` como texto 4,36 ✗ · tonos Cocoa como texto ✗ (success 3,1 · warning 2,2 · danger 3,6 · info 4,0) | `--cocoa-label-secondary` claro → `rgb(0 0 0 / .62)` (≈ 5,3:1; verificar con números en las 3 superficies); eyebrow → secondary; tertiary solo decorativo; texto de tono → `*-ink` de Aurora; acento como texto → `--accent-strong` |
+| Contraste texto ≥ 4,5:1 | `label` 15,1 ✓ · `label-secondary` claro **3,98 ✗** (oscuro 5,9 ✓) · `label-tertiary` **1,9 ✗** (eyebrow, ejes) · `--accent` como texto 4,36 ✗ · blanco sobre `--accent` (filled) **4,36 ✗** · tonos Cocoa como texto ✗ (success 3,1 · warning 2,2 · danger 3,6 · info 4,0) | `--cocoa-label-secondary` claro → `rgb(0 0 0 / .62)` (≈ 5,3:1; verificar con números en las 3 superficies); eyebrow → secondary; tertiary solo decorativo; texto de tono → `*-ink` de Aurora; acento como texto → `--accent-strong`; filled accent sobre `--cocoa-accent-fill` `#0b7a54` (5,35:1, qa#7) |
 | Foco visible | `.cocoa-focus-ring:focus-visible` halo 3 px Esmeralda 50/60 % ✓; `<button>` crudos usan `--focus` Aurora (distinto) | Todo control Cocoa; un solo anillo |
 | Roles | KPI `role=group` con `aria-label`; tarjeta interactiva `role=button` + `tabIndex` + Enter/Espacio; tabs WAI-ARIA con roving tabindex; toast `status/alert`; sheet `dialog aria-modal` + focus trap | `CocoaState` `role=status/alert`; tablas `aria-sort`; drawers `aria-labelledby`; live region única (`CocoaLiveRegion`) para «guardado», «N nuevos» |
 | Teclado | ⌘K/Ctrl-K global; Esc cierra drawer/menús; tabs ←→ Home End | `CocoaActionBar` Ctrl-Enter = primaria; filas de tabla Enter = abrir; `?` = atajos |
@@ -1561,7 +1562,7 @@ Ubicación: `apps/admin-web/src/components/cocoa/` (39 ficheros + barrel `index.
 | Cifra secundaria (aside, listas) | `CocoaStat` | `CocoaStat.tsx` | `label`, `value` |
 | Campo, fila y sección de formulario | `CocoaField` / `CocoaFormRow` / `CocoaFormSection` | `CocoaField.tsx` | `label` + 1 hijo / — / `title` |
 | Texto, número, textarea | `CocoaInput` (`multiline`) | `CocoaInput.tsx` | `value`, `onChange` |
-| Selección nativa | `CocoaSelect` | `CocoaSelect.tsx` | `value`, `onChange`, `options` |
+| Selección nativa | `CocoaSelect` | `CocoaSelect.tsx` | `value`, `onChange`, `options`; `inline` para un selector en una fila de acciones o toolbar (ancho de la opción más larga, no de la fila) |
 | Interruptor | `CocoaSwitch` | `CocoaSwitch.tsx` | `checked`, `onChange` |
 | Fecha | `CocoaDatePicker` | `CocoaDatePicker.tsx` | `value`, `onChange` |
 | Contador numérico ± (no es un indicador de pasos) | `CocoaStepper` | `CocoaStepper.tsx` | `value`, `onChange` |
@@ -2563,11 +2564,13 @@ export interface CocoaSelectProps {
   className?: string;
   /** Layout escape hatch for the wrapper (width). */
   style?: CSSProperties;
+  /** Shrink to the widest option instead of filling the row (pickers in an actions row or a toolbar). */
+  inline?: boolean;
 }
 
 /** Outer height of a select by size (pure; equals CocoaInput's). */
 export function selectControlHeight(size: NonNullable<CocoaSelectProps["size"]>): number
-export function CocoaSelect({ value, onChange, options, placeholder, size = "regular", disabled = false, error = false, required = false, id, name, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-invalid": ariaInvalid, className, style }: CocoaSelectProps)
+export function CocoaSelect({ value, onChange, options, placeholder, size = "regular", disabled = false, error = false, required = false, id, name, "aria-label": ariaLabel, "aria-describedby": ariaDescribedBy, "aria-invalid": ariaInvalid, className, style, inline = false }: CocoaSelectProps)
 ```
 
 #### `CocoaSwitch.tsx`
@@ -3472,7 +3475,7 @@ export function CocoaRouteTabs(props: CocoaRouteTabsProps)
 - **Alojamiento**: `useTabHost(): TabHostInfo | null` (`{ screenKey, basePath, title }`) y `HOSTED_ACTIONS_ROW` de `screens/tabs/TabHost.tsx`; `HostedHead`, `pageHead(embedded?)`, `useRouteParam(pattern, name)`, `treeHeaderFor(screenKey, fallback)` de `screens/tabs/tab-helpers.tsx`.
 - **Iconos**: `components/cocoa-icons/{ActionIcons,NavigationIcons,StatusIcons}.tsx` (`PlusIcon`, `SearchIcon`, `TrashIcon`, `CheckCircleIcon`, `ExclamationCircleIcon`, `XCircleIcon`, `SparkleIcon`, …; prop `size`).
 - **Copy y formato**: `content/actions.ts` (`ACTIONS`, `STATUS_LABELS`, `FIELD_LABELS`, `A11Y_LABELS`, `newLabel`, `emptyStateFor`, `errorStateFor`, `confirmDelete`, `confirmDiscard`) y `lib/format.ts` (`money`, `number`, `percent`, `date`, `time`, `dateTime`, `dateRange`, `plural`, `relativeTime`, `toNumber`, `EMPTY`).
-- **Utilidades CSS** (`styles/cocoa-base.css`): `.cocoa-stack[data-gap="1…6"]` (columna, 4…32 px, por defecto 12), `.cocoa-row[data-gap="1|2|4"][data-align="start|end|baseline"][data-justify="between|end"][data-wrap="nowrap"]` (fila centrada que envuelve), `.cocoa-cluster` (chips, 8 px), `.cocoa-sr-only`, `.cocoa-scroll-x`, `.cocoa-truncate`, `.cocoa-clamp-2`, `.cocoa-tabular`; listas `ul/ol.c22-section__list` (hairlines entre `li`, `strong` tabular a la derecha) de `cocoa-22-layout.css`.
+- **Utilidades CSS** (`styles/cocoa-base.css`): `.cocoa-stack[data-gap="1…6"]` (columna, 4…32 px, por defecto 12), `.cocoa-row[data-gap="1|2|4"][data-align="start|end|baseline"][data-justify="between|end"][data-wrap="nowrap"]` (fila centrada que envuelve), `.cocoa-cluster` (chips, 8 px), `.cocoa-sr-only`, `.cocoa-scroll-x`, `.cocoa-truncate`, `.cocoa-clamp-2`, `.cocoa-tabular`, `.cocoa-caption` (etiqueta CORTA de un grupo: caption 10 px 600 mayúsculas) y `.cocoa-note` (nota en prosa de una sección o un diálogo: callout 12 px secundario sin mayúsculas; nunca un pie de 200 caracteres en `.cocoa-caption`, qa#5 L6); listas `ul/ol.c22-section__list` (hairlines entre `li`, `strong` tabular a la derecha) de `cocoa-22-layout.css`.
 - **Legacy fuera del barrel**: `CocoaAlert` y `CocoaFormFieldset` (`components/cocoa-extras`) siguen existiendo pero no se usan en pantallas migradas (→ `CocoaCallout`, `CocoaFormSection`); `CocoaColorWell` queda solo en el showcase (la preferencia de acento está prohibida, §6).
 - **Tokens** (`cocoa-tokens.css`, lote css): `--cocoa-background-window: var(--canvas)`, `--cocoa-background-sidebar: var(--surface)`, `--cocoa-label-secondary` claro `.62`, `--cocoa-fs-kpi: 32px` / `-compact: 24px`, `--cocoa-tone-{success,warning,danger,info,neutral,accent,ai}[-text|-bg|-border]`, `--cocoa-density-*` (por `[data-cocoa-density]`), `--cocoa-content-padding` (24 → 16 en < 600; el gutter real: no existe `--cocoa-content-inset`), `--cocoa-scrim`, `--cocoa-z-*`, alias `--cocoa-accent-soft: var(--cocoa-accent-bg)`.
 

@@ -50,6 +50,8 @@ export type { TreasuryScope } from "./finance-contracts";
 const enc = encodeURIComponent;
 
 function scope(input: TreasuryScope): TreasuryScope {
+  // «Ámbito» Sociedad (L7): `scope: "entity"` asks the whole sociedad and never falls back to the active centre.
+  if (input.scope === "entity") return { scope: "entity", asOf: input.asOf };
   return { propertyId: input.propertyId ?? getActivePropertyId(), asOf: input.asOf };
 }
 

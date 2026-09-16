@@ -91,6 +91,8 @@ const ContabilidadFiscalTabs = lazyTab("ContabilidadFiscalTabs");
 const ModulosTabs = lazyTab("ModulosTabs");
 const InteligenciaArtificialTabs = lazyTab("InteligenciaArtificialTabs");
 const SistemaTabs = lazyTab("SistemaTabs");
+// Tanda 6b · L6: Configuración › Estructura societaria.
+const EstructuraSocietariaTabs = lazyTab("EstructuraSocietariaTabs");
 
 // Standalone screens (menu items without tabs).
 const AssistantChatScreen = lazyNamed(() => import("./screens/assistant/AssistantChatScreen"), "AssistantChatScreen");
@@ -315,6 +317,12 @@ const SCREEN_COMPONENTS = {
   CategoryDetailScreen: PropiedadTabs,
   CategoryOptionForm: PropiedadTabs,
   CustomFieldSetupForm: PropiedadTabs,
+  // Tanda 6b · L6: Estructura societaria (item + 4 tabs → one container).
+  StructureScreen: EstructuraSocietariaTabs,
+  StructurePropertiesTab: EstructuraSocietariaTabs,
+  StructureSeriesTab: EstructuraSocietariaTabs,
+  StructureVatTab: EstructuraSocietariaTabs,
+  StructureAllocationTab: EstructuraSocietariaTabs,
   RoomSetupForm: HabitacionesTabs,
   RoomTypeSetupForm: HabitacionesTabs,
   SpaceResourceSetupForm: HabitacionesTabs,

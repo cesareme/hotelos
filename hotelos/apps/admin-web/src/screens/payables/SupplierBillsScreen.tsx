@@ -36,7 +36,8 @@ import {
   type SupplierBillRequest,
   type SupplierDto
 } from "../../services/payablesApi";
-import { getActivePropertyName } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { useToast } from "../../components/Toast";
 import { useTabHost } from "../tabs/TabHost";
 import { date, dateTime, money, percent, plural, toNumber } from "../../lib/format";
@@ -250,10 +251,14 @@ function EntryLines({ entry, label }: { entry: LedgerEntryDto; label: string }) 
 export function SupplierBillsScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
+  // Tanda 6b · L7: supplier bills hang from a centre (/properties/:propertyId/payables/…): the «Ámbito» offers every
+  // centre, the oficina central included (its bills live there), and defaults to the active hotel.
+  const finance = useFinanceScope(financeScopePolicy("SupplierBillsScreen"));
+  const propertyId = finance.propertyId ?? finance.active.propertyId;
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
-  const bills = useLoader(() => listSupplierBills({ q: search.trim() || undefined, status: (status || undefined) as SupplierBillStatus | undefined, limit: 500 }), `${search}|${status}`, "No se pudieron cargar las facturas recibidas.");
-  const aging = useLoader(() => getPayablesAging(), "aging", "No se pudo calcular la antigüedad de la deuda.");
+  const bills = useLoader(() => listSupplierBills({ q: search.trim() || undefined, status: (status || undefined) as SupplierBillStatus | undefined, limit: 500 }, propertyId), `${propertyId}|${search}|${status}`, "No se pudieron cargar las facturas recibidas.");
+  const aging = useLoader(() => getPayablesAging(undefined, propertyId), `aging|${propertyId}`, "No se pudo calcular la antigüedad de la deuda.");
   const suppliers = useLoader(() => listSuppliers({ active: true, limit: 500 }), "suppliers", "No se pudo cargar el directorio de proveedores.");
   const chart = useChartAccounts();
   const expenseOptions = useMemo(() => accountOptions(chart.accounts, (code) => isExpenseAccount(code) || isInvestmentAccount(code)), [chart.accounts]);
@@ -261,7 +266,7 @@ export function SupplierBillsScreen() {
 
   // Detail drawer + actions
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const detail = useLoader<SupplierBillDetailDto | null>(() => (selectedId ? getSupplierBill(selectedId) : Promise.resolve(null)), selectedId ?? "", "No se pudo cargar la factura.");
+  const detail = useLoader<SupplierBillDetailDto | null>(() => (selectedId ? getSupplierBill(selectedId, propertyId) : Promise.resolve(null)), `${propertyId}|${selectedId ?? ""}`, "No se pudo cargar la factura.");
   const [busy, setBusy] = useState(false);
   const [actionFailure, setActionFailure] = useState<string | null>(null);
   const [askPost, setAskPost] = useState(false);
@@ -356,7 +361,7 @@ export function SupplierBillsScreen() {
     setSaving(true);
     setSaveFailure(null);
     try {
-      const created = await createSupplierBill(bodyOf(form));
+      const created = await createSupplierBill(bodyOf(form), propertyId);
       showToast(`Factura ${created.invoiceNumber ?? ""} guardada como borrador.`, { variant: "success" });
       setCreating(false);
       bills.refresh();
@@ -387,7 +392,7 @@ export function SupplierBillsScreen() {
 
   async function confirmPost() {
     if (!selectedId) return;
-    const ok = await run(() => postSupplierBill(selectedId), "Factura contabilizada: asiento y libro de IVA recibidas anotados.", "No se pudo contabilizar la factura.");
+    const ok = await run(() => postSupplierBill(selectedId, propertyId), "Factura contabilizada: asiento y libro de IVA recibidas anotados.", "No se pudo contabilizar la factura.");
     setAskPost(false);
     if (!ok) return;
   }
@@ -399,7 +404,7 @@ export function SupplierBillsScreen() {
       return;
     }
     const ok = await run(
-      () => paySupplierBill(selectedId, { paymentDate: payDate, paidWith: payWith, ...(payAccount ? { counterAccountCode: payAccount } : {}), ...(payReference.trim() ? { reference: payReference.trim() } : {}) }),
+      () => paySupplierBill(selectedId, { paymentDate: payDate, paidWith: payWith, ...(payAccount ? { counterAccountCode: payAccount } : {}), ...(payReference.trim() ? { reference: payReference.trim() } : {}) }, propertyId),
       "Pago registrado: asiento D proveedor / H tesorería contabilizado.",
       "No se pudo registrar el pago."
     );
@@ -414,7 +419,7 @@ export function SupplierBillsScreen() {
       return;
     }
     if (!selectedId) return;
-    await run(() => cancelSupplierBill(selectedId, { reason: text }), "Factura anulada.", "No se pudo anular la factura.");
+    await run(() => cancelSupplierBill(selectedId, { reason: text }, propertyId), "Factura anulada.", "No se pudo anular la factura.");
     setAskCancel(false);
     setReason("");
   }
@@ -423,7 +428,7 @@ export function SupplierBillsScreen() {
     if (!selectedId) return;
     setActionFailure(null);
     try {
-      const attachment = await getSupplierBillAttachment(selectedId);
+      const attachment = await getSupplierBillAttachment(selectedId, propertyId);
       if (attachment.inline && attachment.base64 && attachment.mimeType) {
         if (!openInlineAttachment(attachment.base64, attachment.mimeType)) showToast("El navegador bloqueó la ventana del adjunto: permite las ventanas emergentes.", { variant: "warning" });
       } else {
@@ -486,7 +491,7 @@ export function SupplierBillsScreen() {
   const primaryAction =
     selected && !busy
       ? selected.status === "draft"
-        ? { label: ACTIONS.approve, onClick: () => void run(() => approveSupplierBill(selected.id), "Factura aprobada.", "No se pudo aprobar la factura.") }
+        ? { label: ACTIONS.approve, onClick: () => void run(() => approveSupplierBill(selected.id, propertyId), "Factura aprobada.", "No se pudo aprobar la factura.") }
         : selected.status === "approved"
           ? { label: "Contabilizar", onClick: () => setAskPost(true) }
           : selected.status === "posted"
@@ -496,13 +501,16 @@ export function SupplierBillsScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${getActivePropertyName()}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Facturas recibidas"
-      subtitle={hosted ? undefined : "Facturas de proveedores por líneas: borrador, aprobada, contabilizada y pagada, con la antigüedad de la deuda pendiente."}
+      subtitle={hosted ? undefined : "Facturas de proveedores por líneas: borrador, aprobada, contabilizada y pagada, con la antigüedad de la deuda pendiente. Cada factura lleva su centro de trabajo (hotel u oficina central)."}
       actions={
-        <CocoaButton variant="filled" tone="accent" size={hosted ? "small" : "regular"} onClick={openNew}>
-          {newBillLabel}
-        </CocoaButton>
+        <>
+          <FinanceScopeSelector scope={finance} />
+          <CocoaButton variant="filled" tone="accent" size={hosted ? "small" : "regular"} onClick={openNew}>
+            {newBillLabel}
+          </CocoaButton>
+        </>
       }
       commands={[
         { id: "supplier-bills-new", label: newBillLabel, run: openNew },

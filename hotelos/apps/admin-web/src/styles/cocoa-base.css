@@ -116,6 +116,24 @@ input[type="search"]::-webkit-search-decoration {
   min-width: 0;
 }
 
+/* Prose note of a section or a dialog (a legal reason, «8 filas en 8 tablas»,
+   the sentence under a table): callout 12 / 15 secondary in sentence case,
+   the same metrics as a CocoaSection footer or a CocoaField help. `.cocoa-caption`
+   stays for SHORT labels: a 199-character sentence at 10 px uppercase measured
+   unreadable (qa#5 L6). */
+.cocoa-note {
+  display: block;
+  margin: 0;
+  font-family: var(--cocoa-font);
+  font-size: var(--cocoa-fs-callout);
+  line-height: var(--cocoa-leading-text);
+  font-weight: var(--cocoa-fw-regular);
+  letter-spacing: var(--cocoa-tracking-normal);
+  text-transform: none;
+  color: var(--cocoa-label-secondary);
+  min-width: 0;
+}
+
 /* Inline text link (<a href download>, «Abrir histórico»): the AA-safe accent
    ink (the hue alone is 4.36:1 at 13 px), underline offset 2, shared ring. */
 .cocoa-link {

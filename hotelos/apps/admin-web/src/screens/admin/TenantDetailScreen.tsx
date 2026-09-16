@@ -42,6 +42,35 @@ import {
 } from "../../services/tenantAdminApi";
 import { copyText, describeDelivery, formatExpiry, type InvitationResult } from "../../services/authApi";
 import { date, dateTime } from "../../lib/format";
+// Tanda 6b (L6): the tenant's sociedad and its VeriFactu chain policy (platform console only, R7).
+import { CocoaSection } from "../../components/cocoa/CocoaSection";
+import { CocoaBadge } from "../../components/cocoa/CocoaBadge";
+import { CocoaSelect } from "../../components/cocoa/CocoaSelect";
+import { CocoaDialog } from "../../components/cocoa/CocoaDialog";
+import { CocoaCallout } from "../../components/cocoa/CocoaCallout";
+import { setVerifactuChainScope, type VerifactuChainScope } from "../../services/structureApi";
+import { financeErrorMessage } from "../../services/finance-contracts";
+import { CHAIN_SCOPE_LABELS, CHAIN_SCOPE_SHORT_LABELS, PGC_VARIANT_LABELS, propertyKindLabel } from "../structure/structure-ui";
+
+/** Tanda 6b: `TenantDetail.legalEntity` of GET /admin/tenants/:orgId (tenant-admin.service TenantLegalEntitySummary); null before the backfill. */
+type TenantLegalEntitySummary = {
+  id: string;
+  code: string;
+  legalName: string;
+  taxId: string | null;
+  taxIdValid: boolean;
+  verifactuChainScope: VerifactuChainScope;
+  pgcVariant: "pymes" | "general";
+  siiEnabled: boolean;
+  largeCompany: boolean;
+};
+
+function legalEntityOf(tenant: TenantDetail | null): TenantLegalEntitySummary | null {
+  const value = (tenant as (TenantDetail & { legalEntity?: TenantLegalEntitySummary | null }) | null)?.legalEntity;
+  return value && typeof value === "object" && typeof value.id === "string" ? value : null;
+}
+
+const CHAIN_SCOPE_OPTIONS = (Object.keys(CHAIN_SCOPE_LABELS) as VerifactuChainScope[]).map((value) => ({ value, label: CHAIN_SCOPE_LABELS[value] }));
 
 export interface TenantDetailScreenProps {
   orgId: string;
@@ -184,6 +213,32 @@ export function TenantDetailScreen({ orgId, onClose, embedded = false }: TenantD
   const [busy, setBusy] = useState(false);
   // Last re-issued invitation (link + real delivery state), shown under the users table.
   const [inviteResult, setInviteResult] = useState<{ userId: string; email: string; invitation: InvitationResult } | null>(null);
+  // Tanda 6b: VeriFactu chain policy of the sociedad (per_center · per_entity), confirmed before POST /admin/legal-entities/:id/verifactu-scope.
+  const legalEntity = legalEntityOf(tenant);
+  const [chainScopeDraft, setChainScopeDraft] = useState<VerifactuChainScope | null>(null);
+  const [chainScopeConfirm, setChainScopeConfirm] = useState(false);
+  const [chainScopeBusy, setChainScopeBusy] = useState(false);
+  const [chainScopeError, setChainScopeError] = useState<string | null>(null);
+  const chainScopeValue = chainScopeDraft ?? legalEntity?.verifactuChainScope ?? "per_center";
+  const chainScopeDirty = legalEntity !== null && chainScopeValue !== legalEntity.verifactuChainScope;
+
+  async function applyChainScope() {
+    if (!legalEntity || !chainScopeDirty) return;
+    setChainScopeBusy(true);
+    setChainScopeError(null);
+    try {
+      const result = await setVerifactuChainScope(legalEntity.id, chainScopeValue);
+      setTenant((prev) => (prev ? ({ ...prev, legalEntity: { ...legalEntity, verifactuChainScope: result.legalEntity.verifactuChainScope } } as TenantDetail) : prev));
+      setChainScopeDraft(null);
+      setChainScopeConfirm(false);
+      showToast(result.changed ? `Política de cadena VeriFactu: ${CHAIN_SCOPE_SHORT_LABELS[result.legalEntity.verifactuChainScope].toLowerCase()}.` : "La política de cadena ya era esa.", { variant: "success" });
+    } catch (e) {
+      setChainScopeError(financeErrorMessage(e, "No se pudo cambiar la política de cadena."));
+      setChainScopeConfirm(false);
+    } finally {
+      setChainScopeBusy(false);
+    }
+  }
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -347,7 +402,17 @@ export function TenantDetailScreen({ orgId, onClose, embedded = false }: TenantD
       label: "Nombre",
       render: (row) => <strong>{getString(row, "name") || (getString(row, "id") || "—")}</strong>
     },
-    { key: "city", label: "Ciudad", render: (row) => getString(row, "city") || "—" },
+    // Tanda 6b: work-centre code and kind (hotel · oficina · otro) of every centre of the sociedad.
+    { key: "code", label: "Código", render: (row) => getString(row, "code") || "—" },
+    {
+      key: "kind",
+      label: "Tipo de centro",
+      render: (row) => {
+        const kind = getString(row, "kind") || "hotel";
+        return <CocoaBadge tone={kind === "hotel" ? "accent" : kind === "office" ? "info" : "neutral"}>{propertyKindLabel(kind)}</CocoaBadge>;
+      }
+    },
+    { key: "city", label: "Ciudad", render: (row) => getString(row, "city") || getString(row, "municipality") || "—" },
     { key: "country", label: "País", render: (row) => getString(row, "country") || tenant.country || "—" },
     {
       key: "rooms",
@@ -521,6 +586,71 @@ export function TenantDetailScreen({ orgId, onClose, embedded = false }: TenantD
               <p style={valueStyle}>{fmtDateShort(tenant.lastActivityAt)}</p>
             </CocoaCard>
           </div>
+
+          {/* Tanda 6b (L6): the tenant's sociedad and its VeriFactu chain policy (fixed here, never by the hotelier). */}
+          <CocoaSection
+            title="Sociedad"
+            meta={legalEntity ? legalEntity.code : undefined}
+            footer={<span className="cocoa-caption">La política de cadena consta en la declaración responsable del productor y no se puede cambiar una vez remitidos registros reales a la AEAT (nunca se re-encadena).</span>}
+          >
+            {legalEntity ? (
+              <div className="cocoa-stack" data-gap="3">
+                <ul className="c22-section__list" aria-label="Datos de la sociedad del tenant">
+                  <li>
+                    <span>Razón social</span>
+                    <strong>{legalEntity.legalName}</strong>
+                  </li>
+                  <li>
+                    <span>NIF</span>
+                    {legalEntity.taxId ? (
+                      <span className="cocoa-cluster">
+                        <strong className="cocoa-tabular">{legalEntity.taxId}</strong>
+                        <CocoaBadge tone={legalEntity.taxIdValid ? "success" : "danger"} size="small">{legalEntity.taxIdValid ? "válido" : "revisar"}</CocoaBadge>
+                      </span>
+                    ) : (
+                      <CocoaBadge tone="warning" size="small">pendiente</CocoaBadge>
+                    )}
+                  </li>
+                  <li>
+                    <span>Plan contable</span>
+                    <strong>{PGC_VARIANT_LABELS[legalEntity.pgcVariant]}</strong>
+                  </li>
+                  <li>
+                    <span>Régimen</span>
+                    <span className="cocoa-cluster">
+                      {legalEntity.siiEnabled ? <CocoaBadge tone="warning" size="small">SII</CocoaBadge> : null}
+                      {legalEntity.largeCompany ? <CocoaBadge tone="warning" size="small">gran empresa</CocoaBadge> : null}
+                      {!legalEntity.siiEnabled && !legalEntity.largeCompany ? <strong>General</strong> : null}
+                    </span>
+                  </li>
+                </ul>
+                {chainScopeError ? (
+                  <CocoaCallout tone="danger" title="No se pudo cambiar la política de cadena" role="alert">
+                    {chainScopeError}
+                  </CocoaCallout>
+                ) : null}
+                <div className="cocoa-row" data-gap="2">
+                  <CocoaSelect value={chainScopeValue} onChange={(v) => setChainScopeDraft(v as VerifactuChainScope)} options={CHAIN_SCOPE_OPTIONS} aria-label="Política de cadena VeriFactu" disabled={chainScopeBusy} />
+                  <CocoaButton variant="filled" tone="accent" size="small" onClick={() => setChainScopeConfirm(true)} disabled={!chainScopeDirty || chainScopeBusy}>
+                    Aplicar política de cadena
+                  </CocoaButton>
+                </div>
+              </div>
+            ) : (
+              <p className="cocoa-caption">Este tenant no tiene sociedad todavía (anterior a la estructura societaria): ejecuta el proceso de estructura del API para crearla.</p>
+            )}
+          </CocoaSection>
+          <CocoaDialog
+            open={chainScopeConfirm}
+            onClose={() => setChainScopeConfirm(false)}
+            tone="destructive"
+            title="Confirmar la política de cadena VeriFactu"
+            description={`${CHAIN_SCOPE_LABELS[chainScopeValue]}. La decisión consta en la declaración responsable y no se puede deshacer una vez remitidos registros reales; cambiarla no re-encadena: se retiran las instalaciones y se abren otras con número nuevo.`}
+            confirmLabel="Aplicar"
+            cancelLabel="Cancelar"
+            busy={chainScopeBusy}
+            onConfirm={applyChainScope}
+          />
 
           {/* Modules quick toggles */}
           <CocoaCard variant="bordered" padding="md">

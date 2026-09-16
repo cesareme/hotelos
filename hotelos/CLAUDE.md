@@ -194,6 +194,33 @@ integrador final; working tree sin commit, :3000/:5173 sin reiniciar):
 - Faranda solo lectura: 25 facturas · 61 asientos / 150 líneas / Σ 2.595,00 · 33 envíos
   (idéntico antes y después de todas las suites)
 
+Estado verificado (cierre Tanda 6b · Estructura societaria front L6/L7/L9 + tres
+lotes de corrección de la QA con navegador, 2026-09-16, integrador final; working
+tree sin commit; :3000 sirve el backend de la tanda, :5173 sin reiniciar):
+- 224 screens alcanzables · 188/188 URLs · 0 broken links · placeholders 16/20 ·
+  `build-nav-tree --check` al día (67 ítems · 98 pestañas · 205 redirecciones;
+  Configuración 11 ≤ 12 con «Estructura societaria»)
+- typecheck-all: 15 PASS · 0 FAIL · 1 SKIP explícito (apps/guest-web) · `.husky/pre-commit` OK
+- contratos 445/445 · unitarios front 939/939 · unitarios api 1.512 (1.511 pass · 1
+  skipped) · integración 337 (2.ª pasada 332 pass · 0 fail · 5 skipped preexistentes;
+  la 1.ª pasada falló una vez `structure-l6-l7-contract` «rollup totalUndistributed»
+  por carrera de lectura de org_123 con suites hermanas: sola 14/14) · env 137/137 ·
+  validate-env OK · migraciones 8/8 (drift 0, 266 tablas / 30 enums) · fresh-install OK
+  · `install --frozen-lockfile --offline` al día · `cocoa-22-api --check` y
+  `--typecheck-examples` al día
+- inventario Cocoa 22 regenerado: 224 pantallas · 88.428 líneas · 1.912 puntos (sin
+  cambio: las 8 pantallas nuevas nacen a 0); `NOT_MIGRATED` 68 = techo; techos
+  `GLOBAL_CEILING` 307 · 203 · 40 · 158 · 70 · 1.832; §6 del plan al día
+- `rbac:sync -- --dry-run`: 223 claves · +0 · 0 roles por completar (en local el
+  arranque del API con el backend 6b completó las plantillas; en el VPS lo hará el
+  reinicio tras el deploy)
+- QA con navegador: 12 hallazgos confirmados (2 media · 10 baja) → 12 corregidos
+  (`docs/audits/TANDA-6B-ESTRUCTURA-FRONT-2026-09-16.md` §4); la verificación
+  visual de las correcciones con sesión queda pendiente
+- Faranda solo lectura: idéntica antes y después de las dos pasadas (25 facturas ·
+  61 asientos / 150 líneas / Σ 2.595,00 · 33 envíos · 2 centros · 4 series · 1
+  instalación); org_123 en el dataset de referencia; 2 organizaciones (0 residuales)
+
 Whitelist: `apps/admin-web/.discoverability-whitelist.json` — screens
 que intencionalmente NO están en sidebar (dialogs, drawers, drill-down
 detail, sub-forms de wizards, auth, dev tools).
@@ -247,6 +274,11 @@ node scripts/env-census.mjs --write
 # (dry-run por defecto; idempotente; una transacción + evento LEGAL_STRUCTURE_BACKFILLED por organización)
 (cd apps/api && node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-legal-structure.ts --dry-run)
 (cd apps/api && node --env-file-if-exists=../../.env --import tsx src/scripts/backfill-legal-structure.ts --apply --confirm <orgId|all>)
+
+# Migración Faranda → CELUISMA (L8; dry-run por defecto; --apply exige --confirm <orgId> y --fiscal-address; runbook §17.13)
+corepack pnpm --filter @hotelos/api structure:migrate-faranda-celuisma
+corepack pnpm --filter @hotelos/api structure:migrate-faranda-celuisma -- --apply --confirm cmrhw9jy30002fyvb6tsdiugt --fiscal-address gijon|madrid|florida
+corepack pnpm --filter @hotelos/api structure:migrate-faranda-celuisma -- --print-rollback   # solo lectura
 
 # Verificación completa antes de commit
 bash .husky/pre-commit
@@ -745,14 +777,32 @@ habitaciones ESTIMADO. Ficha, mapeo y procedimiento:
     `JournalEntry.propertyId`; (b) `rbac:sync` pendiente (escribe `role_permissions`
     de Faranda: 6 roles + Local Super Admin); (c) la activación de VeriFactu en un
     centro no abre todavía su `verifactu_installations` (backfill / consola / SQL);
-    (d) front L6 (Configuración › Estructura societaria, perfil sin NIF, consola) y
-    L7 (ámbito único en Finanzas y Cumplimiento) sin construir: `grep
-    legal-entities apps/admin-web/src` = 0; (e) L8 (Faranda → CELUISMA, 5 hoteles +
-    oficina, specs parametrizados, cierre de `FAC-2026-` en RA, `sii_enabled` de RA,
-    índices únicos) bloqueado por los datos que solo César puede aportar (informe
-    §8); el NIF real A33615980 no entra en ningún entorno sin consentimiento; (f)
-    la probe org_123 de C9 (`structure-l5.test.mts`) solo compara cifras con la BD
-    en reposo (las suites hermanas escriben org_123 en paralelo).
+    (d) front L6 (Configuración › Estructura societaria: 5 pestañas en
+    `screens/structure/**`, contenedor `EstructuraSocietariaTabs`, asistente «Añadir
+    centro» con `dryRun`, perfil sin NIF, consola) y L7 (ámbito único
+    `services/financeScope.ts` + `FinanceScopeSelector` en 26 pantallas de Finanzas y
+    Cumplimiento, `localStorage["hotelos-finance-scope"]`, `?ambito=`, matriz
+    `FINANCE_SCOPE_POLICIES`) CONSTRUIDOS y cerrados el 2026-09-16
+    (`docs/audits/TANDA-6B-ESTRUCTURA-FRONT-2026-09-16.md`; runbook §17.12); quedan:
+    verificación visual con sesión de las 12 correcciones de la QA, banner de shell
+    «Finanzas de toda la sociedad» (`divergesFromActive` sin montar), patrón latente de
+    qa#11 en `BankReconciliation` / `BankingSpain` / `Commissions`, `scope=entity` en
+    `/banking/*` y compras (hoy «centro por defecto»), columnas censales en `GET
+    /organizations/me/structure` (la ficha las arranca vacías), ruta de archivado de
+    centro, tipos compartidos aditivos (`PayrollExportResult.employer`,
+    `TreasuryPosition.scope`, `InvoiceIssuer.establishment`), `--cocoa-accent-fill`
+    en `CocoaSidebar` / avatar del shell; (e) L8 (Faranda → CELUISMA): CLI
+    `apps/api/src/scripts/migrate-faranda-celuisma.ts` (`structure:migrate-faranda-celuisma`,
+    dry-run por defecto, 11 pasos, idempotente y reversible, runbook §17.13) y specs
+    `specs/faranda-{oficina-central,pathos-gijon,marsol-candas,alisas-santander,florida-norte,las-lomas}.json`
+    construidos y probados en seco (873 escrituras · 0 colisiones); el `--apply` sigue
+    bloqueado por los datos que solo César puede aportar (informe backend §8; sin
+    `--fiscal-address` el apply termina con salida 2); el NIF real A33615980 solo entra
+    en la demo local y nunca se remite a la AEAT; (f) la probe org_123 de C9
+    (`structure-l5.test.mts`) y la suite `structure-l6-l7-contract` (rollup USALI)
+    solo son fiables con la BD en reposo (las suites hermanas escriben org_123 en
+    paralelo): la primera se salta con diagnóstico, la segunda puede fallar una vez y
+    pasa sola.
 
 ## Docs prioritarios
 
@@ -769,6 +819,7 @@ Antes de tomar decisiones de producto, lee:
 - `docs/audits/TANDA-6-FINANZAS-BACKEND-2026-09-15.md` — cierre de la Tanda 6 · Finanzas backend: qué era mock y qué es real, cifras de Faranda tras el replay, los 15 hallazgos de la revisión y su estado, lo que el front debe consumir y lo que solo César puede aportar
 - `docs/audits/TANDA-6-FINANZAS-FRONT-2026-09-16.md` — cierre de la Tanda 6 · Finanzas front (Cocoa 22): las 36 URL nuevas y migradas, qué puede hacer ya un contable paso a paso, los 11 hallazgos de QA y su estado, puertas y pendientes (reinicio, verificación visual, `InvoiceLine.id`)
 - `docs/audits/TANDA-6B-ESTRUCTURA-BACKEND-2026-09-16.md` — cierre de la Tanda 6b · Estructura societaria backend: qué cambia para Faranda/Celuisma y qué no para un hotel individual, los 17 hallazgos y su estado, lo que necesita el front (L6/L7) y la lista exacta de datos que César debe aportar para la migración (L8)
+- `docs/audits/TANDA-6B-ESTRUCTURA-FRONT-2026-09-16.md` — cierre de la Tanda 6b · Estructura societaria front: qué ve ya Carmen pantalla a pantalla (Configuración › Estructura societaria y el ámbito único de Finanzas), cómo se dan de alta la oficina y los 5 hoteles con el CLI de L8 (pasos y comandos), los 12 hallazgos de la QA y su estado, puertas y pendientes
 - `docs/design/FINANZAS-ESTRUCTURA-SOCIETARIA.md` — diseño de la estructura societaria (Grupo → Sociedad → Centro): normativa, comparativa de ERP, modelo, reglas R1-R11, API, migración de Faranda, lotes L1-L10 y decisiones que solo César puede tomar
 - `docs/runbooks/finanzas-contabilidad.md` — contrato de datos PGC/USALI, reglas canónicas con ejemplos de asiento, rutas y permisos por módulo, comandos (plan, replay, cierre, amortización, IVA, exportaciones), límites y §17 estructura societaria (modelo, migraciones, backfill, reglas, rutas, comandos, aplazados, puertas)
 - `docs/director-dashboard/DESIGN-PROPOSAL.md`

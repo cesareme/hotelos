@@ -18,7 +18,8 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import type { Csb43ImportAccount, SepaNorma19Request, SepaRemittanceStatus } from "@hotelos/shared";
 import { useApiData } from "../../hooks/useApiData";
-import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { importCsb43, validateIban, type Csb43ImportResult } from "../../services/bankingApi";
 import { createSepaRemittance, getSepaRemittance, listSepaRemittances, treasuryErrorMessage, updateSepaRemittanceStatus, type SepaRemittanceRecord } from "../../services/treasuryApi";
 import { useToast } from "../../components/Toast";
@@ -216,8 +217,10 @@ function BankingSkeleton() {
 
 export function BankingSpainScreen() {
   const hosted = useTabHost() !== null;
-  const propertyId = getActivePropertyId();
-  const propertyName = getActiveProperty().propertyName;
+  // Tanda 6b · L7: bank accounts hang from a hotel today (`bank_accounts.property_id` NOT NULL): the «Ámbito» offers the
+  // centres (never the oficina central) and defaults to the active hotel.
+  const finance = useFinanceScope(financeScopePolicy("BankingSpainScreen"), { excludeOffice: true });
+  const propertyId = finance.propertyId ?? finance.active.propertyId;
   const { showToast } = useToast();
   const [view, setView] = useState<View>("statements");
 
@@ -403,12 +406,13 @@ export function BankingSpainScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${propertyName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Extractos y remesas"
       subtitle={hosted ? undefined : "Importa los extractos AEB Cuaderno 43 que emite tu banco y genera remesas SEPA de adeudos (Norma 19) con seguimiento de su estado."}
       actions={
         <>
           {accountsState.loading || remittancesLoading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton
             variant="bordered"
             tone="neutral"
@@ -697,7 +701,7 @@ export function BankingSpainScreen() {
             <CocoaFormSection title="Acreedor (el hotel)" description="Los datos SEPA que te ha asignado tu banco.">
               <CocoaFormRow columns={2}>
                 <CocoaField label="Nombre" required error={creditorName === "" ? undefined : creditorErrors.name}>
-                  <CocoaInput value={creditorName} onChange={setCreditorName} placeholder={propertyName} maxLength={70} autoFocus />
+                  <CocoaInput value={creditorName} onChange={setCreditorName} placeholder={finance.scope.label} maxLength={70} autoFocus />
                 </CocoaField>
                 <CocoaField label="Identificador de acreedor SEPA" required error={creditorId === "" ? undefined : creditorErrors.id} help="Lo asigna el banco (ES + 2 dígitos de control + sufijo + NIF).">
                   <CocoaInput value={creditorId} onChange={setCreditorId} placeholder="ES00000A00000000" maxLength={35} />

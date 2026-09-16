@@ -906,16 +906,25 @@ table.cocoa-table {
   font-weight: var(--cocoa-fw-semibold);
   color: var(--cocoa-danger-ink);
 }
-/* Inline field (switch / checkbox): label left, control right */
+/* Inline field (switch / checkbox): label left, control right; the help and
+   the error sit UNDER the label (second grid row, first column). As a flex row
+   the help was a third item of the same line and a long one shrank the label
+   to its min-content («Gran / empr / esa» at 390 px with `overflow-wrap:
+   anywhere`, qa#2 L6): a grid gives the label column whatever the control
+   leaves (minmax(0, 1fr)), so a word only breaks when it alone is wider than
+   the column. */
 .c22-field[data-inline="true"] {
-  flex-direction: row;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--cocoa-space-3);
+  column-gap: var(--cocoa-space-3);
+  row-gap: var(--cocoa-space-1);
   min-height: var(--cocoa-density-control-height);
 }
-.c22-field[data-inline="true"] .c22-field__label-row { flex: 1 1 auto; flex-direction: column; align-items: flex-start; gap: 2px; }
-.c22-field[data-inline="true"] .c22-field__control { flex-shrink: 0; }
+.c22-field[data-inline="true"] .c22-field__label-row { flex-direction: column; align-items: flex-start; gap: 2px; }
+.c22-field[data-inline="true"] .c22-field__control { grid-column: 2; grid-row: 1; }
+.c22-field[data-inline="true"] .c22-field__help,
+.c22-field[data-inline="true"] .c22-field__error { grid-column: 1; }
 
 /* Raw controls inside a CocoaField (textarea = CocoaInput multiline).
    `:where()` keeps this base at (0,1,0): the chained :not() used to lift it

@@ -19,8 +19,17 @@
 // `useTabHost()` instead of the prop, drop the prop, and change its loader to
 // `{ default: m.Screen }`. Screens built on `pageHead(embedded)` are already on
 // the context (pageHead reads it) and only carry a dead prop.
+//
+// Eyebrow qualifier (Tanda 6b · L7, fix qa#12): the container paints the
+// category («Finanzas»); a hosted screen that knows more — the sociedad or
+// centre of its finance scope, «Finanzas · CELUISMA S.A.» (design §5.3 of
+// FINANZAS-ESTRUCTURA-SOCIETARIA.md) — registers its eyebrow through
+// `useHostedEyebrow` (CocoaPage and HostedHead do it for their `eyebrow` prop)
+// and NavItemTabs paints the qualifier only when it extends its own category
+// label (`containerEyebrow`, nav-item-tabs.ts): eyebrow = categoría stays the
+// rule of the runbook; the qualifier is its one extension.
 
-import { createContext, useContext, type CSSProperties, type ReactNode } from "react";
+import { createContext, useContext, useEffect, type CSSProperties, type ReactNode } from "react";
 
 export type TabHostInfo = {
   /** Item screen key of the tree (`FrontDeskDashboard`). */
@@ -29,6 +38,12 @@ export type TabHostInfo = {
   basePath: string;
   /** Item label painted by the container header («Mi día»). */
   title: string;
+  /**
+   * Receives the eyebrow of the hosted screen so the container can qualify its
+   * category («Finanzas · CELUISMA S.A.»); null clears it. Absent on a host that
+   * keeps the plain category.
+   */
+  setEyebrow?: (eyebrow: string | null) => void;
 };
 
 const TabHostContext = createContext<TabHostInfo | null>(null);
@@ -40,6 +55,20 @@ export function TabHostProvider(props: { value: TabHostInfo; children: ReactNode
 /** Null when the screen is rendered standalone (legacy route); the host info inside a container. */
 export function useTabHost(): TabHostInfo | null {
   return useContext(TabHostContext);
+}
+
+/**
+ * Registers the eyebrow of a hosted screen with its container (no-op standalone
+ * or when the host does not take one); cleared on unmount so the next tab of the
+ * container starts again from the plain category.
+ */
+export function useHostedEyebrow(eyebrow: string | undefined): void {
+  const setEyebrow = useTabHost()?.setEyebrow;
+  useEffect(() => {
+    if (!setEyebrow) return undefined;
+    setEyebrow(eyebrow ?? null);
+    return () => setEyebrow(null);
+  }, [setEyebrow, eyebrow]);
 }
 
 /** Right-aligned actions row a hosted screen paints instead of its page header. */

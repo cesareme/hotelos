@@ -42,7 +42,9 @@ import {
   CocoaToolbar,
   type CocoaTableColumn
 } from "../../components/cocoa";
-import { firstDayOfYear, lastDayOfYear, readQueryParam, saveDownload, scopeLabel, signTone, usePropertyScopeOptions } from "../accounting/accounting-ui";
+import { firstDayOfYear, lastDayOfYear, readQueryParam, saveDownload, signTone } from "../accounting/accounting-ui";
+import { FinanceEntityNote, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { DOWNLOAD_FORMAT_OPTIONS, PERIOD_PRESET_OPTIONS, isDownloadFormat, isMeaningfulLine, presetOf, presetRange, statementColumns, type DateRange, type PeriodPresetKey } from "./statement-ui";
 
 const ACCOUNT_COLUMNS: CocoaTableColumn<StatementAccountAmount>[] = [
@@ -73,11 +75,12 @@ function BalanceSkeleton() {
 export function BalanceSheetScreen() {
   const header = treeHeaderFor("BalanceSheetScreen", { eyebrow: "Finanzas · Estados contables", title: "Balance de situación" });
   const { showToast } = useToast();
-  const scopeOptions = usePropertyScopeOptions();
+  // Tanda 6b · L7 (design §5.3): the balance is FORCED to the sociedad — there is no balance per centre (R1).
+  const finance = useFinanceScope(financeScopePolicy("BalanceSheetScreen"));
+  const propertyId = finance.propertyId ?? "";
 
   const [range, setRange] = useState<DateRange>(() => ({ from: readQueryParam("desde") ?? firstDayOfYear(), to: readQueryParam("hasta") ?? lastDayOfYear() }));
   const [comparative, setComparative] = useState(false);
-  const [propertyId, setPropertyId] = useState(readQueryParam("propiedad") ?? "");
   const [showZero, setShowZero] = useState(false);
   const preset = presetOf(range);
 
@@ -160,12 +163,13 @@ export function BalanceSheetScreen() {
   // squeezed to «CUA…» (qa#3). Format + download stay together as one cluster.
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
-      subtitle={k ? `Modelo de Pymes a ${date(k.asOf, "long")} · ${scopeLabel(scopeOptions, k.propertyId)} · generado ${dateTime(k.generatedAt)}` : "Activo, patrimonio neto y pasivo del PGC de Pymes calculados desde el libro diario: Activo = Patrimonio neto + Pasivo."}
+      subtitle={k ? `Modelo de Pymes a ${date(k.asOf, "long")} · ${k.entity?.legalName ?? finance.scope.label} · generado ${dateTime(k.generatedAt)}` : "Activo, patrimonio neto y pasivo del PGC de Pymes calculados desde el libro diario: Activo = Patrimonio neto + Pasivo."}
       actions={
         <>
           {k ? <CocoaBadge tone={k.balanced ? "success" : "danger"}>{k.balanced ? "Cuadrado" : "Descuadrado"}</CocoaBadge> : null}
+          <FinanceScopeSelector scope={finance} />
           <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
             <CocoaSelect value={format} onChange={setFormat} options={[...DOWNLOAD_FORMAT_OPTIONS]} size="small" aria-label="Formato de descarga" />
             <CocoaButton variant="bordered" tone="neutral" size="small" icon={<DownloadIcon size={14} aria-hidden="true" />} loading={downloading} disabled={!k} onClick={() => void download()}>
@@ -198,9 +202,6 @@ export function BalanceSheetScreen() {
             <CocoaField label="Fecha de cierre">
               <CocoaDatePicker value={range.to} onChange={(value) => setRange((current) => ({ ...current, to: value }))} size="small" aria-label="Fecha de cierre del balance (incluida)" />
             </CocoaField>
-            <CocoaField label="Propiedad">
-              <CocoaSelect value={propertyId} onChange={setPropertyId} options={scopeOptions} size="small" aria-label="Propiedad" />
-            </CocoaField>
           </div>
         }
         rightSlot={
@@ -214,6 +215,13 @@ export function BalanceSheetScreen() {
           </div>
         }
       />
+
+      <FinanceEntityNote scope={finance} subject="El balance de situación" />
+      {k?.format && !k.format.depositable ? (
+        <CocoaCallout tone="warning" title="Formato Pymes no depositable para esta sociedad" role="status">
+          {k.format.reason} El balance se muestra a título informativo.
+        </CocoaCallout>
+      ) : null}
 
       {k ? (
         <>

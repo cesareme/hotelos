@@ -247,3 +247,25 @@ export function landingKeysFor(
   };
   return { defaultTab: keyFor(false), mobileDefaultTab: keyFor(true) };
 }
+
+// ----------------------------------------------------------------- eyebrow
+
+/**
+ * Eyebrow a container paints over its H1: the category label («Finanzas»),
+ * extended by the hosted screen's own eyebrow ONLY when that eyebrow qualifies
+ * the same category — «Finanzas · CELUISMA S.A.» / «Cumplimiento · Hotel Rías
+ * Altas (RA)», the sociedad or centre of the finance scope (design §5.3 of
+ * FINANZAS-ESTRUCTURA-SOCIETARIA.md; fix:L7 qa#12). Anything else keeps the
+ * plain category so the header never drifts from the menu (runbook
+ * navegación-tanda-5 §4): another category, the category alone, or
+ * «Categoría · Ítem» (treeHeaderFor of a tab, already the H1 of the container).
+ */
+export function containerEyebrow(categoryLabel: string, itemLabel: string, screenEyebrow: string | null | undefined): string {
+  const eyebrow = screenEyebrow?.trim();
+  if (!eyebrow) return categoryLabel;
+  const prefix = `${categoryLabel} · `;
+  if (!eyebrow.startsWith(prefix)) return categoryLabel;
+  const qualifier = eyebrow.slice(prefix.length).trim();
+  if (!qualifier || qualifier === itemLabel) return categoryLabel;
+  return `${categoryLabel} · ${qualifier}`;
+}

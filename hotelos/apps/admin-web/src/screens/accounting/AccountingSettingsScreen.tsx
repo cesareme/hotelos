@@ -53,10 +53,11 @@ import {
   parseMoneyInput,
   sourceTypeLabel,
   todayIso,
-  usePropertyScopeOptions,
   vatPeriodicityLabel,
   vatRegimeLabel
 } from "./accounting-ui";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 
 type Draft = { fiscalYearStartMonth: string; vatPeriodicity: string; vatRegime: string; prorrataPct: string; taxFigure: string };
 
@@ -113,7 +114,9 @@ export function AccountingSettingsScreen() {
   const gate = useNavGate();
   const canConfigure = canDo(gate, "accounting.configure");
   const canReplay = canDo(gate, "accounting.journal.post") && canDo(gate, "ai.high_risk.confirm");
-  const scopeOptions = usePropertyScopeOptions();
+  // Tanda 6b · L7: the accounting settings are the sociedad's (forced); the replay may still target one centre.
+  const finance = useFinanceScope(financeScopePolicy("AccountingSettingsScreen"));
+  const scopeOptions = useMemo(() => centreSelectOptions(finance.structure, finance.active, { societyLevel: true, societyLabel: "Toda la sociedad" }), [finance.structure, finance.active]);
 
   // ---- settings -------------------------------------------------------------------
   const [settings, setSettings] = useState<AccountingSettingsView | null>(null);
@@ -243,9 +246,10 @@ export function AccountingSettingsScreen() {
 
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
-      subtitle="Mes de inicio del ejercicio, periodicidad y régimen del IVA, figura impositiva y estado de la proyección contable de la organización."
+      subtitle="Mes de inicio del ejercicio, periodicidad y régimen del IVA, figura impositiva y estado de la proyección contable de la sociedad."
+      actions={<FinanceScopeSelector scope={finance} />}
       state={loading && !settings ? "loading" : error && !settings ? "error" : "ready"}
       skeleton={
         <div className="cocoa-stack" data-gap="4" aria-hidden="true">
@@ -264,13 +268,13 @@ export function AccountingSettingsScreen() {
         <>
           <CocoaKpiStrip aria-label="Estado del plan y del IVA">
             <CocoaKpi label="Plan de cuentas" value={settings.chartProvisioned ? "Provisionado" : "Sin provisionar"} deltaLabel={settings.chartTemplate === "pgc_pymes_hotelero_v1" ? "PGC Pymes hotelero" : settings.chartTemplate ?? "sin plantilla"} polarity="neutral" status={settings.chartProvisioned ? "ok" : "critical"} />
-            <CocoaKpi label="Cuentas" value={number(settings.accountCount)} deltaLabel="en el plan de la organización" polarity="neutral" />
+            <CocoaKpi label="Cuentas" value={number(settings.accountCount)} deltaLabel="en el plan de la sociedad" polarity="neutral" />
             {/* The tax figure (IVA · IGIC · IPSI) names the tile; it is not a unit of «Trimestral» (qa#7: «Trimestral IVA» read as one word). */}
             <CocoaKpi label={`Periodicidad del ${settings.vat.taxFigure}`} value={vatPeriodicityLabel(settings.vat.periodicity)} deltaLabel={settings.vat.persisted ? vatRegimeLabel(settings.vat.regime) : "valores por defecto, sin guardar"} polarity="neutral" status={settings.vat.persisted ? "ok" : "warning"} />
           </CocoaKpiStrip>
 
           {!settings.chartProvisioned ? (
-            <CocoaCallout tone="danger" title="La organización no tiene plan de cuentas" role="alert">
+            <CocoaCallout tone="danger" title="La sociedad no tiene plan de cuentas" role="alert">
               Sin plan no se contabiliza nada (la proyección responde «plan no provisionado»). Provisiona la plantilla PGC Pymes hotelero desde la línea de comandos del API (accounting:provision-chart) o contabiliza un primer documento: el motor la provisiona al vuelo.
             </CocoaCallout>
           ) : null}
@@ -405,7 +409,7 @@ export function AccountingSettingsScreen() {
                 <CocoaField label="Hasta" required>
                   <CocoaDatePicker value={replayTo} onChange={setReplayTo} />
                 </CocoaField>
-                <CocoaField label="Propiedad" fullWidth>
+                <CocoaField label="Centro de trabajo" fullWidth help="Sin centro se reproyectan los documentos de toda la sociedad.">
                   <CocoaSelect value={replayProperty} onChange={setReplayProperty} options={scopeOptions} />
                 </CocoaField>
                 <CocoaField label="Contabilizar de verdad" inline help="Desactivado = simulación (no escribe nada).">

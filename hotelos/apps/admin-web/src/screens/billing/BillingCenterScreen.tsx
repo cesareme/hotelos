@@ -45,7 +45,9 @@ import type { InvoiceCancellationPayments, PaymentMethodCode } from "@hotelos/sh
 import { ApiError } from "../../services/api-client";
 import { financeErrorMessage } from "../../services/finance-contracts";
 import { TAX_CATEGORY_LABELS, TAX_CATEGORY_OPTIONS, buildTaxCodeClient, fetchPropertyTaxes, isSuspiciousTaxLine, rateForCategory, type PropertyTaxProfile, type TaxCategory } from "../../services/taxesApi";
-import { getActiveProperty } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { verifactuExclusionText } from "../../services/finance-contracts";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { toArray } from "../../utils/toArray";
 import { navigateTo } from "../../lib/navigate";
 import { useToast } from "../../components/Toast";
@@ -220,6 +222,13 @@ const DETAIL_COLUMNS: CocoaTableColumn<DetailLine>[] = [
   { key: "total", label: FIELD_LABELS.total, align: "right", render: (line) => <strong>{money(line.total)}</strong> }
 ];
 
+/** Tanda 6b (L3): additive issuer fields of GET /invoices/:id — sociedad domicilio fiscal, establishment block, SII exclusion. */
+type IssuerStructure = {
+  fiscalAddress?: string;
+  establishment?: { code: string | null; tradeName: string; addressLine: string | null } | null;
+  verifactuExclusion?: { code?: string; motivo: string } | null;
+};
+
 function BillingSkeleton() {
   return (
     <div className="cocoa-stack" data-gap="4" aria-hidden="true">
@@ -232,8 +241,10 @@ function BillingSkeleton() {
 export function BillingCenterScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
-  const property = getActiveProperty();
-  const propertyId = property.propertyId;
+  // Tanda 6b · L7 (design §5.3): emission is operational — the «Ámbito» offers the centres that issue (hotel / other,
+  // never the oficina central) and defaults to the active hotel; the issuer printed is ALWAYS the sociedad (R2).
+  const finance = useFinanceScope(financeScopePolicy("BillingCenterScreen"), { excludeOffice: true });
+  const propertyId = finance.propertyId ?? finance.active.propertyId;
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -361,9 +372,12 @@ export function BillingCenterScreen() {
   }
 
   useEffect(() => {
+    // The eligible centres come from the structure (fix:L7 qa#11): until it is known the scope would be
+    // the active property even when that is the oficina central, so wait for it instead of loading twice.
+    if (finance.loading) return;
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [propertyId]);
+  }, [propertyId, finance.loading]);
 
   function handleReservationChange(reservationId: string) {
     setSelectedReservationId(reservationId);
@@ -710,16 +724,20 @@ export function BillingCenterScreen() {
   const detailMarkable = detail ? canMarkPaid(detailListRow ?? detail) : false;
   const detailBlock = detail ? issueBlocks[detail.id] : undefined;
   const detailLinesView = detail ? detailLines(detail) : null;
+  // Tanda 6b (additive on GET /invoices/:id): the sociedad's fiscal address, the establishment block and the SII exclusion.
+  const detailStructure = detail ? (detail.issuer as (typeof detail.issuer & IssuerStructure) | undefined) : undefined;
+  const detailExclusion = detail ? verifactuExclusionText({ warnings: toArray<string>(detail.warnings), verifactuExclusion: detailStructure?.verifactuExclusion ?? null }) : null;
   const invoicesReady = !invoicesError && filteredInvoices.length > 0;
   const draftPreview = draftLines.length > 0 ? resolveDraftLines(draftLines, taxProfile) : null;
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${property.propertyName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Facturación y cobros"
-      subtitle={hosted ? undefined : "Folios, cobros y devoluciones de las reservas; borradores, emisión, envío y anulación de facturas con VeriFactu."}
+      subtitle={hosted ? undefined : "Folios, cobros y devoluciones de las reservas; borradores, emisión, envío y anulación de facturas con VeriFactu. El emisor es siempre la sociedad; el centro aporta la serie y el bloque «Establecimiento»."}
       actions={
         <>
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void refresh()} disabled={loading}>
             {ACTIONS.refresh}
           </CocoaButton>
@@ -1115,6 +1133,11 @@ export function BillingCenterScreen() {
               {detail.rectificationType ? <CocoaBadge tone="info">{detail.rectificationType === "S" ? "Rectificativa por sustitución" : "Rectificativa por diferencias"}</CocoaBadge> : null}
               {detailLinesView.frozen ? <CocoaBadge tone="success">Líneas congeladas al emitir</CocoaBadge> : null}
               {detail.issuer?.taxIdPlaceholder || detail.issuerTaxIdPlaceholder ? <CocoaBadge tone="warning">NIF emisor provisional</CocoaBadge> : null}
+              {detailExclusion ? (
+                <CocoaBadge tone="warning" uppercase={false} title={detailExclusion}>
+                  VeriFactu no aplica (SII)
+                </CocoaBadge>
+              ) : null}
             </div>
 
             <div className="cocoa-row" data-gap="2">
@@ -1173,7 +1196,8 @@ export function BillingCenterScreen() {
             ) : null}
 
             <CocoaFormRow columns={2}>
-              <CocoaStat label="Emisor" value={detail.issuer?.legalName ?? detail.issuer?.propertyName ?? "—"} hint={detail.issuer?.taxId ? `NIF ${detail.issuer.taxId}` : undefined} tabular={false} />
+              <CocoaStat label="Sociedad emisora" value={detail.issuer?.legalName ?? detail.issuer?.propertyName ?? "—"} hint={[detail.issuer?.taxId ? `NIF ${detail.issuer.taxId}` : null, detailStructure?.fiscalAddress ?? null].filter(Boolean).join(" · ") || undefined} tabular={false} />
+              {detailStructure?.establishment ? <CocoaStat label="Establecimiento" value={`${detailStructure.establishment.tradeName}${detailStructure.establishment.code ? ` (${detailStructure.establishment.code})` : ""}`} hint={detailStructure.establishment.addressLine ?? undefined} tabular={false} /> : null}
               <CocoaStat label="Cliente" value={detail.customerName ?? customerTypeLabel(detail.customerType)} hint={detail.customerTaxId ? `NIF ${detail.customerTaxId}` : customerTypeLabel(detail.customerType)} tabular={false} />
               <CocoaStat label="Emitida" value={detail.issuedAt ? date(detail.issuedAt, "medium") : "—"} tabular={false} />
               <CocoaStat label={FIELD_LABELS.total} value={money(detail.total, detail.currencyCode)} hint={`Impuestos ${money(detail.taxTotal, detail.currencyCode)}`} />

@@ -24,7 +24,7 @@
 
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
 import { HostedHead } from "../../screens/tabs/tab-helpers";
-import { useTabHost } from "../../screens/tabs/TabHost";
+import { useHostedEyebrow, useTabHost } from "../../screens/tabs/TabHost";
 import { CocoaPageHeader, type CocoaPageHeaderProps } from "./CocoaPageHeader";
 import { CocoaState, type CocoaStateProps } from "./CocoaState";
 import { commandsKey, registerPageCommands, resolvePageState, type CocoaPageCommand, type CocoaPageState } from "./cocoa-page-commands";
@@ -80,6 +80,9 @@ export function CocoaPage({
   "aria-label": ariaLabel
 }: CocoaPageProps) {
   const hosted = useTabHost() !== null;
+  // Hosted: the container paints the eyebrow — hand it ours so it can qualify its category
+  // («Finanzas · CELUISMA S.A.», design §5.3; fix:L7 qa#12). No-op standalone.
+  useHostedEyebrow(eyebrow);
   const resolved = resolvePageState({ state });
 
   // ⌘K: register once per command set; the latest `run` closures are read through a ref.

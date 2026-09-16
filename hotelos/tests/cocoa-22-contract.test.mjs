@@ -191,12 +191,20 @@ const STYLE_BUDGET = {
   "operations/RoomingListImportDialog.tsx": 15,
   "operations/RoomBlockGridDialog.tsx": 15,
   "operations/NewEventDialog.tsx": 15,
-  "operations/GroupsCalendarScreen.tsx": 40
+  "operations/GroupsCalendarScreen.tsx": 40,
+  // Tanda 6b · L6 (Configuración › Estructura societaria: workspace split 40 for the five hosted tabs; drawers 15)
+  "structure/StructureScreen.tsx": 40,
+  "structure/PropertiesTable.tsx": 40,
+  "structure/SeriesAndInstallationsTab.tsx": 40,
+  "structure/VatAndFiscalYearTab.tsx": 40,
+  "structure/AllocationTab.tsx": 40,
+  "structure/PropertyDrawer.tsx": 15,
+  "structure/AddPropertyDrawer.tsx": 15
 };
 const DEFAULT_STYLE_BUDGET = 25;
 
-/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223; olas 3 · 5 · 7 integradas el 2026-09-16, lotes 3-A/3-B/3-C/5-A/5-B/5-C/7-A/7-B/7-C: 589/419/91/409/402/3223 → 307/203/40/158/70/1833; cierre de la Tanda B con las correcciones fix:* del 2026-09-16: sin cambio, los seis techos igualan los totales regenerados). */
-const GLOBAL_CEILING = { boCard: 307, rawButtons: 203, rawTables: 40, rawInputs: 158, colourLiterals: 70, inlineStyles: 1833 };
+/** Rule 13 ceilings (§9) — lowered by every wave to the regenerated inventory (olas 1 · 2 · 4 · 9 integradas el 2026-09-15: 941/647/159/553/539/4607 → 762/488/121/491/419/3795; cierre de tanda A con las correcciones fix:*: inlineStyles 3795 → 3788; Tanda 6 Finanzas integrada el 2026-09-16, lotes 6-A/6-B/6-C/6-D/6-F/8-B/4-B: 762/488/121/491/419/3788 → 589/419/91/409/402/3223; olas 3 · 5 · 7 integradas el 2026-09-16, lotes 3-A/3-B/3-C/5-A/5-B/5-C/7-A/7-B/7-C: 589/419/91/409/402/3223 → 307/203/40/158/70/1833; cierre de la Tanda B con las correcciones fix:* del 2026-09-16: sin cambio, los seis techos igualan los totales regenerados; Tanda 6b · L6/L7 (Estructura societaria y ámbito único) integradas el 2026-09-16: inlineStyles 1833 → 1832, el resto sin cambio). */
+const GLOBAL_CEILING = { boCard: 307, rawButtons: 203, rawTables: 40, rawInputs: 158, colourLiterals: 70, inlineStyles: 1832 };
 
 // ----------------------------------------------------------------- helpers
 

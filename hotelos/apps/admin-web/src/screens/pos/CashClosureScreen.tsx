@@ -21,7 +21,8 @@
 // on the wire and only become numbers to be painted (lib/format).
 
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
-import { getActiveProperty } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { fetchPosOutlets, type PosOutlet } from "../../services/posApi";
 import {
   approveCashClosure,
@@ -158,7 +159,9 @@ function ClosureSkeleton() {
 
 export function CashClosureScreen() {
   const hosted = useTabHost() !== null;
-  const propertyName = getActiveProperty().propertyName;
+  // Tanda 6b · L7: the cash closure is per point of sale of a hotel — the «Ámbito» offers the hotels (never the oficina).
+  const finance = useFinanceScope(financeScopePolicy("CashClosureScreen"), { excludeOffice: true });
+  const propertyId = finance.propertyId ?? finance.active.propertyId;
   const tier = useViewportTier();
   const compact = tier === "phone" || tier === "tablet";
   const { showToast } = useToast();
@@ -189,21 +192,25 @@ export function CashClosureScreen() {
     setLoading(true);
     setError(null);
     try {
-      const rows = await listCashClosures({ status: status || undefined, outletId: outletFilter || undefined, from: from || undefined, to: to || undefined, limit: LIST_LIMIT });
+      const rows = await listCashClosures({ status: status || undefined, outletId: outletFilter || undefined, from: from || undefined, to: to || undefined, limit: LIST_LIMIT }, propertyId);
       setClosures(rows);
     } catch (e: unknown) {
       setError(cashClosureErrorMessage(e, "No se pudieron cargar los cierres de caja."));
     } finally {
       setLoading(false);
     }
-  }, [status, outletFilter, from, to]);
+  }, [status, outletFilter, from, to, propertyId]);
 
+  // The eligible hotels come from the structure (fix:L7 qa#11): until it is known the scope would be the
+  // active property even when that is the oficina central, so both readers wait instead of loading twice.
   useEffect(() => {
+    if (finance.loading) return;
     void load();
-  }, [load]);
+  }, [load, finance.loading]);
 
   useEffect(() => {
-    void fetchPosOutlets()
+    if (finance.loading) return;
+    void fetchPosOutlets(propertyId)
       .then((list) => {
         setOutlets(list);
         setOutletsError(null);
@@ -212,7 +219,7 @@ export function CashClosureScreen() {
         setOutlets([]);
         setOutletsError(cashClosureErrorMessage(e, "No se pudieron cargar los puntos de venta: solo se puede abrir la caja de recepción."));
       });
-  }, []);
+  }, [propertyId, finance.loading]);
 
   /** Replace (or prepend) a closure the API just returned, and select it. */
   function upsert(record: CashClosureWire) {
@@ -248,7 +255,7 @@ export function CashClosureScreen() {
         businessDate: openDate || undefined,
         openingFloat: (toCents(openFloatParsed) ?? 0) / 100,
         notes: openNotes.trim() || undefined
-      });
+      }, propertyId);
       setOpenDialog(false);
       setOpenFloat("");
       setOpenNotes("");
@@ -272,7 +279,7 @@ export function CashClosureScreen() {
       return;
     }
     try {
-      upsert(await getCashClosure(closureId));
+      upsert(await getCashClosure(closureId, propertyId));
     } catch (e: unknown) {
       setMsg({ text: cashClosureErrorMessage(e, "No se pudo cargar el cierre de caja."), tone: "danger" });
     }
@@ -317,7 +324,7 @@ export function CashClosureScreen() {
     setBusy(true);
     setMsg(null);
     try {
-      const closed = await closeCashClosure(selected.id, closeRequest.body);
+      const closed = await closeCashClosure(selected.id, closeRequest.body, propertyId);
       setConfirmClose(false);
       const kind = differenceKind(closed.difference);
       showToast(
@@ -341,7 +348,7 @@ export function CashClosureScreen() {
     setBusy(true);
     setMsg(null);
     try {
-      const approved = await approveCashClosure(selected.id, approveNotes.trim() ? { notes: approveNotes.trim() } : {});
+      const approved = await approveCashClosure(selected.id, approveNotes.trim() ? { notes: approveNotes.trim() } : {}, propertyId);
       setApproveDialog(false);
       showToast("Cierre de caja aprobado.", { variant: "success" });
       upsert(approved);
@@ -427,12 +434,13 @@ export function CashClosureScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Operaciones · ${propertyName}`}
+      eyebrow={finance.eyebrow("Operaciones")}
       title="Cierre de caja"
       subtitle={hosted ? undefined : "Arqueo del día por punto de venta: fondo de apertura, recuento por método y denominaciones, diferencias y aprobación."}
       actions={
         <>
           {busy ? <CocoaBadge tone="info">{STATUS_LABELS.inProgress}</CocoaBadge> : null}
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={() => void load()} loading={loading && closures.length > 0} title={ACTIONS.refresh}>
             {ACTIONS.refresh}
           </CocoaButton>

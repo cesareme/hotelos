@@ -48,13 +48,13 @@ import {
   kindTone,
   readQueryParam,
   saveDownload,
-  scopeLabel,
   signTone,
   sourceTypeLabel,
   todayIso,
-  usePropertyScopeOptions,
   withQuery
 } from "./accounting-ui";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { centreNameFor, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 
 const LEDGER_DETAIL_CAP = 5_000;
 
@@ -94,7 +94,8 @@ type LedgerRange = { accountCode: string; from: string; to: string; propertyId: 
 export function LedgerScreen() {
   const header = treeHeaderFor("LedgerScreen", { eyebrow: "Finanzas · Contabilidad", title: "Mayor" });
   const { showToast } = useToast();
-  const scopeOptions = usePropertyScopeOptions();
+  // Tanda 6b · L7: the «Ámbito» of the header (sociedad by default, a centre as filter) feeds `range.propertyId`.
+  const finance = useFinanceScope(financeScopePolicy("LedgerScreen"));
 
   const [range, setRange] = useState<LedgerRange>(() => ({
     accountCode: readQueryParam("cuenta") ?? "",
@@ -103,6 +104,9 @@ export function LedgerScreen() {
     propertyId: readQueryParam("propiedad") ?? ""
   }));
   const [accountFilter, setAccountFilter] = useState("");
+  useEffect(() => {
+    setRange((current) => (current.propertyId === (finance.propertyId ?? "") ? current : { ...current, propertyId: finance.propertyId ?? "" }));
+  }, [finance.propertyId]);
 
   // ---- chart of accounts (picker) --------------------------------------------
   const [chart, setChart] = useState<ChartAccountView[]>([]);
@@ -216,7 +220,7 @@ export function LedgerScreen() {
       <CocoaState
         kind="error"
         title={notFound ? "Cuenta no encontrada" : "No se pudo cargar el mayor"}
-        message={accountingErrorMessage(error, notFound ? `La cuenta ${range.accountCode} no existe en el plan de la organización.` : undefined)}
+        message={accountingErrorMessage(error, notFound ? `La cuenta ${range.accountCode} no existe en el plan de la sociedad.` : undefined)}
         onRetry={() => setReloadNonce((n) => n + 1)}
       />
     );
@@ -247,13 +251,16 @@ export function LedgerScreen() {
 
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
       subtitle="Apuntes de una cuenta con su saldo inicial, el saldo corrido tras cada movimiento y los totales exactos del periodo."
       actions={
-        <CocoaButton variant="bordered" tone="neutral" size="small" icon={<DownloadIcon size={14} aria-hidden="true" />} loading={downloading} disabled={!range.accountCode || !ready} onClick={() => void downloadCsv()}>
-          Descargar CSV
-        </CocoaButton>
+        <>
+          <FinanceScopeSelector scope={finance} />
+          <CocoaButton variant="bordered" tone="neutral" size="small" icon={<DownloadIcon size={14} aria-hidden="true" />} loading={downloading} disabled={!range.accountCode || !ready} onClick={() => void downloadCsv()}>
+            Descargar CSV
+          </CocoaButton>
+        </>
       }
       commands={[
         { id: "ledger-download-csv", label: "Descargar el mayor en CSV", run: () => void downloadCsv() },
@@ -287,9 +294,6 @@ export function LedgerScreen() {
             <CocoaField label="Hasta">
               <CocoaDatePicker value={range.to} onChange={(value) => set("to", value)} size="small" aria-label="Fecha hasta" />
             </CocoaField>
-            <CocoaField label="Propiedad">
-              <CocoaSelect value={range.propertyId} onChange={(value) => set("propertyId", value)} options={scopeOptions} size="small" aria-label="Filtrar por propiedad" />
-            </CocoaField>
           </div>
         }
         rightSlot={
@@ -315,7 +319,7 @@ export function LedgerScreen() {
           <CocoaKpi label="Saldo inicial" value={money(ledger.openingBalance)} deltaLabel={ledger.from ? `al ${date(ledger.from, "short")}` : "sin fecha de inicio"} polarity="neutral" tone={signTone(ledger.openingBalance)} />
           <CocoaKpi label="Suma del debe" value={money(ledger.totals.debit)} deltaLabel="todo el periodo" polarity="neutral" />
           <CocoaKpi label="Suma del haber" value={money(ledger.totals.credit)} deltaLabel="todo el periodo" polarity="neutral" />
-          <CocoaKpi label="Saldo final" value={money(ledger.closingBalance)} deltaLabel={`al ${date(ledger.to, "short")} · ${scopeLabel(scopeOptions, ledger.propertyId)}`} polarity="neutral" tone={signTone(ledger.closingBalance)} status={ledger.truncated ? "warning" : undefined} />
+          <CocoaKpi label="Saldo final" value={money(ledger.closingBalance)} deltaLabel={`al ${date(ledger.to, "short")} · ${ledger.propertyId ? centreNameFor(finance.structure, ledger.propertyId) : finance.entityName}`} polarity="neutral" tone={signTone(ledger.closingBalance)} status={ledger.truncated ? "warning" : undefined} />
         </CocoaKpiStrip>
       ) : null}
 

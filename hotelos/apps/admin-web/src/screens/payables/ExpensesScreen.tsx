@@ -16,7 +16,8 @@
 import { useMemo, useState, type CSSProperties } from "react";
 import type { ExpensePaidWith, InlineAttachment } from "@hotelos/shared";
 import { createExpense, getExpense, listExpenses, reverseExpense, type ExpenseDetailDto, type ExpenseDto, type ExpenseRequest } from "../../services/payablesApi";
-import { getActivePropertyName } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { useToast } from "../../components/Toast";
 import { useTabHost } from "../tabs/TabHost";
 import { date, dateTime, money, percent, plural, toNumber } from "../../lib/format";
@@ -178,6 +179,9 @@ const COLUMNS: CocoaTableColumn<ExpenseDto>[] = [
 export function ExpensesScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
+  // Tanda 6b · L7: expenses hang from a centre (the oficina central included); the «Ámbito» picks it.
+  const finance = useFinanceScope(financeScopePolicy("ExpensesScreen"));
+  const propertyId = finance.propertyId ?? finance.active.propertyId;
   const [search, setSearch] = useState("");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -192,8 +196,8 @@ export function ExpensesScreen() {
         paidWith: (paidWith || undefined) as ExpensePaidWith | undefined,
         includeCancelled: includeCancelled || undefined,
         limit: 500
-      }),
-    `${search}|${from}|${to}|${paidWith}|${includeCancelled}`,
+      }, propertyId),
+    `${propertyId}|${search}|${from}|${to}|${paidWith}|${includeCancelled}`,
     "No se pudieron cargar los gastos."
   );
   const chart = useChartAccounts();
@@ -201,7 +205,7 @@ export function ExpensesScreen() {
 
   // Detail drawer
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const detail = useLoader<ExpenseDetailDto | null>(() => (selectedId ? getExpense(selectedId) : Promise.resolve(null)), selectedId ?? "", "No se pudo cargar el gasto.");
+  const detail = useLoader<ExpenseDetailDto | null>(() => (selectedId ? getExpense(selectedId, propertyId) : Promise.resolve(null)), `${propertyId}|${selectedId ?? ""}`, "No se pudo cargar el gasto.");
   const [askReverse, setAskReverse] = useState(false);
   const [reason, setReason] = useState("");
   const [reasonError, setReasonError] = useState<string | undefined>(undefined);
@@ -268,7 +272,7 @@ export function ExpensesScreen() {
     setSaving(true);
     setSaveFailure(null);
     try {
-      const created = await createExpense(bodyOf(form));
+      const created = await createExpense(bodyOf(form), propertyId);
       showToast(`Gasto de ${money(created.total)} contabilizado.`, { variant: "success" });
       setCreating(false);
       list.refresh();
@@ -289,7 +293,7 @@ export function ExpensesScreen() {
     setBusy(true);
     setActionFailure(null);
     try {
-      await reverseExpense(selectedId, { reason: text });
+      await reverseExpense(selectedId, { reason: text }, propertyId);
       showToast("Gasto anulado: el asiento se ha revertido.", { variant: "success" });
       setAskReverse(false);
       setReason("");
@@ -344,13 +348,16 @@ export function ExpensesScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${getActivePropertyName()}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Gastos"
-      subtitle={hosted ? undefined : "Gastos menores y tiques pagados en caja, tarjeta o banco, contabilizados al registrarlos; el IVA solo se deduce con NIF del proveedor."}
+      subtitle={hosted ? undefined : "Gastos menores y tiques pagados en caja, tarjeta o banco, contabilizados al registrarlos en su centro de trabajo; el IVA solo se deduce con NIF del proveedor."}
       actions={
-        <CocoaButton variant="filled" tone="accent" size={hosted ? "small" : "regular"} onClick={openNew}>
-          {newExpenseLabel}
-        </CocoaButton>
+        <>
+          <FinanceScopeSelector scope={finance} />
+          <CocoaButton variant="filled" tone="accent" size={hosted ? "small" : "regular"} onClick={openNew}>
+            {newExpenseLabel}
+          </CocoaButton>
+        </>
       }
       commands={[
         { id: "expenses-new", label: newExpenseLabel, run: openNew },

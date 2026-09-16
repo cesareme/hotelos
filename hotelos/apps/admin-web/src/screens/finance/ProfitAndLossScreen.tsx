@@ -11,16 +11,28 @@
 // the model lines (a row opens the drawer with the PGC accounts behind it) →
 // warnings of the API as callouts. «Descargar» fetches the same statement as
 // pdf / xlsx / csv through the API (no client-side rendering).
+//
+// Tanda 6b · L7 (design §5.3): the header carries the ONE «Ámbito» (sociedad by
+// default, a centre as filter → `propertyId`) and a «Sociedad · Por centro»
+// view: the matrix account × centre of GET /accounting/pnl/by-property with the
+// columns «Oficina central» (office centres), «Sin asignar» (entries without a
+// work centre) and «Total sociedad», plus the informative allocation row
+// (`allocation`, never posted) behind a CocoaSwitch.
 
-import { useEffect, useMemo, useState } from "react";
-import type { PgcProfitAndLoss, StatementAccountAmount, StatementLine } from "@hotelos/shared";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import type { PgcProfitAndLoss, PnlByProperty, PnlByPropertyRow, StatementAccountAmount, StatementLine } from "@hotelos/shared";
+import { apiRequest } from "../../services/api-client";
+import { compactQuery } from "../../services/finance-contracts";
 import { downloadStatement, getProfitAndLoss, statementsErrorMessage } from "../../services/financialStatementsApi";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { ALLOCATION_ROW_LABEL, ENTITY_TOTAL_FOOTNOTE, ENTITY_TOTAL_LABEL, PROPERTY_KIND_LABELS, UNASSIGNED_COLUMN_LABEL, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { useToast } from "../../components/Toast";
 import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { date, dateTime, money, plural } from "../../lib/format";
 import { DownloadIcon } from "../../components/cocoa-icons/ActionIcons";
 import { treeHeaderFor } from "../tabs/tab-helpers";
 import {
+  CocoaBadge,
   CocoaButton,
   CocoaCallout,
   CocoaDatePicker,
@@ -30,6 +42,7 @@ import {
   CocoaKpiStrip,
   CocoaPage,
   CocoaSection,
+  CocoaSegmentedControl,
   CocoaSelect,
   CocoaSkeleton,
   CocoaStat,
@@ -39,7 +52,7 @@ import {
   CocoaToolbar,
   type CocoaTableColumn
 } from "../../components/cocoa";
-import { firstDayOfYear, lastDayOfYear, readQueryParam, saveDownload, scopeLabel, signTone, usePropertyScopeOptions } from "../accounting/accounting-ui";
+import { firstDayOfYear, lastDayOfYear, readQueryParam, saveDownload, signTone } from "../accounting/accounting-ui";
 import { DOWNLOAD_FORMAT_OPTIONS, PERIOD_PRESET_OPTIONS, isDownloadFormat, isMeaningfulLine, presetOf, presetRange, statementColumns, type DateRange, type PeriodPresetKey } from "./statement-ui";
 
 const ACCOUNT_COLUMNS: CocoaTableColumn<StatementAccountAmount>[] = [
@@ -47,6 +60,38 @@ const ACCOUNT_COLUMNS: CocoaTableColumn<StatementAccountAmount>[] = [
   { key: "name", label: "Nombre", render: (row) => row.name },
   { key: "amount", label: "Importe", align: "right", render: (row) => money(row.amount) }
 ];
+
+type PnlView = "sociedad" | "centros";
+
+const VIEW_OPTIONS: Array<{ value: PnlView; label: string }> = [
+  { value: "sociedad", label: "Sociedad" },
+  { value: "centros", label: "Por centro" }
+];
+
+/** Columns of the matrix account × centre: label, one per centre, «Sin asignar», «Total sociedad» (declared outside the component: §4.2 A5 via useMemo on the centres). */
+function pnlByCentreColumns(view: PnlByProperty): CocoaTableColumn<PnlByPropertyRow>[] {
+  const columns: CocoaTableColumn<PnlByPropertyRow>[] = [
+    { key: "label", label: "Cuenta", minWidth: 220, render: (row) => `${row.accountCode} · ${row.label}` }
+  ];
+  for (const centre of view.properties) {
+    columns.push({
+      key: centre.propertyId,
+      label: centre.kind === "office" ? `Oficina central${centre.code ? ` (${centre.code})` : ""}` : `${centre.code ?? centre.name}${centre.kind !== "hotel" ? ` · ${PROPERTY_KIND_LABELS[centre.kind]}` : ""}`,
+      align: "right",
+      fit: true,
+      hideOnNarrow: true,
+      render: (row) => money(row.byProperty[centre.propertyId] ?? "0.00")
+    });
+  }
+  columns.push({ key: "unassigned", label: UNASSIGNED_COLUMN_LABEL, align: "right", fit: true, hideOnNarrow: true, render: (row) => money(row.unassigned) });
+  columns.push({ key: "total", label: ENTITY_TOTAL_LABEL, align: "right", fit: true, render: (row) => <strong>{money(row.total)}</strong> });
+  return columns;
+}
+
+/** GET /accounting/pnl/by-property?from&to[&allocation=none] — `allocation` omitted applies the stored key (informative). */
+function getPnlByProperty(input: { from: string; to: string; applyAllocation: boolean }): Promise<PnlByProperty> {
+  return apiRequest<PnlByProperty>("/accounting/pnl/by-property", { query: compactQuery({ from: input.from, to: input.to, allocation: input.applyAllocation ? undefined : "none" }) });
+}
 
 function ProfitAndLossSkeleton() {
   return (
@@ -60,13 +105,45 @@ function ProfitAndLossSkeleton() {
 export function ProfitAndLossScreen() {
   const header = treeHeaderFor("ProfitAndLossScreen", { eyebrow: "Finanzas · Estados contables", title: "Pérdidas y ganancias" });
   const { showToast } = useToast();
-  const scopeOptions = usePropertyScopeOptions();
+  // Tanda 6b · L7: the «Ámbito» of the header (sociedad by default, a centre as filter) is the `propertyId` of the statement.
+  const finance = useFinanceScope(financeScopePolicy("ProfitAndLossScreen"));
+  const propertyId = finance.propertyId ?? "";
+  const multiCentre = Boolean(finance.structure && finance.structure.mode !== "single_hotel");
 
   const [range, setRange] = useState<DateRange>(() => ({ from: readQueryParam("desde") ?? firstDayOfYear(), to: readQueryParam("hasta") ?? lastDayOfYear() }));
   const [comparative, setComparative] = useState(false);
-  const [propertyId, setPropertyId] = useState(readQueryParam("propiedad") ?? "");
   const [showZero, setShowZero] = useState(false);
+  const [view, setView] = useState<PnlView>("sociedad");
+  const [applyAllocation, setApplyAllocation] = useState(false);
   const preset = presetOf(range);
+  const byCentre = view === "centros" && multiCentre;
+
+  // «Por centro»: the matrix of GET /accounting/pnl/by-property for the same window (whole sociedad by definition).
+  const [matrix, setMatrix] = useState<PnlByProperty | null>(null);
+  const [matrixLoading, setMatrixLoading] = useState(false);
+  const [matrixError, setMatrixError] = useState<unknown>(null);
+  const [matrixNonce, setMatrixNonce] = useState(0);
+  useEffect(() => {
+    if (!byCentre) return undefined;
+    let cancelled = false;
+    setMatrixLoading(true);
+    setMatrixError(null);
+    getPnlByProperty({ from: range.from, to: range.to, applyAllocation })
+      .then((value) => {
+        if (!cancelled) setMatrix(value);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setMatrixError(err);
+      })
+      .finally(() => {
+        if (!cancelled) setMatrixLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [byCentre, range.from, range.to, applyAllocation, matrixNonce]);
+  const matrixColumns = useMemo(() => (matrix ? pnlByCentreColumns(matrix) : []), [matrix]);
+  const matrixRows = useMemo(() => (matrix ? matrix.rows.filter((row) => showZero || Number(row.total) !== 0 || Number(row.unassigned) !== 0) : []), [matrix, showZero]);
 
   const [report, setReport] = useState<PgcProfitAndLoss | null>(null);
   const [loading, setLoading] = useState(true);
@@ -116,16 +193,20 @@ export function ProfitAndLossScreen() {
 
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
-      subtitle={k ? `Modelo de Pymes desde el libro diario · ${scopeLabel(scopeOptions, k.propertyId)} · generado ${dateTime(k.generatedAt)}` : "Cuenta de pérdidas y ganancias del PGC de Pymes calculada desde el libro diario."}
+      subtitle={k ? `Modelo de Pymes desde el libro diario · ${finance.scope.label} · generado ${dateTime(k.generatedAt)}` : "Cuenta de pérdidas y ganancias del PGC de Pymes calculada desde el libro diario."}
       actions={
-        <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
-          <CocoaSelect value={format} onChange={setFormat} options={[...DOWNLOAD_FORMAT_OPTIONS]} size="small" aria-label="Formato de descarga" />
-          <CocoaButton variant="bordered" tone="neutral" size="small" icon={<DownloadIcon size={14} aria-hidden="true" />} loading={downloading} disabled={!k} onClick={() => void download()}>
-            {ACTIONS.download}
-          </CocoaButton>
-        </div>
+        <>
+          <FinanceScopeSelector scope={finance} />
+          {multiCentre ? <CocoaSegmentedControl value={view} onChange={(value) => setView(value === "centros" ? "centros" : "sociedad")} options={VIEW_OPTIONS} size="small" aria-label="Vista de la cuenta de resultados" /> : null}
+          <div className="cocoa-row" data-gap="2" data-wrap="nowrap">
+            <CocoaSelect value={format} onChange={setFormat} options={[...DOWNLOAD_FORMAT_OPTIONS]} size="small" aria-label="Formato de descarga" />
+            <CocoaButton variant="bordered" tone="neutral" size="small" icon={<DownloadIcon size={14} aria-hidden="true" />} loading={downloading} disabled={!k} onClick={() => void download()}>
+              {ACTIONS.download}
+            </CocoaButton>
+          </div>
+        </>
       }
       state={state}
       skeleton={<ProfitAndLossSkeleton />}
@@ -151,16 +232,19 @@ export function ProfitAndLossScreen() {
             <CocoaField label="Hasta">
               <CocoaDatePicker value={range.to} onChange={(value) => setRange((current) => ({ ...current, to: value }))} size="small" aria-label="Fecha de fin (incluida)" />
             </CocoaField>
-            <CocoaField label="Propiedad">
-              <CocoaSelect value={propertyId} onChange={setPropertyId} options={scopeOptions} size="small" aria-label="Propiedad" />
-            </CocoaField>
           </div>
         }
         rightSlot={
           <div className="cocoa-row" data-gap="4">
-            <CocoaField label="Comparar con el periodo anterior" inline>
-              <CocoaSwitch checked={comparative} onChange={setComparative} size="small" />
-            </CocoaField>
+            {byCentre ? (
+              <CocoaField label="Aplicar reparto de oficina central (informativo)" inline>
+                <CocoaSwitch checked={applyAllocation} onChange={setApplyAllocation} size="small" />
+              </CocoaField>
+            ) : (
+              <CocoaField label="Comparar con el periodo anterior" inline>
+                <CocoaSwitch checked={comparative} onChange={setComparative} size="small" />
+              </CocoaField>
+            )}
             <CocoaField label="Partidas a cero" inline>
               <CocoaSwitch checked={showZero} onChange={setShowZero} size="small" />
             </CocoaField>
@@ -168,7 +252,11 @@ export function ProfitAndLossScreen() {
         }
       />
 
-      {k ? (
+      {byCentre ? (
+        <PnlByCentreView matrix={matrix} loading={matrixLoading} error={matrixError} columns={matrixColumns} rows={matrixRows} hidden={matrix ? matrix.rows.length - matrixRows.length : 0} onRetry={() => setMatrixNonce((n) => n + 1)} />
+      ) : null}
+
+      {k && !byCentre ? (
         <>
           <CocoaKpiStrip stagger aria-label="Resultados del periodo">
             <CocoaKpi label="Ingresos" value={money(k.revenueTotal)} deltaLabel="grupo 7" polarity="neutral" />
@@ -244,6 +332,110 @@ export function ProfitAndLossScreen() {
         )}
       </CocoaDrawer>
     </CocoaPage>
+  );
+}
+
+type PnlByCentreViewProps = {
+  matrix: PnlByProperty | null;
+  loading: boolean;
+  error: unknown;
+  columns: CocoaTableColumn<PnlByPropertyRow>[];
+  rows: PnlByPropertyRow[];
+  hidden: number;
+  onRetry: () => void;
+};
+
+/** «Por centro»: KPIs per column, the account × centre matrix with totals, the informative allocation and the reconciliation. */
+function PnlByCentreView({ matrix, loading, error, columns, rows, hidden, onRetry }: PnlByCentreViewProps) {
+  if (!matrix && loading) return <ProfitAndLossSkeleton />;
+  if (!matrix) return <CocoaState kind="error" title="No se pudo calcular la cuenta de resultados por centro" message={statementsErrorMessage(error)} onRetry={onRetry} />;
+  const office = matrix.properties.filter((centre) => centre.kind !== "hotel");
+  const footer: Record<string, ReactNode> = { label: <strong>Resultado</strong>, unassigned: <strong>{money(matrix.netResult.unassigned)}</strong>, total: <strong>{money(matrix.netResult.total)}</strong> };
+  for (const centre of matrix.properties) footer[centre.propertyId] = <strong>{money(matrix.netResult.byProperty[centre.propertyId] ?? "0.00")}</strong>;
+  const allocation = matrix.allocation;
+
+  return (
+    <>
+      {error ? (
+        <CocoaCallout tone="danger" title="No se pudo actualizar la vista por centro" role="alert">
+          {statementsErrorMessage(error)} Se muestran los últimos datos cargados.
+        </CocoaCallout>
+      ) : null}
+      <CocoaKpiStrip stagger aria-label="Resultado por centro">
+        {matrix.properties.map((centre) => (
+          <CocoaKpi key={centre.propertyId} label={centre.kind === "office" ? "Oficina central" : centre.code ?? centre.name} caption={centre.kind === "office" ? centre.name : PROPERTY_KIND_LABELS[centre.kind]} value={money(matrix.netResult.byProperty[centre.propertyId] ?? "0.00")} polarity="neutral" tone={signTone(matrix.netResult.byProperty[centre.propertyId] ?? "0.00")} />
+        ))}
+        <CocoaKpi label={UNASSIGNED_COLUMN_LABEL} caption="asientos de sociedad sin centro" value={money(matrix.netResult.unassigned)} polarity="neutral" tone={signTone(matrix.netResult.unassigned)} />
+        <CocoaKpi label={ENTITY_TOTAL_LABEL} caption={matrix.entity.legalName} value={money(matrix.netResult.total)} polarity="neutral" tone={signTone(matrix.netResult.total)} status={matrix.reconciliation.ok ? "ok" : "critical"} />
+      </CocoaKpiStrip>
+
+      {!matrix.reconciliation.ok ? (
+        <CocoaCallout tone="danger" title="La suma de centros no cuadra con el total de la sociedad" role="alert">
+          Filas afectadas: {matrix.reconciliation.rowsOff.join(", ")}. Revisa los asientos del periodo antes de dar la vista por buena.
+        </CocoaCallout>
+      ) : null}
+      {matrix.warnings.length > 0 ? (
+        <CocoaCallout tone="warning" title={plural(matrix.warnings.length, "aviso del cálculo", "avisos del cálculo")} role="status">
+          <ul className="c22-section__list">
+            {matrix.warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        </CocoaCallout>
+      ) : null}
+
+      <CocoaSection
+        title="Cuenta de resultados por centro"
+        meta={`${date(matrix.period.from, "short")} – ${date(matrix.period.to, "short")}${office.length > 0 ? ` · ${plural(office.length, "centro no alojativo", "centros no alojativos")}` : ""}`}
+        footer={
+          <span>
+            {ENTITY_TOTAL_FOOTNOTE}
+            {hidden > 0 ? ` ${plural(hidden, "cuenta a cero oculta", "cuentas a cero ocultas")}.` : ""}
+          </span>
+        }
+      >
+        {rows.length > 0 ? (
+          <CocoaTable columns={columns} rows={rows} rowKey="accountCode" density="compact" stickyFirstColumn footer={footer} caption="Cuenta de resultados por centro de trabajo" aria-label="Cuenta de resultados por centro de trabajo" />
+        ) : (
+          <CocoaState kind="empty" inline title="Sin movimientos de ingresos ni gastos en el periodo." />
+        )}
+      </CocoaSection>
+
+      <CocoaSection title={ALLOCATION_ROW_LABEL} meta={allocation ? allocation.basisLabel : undefined}>
+        {!allocation || allocation.method === "none" ? (
+          <CocoaState kind="empty" inline title="Sin reparto: la clave de reparto de la oficina central es «ninguno» o no se ha aplicado. Se configura en Configuración › Estructura societaria › Reparto." />
+        ) : (
+          <div className="cocoa-stack" data-gap="3">
+            <div className="cocoa-row" data-gap="4" data-align="start">
+              <CocoaStat label="Coste corporativo repartido" value={money(allocation.corporateCost)} hint={allocation.applied ? `${allocation.basisLabel} · repartido ${money(allocation.allocated)}` : "no se ha repartido nada"} />
+              <CocoaStat label="Contabilizado" value={<CocoaBadge tone="info">No: solo informativo</CocoaBadge>} tabular={false} />
+            </div>
+            <ul className="c22-section__list" aria-label="Reparto por hotel">
+              {allocation.shares.map((share) => {
+                const centre = matrix.properties.find((row) => row.propertyId === share.propertyId);
+                return (
+                  <li key={share.propertyId}>
+                    <span>{centre ? (centre.code ? `${centre.name} (${centre.code})` : centre.name) : share.propertyId}</span>
+                    <span>
+                      {money(share.amount)} · resultado tras reparto {money(allocation.netResultAfterAllocation[share.propertyId] ?? "0.00")}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            {allocation.warnings.length > 0 ? (
+              <ul className="c22-section__list">
+                {allocation.warnings.map((warning) => (
+                  <li key={warning}>
+                    <span>{warning}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        )}
+      </CocoaSection>
+    </>
   );
 }
 

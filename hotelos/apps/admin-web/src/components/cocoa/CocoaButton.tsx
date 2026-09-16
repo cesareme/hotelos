@@ -9,8 +9,10 @@
 //   - Focus: the shared `.cocoa-focus-ring` (single Esmeralda ring).
 //   - Text colour of tinted/bordered/plain: the AA-safe tone INK
 //     (`--cocoa-tone-accent-text` = accent-strong 6.55:1, `--cocoa-tone-
-//     danger-text`), never the hue (accent 4.36:1 at 11–13 px, §2.1); the hue
-//     is only used for filled backgrounds.
+//     danger-text`), never the hue (accent 4.36:1 at 11–13 px, §2.1).
+//   - Filled accent paints on `--cocoa-accent-fill` (light #0b7a54: white ink
+//     5.35:1, 5.02:1 hovered; dark = the hue under deep ink 7.0:1), not on the
+//     bare `--cocoa-accent` (white 4.36:1 < 4.5 AA at 11–15 px, qa#7).
 //   - `loading` shows the spinner (keyframes in styles/cocoa-base.css) and
 //     sets aria-busy; icon-only buttons MUST pass `aria-label`.
 //   - React 19: `ref` is a plain prop (dialogs use it for the initial focus).
@@ -87,7 +89,7 @@ const ICON_SIZE_BY_SIZE: Record<CocoaButtonSize, number> = { small: 12, regular:
 const GAP_BY_SIZE: Record<CocoaButtonSize, number> = { small: 4, regular: 6, large: 8 };
 
 interface ToneVars {
-  /** Hue: filled background. */
+  /** Filled background: the accent FILL token (AA under its ink), the danger hue, the label. */
   accent: string;
   /** Ink ON the filled hue. */
   accentContrast: string;
@@ -98,7 +100,8 @@ interface ToneVars {
 
 const TONE_VARS: Record<CocoaButtonTone, ToneVars> = {
   accent: {
-    accent: "var(--cocoa-accent)",
+    // Not the bare hue: white on #0d8a5f is 4.36:1; the fill is 5.35:1 (qa#7).
+    accent: "var(--cocoa-accent-fill)",
     accentContrast: "var(--cocoa-accent-contrast)",
     text: "var(--cocoa-tone-accent-text)",
     tintedBg: "var(--cocoa-accent-bg)"

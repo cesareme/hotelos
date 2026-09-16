@@ -6,7 +6,8 @@
 // inner views and the actions row. Nothing is passed down by the container:
 // the host context is the source of truth. This module adds:
 //   - `HostedHead`: the head a hosted screen paints (subtitle, optional
-//     segmented inner views, actions row; never an H1);
+//     segmented inner views, actions row; never an H1; its `eyebrow` is
+//     registered with the container, which paints «Finanzas · <sociedad>»);
 //   - `pageHead(embedded?)`: header component of a screen that takes the same
 //     props standalone and hosted — HostedHead inside a container (context) or
 //     when `embedded` is explicitly true, CocoaPageHeader otherwise; so a
@@ -28,31 +29,54 @@ import { CocoaPageHeader, type CocoaPageHeaderProps } from "../../components/coc
 import { CocoaSegmentedControl } from "../../components/cocoa/CocoaSegmentedControl";
 import { HOTELOS_NAV_EVENT } from "../../lib/navigate";
 import { findByScreen, matchPath } from "../../navigation/nav-tree";
-import { HOSTED_TOOLBAR, useTabHost } from "./TabHost";
+import { HOSTED_TOOLBAR, useHostedEyebrow, useTabHost } from "./TabHost";
 import { usePathname } from "./usePathname";
 
 // ----------------------------------------------------------------- hosted head
 
 export type HostedHeadProps = Pick<CocoaPageHeaderProps, "title" | "subtitle" | "actions" | "tabs" | "activeTab" | "onTabChange"> & {
-  /** Accepted so a screen swaps `CocoaPageHeader` for this component with the same props; eyebrow and title are not painted. */
+  /**
+   * Not painted here (the container owns the eyebrow): registered with it through
+   * `useHostedEyebrow` so «Finanzas · <sociedad>» qualifies the container's category
+   * (design §5.3; fix:L7 qa#12). The title is never painted either (the container's H1).
+   */
   eyebrow?: string;
 };
 
 // The subtitle sits in a COLUMN flex (leadStyle): a flex-basis here would become its height.
-const subtitleStyle = { color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)", margin: 0, flex: "0 0 auto", minWidth: 0 } as const;
-const leadStyle = { display: "flex", flexDirection: "column", gap: "var(--cocoa-space-3)", flex: "1 1 320px", minWidth: 0 } as const;
-const actionsStyle = { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "var(--cocoa-space-2)" } as const;
+// `width: 0` + `minWidth: 100%`: the paragraph fills the column but adds nothing to its intrinsic
+// width, so a long sentence never decides whether the actions wrap — only the segmented views do.
+const subtitleStyle = { color: "var(--cocoa-label-secondary)", fontSize: "var(--cocoa-fs-body)", margin: 0, flex: "0 0 auto", width: 0, minWidth: "100%" } as const;
+// Lead column: its flex basis is the width of its segmented views (fix:L7 qa#1: with a fixed 320 px
+// basis the four USALI views were squeezed to 452 px beside a 688 px actions row at 1440 and the strip
+// scrolled), at least 320 px — or the whole row on a phone — for a subtitle alone; items align to the
+// start so the strip keeps its own width instead of stretching to the column.
+const leadStyle = { display: "flex", flexDirection: "column", alignItems: "flex-start", gap: "var(--cocoa-space-3)", flex: "1 1 auto", minWidth: "min(320px, 100%)" } as const;
+// Actions keep the right edge whichever line they land on (`marginLeft: auto` also on a wrapped line).
+const actionsStyle = { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end", gap: "var(--cocoa-space-2)", marginLeft: "auto", minWidth: 0, maxWidth: "100%" } as const;
+
+/** Hook carrier of HostedHead: keeps HostedHead a plain function (the tests call it directly) while its eyebrow reaches the container. */
+function HostedEyebrow({ eyebrow }: { eyebrow: string }) {
+  useHostedEyebrow(eyebrow);
+  return null;
+}
+HostedEyebrow.displayName = "HostedEyebrow";
 
 /**
  * Head of a hosted screen: subtitle (left), optional segmented inner views and
  * the actions row (right). No eyebrow, no title: the container already
- * painted them. Paints nothing when it has nothing to say.
+ * painted them — the `eyebrow` prop is only registered with it (useHostedEyebrow)
+ * so «Finanzas · <sociedad>» reaches the container's header. Paints nothing
+ * when it has nothing to say. Layout: the lead column is as wide as its
+ * segmented views and the actions wrap under them when both do not fit.
  */
-export function HostedHead({ title, subtitle, actions, tabs, activeTab, onTabChange }: HostedHeadProps) {
+export function HostedHead({ title, subtitle, actions, tabs, activeTab, onTabChange, eyebrow }: HostedHeadProps) {
   const hasTabs = Array.isArray(tabs) && tabs.length > 0;
-  if (!subtitle && !hasTabs && !actions) return null;
+  const register = eyebrow ? <HostedEyebrow eyebrow={eyebrow} /> : null;
+  if (!subtitle && !hasTabs && !actions) return register;
   return (
     <div style={HOSTED_TOOLBAR} data-hosted-head={title}>
+      {register}
       <div style={leadStyle}>
         {subtitle ? <p style={subtitleStyle}>{subtitle}</p> : null}
         {hasTabs ? (

@@ -23,6 +23,8 @@ import { ACTIONS } from "../../content/actions";
 import { date, dateTime, money, number, plural } from "../../lib/format";
 import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
 import { treeHeaderFor } from "../tabs/tab-helpers";
+import { FinanceEntityNote, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   CocoaBadge,
   CocoaButton,
@@ -118,6 +120,8 @@ function YearEndSkeleton() {
 export function YearEndCloseScreen() {
   const header = treeHeaderFor("YearEndCloseScreen", { eyebrow: "Finanzas · Contabilidad", title: "Cierre de ejercicio" });
   const { showToast } = useToast();
+  // Tanda 6b · L7: fiscal years belong to the sociedad (R4, 400 FISCAL_YEAR_IS_ENTITY_SCOPED): forced scope.
+  const finance = useFinanceScope(financeScopePolicy("YearEndCloseScreen"));
   const gate = useNavGate();
   const canPost = canDo(gate, "accounting.journal.post");
 
@@ -221,15 +225,18 @@ export function YearEndCloseScreen() {
 
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
       subtitle="Cierre según el PGC: asiento de regularización (6xx y 7xx contra 129), asiento de cierre al último día y asiento de apertura al primer día del ejercicio siguiente. Nada se borra: reabrir genera reversos."
       actions={
-        canPost ? (
-          <CocoaButton variant="filled" tone="accent" size="small" icon={<PlusIcon size={14} aria-hidden="true" />} onClick={() => setCreateOpen(true)}>
-            Crear ejercicio
-          </CocoaButton>
-        ) : undefined
+        <>
+          <FinanceScopeSelector scope={finance} />
+          {canPost ? (
+            <CocoaButton variant="filled" tone="accent" size="small" icon={<PlusIcon size={14} aria-hidden="true" />} onClick={() => setCreateOpen(true)}>
+              Crear ejercicio
+            </CocoaButton>
+          ) : null}
+        </>
       }
       state={pageState}
       skeleton={<YearEndSkeleton />}
@@ -247,6 +254,7 @@ export function YearEndCloseScreen() {
       ]}
       id="year-end-close-screen"
     >
+      <FinanceEntityNote scope={finance} subject="El ejercicio contable y su cierre" />
       <CocoaSection title="Ejercicios fiscales" meta={yearRows.length > 0 ? plural(yearRows.length, "ejercicio", "ejercicios") : undefined} padding={yearRows.length > 0 ? "none" : "md"} style={{ overflow: "clip" }}>
         {yearRows.length === 0 ? (
           <CocoaState

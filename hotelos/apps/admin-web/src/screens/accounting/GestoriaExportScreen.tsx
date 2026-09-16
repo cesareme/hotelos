@@ -38,7 +38,9 @@ import {
   CocoaTable,
   type CocoaTableColumn
 } from "../../components/cocoa";
-import { canDo, saveDownload, todayIso, usePropertyScopeOptions } from "./accounting-ui";
+import { canDo, saveDownload, todayIso } from "./accounting-ui";
+import { FinanceEntityNote, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 
 const subStyle: CSSProperties = {
   display: "block",
@@ -63,7 +65,9 @@ export function GestoriaExportScreen() {
   const { showToast } = useToast();
   const gate = useNavGate();
   const canExport = canDo(gate, "analytics.export");
-  const scopeOptions = usePropertyScopeOptions();
+  // Tanda 6b · L7: the gestoría export is an artefact of the sociedad (forced scope, t6b#4); the form may still filter one centre.
+  const finance = useFinanceScope(financeScopePolicy("GestoriaExportScreen"));
+  const scopeOptions = useMemo(() => centreSelectOptions(finance.structure, finance.active, { societyLevel: true, societyLabel: "Toda la sociedad" }), [finance.structure, finance.active]);
 
   // ---- formats ------------------------------------------------------------------
   const [formats, setFormats] = useState<GestoriaExportFormatInfo[]>([]);
@@ -233,15 +237,17 @@ export function GestoriaExportScreen() {
 
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
-      subtitle="Asientos y libros de IVA del libro en el formato que importa la gestoría; cada fichero queda en el historial para descargarlo de nuevo."
+      subtitle="Asientos y libros de IVA de la sociedad en el formato que importa la gestoría; cada fichero queda en el historial para descargarlo de nuevo."
+      actions={<FinanceScopeSelector scope={finance} />}
       commands={[
         { id: "gestoria-export-create", label: "Generar exportación para la gestoría", run: () => void createExport() },
         { id: "gestoria-export-refresh", label: "Actualizar el historial de exportaciones", run: () => setHistoryNonce((n) => n + 1) }
       ]}
       id="gestoria-export-screen"
     >
+      <FinanceEntityNote scope={finance} subject="La exportación a la gestoría" />
       <CocoaFormSection
         title="Nueva exportación"
         description="El CSV universal de asientos lo importa cualquier programa contable; los formatos marcados «validar con la gestoría» siguen un diseño de registro que hay que comprobar antes de la primera importación real."
@@ -261,7 +267,7 @@ export function GestoriaExportScreen() {
           <CocoaField label="Formato" required error={touched ? errors.format : undefined} help={selectedFormat?.description}>
             <CocoaSelect value={format} onChange={setFormat} options={formatOptions} placeholder={formatsLoading ? STATUS_LABELS.loading : "Elegir formato…"} disabled={formatsLoading || formats.length === 0} />
           </CocoaField>
-          <CocoaField label="Propiedad" help="Sin propiedad se exportan los asientos de toda la organización.">
+          <CocoaField label="Centro de trabajo" help="Sin centro se exportan los asientos de toda la sociedad; con centro, solo los suyos (los libros de IVA siguen siendo de la sociedad).">
             <CocoaSelect value={propertyId} onChange={setPropertyId} options={scopeOptions} />
           </CocoaField>
           <CocoaField label="Desde" required error={touched ? errors.range : undefined}>

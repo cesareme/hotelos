@@ -1,7 +1,10 @@
 // CocoaSelect — Cocoa-styled native <select> with a custom chevron
 // (COCOA-22.md §3.8). Native menu UX (keyboard, type-ahead, AT) with the
 // control skin of CocoaInput: control bg, separator border (accent on focus,
-// danger on error), radius 8, focus halo, 44 px on a coarse pointer.
+// danger on error), radius 8, focus halo, 44 px on a coarse pointer. The
+// wrapper fills its row (a form field); `inline` shrinks it to the widest
+// option for the pickers of an actions row or a toolbar (fix:L7 qa#6: three
+// full-width selects stacked at 1440 in Modelos AEAT).
 
 import { useId, useState, type CSSProperties } from "react";
 import { useCoarsePointer, TAP_TARGET_PX } from "../../lib/useCoarsePointer";
@@ -31,6 +34,8 @@ export interface CocoaSelectProps {
   className?: string;
   /** Layout escape hatch for the wrapper (width). */
   style?: CSSProperties;
+  /** Shrink to the widest option instead of filling the row (pickers in an actions row or a toolbar). */
+  inline?: boolean;
 }
 
 // Heights come from CocoaInput's CONTROL_HEIGHT_BY_SIZE (22 / 28 / 34) so a
@@ -61,7 +66,8 @@ export function CocoaSelect({
   "aria-describedby": ariaDescribedBy,
   "aria-invalid": ariaInvalid,
   className,
-  style
+  style,
+  inline = false
 }: CocoaSelectProps) {
   const [focused, setFocused] = useState(false);
   const coarse = useCoarsePointer();
@@ -69,7 +75,7 @@ export function CocoaSelect({
   const metrics = SIZE_METRICS[size];
   const chrome = controlChrome({ focused, error });
 
-  const wrapperStyle: CSSProperties = { position: "relative", display: "inline-flex", alignItems: "center", width: "100%", minWidth: 0, ...style };
+  const wrapperStyle: CSSProperties = { position: "relative", display: "inline-flex", alignItems: "center", width: inline ? "auto" : "100%", maxWidth: "100%", minWidth: 0, ...style };
 
   const selectStyle: CSSProperties = {
     width: "100%",
@@ -94,7 +100,7 @@ export function CocoaSelect({
   };
 
   return (
-    <span className={["cocoa-select", className].filter(Boolean).join(" ")} style={wrapperStyle} data-cocoa="select" data-size={size}>
+    <span className={["cocoa-select", className].filter(Boolean).join(" ")} style={wrapperStyle} data-cocoa="select" data-size={size} data-inline={inline ? "true" : undefined}>
       <select
         id={id ?? generatedId}
         name={name}

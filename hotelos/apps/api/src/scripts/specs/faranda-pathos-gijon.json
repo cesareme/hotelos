@@ -1,0 +1,173 @@
+{
+  "_notes": {
+    "purpose": "Spec de alta de «Faranda Pathos Gijón, Ascend Hotel Collection» (código PG) como centro de trabajo de CELUISMA S.A. (org cmrhw9jy30002fyvb6tsdiugt) para apps/api/src/scripts/migrate-faranda-celuisma.ts (paso 5 de §5.5) y para apps/api/src/scripts/provision-pilot-property.ts. Solo dry-run por defecto; --apply --confirm <organizationId> escribe.",
+    "sources": {
+      "brief": "Datos confirmados por César el 2026-09-16 (lista de los 7 hoteles que explota CELUISMA S.A., A33615980; consentimiento para usar el CIF real SOLO en la demo local, nunca en envíos a la AEAT).",
+      "web": "https://www.farandahotels.com/en/country/espana (web oficial: nombre comercial, dirección, categoría y número de habitaciones; consultada 2026-09-16)",
+      "ine": "Nomenclátor INE de municipios (códigos de 5 dígitos: provincia + municipio): https://www.ine.es/daco/daco42/codmun/codmunmapa.htm",
+      "design": "docs/design/FINANZAS-ESTRUCTURA-SOCIETARIA.md §5.5 paso 5 (specs parametrizados, prefijos FAC-<COD>-2026- / FS-<COD>-2026- / REC-<COD>-2026-) y docs/audits/TANDA-6B-ESTRUCTURA-BACKEND-2026-09-16.md §8 fila 3.",
+      "identity": "Web oficial farandahotels.com (consultada 2026-09-16): «Faranda Pathos Gijón, Ascend Hotel Collection», Calle Santa Elena, 6, 33201 Gijón (Asturias), 3★, 56 habitaciones. INE municipio 33024 = Gijón verificado contra el nomenclátor INE.",
+      "rooms": "56 habitaciones (web oficial, 2026-09-16). Reparto por tipo ESTIMADO (ver roomTypes._estimatedReason)."
+    },
+    "notInvented": [
+      "property.legalName no se escribe (columna deprecada, Tanda 6b): el emisor de TODAS las facturas es la sociedad (CELUISMA S.A., A33615980 tras la migración L8) y el hotel solo aporta el bloque «Establecimiento» (tradeName + code + dirección) vía resolveIssuerIdentity.",
+      "Registro turístico autonómico y código SES.HOSPEDAJES: NO se conocen (census.tourismRegistryNumber y sesEstablishmentCode quedan null; sesHospedajesEnabled = false).",
+      "Referencia catastral, superficie (IAE), epígrafe IAE y CCC provincial: NO se conocen (census.* null); los aporta Faranda (informe de cierre §8 fila 3).",
+      "Tarifario real: no hay datos de PMS. Se crea el plan BAR sin rate_days (mismo soporte que Los Tilos); el importador del History & Forecast puede derivar la BAR de referencia cuando Faranda facilite el CSV.",
+      "Rooming list real: no se conoce; numeración determinista de planRooms (ver roomNumbering).",
+      "Servicios del hotel (hasRestaurant, hasBar, hasParking…): sin confirmar → todos false hasta que Faranda lo indique (no se inventan).",
+      "Plazas (bedCapacity): ESTIMADAS como Σ count × baseCapacity del reparto estimado (misma regla con la que Los Tilos cuadró 176 = REAT); corregir con el registro turístico."
+    ],
+    "fields": {
+      "organizationId": "Organización EXISTENTE (Faranda Hotels & Resorts → sociedad CELUISMA S.A. tras L8). El script nunca crea ni modifica organizations.*.",
+      "property": "Columnas 1:1 de Property. code = código de centro (único por sociedad; prefijo de series). tradeName = nombre comercial del bloque establecimiento de la factura. taxRegion canónica ES_PENINSULA_BALEARES, fiscalTerritory common (→ VeriFactu), CP e INE con el mismo prefijo de provincia (regla assertFiscalLocationCoherent). census.* = columnas censales de la Tanda 6b (fill-only al converger).",
+      "profile": "Columnas de CompliancePropertyProfile (hotelType, autonomousCommunity, has*) + resto (starRating, brandAffiliation, plazas, source) → property_compliance_settings.configurationJson.pilotProfile.",
+      "owners": "user_property_roles: Carmen (direccion@farandariasaltas.es) con el rol Owner de la organización (222 permisos, incluye accounting.entity.read y organization.structure.manage).",
+      "modules": "property_modules enabled: mismo conjunto que Rías Altas y Los Tilos.",
+      "building": "1 edificio con `floors` plantas: Planta 1..N (floorNumber n, code P<n>).",
+      "totalRooms": "Habitaciones totales según la web oficial. validateSpec exige Σ roomTypes.items[].count == totalRooms y (sin `rooms` explícito) totalRooms divisible entre building.floors.",
+      "roomTypes": "Upsert por code. Reparto ESTIMADO salvo Las Lomas (ver _estimated / _estimatedReason).",
+      "ratePlans": "rate_plans por code; BAR sin precios.",
+      "invoiceSequences": "invoice_sequences por (sequenceCode, year): FAC↔F1, REC↔R1, SIM↔F2 (regla assertSeriesCodeMatchesType). Prefijo con el código del centro (R3: varios centros facturadores bajo el mismo NIF): FAC-<COD>-2026-, REC-<COD>-2026-, FS-<COD>-2026- (la serie de simplificadas se llama SIM en la BD y se imprime FS-…).",
+      "departments": "departments por (propertyId, code) + user_departments (roleLabel).",
+      "roomNumbering": "planRooms: 4 plantas × 14 = 101-114, 201-214, 301-314, 401-414. x01 → IND (4). Resto: impar → DBL (24), par → DBM (28). Sin suites (3★)."
+    }
+  },
+  "organizationId": "cmrhw9jy30002fyvb6tsdiugt",
+  "property": {
+    "name": "Faranda Pathos Gijón, Ascend Hotel Collection",
+    "kind": "hotel",
+    "code": "PG",
+    "tradeName": "Faranda Pathos Gijón, Ascend Hotel Collection",
+    "legalName": null,
+    "address": "Calle Santa Elena, 6",
+    "municipality": "Gijón",
+    "province": "Asturias",
+    "country": "ES",
+    "postalCode": "33201",
+    "ineMunicipalityCode": "33024",
+    "taxRegion": "ES_PENINSULA_BALEARES",
+    "fiscalTerritory": "common",
+    "timezone": "Europe/Madrid",
+    "sesHospedajesEnabled": false,
+    "verifactuEnabled": false,
+    "census": {
+      "starRating": 3,
+      "bedCapacity": 108,
+      "tourismRegistryNumber": null,
+      "sesEstablishmentCode": null,
+      "cadastralReference": null,
+      "surfaceM2": null,
+      "iaeEpigraph": null,
+      "socialSecurityCcc": null
+    }
+  },
+  "profile": {
+    "hotelType": "hotel",
+    "autonomousCommunity": "Asturias",
+    "hasRestaurant": false,
+    "hasKitchen": false,
+    "hasPool": false,
+    "hasSpa": false,
+    "hasParking": false,
+    "hasEvents": false,
+    "hasTerrace": false,
+    "hasLaundry": false,
+    "buildingProtected": false,
+    "starRating": 3,
+    "brandAffiliation": "Ascend Hotel Collection (Choice Hotels)",
+    "plazas": 108,
+    "plazasEstimated": true,
+    "source": "farandahotels.com · 2026-09-16"
+  },
+  "owners": [
+    {
+      "userId": "cmrhw9jyb0005fyvb4ykaumyc",
+      "roleId": "cmrhw9jy60004fyvbjvur0uqt"
+    }
+  ],
+  "modules": [
+    "pms_core",
+    "compliance_hub",
+    "distribution_hub",
+    "guest_experience",
+    "outlet_pos",
+    "revenue_profit_engine"
+  ],
+  "building": {
+    "name": "Edificio principal",
+    "code": "PRINCIPAL",
+    "floors": 4
+  },
+  "totalRooms": 56,
+  "roomTypes": {
+    "_estimated": true,
+    "_estimatedReason": "Regla de reparto ESTIMADO (la misma con la que se estimó Los Tilos, docs/pilots/FARANDA-LOS-TILOS-2026-09-14.md): la web solo publica el total de habitaciones; se reparte con la numeración determinista de planRooms — x01 de cada planta = Individual (1 por planta), la última habitación de las plantas superiores = Suite (solo en hoteles de 4★), el resto Doble 2 camas (número impar) / Doble matrimonio (número par). Marcado _estimated: corregir con la rooming list real cuando Faranda la facilite. 4 plantas × 14 = 56: IND 4 (x01) + DBL 24 (impares 103-113) + DBM 28 (pares 102-114); plazas base 4 + 48 + 56 = 108.",
+    "items": [
+      {
+        "code": "IND",
+        "name": "Individual Estándar",
+        "baseCapacity": 1,
+        "maxOccupancy": 1,
+        "count": 4,
+        "defaultRateCategory": "Standard"
+      },
+      {
+        "code": "DBL",
+        "name": "Doble Estándar 2 camas",
+        "baseCapacity": 2,
+        "maxOccupancy": 3,
+        "count": 24,
+        "defaultRateCategory": "Standard"
+      },
+      {
+        "code": "DBM",
+        "name": "Doble Estándar matrimonio",
+        "baseCapacity": 2,
+        "maxOccupancy": 2,
+        "count": 28,
+        "defaultRateCategory": "Standard"
+      }
+    ]
+  },
+  "ratePlans": [
+    {
+      "code": "BAR",
+      "name": "BAR Flexible",
+      "ratePlanType": "bar",
+      "mealPlan": "room_only"
+    }
+  ],
+  "invoiceSequences": [
+    {
+      "sequenceCode": "FAC",
+      "invoiceType": "F1",
+      "prefix": "FAC-PG-2026-",
+      "year": 2026
+    },
+    {
+      "sequenceCode": "REC",
+      "invoiceType": "R1",
+      "prefix": "REC-PG-2026-",
+      "year": 2026
+    },
+    {
+      "sequenceCode": "SIM",
+      "invoiceType": "F2",
+      "prefix": "FS-PG-2026-",
+      "year": 2026
+    }
+  ],
+  "departments": [
+    {
+      "code": "MGMT",
+      "name": "Management",
+      "users": [
+        {
+          "userId": "cmrhw9jyb0005fyvb4ykaumyc",
+          "roleLabel": "owner"
+        }
+      ]
+    }
+  ]
+}

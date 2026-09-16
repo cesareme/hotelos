@@ -5,6 +5,7 @@ import { ACTIONS, UI_STATES } from "../../../content/actions.ts";
 import {
   baseKeyFor,
   buildItemTabs,
+  containerEyebrow,
   detailParamsFor,
   emptyTabsCopy,
   emptyTabsReason,
@@ -242,5 +243,28 @@ describe("nav-item-tabs · empty container tells module from role (qa#12)", () =
     assert.match(unknown.message, /módulos/);
     assert.equal(unknown.cta, undefined, "no «Activar módulo» when we do not know whether the module is off");
     for (const copy of [withCta, withoutCta, role, unknown]) assert.doesNotMatch(`${copy.title} ${copy.message}`, /para tu perfil/);
+  });
+});
+
+describe("nav-item-tabs · eyebrow qualified by the hosted screen (Tanda 6b · L7, fix qa#12)", () => {
+  it("paints the category alone until a hosted screen registers an eyebrow", () => {
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", null), "Finanzas");
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", undefined), "Finanzas");
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", ""), "Finanzas");
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", "   "), "Finanzas");
+  });
+
+  it("extends the category with the sociedad or centre of the finance scope (design §5.3: «FINANZAS · <sociedad>»)", () => {
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", "Finanzas · CELUISMA S.A."), "Finanzas · CELUISMA S.A.");
+    assert.equal(containerEyebrow("Cumplimiento", "Modelos AEAT", "Cumplimiento · Hotel Faranda Rías Altas (RA)"), "Cumplimiento · Hotel Faranda Rías Altas (RA)");
+    assert.equal(containerEyebrow("Operaciones", "Punto de venta", " Operaciones · Oficina central (OC) "), "Operaciones · Oficina central (OC)");
+  });
+
+  it("ignores an eyebrow that does not qualify the container's own category (the header never drifts from the menu)", () => {
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", "Finanzas"), "Finanzas", "the plain category adds nothing");
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", "Finanzas ·  "), "Finanzas", "an empty qualifier adds nothing");
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", "Contabilidad · CELUISMA S.A."), "Finanzas", "another category is not this container");
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", "Finanzas · Estados contables"), "Finanzas", "«Categoría · Ítem» (treeHeaderFor of a tab) is already the H1");
+    assert.equal(containerEyebrow("Finanzas", "Estados contables", "FINANZAS · CELUISMA S.A."), "Finanzas", "the prefix is the label as the tree writes it");
   });
 });

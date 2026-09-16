@@ -10,9 +10,17 @@
 // `fuentes` (origin of the figures, book totals, ledger cross-check with its
 // differences, settlement entry), the `detalle[]` rows and the `avisos`, and
 // says in a callout that filing is manual (`presentacion.modo = manual`). The
-// pickers (year · quarter or month · scope) live in the actions row so they
-// stay usable while an error is on screen; the 303 follows the VAT
-// periodicity of the organisation (GET /fiscal/vat-settings).
+// pickers (year · quarter or month · desglose) live in the actions row so they
+// stay usable while an error is on screen, sized to their widest option
+// (`inline`, fix:L7 qa#6: a full-width select stacks the row); the 303
+// follows the VAT periodicity of the sociedad (GET /fiscal/vat-settings).
+//
+// Tanda 6b · L7 (design §5.3): the models are FORCED to the sociedad — the
+// «Ámbito» selector (services/financeScope.ts, entity_forced) paints the
+// sociedad disabled; the badge «Declarante: <razón social> · <NIF>» comes from
+// `report.sociedad`; a centre can still be picked as «Desglose por centro»
+// (informative partial view, «no liquidable»); `presentacion.noSePresenta` and
+// the SII / gran empresa regime paint a warning callout.
 
 import { useMemo, useState } from "react";
 import type { FiscalBox, FiscalLedgerCrossCheck, FiscalModelCode, FiscalModelReport as FiscalModelReportDto, VatBookName, VatPeriodicityCode } from "@hotelos/shared";
@@ -20,8 +28,9 @@ import { useToast } from "../../components/Toast";
 import { ACTIONS, UI_STATES } from "../../content/actions";
 import { date, money, number, percent, plural } from "../../lib/format";
 import { urlForScreen } from "../../navigation/nav-tree";
-import { getActiveProperty } from "../../services/activeProperty";
+import { FinanceDeclaranteBadge, FinanceRegimeCallout, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
 import { downloadFiscalModelPdf, getFiscalModel, getVatSettings, type FiscalModelParams } from "../../services/fiscalApi";
+import { centreNameFor, centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   CocoaBadge,
   CocoaButton,
@@ -81,7 +90,6 @@ export type FiscalModelScreenProps = {
   subtitle?: string;
 };
 
-type Scope = "organization" | "property";
 type DetalleRow = Record<string, string | number | null>;
 type KeyedDetalleRow = DetalleRow & { rowId: string };
 type TotalRow = { key: string; label: string; value: number };
@@ -124,10 +132,8 @@ const DIFF_COLUMNS: CocoaTableColumn<LedgerDifference>[] = [
   { key: "diferencia", label: "Diferencia", align: "right", render: (row) => <strong>{money(row.diferencia)}</strong> }
 ];
 
-const SCOPE_OPTIONS = (propertyName: string) => [
-  { value: "organization", label: "Toda la organización" },
-  { value: "property", label: `Solo ${propertyName} (vista parcial)` }
-];
+/** «Desglose por centro»: the whole declaration (default) or the informative partial view of one centre. */
+const DECLARATION_OPTION = { value: "", label: "Declaración de la sociedad" };
 
 /** Columns of the `detalle[]` table from the keys of its first row (390 per period, 347 per third party, 180 per lessor, 111 per row). */
 export function detalleColumns(rows: readonly DetalleRow[]): CocoaTableColumn<KeyedDetalleRow>[] {
@@ -156,10 +162,10 @@ function ReportSkeleton() {
 
 export function FiscalModelScreen({ modelo, title, subtitle }: FiscalModelScreenProps) {
   const { showToast } = useToast();
-  const property = getActiveProperty();
+  const finance = useFinanceScope(financeScopePolicy("FiscalModelReport"));
   const kind = modelPeriodKind(modelo);
 
-  // Only the 303 follows the VAT periodicity of the organisation; the report waits for it (a month asked to a quarterly organisation is a 400).
+  // Only the 303 follows the VAT periodicity of the sociedad; the report waits for it (a month asked to a quarterly sociedad is a 400).
   const settings = useFiscalResource(kind === "settlement" ? "vat-settings" : null, getVatSettings);
   const periodicity: VatPeriodicityCode = settings.data?.periodicity ?? "quarterly";
   const pickerKind: "annual" | "monthly" | "quarterly" = kind === "annual" ? "annual" : kind === "settlement" && periodicity === "monthly" ? "monthly" : "quarterly";
@@ -169,17 +175,20 @@ export function FiscalModelScreen({ modelo, title, subtitle }: FiscalModelScreen
   const [year, setYear] = useState(() => years[0]?.value ?? String(new Date().getUTCFullYear()));
   const [quarter, setQuarter] = useState(() => currentQuarter());
   const [month, setMonth] = useState(() => currentMonth());
-  const [scope, setScope] = useState<Scope>("organization");
+  // Informative breakdown of one centre («vista parcial, no liquidable»); "" = the declaration of the sociedad.
+  const [breakdown, setBreakdown] = useState("");
   const [hideZero, setHideZero] = useState(false);
   const [allAvisos, setAllAvisos] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
   const period = periodCodeOf({ kind: pickerKind, year, quarter, month });
-  const propertyId = scope === "property" ? property.propertyId : undefined;
+  const propertyId = breakdown || undefined;
+  const breakdownOptions = useMemo(() => [DECLARATION_OPTION, ...centreSelectOptions(finance.structure, finance.active).map((option) => ({ ...option, label: `Desglose · ${option.label}` }))], [finance.structure, finance.active]);
   const params: FiscalModelParams = kind === "annual" ? { year, propertyId } : { period, propertyId };
   const key = settingsPending ? null : `${modelo}|${period}|${propertyId ?? ""}`;
   const report = useFiscalResource<FiscalModelReportDto>(key, () => getFiscalModel(modelo, params));
   const data = report.data;
+  const sociedad = data?.sociedad ?? settings.data?.sociedad ?? null;
   const errorText = report.error ? fiscalErrorText(report.error, "No hemos podido cargar este informe. Inténtalo de nuevo.") : null;
 
   async function download() {
@@ -198,10 +207,12 @@ export function FiscalModelScreen({ modelo, title, subtitle }: FiscalModelScreen
 
   const actions = (
     <>
-      {pickerKind === "quarterly" ? <CocoaSelect size="small" aria-label="Trimestre" value={quarter} onChange={setQuarter} options={[...QUARTER_OPTIONS]} /> : null}
-      {pickerKind === "monthly" ? <CocoaSelect size="small" aria-label="Mes" value={month} onChange={setMonth} options={[...MONTH_OPTIONS]} /> : null}
-      <CocoaSelect size="small" aria-label="Ejercicio" value={year} onChange={setYear} options={years} />
-      <CocoaSelect size="small" aria-label="Ámbito del modelo" value={scope} onChange={(value) => setScope(value === "property" ? "property" : "organization")} options={SCOPE_OPTIONS(property.propertyName)} />
+      <FinanceDeclaranteBadge sociedad={sociedad} />
+      {pickerKind === "quarterly" ? <CocoaSelect size="small" inline aria-label="Trimestre" value={quarter} onChange={setQuarter} options={[...QUARTER_OPTIONS]} /> : null}
+      {pickerKind === "monthly" ? <CocoaSelect size="small" inline aria-label="Mes" value={month} onChange={setMonth} options={[...MONTH_OPTIONS]} /> : null}
+      <CocoaSelect size="small" inline aria-label="Ejercicio" value={year} onChange={setYear} options={years} />
+      <FinanceScopeSelector scope={finance} />
+      {breakdownOptions.length > 1 ? <CocoaSelect size="small" inline aria-label="Desglose por centro" value={breakdown} onChange={setBreakdown} options={breakdownOptions} /> : null}
       <CocoaButton variant="bordered" tone="neutral" size="small" onClick={report.refresh} loading={report.refreshing && !report.loading} disabled={report.loading}>
         {ACTIONS.refresh}
       </CocoaButton>
@@ -213,7 +224,7 @@ export function FiscalModelScreen({ modelo, title, subtitle }: FiscalModelScreen
 
   return (
     <CocoaPage
-      eyebrow={`Cumplimiento · ${data?.declarante.nombre ?? property.propertyName}`}
+      eyebrow={finance.eyebrow("Cumplimiento")}
       title={title}
       subtitle={subtitle}
       actions={actions}
@@ -242,7 +253,7 @@ export function FiscalModelScreen({ modelo, title, subtitle }: FiscalModelScreen
               {errorText} Se muestran los últimos datos cargados.
             </CocoaCallout>
           ) : null}
-          <ReportBody report={data} hideZero={hideZero} onToggleZero={() => setHideZero((value) => !value)} allAvisos={allAvisos} onToggleAvisos={() => setAllAvisos((value) => !value)} propertyName={property.propertyName} />
+          <ReportBody report={data} hideZero={hideZero} onToggleZero={() => setHideZero((value) => !value)} allAvisos={allAvisos} onToggleAvisos={() => setAllAvisos((value) => !value)} propertyName={centreNameFor(finance.structure, data.propertyId)} />
         </>
       )}
     </CocoaPage>
@@ -271,12 +282,20 @@ function ReportBody({ report, hideZero, onToggleZero, allAvisos, onToggleAvisos,
 
   return (
     <>
-      <CocoaCallout tone="info" title="Presentación manual en la sede de la AEAT">
-        {report.presentacion.nota} Periodo AEAT {report.periodo.aeatPeriod}/{report.periodo.year}.
-      </CocoaCallout>
+      {report.presentacion.noSePresenta ? (
+        <CocoaCallout tone="warning" title={`El Modelo ${report.modelo} no se presenta`} role="status">
+          {report.presentacion.noSePresenta.motivo} Las cifras se muestran a título informativo.
+        </CocoaCallout>
+      ) : (
+        <CocoaCallout tone="info" title="Presentación manual en la sede de la AEAT">
+          {report.presentacion.nota} Periodo AEAT {report.periodo.aeatPeriod}/{report.periodo.year}.
+        </CocoaCallout>
+      )}
+      <FinanceRegimeCallout regimen={report.sociedad.regimen} />
       {report.propertyId ? (
-        <CocoaCallout tone="warning" title="Vista parcial del establecimiento">
-          Los importes de {propertyName} no son liquidables por sí solos: el modelo se presenta por la organización{report.declarante.nombre ? ` (${report.declarante.nombre})` : ""}.
+        <CocoaCallout tone="warning" title="Desglose por centro: vista parcial, no liquidable">
+          Los importes de {propertyName} no se presentan por sí solos: el modelo lo presenta la sociedad {report.sociedad.legalName}
+          {report.sociedad.taxId ? ` (${report.sociedad.taxId})` : ""} por todos sus centros.
         </CocoaCallout>
       ) : null}
 
@@ -325,8 +344,9 @@ function ReportBody({ report, hideZero, onToggleZero, allAvisos, onToggleAvisos,
           <div className="cocoa-stack" data-gap="3">
             <CocoaSection title="Declarante y periodo" footer={generatedAtLabel(report.generatedAt)}>
               <div className="cocoa-stack" data-gap="3">
-                <CocoaStat label="NIF" value={report.declarante.nif ?? "Sin configurar"} tone={report.declarante.nif ? undefined : "warning"} hint={report.declarante.nif ? undefined : "Configura el NIF emisor en Configuración › Facturación."} />
-                <CocoaStat label="Declarante" value={report.declarante.nombre ?? "—"} tabular={false} />
+                <CocoaStat label="NIF" value={report.sociedad.taxId ?? "NIF pendiente"} tone={report.sociedad.taxId && report.sociedad.taxIdValid ? undefined : "warning"} hint={report.sociedad.taxId ? (report.sociedad.taxIdValid ? undefined : "El NIF no supera el dígito de control.") : "Configura el NIF en Configuración › Estructura societaria › Datos fiscales."} />
+                <CocoaStat label="Sociedad declarante" value={report.sociedad.legalName} hint={report.sociedad.code ? `Código ${report.sociedad.code}` : undefined} tabular={false} />
+                <CocoaStat label="Régimen" value={report.sociedad.regimen.siiEnabled ? "SII (mensual)" : report.sociedad.regimen.largeCompany ? "Gran empresa (mensual)" : report.sociedad.regimen.periodicity === "monthly" ? "General · mensual" : "General · trimestral"} tabular={false} />
                 <CocoaStat label="Periodo" value={describePeriod(report.periodo)} tabular={false} />
                 <CocoaStat label="Periodo AEAT" value={`${report.periodo.aeatPeriod}/${report.periodo.year}`} />
               </div>

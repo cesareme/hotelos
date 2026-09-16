@@ -36,8 +36,10 @@ import type {
 } from "@hotelos/shared";
 import { useApiData } from "../../hooks/useApiData";
 import { useNavGate } from "../../navigation/useEnabledModules";
-import { getActiveOrganizationId, loadSwitchableProperties, type SwitchableProperty } from "../../services/activeProperty";
+import { getActiveOrganizationId } from "../../services/activeProperty";
 import type { NamedDownload } from "../../services/accountingApi";
+import { FinanceEntityNote, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { PROPERTY_KIND_LABELS, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { financeErrorCode, financeErrorDetails, financeErrorStatus } from "../../services/finance-contracts";
 import {
   createSnapshot,
@@ -200,25 +202,6 @@ function saveDownload(file: NamedDownload): void {
   URL.revokeObjectURL(url);
 }
 
-/** Properties of the active organisation (GET /users/me/properties, memoised by activeProperty.ts) and its display name. */
-function useOrganizationScope() {
-  const organizationId = getActiveOrganizationId();
-  const [properties, setProperties] = useState<SwitchableProperty[]>([]);
-  useEffect(() => {
-    let alive = true;
-    loadSwitchableProperties()
-      .then((list) => {
-        if (alive) setProperties(list.filter((property) => property.organizationId === organizationId));
-      })
-      .catch(() => undefined);
-    return () => {
-      alive = false;
-    };
-  }, [organizationId]);
-  const organizationName = properties.find((property) => property.organizationName)?.organizationName ?? "Organización";
-  return { organizationId, organizationName, properties };
-}
-
 function validWindow(from: string, to: string): boolean {
   return ISO_DAY.test(from) && ISO_DAY.test(to) && from <= to;
 }
@@ -367,7 +350,11 @@ function StatementSkeleton() {
 export function AnnualAccountsScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
-  const { organizationId, organizationName, properties } = useOrganizationScope();
+  const organizationId = getActiveOrganizationId();
+  // Tanda 6b · L7 (design §5.3): the annual accounts are FORCED to the sociedad (one set per NIF, R1/R9);
+  // the «Ámbito» select paints the sociedad disabled and no centre filter is offered.
+  const finance = useFinanceScope(financeScopePolicy("AnnualAccountsScreen"));
+  const propertyId = finance.propertyId ?? "";
   // Real grants of the active property (never the demo union of the login payload):
   // unknown while the profile loads → enabled, the API answers 403 if it must.
   const configurable = canDo(useNavGate(), "accounting.configure");
@@ -377,7 +364,6 @@ export function AnnualAccountsScreen() {
   const [fiscalYearId, setFiscalYearId] = useState("");
   const [from, setFrom] = useState(`${today.getFullYear()}-01-01`);
   const [to, setTo] = useState(`${today.getFullYear()}-12-31`);
-  const [propertyId, setPropertyId] = useState("");
   const [comparative, setComparative] = useState(false);
 
   const fiscalYears = useApiData<FiscalYear[]>("/accounting/fiscal-years");
@@ -426,6 +412,7 @@ export function AnnualAccountsScreen() {
   const actions = (
     <>
       {statement.loading && accounts ? <CocoaBadge tone="info">actualizando</CocoaBadge> : null}
+      <FinanceScopeSelector scope={finance} />
       {downloadRoute
         ? DOWNLOAD_FORMATS.map((format) => (
             <CocoaButton key={format} variant="bordered" tone="neutral" size="small" disabled={!accounts} loading={downloading === `${downloadRoute}:${format}`} onClick={() => void download(downloadRoute, format)}>
@@ -441,7 +428,7 @@ export function AnnualAccountsScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${organizationName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Cuentas anuales"
       subtitle={hosted ? undefined : subtitle}
       actions={actions}
@@ -462,13 +449,16 @@ export function AnnualAccountsScreen() {
         to={to}
         onFrom={setFrom}
         onTo={setTo}
-        propertyId={propertyId}
-        onProperty={setPropertyId}
-        properties={properties}
         comparative={comparative}
         onComparative={setComparative}
         accounts={accounts}
       />
+      <FinanceEntityNote scope={finance} subject="El juego de cuentas anuales" />
+      {accounts && !accounts.format.depositable ? (
+        <CocoaCallout tone="warning" title="Formato Pymes no depositable para esta sociedad" role="status">
+          {accounts.format.reason ?? "La sociedad exige el formato normal del PGC (LSC arts. 257-258)."} Las cuentas se generan a título informativo hasta que exista la plantilla del PGC general.
+        </CocoaCallout>
+      ) : null}
 
       {view !== "instantaneas" && !windowOk ? <CocoaState kind="empty" title="Indica un periodo válido" message="La fecha de inicio no puede ser posterior a la de fin." /> : null}
       {view !== "instantaneas" && windowOk && statementPending ? <StatementSkeleton /> : null}
@@ -524,21 +514,18 @@ interface ScopeSectionProps {
   to: string;
   onFrom: (value: string) => void;
   onTo: (value: string) => void;
-  propertyId: string;
-  onProperty: (value: string) => void;
-  properties: SwitchableProperty[];
   comparative: boolean;
   onComparative: (value: boolean) => void;
   accounts: AnnualAccounts | null;
 }
 
-function ScopeSection({ years, yearsError, fiscalYearId, onFiscalYear, from, to, onFrom, onTo, propertyId, onProperty, properties, comparative, onComparative, accounts }: ScopeSectionProps) {
+function ScopeSection({ years, yearsError, fiscalYearId, onFiscalYear, from, to, onFrom, onTo, comparative, onComparative, accounts }: ScopeSectionProps) {
   const byDates = fiscalYearId === "";
   const dateError = byDates && ISO_DAY.test(from) && ISO_DAY.test(to) && from > to ? "La fecha de inicio no puede ser posterior a la de fin." : undefined;
   const fiscalYear = accounts?.fiscalYear ?? null;
   const footer = accounts ? (
     <span>
-      Periodo {dateRange(accounts.period.from, accounts.period.to)} · {accounts.propertyId ? "una propiedad" : "toda la organización"} ·{" "}
+      {accounts.entityLabel} · periodo {dateRange(accounts.period.from, accounts.period.to)} ·{" "}
       {fiscalYear ? `ejercicio ${fiscalYear.code}` : "sin ejercicio fiscal registrado: se calcula por fechas"} · generado {dateTime(accounts.generatedAt)}
     </span>
   ) : yearsError ? (
@@ -547,8 +534,8 @@ function ScopeSection({ years, yearsError, fiscalYearId, onFiscalYear, from, to,
 
   return (
     <CocoaSection title="Ejercicio y ámbito" meta={fiscalYear ? <CocoaBadge tone={FISCAL_YEAR_STATUS[fiscalYear.status as FiscalYear["status"]]?.tone ?? "neutral"}>{FISCAL_YEAR_STATUS[fiscalYear.status as FiscalYear["status"]]?.label ?? fiscalYear.status}</CocoaBadge> : undefined} footer={footer}>
-      <CocoaFormRow columns={4} min={200}>
-        <CocoaField label="Ejercicio fiscal" help={years.length === 0 ? "La organización no tiene ejercicios registrados: se calcula por fechas." : undefined}>
+      <CocoaFormRow columns={3} min={200}>
+        <CocoaField label="Ejercicio fiscal" help={years.length === 0 ? "La sociedad no tiene ejercicios registrados: se calcula por fechas." : undefined}>
           <CocoaSelect
             value={fiscalYearId}
             onChange={onFiscalYear}
@@ -560,9 +547,6 @@ function ScopeSection({ years, yearsError, fiscalYearId, onFiscalYear, from, to,
         </CocoaField>
         <CocoaField label={FIELD_LABELS.to}>
           <CocoaDatePicker value={to} onChange={onTo} disabled={!byDates} />
-        </CocoaField>
-        <CocoaField label={FIELD_LABELS.property}>
-          <CocoaSelect value={propertyId} onChange={onProperty} options={[{ value: "", label: "Toda la organización" }, ...properties.map((property) => ({ value: property.id, label: property.name }))]} />
         </CocoaField>
       </CocoaFormRow>
       <CocoaField label="Comparativo" inline help="Añade el periodo anterior de la misma duración al balance y a la cuenta de pérdidas y ganancias.">
@@ -728,8 +712,8 @@ function SummaryView({ accounts }: { accounts: AnnualAccounts }) {
                 <CocoaBadge tone={ecpn.reconciled ? "success" : "danger"}>{ecpn.reconciled ? STATUS_LABELS.yes : STATUS_LABELS.no}</CocoaBadge>
               </li>
               <li>
-                <span>Entidad</span>
-                <strong>{memoria.entity.legalName ?? memoria.entity.name}</strong>
+                <span>Sociedad</span>
+                <strong>{accounts.entityLabel}</strong>
               </li>
             </ul>
           </CocoaSection>
@@ -927,11 +911,14 @@ function MemoriaView({ accounts, organizationId }: { accounts: AnnualAccounts; o
 
   return (
     <>
-      <CocoaSection title={memoria.entity.legalName ?? memoria.entity.name} meta={memoria.entity.taxId ? `NIF ${memoria.entity.taxId}` : undefined}>
-        <ul className="c22-section__list">
+      <CocoaSection title={memoria.entity.legalName ?? memoria.entity.name} meta={memoria.entity.taxId ? `NIF ${memoria.entity.taxId}` : "NIF pendiente"} footer={plural(memoria.entity.properties.length, "establecimiento", "establecimientos")}>
+        <ul className="c22-section__list" aria-label="Establecimientos de la sociedad">
           {memoria.entity.properties.map((property) => (
             <li key={property.id}>
-              <span>{property.name}</span>
+              <span>
+                {property.code ? `${property.code} · ` : ""}
+                {property.name} <CocoaBadge tone={property.kind === "hotel" ? "neutral" : "info"} size="small">{PROPERTY_KIND_LABELS[property.kind] ?? property.kind}</CocoaBadge>
+              </span>
               <span>{property.address ?? "—"}</span>
             </li>
           ))}

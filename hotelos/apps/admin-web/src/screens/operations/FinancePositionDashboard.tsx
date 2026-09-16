@@ -14,11 +14,17 @@
 // `kpis.monthCollectedPct`, top debtors and the latest payments. Money on the
 // treasury contract travels as decimal strings ("1234.50"): lib/format turns
 // it into es-ES text only when painting. Everything polls every 60 s as before.
+//
+// Tanda 6b · L7 (design §5.3): the header carries the ONE «Ámbito» — the
+// sociedad by default (`GET /treasury/*?scope=entity`: every account, with and
+// without centre) or one centre (`propertyId`); the legacy dashboard stays
+// per centre (it has no sociedad scope) and says so.
 
 import { useState, type CSSProperties } from "react";
 import type { ForecastBucket, ForecastBucketLabel, PayableItem, ReceivableItem, TreasuryAgingBuckets, TreasuryBankRow } from "@hotelos/shared";
 import { useApiData } from "../../hooks/useApiData";
-import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { SOCIETY_NO_CENTRE_LABEL, centreNameFor, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import type { TreasuryForecast, TreasuryPayables, TreasuryPosition, TreasuryReceivables } from "../../services/treasuryApi";
 import { navigateTo } from "../../lib/navigate";
 import { useTabHost } from "../tabs/TabHost";
@@ -261,12 +267,15 @@ function TreasurySkeleton() {
 
 export function FinancePositionDashboard() {
   const hosted = useTabHost() !== null;
-  const propertyId = getActivePropertyId();
-  const propertyName = getActiveProperty().propertyName;
-  const query = { propertyId };
+  const finance = useFinanceScope(financeScopePolicy("FinancePositionDashboard"));
+  const entityScope = finance.scope.kind === "entity";
+  // Treasury routes: `scope=entity` for the sociedad, `propertyId` for a centre. The legacy
+  // dashboard has no sociedad scope: it keeps the active centre.
+  const query = finance.treasuryQuery;
+  const legacyQuery = { propertyId: finance.propertyId ?? finance.active.propertyId };
 
-  const dash = useApiData<LegacyDashboard>("/dashboards/finance-position", { pollIntervalMs: POLL_MS, query });
-  const position = useApiData<TreasuryPosition>("/treasury/position", { pollIntervalMs: POLL_MS, query });
+  const dash = useApiData<LegacyDashboard>("/dashboards/finance-position", { pollIntervalMs: POLL_MS, query: legacyQuery });
+  const position = useApiData<TreasuryPosition & { scope?: string; entityLabel?: string; banks: Array<TreasuryBankRow & { propertyId?: string | null }> }>("/treasury/position", { pollIntervalMs: POLL_MS, query });
   const receivables = useApiData<TreasuryReceivables>("/treasury/receivables", { pollIntervalMs: POLL_MS, query });
   const payables = useApiData<TreasuryPayables>("/treasury/payables", { pollIntervalMs: POLL_MS, query });
   const forecast = useApiData<TreasuryForecast>("/treasury/forecast", { pollIntervalMs: POLL_MS, query });
@@ -283,7 +292,7 @@ export function FinancePositionDashboard() {
   const legacy = dash.data;
   const labels = (key: string) => legacy?.labels?.[key] ?? LABELS[key] ?? key;
 
-  const banks = toArray<TreasuryBankRow>(pos?.banks);
+  const banks = toArray<TreasuryBankRow & { propertyId?: string | null }>(pos?.banks);
   const warnings = toArray<string>(pos?.warnings);
   const topDebtors = toArray<Debtor>(legacy?.topDebtors);
   const recentPayments = toArray<RecentPayment>(legacy?.recentPayments);
@@ -314,11 +323,12 @@ export function FinancePositionDashboard() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${propertyName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Tesorería"
       subtitle={subtitle}
       actions={
         <>
+          <FinanceScopeSelector scope={finance} />
           {pos ? (
             <CocoaBadge tone={pos.source === "ledger+statements" ? "success" : "info"} title="Origen de la posición de tesorería">
               {pos.source === "ledger+statements" ? "Libro y extractos" : "Solo libro contable"}
@@ -335,6 +345,11 @@ export function FinancePositionDashboard() {
       error={{ title: "No se pudo cargar la tesorería", message: fatalError, onRetry: refreshAll }}
       commands={[{ id: "treasury-refresh", label: "Actualizar la tesorería", run: refreshAll }]}
     >
+      {entityScope && finance.structure && finance.structure.mode !== "single_hotel" ? (
+        <CocoaCallout tone="info" title={`Posición de toda la sociedad${pos?.entityLabel ? ` · ${pos.entityLabel}` : ""}`}>
+          Caja, bancos, cobros y pagos de todos los centros bajo un solo NIF; las cuentas sin centro aparecen como «{SOCIETY_NO_CENTRE_LABEL}». El porcentaje cobrado del mes, los principales deudores y los últimos cobros siguen siendo del centro {centreNameFor(finance.structure, legacyQuery.propertyId)}.
+        </CocoaCallout>
+      ) : null}
       {warnings.length > 0 ? (
         <CocoaCallout tone="info" title="Lo que hay detrás de las cifras">
           <ul className="c22-section__list">
@@ -437,6 +452,7 @@ export function FinancePositionDashboard() {
                         <span style={captionStyle}>
                           {bank.ibanMasked ?? "sin IBAN"} · cuenta {bank.ledgerAccountCode}
                           {bank.statementDate ? ` · extracto a ${date(bank.statementDate, "short")}` : " · sin extractos"}
+                          {entityScope ? ` · ${centreNameFor(finance.structure, bank.propertyId ?? null)}` : ""}
                         </span>
                         {bank.unmatchedLines > 0 ? (
                           <span style={captionStyle}>{plural(bank.unmatchedLines, "movimiento sin conciliar", "movimientos sin conciliar")} · {money(bank.unmatchedAmount)}</span>

@@ -1,7 +1,10 @@
 // Generic routed tab container for ONE item of the tree (Tanda 5 · L1a · lote tabs-a).
 //
-// Renders, in this order: one CocoaPageHeader (eyebrow = category, title =
-// item label, optional subtitle/actions), the module-list error when the gate
+// Renders, in this order: one CocoaPageHeader (eyebrow = category — extended
+// with the qualifier a hosted screen registers through useHostedEyebrow when
+// it starts with that category, «Finanzas · CELUISMA S.A.», see
+// containerEyebrow —, title = item label, optional subtitle/actions), the
+// module-list error when the gate
 // could not read it, and CocoaRouteTabs with the tabs built from the JSON item
 // (`buildItemTabs`), the role/module gate (`useNavGate`) and the landing per
 // role (`landingKeysFor` → landingTabFor of nav-tree.ts). Screens hosted here
@@ -15,7 +18,7 @@
 // comprobar los módulos» when the list is not readable, and «Sin acceso» only
 // when the role gate is the cause — never the generic text of CocoaRouteTabs.
 
-import { useCallback, useMemo, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { CocoaPageHeader } from "../../components/cocoa/CocoaPageHeader";
 import { CocoaRouteTabs, CocoaTabSkeleton, type CocoaRouteTab } from "../../components/cocoa/CocoaRouteTabs";
 import { CocoaState } from "../../components/cocoa/CocoaState";
@@ -28,7 +31,7 @@ import { forbiddenModuleLists } from "../../navigation/useEnabledModules";
 import { getActivePropertyId } from "../../services/activeProperty";
 import { enableModuleHash } from "../operations/module-gate";
 import { TabHostProvider } from "./TabHost";
-import { buildItemTabs, emptyTabsCopy, emptyTabsReason, itemForScreen, landingKeysFor, unlockingModulesFor, type TabLoaders } from "./nav-item-tabs";
+import { buildItemTabs, containerEyebrow, emptyTabsCopy, emptyTabsReason, itemForScreen, landingKeysFor, unlockingModulesFor, type TabLoaders } from "./nav-item-tabs";
 import { usePathname } from "./usePathname";
 
 export type NavItemTabsProps = {
@@ -67,7 +70,11 @@ export function NavItemTabs(props: NavItemTabsProps) {
   );
 
   const isVisible = useCallback((tab: CocoaRouteTab) => gate.isVisible(tab), [gate]);
-  const hostInfo = useMemo(() => ({ screenKey, basePath: item.url, title: item.label }), [screenKey, item.url, item.label]);
+  // Eyebrow qualifier of the hosted screen («Finanzas · CELUISMA S.A.», design §5.3), registered through
+  // the host context (useHostedEyebrow) and painted only when it extends this category (fix:L7 qa#12).
+  const [screenEyebrow, setScreenEyebrow] = useState<string | null>(null);
+  const hostInfo = useMemo(() => ({ screenKey, basePath: item.url, title: item.label, setEyebrow: setScreenEyebrow }), [screenKey, item.url, item.label]);
+  const eyebrow = containerEyebrow(category.label, item.label, screenEyebrow);
   const modulesError = gate.error ? errorStateFor("los módulos activos de la propiedad") : null;
 
   // Empty container (qa#12): why no tab is visible, and the copy for it. A
@@ -84,7 +91,7 @@ export function NavItemTabs(props: NavItemTabsProps) {
     <TabHostProvider value={hostInfo}>
       <div className="anf-nav-tabs" style={stackStyle} data-nav-item={screenKey} data-nav-empty={emptyReason ?? undefined}>
         <style>{STRIP_CSS}</style>
-        <CocoaPageHeader eyebrow={category.label} title={item.label} subtitle={subtitle} actions={actions} />
+        <CocoaPageHeader eyebrow={eyebrow} title={item.label} subtitle={subtitle} actions={actions} />
         {modulesError ? (
           <ErrorState title={modulesError.title} message={modulesError.message} onRetry={gate.refresh} retryLabel={modulesError.cta} />
         ) : null}

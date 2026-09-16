@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 279,
+      "csvRows": 284,
       "categories": 9,
-      "items": 66,
-      "tabs": 94,
+      "items": 67,
+      "tabs": 98,
       "devOnly": 21,
       "retired": 72,
       "aliases": 24,
@@ -1809,6 +1809,64 @@
               "label": "Campos personalizados",
               "url": "/configuracion/propiedad/campos-personalizados",
               "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            }
+          ]
+        },
+        {
+          "screenKey": "StructureScreen",
+          "label": "Estructura societaria",
+          "url": "/configuracion/estructura-societaria",
+          "baseTab": "Datos fiscales",
+          "roles": [
+            "finanzas",
+            "direccion",
+            "admin"
+          ],
+          "modulesAny": [],
+          "tabs": [
+            {
+              "screenKey": "StructurePropertiesTab",
+              "label": "Centros",
+              "url": "/configuracion/estructura-societaria/centros",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "StructureSeriesTab",
+              "label": "Series y VeriFactu",
+              "url": "/configuracion/estructura-societaria/series-verifactu",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "StructureVatTab",
+              "label": "IVA y ejercicio",
+              "url": "/configuracion/estructura-societaria/iva-ejercicio",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "StructureAllocationTab",
+              "label": "Reparto",
+              "url": "/configuracion/estructura-societaria/reparto",
+              "roles": [
+                "finanzas",
                 "direccion",
                 "admin"
               ],

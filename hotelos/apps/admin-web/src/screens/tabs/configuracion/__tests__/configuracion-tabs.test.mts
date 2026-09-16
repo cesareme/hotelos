@@ -192,6 +192,18 @@ describe("tabs · tab-helpers (screens/tabs/tab-helpers.tsx)", () => {
     const withActions = HostedHead({ title: "Pagos", actions: "x" }) as { props: { "data-hosted-head": string } } | null;
     assert.equal(withActions?.props["data-hosted-head"], "Pagos");
   });
+
+  it("HostedHead never paints its eyebrow: it hands it to the container (fix:L7 qa#12) and paints no toolbar for it alone", () => {
+    type El = { type: { displayName?: string }; props: Record<string, unknown> } | null;
+    const alone = HostedHead({ title: "USALI", eyebrow: "Finanzas · CELUISMA S.A." }) as El;
+    assert.equal(alone?.type.displayName, "HostedEyebrow", "only the registration, no toolbar without subtitle / tabs / actions");
+    assert.equal(alone?.props.eyebrow, "Finanzas · CELUISMA S.A.");
+    const withActions = HostedHead({ title: "USALI", eyebrow: "Finanzas · CELUISMA S.A.", actions: "x" }) as El;
+    assert.equal(withActions?.props["data-hosted-head"], "USALI");
+    const rendered = JSON.stringify(withActions);
+    assert.doesNotMatch(rendered, /"children":"Finanzas · CELUISMA S\.A\."/, "the eyebrow text is not painted by the hosted head");
+    assert.match(rendered, /"eyebrow":"Finanzas · CELUISMA S\.A\."/, "the eyebrow is registered through the HostedEyebrow carrier");
+  });
 });
 
 describe("tabs-c · Configuración · registration and hosted screens", () => {

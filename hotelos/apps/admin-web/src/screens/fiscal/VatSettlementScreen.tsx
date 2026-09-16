@@ -12,7 +12,11 @@
 // 409s (PERIOD_NOT_ENDED · ALREADY_SETTLED · NOTHING_TO_SETTLE ·
 // FISCAL_YEAR_CLOSED …) are mapped by fiscalErrorText and the fiscal-year one
 // offers the year-end screen. The period follows the VAT periodicity of the
-// organisation (GET /fiscal/vat-settings).
+// sociedad (GET /fiscal/vat-settings).
+//
+// Tanda 6b · L7 (design §5.3): the settlement is FORCED to the sociedad
+// («Ámbito» disabled), the badge «Declarante: <razón social> · <NIF>» comes from
+// `modelo303.sociedad` and the SII / gran empresa regime paints a warning.
 
 import { useMemo, useRef, useState } from "react";
 import type { FiscalBox, VatSettlementLineDto, VatSettlementPreview } from "@hotelos/shared";
@@ -20,8 +24,9 @@ import { useToast } from "../../components/Toast";
 import { ACTIONS, UI_STATES } from "../../content/actions";
 import { date, isoDate, money, number, plural } from "../../lib/format";
 import { urlForScreen } from "../../navigation/nav-tree";
-import { getActiveProperty } from "../../services/activeProperty";
+import { FinanceDeclaranteBadge, FinanceRegimeCallout, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
 import { FINANCE_ERROR_MESSAGES } from "../../services/finance-contracts";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { getVatSettings, postVatSettlement, previewVatSettlement, reverseVatSettlement } from "../../services/fiscalApi";
 import { useTabHost } from "../tabs/TabHost";
 import {
@@ -99,7 +104,7 @@ function SettlementSkeleton() {
 export function VatSettlementScreen() {
   const hosted = useTabHost() !== null;
   const { showToast } = useToast();
-  const property = getActiveProperty();
+  const finance = useFinanceScope(financeScopePolicy("VatSettlementScreen"));
   const today = isoDate(new Date()) ?? "";
 
   const settings = useFiscalResource("vat-settings", getVatSettings);
@@ -114,6 +119,7 @@ export function VatSettlementScreen() {
 
   const resource = useFiscalResource<VatSettlementPreview>(settingsPending ? null : `settlement|${period}`, () => previewVatSettlement(period));
   const preview = resource.data;
+  const sociedad = preview?.modelo303.sociedad ?? settings.data?.sociedad ?? null;
   const errorText = resource.error ? fiscalErrorText(resource.error, "No hemos podido cargar la vista previa de la liquidación.") : null;
 
   const [askPost, setAskPost] = useState(false);
@@ -191,8 +197,10 @@ export function VatSettlementScreen() {
           {status.label}
         </CocoaBadge>
       ) : null}
-      {periodicity === "monthly" ? <CocoaSelect size="small" aria-label="Mes" value={month} onChange={setMonth} options={[...MONTH_OPTIONS]} /> : <CocoaSelect size="small" aria-label="Trimestre" value={quarter} onChange={setQuarter} options={[...QUARTER_OPTIONS]} />}
-      <CocoaSelect size="small" aria-label="Ejercicio" value={year} onChange={setYear} options={years} />
+      <FinanceDeclaranteBadge sociedad={sociedad} />
+      <FinanceScopeSelector scope={finance} />
+      {periodicity === "monthly" ? <CocoaSelect size="small" inline aria-label="Mes" value={month} onChange={setMonth} options={[...MONTH_OPTIONS]} /> : <CocoaSelect size="small" inline aria-label="Trimestre" value={quarter} onChange={setQuarter} options={[...QUARTER_OPTIONS]} />}
+      <CocoaSelect size="small" inline aria-label="Ejercicio" value={year} onChange={setYear} options={years} />
       <CocoaButton variant="bordered" tone="neutral" size="small" onClick={resource.refresh} loading={resource.refreshing && !resource.loading} disabled={resource.loading}>
         {ACTIONS.refresh}
       </CocoaButton>
@@ -201,7 +209,7 @@ export function VatSettlementScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Cumplimiento · ${preview?.modelo303.declarante.nombre ?? property.propertyName}`}
+      eyebrow={finance.eyebrow("Cumplimiento")}
       title="Liquidación de IVA"
       subtitle={hosted ? undefined : "Vista previa del asiento de liquidación del periodo (D 477 / H 472 / H 4750 o D 4700), contabilización y anulación."}
       actions={actions}
@@ -230,6 +238,7 @@ export function VatSettlementScreen() {
               {errorText} Se muestra la última vista previa cargada.
             </CocoaCallout>
           ) : null}
+          <FinanceRegimeCallout regimen={sociedad?.regimen} />
           {yearClosed ? (
             <CocoaCallout
               tone="danger"

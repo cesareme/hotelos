@@ -13,7 +13,8 @@
 
 import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   COMMISSION_APPLIES_TO,
   COMMISSION_APPLIES_TO_LABELS_ES,
@@ -166,8 +167,9 @@ function CommissionsSkeleton() {
 }
 
 export function CommissionsScreen() {
-  const propertyId = getActivePropertyId();
-  const propertyName = getActiveProperty().propertyName;
+  // Tanda 6b · L7: commission rules and accruals live per hotel: the «Ámbito» offers the centres (never the oficina central).
+  const finance = useFinanceScope(financeScopePolicy("CommissionsScreen"), { excludeOffice: true });
+  const propertyId = finance.propertyId ?? finance.active.propertyId;
   const { showToast } = useToast();
   const fromMtd = useMemo(startOfMonthIso, []);
 
@@ -349,12 +351,13 @@ export function CommissionsScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${propertyName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Comisiones"
       subtitle="La comisión de cada canal de venta y su devengo: se contabiliza sola al emitir la factura o al hacer el check-out (cuenta 629.1 Comisiones de canales contra 410 Acreedores)."
       actions={
         <>
           {anyLoading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refreshAll}>
             {ACTIONS.refresh}
           </CocoaButton>

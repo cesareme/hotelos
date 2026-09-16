@@ -25,7 +25,6 @@ import {
   CocoaKpiStrip,
   CocoaPage,
   CocoaSection,
-  CocoaSelect,
   CocoaSkeleton,
   CocoaState,
   CocoaTable,
@@ -33,7 +32,9 @@ import {
   openTabPath,
   type CocoaTableColumn
 } from "../../components/cocoa";
-import { kindLabel, kindTone, readQueryParam, todayIso, usePropertyScopeOptions, withQuery } from "../accounting/accounting-ui";
+import { kindLabel, kindTone, readQueryParam, todayIso, withQuery } from "../accounting/accounting-ui";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 
 type TrialBalanceRow = {
   accountCode: string;
@@ -82,11 +83,12 @@ function TrialBalanceSkeleton() {
 export function TrialBalanceScreen() {
   // Base tab of the item: the container paints «Finanzas» + «Estados contables»; standalone the page names the tab.
   const header = { eyebrow: "Finanzas · Estados contables", title: "Sumas y saldos" };
-  const scopeOptions = usePropertyScopeOptions();
+  // Tanda 6b · L7: the «Ámbito» of the header (sociedad by default, a centre as filter) is the `propertyId` of the report.
+  const finance = useFinanceScope(financeScopePolicy("TrialBalanceScreen"));
   const [asOf, setAsOf] = useState(() => readQueryParam("hasta") ?? todayIso());
   const [fromDate, setFromDate] = useState(() => readQueryParam("desde") ?? "");
   const [toDate, setToDate] = useState("");
-  const [propertyId, setPropertyId] = useState(() => readQueryParam("propiedad") ?? "");
+  const propertyId = finance.propertyId ?? "";
 
   const query = useMemo(() => {
     const q: Record<string, string> = { asOf };
@@ -105,17 +107,18 @@ export function TrialBalanceScreen() {
 
   function openLedger(row: TrialBalanceRow) {
     if (!ledgerUrl) return;
-    openTabPath(withQuery(ledgerUrl, { cuenta: row.accountCode, desde: fromDate || undefined, hasta: toDate || asOf, propiedad: propertyId || undefined }));
+    openTabPath(withQuery(ledgerUrl, { cuenta: row.accountCode, desde: fromDate || undefined, hasta: toDate || asOf, ambito: finance.value }));
   }
 
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
-      subtitle={k ? `Sumas y saldos por cuenta desde el libro diario · ${windowLabel} · calculado ${dateTime(k.generatedAt)}` : "Suma del debe y del haber de cada cuenta del PGC con su saldo: comprueba que la partida doble cuadra."}
+      subtitle={k ? `Sumas y saldos por cuenta desde el libro diario · ${windowLabel} · ${finance.scope.label} · calculado ${dateTime(k.generatedAt)}` : "Suma del debe y del haber de cada cuenta del PGC con su saldo: comprueba que la partida doble cuadra."}
       actions={
         <>
           {k ? <CocoaBadge tone={k.balanced ? "success" : "danger"}>{k.balanced ? "Cuadra" : "No cuadra"}</CocoaBadge> : null}
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} loading={loading && !!k}>
             {ACTIONS.refresh}
           </CocoaButton>
@@ -141,9 +144,6 @@ export function TrialBalanceScreen() {
             </CocoaField>
             <CocoaField label="Hasta" hint="opcional">
               <CocoaDatePicker value={toDate} onChange={setToDate} size="small" aria-label="Movimientos hasta" />
-            </CocoaField>
-            <CocoaField label="Propiedad">
-              <CocoaSelect value={propertyId} onChange={setPropertyId} options={scopeOptions} size="small" aria-label="Propiedad" />
             </CocoaField>
           </div>
         }
@@ -203,7 +203,7 @@ export function TrialBalanceScreen() {
                 kind="empty"
                 illustration="box"
                 title="Sin movimientos contables"
-                message={fromDate ? `No hay asientos contabilizados entre ${date(fromDate, "short")} y ${date(toDate || asOf, "short")}.` : `No hay asientos contabilizados hasta ${date(asOf, "short")}${propertyId ? " en esta propiedad" : ""}. Los asientos nacen al emitir facturas, registrar cobros y cerrar comandas.`}
+                message={fromDate ? `No hay asientos contabilizados entre ${date(fromDate, "short")} y ${date(toDate || asOf, "short")}.` : `No hay asientos contabilizados hasta ${date(asOf, "short")}${propertyId ? " en este centro" : ""}. Los asientos nacen al emitir facturas, registrar cobros y cerrar comandas.`}
               />
             )}
           </CocoaSection>

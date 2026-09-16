@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import { nextSegmentValue, segmentItemStyle, segmentedOverflows, tabSurfaceStyle } from "../CocoaSegmentedControl.tsx";
 import { routeTabStyle } from "../CocoaRouteTabs.tsx";
@@ -106,6 +109,46 @@ describe("CocoaButton · foreground (§2.1: ghosts use the AA tone ink, review#7
         assert.notEqual(buttonForeground(variant, tone), "var(--cocoa-danger)", `${variant}/${tone}`);
       }
     }
+  });
+});
+
+// The filled accent button carries white ink: the bare Esmeralda hue #0d8a5f
+// only reaches 4.36:1 (< 4.5 AA at 11–15 px, qa#7), so it paints on the
+// deeper --cocoa-accent-fill. Measured here from the stylesheets, WCAG 2.x.
+describe("CocoaButton · filled accent surface (fix:primitives qa#7)", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const srcDir = resolve(here, "../../..");
+  const tokens = readFileSync(resolve(srcDir, "styles/cocoa-tokens.css"), "utf8");
+  const aurora = readFileSync(resolve(srcDir, "styles.css"), "utf8");
+  const button = readFileSync(resolve(here, "../CocoaButton.tsx"), "utf8");
+  const channel = (v: number): number => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const hex = (h: string): number[] => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const luminance = ([r = 0, g = 0, b = 0]: number[]): number => 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+  const contrast = (a: number[], b: number[]): number => { const x = luminance(a), y = luminance(b); return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05); };
+  const WHITE = [255, 255, 255];
+
+  it("light: --cocoa-accent-fill is a literal deeper than the hue and carries white ≥ 4.5:1, hover included", () => {
+    const fills = [...tokens.matchAll(/--cocoa-accent-fill:\s*(#[0-9a-fA-F]{6}|var\(--accent\));/g)].map((m) => m[1] ?? "");
+    assert.equal(fills.length, 3, "light literal + the two dark blocks ([data-theme=dark] and prefers-color-scheme)");
+    const light = fills[0] ?? "";
+    assert.match(light, /^#[0-9a-fA-F]{6}$/, "the light fill is a literal: the hue #0d8a5f only reaches 4.36:1 under white");
+    assert.ok(contrast(hex("#0d8a5f"), WHITE) < 4.5, "the bare Esmeralda hue is the reason the fill exists");
+    assert.ok(contrast(hex(light), WHITE) >= 4.5, `${light} under white ink`);
+    const hovered = hex(light).map((v) => Math.min(255, v * 1.04)); // CocoaButton applyHover → filter: brightness(1.04)
+    assert.ok(contrast(hovered, WHITE) >= 4.5, `${light} hovered (brightness 1.04) under white ink`);
+    assert.deepEqual(fills.slice(1), ["var(--accent)", "var(--accent)"], "dark keeps the hue: --accent-ink is deep ink there");
+  });
+
+  it("dark: the hue under --accent-ink stays ≥ 4.5:1", () => {
+    const accents = [...aurora.matchAll(/(?<![\w-])--accent:\s*(#[0-9a-fA-F]{6});/g)].map((m) => m[1] ?? "");
+    const inks = [...aurora.matchAll(/(?<![\w-])--accent-ink:\s*(#[0-9a-fA-F]{6});/g)].map((m) => m[1] ?? "");
+    assert.ok(accents.length >= 2 && inks.length >= 2, "Aurora defines light + dark --accent / --accent-ink");
+    assert.ok(contrast(hex(accents[1] ?? ""), hex(inks[1] ?? "")) >= 4.5, `${inks[1]} on ${accents[1]}`);
+  });
+
+  it("CocoaButton paints the filled accent on the fill token, never on the bare hue", () => {
+    assert.match(button, /accent: "var\(--cocoa-accent-fill\)"/);
+    assert.doesNotMatch(button, /accent: "var\(--cocoa-accent\)"/);
   });
 });
 

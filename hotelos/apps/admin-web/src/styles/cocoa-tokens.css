@@ -65,6 +65,12 @@
   --cocoa-accent-hover:         var(--accent-strong);
   --cocoa-accent-pressed:       var(--accent-strong);
   --cocoa-accent-contrast:      var(--accent-ink);
+  /* Accent as a FILLED surface under --cocoa-accent-contrast (CocoaButton
+     filled accent): the bare hue #0d8a5f carries white at only 4.36:1 at
+     11–15 px, so the fill is one step deeper — 5.35:1, and 5.02:1 under the
+     hover brightness(1.04) (qa#7). Bars, icons, focus and selection keep
+     --cocoa-accent. Dark: the hue itself (#2bb37f under #07140e = 7.0:1). */
+  --cocoa-accent-fill:          #0b7a54;
 
   /* Status hues — bars of 3 px, deltas, dots, strokes, figures ≥ 24 px.
      As text ≤ 13 px in light they fail AA → use the *-text tokens below. */
@@ -498,6 +504,7 @@
   --cocoa-accent-hover:         var(--accent-strong);
   --cocoa-accent-pressed:       var(--accent-strong);
   --cocoa-accent-contrast:      var(--accent-ink);
+  --cocoa-accent-fill:          var(--accent);
 
   --cocoa-success:              #30D158;
   --cocoa-warning:              #FF9F0A;
@@ -580,6 +587,7 @@
     --cocoa-accent-hover:         var(--accent-strong);
     --cocoa-accent-pressed:       var(--accent-strong);
     --cocoa-accent-contrast:      var(--accent-ink);
+    --cocoa-accent-fill:          var(--accent);
 
     --cocoa-success:              #30D158;
     --cocoa-warning:              #FF9F0A;

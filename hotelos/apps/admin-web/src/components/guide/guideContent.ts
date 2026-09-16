@@ -157,6 +157,7 @@ const ITEM_NARRATION: Record<string, string> = {
   // Configuración
   SetupCenterScreen: "Todo lo necesario para dejar el hotel listo: comprobaciones de salida en vivo e importación desde documentos con ayuda de la IA.",
   PropertyProfileSetupForm: "Los datos del hotel: perfil legal, edificios, plantas, zonas, departamentos, categorías y campos personalizados.",
+  StructureScreen: "Quién factura y dónde se trabaja: la sociedad (NIF, razón social, régimen) y sus centros de trabajo, series e instalaciones VeriFactu.",
   RoomSetupForm: "Tipos de habitación, inventario de habitaciones y espacios (salas, recursos para eventos).",
   UserRoleManager: "Quién puede entrar y con qué rol; invitaciones y desactivación de accesos.",
   NotificationsScreen: "Plantillas y envíos de correo y mensajes, y los buzones de correo entrante que la IA lee para preparar reservas.",

@@ -12,7 +12,8 @@
 
 import { useMemo, useState, type CSSProperties } from "react";
 import { useApiData } from "../../hooks/useApiData";
-import { getActiveProperty, getActivePropertyId } from "../../services/activeProperty";
+import { FinanceEntityNote, FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import { useTabHost } from "../tabs/TabHost";
 import { toArray } from "../../utils/toArray";
 import { STATUS_LABELS } from "../../content/actions";
@@ -110,8 +111,10 @@ function CashFlowSkeleton() {
 
 export function CashFlowScreen() {
   const hosted = useTabHost() !== null;
-  const propertyId = getActivePropertyId();
-  const propertyName = getActiveProperty().propertyName;
+  // Tanda 6b · L7 (design §5.3): the cash-flow statement is FORCED to the sociedad (no `propertyId`); a
+  // centre-scoped reader keeps its own centre.
+  const finance = useFinanceScope(financeScopePolicy("CashFlowScreen"));
+  const propertyId = finance.propertyId;
   const initial = useMemo(currentMonth, []);
   const [fromDate, setFromDate] = useState(initial.from);
   const [toDate, setToDate] = useState(initial.to);
@@ -146,7 +149,7 @@ export function CashFlowScreen() {
 
   return (
     <CocoaPage
-      eyebrow={`Finanzas · ${propertyName}`}
+      eyebrow={finance.eyebrow("Finanzas")}
       title="Flujos de efectivo"
       subtitle={hosted ? undefined : "Método indirecto: del resultado del periodo a la variación de tesorería, ajustando amortizaciones y capital circulante y separando inversión y financiación."}
       actions={
@@ -157,6 +160,7 @@ export function CashFlowScreen() {
             </CocoaBadge>
           ) : null}
           {loading ? <CocoaBadge tone="info">{STATUS_LABELS.loading}</CocoaBadge> : null}
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton variant="bordered" tone="neutral" size="small" onClick={refresh} title="Recalcular el estado con el periodo elegido">
             Recalcular
           </CocoaButton>
@@ -189,6 +193,7 @@ export function CashFlowScreen() {
         }
       />
 
+      <FinanceEntityNote scope={finance} subject="El estado de flujos de efectivo" />
       {rangeInverted ? (
         <CocoaCallout tone="warning" title="Revisa el periodo">
           La fecha de inicio ({date(fromDate, "short")}) es posterior a la de fin ({date(toDate, "short")}). Corrige las fechas para calcular el estado.

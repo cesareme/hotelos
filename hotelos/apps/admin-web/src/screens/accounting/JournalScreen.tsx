@@ -69,12 +69,12 @@ import {
   readHashParam,
   readQueryParam,
   saveDownload,
-  scopeLabel,
   sourceTypeLabel,
   todayIso,
-  usePropertyScopeOptions,
   withQuery
 } from "./accounting-ui";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { SOCIETY_NO_CENTRE_LABEL, centreNameFor, centreSelectOptions, financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 
 const PAGE_SIZE = 50;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -95,8 +95,9 @@ function toQuery(filters: Filters): Omit<JournalListQuery, "limit" | "cursor"> {
   };
 }
 
+/** True when a toolbar filter is set (the centre comes from the header «Ámbito», not from a filter). */
 function hasFilters(filters: Filters): boolean {
-  return Object.values(filters).some((value) => value !== "");
+  return Object.entries(filters).some(([key, value]) => key !== "propertyId" && value !== "");
 }
 
 // Secondary line under a cell (documento, cuenta): caption secondary.
@@ -222,7 +223,9 @@ function draftToInput(draft: ManualDraft): ManualJournalEntryInput {
     entryDate: draft.entryDate,
     description: draft.description.trim(),
     ...(draft.reference.trim() ? { reference: draft.reference.trim() } : {}),
-    ...(draft.propertyId ? { propertyId: draft.propertyId } : {}),
+    // Tanda 6b (R4): a manual entry without a work centre is a society-level entry
+    // (`societyLevel`), otherwise lines of groups 6/7 answer 400 WORK_CENTER_REQUIRED.
+    ...(draft.propertyId ? { propertyId: draft.propertyId } : { societyLevel: true }),
     lines
   };
 }
@@ -243,7 +246,10 @@ export function JournalScreen() {
   const session = useMemo(() => getUser(), []);
   const canPost = canDo(gate, "accounting.journal.post");
   const canReverse = canPost && canDo(gate, "ai.high_risk.confirm");
-  const scopeOptions = usePropertyScopeOptions();
+  // Tanda 6b · L7: ONE «Ámbito» (sociedad by default, a centre as filter) in the header; the
+  // «Propiedad» filter of the toolbar is gone — the scope feeds `filters.propertyId`.
+  const finance = useFinanceScope(financeScopePolicy("JournalScreen"));
+  const centreOptions = useMemo(() => centreSelectOptions(finance.structure, finance.active, { societyLevel: true }), [finance.structure, finance.active]);
 
   // ---- filters + list -------------------------------------------------------
   const [filters, setFilters] = useState<Filters>(() => ({ ...EMPTY_FILTERS, accountCode: readQueryParam("cuenta") ?? "" }));
@@ -275,6 +281,11 @@ export function JournalScreen() {
         if (seq === requestSeq.current) setLoading(false);
       });
   }, []);
+
+  // The scope is the centre filter of the list (`propertyId` = centre, nothing = the whole sociedad).
+  useEffect(() => {
+    setFilters((current) => (current.propertyId === (finance.propertyId ?? "") ? current : { ...current, propertyId: finance.propertyId ?? "" }));
+  }, [finance.propertyId]);
 
   useEffect(() => {
     if (debounce.current) clearTimeout(debounce.current);
@@ -525,11 +536,12 @@ export function JournalScreen() {
 
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
-      subtitle="Libro diario de la organización: cada asiento con su número, fecha contable, origen y estado. Nada se borra: una anulación es otro asiento."
+      subtitle="Libro diario de la sociedad: cada asiento con su número, fecha contable, origen, centro de trabajo y estado. Nada se borra: una anulación es otro asiento."
       actions={
         <>
+          <FinanceScopeSelector scope={finance} />
           <CocoaButton variant="bordered" tone="neutral" size="small" icon={<DownloadIcon size={14} aria-hidden="true" />} loading={exporting} onClick={() => void exportCsv()}>
             Exportar CSV
           </CocoaButton>
@@ -568,16 +580,13 @@ export function JournalScreen() {
             <CocoaField label="Cuenta">
               <CocoaInput value={filters.accountCode} onChange={(value) => setFilter("accountCode", value)} suggestions={accountSuggestions} placeholder="4300" size="small" inputMode="decimal" aria-label="Filtrar por código de cuenta" />
             </CocoaField>
-            <CocoaField label="Propiedad">
-              <CocoaSelect value={filters.propertyId} onChange={(value) => setFilter("propertyId", value)} options={scopeOptions} size="small" aria-label="Filtrar por propiedad" />
-            </CocoaField>
           </div>
         }
         rightSlot={
           <div className="cocoa-row" data-gap="2">
             <CocoaSearchInput value={filters.q} onChange={(value) => setFilter("q", value)} placeholder="Concepto, documento o referencia…" aria-label="Buscar en concepto, documento o referencia" />
             {filtered ? (
-              <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setFilters(EMPTY_FILTERS)}>
+              <CocoaButton variant="plain" tone="neutral" size="small" onClick={() => setFilters({ ...EMPTY_FILTERS, propertyId: finance.propertyId ?? "" })}>
                 {ACTIONS.clearFilters}
               </CocoaButton>
             ) : null}
@@ -622,7 +631,7 @@ export function JournalScreen() {
               <CocoaStat label="Importe" value={money(selected.totalDebit, selected.currencyCode)} size="large" />
               <CocoaStat label="Estado" value={<CocoaBadge tone={entryStatusBadge(selected).tone}>{entryStatusBadge(selected).label}</CocoaBadge>} tabular={false} />
               <CocoaStat label="Documento" value={selected.reference ?? "—"} tabular={false} />
-              <CocoaStat label="Propiedad" value={scopeLabel(scopeOptions, selected.propertyId)} tabular={false} />
+              <CocoaStat label="Centro de trabajo" value={centreNameFor(finance.structure, selected.propertyId)} tabular={false} />
               {selected.postedAt ? <CocoaStat label="Contabilizado" value={date(selected.postedAt, "short")} hint={actorHint(selected.createdBy, session)} /> : null}
             </div>
             <p className="cocoa-caption">{selected.description ?? "Sin concepto"}</p>
@@ -704,8 +713,8 @@ export function JournalScreen() {
             <CocoaField label="Fecha contable" required help="Fija el ejercicio y el periodo del asiento.">
               <CocoaDatePicker value={draft.entryDate} onChange={(value) => setDraft((current) => ({ ...current, entryDate: value }))} />
             </CocoaField>
-            <CocoaField label="Propiedad" help="Sin propiedad, el asiento es de toda la organización.">
-              <CocoaSelect value={draft.propertyId} onChange={(value) => setDraft((current) => ({ ...current, propertyId: value }))} options={scopeOptions} />
+            <CocoaField label="Centro de trabajo" help={`Los gastos e ingresos (grupos 6 y 7) llevan siempre un hotel o la oficina central; «${SOCIETY_NO_CENTRE_LABEL}» solo para asientos de la propia sociedad.`}>
+              <CocoaSelect value={draft.propertyId} onChange={(value) => setDraft((current) => ({ ...current, propertyId: value }))} options={centreOptions} />
             </CocoaField>
             <CocoaField label="Concepto" required fullWidth>
               <CocoaInput value={draft.description} onChange={(value) => setDraft((current) => ({ ...current, description: value }))} placeholder="Reclasificación de clientes 430 a 4300" maxLength={500} />

@@ -25,6 +25,8 @@ import { ACTIONS, STATUS_LABELS } from "../../content/actions";
 import { number, plural } from "../../lib/format";
 import { PlusIcon } from "../../components/cocoa-icons/ActionIcons";
 import { treeHeaderFor } from "../tabs/tab-helpers";
+import { FinanceScopeSelector } from "../../components/finance/FinanceScopeSelector";
+import { financeScopePolicy, useFinanceScope } from "../../services/financeScope";
 import {
   CocoaBadge,
   CocoaButton,
@@ -125,6 +127,8 @@ function draftOf(account: ChartAccountView): Draft {
 export function ChartOfAccountsScreen() {
   const header = treeHeaderFor("ChartOfAccountsScreen", { eyebrow: "Finanzas · Contabilidad", title: "Plan de cuentas" });
   const { showToast } = useToast();
+  // Tanda 6b · L7: one chart per sociedad (R1) — forced scope, painted disabled in a multi-centre sociedad.
+  const finance = useFinanceScope(financeScopePolicy("ChartOfAccountsScreen"));
   const gate = useNavGate();
   const canConfigure = canDo(gate, "accounting.configure");
 
@@ -344,15 +348,18 @@ export function ChartOfAccountsScreen() {
 
   return (
     <CocoaPage
-      eyebrow={header.eyebrow}
+      eyebrow={finance.eyebrow("Finanzas")}
       title={header.title}
-      subtitle="Cuentas del PGC de Pymes con las subcuentas hoteleras: solo las imputables admiten apuntes; cada cuenta de resultados lleva su departamento y línea USALI."
+      subtitle="Cuentas del PGC de Pymes con las subcuentas hoteleras, un solo plan para toda la sociedad: solo las imputables admiten apuntes; cada cuenta de resultados lleva su departamento y línea USALI."
       actions={
-        canConfigure ? (
-          <CocoaButton variant="filled" tone="accent" size="small" icon={<PlusIcon size={14} aria-hidden="true" />} onClick={openCreate} disabled={loading || !!error}>
-            Nueva cuenta
-          </CocoaButton>
-        ) : undefined
+        <>
+          <FinanceScopeSelector scope={finance} />
+          {canConfigure ? (
+            <CocoaButton variant="filled" tone="accent" size="small" icon={<PlusIcon size={14} aria-hidden="true" />} onClick={openCreate} disabled={loading || !!error}>
+              Nueva cuenta
+            </CocoaButton>
+          ) : null}
+        </>
       }
       commands={[
         ...(canConfigure ? [{ id: "chart-new-account", label: "Nueva cuenta del plan", run: openCreate }] : []),

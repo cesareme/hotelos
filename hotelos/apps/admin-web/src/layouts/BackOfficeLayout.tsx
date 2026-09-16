@@ -39,6 +39,7 @@ import {
 import { useCocoaNotifications } from "../providers/CocoaGlobalProvider";
 import { openHelpCenter } from "../components/guide/guideStore";
 import { fetchPropertyReadiness, type PropertyReadiness } from "../services/billingApi";
+import { PROPERTY_KIND_LABELS, type StructuredPropertyRow } from "../services/financeScope";
 
 // Feature flag: keep the legacy chrome reachable in case the migrated shell
 // breaks a specific workflow. Flip to false to fall back to TopBar + Sidebar.
@@ -276,6 +277,13 @@ function PropertySwitcher({ compact = false }: { compact?: boolean }) {
     setActiveProperty(next);
   }
 
+  // Tanda 6b · L7 (design §5.3): the rows carry `kind`, `code` and `legalEntityName`
+  // (additive columns of GET /users/me/properties): the list is grouped by sociedad
+  // and, inside it, «Hoteles» first and «Centros no alojativos» (oficina central,
+  // otros) after. A single group with hotels only paints no headings.
+  const groups = groupSwitchableProperties(properties as StructuredPropertyRow[]);
+  const showHeadings = groups.length > 1 || groups.some((group) => group.nonOperational.length > 0);
+
   return (
     <div
       ref={wrapRef}
@@ -314,38 +322,102 @@ function PropertySwitcher({ compact = false }: { compact?: boolean }) {
           {!loading && !error && properties.length === 0 ? (
             <div style={{ padding: 8, color: "var(--cocoa-label-secondary)" }}>Sin propiedades</div>
           ) : null}
-          {properties.map((property) => {
-            const selected = property.id === active.propertyId;
-            const location = [property.municipality, property.province].filter(Boolean).join(", ");
-            return (
-              <button
-                key={property.id}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                className="cocoa-menu-item cocoa-focus-ring"
-                onClick={() => choose(property)}
-                style={{
-                  ...menuItemStyle,
-                  flexDirection: "column",
-                  alignItems: "flex-start",
-                  gap: 2,
-                  background: selected ? "var(--cocoa-accent-bg)" : "transparent",
-                  color: selected ? "var(--cocoa-tone-accent-text)" : "var(--cocoa-label)"
-                }}
-              >
-                <span style={{ fontWeight: 600 }}>{property.name}</span>
-                <span style={{ fontSize: "var(--cocoa-fs-caption)", color: selected ? "inherit" : "var(--cocoa-label-secondary)" }}>
-                  {property.organizationName ?? property.organizationId}
-                  {location ? ` · ${location}` : ""}
-                </span>
-              </button>
-            );
-          })}
+          {groups.map((group) => (
+            <div key={group.key} role="presentation">
+              {showHeadings ? (
+                <div role="presentation" style={switcherGroupHeadingStyle}>
+                  {group.label}
+                </div>
+              ) : null}
+              {(
+                [
+                  { heading: "Hoteles", rows: group.hotels },
+                  { heading: "Centros no alojativos", rows: group.nonOperational }
+                ] as const
+              ).map((section) =>
+                section.rows.length === 0 ? null : (
+                  <div key={section.heading} role="presentation">
+                    {showHeadings && group.nonOperational.length > 0 ? (
+                      <div role="presentation" style={switcherSectionHeadingStyle}>
+                        {section.heading}
+                      </div>
+                    ) : null}
+                    {section.rows.map((property) => {
+                      const selected = property.id === active.propertyId;
+                      const location = [property.municipality, property.province].filter(Boolean).join(", ");
+                      const kind = property.kind ?? "hotel";
+                      return (
+                        <button
+                          key={property.id}
+                          type="button"
+                          role="option"
+                          aria-selected={selected}
+                          className="cocoa-menu-item cocoa-focus-ring"
+                          onClick={() => choose(property)}
+                          style={{
+                            ...menuItemStyle,
+                            flexDirection: "column",
+                            alignItems: "flex-start",
+                            gap: 2,
+                            background: selected ? "var(--cocoa-accent-bg)" : "transparent",
+                            color: selected ? "var(--cocoa-tone-accent-text)" : "var(--cocoa-label)"
+                          }}
+                        >
+                          <span style={{ fontWeight: 600 }}>
+                            {property.name}
+                            {property.code ? ` (${property.code})` : ""}
+                          </span>
+                          <span style={{ fontSize: "var(--cocoa-fs-caption)", color: selected ? "inherit" : "var(--cocoa-label-secondary)" }}>
+                            {kind !== "hotel" ? `${PROPERTY_KIND_LABELS[kind]} · ` : ""}
+                            {property.legalEntityName ?? property.organizationName ?? property.organizationId}
+                            {location ? ` · ${location}` : ""}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )
+              )}
+            </div>
+          ))}
         </div>
       ) : null}
     </div>
   );
+}
+
+// Group headings of the switcher (sociedad · «Hoteles» / «Centros no alojativos»): caption secondary, uppercase.
+const switcherGroupHeadingStyle: CSSProperties = {
+  padding: "6px 8px 2px",
+  fontSize: "var(--cocoa-fs-caption)",
+  fontWeight: 600,
+  letterSpacing: "var(--cocoa-tracking-wide)",
+  textTransform: "uppercase",
+  color: "var(--cocoa-label-secondary)"
+};
+const switcherSectionHeadingStyle: CSSProperties = { padding: "4px 8px 2px", fontSize: "var(--cocoa-fs-caption)", color: "var(--cocoa-label-tertiary)" };
+
+export type SwitcherGroup = { key: string; label: string; hotels: StructuredPropertyRow[]; nonOperational: StructuredPropertyRow[] };
+
+/**
+ * Pure: switcher rows grouped by sociedad (razón social; the organization name for
+ * rows without one) with the hotels first and the non-operational centres
+ * (oficina central, otros) after. Order of the groups = order of first appearance.
+ */
+export function groupSwitchableProperties(rows: readonly StructuredPropertyRow[]): SwitcherGroup[] {
+  const groups = new Map<string, SwitcherGroup>();
+  for (const row of rows) {
+    const key = row.legalEntityId ?? row.organizationId;
+    const label = row.legalEntityName ?? row.organizationName ?? row.organizationId;
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, label, hotels: [], nonOperational: [] };
+      groups.set(key, group);
+    }
+    if ((row.kind ?? "hotel") === "hotel") group.hotels.push(row);
+    else group.nonOperational.push(row);
+  }
+  return [...groups.values()];
 }
 
 /** Short label of each theme preference (toolbar toggle and the compact user menu). */
@@ -408,6 +480,55 @@ function ThemeToggle() {
         {THEME_SHORT_LABELS[theme]}
       </CocoaButton>
     </span>
+  );
+}
+
+// --- Office centre banner (Tanda 6b · L7) --------------------------------------
+// Shown while the active centre is the oficina central (or another non-hotel
+// centre, design §5.2 R6): no rooms, no reception, no night audit — Finanzas y
+// Cumplimiento are the screens that work there. Reads the same memoized list as
+// the switcher (`kind` is an additive column of GET /users/me/properties).
+
+/** Pure decision used by the banner (and its tests): the active row exists and is not a hotel. */
+export function isNonOperationalCentre(rows: readonly StructuredPropertyRow[], propertyId: string): StructuredPropertyRow | null {
+  const row = rows.find((candidate) => candidate.id === propertyId);
+  return row && row.kind && row.kind !== "hotel" ? row : null;
+}
+
+function OfficeCentreBanner(props: { onOpenFinance: () => void }) {
+  const active = getActiveProperty();
+  const [row, setRow] = useState<StructuredPropertyRow | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadSwitchableProperties()
+      .then((list) => {
+        if (!cancelled) setRow(isNonOperationalCentre(list as StructuredPropertyRow[], active.propertyId));
+      })
+      .catch(() => {
+        // No list (network, 403): no banner — never nag about something we cannot verify.
+        if (!cancelled) setRow(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active.propertyId]);
+  if (!row) return null;
+  const kind = row.kind ?? "other";
+  return (
+    <div role="region" aria-label="Centro no alojativo activo" style={{ ...shellBannerStyle, background: "var(--cocoa-accent-bg)" }}>
+      <span style={{ minWidth: 0 }}>
+        Estás en <strong>{row.name}</strong>
+        {row.code ? ` (${row.code})` : ""}, un centro de tipo {PROPERTY_KIND_LABELS[kind].toLowerCase()} de {row.legalEntityName ?? row.organizationName ?? "la sociedad"}: sin habitaciones, recepción ni cierre del día. Aquí trabajan Finanzas y Cumplimiento.
+      </span>
+      <div style={{ display: "flex", gap: "var(--cocoa-space-2)", flexShrink: 0 }}>
+        <CocoaButton variant="filled" tone="accent" onClick={props.onOpenFinance}>
+          Abrir Finanzas
+        </CocoaButton>
+        <CocoaButton variant="bordered" tone="neutral" onClick={() => openPropertySwitcher()}>
+          Cambiar de centro
+        </CocoaButton>
+      </div>
+    </div>
   );
 }
 
@@ -955,6 +1076,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
         />
         <TopBar onOpenCommandPalette={() => openPaletteWith("")} onOpenNav={() => setNavOpen(true)} />
         <ActivePropertyInvalidBanner />
+        <OfficeCentreBanner onOpenFinance={() => selectAndClose("FinancePositionDashboard")} />
         <SetupPendingBanner activeScreen={props.activeScreen} />
         <section className="bo-workspace">{props.children}</section>
         <CommandPalette
@@ -1057,6 +1179,7 @@ export function BackOfficeLayout(props: { activeScreen: string; onSelect: (scree
       />
       )}
       <ActivePropertyInvalidBanner />
+      <OfficeCentreBanner onOpenFinance={() => selectAndClose("FinancePositionDashboard")} />
       <SetupPendingBanner activeScreen={props.activeScreen} />
       {compact ? (
         <>

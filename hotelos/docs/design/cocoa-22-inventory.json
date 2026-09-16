@@ -11,44 +11,44 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 216,
-    "lines": 84869,
+    "files": 224,
+    "lines": 88428,
     "boClasses": 1216,
     "boCard": 307,
     "boPageTitle": 15,
     "rawButtons": 203,
-    "cocoaButtons": 820,
+    "cocoaButtons": 836,
     "rawTables": 40,
-    "cocoaTables": 217,
+    "cocoaTables": 224,
     "rawInputs": 158,
-    "cocoaInputs": 830,
-    "inlineStyles": 1833,
+    "cocoaInputs": 892,
+    "inlineStyles": 1832,
     "cocoaCards": 67,
     "colourLiterals": 70,
     "colourFallbacks": 38,
     "rawH1": 15,
     "emoji": 26,
-    "withPageHeader": 167,
-    "withTabHost": 58,
+    "withPageHeader": 173,
+    "withTabHost": 63,
     "debtPoints": 1912
   },
   "bySize": {
-    "S": 92,
-    "M": 96,
-    "L": 25,
+    "S": 94,
+    "M": 101,
+    "L": 26,
     "XL": 3
   },
   "byArchetype": {
-    "dashboard": 89,
-    "lista": 13,
+    "dashboard": 91,
+    "lista": 15,
     "detalle": 3,
-    "formulario": 18,
+    "formulario": 19,
     "asistente": 12,
     "workspace": 6,
     "calendario": 6,
     "chat": 1,
-    "dialogo": 12,
-    "contenedor": 41,
+    "dialogo": 14,
+    "contenedor": 42,
     "otro": 15
   },
   "byCategory": {
@@ -71,48 +71,49 @@
     },
     "compartido": {
       "label": "Compartido / sin entrada de menú",
-      "files": 5,
-      "lines": 629,
+      "files": 7,
+      "lines": 1729,
       "debtPoints": 26,
       "sizes": {
         "S": 5,
-        "M": 0,
+        "M": 2,
         "L": 0,
         "XL": 0
       },
       "archetypes": {
         "formulario": 1,
         "otro": 1,
+        "dialogo": 2,
         "contenedor": 3
       }
     },
     "configuracion": {
       "label": "Configuración",
-      "files": 42,
-      "lines": 14405,
+      "files": 48,
+      "lines": 16432,
       "debtPoints": 1086,
       "sizes": {
-        "S": 17,
-        "M": 20,
-        "L": 5,
+        "S": 20,
+        "M": 22,
+        "L": 6,
         "XL": 0
       },
       "archetypes": {
-        "formulario": 9,
+        "formulario": 10,
         "dialogo": 3,
-        "lista": 5,
+        "lista": 7,
         "detalle": 2,
-        "dashboard": 7,
+        "dashboard": 9,
         "otro": 1,
         "asistente": 3,
         "workspace": 2,
-        "contenedor": 10
+        "contenedor": 11
       }
     },
     "cumplimiento": {
       "label": "Cumplimiento",
       "files": 29,
-      "lines": 7232,
+      "lines": 7273,
       "debtPoints": 604,
       "sizes": {
         "S": 15,
@@ -147,11 +148,11 @@
     "finanzas": {
       "label": "Finanzas",
       "files": 33,
-      "lines": 16834,
+      "lines": 17217,
       "debtPoints": 36,
       "sizes": {
-        "S": 10,
-        "M": 15,
+        "S": 9,
+        "M": 16,
         "L": 8,
         "XL": 0
       },
@@ -202,7 +203,7 @@
     "operaciones": {
       "label": "Operaciones",
       "files": 27,
-      "lines": 10961,
+      "lines": 10969,
       "debtPoints": 38,
       "sizes": {
         "S": 9,
@@ -288,9 +289,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 429,
+      "lines": 433,
       "metrics": {
-        "lines": 429,
+        "lines": 433,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -327,9 +328,9 @@
         "finanzas"
       ],
       "archetype": "formulario",
-      "lines": 473,
+      "lines": 480,
       "metrics": {
-        "lines": 473,
+        "lines": 480,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -366,9 +367,9 @@
         "finanzas"
       ],
       "archetype": "lista",
-      "lines": 322,
+      "lines": 328,
       "metrics": {
-        "lines": 322,
+        "lines": 328,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -405,9 +406,9 @@
         "finanzas"
       ],
       "archetype": "formulario",
-      "lines": 855,
+      "lines": 864,
       "metrics": {
-        "lines": 855,
+        "lines": 864,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -416,7 +417,7 @@
         "rawTables": 0,
         "cocoaTables": 3,
         "rawInputs": 0,
-        "cocoaInputs": 17,
+        "cocoaInputs": 16,
         "inlineStyles": 4,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -444,9 +445,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 343,
+      "lines": 347,
       "metrics": {
-        "lines": 343,
+        "lines": 347,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -455,7 +456,7 @@
         "rawTables": 0,
         "cocoaTables": 2,
         "rawInputs": 0,
-        "cocoaInputs": 5,
+        "cocoaInputs": 4,
         "inlineStyles": 2,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -748,9 +749,9 @@
       "category": "configuracion",
       "categories": [],
       "archetype": "dialogo",
-      "lines": 571,
+      "lines": 619,
       "metrics": {
-        "lines": 571,
+        "lines": 619,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -759,8 +760,8 @@
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 1,
-        "cocoaInputs": 12,
-        "inlineStyles": 47,
+        "cocoaInputs": 18,
+        "inlineStyles": 41,
         "cocoaCards": 0,
         "colourLiterals": 8,
         "colourFallbacks": 0,
@@ -773,7 +774,7 @@
         "emoji": 0
       },
       "headerExempt": true,
-      "debtPoints": 21,
+      "debtPoints": 19,
       "size": "M"
     },
     {
@@ -901,18 +902,18 @@
         "configuracion"
       ],
       "archetype": "detalle",
-      "lines": 773,
+      "lines": 903,
       "metrics": {
-        "lines": 773,
+        "lines": 903,
         "boClasses": 5,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 10,
+        "cocoaButtons": 11,
         "rawTables": 0,
         "cocoaTables": 3,
         "rawInputs": 0,
-        "cocoaInputs": 3,
+        "cocoaInputs": 4,
         "inlineStyles": 74,
         "cocoaCards": 13,
         "colourLiterals": 0,
@@ -927,7 +928,7 @@
       },
       "headerExempt": false,
       "debtPoints": 21,
-      "size": "M"
+      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/admin/TouristTaxScreen.tsx",
@@ -1665,9 +1666,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 788,
+      "lines": 792,
       "metrics": {
-        "lines": 788,
+        "lines": 792,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1704,9 +1705,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 957,
+      "lines": 961,
       "metrics": {
-        "lines": 957,
+        "lines": 961,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1743,9 +1744,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 1312,
+      "lines": 1336,
       "metrics": {
-        "lines": 1312,
+        "lines": 1336,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1938,9 +1939,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 669,
+      "lines": 672,
       "metrics": {
-        "lines": 669,
+        "lines": 672,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2593,9 +2594,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 1129,
+      "lines": 1116,
       "metrics": {
-        "lines": 1129,
+        "lines": 1116,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2604,7 +2605,7 @@
         "rawTables": 0,
         "cocoaTables": 6,
         "rawInputs": 0,
-        "cocoaInputs": 8,
+        "cocoaInputs": 7,
         "inlineStyles": 0,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -2632,9 +2633,9 @@
         "finanzas"
       ],
       "archetype": "dialogo",
-      "lines": 318,
+      "lines": 326,
       "metrics": {
-        "lines": 318,
+        "lines": 326,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2643,7 +2644,7 @@
         "rawTables": 0,
         "cocoaTables": 3,
         "rawInputs": 0,
-        "cocoaInputs": 7,
+        "cocoaInputs": 6,
         "inlineStyles": 2,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -2671,9 +2672,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 283,
+      "lines": 288,
       "metrics": {
-        "lines": 283,
+        "lines": 288,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2749,18 +2750,18 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 251,
+      "lines": 443,
       "metrics": {
-        "lines": 251,
+        "lines": 443,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
         "cocoaButtons": 2,
         "rawTables": 0,
-        "cocoaTables": 2,
+        "cocoaTables": 3,
         "rawInputs": 0,
-        "cocoaInputs": 7,
+        "cocoaInputs": 8,
         "inlineStyles": 1,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -2775,7 +2776,7 @@
       },
       "headerExempt": false,
       "debtPoints": 0,
-      "size": "S"
+      "size": "M"
     },
     {
       "path": "apps/admin-web/src/screens/finance/TrialBalanceScreen.tsx",
@@ -2799,7 +2800,7 @@
         "rawTables": 0,
         "cocoaTables": 1,
         "rawInputs": 0,
-        "cocoaInputs": 4,
+        "cocoaInputs": 3,
         "inlineStyles": 2,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -2827,16 +2828,16 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 1311,
+      "lines": 1380,
       "metrics": {
-        "lines": 1311,
+        "lines": 1380,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
         "cocoaButtons": 14,
         "rawTables": 0,
-        "cocoaTables": 8,
+        "cocoaTables": 10,
         "rawInputs": 0,
         "cocoaInputs": 13,
         "inlineStyles": 0,
@@ -2866,9 +2867,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 457,
+      "lines": 465,
       "metrics": {
-        "lines": 457,
+        "lines": 465,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -2975,9 +2976,9 @@
       "category": "cumplimiento",
       "categories": [],
       "archetype": "dashboard",
-      "lines": 495,
+      "lines": 515,
       "metrics": {
-        "lines": 495,
+        "lines": 515,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -3361,9 +3362,9 @@
         "cumplimiento"
       ],
       "archetype": "dashboard",
-      "lines": 403,
+      "lines": 415,
       "metrics": {
-        "lines": 403,
+        "lines": 415,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -3400,9 +3401,9 @@
         "cumplimiento"
       ],
       "archetype": "dashboard",
-      "lines": 405,
+      "lines": 414,
       "metrics": {
-        "lines": 405,
+        "lines": 414,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -4363,9 +4364,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 583,
+      "lines": 599,
       "metrics": {
-        "lines": 583,
+        "lines": 599,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5809,9 +5810,9 @@
         "finanzas"
       ],
       "archetype": "formulario",
-      "lines": 627,
+      "lines": 634,
       "metrics": {
-        "lines": 627,
+        "lines": 634,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5848,9 +5849,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 971,
+      "lines": 978,
       "metrics": {
-        "lines": 971,
+        "lines": 978,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5887,9 +5888,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 943,
+      "lines": 951,
       "metrics": {
-        "lines": 943,
+        "lines": 951,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -5926,9 +5927,9 @@
         "finanzas"
       ],
       "archetype": "formulario",
-      "lines": 459,
+      "lines": 462,
       "metrics": {
-        "lines": 459,
+        "lines": 462,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6004,9 +6005,9 @@
         "finanzas"
       ],
       "archetype": "dashboard",
-      "lines": 815,
+      "lines": 823,
       "metrics": {
-        "lines": 815,
+        "lines": 823,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6043,9 +6044,9 @@
         "operaciones"
       ],
       "archetype": "asistente",
-      "lines": 880,
+      "lines": 888,
       "metrics": {
-        "lines": 880,
+        "lines": 888,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6170,14 +6171,14 @@
         "operaciones"
       ],
       "archetype": "formulario",
-      "lines": 847,
+      "lines": 910,
       "metrics": {
-        "lines": 847,
+        "lines": 910,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
         "rawButtons": 0,
-        "cocoaButtons": 3,
+        "cocoaButtons": 5,
         "rawTables": 0,
         "cocoaTables": 0,
         "rawInputs": 0,
@@ -6860,6 +6861,271 @@
       "size": "S"
     },
     {
+      "path": "apps/admin-web/src/screens/structure/AddPropertyDrawer.tsx",
+      "name": "AddPropertyDrawer",
+      "screenKeys": [],
+      "category": "compartido",
+      "categories": [],
+      "archetype": "dialogo",
+      "lines": 684,
+      "metrics": {
+        "lines": 684,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 5,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 19,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/structure/AllocationTab.tsx",
+      "name": "AllocationTab",
+      "screenKeys": [
+        "StructureAllocationTab"
+      ],
+      "category": "configuracion",
+      "categories": [
+        "configuracion"
+      ],
+      "archetype": "lista",
+      "lines": 290,
+      "metrics": {
+        "lines": 290,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 1,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 2,
+        "inlineStyles": 1,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/structure/PropertiesTable.tsx",
+      "name": "PropertiesTable",
+      "screenKeys": [
+        "StructurePropertiesTab"
+      ],
+      "category": "configuracion",
+      "categories": [
+        "configuracion"
+      ],
+      "archetype": "dashboard",
+      "lines": 139,
+      "metrics": {
+        "lines": 139,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 0,
+        "rawTables": 0,
+        "cocoaTables": 1,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 2,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 1,
+      "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/structure/PropertyDrawer.tsx",
+      "name": "PropertyDrawer",
+      "screenKeys": [],
+      "category": "compartido",
+      "categories": [],
+      "archetype": "dialogo",
+      "lines": 356,
+      "metrics": {
+        "lines": 356,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 3,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 13,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": false,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/structure/SeriesAndInstallationsTab.tsx",
+      "name": "SeriesAndInstallationsTab",
+      "screenKeys": [
+        "StructureSeriesTab"
+      ],
+      "category": "configuracion",
+      "categories": [
+        "configuracion"
+      ],
+      "archetype": "lista",
+      "lines": 306,
+      "metrics": {
+        "lines": 306,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 2,
+        "rawTables": 0,
+        "cocoaTables": 2,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 2,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 1,
+      "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/structure/StructureScreen.tsx",
+      "name": "StructureScreen",
+      "screenKeys": [
+        "StructureScreen"
+      ],
+      "category": "configuracion",
+      "categories": [
+        "configuracion"
+      ],
+      "archetype": "formulario",
+      "lines": 622,
+      "metrics": {
+        "lines": 622,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 2,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 17,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/structure/VatAndFiscalYearTab.tsx",
+      "name": "VatAndFiscalYearTab",
+      "screenKeys": [
+        "StructureVatTab"
+      ],
+      "category": "configuracion",
+      "categories": [
+        "configuracion"
+      ],
+      "archetype": "dashboard",
+      "lines": 395,
+      "metrics": {
+        "lines": 395,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 0,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 8,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "M"
+    },
+    {
       "path": "apps/admin-web/src/screens/tabs/comercial/CanalesTabs.tsx",
       "name": "CanalesTabs",
       "screenKeys": [],
@@ -7044,6 +7310,41 @@
       "lines": 30,
       "metrics": {
         "lines": 30,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 0,
+        "rawTables": 0,
+        "cocoaTables": 0,
+        "rawInputs": 0,
+        "cocoaInputs": 0,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "usesGmGrid": false,
+        "emoji": 0
+      },
+      "headerExempt": true,
+      "debtPoints": 0,
+      "size": "S"
+    },
+    {
+      "path": "apps/admin-web/src/screens/tabs/configuracion/EstructuraSocietariaTabs.tsx",
+      "name": "EstructuraSocietariaTabs",
+      "screenKeys": [],
+      "category": "configuracion",
+      "categories": [],
+      "archetype": "contenedor",
+      "lines": 34,
+      "metrics": {
+        "lines": 34,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -7846,9 +8147,9 @@
       "category": "compartido",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 116,
+      "lines": 123,
       "metrics": {
-        "lines": 116,
+        "lines": 123,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -8231,9 +8532,9 @@
       "category": "compartido",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 140,
+      "lines": 164,
       "metrics": {
-        "lines": 140,
+        "lines": 164,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -8266,9 +8567,9 @@
       "category": "compartido",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 62,
+      "lines": 91,
       "metrics": {
-        "lines": 62,
+        "lines": 91,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
