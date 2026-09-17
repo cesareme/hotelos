@@ -57,6 +57,11 @@ export const SOURCE_TYPE_LABELS: Readonly<Record<string, string>> = Object.freez
   payroll_slip: "Nómina",
   payroll_payment: "Pago de nómina",
   payroll_cost_import: "Coste de personal importado",
+  // Tanda 7b: ingresos diarios de OPERA Cloud en modo sombra (un asiento por hotel y fecha de negocio).
+  pms_shadow_revenue: "Ingresos diarios de OPERA",
+  // Tanda 7c: diario y saldos importados desde Sage 200 (Finanzas › Contabilidad › Importar desde Sage 200).
+  sage200_journal: "Diario importado de Sage 200",
+  sage200_balance: "Saldos importados de Sage 200",
   commission: "Comisión",
   commission_settlement: "Liquidación de comisión",
   depreciation: "Amortización",

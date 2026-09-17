@@ -107,6 +107,13 @@ enum PayrollCostImportStatus {
   reversed
 }
 
+/// Lote de importación contable desde Sage 200 (Tanda 7c): draft → posted (asientos / filas de libros) → reversed (reverso completo del lote).
+enum LedgerImportStatus {
+  draft
+  posted
+  reversed
+}
+
 /// Lote de importación masiva de reservas (Tanda 7): processing (lote creado, filas en curso: «Interrumpida» si el proceso murió; deshacible) · imported (todas las filas válidas creadas) · partial (alguna fila omitida o con error en el alta) · failed (ninguna reserva creada) · undone (reservas del lote canceladas por «deshacer»).
 enum ReservationImportStatus {
   /// Lote creado antes de la primera reserva; filas en curso. Si el proceso muere queda así («Interrumpida») y sigue siendo deshacible.
@@ -140,6 +147,8 @@ enum VatBookSourceType {
   simplified
   supplier_bill
   expense
+  /// Tanda 7c: fila de los libros de IVA importada desde Sage 200 (lote vat_books; sourceId <empresa>:<ejercicio>:<serie>:<factura>[:R]). rebuildVatBooks la conserva.
+  sage200
 }
 
 enum VatPeriodicity {
@@ -3639,7 +3648,8 @@ model Account {
 
 /// Asiento del libro diario. `sourceType` (String, contrato en docs/runbooks/finanzas-contabilidad.md): folio_line · payment ·
 /// payment_refund · invoice · invoice_rectification · invoice_cancellation · pos_ticket · supplier_bill · supplier_bill_payment ·
-/// expense · payroll_slip · payroll_payment · payroll_cost_import · commission · depreciation · vat_settlement · cash_closure ·
+/// expense · payroll_slip · payroll_payment · payroll_cost_import · sage200_journal · sage200_balance (Tanda 7c: diario y saldos
+/// importados de Sage 200) · commission · depreciation · vat_settlement · cash_closure ·
 /// card_settlement · tourist_tax · manual · regularization · closing · opening · reversal. (Sigue siendo texto: los escritores heredados lo tipan como string.)
 model JournalEntry {
   id             String        @id @default(cuid())
@@ -6119,4 +6129,226 @@ model PmsShadowAlert {
   @@index([propertyId, resolvedAt, businessDate])
   @@index([propertyId, code, createdAt])
   @@map("pms_shadow_alerts")
+}
+
+// ============================================================================
+// Importación contable desde Sage 200 (Tanda 7c)
+// ============================================================================
+// Diseño: docs/design/FINANZAS-IMPORTACION-SAGE200.md §4.2. Modelo ADITIVO: ninguna columna nueva en JournalEntry ni
+// JournalLine; los asientos importados son asientos normales del motor (sourceType sage200_journal / sage200_balance) y los
+// lotes solo guardan sus ids. Catálogos de texto en packages/shared/src/ledger-import-types.ts. Sin FK a properties,
+// suppliers ni journal_entries (misma convención que payroll_cost_imports y pms_shadow_revenue_imports).
+
+/// Lote de importación contable desde Sage 200 (un fichero de un tipo: plan · fiscal_years · journal · vat_books · third_parties · balances), identificado por el sha256 de las filas normalizadas tras el mapeo. draft (previsualizado, nada escrito) → posted (asientos contabilizados por postJournalEntry / filas de libros / cuentas / ejercicios) → reversed (asientos revertidos; `replacedById` si lo sustituyó otro lote). Patrón de la Tanda 6c.
+model LedgerImport {
+  id                      String             @id @default(cuid())
+  organizationId          String             @map("organization_id")
+  /// Sociedad (LegalEntity) resuelta por resolveLedgerScope al crear el lote; null si la organización aún no tiene sociedad.
+  legalEntityId           String?            @map("legal_entity_id")
+  /// Sistema de origen: sage200 (LEDGER_IMPORT_SYSTEMS; extensible a contaplus / a3). Sin DEFAULT en BD: lo escribe siempre el servicio.
+  system                  String
+  /// plan · fiscal_years · journal · vat_books · third_parties · balances (LEDGER_IMPORT_KINDS).
+  kind                    String
+  /// sage_excel · sage_ime_csv · sage_xml · canonical_csv · canonical_json (LEDGER_IMPORT_FORMATS).
+  format                  String
+  fileName                String?            @map("file_name")
+  /// sha256 hex del JSON canónico de las filas normalizadas tras el mapeo (mismo hash para el Excel y el CSV equivalentes); 409 LEDGER_IMPORT_DUPLICATE mientras exista un lote no revertido con el mismo hash en la organización.
+  contentHash             String             @map("content_hash")
+  /// CodigoEmpresa de Sage.
+  sourceCompanyCode       String?            @map("source_company_code")
+  /// Ejercicio (FiscalYear.code = año natural "YYYY") al que pertenece el lote.
+  fiscalYearCode          String?            @map("fiscal_year_code")
+  /// Rango de meses cubierto, "YYYY-MM" (solapes: LEDGER_IMPORT_OVERLAP).
+  periodFrom              String?            @map("period_from")
+  periodTo                String?            @map("period_to")
+  status                  LedgerImportStatus @default(draft)
+  /// Filas leídas del fichero, asientos producidos, asientos omitidos (nativos, ya existentes) y avisos.
+  rowCount                Int                @default(0) @map("row_count")
+  entryCount              Int                @default(0) @map("entry_count")
+  skippedCount            Int                @default(0) @map("skipped_count")
+  warningCount            Int                @default(0) @map("warning_count")
+  /// { accounts, analytics, options } aplicado al lote (LedgerImportMappingInput + opciones), para reproducirlo y auditarlo.
+  mappingJson             Json               @default("{}") @map("mapping_json")
+  /// Avisos del lote en español, [] si ninguno.
+  warningsJson            Json               @default("[]") @map("warnings_json")
+  /// Σ debe / Σ haber de los asientos contabilizados (cuadran por construcción).
+  totalDebit              Decimal            @default(0) @db.Decimal(14, 2) @map("total_debit")
+  totalCredit             Decimal            @default(0) @db.Decimal(14, 2) @map("total_credit")
+  /// Asientos del lote y sus reversos (ids de journal_entries).
+  journalEntryIds         String[]           @default([]) @map("journal_entry_ids")
+  reversalJournalEntryIds String[]           @default([]) @map("reversal_journal_entry_ids")
+  /// Lote que sustituyó a este mediante `replace` (reverso + nuevo en la misma transacción).
+  replacedById            String?            @map("replaced_by_id")
+  notes                   String?
+  createdBy               String?            @map("created_by")
+  createdAt               DateTime           @default(now()) @map("created_at")
+  postedAt                DateTime?          @map("posted_at")
+  reversedAt              DateTime?          @map("reversed_at")
+  reversedBy              String?            @map("reversed_by")
+  reversalReason          String?            @map("reversal_reason")
+
+  entries                 LedgerImportEntry[]
+  balances                LedgerImportBalance[]
+
+  @@index([organizationId, kind, status, periodFrom, periodTo])
+  @@index([organizationId, contentHash])
+  @@map("ledger_imports")
+}
+
+/// Un asiento Sage dentro de un lote (una fila por (asiento Sage, centro): un asiento Sage con gasto en varios hoteles produce varias filas y varios asientos Anfitorio). Guarda la clave de idempotencia de Sage (empresa + ejercicio + periodo + asiento [+ canal] [+ centro]), el asiento Anfitorio producido y por qué se omitió si no se produjo.
+model LedgerImportEntry {
+  id                String   @id @default(cuid())
+  importId          String   @map("import_id")
+  organizationId    String   @map("organization_id")
+  /// CodigoEmpresa · Ejercicio · NumeroPeriodo (en Sage el nº de asiento solo es único dentro de un periodo) · Asiento.
+  sourceCompanyCode String   @map("source_company_code")
+  sourceFiscalYear  String   @map("source_fiscal_year")
+  sourcePeriod      String   @map("source_period")
+  sourceEntryNumber String   @map("source_entry_number")
+  /// CodigoCanal o IdDelegacion cuando Sage numera por canal / delegación.
+  sourceChannel     String?  @map("source_channel")
+  entryDate         DateTime @map("entry_date") @db.Date
+  propertyId        String?  @map("property_id")
+  /// Código del centro de trabajo, o "SOC" a nivel sociedad: la unicidad no puede apoyarse en un propertyId NULL (semántica NULL de PostgreSQL).
+  propertyCode      String   @map("property_code")
+  journalEntryId    String?  @map("journal_entry_id")
+  /// draft · posted · skipped_native · skipped_existing · unmapped · unbalanced · error (LEDGER_IMPORT_ENTRY_STATUSES).
+  status            String
+  /// normal · opening · regularization · closing (JOURNAL_ENTRY_KINDS): apertura y cierres de Sage detectados por periodo o por cuenta 129.
+  entryKind         String   @default("normal") @map("entry_kind")
+  lineCount         Int      @map("line_count")
+  debit             Decimal  @db.Decimal(14, 2)
+  credit            Decimal  @db.Decimal(14, 2)
+  /// Asiento nativo de Anfitorio con el que colisiona (skipped_native: factura / cobro propio; skipped_existing: asiento importado antes).
+  sourceType        String?  @map("source_type")
+  sourceId          String?  @map("source_id")
+  warningsJson      Json     @default("[]") @map("warnings_json")
+
+  import            LedgerImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, sourceCompanyCode, sourceFiscalYear, sourcePeriod, sourceEntryNumber, propertyCode])
+  @@index([organizationId, sourceFiscalYear, sourceEntryNumber])
+  @@index([journalEntryId])
+  @@map("ledger_import_entries")
+}
+
+/// Fila del balance de sumas y saldos de Sage (nivel 0) importada por un lote `balances` o adjuntada a una reconciliación: cuenta Sage literal, cuenta PGC mapeada y sumas de apertura / periodo / saldo. Se conserva aunque el lote se revierta (histórico y drawer «Detalle Sage»).
+model LedgerImportBalance {
+  id             String   @id @default(cuid())
+  importId       String   @map("import_id")
+  organizationId String   @map("organization_id")
+  fiscalYearCode String   @map("fiscal_year_code")
+  /// "YYYY-MM" · "YYYY-Qn" · "YYYY" · "apertura".
+  periodCode     String   @map("period_code")
+  propertyId     String?  @map("property_id")
+  /// Código del centro de trabajo o "SOC" si la fila es de sociedad (misma razón que LedgerImportEntry.propertyCode).
+  propertyCode   String   @map("property_code")
+  sourceAccount  String   @map("source_account")
+  sourceName     String?  @map("source_name")
+  /// Cuenta PGC destino tras el mapa de cuentas.
+  accountCode    String   @map("account_code")
+  openingDebit   Decimal  @default(0) @db.Decimal(14, 2) @map("opening_debit")
+  openingCredit  Decimal  @default(0) @db.Decimal(14, 2) @map("opening_credit")
+  periodDebit    Decimal  @default(0) @db.Decimal(14, 2) @map("period_debit")
+  periodCredit   Decimal  @default(0) @db.Decimal(14, 2) @map("period_credit")
+  /// Saldo al cierre del periodo (positivo deudor, negativo acreedor).
+  closingBalance Decimal  @default(0) @db.Decimal(14, 2) @map("closing_balance")
+
+  import         LedgerImport @relation(fields: [importId], references: [id], onDelete: Cascade)
+
+  @@unique([importId, periodCode, propertyCode, sourceAccount])
+  @@index([organizationId, fiscalYearCode, periodCode])
+  @@map("ledger_import_balances")
+}
+
+/// Mapa de cuentas persistente Sage → PGC Pymes hotelero por organización y sistema (§4.4: 7 reglas; la fila explícita gana). Una fila por cuenta Sage literal.
+model LedgerAccountMap {
+  id                String   @id @default(cuid())
+  organizationId    String   @map("organization_id")
+  /// sage200 (LEDGER_IMPORT_SYSTEMS). Sin DEFAULT en BD.
+  system            String
+  /// Código de cuenta Sage literal (5-12 caracteres).
+  sourceAccount     String   @map("source_account")
+  sourceName        String?  @map("source_name")
+  /// map · map_by_rate · create · collapse · block (LEDGER_ACCOUNT_MAP_ACTIONS).
+  action            String
+  /// Cuenta PGC destino (map / create / collapse) o prefijo 472 / 477 (map_by_rate); null solo en block.
+  accountCode       String?  @map("account_code")
+  /// Solo create en grupos 6/7: departamento y línea USALI de la subcuenta nueva.
+  usaliDepartment   String?  @map("usali_department")
+  usaliLine         String?  @map("usali_line")
+  /// collapse: escribe «Sage <cuenta> · <NIF> · <nombre>» en la descripción de la línea.
+  carryCounterparty Boolean  @default(true) @map("carry_counterparty")
+  updatedBy         String?  @map("updated_by")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, system, sourceAccount])
+  @@map("ledger_account_maps")
+}
+
+/// Mapa analítico Sage → centro de trabajo y centro de coste USALI (§4.5): una fila por (dimensión, código Sage). `propertyId` para la dimensión de centro (delegación por defecto), `costCentreCode` (ROOMS · FNB · POM · ADMIN_GENERAL · SALES_MARKETING · OTHER_OPERATED · IT) para la de centro de coste (departamento por defecto).
+model LedgerAnalyticsMap {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  /// sage200 (LEDGER_IMPORT_SYSTEMS). Sin DEFAULT en BD.
+  system         String
+  /// canal · delegacion · departamento · seccion · proyecto (LEDGER_ANALYTICS_DIMENSIONS).
+  dimension      String
+  sourceCode     String   @map("source_code")
+  sourceName     String?  @map("source_name")
+  propertyId     String?  @map("property_id")
+  costCentreCode String?  @map("cost_centre_code")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, system, dimension, sourceCode])
+  @@map("ledger_analytics_maps")
+}
+
+/// Tercero contable de Sage (cliente o proveedor): código, cuenta contable, NIF normalizado, país y razón social. Alimenta el colapso de terceros a 4300 / 400 / 410 (descripción de línea) y el 347; `supplierId` si se dio de alta como Supplier (upsert por NIF). Sin FK a suppliers.
+model LedgerThirdParty {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  /// sage200 (LEDGER_IMPORT_SYSTEMS). Sin DEFAULT en BD.
+  system         String
+  /// CodigoCliente / CodigoProveedor de Sage.
+  sourceCode     String   @map("source_code")
+  /// customer · supplier (LEDGER_THIRD_PARTY_ROLES).
+  role           String
+  /// CodigoContable (subcuenta Sage del tercero).
+  sourceAccount  String?  @map("source_account")
+  taxId          String?  @map("tax_id")
+  countryCode    String   @default("ES") @map("country_code")
+  name           String
+  supplierId     String?  @map("supplier_id")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, system, role, sourceCode])
+  @@index([organizationId, taxId])
+  @@map("ledger_third_parties")
+}
+
+/// Reconciliación del modo sombra contable (§5.2): balance de sumas y saldos de Sage del rango frente a aggregateAccountBalances de Anfitorio por cuenta destino, con tolerancias y clasificación de cada diferencia (amount_diff · native_only · missing_in_ledger · vat_diff). Una fila por ejecución; `importId` si la lanzó un lote `journal` con balance adjunto.
+model LedgerReconciliation {
+  id               String   @id @default(cuid())
+  organizationId   String   @map("organization_id")
+  importId         String?  @map("import_id")
+  periodFrom       DateTime @map("period_from") @db.Date
+  periodTo         DateTime @map("period_to") @db.Date
+  /// Centro comparado; null = consolidado de sociedad.
+  propertyId       String?  @map("property_id")
+  /// sha256 del balance Sage recibido.
+  sourceHash       String   @map("source_hash")
+  /// ok · differences · error (LEDGER_RECONCILIATION_STATUSES).
+  status           String
+  accountsCompared Int      @map("accounts_compared")
+  differenceCount  Int      @map("difference_count")
+  /// LedgerReconciliationRow[] (por cuenta: sourceDebit, sourceCredit, ledgerDebit, ledgerCredit, diffDebit, diffCredit, classification, tolerance).
+  rowsJson         Json     @default("[]") @map("rows_json")
+  /// { nativeOnly, missingInLedger, amountDiff, vatDiff, tolerance, criterion } + asientos Sage no importados.
+  summaryJson      Json     @default("{}") @map("summary_json")
+  createdBy        String?  @map("created_by")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, periodFrom, periodTo, createdAt])
+  @@map("ledger_reconciliations")
 }

@@ -672,6 +672,16 @@ const RESOLVERS = {
   payrollCostImport: byOrganization("Importación de coste de personal no encontrada.", (id) =>
     prisma.payrollCostImport.findUnique({ where: { id }, select: selectOrganization })
   ),
+  // Importación contable desde Sage 200 (Tanda 7c · L3): lote y reconciliación
+  // agregados por organización (GET /accounting/ledger-imports/:id, POST …/:id/post,
+  // POST …/:id/reverse, GET …/reconciliation/:id[/csv]); el ámbito por centro (R11)
+  // sobre los propertyId del lote lo aplica el servicio con assertFinanceReadScopeMany.
+  ledgerImport: byOrganization("Importación contable no encontrada.", (id) =>
+    prisma.ledgerImport.findUnique({ where: { id }, select: selectOrganization })
+  ),
+  ledgerReconciliation: byOrganization("Reconciliación contable no encontrada.", (id) =>
+    prisma.ledgerReconciliation.findUnique({ where: { id }, select: selectOrganization })
+  ),
   developerApp: byOrganization("Aplicación no encontrada.", (id) =>
     prisma.developerApp.findUnique({ where: { id }, select: selectOrganization })
   ),

@@ -270,6 +270,8 @@ export const SEGMENT_LABELS: Record<string, string> = {
   statements: "el extracto",
   "exchange-rates": "el tipo de cambio",
   "cost-imports": "la importación de costes",
+  // Sage 200 (Tanda 7c): lotes de importación contable «/accounting/ledger-imports*».
+  "ledger-imports": "la importación contable",
   imports: "la importación",
   "gestoria-exports": "la exportación para la gestoría",
   formats: "el formato",
@@ -467,6 +469,10 @@ export const SINGLETON_LABELS: Record<string, string> = {
   attachment: "el adjunto",
   photo: "la foto",
   pdf: "el PDF",
+  // Sage 200 (Tanda 7c): «/accounting/ledger-imports/{account-map,analytics-map}» y «…/reconciliation/:id/csv».
+  "account-map": "el mapa de cuentas",
+  "analytics-map": "el mapa analítico",
+  csv: "el CSV",
   "openapi.yaml": "la especificación OpenAPI",
   "api-reference": "la referencia del API",
   evidence: "la evidencia",
@@ -845,6 +851,14 @@ export function describeEndpoint(method: string, path: string): string {
   if (last === "preflight") return "Pre-chequeo de bloqueos antes del cierre del día.";
   if (last === "run") return "Ejecutar el proceso.";
   if (last === "preview") return "Vista previa sin persistir.";
+  // Sage 200 (Tanda 7c): la reconciliación contable no es la conciliación diaria de OPERA.
+  if (last === "reconciliation" && parts[lastIndex - 1] === "ledger-imports") {
+    return verb === "POST" ? "Reconciliar el diario con el balance de sumas y saldos de Sage 200." : "Listar las reconciliaciones contables.";
+  }
+  if (last === "csv" && parts[lastIndex - 2] === "reconciliation") return "Descargar el CSV de la reconciliación contable.";
+  if (isParam(last) && parts[lastIndex - 1] === "reconciliation" && parts[lastIndex - 2] === "ledger-imports") {
+    return "Obtener el detalle de la reconciliación contable.";
+  }
   if (last === "rotate-secret") return "Rotar el secreto OAuth2 de la aplicación de desarrollador.";
   if (last === "install") return "Instalar la aplicación del marketplace en una propiedad.";
   if (last === "uninstall") return "Desinstalar la aplicación del marketplace.";

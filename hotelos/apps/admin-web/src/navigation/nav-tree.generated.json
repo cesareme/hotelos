@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 286,
+      "csvRows": 287,
       "categories": 9,
       "items": 67,
-      "tabs": 100,
+      "tabs": 101,
       "devOnly": 21,
       "retired": 72,
       "aliases": 24,
@@ -1158,6 +1158,17 @@
               "screenKey": "GestoriaExportScreen",
               "label": "Exportar a gestoría",
               "url": "/finanzas/contabilidad/exportar-gestoria",
+              "roles": [
+                "finanzas",
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "Sage200ImportScreen",
+              "label": "Importar desde Sage 200",
+              "url": "/finanzas/contabilidad/importar-sage200",
               "roles": [
                 "finanzas",
                 "direccion",

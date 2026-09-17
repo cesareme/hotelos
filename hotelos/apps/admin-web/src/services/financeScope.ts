@@ -80,6 +80,8 @@ export const FINANCE_SCOPE_POLICIES: Readonly<Record<string, FinanceScopePolicy>
   AccountingSettingsScreen: "entity_forced",
   YearEndCloseScreen: "entity_forced",
   GestoriaExportScreen: "entity_forced",
+  // Tanda 7c: the Sage 200 import is a lot of the sociedad, but the reconciliation and the per-centre view read the centre of the ONE selector (`finance.propertyId`, undefined = consolidado).
+  Sage200ImportScreen: "entity_default",
   // Estados contables
   TrialBalanceScreen: "entity_default",
   BalanceSheetScreen: "entity_forced",

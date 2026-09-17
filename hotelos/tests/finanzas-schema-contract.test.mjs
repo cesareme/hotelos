@@ -36,7 +36,8 @@ describe("Finanzas · contrato de datos (schema)", () => {
     assert.deepEqual(enumBlock("DepreciationRunStatus"), ["draft", "posted", "reversed"]);
     assert.deepEqual(enumBlock("CashClosureStatus"), ["open", "closed", "approved"]);
     assert.deepEqual(enumBlock("VatBook"), ["emitidas", "recibidas", "bienes_inversion"]);
-    assert.deepEqual(enumBlock("VatBookSourceType"), ["invoice", "rectification", "simplified", "supplier_bill", "expense"]);
+    // Tanda 7c (Sage 200): «sage200» = filas de libro importadas del Libro Registro de IVA de Sage.
+    assert.deepEqual(enumBlock("VatBookSourceType"), ["invoice", "rectification", "simplified", "supplier_bill", "expense", "sage200"]);
     assert.deepEqual(enumBlock("VatPeriodicity"), ["quarterly", "monthly"]);
     assert.deepEqual(enumBlock("VatRegime"), ["general", "redeme", "recargo"]);
     assert.deepEqual(enumBlock("FinancialStatementKind"), ["balance", "pyg", "ecpn", "memoria", "usali"]);

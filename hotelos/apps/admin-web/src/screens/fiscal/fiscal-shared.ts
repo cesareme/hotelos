@@ -135,7 +135,8 @@ export const SOURCE_TYPE_LABELS: Readonly<Record<VatBookSourceTypeCode, string>>
   rectification: "Rectificativa",
   simplified: "Factura simplificada",
   supplier_bill: "Factura recibida",
-  expense: "Gasto"
+  expense: "Gasto",
+  sage200: "Importado de Sage 200"
 });
 
 export const PERIODICITY_LABELS: Readonly<Record<VatPeriodicityCode, string>> = Object.freeze({ quarterly: "Trimestral", monthly: "Mensual" });

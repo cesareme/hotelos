@@ -36,9 +36,9 @@ const items = NAV_TREE.categories.flatMap((category) => category.items);
 const tabs = items.flatMap((item) => item.tabs);
 
 describe("BACKOFFICE_ROUTES · one URL per screen of the tree", () => {
-  it("registers the 190 URLs of the tree in tree order, the base URL of every container before its tabs", () => {
-    // Tanda 5: 167 · Tanda 6 (Finanzas: Contabilidad, Proveedores y gastos, estados, 347/libros/liquidación, Cierre de caja): 183 · Tanda 6b (Estructura societaria + 4 pestañas): 188 · Tanda 7 (Reservas › Importar): 189 · Tanda 7b (Modo sombra OPERA): 190.
-    assert.equal(BACKOFFICE_ROUTES.length, 190);
+  it("registers the 191 URLs of the tree in tree order, the base URL of every container before its tabs", () => {
+    // Tanda 5: 167 · Tanda 6 (Finanzas: Contabilidad, Proveedores y gastos, estados, 347/libros/liquidación, Cierre de caja): 183 · Tanda 6b (Estructura societaria + 4 pestañas): 188 · Tanda 7 (Reservas › Importar): 189 · Tanda 7b (Modo sombra OPERA): 190 · Tanda 7c (Contabilidad › Importar desde Sage 200): 191.
+    assert.equal(BACKOFFICE_ROUTES.length, 191);
     assert.deepEqual(BACKOFFICE_ROUTES.map((route) => route.path), allUrls());
     for (const item of items) {
       const base = BACKOFFICE_ROUTES.findIndex((route) => route.path === item.url);

@@ -36,6 +36,12 @@ import { reservationImportRoutePermissions } from "../modules/pms/route-permissi
 // Claves integrations.read / connect y accounting.read / journal.post ya
 // existentes (sin rbac:sync).
 import { pmsShadowRoutePermissions as pmsShadowRoutePermissionsAsWritten } from "../modules/pms-shadow/route-permissions.partial.js";
+// Importación contable desde Sage 200 (Tanda 7c · L3): /accounting/ledger-imports*
+// y /accounting/ledger-imports/reconciliation* (modules/accounting/
+// ledger-import.routes.ts; partial propio a profundidad 1 del módulo, como
+// fiscal-route-permissions.partial.ts). Claves accounting.read / configure /
+// journal.post y ai.high_risk.confirm ya existentes (sin rbac:sync).
+import { ledgerImportRoutePermissions as ledgerImportRoutePermissionsAsWritten } from "../modules/accounting/ledger-import-route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -94,6 +100,11 @@ const FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS = requireAccountingReportsKey(FINAN
 // ingresos muestran importes → misma remap que las finanzas (accounting.read del
 // partial → accounting.reports.read en el manifiesto en vigor; el resto intacto).
 const pmsShadowRoutePermissions = requireAccountingReportsKey(pmsShadowRoutePermissionsAsWritten);
+// Importación contable desde Sage 200 (Tanda 7c · L3): lotes, mapas, plantilla y
+// reconciliaciones muestran importes → misma remap (accounting.read del partial →
+// accounting.reports.read en el manifiesto en vigor, plantilla incluida; el resto
+// intacto). Pinado por security/__tests__/finance-report-keys.test.mts.
+const ledgerImportRoutePermissions = requireAccountingReportsKey(ledgerImportRoutePermissionsAsWritten);
 
 /**
  * Calendar reads that legitimately keep `accounting.read` (no amounts):
@@ -142,6 +153,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...reservationImportRoutePermissions,
   // OPERA Cloud modo sombra (Tanda 7b): 15 entradas, ver modules/pms-shadow/route-permissions.partial.ts.
   ...pmsShadowRoutePermissions,
+  // Importación contable desde Sage 200 (Tanda 7c): 15 entradas, ver modules/accounting/ledger-import-route-permissions.partial.ts
+  ...ledgerImportRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },

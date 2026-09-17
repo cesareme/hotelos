@@ -254,13 +254,14 @@ const SCREEN_COMPONENTS = {
   ExchangeRatesScreen: TesoreriaTabs,
   BankReconciliationScreen: ConciliacionTabs,
   BankingSpain: ConciliacionTabs,
-  // Contabilidad (Tanda 6): diario · mayor · plan · ajustes · cierre de ejercicio · gestoría
+  // Contabilidad (Tanda 6): diario · mayor · plan · ajustes · cierre de ejercicio · gestoría · importar desde Sage 200 (Tanda 7c)
   JournalScreen: ContabilidadTabs,
   LedgerScreen: ContabilidadTabs,
   ChartOfAccountsScreen: ContabilidadTabs,
   AccountingSettingsScreen: ContabilidadTabs,
   YearEndCloseScreen: ContabilidadTabs,
   GestoriaExportScreen: ContabilidadTabs,
+  Sage200ImportScreen: ContabilidadTabs,
   TrialBalanceScreen: EstadosContablesTabs,
   BalanceSheetScreen: EstadosContablesTabs,
   ProfitAndLossScreen: EstadosContablesTabs,

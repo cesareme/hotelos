@@ -29,6 +29,10 @@ export * from "./reservation-import-types.js";
 // compartidos por el API, el CLI pms-shadow:pull, el job del líder y el admin-web.
 export * from "./pms-shadow-types.js";
 export * from "./pms-shadow-profiles/opera-cloud.js";
+// Importación contable desde Sage 200 (Tanda 7c · L0): tipos de lote, formatos, mapa de
+// cuentas y analítico, previsualización, lotes, reconciliación, límites y códigos de error
+// compartidos por el API, el CLI sage200:import y el admin-web.
+export * from "./ledger-import-types.js";
 export type { MoneyString } from "./accounting-types.js";
 export type { PaymentMethodCode } from "./payments-types.js";
 export type { VatBookRowDto } from "./fiscal-types.js";

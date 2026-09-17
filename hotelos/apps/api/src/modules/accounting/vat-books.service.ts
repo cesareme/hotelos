@@ -545,7 +545,12 @@ export function fromPersistedRow(row: PersistedVatRow): VatBookRow {
   };
 }
 
-function toCreateInput(row: VatBookRow): Prisma.VatBookEntryCreateManyInput {
+/**
+ * Fila del libro → input de `vatBookEntry.createMany`. Exportada (Tanda 7c · L2) para que el lote
+ * `vat_books` importado de Sage 200 escriba sus filas (`sourceType sage200`) con la misma forma que
+ * los escritores nativos.
+ */
+export function toVatBookCreateInput(row: VatBookRow): Prisma.VatBookEntryCreateManyInput {
   return {
     organizationId: row.organizationId,
     propertyId: row.propertyId,
@@ -569,6 +574,8 @@ function toCreateInput(row: VatBookRow): Prisma.VatBookEntryCreateManyInput {
     deductible: row.deductible
   };
 }
+
+const toCreateInput = toVatBookCreateInput;
 
 /** NIF normalised the way Supplier.taxId is stored: upper case, no spaces or dashes; null when empty. */
 export function normalizeNif(value: string | null | undefined): string | null {
@@ -1196,8 +1203,10 @@ export async function rebuildVatBooks(input: { context: UserContext; from: strin
     async (tx) => {
       const settings = await ensureVatSettings(organizationId, tx);
       const derived = await deriveVatBookRows({ organizationId, from: input.from, to: input.to, propertyId: input.propertyId, periodicity: settings.periodicity, taxFigure: settings.taxFigure, client: tx });
+      // Tanda 7c (importación desde Sage 200): las filas importadas (`sourceType sage200`) no salen de
+      // ningún documento de Anfitorio, así que el rebuild no puede regenerarlas: se conservan siempre.
       const deleted = await tx.vatBookEntry.deleteMany({
-        where: { organizationId, date: { gte: dateColumn(input.from), lte: dateColumn(input.to) }, ...(input.propertyId ? { propertyId: input.propertyId } : {}) }
+        where: { organizationId, sourceType: { not: "sage200" }, date: { gte: dateColumn(input.from), lte: dateColumn(input.to) }, ...(input.propertyId ? { propertyId: input.propertyId } : {}) }
       });
       const created: Record<VatBookName, number> = { emitidas: 0, recibidas: 0, bienes_inversion: 0 };
       if (derived.rows.length > 0) {

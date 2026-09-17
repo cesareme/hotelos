@@ -104,6 +104,7 @@ import { registerReservationImportRoutes } from "./modules/pms/reservation-impor
 // modules/pms-shadow/route-permissions.partial.ts); job del líder
 // (modules/pms-shadow/pms-shadow.job.ts) en el bloque de schedulers.
 import { registerPmsShadowRoutes } from "./modules/pms-shadow/pms-shadow.routes.js";
+import { registerLedgerImportRoutes } from "./modules/accounting/ledger-import.routes.js";
 import { startPmsShadowJob } from "./modules/pms-shadow/pms-shadow.job.js";
 import { CreateEmailConnectionSchema } from "./schemas/email-connections.schemas.js";
 import { parseOr400 } from "./modules/rate-manager/rate-grid.schemas.js";
@@ -2745,6 +2746,11 @@ export async function buildApiServer() {
   // panel, perfil, cortes, alertas, reconciliación e ingresos diarios
   // (/integrations/pms-shadow/ingest y /properties/:propertyId/pms-shadow/*).
   registerPmsShadowRoutes(app);
+  // Importación contable desde Sage 200 (Tanda 7c · L3): previsualizar, crear y
+  // contabilizar lotes (plan, ejercicios, diario, IVA, terceros, saldos), mapas de
+  // cuentas y analítico, plantilla canónica, reconciliación y reverso
+  // (/accounting/ledger-imports* y /accounting/ledger-imports/reconciliation*).
+  registerLedgerImportRoutes(app);
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to

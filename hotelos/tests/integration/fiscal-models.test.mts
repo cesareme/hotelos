@@ -583,7 +583,9 @@ describe("fiscal · libros de IVA, modelos AEAT y liquidación (org de test)", (
     // Tras la migración Faranda → CELUISMA (runbook §17.13) la sociedad declarante es CEL · A33615980 (NIF real solo en la demo local).
     assert.equal(report.declarante.nif, "A33615980");
     assert.ok(report.casillas.some((box) => box.casilla === "71"));
-    assert.equal(report.fuentes.origen, "documentos");
+    // Tanda 7c: con libros importados de Sage 200 (sourceType sage200) en el trimestre, el 303 sale de los libros.
+    const sageBookRows = await prisma.vatBookEntry.count({ where: { organizationId: FARANDA_ORG_ID, sourceType: "sage200", period: "2026-Q3" } });
+    assert.equal(report.fuentes.origen, sageBookRows > 0 ? "libros" : "documentos");
     const annual = await buildModelo390({ context: farandaCtx, year: 2026 });
     assert.equal(annual.modelo, "390");
     assert.deepEqual(await farandaCounts(), before);

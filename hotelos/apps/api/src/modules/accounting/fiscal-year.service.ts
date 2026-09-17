@@ -1,4 +1,6 @@
 import { prisma } from "@hotelos/database";
+import type { Prisma } from "@prisma/client";
+import { LEDGER_IMPORT_SOURCE_TYPES } from "@hotelos/shared";
 import type { UserContext } from "../../lib/demo-store.js";
 import { BadRequestError, ConflictError, NotFoundError } from "../../lib/http-error.js";
 import { isIsoDate } from "../../lib/query-dates.js";
@@ -32,6 +34,17 @@ import { assertEntityScopedFiscalInput } from "./fiscal-period.service.js";
 // posts regularización / cierre / apertura without a centre (entryKind exempt
 // from WORK_CENTER_REQUIRED). Legacy property-scoped rows (0 in the local
 // database) stay readable through `loadYear`.
+//
+// Cierre importado (Tanda 7c · L2, design §5.3 / §10.4.2 #3): cuando el cierre
+// del ejercicio viene de Sage 200 (lote `journal` con regularization + closing,
+// o lote `balances`), el importador contabiliza ESOS asientos y llama a
+// `markFiscalYearClosedFromImport` (status closed sin generar asientos propios).
+// `reopenFiscalYear` no reabre un ejercicio cerrado así: postJournalEntry fija
+// fiscalYearId y entryKind en todo asiento (accounting.service.ts:648), de modo
+// que la búsqueda de closeEntries alcanzaría los cierres importados y los
+// reversaría a medias (sin tocar el lote). Responde 409
+// FISCAL_YEAR_CLOSED_FROM_IMPORT { fiscalYearId, importId }: reabrir = revertir
+// el lote (`reverseLedgerImport` devuelve el ejercicio a open).
 
 export type FiscalYearStatus = "open" | "closing" | "closed";
 
@@ -299,6 +312,29 @@ export async function closeFiscalYear(input: {
 
   const year = await loadYear(input.context, input.id);
   if (year.status === "closed") throw yearConflict("FISCAL_YEAR_ALREADY_CLOSED", `El ejercicio ${year.code} ya está cerrado.`, { yearCode: year.code });
+  // Tanda 7c: el cierre de Sage 200 ya importado (regularización / cierre `sage200_journal` o `sage200_balance`
+  // vivos, aunque el ejercicio siga `open` porque llegó antes que «ejercicios») no se vuelve a generar: cerrar
+  // = importar «ejercicios» (marca el ejercicio cerrado con esos asientos) o revertir el lote y cerrar aquí.
+  const importedClose = await prisma.journalEntry.findFirst({
+    where: {
+      organizationId: year.organizationId,
+      status: { not: "draft" },
+      reversedById: null,
+      sourceType: { in: [LEDGER_IMPORT_SOURCE_TYPES.journal, LEDGER_IMPORT_SOURCE_TYPES.balance] },
+      entryKind: { in: ["regularization", "closing"] },
+      OR: [{ fiscalYearId: year.id }, { fiscalYearCode: year.code, entryDate: { gte: year.startDate, lte: year.endDate } }]
+    },
+    select: { id: true }
+  });
+  if (importedClose) {
+    const importEntry = await prisma.ledgerImportEntry.findFirst({ where: { journalEntryId: importedClose.id }, select: { importId: true } });
+    throw yearConflict("FISCAL_YEAR_CLOSED_FROM_IMPORT", `El ejercicio ${year.code} ya tiene la regularización o el cierre importados de Sage 200: cerrarlo aquí los duplicaría. Importa «ejercicios» para marcarlo cerrado o revierte el lote ${importEntry?.importId ?? ""}.`, {
+      fiscalYearId: year.id,
+      yearCode: year.code,
+      importId: importEntry?.importId ?? null,
+      journalEntryId: importedClose.id
+    });
+  }
 
   const openPeriodCount = await prisma.fiscalPeriod.count({
     where: {
@@ -429,6 +465,31 @@ export async function reopenFiscalYear(input: {
     throw yearConflict("FISCAL_YEAR_LATER_CLOSED", `No se puede reabrir ${year.code}: el ejercicio posterior ${laterClosed.code} también está cerrado. Reábrelo primero.`, { yearCode: laterClosed.code });
   }
 
+  // Tanda 7c: un cierre importado de Sage 200 (sage200_journal / sage200_balance) no se reabre
+  // aquí; se revierte el lote que lo trajo (la comprobación precede a la búsqueda de closeEntries).
+  const importedClose = await prisma.journalEntry.findFirst({
+    where: {
+      organizationId: year.organizationId,
+      status: { not: "draft" },
+      reversedById: null,
+      sourceType: { in: [LEDGER_IMPORT_SOURCE_TYPES.journal, LEDGER_IMPORT_SOURCE_TYPES.balance] },
+      OR: [
+        { id: { in: [year.closingEntryId, year.openingEntryId].filter((id): id is string => Boolean(id)) } },
+        { fiscalYearId: year.id, entryKind: { in: ["regularization", "closing"] } }
+      ]
+    },
+    select: { id: true }
+  });
+  if (importedClose) {
+    const importEntry = await prisma.ledgerImportEntry.findFirst({ where: { journalEntryId: importedClose.id }, select: { importId: true } });
+    throw yearConflict("FISCAL_YEAR_CLOSED_FROM_IMPORT", `El ejercicio ${year.code} se cerró con los asientos importados de Sage 200: reabrir = revertir el lote.`, {
+      fiscalYearId: year.id,
+      yearCode: year.code,
+      importId: importEntry?.importId ?? null,
+      journalEntryId: importedClose.id
+    });
+  }
+
   const closeEntries = await prisma.journalEntry.findMany({
     where: {
       organizationId: year.organizationId,
@@ -481,6 +542,64 @@ export async function reopenFiscalYear(input: {
   });
 
   return mapYear(updated);
+}
+
+// ---------------------------------------------------------------------------
+// Cierre importado desde Sage 200 (Tanda 7c · L2) — sin asientos propios
+// ---------------------------------------------------------------------------
+
+/** Cliente mínimo que usa `markFiscalYearClosedFromImport` (la transacción del lote o un doble en los tests). */
+export type FiscalYearImportCloseClient = {
+  fiscalYear: Pick<Prisma.TransactionClient["fiscalYear"], "findUnique" | "update">;
+  fiscalPeriod: Pick<Prisma.TransactionClient["fiscalPeriod"], "updateMany">;
+};
+
+export type MarkFiscalYearClosedFromImportInput = {
+  fiscalYearId: string;
+  /** Asiento `closing` importado (grupos 1-5). */
+  closingEntryId: string;
+  /** Asiento `opening` del ejercicio siguiente importado en el mismo lote, si lo hubo. */
+  openingEntryId?: string | null;
+  /** Resultado del ejercicio (129) que dejó la regularización importada; texto con dos decimales. */
+  netResult: string | number;
+  /** Lote que trae el cierre (queda en `closingNotes` de los periodos que se cierran). */
+  importId: string;
+};
+
+/** Nota con la que el cierre importado cierra los periodos que seguían abiertos. */
+export function importClosingNote(importId: string): string {
+  return `cerrado por importación ${importId}`;
+}
+
+/**
+ * Deja el ejercicio `closed` con los asientos de cierre / apertura IMPORTADOS (Sage 200),
+ * SIN generar regularización, cierre ni apertura propios (design §5.3): el lote ya los
+ * contabilizó con su `entryKind`. Rehúsa un ejercicio ya cerrado
+ * (409 FISCAL_YEAR_ALREADY_CLOSED) y cierra los periodos del ejercicio que sigan
+ * abiertos con la nota «cerrado por importación <importId>» (el reverso del lote los
+ * reabre). Se ejecuta dentro de la transacción del lote: no audita (lo hace el lote
+ * tras el commit).
+ */
+export async function markFiscalYearClosedFromImport(tx: FiscalYearImportCloseClient, input: MarkFiscalYearClosedFromImportInput): Promise<{ fiscalYearId: string; code: string; closedPeriods: number }> {
+  const year = await tx.fiscalYear.findUnique({ where: { id: input.fiscalYearId } });
+  if (!year) throw new NotFoundError("Ejercicio fiscal no encontrado.");
+  if (year.status === "closed") throw yearConflict("FISCAL_YEAR_ALREADY_CLOSED", `El ejercicio ${year.code} ya está cerrado.`, { yearCode: year.code, fiscalYearId: year.id });
+  const netResult = typeof input.netResult === "number" ? input.netResult.toFixed(2) : input.netResult;
+  await tx.fiscalYear.update({
+    where: { id: year.id },
+    data: { status: "closed", closedAt: new Date(), closingEntryId: input.closingEntryId, openingEntryId: input.openingEntryId ?? null, netResult }
+  });
+  const closed = await tx.fiscalPeriod.updateMany({
+    where: {
+      organizationId: year.organizationId,
+      propertyId: year.propertyId ?? null,
+      startDate: { gte: year.startDate },
+      endDate: { lte: year.endDate },
+      status: { not: "closed" }
+    },
+    data: { status: "closed", closedAt: new Date(), closingNotes: importClosingNote(input.importId) }
+  });
+  return { fiscalYearId: year.id, code: year.code, closedPeriods: closed.count };
 }
 
 /** Net result of a year as computed from the diario (for tests and the UI). */

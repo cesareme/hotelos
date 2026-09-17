@@ -1078,6 +1078,12 @@ export type AggregateBalancesInput = {
    * reinstated balances.
    */
   closingCutoff?: string | null;
+  /**
+   * Same «as of» semantics for the asiento de regularización dated on/after this day: the
+   * 31/12 picture of a closed year keeps 129 WITHOUT the year's result (the balance Sage 200
+   * prints «hasta el periodo 12»), while a later date includes it (Tanda 7c reconciliation).
+   */
+  regularizationCutoff?: string | null;
   /** Reversed entries and their reversals net to zero: left out by default (a reopened close never double counts). */
   includeReversedPairs?: boolean;
   accountIds?: readonly string[];
@@ -1094,6 +1100,7 @@ export async function aggregateAccountBalances(input: AggregateBalancesInput): P
   if (input.to) conditions.push(Prisma.sql`je.entry_date <= ${dateOnlyUtc(input.to)}::date`);
   if (input.excludeKinds && input.excludeKinds.length > 0) conditions.push(Prisma.sql`je.entry_kind <> ALL(${input.excludeKinds as string[]}::text[])`);
   if (input.closingCutoff) conditions.push(Prisma.sql`NOT (je.entry_kind = 'closing' AND je.entry_date >= ${dateOnlyUtc(input.closingCutoff)}::date)`);
+  if (input.regularizationCutoff) conditions.push(Prisma.sql`NOT (je.entry_kind = 'regularization' AND je.entry_date >= ${dateOnlyUtc(input.regularizationCutoff)}::date)`);
   if (input.accountIds && input.accountIds.length > 0) conditions.push(Prisma.sql`jl.account_id = ANY(${input.accountIds as string[]}::text[])`);
   if (input.kinds && input.kinds.length > 0) conditions.push(Prisma.sql`a.kind::text = ANY(${input.kinds as string[]}::text[])`);
   const rows = await prisma.$queryRaw<Array<{ account_id: string; code: string; name: string; account_type: string; kind: string; debit: Prisma.Decimal; credit: Prisma.Decimal }>>`

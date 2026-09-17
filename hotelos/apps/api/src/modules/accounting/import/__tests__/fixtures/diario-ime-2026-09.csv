@@ -1,0 +1,17 @@
+CodigoEmpresa;Ejercicio;Asiento;CargoAbono;CodigoCuenta;Contrapartida;FechaAsiento;DocumentoConta;Comentario;ImporteAsiento;CodigoDiario;CodigoCanal;CodigoDepartamento;CodigoSeccion;CodigoProyecto;IdDelegacion;FechaVencimiento;NumeroPeriodo;TipoCarteraIME;TipoAnaliticaIME;TipoImportacionIME;BaseIva1;BaseIva2;BaseIva3;CodigoIva1;CodigoIva2;CodigoIva3;PorIva1;PorIva2;PorIva3;CuotaIva1;CuotaIva2;CuotaIva3;PorRecargoEquivalencia1;PorRecargoEquivalencia2;PorRecargoEquivalencia3;RecargoEquivalencia1;RecargoEquivalencia2;RecargoEquivalencia3;CodigoTransaccion1;CodigoTransaccion2;CodigoTransaccion3;Serie;Factura;SuFacturaNo;FechaFactura;ImporteFactura;TipoFactura;CifDni;Nombre;CodigoRetencion;BaseRetencion;PorRetencion;ImporteRetencion;CodigoTerritorio;SiglaNacion;EjercicioFactura;Exclusion347;Previsiones;MantenerAsiento
+1;2026;1501;D;6280001;;03/09/2026;F-778;Electricidad septiembre;250,00;0;;MANT;;;RA;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1501;D;4720021;;03/09/2026;F-778;IVA soportado 21 %;52,50;0;;;;;RA;;9;;;;250,00;;;IVA21;;;21;;;52,50;;;;;;;;;;;;;;;;;R;;;;;;;;;;;;
+1;2026;1501;H;4000000042;;03/09/2026;F-778;Suministros Eléctricos del Noroeste SL;302,50;0;;;;;RA;;9;;;;;;;;;;;;;;;;;;;;;;;;;F;778;;03/09/2026;;R;A12345674;SUMINISTROS ELECTRICOS DEL NOROESTE SL;;;;;;ES;2026;;;
+1;2026;1502;D;4300000123;;04/09/2026;FAC-2026-000015;Viajes Cantábrico SL;1100,00;0;;;;;RA;;9;;;;;;;;;;;;;;;;;;;;;;;;;FAC-2026;000015;;04/09/2026;;E;A23456783;VIAJES CANTABRICO SL;;;;;;ES;2026;;;
+1;2026;1502;H;7050001;;04/09/2026;FAC-2026-000015;Alojamiento grupo;1000,00;0;;HAB;;;RA;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1502;H;4770010;;04/09/2026;FAC-2026-000015;IVA repercutido 10 %;100,00;0;;;;;RA;;9;;;;1000,00;;;IVA10;;;10;;;100,00;;;;;;;;;;;;;;;;;E;;;;;;;;;;;;
+1;2026;1503;D;6290001;;05/09/2026;L-2026-91;Lavandería agosto RA;300,00;0;;ADM;;;RA;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1503;D;6290001;;05/09/2026;L-2026-91;Lavandería agosto LT;100,00;0;;ADM;;;LT;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1503;D;4720021;;05/09/2026;L-2026-91;IVA soportado 21 %;84,00;0;;;;;;;9;;;;400,00;;;IVA21;;;21;;;84,00;;;;;;;;;;;;;;;;;R;;;;;;;;;;;;
+1;2026;1503;H;4100000007;;05/09/2026;L-2026-91;Lavandería Industrial del Cantábrico SL;484,00;0;;;;;;;9;;;;;;;;;;;;;;;;;;;;;;;;;L;91;;;;R;A34567891;LAVANDERIA INDUSTRIAL DEL CANTABRICO SL;;;;;;ES;;;;
+1;2026;1504;D;6210000;;06/09/2026;;Alquiler oficina;500,00;0;;;;;;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1504;H;5720000;;06/09/2026;;Alquiler oficina;500,00;0;;;;;;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1505;D;5720000;;10/09/2026;FAC-2026-000015;Cobro transferencia;1100,00;0;;;;;RA;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1505;H;4300000123;;10/09/2026;FAC-2026-000015;Cobro transferencia;1100,00;0;;;;;RA;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1506;D;6400000;;12/09/2026;;Nómina septiembre LT;2000,00;0;;ADM;;;LT;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+1;2026;1506;H;4650000;;12/09/2026;;Nómina septiembre LT;2000,00;0;;;;;LT;;9;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

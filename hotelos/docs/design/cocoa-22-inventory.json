@@ -11,24 +11,24 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 221,
-    "lines": 90495,
+    "files": 222,
+    "lines": 92339,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1061,
+    "cocoaButtons": 1081,
     "rawTables": 2,
-    "cocoaTables": 296,
+    "cocoaTables": 306,
     "rawInputs": 0,
-    "cocoaInputs": 1062,
+    "cocoaInputs": 1082,
     "inlineStyles": 682,
     "cocoaCards": 33,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
-    "withPageHeader": 197,
+    "withPageHeader": 198,
     "withTabHost": 88,
     "debtPoints": 194
   },
@@ -36,14 +36,14 @@
     "S": 93,
     "M": 105,
     "L": 20,
-    "XL": 3
+    "XL": 4
   },
   "byArchetype": {
     "dashboard": 94,
     "lista": 15,
     "detalle": 3,
     "formulario": 19,
-    "asistente": 10,
+    "asistente": 11,
     "workspace": 5,
     "calendario": 6,
     "chat": 1,
@@ -146,20 +146,20 @@
     },
     "finanzas": {
       "label": "Finanzas",
-      "files": 33,
-      "lines": 17628,
+      "files": 34,
+      "lines": 19472,
       "debtPoints": 36,
       "sizes": {
         "S": 9,
         "M": 16,
         "L": 8,
-        "XL": 0
+        "XL": 1
       },
       "archetypes": {
         "dashboard": 17,
         "formulario": 5,
         "lista": 1,
-        "asistente": 1,
+        "asistente": 2,
         "detalle": 1,
         "dialogo": 2,
         "contenedor": 6
@@ -466,6 +466,44 @@
       "headerExempt": false,
       "debtPoints": 1,
       "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/accounting/Sage200ImportScreen.tsx",
+      "name": "Sage200ImportScreen",
+      "screenKeys": [
+        "Sage200ImportScreen"
+      ],
+      "category": "finanzas",
+      "categories": [
+        "finanzas"
+      ],
+      "archetype": "asistente",
+      "lines": 1841,
+      "metrics": {
+        "lines": 1841,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 20,
+        "rawTables": 0,
+        "cocoaTables": 10,
+        "rawInputs": 0,
+        "cocoaInputs": 20,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": false,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "XL"
     },
     {
       "path": "apps/admin-web/src/screens/AccountingSettings.tsx",
@@ -7573,9 +7611,9 @@
       "category": "finanzas",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 32,
+      "lines": 35,
       "metrics": {
-        "lines": 32,
+        "lines": 35,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

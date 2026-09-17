@@ -29,7 +29,8 @@ export const FISCAL_MODEL_CODES: readonly FiscalModelCode[] = ["303", "390", "34
 
 export type VatBookName = "emitidas" | "recibidas" | "bienes_inversion";
 
-export type VatBookSourceTypeCode = "invoice" | "rectification" | "simplified" | "supplier_bill" | "expense";
+/** `sage200` (Tanda 7c): fila importada de los libros de IVA de Sage 200 (`rebuildVatBooks` la conserva). */
+export type VatBookSourceTypeCode = "invoice" | "rectification" | "simplified" | "supplier_bill" | "expense" | "sage200";
 
 export type VatPeriodicityCode = "quarterly" | "monthly";
 

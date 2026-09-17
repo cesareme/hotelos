@@ -22,6 +22,7 @@ const MONEY_SCREENS: ReadonlyArray<[string, string]> = [
   ["accounting/ChartOfAccountsScreen.tsx", "ChartOfAccountsScreen"],
   ["accounting/AccountingSettingsScreen.tsx", "AccountingSettingsScreen"],
   ["accounting/GestoriaExportScreen.tsx", "GestoriaExportScreen"],
+  ["accounting/Sage200ImportScreen.tsx", "Sage200ImportScreen"],
   ["finance/YearEndCloseScreen.tsx", "YearEndCloseScreen"],
   ["finance/TrialBalanceScreen.tsx", "TrialBalanceScreen"],
   ["finance/BalanceSheetScreen.tsx", "BalanceSheetScreen"],

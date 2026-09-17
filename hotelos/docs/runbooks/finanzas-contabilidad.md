@@ -47,7 +47,7 @@ campos marcados «heredado» existían antes y se mantienen por compatibilidad.
 | `PayrollCostImportStatus` | `draft` · `posted` · `reversed` | Lote de coste de personal importado (`PayrollCostImport.status`, Tanda 6c, §18): borrador sin asientos → contabilizado (un asiento por centro × mes) → revertido (todos sus asientos reversados; el hash del fichero queda libre). |
 | `CashClosureStatus` | `open` · `closed` · `approved` | Arqueo: abierto (turno) → cerrado (recuento) → aprobado (dirección). |
 | `VatBook` | `emitidas` · `recibidas` · `bienes_inversion` | Libros registro de IVA (RD 1619/2012). |
-| `VatBookSourceType` | `invoice` · `rectification` · `simplified` · `supplier_bill` · `expense` | Documento origen de una fila del libro. |
+| `VatBookSourceType` | `invoice` · `rectification` · `simplified` · `supplier_bill` · `expense` · `sage200` | Documento origen de una fila del libro. `sage200` (Tanda 7c, §19): fila importada del Libro Registro de IVA de Sage 200 (`sourceId <empresa>:<ejercicio factura>:<serie>:<factura>[:<NIF>][:R]`, el NIF solo en recibidas); `rebuildVatBooks` la conserva y el lote omite los documentos propios de Anfitorio (nunca la misma factura como `sage200` e `invoice` / `supplier_bill`). Primer `ALTER TYPE … ADD VALUE` de la cadena de migraciones (`20260917110000_sage200_importacion`). |
 | `VatPeriodicity` | `quarterly` · `monthly` | Modelo 303 trimestral (general) o mensual (REDEME / gran empresa). |
 | `VatRegime` | `general` · `redeme` · `recargo` | Régimen de IVA de la organización. |
 | `FinancialStatementKind` | `balance` · `pyg` · `ecpn` · `memoria` · `usali` | Estado guardado en `FinancialStatementSnapshot`. |
@@ -61,7 +61,13 @@ valores):
   `invoice` · `invoice_rectification` · `invoice_cancellation` · `pos_ticket` ·
   `supplier_bill` · `supplier_bill_payment` · `expense` · `payroll_slip` ·
   `payroll_payment` · `payroll_cost_import` (coste de personal importado, Tanda 6c,
-  §18: D 640 / D 642 por centro de coste USALI, H 465 / H 476) · `commission` ·
+  §18: D 640 / D 642 por centro de coste USALI, H 465 / H 476) ·
+  `pms_shadow_revenue` (ingresos diarios de OPERA en modo sombra, Tanda 7b,
+  `docs/runbooks/opera-modo-sombra.md` §8: un asiento por (hotel, business date)) ·
+  `sage200_journal` (diario importado de Sage 200, Tanda 7c, §19: un asiento por
+  (asiento Sage, centro), con el número Sage en `reference`) · `sage200_balance`
+  (saldos importados de Sage 200 por periodo, Tanda 7c, §19: un asiento resumen
+  por (ejercicio, periodo, centro) más la apertura del ejercicio) · `commission` ·
   `depreciation` · `vat_settlement` ·
   `cash_closure` · `card_settlement` · `tourist_tax` · `manual` ·
   `regularization` · `closing` · `opening` · `reversal` · `fixed_asset_disposal`
@@ -83,7 +89,18 @@ valores):
   coste de personal importado → `payroll_cost_import` /
   `<importId>:<propertyId>:<periodCode>` (un asiento por centro y mes; nunca el
   sufijo `#n`: cada lote lleva un `importId` nuevo, y el reverso del lote reversa
-  por asiento con `reverseJournalEntry`).
+  por asiento con `reverseJournalEntry`); ingresos diarios de OPERA →
+  `pms_shadow_revenue` / `<propertyId>:<YYYY-MM-DD>` (un asiento por hotel y
+  business date; `replace` reversa el del día y vuelve a contabilizar con `#n`);
+  diario importado de Sage 200 → `sage200_journal` /
+  `<CodigoEmpresa>:<Ejercicio>:<NumeroPeriodo>:<Asiento>[:<CodigoCanal|IdDelegacion>][:<propertyCode>]`
+  (el periodo forma parte de la clave porque en Sage el número de asiento solo es
+  único dentro de un periodo; el canal solo si Sage numera por canal; el centro
+  solo cuando el asiento se reparte por centro; la apertura de Sage usa el mismo
+  `sourceType` con `entryKind opening`; tras un reverso la clave se reutiliza con
+  `#n`); saldos importados de Sage 200 → `sage200_balance` /
+  `<CodigoEmpresa>:<Ejercicio>:<periodo>:<propertyCode|SOC>` (`periodo` =
+  `YYYY-MM` · `YYYY-Qn` · `YYYY` · `apertura` · `regularizacion` · `cierre`).
   Tras un reverso, el mismo documento vuelve a contabilizarse con
   `sourceId#n` (`treasury/ledger-bridge.ts`: volver a pagar una nómina tras
   desconciliar).
@@ -485,6 +502,7 @@ AUDIT sin categoría fiscal), 705.1 −218,18, 705.2 −56,81, 705.3 −184,71.
 | `payroll_periods` (nuevos campos) | lote nóminas | PyG, 111/190, USALI (personal por departamento vía `costCenterId`) |
 | `payroll_cost_imports`, `payroll_cost_lines`, `payroll_cost_references` (Tanda 6c, §18) | lote coste de personal importado (`payroll/cost-import.service.ts`: la previsualización nunca escribe; crear / contabilizar / revertir en una transacción bajo advisory lock; CLI `payroll:import-cost`) | informe `GET /payroll/cost-report` (líneas de lotes `posted` + referencias), USALI y PyG por centro / reparto (headcount de respaldo cuando no hay recibos: `employeesReported` o Σ `headcount`), front Nóminas › Coste de personal |
 | `cost_centers` (`type = usali`, `code` = departamento USALI en mayúsculas) y `journal_lines.cost_center_id` | lote coste de personal importado (`upsert` por `(propertyId, code)` al contabilizar), nóminas reales con contrato con centro de coste, asientos manuales | USALI por centro de coste (`accountBalances({ byCostCentre: true })`, §4 paso 0); el resto de estados ignora el centro de coste |
+| `ledger_imports`, `ledger_import_entries`, `ledger_import_balances`, `ledger_account_maps`, `ledger_analytics_maps`, `ledger_third_parties`, `ledger_reconciliations` (Tanda 7c, §19) | lote importación desde Sage 200 (`accounting/import/ledger-import.service.ts`: la previsualización nunca escribe; crear / contabilizar / revertir en una transacción bajo `pg_advisory_xact_lock('ledger_import:<org>')`; reconciliación en `ledger-reconciliation.service.ts` tras el commit; CLI `sage200:import`). Efectos fuera de sus tablas: `journal_entries` / `journal_lines` SIEMPRE vía `postJournalEntry` (`sourceType sage200_journal` / `sage200_balance`, `entryKind` apertura / regularización / cierre de Sage); `accounts` por `prismaChartStore(tx).createAccounts` (solo altas, nunca renombra ni borra); `fiscal_years` / `fiscal_periods` por `tx.fiscalYear` / `tx.fiscalPeriod.create` replicando las validaciones de `createFiscalYear`, y cerrados por `markFiscalYearClosedFromImport` (sin asientos propios; reabrir = revertir el lote, 409 `FISCAL_YEAR_CLOSED_FROM_IMPORT`); `vat_book_entries` con `sourceType sage200` **protegidas de `rebuildVatBooks`**; `cost_centers usali` por `upsert`; `suppliers` solo con `createSuppliers` (`findFirst` por NIF + create / update) | diario, mayor, sumas y saldos, balance, PyG, cuentas anuales (`comparative`), USALI por centro, 303 / 347 / 390 (libros importados + nativos), reconciliación (`aggregateAccountBalances`), front Finanzas › Contabilidad › «Importar desde Sage 200» (`/finanzas/contabilidad/importar-sage200`); runbook `docs/runbooks/finanzas-importacion-sage200.md` |
 | `commission_accruals` (nuevos campos) | lote comisiones | PyG, USALI (Habitaciones · otros gastos), pagos a canales |
 | `financial_statement_snapshots` | lote cuentas anuales / USALI | front (histórico de estados), exportación |
 | `gestoria_exports` | lote exportación | front (descargas) |
@@ -922,9 +940,18 @@ requeridas»; el nivel de riesgo decide si el fallback demo sin token alcanza la
 ruta (nunca `high`/`critical`). Las claves de lectura con importes que los
 partials escriben como `accounting.read` se remapean a `accounting.reports.read`
 en `security/route-permissions.ts` (`requireAccountingReportsKey`); en la tabla
-figura la clave EFECTIVA en el borde. 118 entradas de Finanzas + 9 del módulo
-`structure` (Tanda 6b, §17.8) + 7 del partial `payroll` (coste de personal importado,
-Tanda 6c, §18.7): 118 + 9 + 7 = 134.
+figura la clave EFECTIVA en el borde. Desglose por partial (el total único dejó de
+tener sentido cuando los partials de PMS empezaron a llevar rutas con importes):
+118 entradas de Finanzas (partials `accounting` ledger + fiscal, `invoicing`,
+`payments`, `pos`, `night-audit`, `payables`, `fixed-assets`, `treasury`,
+`financial-statements`) + 9 del módulo `structure` (Tanda 6b, §17.8) + 7 del partial
+`payroll` (coste de personal importado, Tanda 6c, §18.7) + **15 del partial
+`accounting (ledger-import)`** (importación desde Sage 200, Tanda 7c, §19:
+`modules/accounting/ledger-import-route-permissions.partial.ts`, envuelto con
+`requireAccountingReportsKey`; la lectura de la plantilla incluida). Fuera de
+Finanzas pero en el mismo manifiesto: 6 del partial `pms` (importación masiva de
+reservas, Tanda 7) y 15 del partial `pms-shadow` (OPERA Cloud en modo sombra, Tanda
+7b), documentados en `docs/api-contracts.md` y no en esta tabla.
 
 | Módulo (partial) | Ruta | Clave efectiva | Riesgo |
 | --- | --- | --- | --- |
@@ -979,6 +1006,12 @@ Tanda 6c, §18.7): 118 + 9 + 7 = 134.
 | | `POST /payroll/cost-imports/:id/post` (borrador → contabilizado) | `payroll.manage` (servicio: o `accounting.journal.post`) | high |
 | | `POST /payroll/cost-imports/:id/reverse` (espejo de `POST /payroll/periods/:id/pay`; idempotente) | `payroll.manage` (servicio: o `accounting.journal.post`) | critical |
 | | `GET /payroll/cost-report` (sin `propertyId` = toda la sociedad → `accounting.entity.read`; nunca `accounting.read` ni `analytics.read`) | `payroll.read` | medium |
+| accounting (ledger-import) (Tanda 7c · importación desde Sage 200, `modules/accounting/ledger-import-route-permissions.partial.ts`, envuelto con `requireAccountingReportsKey`; rutas en `modules/accounting/ledger-import.routes.ts`, registradas en `server.ts` junto a `registerLedgerRoutes`; ámbito R11 por `assertFinanceReadScopeMany` sobre los centros del mapa) | `POST /accounting/ledger-imports/preview` (nunca escribe; `bodyLimit` 30 MiB) · `POST /accounting/ledger-imports/reconciliation` (escribe solo `ledger_reconciliations`; `bodyLimit` 30 MiB) | `accounting.journal.post` | medium |
+| | `POST /accounting/ledger-imports` (crear + contabilizar; `post: false` deja borrador; `bodyLimit` 30 MiB) · `POST /accounting/ledger-imports/:id/post` (borrador → contabilizado, `{ replace? }`) | `accounting.journal.post` | high |
+| | `POST /accounting/ledger-imports/:id/reverse` (`{ reason 3..500 }`; 200 idempotente; espejo de `POST /accounting/journal/:id/reverse`) | `accounting.journal.post` + `ai.high_risk.confirm` | critical |
+| | `GET /accounting/ledger-imports` (`?kind=&status=&from=&to=&limit=`), `GET /accounting/ledger-imports/:id` (`?offset=&limit=` pagina las entradas, 500 / máx. 2.000; tenencia: 404 opaco `LEDGER_IMPORT_NOT_FOUND`, resolver `ledgerImport` en `lib/tenancy.ts`), `GET /accounting/ledger-imports/account-map`, `GET /accounting/ledger-imports/analytics-map`, `GET /accounting/ledger-imports/reconciliation` (`?from=&to=&propertyId=&limit=`), `GET /accounting/ledger-imports/reconciliation/:id`, `GET /accounting/ledger-imports/reconciliation/:id/csv` (404 opaco `LEDGER_RECONCILIATION_NOT_FOUND`) | `accounting.reports.read` (el partial escribe `accounting.read`; remap obligatorio: `finance-report-keys.test.mts` rechaza cualquier GET `/accounting/*` con `accounting.read`) | medium |
+| | `GET /accounting/ledger-imports/template` (`?kind=&format=csv`, plantilla canónica) | `accounting.reports.read` | low |
+| | `PUT /accounting/ledger-imports/account-map` (valida `accountCode` con el patrón, existencia y postabilidad; `create` da de alta la subcuenta en la misma transacción que persiste el mapa, `prismaChartStore(tx)`), `PUT /accounting/ledger-imports/analytics-map` (`propertyId` de la organización) | `accounting.configure` | high |
 
 Rutas heredadas de `server.ts` que siguen vivas y numeran por el motor:
 `GET /organizations/:organizationId/accounts` (409 `CHART_NOT_PROVISIONED` sin
@@ -1044,6 +1077,22 @@ corepack pnpm --filter @hotelos/api payroll:import-cost -- --file <ruta.json|rut
 corepack pnpm --filter @hotelos/api payroll:import-cost -- --file <ruta> --organization <orgId> --apply --confirm <orgId> [--replace] [--json]
 #   Faranda: dry-run → 363 filas · 48 celdas centro × mes · 40 referencias · 0 sin mapear · 1 aviso de coste_total; apply UNA vez → 48 asientos (62..109).
 #   --replace reversa ENTEROS los lotes que dupliquen o solapen: nunca sobre Faranda salvo para sustituir el rango completo.
+
+# 6. Importación contable desde Sage 200 (Tanda 7c, §19; runbook docs/runbooks/finanzas-importacion-sage200.md §7): un lote por fichero y tipo
+corepack pnpm --filter @hotelos/api sage200:import -- --type plan|fiscal_years|journal|vat_books|third_parties|balances --file <ruta> --organization <orgId> \
+    [--entity <legalEntityId>] [--format sage_excel|sage_ime_csv|sage_xml|canonical_csv|canonical_json] [--sheet <hoja>] [--mapping <ruta.json>] \
+    [--unassigned block|office] [--dry-run | --apply --confirm <orgId>] [--replace] [--allow-closed --reason "…"] \
+    [--reconcile --balance <sumas-y-saldos> [--from AAAA-MM-DD --to AAAA-MM-DD --property <código>]] [--json]
+corepack pnpm --filter @hotelos/api sage200:import -- --type plan --file plan-cuentas.xlsx --organization <orgId>                       # dry-run: acción propuesta por cuenta Sage
+corepack pnpm --filter @hotelos/api sage200:import -- --type journal --file diario-2026-09.csv --organization <orgId> --json           # dry-run: LedgerImportPreview íntegro
+corepack pnpm --filter @hotelos/api sage200:import -- --type journal --file diario-2026-09.csv --organization <orgId> \
+    --reconcile --balance sumas-y-saldos-2026-09.xlsx --from 2026-09-01 --to 2026-09-30 --apply --confirm <orgId>                       # contabiliza y reconcilia el mes
+corepack pnpm --filter @hotelos/api sage200:import -- --reverse <importId> --reason "Mes reexportado desde Sage" --confirm <orgId>     # reverso por lote (idempotente)
+corepack pnpm --filter @hotelos/api sage200:import -- --template journal --out plantilla-diario.csv                                    # plantilla canónica
+#   Orden: plan → fiscal_years → journal (por meses) → vat_books → third_parties → balances (ejercicios sin diario) → reconciliación.
+#   Usuario de sistema usr_system_sage200_import; salida 2 uso · 1 fallo o canPost:false · 0 ok. Ficheros > 20 MiB o > 20.000 asientos: solo por CLI y troceados por meses.
+#   --replace reversa ENTEROS los lotes que dupliquen o solapen (empresa, ejercicio, periodo, asiento): nunca sobre Faranda salvo para sustituir un mes completo.
+#   --allow-closed --reason: contabiliza en periodos cerrados de Anfitorio (auditado); por HTTP allowClosed → 400 VALIDATION_ERROR.
 ```
 
 Operaciones por API (todas con zod estricto; importes como cadenas `"121.00"`):
@@ -2410,3 +2459,234 @@ el diario. Clientes tipados en `services/payrollApi.ts`; mensajes por código en
   `.xlsx` en el API exigiría una librería (hoy ninguna en `node_modules`, regla de §9) y
   garantizar que solo se persisten agregados: solo si el CSV falla en la práctica. Decisión
   de César (informe de cierre §6).
+
+## 19. Importación contable desde Sage 200 (Tanda 7c · 2026-09-17)
+
+Runbook operativo completo (qué pedir a administración, formatos y cabeceras, orden de
+carga, mapas, modo sombra, reconciliación, CLI paso a paso, SQL de verificación, FAQ y
+decisiones): **`docs/runbooks/finanzas-importacion-sage200.md`**. Diseño:
+`docs/design/FINANZAS-IMPORTACION-SAGE200.md` (§4 modelo, §5 modo sombra, §6 saldos sin
+diario, §7 API / CLI / front, §10.4 correcciones tras el plan de lotes). Rutas:
+`docs/api-contracts.md` «Importación contable desde Sage 200 (Tanda 7c)» y §13 de este
+runbook (partial `accounting (ledger-import)`, 15 entradas). Comandos: §14 comando 6.
+Correcciones de la revisión adversarial (ronda 1, 2026-09-17; diseño §10.4.4): el lote
+`vat_books` excluye los documentos propios y solapa por fila de libro; el sourceId de recibidas
+lleva el NIF del proveedor; `balances` rehúsa ejercicios con diario o apertura importados;
+la reconciliación toma el saldo acumulado de la última fila, compara el IVA por tipo por
+prefijo y deja fuera la regularización fechada en `to`; cobros consumidos una sola vez;
+destinos del mapa comprobados en la preview; `closeFiscalYear` rehúsa (409
+`FISCAL_YEAR_CLOSED_FROM_IMPORT`) un ejercicio con cierre importado; listados a nivel sociedad
+con `accounting.entity.read`; `options.numberingDimension` / `--numbering`. Código:
+`packages/shared/src/ledger-import-types.ts` (catálogos, límites, `LEDGER_IMPORT_ERROR_CODES`
+y DTOs), `apps/api/src/modules/accounting/import/{sage200.parser, sage200.xml,
+ledger-import.mapping, ledger-import.posting, ledger-import.canonical, ledger-import.service,
+ledger-reconciliation.service}.ts`, `apps/api/src/modules/accounting/{ledger-import.routes,
+ledger-import-route-permissions.partial, fiscal-year.service (markFiscalYearClosedFromImport),
+vat-books.service (rebuild excluye sage200; toVatBookCreateInput)}.ts`, esquemas
+`apps/api/src/schemas/ledger-import.schemas.ts`, CLI `apps/api/src/scripts/import-sage200.ts`
+(`sage200:import`), front `apps/admin-web/src/screens/accounting/{Sage200ImportScreen.tsx,
+sage200-import-helpers.ts}` y `services/ledgerImportApi.ts`.
+
+### 19.1 Objetivo y alcance
+
+Encargo de César (2026-09-16/17): «importar toda la información contable, a cualquier nivel,
+desde el diario hasta el balance, desde Sage 200». Sage 200 sigue siendo el sistema contable
+de registro de CELUISMA (modo sombra: Sage sigue, Anfitorio replica y compara, luego cambia).
+Administración exporta por listado (Diario con desglose analítico, Sumas y saldos nivel 0,
+Plan de cuentas, Libro Registro de IVA formato AEAT, Clientes / Proveedores) y Anfitorio los
+importa por **lotes de seis tipos** (`plan` · `fiscal_years` · `journal` · `vat_books` ·
+`third_parties` · `balances`, `LEDGER_IMPORT_KINDS`, idénticos a `--type` del CLI) en
+**cinco formatos** (`sage_excel` por cabecera con sinónimos, `sage_ime_csv` de 60 columnas,
+`sage_xml` —hoy `LEDGER_IMPORT_XML_UNSUPPORTED`—, `canonical_csv`, `canonical_json`), a
+través de un **mapa de cuentas** persistente Sage → PGC Pymes hotelero (7 reglas, §19.3) y un
+**mapa analítico** (canal / delegación / departamento / sección / proyecto → centro de trabajo
+y centro de coste USALI), y contabiliza **siempre** por `postJournalEntry`. Toda la
+presentación PGC (diario, mayor, sumas y saldos, balance, PyG, cuentas anuales con
+`comparative`) y USALI por centro sale del diario: importar diario o saldos basta.
+
+### 19.2 Modelo (§1.1 y §3): siete tablas, una migración
+
+Migración `20260917110000_sage200_importacion` (**12.ª** de la cadena; 11 antes, 12 después;
+salida verbatim de `prisma migrate diff`, sin pasos de datos; `db:drift:check` 0): 7 `CREATE
+TABLE` (`ledger_imports`, `ledger_import_entries`, `ledger_import_balances`,
+`ledger_account_maps`, `ledger_analytics_maps`, `ledger_third_parties`,
+`ledger_reconciliations`), 1 `CREATE TYPE "LedgerImportStatus"` (`draft` · `posted` ·
+`reversed`, gemelo de `PayrollCostImportStatus`) y el **primer `ALTER TYPE … ADD VALUE` del
+repo** (`VatBookSourceType` gana `sage200`; PostgreSQL ≥ 12 lo admite en la transacción de
+`migrate deploy` mientras el valor no se use en la misma transacción, por eso la migración es
+DDL puro). **Aditiva**: ninguna columna nueva en `JournalEntry` / `JournalLine` (bloques
+pinados por `tests/finanzas-schema-contract.test.mjs`); `vat_book_entries` conserva su unicidad
+`(org, book, sourceType, sourceId, rate)`; sin FK a `properties` / `suppliers` /
+`journal_entries` (convención de `payroll_cost_imports`). Contrato pinado por
+`tests/sage200-schema-contract.test.mjs`. `sourceType` nuevos en `JOURNAL_SOURCE_TYPES` y
+en §1.1: `sage200_journal` (un asiento por (asiento Sage, centro)) y `sage200_balance` (un
+asiento resumen por (ejercicio, periodo, centro) y la apertura), con `SOURCE_TYPE_LABELS`
+«Diario importado de Sage 200» / «Saldos importados de Sage 200».
+
+| Tabla | Qué guarda | Clave |
+| --- | --- | --- |
+| `ledger_imports` | el lote: sociedad (`resolveLedgerScope`), `system sage200`, `kind`, `format`, `contentHash` (sha256 de las filas normalizadas **antes** del mapa), empresa Sage, ejercicio, `periodFrom` / `periodTo` (`YYYY-MM`), estado, contadores, `mappingJson`, totales `Decimal(14,2)`, `journalEntryIds[]`, `reversalJournalEntryIds[]`, `replacedById`, datos del reverso | índices `(org, kind, status, periodFrom, periodTo)` y `(org, contentHash)` |
+| `ledger_import_entries` | un asiento Sage por (asiento, centro): clave Sage (empresa, ejercicio, periodo, asiento, canal), fecha, `propertyCode` (`SOC` a nivel sociedad), asiento Anfitorio producido, `status` (`draft` · `posted` · `skipped_native` · `skipped_existing` · `unmapped` · `unbalanced` · `error`), `entryKind`, líneas, debe / haber, asiento nativo con el que colisiona | única `(importId, empresa, ejercicio, periodo, asiento, propertyCode)` |
+| `ledger_import_balances` | fila del sumas y saldos de Sage por ejercicio × periodo (`YYYY-MM` · `YYYY-Qn` · `YYYY` · `apertura`) × centro × cuenta Sage, con la cuenta PGC mapeada y apertura / periodo / saldo; se conserva aunque el lote se revierta | única `(importId, periodCode, propertyCode, sourceAccount)` |
+| `ledger_account_maps` | mapa de cuentas: `action` (`map` · `map_by_rate` · `create` · `collapse` · `block`), cuenta destino (`null` solo en `block`), USALI de la subcuenta nueva, `carryCounterparty` | única `(org, system, sourceAccount)` |
+| `ledger_analytics_maps` | mapa analítico: dimensión + código Sage → `propertyId` y / o `costCentreCode` USALI | única `(org, system, dimension, sourceCode)` |
+| `ledger_third_parties` | tercero Sage: rol `customer` / `supplier`, subcuenta Sage, NIF normalizado, país, razón social, `supplierId` opcional | única `(org, system, role, sourceCode)`; índice `(org, taxId)` para el 347 |
+| `ledger_reconciliations` | ejecución de la reconciliación: lote, rango, centro, sha256 del balance, `status` (`ok` · `differences` · `error`), cuentas comparadas, diferencias, `rowsJson`, `summaryJson` | índice `(org, periodFrom, periodTo, createdAt)` |
+
+### 19.3 Contabilización: idempotencia en tres capas, numeración y reparto R4
+
+**Idempotencia (patrón §18.5):** (1) `contentHash` vivo en la organización → 409
+`LEDGER_IMPORT_DUPLICATE { importId, fileName, createdAt }`; solape por `(empresa, ejercicio,
+periodo, asiento)` con un lote no revertido → 409 `LEDGER_IMPORT_OVERLAP { overlaps }`, salvo
+`replace` (reversa **enteros** los lotes afectados y crea el nuevo en la misma transacción);
+(2) por asiento, `findJournalEntryBySource` antes de contabilizar → fila `skipped_existing`
+(no 409: permite reimportar un mes al que Sage añadió asientos); (3) el motor devuelve
+`created: false` si la clave existe → 409 defensivo `LEDGER_IMPORT_ENTRY_EXISTS`. Tras un
+reverso la clave queda `reversed` y se reutiliza con `#n`. El motor se llama con `{ tx }`
+directo (el puente `treasury/ledger-bridge.ts` no transporta `entryKind`, `fiscalYearId` ni
+`ignoreClosedPeriod`), por lo que el sufijo `#n` y `assertOriginalPeriodOpen` están
+reimplementados en el servicio.
+
+**Numeración:** `entryNumber` = MAX+1 por `(org, fiscalYearCode)` bajo advisory lock; **no se
+conserva el número de Sage**: va en `reference` («Sage 200 · asiento 2026/1501 · periodo 9 ·
+diario 0», recortado a 200) y en `sourceEntryNumber`. El lote ordena por `(fecha, asiento
+Sage)` y contabiliza en secuencia en UNA transacción (`maxWait` 15 s, `timeout` 600 s, `SELECT
+pg_advisory_xact_lock(hashtext('ledger_import:<org>'))` antes del lock de numeración:
+orden constante, sin interbloqueos; ≤ 20.000 asientos y ≤ 500 líneas por asiento). Cualquier
+409 del motor (`FISCAL_PERIOD_CLOSED`, `FISCAL_YEAR_CLOSED`, `WORK_CENTER_REQUIRED`,
+`PROPERTY_NOT_FOUND`) hace rollback del lote entero; los `JournalEntryPosted` encolados por
+asiento antes del commit no se retiran (herencia del lote de nómina); el evento de lote
+`LEDGER_IMPORT_POSTED` se registra tras el commit.
+
+**Mapa de cuentas (7 reglas, `ledger-import.mapping.ts`):** 1 fila explícita · 2 código sin
+ceros finales ≡ cuenta postable (`6400000 → 640`) · 3 prefijo + serial ≤ 999 existente
+(`4770021 → 477.21`) · 4 prefijo de tercero 430 / 431 / 435 / 400 / 401 / 410 / 411 →
+`collapse` a `4300` / `400` / `410` con el tercero en la descripción · 5 `472` / `477` sin
+serial + bloque IVA → `map_by_rate` (`477` + PorIva 10 → `477.10` apunte a apunte) · 6 regla 3
+sin destino → `create` (USALI obligatorio en 6/7; alta por `prismaChartStore(tx).createAccounts`,
+porque `createChartAccount` usa el `prisma` raíz y exige `UserContext`) · 7 resto → `block`
+(400 `LEDGER_IMPORT_ACCOUNT_UNMAPPED { accounts }`). `ACCOUNT_CODE_PATTERN` está duplicado en
+`ledger-import.mapping.ts` con un test que lo pina contra el del motor (:250).
+
+**Reparto R4 (`WORK_CENTER_REQUIRED`):** un asiento Sage con líneas 6/7 de **un** centro → un
+asiento con ese `propertyId`; de **varios** centros → **un asiento por (asiento Sage, centro)**
+con las líneas 6/7 del centro y las líneas de balance repartidas en proporción a Σ|6/7|,
+céntimos residuales al centro de mayor peso, `taxBase` con la misma proporción, `sourceId` con
+sufijo `:<centro>`; cada parte cuadra por construcción y el consolidado es exacto al céntimo
+(la reconciliación tolera 0,01 × nº de asientos repartidos en las cuentas de balance por
+centro). Apuntes 6/7 sin analítica → `unassignedPolicy` `block` (defecto) · `office` ·
+`property:<id>`; nunca `societyLevel`.
+
+**Modo sombra (§5 del diseño):** el lote **excluye** los asientos de documentos nativos de
+Anfitorio (`skipped_native`: factura por serie + número normalizados contra `seriesCode` +
+`invoiceNumber` de las facturas de los centros de la organización —`Invoice` no lleva
+`organizationId`—, y su cobro por documento o por importe + fecha ± 3 días contra
+`payment/<paymentId>`); los asientos propios se conservan tal cual; el replay y la proyección
+no cambian. Faranda: la preview avisa con `payrollCostImportsPosted[]` si Sage trae la nómina
+real de 2026-01..08 (nada se reversa solo; §18.5 o `block` en 640 / 642 / 465 / 476).
+
+### 19.4 Cierre importado y reapertura
+
+Los periodos «Cierre ejercicio» y «Cierre Contabilidad» de Sage se importan con `entryKind
+regularization` / `closing` (detección por periodo o por cuenta 129 + fin de ejercicio;
+`closingDetected[]` en la preview) y la apertura del siguiente con `opening` (lote
+`fiscal_years`); después `markFiscalYearClosedFromImport({ fiscalYearId, closingEntryId,
+openingEntryId, netResult })` (`fiscal-year.service.ts`) deja el ejercicio `closed` **sin**
+asientos propios. Corrección del diseño (§10.4): `reopenFiscalYear` **sí** alcanzaría esos
+asientos (busca por `fiscalYearId` + `entryKind`, que `postJournalEntry` rellena en :648), así
+que `POST /accounting/fiscal-years/:id/reopen` responde **409 `FISCAL_YEAR_CLOSED_FROM_IMPORT {
+fiscalYearId, importId }`** y la regla es **reabrir = revertir el lote**
+(`POST /accounting/ledger-imports/:id/reverse` / `--reverse`): el reverso devuelve el ejercicio a
+`open` sin `year-reopen:*`. Como el reverso exige el periodo del asiento original abierto
+(`assertOriginalPeriodOpen`), el orden es reabrir el periodo 12 → revertir → reimportar →
+cerrar. Ejercicios sin cierre importado siguen `open` con todos sus periodos `closed`; el
+cierre de periodo tras cada reconciliación `ok` protege el mes de la proyección y el replay.
+
+### 19.5 Reconciliación (`ledger-reconciliation.service.ts`)
+
+Sumas y saldos nivel 0 de Sage del rango (por centro solo con la «Hoja adicional
+canales/delegaciones») frente a `aggregateAccountBalances` por cuenta destino tras el mapa, con
+la **misma regla de lectura que los estados** (`status ≠ draft`, sin parejas de reversión,
+`movements` sin `regularization` / `closing` / `opening`, `balance_at` en `to` para grupos
+1-5). Tolerancias (`LEDGER_RECONCILIATION_TOLERANCES`): **0,00** consolidado y cuentas solo
+importadas; **0,01 × asientos repartidos** en cuentas de balance por centro; **0,01 por tipo**
+de IVA. Clasificación: `amount_diff` · `native_only` (esperado en `4300`, `705.x`, `477.x`,
+`57x` mientras Anfitorio emita, y en `28x` / `68x` por `payables/ledger-port.ts`) ·
+`missing_in_ledger` (asientos del lote `unmapped` / `error` / `skipped_native`) · `vat_diff`.
+Se lanza **tras el commit** del lote (`aggregateAccountBalances` lee con el `prisma` raíz),
+por HTTP (`POST /accounting/ledger-imports/reconciliation`), por CLI (`--reconcile --balance`)
+o adjuntando el balance al lote `journal`; resultado en `ledger_reconciliations` con `rows[]`,
+`summary` (`criterion` en español) y CSV (`GET /accounting/ledger-imports/reconciliation/:id/csv`). A fin de año no
+coincide con la pantalla «Sumas y saldos» (`buildTrialBalance` no excluye `entryKind`):
+runbook nuevo §6. Cadencia mensual: importar → reconciliar → si `ok`, cerrar el periodo; relevo
+tras dos cierres mensuales `ok` y un trimestre declarado con los libros de Anfitorio.
+
+### 19.6 Rutas, CLI, front y códigos
+
+Rutas y claves efectivas: §13, partial `accounting (ledger-import)` (15 entradas; lectura con
+`accounting.reports.read` por el remap, incluida la plantilla; el partial vive a profundidad 1
+en `modules/accounting/` porque `tests/api-route-permissions-contract.test.mjs` solo lee
+`modules/<módulo>/*route-permissions.partial.ts`). Cuerpos `.strict()` en español
+(`schemas/ledger-import.schemas.ts`); `contentBase64` ≤ 28 MiB de caracteres con `bodyLimit`
+30 MiB en las tres rutas de carga (preview, lote, reconciliación); `allowClosed` por HTTP →
+400 `VALIDATION_ERROR`. CLI: §14 comando 6 (usuario de sistema `usr_system_sage200_import`,
+`createdBy cli:import-sage200`). Front: pestaña «Importar desde Sage 200» de Finanzas ›
+Contabilidad (`/finanzas/contabilidad/importar-sage200`; `Sage200ImportScreen.tsx`, fila nueva
+de orden 6 en el CSV de navegación tras `GestoriaExportScreen`; cero `style={}`), con tres
+vistas —Importar (Fichero · Cuentas · Analítica · Revisión · Resultado), Reconciliación y
+Lotes—, política de ámbito `entity_default`: el centro de la reconciliación se elige en el
+selector de ámbito único de la cabecera. Códigos (`LEDGER_IMPORT_ERROR_CODES`, siempre en
+`details.code`): 400 `VALIDATION_ERROR`, `LEDGER_IMPORT_INVALID { errors }`,
+`LEDGER_IMPORT_FORMAT_UNKNOWN`, `LEDGER_IMPORT_XML_UNSUPPORTED { blocks }`,
+`LEDGER_IMPORT_KIND_MISMATCH`, `LEDGER_IMPORT_EMPTY`, `LEDGER_IMPORT_TOO_LARGE { bytes, max }`,
+`LEDGER_IMPORT_TOO_MANY_ROWS { rows, max }`, `LEDGER_IMPORT_TOO_MANY_ENTRIES { entries, max }`,
+`LEDGER_IMPORT_COMPANY_MISMATCH`, `LEDGER_IMPORT_ACCOUNT_UNMAPPED { accounts }`,
+`LEDGER_IMPORT_ACCOUNT_CODE_INVALID { accountCode }`, `LEDGER_IMPORT_ANALYTICS_UNMAPPED {
+codes }`, `LEDGER_IMPORT_CENTRE_REQUIRED { entries }`, `LEDGER_IMPORT_UNBALANCED { entries }`,
+`LEDGER_IMPORT_YEAR_CODE_INVALID { code }`, `LEDGER_IMPORT_MAP_INVALID { errors }`; 409
+`LEDGER_IMPORT_DUPLICATE`, `LEDGER_IMPORT_OVERLAP`, `LEDGER_IMPORT_ENTRY_EXISTS`,
+`LEDGER_IMPORT_ALREADY_POSTED`, `LEDGER_IMPORT_REVERSED`, `LEDGER_IMPORT_NOT_POSTED`,
+`LEDGER_IMPORT_VAT_SETTINGS_MISSING`, `FISCAL_YEAR_CLOSED_FROM_IMPORT { fiscalYearId,
+importId }`; 404 opacos `LEDGER_IMPORT_NOT_FOUND`, `LEDGER_RECONCILIATION_NOT_FOUND`; del
+motor `ACCOUNT_NOT_FOUND`, `ACCOUNT_NOT_POSTABLE`, `WORK_CENTER_REQUIRED`,
+`PROPERTY_NOT_FOUND`, `FISCAL_PERIOD_CLOSED`, `FISCAL_YEAR_CLOSED`, `JOURNAL_UNBALANCED`.
+Decisiones fijadas por el plan: el importador **nunca crea** la fila `vat_settings`
+(`getVatSettings` devuelve defaults sin fila, así que la ausencia se detecta con
+`vatSettings.findUnique` → 409 `LEDGER_IMPORT_VAT_SETTINGS_MISSING` hasta que César decida);
+`Supplier` solo con `options.createSuppliers` (sin unique `(org, taxId)` y con la comprobación
+de NIF privada: `findFirst` + create / update); las filas de libros se escriben con
+`toVatBookCreateInput` (el antiguo `toCreateInput` de `vat-books.service.ts`, exportado);
+las hojas AEAT se leen con `readXlsxTable` localizando la cabecera por contenido; `parseXml`
+con límites explícitos.
+
+### 19.7 Puertas y estado
+
+Puertas de la tanda: `corepack pnpm run typecheck:all` (15/15 + 1 SKIP) · `corepack pnpm
+--filter @hotelos/api test` · unitarios front · `node --test tests/*.test.mjs` (incluye
+`sage200-schema-contract`, `finanzas-schema-contract`, `api-route-permissions-contract`,
+`legal-identity-readers-contract`, `cocoa-22-contract` con el inventario regenerado en L4) ·
+integración `tests/integration/{ledger-import,ledger-import-routes}.test.mts` sobre una
+organización aislada · `db:migrate:status` 12/12 · `db:drift:check` 0 · `build-nav-tree
+--check` · `check-discoverability`. Estado de Faranda **antes** de la primera carga (BD local,
+2026-09-17, tras la Tanda 7b; invariantes que la importación no debe alterar): **112 asientos**
+(22 `invoice` · 8 `invoice_cancellation` · 4 `invoice_rectification` · 23 `payment` · 4
+`payment_refund` · 48 `payroll_cost_import` · 2 `pms_shadow_revenue` · 1 `reversal`) / **599
+líneas** / Σ debe = Σ haber = **2.456.852,66** · 25 facturas · 33 envíos VeriFactu · 22
+`cost_centers` · 0 `fiscal_years` · 0 `vat_book_entries` · 0 `suppliers` · 0 `vat_settings`
+(SQL de comprobación en el runbook nuevo §8). Cifras de la demo sintética y resultado del
+apply único: `docs/audits/TANDA-7C-SAGE200-2026-09-17.md` (L6).
+
+### 19.8 Lo que solo puede aportar César
+
+Las siete necesidades del diseño §9 (runbook nuevo §1): exportaciones reales de un mes
+(Diario con desglose analítico, Sumas y saldos nivel 0 con «Comparativo periodo acumulado» y
+«Hoja adicional canales/delegaciones», Plan de cuentas con NIF, Libro Registro de IVA formato
+AEAT, XML opcional) para fijar cabeceras y parser; versión y edición de Sage; dimensión
+analítica del hotel y códigos, numeración por canal; longitud de cuenta y convención de
+subcuentas; acceso SQL de lectura (cadencia diaria); ejercicios a cargar y fecha de relevo;
+decisiones abiertas (`pgc_variant`, `VatSettings`, SII, facturas sandbox de RA). Decisiones
+por defecto de esta tanda (diseño §10.1 y runbook nuevo §10): colapso de terceros a `4300` /
+`400` / `410`, dimensión `delegacion` y política `block`, reparto proporcional a Σ|6/7|,
+nómina real frente a coste importado solo avisada, exclusión de las facturas de RA emitidas en
+Anfitorio, saldos para los ejercicios sin diario, relevo tras dos cierres `ok` + un trimestre
+declarado, `vat_settings` nunca creada por el importador.

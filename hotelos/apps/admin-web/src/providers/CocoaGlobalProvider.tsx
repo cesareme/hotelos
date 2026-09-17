@@ -232,6 +232,7 @@ function buildDefaultCommands(bindings: DefaultCommandBindings): CocoaCommandPal
     { id: "nav.reservations", label: "Reservas", category: "Navegación", onSelect: () => navigateTo("ReservationWorkspace") },
     { id: "nav.reservation-create", label: "Nueva reserva", category: "Navegación", onSelect: () => navigateTo("ReservationCreate") },
     { id: "nav.reservation-import", label: "Importar reservas", category: "Navegación", onSelect: () => navigateTo("ReservationImportScreen") },
+    { id: "nav.sage200-import", label: "Importar desde Sage 200", category: "Navegación", onSelect: () => navigateTo("Sage200ImportScreen") },
     { id: "nav.guests", label: "Huéspedes", category: "Navegación", onSelect: () => navigateTo("GuestsList") },
     { id: "nav.groups", label: "Grupos y eventos", category: "Navegación", onSelect: () => navigateTo("GroupsEventsDashboard") },
     { id: "nav.rates", label: "Planes de tarifas", category: "Navegación", onSelect: () => navigateTo("RatePlans") },

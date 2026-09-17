@@ -789,9 +789,21 @@ describe("C9 · equivalencia (solo lectura): Faranda y org_123 tras L1-L5", () =
     const report = await buildModelo303({ context: farandaCtx, period: "2026-Q3" });
     assert.deepEqual(report.declarante, { nif: "A33615980", nombre: "CELUISMA S.A." });
     assert.deepEqual([report.sociedad.code, report.sociedad.source, report.sociedad.regimen.periodicity], ["CEL", "legal_entity", "quarterly"]);
-    assert.deepEqual([casilla(report, "27"), casilla(report, "45"), casilla(report, "71"), report.fuentes.registros, report.fuentes.origen], [74.94, 0, 74.94, 37, "documentos"]);
+    // Tanda 7c: con libros importados de Sage 200 en 2026 el 303 y el 390 salen de los libros (documentos nativos
+    // materializados + filas sage200); las cifras de la demo sin Sage se conservan solo sin filas importadas.
+    const sageBookRows = await prisma.vatBookEntry.count({ where: { organizationId: FARANDA_ORG, sourceType: "sage200" } });
     const m390 = await buildModelo390({ context: farandaCtx, year: 2026 });
-    assert.deepEqual([m390.totales.volumenOperaciones, m390.totales.resultadoLiquidaciones, m390.presentacion.noSePresenta], [805.76, 74.94, undefined]);
+    if (sageBookRows === 0) {
+      assert.deepEqual([casilla(report, "27"), casilla(report, "45"), casilla(report, "71"), report.fuentes.registros, report.fuentes.origen], [74.94, 0, 74.94, 37, "documentos"]);
+      assert.deepEqual([m390.totales.volumenOperaciones, m390.totales.resultadoLiquidaciones, m390.presentacion.noSePresenta], [805.76, 74.94, undefined]);
+    } else {
+      const emitidas = await prisma.vatBookEntry.aggregate({ where: { organizationId: FARANDA_ORG, book: "emitidas", period: "2026-Q3" }, _sum: { quota: true } });
+      assert.equal(report.fuentes.origen, "libros");
+      assert.equal(casilla(report, "27"), Number(Number(emitidas._sum.quota ?? 0).toFixed(2)), "27 = Σ cuotas de emitidas del trimestre en los libros");
+      assert.equal(Number((casilla(report, "27") - casilla(report, "45")).toFixed(2)), casilla(report, "71"));
+      assert.ok(m390.totales.volumenOperaciones > 805.76, "el 390 suma también las emitidas importadas de Sage");
+      assert.equal(m390.presentacion.noSePresenta, undefined);
+    }
     assert.deepEqual(await farandaCounts(), farandaBefore, "nothing written to Faranda");
   });
 

@@ -998,7 +998,12 @@ describe("I · Equivalencia de Faranda (solo lectura)", () => {
     // se excluyen como las nóminas; el invariante fiscal siguen siendo los 61 previos y el saldo 379,00 de 4300.
     const shadowEntryIds = (await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG, sourceType: "pms_shadow_revenue" }, select: { id: true } })).map((e) => e.id);
     // `reversalOfId` es nullable: un `NOT { in }` a secas dejaría fuera los asientos sin reverso (lógica trivaluada).
-    const baseline = { organizationId: FARANDA_ORG, sourceType: { notIn: ["payroll_cost_import", "pms_shadow_revenue"] }, ...(shadowEntryIds.length > 0 ? { OR: [{ reversalOfId: null }, { reversalOfId: { notIn: shadowEntryIds } }] } : {}) };
+    // Tanda 7c (importación desde Sage 200, demo del integrador): Faranda lleva además los asientos importados
+    // (`sage200_journal` / `sage200_balance`, 2024-2026) y los reversos de los lotes de la demo (`reversal` con
+    // sourceId `ledger-import-reverse:<lote>:<asiento>`): se excluyen igual; los 61 previos y el 379,00 no cambian.
+    const sageEntryIds = (await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG, sourceType: { in: ["sage200_journal", "sage200_balance"] } }, select: { id: true } })).map((e) => e.id);
+    const excludedReversalTargets = [...shadowEntryIds, ...sageEntryIds];
+    const baseline = { organizationId: FARANDA_ORG, sourceType: { notIn: ["payroll_cost_import", "pms_shadow_revenue", "sage200_journal", "sage200_balance"] }, ...(excludedReversalTargets.length > 0 ? { OR: [{ reversalOfId: null }, { reversalOfId: { notIn: excludedReversalTargets } }] } : {}) };
     assert.equal(await prisma.journalEntry.count({ where: baseline }), 61);
     const entryIds = (await prisma.journalEntry.findMany({ where: baseline, select: { id: true } })).map((e) => e.id);
     const lines = await prisma.journalLine.findMany({ where: { accountCode: "4300", journalEntryId: { in: entryIds } }, select: { debit: true, credit: true } });
@@ -1006,9 +1011,20 @@ describe("I · Equivalencia de Faranda (solo lectura)", () => {
     assert.equal(balance.toFixed(2), "379.00");
     const report = await buildModelo303({ context: farandaCtx, period: "2026-Q3" });
     const casilla = (code: string): number => report.casillas.find((box) => box.casilla === code)?.importe ?? Number.NaN;
-    assert.deepEqual([casilla("04"), casilla("07")], [423.62, 155.04]);
-    assert.equal(Number((casilla("04") + casilla("07")).toFixed(2)), 578.66);
-    assert.deepEqual([casilla("27"), casilla("71"), report.fuentes.registros], [74.94, 74.94, 37]);
+    // Tanda 7c: con libros importados de Sage 200 (`vat_book_entries.sourceType sage200`) en 2026 el 303 sale de los
+    // LIBROS (los documentos nativos materializados + las filas de Sage); las cifras fijas de la demo sin Sage
+    // (bases 423,62 + 155,04, 27 = 71 = 74,94, 37 registros) solo valen cuando no hay filas importadas.
+    const sageBookRows = await prisma.vatBookEntry.count({ where: { organizationId: FARANDA_ORG, sourceType: "sage200" } });
+    if (sageBookRows === 0) {
+      assert.deepEqual([casilla("04"), casilla("07")], [423.62, 155.04]);
+      assert.equal(Number((casilla("04") + casilla("07")).toFixed(2)), 578.66);
+      assert.deepEqual([casilla("27"), casilla("71"), report.fuentes.registros], [74.94, 74.94, 37]);
+    } else {
+      assert.equal(report.fuentes.origen, "libros");
+      const emitidas = await prisma.vatBookEntry.aggregate({ where: { organizationId: FARANDA_ORG, book: "emitidas", period: "2026-Q3" }, _sum: { quota: true }, _count: { _all: true } });
+      assert.equal(casilla("27"), Number(Number(emitidas._sum.quota ?? 0).toFixed(2)), "casilla 27 = Σ cuotas del libro de emitidas del trimestre (nativas + Sage)");
+      assert.ok(report.fuentes.registros >= emitidas._count._all);
+    }
     assert.deepEqual(report.declarante, { nif: "A33615980", nombre: "CELUISMA S.A." });
     assert.deepEqual([report.sociedad.code, report.sociedad.source, report.sociedad.regimen.periodicity], ["CEL", "legal_entity", "quarterly"]);
   });

@@ -179,6 +179,29 @@ const SURFACE: Surface[] = [
     routes: ["/commissions/rules", "/deactivate", "/commissions/accruals", "/commissions/summary", "/commissions/accrue", "/settle", "/reverse"],
     functions: ["listCommissionRules", "createCommissionRule", "deactivateCommissionRule", "listCommissionAccruals", "getCommissionSummary", "getCommissionAccrual", "accrueCommission", "settleCommissionAccrual", "reverseCommissionAccrual"],
     errorHelper: "commissionsErrorMessage"
+  },
+  {
+    file: "ledgerImportApi.ts",
+    // Tanda 7c: the fifteen routes of the Sage 200 import (preview · create · list · detail · post · reverse · account map · analytics map · reconcile · reconciliations · reconciliation · csv · template).
+    routes: ["/accounting/ledger-imports", "/preview", "/post", "/reverse", "/account-map", "/analytics-map", "/reconciliation", "/csv", "/template"],
+    functions: [
+      "previewLedgerImport",
+      "createLedgerImport",
+      "listLedgerImports",
+      "getLedgerImport",
+      "postLedgerImport",
+      "reverseLedgerImport",
+      "getAccountMap",
+      "putAccountMap",
+      "getAnalyticsMap",
+      "putAnalyticsMap",
+      "reconcileLedger",
+      "listReconciliations",
+      "getReconciliation",
+      "downloadReconciliationCsv",
+      "downloadLedgerImportTemplate"
+    ],
+    errorHelper: "ledgerImportErrorMessage"
   }
 ];
 

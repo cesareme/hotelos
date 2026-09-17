@@ -33,6 +33,10 @@ export const JOURNAL_SOURCE_TYPES = [
   "payroll_cost_import",
   /** Tanda 7b: ingresos diarios de OPERA (modo sombra), un asiento por (hotel, business date); sourceId `<propertyId>:<YYYY-MM-DD>`. */
   "pms_shadow_revenue",
+  /** Tanda 7c: diario importado de Sage 200 (un asiento por (asiento Sage, centro)); sourceId `<empresa>:<ejercicio>:<periodo>:<asiento>[:<canal>][:<centro>]`. */
+  "sage200_journal",
+  /** Tanda 7c: saldos importados por periodo (asiento resumen por (ejercicio, periodo, centro) y apertura); sourceId `<empresa>:<ejercicio>:<periodo>:<centro|SOC>`. */
+  "sage200_balance",
   "commission",
   "commission_settlement",
   "depreciation",
