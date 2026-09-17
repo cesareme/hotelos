@@ -20,6 +20,7 @@ import {
   BASE64_PATTERN,
   CONTENT_XOR_MESSAGE,
   CreateReservationImportSchema,
+  SYNC_REQUIRES_FEED_MESSAGE,
   ListReservationImportsQuerySchema,
   PreviewReservationImportSchema,
   ReservationImportMappingSchema,
@@ -224,5 +225,73 @@ describe("UndoReservationImportSchema", () => {
     assert.match(messagesOf(UndoReservationImportSchema.safeParse({ reason: 42 })).join(), /reason debe ser un texto/);
     assert.match(messagesOf(UndoReservationImportSchema.safeParse({ motivo: "x" })).join(), /^motivo: Campo no admitido/);
     assertSpanish(messagesOf(UndoReservationImportSchema.safeParse({ reason: 42, motivo: "x" })));
+  });
+});
+
+// ---- Tanda 7b · L1 · modo `sync` (mode, profile, feed, businessDate, horizonDays, headerOverride) ----
+
+describe("PreviewReservationImportSchema · modo sync (Tanda 7b)", () => {
+  it("mode ausente → create; profile, feed, businessDate, horizonDays y headerOverride ausentes", () => {
+    const parsed = PreviewReservationImportSchema.parse(PREVIEW);
+    assert.equal(parsed.mode, "create");
+    assert.equal(parsed.profile, undefined);
+    assert.equal(parsed.feed, undefined);
+    assert.equal(parsed.businessDate, undefined);
+    assert.equal(parsed.horizonDays, undefined);
+    assert.equal(parsed.headerOverride, undefined);
+  });
+
+  it("sync con feed y businessDate → válido (horizonDays coercionado, headerOverride lista de columnas, profile opera_cloud)", () => {
+    const parsed = PreviewReservationImportSchema.parse({ ...PREVIEW, mode: "sync", profile: "opera_cloud", feed: "arrivals", businessDate: "2026-09-17", horizonDays: "45", headerOverride: ["Room No.", "Name"] });
+    assert.equal(parsed.mode, "sync");
+    assert.equal(parsed.profile, "opera_cloud");
+    assert.equal(parsed.feed, "arrivals");
+    assert.equal(parsed.businessDate, "2026-09-17");
+    assert.equal(parsed.horizonDays, 45);
+    assert.deepEqual(parsed.headerOverride, ["Room No.", "Name"]);
+    for (const feed of ["arrivals", "inhouse", "departures", "changes"]) {
+      assert.equal(PreviewReservationImportSchema.parse({ ...PREVIEW, mode: "sync", feed, businessDate: "2026-09-17" }).feed, feed);
+    }
+  });
+
+  it("sync sin feed o sin businessDate → 400 en `feed` con mensaje en español; en create no se exigen", () => {
+    const noFeed = PreviewReservationImportSchema.safeParse({ ...PREVIEW, mode: "sync", businessDate: "2026-09-17" });
+    assert.equal(noFeed.success, false);
+    assert.deepEqual(messagesOf(noFeed), [`feed: ${SYNC_REQUIRES_FEED_MESSAGE}`]);
+    const noDate = PreviewReservationImportSchema.safeParse({ ...PREVIEW, mode: "sync", feed: "arrivals" });
+    assert.equal(noDate.success, false);
+    assert.deepEqual(messagesOf(noDate), [`feed: ${SYNC_REQUIRES_FEED_MESSAGE}`]);
+    assert.equal(PreviewReservationImportSchema.safeParse({ ...PREVIEW, mode: "create", feed: "arrivals" }).success, true);
+    assert.equal(PreviewReservationImportSchema.safeParse({ ...PREVIEW, profile: "opera_cloud", feed: "arrivals" }).success, true, "perfil sin sync: mapeo por perfil en modo create");
+  });
+
+  it("valores fuera de catálogo o de rango → mensajes en español; una clave desconocida sigue siendo 400", () => {
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, mode: "upsert" })).join(), /mode debe ser uno de: create, sync\./);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, profile: "mews" })).join(), /profile debe ser uno de: opera_cloud\./);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, mode: "sync", feed: "revenue", businessDate: "2026-09-17" })).join(), /feed debe ser uno de: arrivals, inhouse, departures, changes\./);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, mode: "sync", feed: "arrivals", businessDate: "17/09/2026" })).join(), /businessDate debe ser una fecha AAAA-MM-DD/);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, horizonDays: 0 })).join(), /horizonDays debe ser un entero entre 1 y 730/);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, horizonDays: 731 })).join(), /horizonDays debe ser un entero entre 1 y 730/);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, horizonDays: 1.5 })).join(), /horizonDays debe ser un entero entre 1 y 730/);
+    assert.equal(PreviewReservationImportSchema.parse({ ...PREVIEW, horizonDays: 730 }).horizonDays, 730);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, headerOverride: "Room No." })).join(), /headerOverride debe ser la lista de columnas/);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, headerOverride: [""] })).join(), /headerOverride: la columna no puede estar vacía/);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, headerOverride: Array.from({ length: 201 }, (_, i) => `c${i}`) })).join(), /headerOverride no puede tener más de 200 columnas/);
+    assert.match(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, mode: "sync", feed: "arrivals", businessDate: "2026-09-17", corte: 1 })).join(), /^corte: Campo no admitido/);
+    assertSpanish(messagesOf(PreviewReservationImportSchema.safeParse({ ...PREVIEW, mode: 1, profile: 2, feed: 3, businessDate: 4, horizonDays: "x", headerOverride: [1] })));
+  });
+});
+
+describe("CreateReservationImportSchema · modo sync (Tanda 7b)", () => {
+  it("hereda mode / feed / businessDate y el refine de sync; commit sigue siendo obligatorio", () => {
+    const parsed = CreateReservationImportSchema.parse({ ...PREVIEW, commit: true, mode: "sync", feed: "departures", businessDate: "2026-09-17", headerOverride: ["a", "b"] });
+    assert.equal(parsed.mode, "sync");
+    assert.equal(parsed.feed, "departures");
+    assert.deepEqual(parsed.headerOverride, ["a", "b"]);
+    const noFeed = CreateReservationImportSchema.safeParse({ ...PREVIEW, commit: true, mode: "sync" });
+    assert.equal(noFeed.success, false);
+    assert.deepEqual(messagesOf(noFeed), [`feed: ${SYNC_REQUIRES_FEED_MESSAGE}`]);
+    assert.equal(CreateReservationImportSchema.parse({ ...PREVIEW, commit: true }).mode, "create");
+    assert.match(messagesOf(CreateReservationImportSchema.safeParse({ ...PREVIEW, mode: "sync", feed: "arrivals", businessDate: "2026-09-17" })).join(), /^commit: commit debe ser true/);
   });
 });

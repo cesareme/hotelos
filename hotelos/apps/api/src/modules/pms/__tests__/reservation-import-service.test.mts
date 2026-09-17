@@ -74,6 +74,16 @@ describe("deriveImportStatus", () => {
     assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 0, errorCount: 0 }), "failed");
     assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 5, errorCount: 2 }), "failed");
   });
+
+  it("Tanda 7b · sync: failed solo si created + updated + unchanged + transitioned === 0; un corte todo unchanged es imported", () => {
+    assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 0, errorCount: 0, unchangedCount: 3 }), "imported");
+    assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 0, errorCount: 0, updatedCount: 1 }), "imported");
+    assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 0, errorCount: 0, transitionedCount: 1 }), "imported");
+    assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 1, errorCount: 0, unchangedCount: 3 }), "partial");
+    assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 0, errorCount: 1, updatedCount: 2, unchangedCount: 0, transitionedCount: 0 }), "partial");
+    assert.equal(deriveImportStatus({ createdCount: 0, skippedCount: 0, errorCount: 1, updatedCount: 0, unchangedCount: 0, transitionedCount: 0 }), "failed");
+    assert.equal(deriveImportStatus({ createdCount: 2, skippedCount: 0, errorCount: 0, updatedCount: 0, unchangedCount: 0, transitionedCount: 0 }), "imported");
+  });
 });
 
 describe("errores tipados de lote", () => {

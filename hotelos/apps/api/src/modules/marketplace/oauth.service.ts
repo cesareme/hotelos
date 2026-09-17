@@ -26,7 +26,14 @@ export const OAUTH_SCOPES = [
   "rooms.read",
   "properties.read",
   "webhooks.subscribe",
-  "messaging.send"
+  "messaging.send",
+  // OPERA Cloud · modo sombra (Tanda 7b · L3): ingesta de ficheros OPERA
+  // (POST /integrations/pms-shadow/ingest con X-Api-Key); se concede a la app
+  // del agente SFTP / cron del VPS. Validador propio en modules/pms-shadow/ingest-auth.ts.
+  // SEC-04: la variante ligada a un centro, `pms.shadow.ingest:<propertyId>`
+  // (pmsShadowIngestScopeFor de @hotelos/shared), no se lista aquí porque es
+  // un patrón, no un literal; el validador del ingest la reconoce.
+  "pms.shadow.ingest"
 ] as const;
 
 export type OAuthScope = (typeof OAUTH_SCOPES)[number];

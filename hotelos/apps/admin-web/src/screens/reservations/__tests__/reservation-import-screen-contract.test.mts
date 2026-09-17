@@ -135,11 +135,16 @@ describe("Reservas › Importar · pantalla (Tanda 7 · L4)", () => {
   it("imports only when the API says canImport and the session holds create AND modify (canDo over useNavGate), with a Spanish note otherwise", () => {
     assert.match(screen, /import \{ useNavGate \} from "\.\.\/\.\.\/navigation\/useEnabledModules";/);
     assert.match(screen, /import \{ canDo, saveDownload \} from "\.\.\/accounting\/accounting-ui";/);
-    assert.match(screen, /const canImport = canDo\(gate, "pms\.reservation\.create"\) && canDo\(gate, "pms\.reservation\.modify"\);/);
+    assert.match(screen, /const canCreateImport = canDo\(gate, "pms\.reservation\.create"\) && canDo\(gate, "pms\.reservation\.modify"\);/);
+    // FUX-7B-05: the sync commit also needs check-in / check-out (the API demands the four keys).
+    assert.match(screen, /const canImport = syncMode \? canCreateImport && canDo\(gate, "pms\.checkin\.execute"\) && canDo\(gate, "pms\.checkout\.execute"\) : canCreateImport;/);
+    assert.match(screen, /Necesitas los permisos de crear y modificar reservas y los de check-in y check-out para sincronizar un corte/);
+    // FUX-7B-09: the sync callout holds an editable date field, so it is not a live region.
+    assert.doesNotMatch(screen, /title=\{syncCalloutText\(sync, syncBusinessDate\)\} role="status"/);
     assert.match(screen, /const importDisabled = !preview\?\.canImport \|\| !canImport \|\| importing \|\| previewing;/);
     assert.match(screen, /createReservationImport\(\s*\{[\s\S]*?commit: true \},\s*propertyId\s*\)/);
     assert.match(screen, /`Importar \$\{plural\(preview\?\.summary\.toCreate \?\? 0, "reserva", "reservas"\)\}`/);
-    assert.match(screen, /<p className="cocoa-note">Necesitas los permisos de crear y modificar reservas/);
+    assert.match(screen, /Necesitas los permisos de crear y modificar reservas para importar un lote/);
     assert.doesNotMatch(screen, /auth-storage|getUser\(|\?\.permissions/);
     assert.match(screen, /showToast\(plural\(created\.createdCount, "reserva importada", "reservas importadas"\)/);
   });

@@ -34,7 +34,9 @@ const HOST_CONTEXT_SCREENS = [
   "aiOperations/AiGovernanceScreen.tsx",
   "developer/ApiReferenceScreen.tsx",
   "admin/TenantAdminConsoleScreen.tsx",
-  "admin/TenantDetailScreen.tsx"
+  "admin/TenantDetailScreen.tsx",
+  // Tanda 7b · L4: the OPERA shadow-mode panel is born hosted (tab of Módulos e integraciones).
+  "integrations/PmsShadowScreen.tsx"
 ];
 
 const noop = () => Promise.reject(new Error("loader not meant to run in tests"));
@@ -122,9 +124,37 @@ describe("tabs-c · Configuración · tabs from the tree", () => {
     expect("NotificationsScreen", ["comunicaciones", "correo-entrante"], "Plantillas y envíos");
     expect("BillingSettings", ["facturacion-pagos", "pagos"], "Facturación");
     expect("AccountingSettings", ["contabilidad-fiscal", "fiscal", "perfil-inicial", "categorias-ingresos"], "Contabilidad");
-    expect("ModuleManager", ["modulos", "salud", "integraciones"], "Módulos");
+    expect("ModuleManager", ["modulos", "salud", "integraciones", "modo-sombra"], "Módulos");
     expect("PropertyAiScreen", ["ia", "herramientas", "actividad", "gobernanza", "alta"], "Ajustes");
     expect("RoomSetupForm", ["habitaciones", "tipos", "espacios"], "Habitaciones");
+  });
+
+  it("Módulos e integraciones: «Modo sombra OPERA» is the third tab (/configuracion/modulos/modo-sombra) for dirección and admin, loaded directly (Tanda 7b · L4)", () => {
+    const { item } = itemForScreen("ModuleManager");
+    const tab = item.tabs.find((entry) => entry.screenKey === "PmsShadowScreen");
+    assert.ok(tab, "PmsShadowScreen tab");
+    assert.equal(tab.label, "Modo sombra OPERA");
+    assert.equal(tab.url, "/configuracion/modulos/modo-sombra");
+    assert.deepEqual(tab.roles, ["direccion", "admin"]);
+    assert.equal(item.tabs.indexOf(tab), item.tabs.length - 1, "Modo sombra OPERA is the last tab (orden 3)");
+    assert.equal(urlForScreen("PmsShadowScreen"), "/configuracion/modulos/modo-sombra");
+    const tabs = buildItemTabs(item, loadersFor(item), { pathname: "/configuracion/modulos/modo-sombra" });
+    assert.deepEqual(tabs.filter((entry) => isTabVisible(entry, ["direccion"], [])).map((entry) => entry.key), ["modulos", "salud", "integraciones", "modo-sombra"]);
+    assert.deepEqual(tabs.filter((entry) => isTabVisible(entry, ["recepcion"], [])).map((entry) => entry.key), []);
+    const container = read("../ModulosTabs.tsx");
+    assert.match(container, /^\s+PmsShadowScreen: \(\) => import\("\.\.\/\.\.\/integrations\/PmsShadowScreen"\)\.then\(\(m\) => \(\{ default: m\.PmsShadowScreen \}\)\)$/m);
+    const screen = read("../../../integrations/PmsShadowScreen.tsx");
+    assert.match(screen, /export function PmsShadowScreen\(\)/);
+    assert.match(screen, /treeHeaderFor\("PmsShadowScreen", \{ eyebrow: "Configuración · Módulos e integraciones", title: "Modo sombra OPERA" \}\)/);
+    assert.equal((screen.match(/\bstyle=\{/g) ?? []).length, 0, "the panel is born without inline styles (Cocoa 22 contract without margin)");
+    assert.doesNotMatch(screen, /<(?:button|table|input|select|textarea)\b|(?<!-)\bbo-[a-z0-9-]+|#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{3,4})(?![\w-])|\b(?:rgba?|hsla?)\(/, "no raw elements, no .bo-*, no colour literals");
+    assert.doesNotMatch(screen, /\bfetch\s*\(/, "no raw fetch: services/pmsShadowApi only");
+    assert.match(screen, /canDo\(gate, "integrations\.read"\)/);
+    assert.match(screen, /canDo\(gate, "integrations\.connect"\)/);
+    assert.match(screen, /canDo\(gate, "accounting\.journal\.post"\)/);
+    assert.match(screen, /buildSyncImportUrl\(/, "reservation feeds open the Tanda 7 wizard in sync mode");
+    const app = read("../../../../App.tsx");
+    assert.match(app, /^\s+PmsShadowScreen: ModulosTabs,$/m);
   });
 
   it("Comunicaciones: recepción sees templates but not the inbound mailboxes", () => {

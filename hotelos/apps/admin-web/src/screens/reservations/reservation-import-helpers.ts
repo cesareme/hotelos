@@ -493,13 +493,19 @@ export function importStatusTone(status: ReservationImportStatus | string): Coco
 export const ROW_OUTCOME_LABELS: Readonly<Record<ReservationImportRowOutcome, string>> = Object.freeze({
   created: "Creada",
   skipped: "Omitida",
-  error: "Error"
+  error: "Error",
+  updated: "Actualizada",
+  unchanged: "Sin cambios",
+  transitioned: "Transición"
 });
 
 export const ROW_OUTCOME_TONES: Readonly<Record<ReservationImportRowOutcome, CocoaTone>> = Object.freeze({
   created: "success",
   skipped: "neutral",
-  error: "danger"
+  error: "danger",
+  updated: "info",
+  unchanged: "neutral",
+  transitioned: "warning"
 });
 
 export function rowOutcomeLabel(outcome: ReservationImportRowOutcome | string): string {

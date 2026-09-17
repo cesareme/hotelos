@@ -31,6 +31,10 @@
  */
 
 import type { IsoDate, MoneyString } from "./financial-statements-types.js";
+// Tanda 7b · L1 (modo `sync`): solo tipos (pms-shadow-types importa a su vez
+// `ReservationImportField` de aquí; la circularidad es únicamente de tipos).
+import type { PmsShadowReservationFeed, ReservationSyncTargetStatus } from "./pms-shadow-types.js";
+import type { ReservationStatus } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Límites (diseño §3.1, §2.2, §6, §7)
@@ -84,6 +88,29 @@ export const RESERVATION_IMPORT_LIST_MAX_LIMIT = 200;
 export const RESERVATION_IMPORT_ROW_BATCH_SIZE = 100;
 /** Prefijo de `Reservation.bookingSource` de las reservas de un lote: `import:<importId>`. */
 export const RESERVATION_IMPORT_BOOKING_SOURCE_PREFIX = "import:";
+
+// ---- Modo `sync` (Tanda 7b · L1, diseño OPERA-CLOUD-MODO-SOMBRA.md §5, §6.3) ----
+
+/** Horizonte por defecto (días desde `businessDate`) de la ventana del feed `arrivals` para detectar reservas ausentes (§5.2). */
+export const RESERVATION_IMPORT_SYNC_DEFAULT_HORIZON_DAYS = 30;
+/** Tope de `horizonDays` (snapshot semanal de horizonte completo: business date + 540, decisión 10 de §8.1). */
+export const RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS = 730;
+/** Columnas máximas de `headerOverride` (cabecera sintética para un «Delimited Data» sin fila de cabecera). */
+export const RESERVATION_IMPORT_MAX_HEADER_OVERRIDE = 200;
+/**
+ * Columna SINTÉTICA que el perfil OPERA añade al fichero cuando trae `RATE` (tarifa
+ * de la primera noche) y no trae importe total: `RATE × noches × habitaciones`,
+ * mapeada a `importe_total` con aviso RESERVATION_IMPORT_ROW_OPERA_TOTAL_ESTIMATED.
+ */
+export const RESERVATION_IMPORT_SYNC_TOTAL_COLUMN = "__importe_total_estimado";
+/**
+ * Columna SINTÉTICA con el nº de confirmación resuelto por enlace (habitación +
+ * llegada + salida) para los informes que no lo traen (`departure_all`); mapeada a
+ * `referencia_externa`. Una fila sin resolver sigue sin referencia → SYNC_REQUIRES_REFERENCE.
+ */
+export const RESERVATION_IMPORT_SYNC_REFERENCE_COLUMN = "__referencia_externa";
+/** Código de la entrada de `warningsJson` que registra el diff (solo nombres de campo, nunca valores) de una fila actualizada. */
+export const RESERVATION_IMPORT_SYNC_DIFF_CODE = "SYNC_DIFF";
 
 /**
  * Longitud máxima (caracteres) de los campos de texto libre tras el mapeo (diseño
@@ -284,9 +311,48 @@ export const RESERVATION_IMPORT_FORMAT_LABELS_ES: Readonly<Record<ReservationImp
 export const RESERVATION_IMPORT_ENCODINGS = ["utf-8", "windows-1252"] as const;
 export type ReservationImportEncoding = (typeof RESERVATION_IMPORT_ENCODINGS)[number];
 
-/** Quién lanzó el commit (`optionsJson.source`). */
-export const RESERVATION_IMPORT_SOURCES = ["http", "cli"] as const;
+/** Quién lanzó el commit (`optionsJson.source`): HTTP, CLI y, en modo sombra (Tanda 7b), el conector de correo, el ingest por clave de API y el job del líder. */
+export const RESERVATION_IMPORT_SOURCES = ["http", "cli", "email", "api_key", "job"] as const;
 export type ReservationImportSource = (typeof RESERVATION_IMPORT_SOURCES)[number];
+
+/**
+ * Modo del análisis y del commit (Tanda 7b · L1): `create` (Tanda 7: cada fila
+ * válida crea una reserva) o `sync` (el fichero es un snapshot de un PMS de
+ * registro: upsert por nº de confirmación con `PmsShadowLink`, diff por fila y
+ * transiciones de estado; nada se borra). Ausente en el cuerpo = `create`.
+ */
+export const RESERVATION_IMPORT_MODES = ["create", "sync"] as const;
+export type ReservationImportMode = (typeof RESERVATION_IMPORT_MODES)[number];
+
+export const RESERVATION_IMPORT_MODE_LABELS_ES: Readonly<Record<ReservationImportMode, string>> = Object.freeze({
+  create: "Crear reservas",
+  sync: "Sincronizar (modo sombra)"
+});
+
+/** Perfiles de mapeo preinstalados (`packages/shared/src/pms-shadow-profiles/*`): cabecera literal → campo canónico + diccionarios. */
+export const RESERVATION_IMPORT_PROFILES = ["opera_cloud"] as const;
+export type ReservationImportProfile = (typeof RESERVATION_IMPORT_PROFILES)[number];
+
+export const RESERVATION_IMPORT_PROFILE_LABELS_ES: Readonly<Record<ReservationImportProfile, string>> = Object.freeze({
+  opera_cloud: "Oracle OPERA Cloud"
+});
+
+/**
+ * Acción decidida para una fila en modo `sync` (§6.3): `create` (sin enlace),
+ * `update` (enlace con diff de campos, con o sin transición), `transition` (solo
+ * cambia el estado), `unchanged` (mismo hash y mismo estado) y `skip` (waitlist,
+ * pseudo room, conflicto con una reserva local, regresión de estado).
+ */
+export const RESERVATION_SYNC_ACTIONS = ["create", "update", "unchanged", "transition", "skip"] as const;
+export type ReservationSyncAction = (typeof RESERVATION_SYNC_ACTIONS)[number];
+
+export const RESERVATION_SYNC_ACTION_LABELS_ES: Readonly<Record<ReservationSyncAction, string>> = Object.freeze({
+  create: "Crear",
+  update: "Actualizar",
+  unchanged: "Sin cambios",
+  transition: "Cambio de estado",
+  skip: "Omitir"
+});
 
 /**
  * Estado del lote (enum Prisma `ReservationImportStatus`): `processing` (creado
@@ -316,14 +382,22 @@ export const RESERVATION_IMPORT_ROW_STATUS_LABELS_ES: Readonly<Record<Reservatio
   skipped: "Omitida"
 });
 
-/** Resultado persistido de una fila tras el commit (`ReservationImportRow.outcome`). */
-export const RESERVATION_IMPORT_ROW_OUTCOMES = ["created", "skipped", "error"] as const;
+/**
+ * Resultado persistido de una fila tras el commit (`ReservationImportRow.outcome`).
+ * `updated`, `unchanged` y `transitioned` solo en modo `sync` (Tanda 7b): la fila
+ * se persiste con `reservationId` null (la reserva no procede de esta fila) y
+ * `reservationCode` relleno.
+ */
+export const RESERVATION_IMPORT_ROW_OUTCOMES = ["created", "skipped", "error", "updated", "unchanged", "transitioned"] as const;
 export type ReservationImportRowOutcome = (typeof RESERVATION_IMPORT_ROW_OUTCOMES)[number];
 
 export const RESERVATION_IMPORT_ROW_OUTCOME_LABELS_ES: Readonly<Record<ReservationImportRowOutcome, string>> = Object.freeze({
   created: "Creada",
   skipped: "Omitida",
-  error: "Error"
+  error: "Error",
+  updated: "Actualizada",
+  unchanged: "Sin cambios",
+  transitioned: "Transición"
 });
 
 /**
@@ -517,6 +591,26 @@ export type ReservationImportOptions = {
   historico: boolean;
   /** Importar aunque exista un lote no deshecho con el mismo hash. */
   force: boolean;
+  /**
+   * Tanda 7b · modo sombra. Ausente = `create` (los lotes y la preview de la
+   * Tanda 7 no llevan ninguna de estas claves; en `sync` viajan todas juntas).
+   */
+  mode?: ReservationImportMode;
+  /** Perfil de mapeo preinstalado (cabecera literal → campo, diccionarios de estado / canal / segmento / pago). */
+  profile?: ReservationImportProfile;
+  /** Feed del snapshot (arrivals · inhouse · departures · changes): fija la ventana de §5.2. Obligatorio en `sync`. */
+  feed?: PmsShadowReservationFeed;
+  /** Business date del corte ("YYYY-MM-DD"): sal del hash de contenido y `lastBusinessDate` de los enlaces. Obligatorio en `sync`. */
+  businessDate?: IsoDate;
+  /** Días de horizonte del feed `arrivals` (por defecto RESERVATION_IMPORT_SYNC_DEFAULT_HORIZON_DAYS). */
+  horizonDays?: number;
+};
+
+/** Contadores del modo `sync` guardados en `optionsJson.sync` (Tanda 7b). */
+export type ReservationImportSyncCounts = {
+  updated: number;
+  unchanged: number;
+  transitioned: number;
 };
 
 /** Lo que se guarda en `optionsJson` del lote: opciones + contexto del fichero y del commit. */
@@ -529,6 +623,10 @@ export type ReservationImportStoredOptions = ReservationImportOptions & {
   /** Duración del commit en milisegundos. */
   durationMs?: number;
   source: ReservationImportSource;
+  /** Tanda 7b: `PmsShadowRun` que produjo el lote (ingest / correo / CLI / job). */
+  shadowRunId?: string;
+  /** Tanda 7b: contadores de filas actualizadas / sin cambios / con transición (solo `sync`). */
+  sync?: ReservationImportSyncCounts;
 };
 
 // ---------------------------------------------------------------------------
@@ -594,6 +692,12 @@ export type NormalizedReservationRow = {
   specialRequests?: string;
   notes?: string;
   vipFlag: boolean;
+  /** Tanda 7b · `sync`: estado destino resuelto por el diccionario de estados del perfil (`estado` canónico se deriva de él). */
+  targetStatus?: ReservationSyncTargetStatus;
+  /** Tanda 7b · `sync`: estancia en curso según OPERA (llegada ≤ hoy < salida con destino checked_in / checked_out): permitida, no IN_HOUSE_PAST. */
+  inHouse?: boolean;
+  /** Tanda 7b · `sync`: tarifa de la primera noche (`RATE` de Responsys) cuando el fichero la trae; informativa. */
+  rateFirstNight?: MoneyString;
 };
 
 // ---------------------------------------------------------------------------
@@ -612,6 +716,22 @@ export type ReservationImportIssue = {
   /** Campo canónico afectado, si aplica. */
   column?: ReservationImportField;
   details?: Record<string, unknown>;
+  /** Tanda 7b: solo en la entrada `SYNC_DIFF` de `warningsJson` (código RESERVATION_IMPORT_SYNC_DIFF_CODE): nombres de los campos actualizados desde el PMS de registro, nunca valores. */
+  fields?: string[];
+};
+
+/** Veredicto de sincronización de una fila (Tanda 7b · `sync`), sin datos personales. */
+export type ReservationImportRowSync = {
+  action: ReservationSyncAction;
+  targetStatus: ReservationSyncTargetStatus;
+  /** Estado actual de la reserva enlazada (ausente en `create`). */
+  currentStatus?: ReservationStatus;
+  /** Código de la reserva enlazada (ausente en `create`). */
+  reservationCode?: string;
+  /** Nombres de los campos que cambian (arrivalDate, ratePlanId, totalAmount…), nunca valores. */
+  diff?: string[];
+  /** `importe_total` estimado como RATE × noches × habitaciones (perfil OPERA, aviso OPERA_TOTAL_ESTIMATED). */
+  totalEstimated?: boolean;
 };
 
 /** Resumen SIN datos personales de una fila normalizada: lo que ven todas las filas de la preview y lo que se persiste. */
@@ -628,6 +748,8 @@ export type ReservationImportRowResolved = {
   historical: boolean;
   totalAmount: MoneyString;
   totalSource: ReservationImportTotalSource;
+  /** Solo en modo `sync`. */
+  sync?: ReservationImportRowSync;
 };
 
 /** Cupo del tipo para la fila según la regla de rango del PMS (BD + filas anteriores del fichero). */
@@ -720,8 +842,14 @@ export type ReservationImportSummary = {
   skipped: number;
   /** Filas que se crearán como estancia cerrada. */
   historical: number;
-  /** Filas que el commit creará (válidas + con avisos; con `omitirInvalidas`, sin las erróneas). */
+  /** Filas que el commit creará (válidas + con avisos; con `omitirInvalidas`, sin las erróneas). En `sync`, solo las de acción `create`. */
   toCreate: number;
+  /** Tanda 7b · `sync`: filas con enlace y diff (acción `update`, con o sin transición). */
+  toUpdate?: number;
+  /** Tanda 7b · `sync`: filas con enlace, mismo hash y mismo estado. */
+  unchanged?: number;
+  /** Tanda 7b · `sync`: filas cuyo estado destino difiere del actual (transición de §5.3), sea `update` o `transition`. */
+  toTransition?: number;
 };
 
 /** Lote vivo con el mismo contenido (409 RESERVATION_IMPORT_DUPLICATE sin `force`). */
@@ -864,9 +992,54 @@ export type ReservationImportDetail = ReservationImportRecord & {
   rows: ReservationImportRowRecord[];
 };
 
+/** Reserva enlazada, en ventana y ausente del corte (Tanda 7b · §5.2): alerta, nunca cancelación automática. */
+export type ReservationImportSyncMissing = {
+  confirmationNo: string;
+  reservationCode: string;
+  arrivalDate: IsoDate;
+  /** Cortes consecutivos en ventana sin aparecer (ya incrementado por este lote). */
+  missingStreak: number;
+};
+
+/** Fila omitida por chocar con una reserva creada en Anfitorio por otra vía (sin enlace). */
+export type ReservationImportSyncConflict = {
+  rowNumber: number;
+  confirmationNo: string;
+  reservationCode: string;
+};
+
+/** OPERA la tiene en casa pero la fila no trae una habitación válida: permanece confirmada. */
+export type ReservationImportSyncCheckInWithoutRoom = {
+  confirmationNo: string;
+  reservationCode: string;
+};
+
+/** Bloque `sync` del resultado del commit (Tanda 7b · §6.3). */
+export type ReservationImportSyncResult = {
+  feed: PmsShadowReservationFeed;
+  businessDate: IsoDate;
+  counts: {
+    created: number;
+    updated: number;
+    unchanged: number;
+    transitioned: number;
+    skipped: number;
+    error: number;
+  };
+  missing: ReservationImportSyncMissing[];
+  conflicts: ReservationImportSyncConflict[];
+  checkInWithoutRoom: ReservationImportSyncCheckInWithoutRoom[];
+  /** SC-03: rate codes de OPERA sin entrada en el perfil (filas creadas / actualizadas con la tarifa por defecto) → OPERA_RATE_CODE_UNMAPPED. Únicos, ordenados. */
+  unmappedRateCodes?: string[];
+  /** SC-03: room types de OPERA sin entrada en el perfil ni en `RoomType` (filas en error) → OPERA_ROOM_TYPE_UNMAPPED. Únicos, ordenados. */
+  unmappedRoomTypes?: string[];
+};
+
 /** `POST …/reservations/imports` (201 siempre que el lote exista, incluso `failed`). */
 export type ReservationImportResult = ReservationImportDetail & {
   warnings: string[];
+  /** Solo en modo `sync` (Tanda 7b). */
+  sync?: ReservationImportSyncResult;
 };
 
 /** `POST …/reservations/imports/:id/undo` (200, idempotente). */
@@ -898,6 +1071,21 @@ export type ReservationImportPreviewBody = {
   force?: boolean;
   /** 1..1000 (por defecto 200). */
   sampleSize?: number;
+  /** Tanda 7b: `create` por defecto; `sync` exige `feed` y `businessDate` (400 RESERVATION_IMPORT_SYNC_REQUIRES_FEED). */
+  mode?: ReservationImportMode;
+  /** Perfil preinstalado: mapeo por cabecera literal (400 RESERVATION_IMPORT_HEADER_MISMATCH si la cabecera no es la del perfil en `sync`). */
+  profile?: ReservationImportProfile;
+  feed?: PmsShadowReservationFeed;
+  /** "YYYY-MM-DD". */
+  businessDate?: IsoDate;
+  /** 1..730. */
+  horizonDays?: number;
+  /**
+   * Cabecera sintética cuando el fichero NO trae fila de cabecera («Delimited
+   * Data»): la primera fila del fichero pasa a ser la primera fila de datos. El nº
+   * de columnas debe coincidir (400 RESERVATION_IMPORT_HEADER_MISMATCH).
+   */
+  headerOverride?: string[];
 };
 
 /** `POST …/reservations/imports`: la preview más `commit: true` (literal). */
@@ -951,7 +1139,14 @@ export const RESERVATION_IMPORT_ERROR_CODES = [
   /** 404 opaco · lote inexistente, de otra propiedad o de otra organización. */
   "RESERVATION_IMPORT_NOT_FOUND",
   /** 409 · `{ importId, undoneAt }`: otro deshacer reclamado hace menos de 15 minutos. */
-  "RESERVATION_IMPORT_UNDO_IN_PROGRESS"
+  "RESERVATION_IMPORT_UNDO_IN_PROGRESS",
+  // ---- Tanda 7b · modo `sync` ----
+  /** 400 · `mode: "sync"` sin `feed` o sin `businessDate`. */
+  "RESERVATION_IMPORT_SYNC_REQUIRES_FEED",
+  /** 400 · `{ profile, feed }`: el perfil no define ese feed (columnas pendientes de muestra real). */
+  "RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED",
+  /** 400 · `{ expected, received }`: la cabecera recibida no es la del perfil (columnas de más, de menos o renombradas; L3 lo convierte en OPERA_FEED_COLUMNS_CHANGED). */
+  "RESERVATION_IMPORT_HEADER_MISMATCH"
 ] as const;
 export type ReservationImportErrorCode = (typeof RESERVATION_IMPORT_ERROR_CODES)[number];
 
@@ -967,7 +1162,10 @@ export const RESERVATION_IMPORT_ERROR_LABELS_ES: Readonly<Record<ReservationImpo
   RESERVATION_IMPORT_INVALID: "Hay filas con errores: corrígelas o activa «Omitir filas inválidas».",
   RESERVATION_IMPORT_DUPLICATE: "Este fichero ya se importó: deshaz el lote anterior o activa «Importar de todos modos».",
   RESERVATION_IMPORT_NOT_FOUND: "Importación de reservas no encontrada.",
-  RESERVATION_IMPORT_UNDO_IN_PROGRESS: "Otro deshacer de este lote está en curso: espera unos minutos."
+  RESERVATION_IMPORT_UNDO_IN_PROGRESS: "Otro deshacer de este lote está en curso: espera unos minutos.",
+  RESERVATION_IMPORT_SYNC_REQUIRES_FEED: "El modo sincronizar exige indicar el feed y el business date del corte.",
+  RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED: "El perfil de mapeo no define las columnas de ese feed: hace falta una salida real del informe.",
+  RESERVATION_IMPORT_HEADER_MISMATCH: "La cabecera del fichero no coincide con la del perfil: revisa las columnas del informe o del export."
 });
 
 // ---------------------------------------------------------------------------
@@ -1096,7 +1294,34 @@ export const RESERVATION_IMPORT_ROW_CODES = [
   /** aviso · celda recortada al máximo del campo. */
   "RESERVATION_IMPORT_ROW_CELL_TRUNCATED",
   /** aviso (commit) · la reserva se creó pero `assignRoom` falló (carrera): asignar desde recepción. */
-  "RESERVATION_IMPORT_ROW_ROOM_ASSIGN_FAILED"
+  "RESERVATION_IMPORT_ROW_ROOM_ASSIGN_FAILED",
+  // ---- Tanda 7b · perfil OPERA Cloud y modo `sync` (diseño §4, §5, §6.3) ----
+  /** aviso · `importe_total` estimado como RATE (primera noche) × noches × habitaciones; se sustituye por el importe real cuando llegue. */
+  "RESERVATION_IMPORT_ROW_OPERA_TOTAL_ESTIMATED",
+  /** omisión · estado Waitlist: sin equivalente en Anfitorio. */
+  "RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED",
+  /** omisión · room type pseudo (PM, HOUSE…): no es inventario. */
+  "RESERVATION_IMPORT_ROW_OPERA_PSEUDO_ROOM",
+  /** omisión · el nº de confirmación coincide con una reserva activa creada en Anfitorio por otra vía (sin enlace): nunca se toca (`details.reservationCode`). */
+  "RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION",
+  /** aviso · OPERA la tiene en casa pero la fila no trae una habitación válida: permanece confirmada (alerta en el panel). */
+  "RESERVATION_IMPORT_ROW_OPERA_CHECKIN_WITHOUT_ROOM",
+  /** omisión · OPERA dice confirmada (o en casa) y Anfitorio ya la tiene con check-in / check-out: no se retrocede. */
+  "RESERVATION_IMPORT_ROW_SYNC_STATUS_REGRESSION",
+  /** aviso · cancelación o no-show sobre una reserva ya alojada o con check-out: no se cancela (§5.3). */
+  "RESERVATION_IMPORT_ROW_SYNC_CANCEL_AFTER_CHECKIN",
+  /** aviso · cambio de habitación de una reserva alojada: no se aplica (el movimiento se hace por recepción). */
+  "RESERVATION_IMPORT_ROW_SYNC_ROOM_MOVE_IGNORED",
+  /** error (commit) · `updateReservationShadow` rechazó la actualización (mensaje del servicio sin PII). */
+  "RESERVATION_IMPORT_ROW_SYNC_UPDATE_FAILED",
+  /** error (commit) · la transición de estado (cancelación, no-show, check-in, check-out) falló. */
+  "RESERVATION_IMPORT_ROW_SYNC_TRANSITION_FAILED",
+  /** error · fila sin `referencia_externa` (nº de confirmación) en modo `sync`: sin clave de upsert. */
+  "RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE",
+  /** aviso · SC-03: rate code de OPERA sin entrada en `mappingJson.rateCodes` ni `RatePlan.code` → tarifa por defecto (BAR) + alerta OPERA_RATE_CODE_UNMAPPED (`details.rateCode`, `details.ratePlanCode`). */
+  "RESERVATION_IMPORT_ROW_OPERA_RATE_CODE_UNMAPPED",
+  /** aviso (commit) · SC-08: la reserva está alojada y el único cambio del corte es un campo que en casa no se aplica (unidades, tipo, tarifa…): fila `unchanged`, hash no memorizado (`fields`). */
+  "RESERVATION_IMPORT_ROW_SYNC_IN_HOUSE_FIELD_IGNORED"
 ] as const;
 export type ReservationImportRowCode = (typeof RESERVATION_IMPORT_ROW_CODES)[number];
 
@@ -1158,7 +1383,20 @@ export const RESERVATION_IMPORT_ROW_CODE_SEVERITY: Readonly<Record<ReservationIm
   RESERVATION_IMPORT_ROW_TENTATIVE_AS_CONFIRMED: "warning",
   RESERVATION_IMPORT_ROW_CANCELLED_AT_IMPORT: "warning",
   RESERVATION_IMPORT_ROW_CELL_TRUNCATED: "warning",
-  RESERVATION_IMPORT_ROW_ROOM_ASSIGN_FAILED: "warning"
+  RESERVATION_IMPORT_ROW_ROOM_ASSIGN_FAILED: "warning",
+  RESERVATION_IMPORT_ROW_OPERA_TOTAL_ESTIMATED: "warning",
+  RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED: "skipped",
+  RESERVATION_IMPORT_ROW_OPERA_PSEUDO_ROOM: "skipped",
+  RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION: "skipped",
+  RESERVATION_IMPORT_ROW_OPERA_CHECKIN_WITHOUT_ROOM: "warning",
+  RESERVATION_IMPORT_ROW_SYNC_STATUS_REGRESSION: "skipped",
+  RESERVATION_IMPORT_ROW_SYNC_CANCEL_AFTER_CHECKIN: "warning",
+  RESERVATION_IMPORT_ROW_SYNC_ROOM_MOVE_IGNORED: "warning",
+  RESERVATION_IMPORT_ROW_SYNC_UPDATE_FAILED: "error",
+  RESERVATION_IMPORT_ROW_SYNC_TRANSITION_FAILED: "error",
+  RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE: "error",
+  RESERVATION_IMPORT_ROW_OPERA_RATE_CODE_UNMAPPED: "warning",
+  RESERVATION_IMPORT_ROW_SYNC_IN_HOUSE_FIELD_IGNORED: "warning"
 });
 
 /** Etiqueta corta en español por código de fila (informe CSV, tabla de revisión, CLI); el `message` de la incidencia añade columna y nº de fila. */
@@ -1219,5 +1457,18 @@ export const RESERVATION_IMPORT_ROW_CODE_LABELS_ES: Readonly<Record<ReservationI
   RESERVATION_IMPORT_ROW_TENTATIVE_AS_CONFIRMED: "Tentativa creada como confirmada",
   RESERVATION_IMPORT_ROW_CANCELLED_AT_IMPORT: "Creada y cancelada en la importación",
   RESERVATION_IMPORT_ROW_CELL_TRUNCATED: "Celda recortada",
-  RESERVATION_IMPORT_ROW_ROOM_ASSIGN_FAILED: "Reserva creada sin la habitación pedida"
+  RESERVATION_IMPORT_ROW_ROOM_ASSIGN_FAILED: "Reserva creada sin la habitación pedida",
+  RESERVATION_IMPORT_ROW_OPERA_TOTAL_ESTIMATED: "Importe total estimado (tarifa de la primera noche × noches × habitaciones)",
+  RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED: "Lista de espera (waitlist): sin equivalente, omitida",
+  RESERVATION_IMPORT_ROW_OPERA_PSEUDO_ROOM: "Pseudo room de OPERA: no es inventario, omitida",
+  RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION: "Conflicto con una reserva creada en Anfitorio",
+  RESERVATION_IMPORT_ROW_OPERA_CHECKIN_WITHOUT_ROOM: "Check-in en OPERA sin habitación válida: permanece confirmada",
+  RESERVATION_IMPORT_ROW_SYNC_STATUS_REGRESSION: "Estado anterior al actual en Anfitorio: no se retrocede",
+  RESERVATION_IMPORT_ROW_SYNC_CANCEL_AFTER_CHECKIN: "Cancelación o no-show sobre una reserva ya alojada: no se aplica",
+  RESERVATION_IMPORT_ROW_SYNC_ROOM_MOVE_IGNORED: "Cambio de habitación de una reserva alojada: no se aplica",
+  RESERVATION_IMPORT_ROW_SYNC_UPDATE_FAILED: "El PMS rechazó la actualización",
+  RESERVATION_IMPORT_ROW_SYNC_TRANSITION_FAILED: "La transición de estado falló",
+  RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE: "Fila sin número de confirmación (referencia externa)",
+  RESERVATION_IMPORT_ROW_OPERA_RATE_CODE_UNMAPPED: "Rate code de OPERA sin mapear: tarifa por defecto",
+  RESERVATION_IMPORT_ROW_SYNC_IN_HOUSE_FIELD_IGNORED: "Cambio en una reserva alojada que no se aplica en casa"
 });

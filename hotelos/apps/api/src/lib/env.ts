@@ -19,6 +19,7 @@
 // tests/env-contract.test.mjs.
 import { CHANNEL_MANAGER_ENV_CONTRACT } from "../modules/channel-manager/env.partial.js";
 import { PAYMENTS_ENV_CONTRACT } from "../modules/payments/env.partial.js";
+import { PMS_SHADOW_ENV_CONTRACT } from "../modules/pms-shadow/env.partial.js";
 import { accessSync, constants as fsConstants } from "node:fs";
 import { z } from "zod";
 import { isValidSpanishTaxId, resolveVerifactuCredentials, resolveVerifactuSoftware } from "@hotelos/compliance";
@@ -683,7 +684,7 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
     ...BOOL,
     default: "true",
     example: "true",
-    doc: "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false)."
+    doc: "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón, modo sombra OPERA). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false)."
   },
   SES_SCHEDULER_DISABLED: { section: "Schedulers", ...BOOL, default: "false", doc: "true desactiva el envío periódico de partes SES." },
   SES_SCHEDULER_INTERVAL_MS: { section: "Schedulers", ...INTERVAL, default: "300000", doc: "Periodo del scheduler SES (ms)." },
@@ -736,6 +737,9 @@ export const ENV_CONTRACT: EnvContract = Object.freeze({
   // Finanzas (2026-09-15): the payments module owns its contract (PSP
   // credentials, provider selection, public base URL) in modules/payments/env.partial.ts.
   ...PAYMENTS_ENV_CONTRACT,
+  // OPERA Cloud · modo sombra (Tanda 7b · L3): job del líder (PMS_SHADOW_JOB_DISABLED,
+  // PMS_SHADOW_JOB_INTERVAL_MS) en modules/pms-shadow/env.partial.ts.
+  ...PMS_SHADOW_ENV_CONTRACT,
 
   // ---------------------------------------------------------------- Wallet
   APPLE_WALLET_PASS_TYPE_ID: { section: "Wallet", format: "string", default: "pass.com.hotelos.roomkey", doc: "Pass Type ID de las llaves móviles en Apple Wallet." },

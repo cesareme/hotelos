@@ -3313,6 +3313,8 @@ model Reservation {
   folios               Folio[]           @relation("ReservationFolios")
   reservationGuests    ReservationGuest[]
   stays                Stay[]
+  /// OPERA Cloud · modo sombra (Tanda 7b · L0): enlace por nº de confirmación (relación sin columna en reservations).
+  pmsShadowLink        PmsShadowLink?
 
   @@unique([propertyId, code])
   @@index([propertyId, arrivalDate, departureDate])
@@ -5337,6 +5339,8 @@ model ReservationImport {
   undoKeptCount    Int                     @default(0) @map("undo_kept_count")
 
   rows             ReservationImportRow[]
+  /// OPERA Cloud · modo sombra (Tanda 7b · L0): runs que produjeron este lote (feeds de reservas en modo sync).
+  shadowRuns       PmsShadowRun[]
 
   @@index([propertyId, status, createdAt])
   @@index([propertyId, contentHash])
@@ -5907,4 +5911,212 @@ model RateChangeJournalItem {
   @@index([journalId])
   @@index([ratePlanId, roomTypeId, date])
   @@map("rate_change_journal_items")
+}
+
+// =============================================================================
+// OPERA Cloud · modo sombra (Tanda 7b · L0)
+// =============================================================================
+// Diseño: docs/design/OPERA-CLOUD-MODO-SOMBRA.md §5 (semántica de sincronización y
+// reconciliación) y §6.1 (modelo). OPERA Cloud sigue siendo el sistema de registro;
+// Anfitorio recibe cada día un corte de reservas, los ingresos por transaction code
+// y, con menos frecuencia, perfiles y estadísticas; nunca escribe en OPERA. Todo es
+// ADITIVO: ninguna columna nueva en `reservations` (la relación 1:1 con
+// `pms_shadow_links` vive en la tabla de enlace) y ningún enum nuevo (los estados
+// son texto con su catálogo en packages/shared/src/pms-shadow-types.ts).
+// GDPR: ninguna de estas tablas guarda nombre, e-mail, teléfono ni documento del
+// huésped; los ficheros recibidos no se persisten (se procesan y se descartan, como
+// en la importación masiva de la Tanda 7); los mensajes y los JSON citan nº de
+// confirmación, códigos, métricas e importes, nunca datos personales. Sin FK a
+// properties / organizations (misma convención que ReservationImport);
+// organizationId y propertyId desnormalizados para aislar cada consulta sin join.
+
+/// Perfil «modo sombra» de una propiedad: qué PMS de registro la alimenta (hoy solo OPERA Cloud), con qué código de hotel y con qué mapeos. Uno por (propiedad, sistema).
+model PmsShadowProfile {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  propertyId     String   @map("property_id")
+  /// Sistema de registro (PMS_SHADOW_SYSTEMS): hoy solo `opera_cloud`.
+  system         String   @default("opera_cloud")
+  /// Hotel Code de OPERA (Property Controls; `hotel_code` del XML de Revenue): identifica el hotel en cada fichero recibido y da `bookingSource opera:<código>`.
+  operaHotelCode String   @map("opera_hotel_code")
+  /// active · paused (PMS_SHADOW_PROFILE_STATUSES). En pausa el ingest responde 409 PMS_SHADOW_PROFILE_PAUSED y el job no reclama feeds ni emite OPERA_FEED_LATE.
+  status         String   @default("active")
+  /// PmsShadowPropertyMapping: roomTypes / rateCodes / marketCodes / sourceCodes / paymentTypes (código OPERA → código Anfitorio) y pseudoRoomTypes[] (PM, HOUSE…: filas omitidas, no son inventario).
+  mappingJson    Json     @default("{}") @map("mapping_json")
+  /// PmsShadowTrxCodeMapping[]: transaction code OPERA → kind (revenue · tax · payment · ignore), cuenta PGC (705.1 / 477.10 / 570…) y departamento USALI. Código sin mapear → el importador de ingresos bloquea el día.
+  trxMappingJson Json     @default("[]") @map("trx_mapping_json")
+  /// { feeds: [{ feed, expectedTime "HH:mm" (hora local del hotel), businessDateOffset -1 | 0, required }] }: feeds esperados; sin fichero a la hora prevista + 2 h → OPERA_FEED_LATE.
+  scheduleJson   Json     @default("{}") @map("schedule_json")
+  /// Buzón dedicado del hotel al que el Report Scheduler de OPERA envía los informes (p. ej. opera-rias@…); lo lee el conector de correo con propósito pms_shadow.
+  inboxEmail     String?  @map("inbox_email")
+  /// Carpeta SFTP (ruta local en el VPS) donde OPERA deposita los exports; la recorre el CLI pms-shadow:pull.
+  sftpFolder     String?  @map("sftp_folder")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([propertyId, system])
+  @@index([organizationId, status])
+  @@map("pms_shadow_profiles")
+}
+
+/// Enlace (propiedad, nº de confirmación OPERA) → reserva de Anfitorio: clave natural del upsert del modo `sync` y memoria de la última vista de cada reserva en los cortes. Sin datos personales.
+model PmsShadowLink {
+  id                  String    @id @default(cuid())
+  organizationId      String    @map("organization_id")
+  propertyId          String    @map("property_id")
+  /// Nº de confirmación de OPERA (`RESERVATION_ID` de Responsys, CONFIRMATION NO de los eventos): el mismo valor que Reservation.externalReference.
+  confirmationNo      String    @map("confirmation_no")
+  /// Id interno de OPERA (RESV NAME ID / `reservationId` de OHIP); solo llega por la vía C.
+  operaReservationId  String?   @map("opera_reservation_id")
+  /// Referencia CRS / OTA (`CRS_CONFIRMATION_NO`, `externalReferences[]` de OHIP); no sustituye a externalReference.
+  crsReference        String?   @map("crs_reference")
+  /// Reserva enlazada (única: una reserva procede como máximo de un nº de confirmación). Reactivación Cancelled → Reserved = reserva nueva y el enlace pasa a apuntar a ella.
+  reservationId       String    @unique @map("reservation_id")
+  /// sha256 hex de la fila normalizada en la última vista: mismo hash → `unchanged`; distinto → actualización + transición si procede.
+  rowHash             String    @map("row_hash")
+  /// Estado destino de la última sincronización (RESERVATION_SYNC_TARGET_STATUSES: confirmed · checked_in · checked_out · cancelled · no_show · skip).
+  lastStatus          String    @map("last_status")
+  lastSeenAt          DateTime  @map("last_seen_at")
+  /// Business date del último corte que traía la reserva (ventana del diff de §5.2).
+  lastBusinessDate    DateTime  @map("last_business_date") @db.Date
+  /// Lote (ReservationImport) que creó el enlace y último lote que lo tocó (sin FK: mismo criterio que ReservationImportRow).
+  firstImportId       String    @map("first_import_id")
+  lastImportId        String?   @map("last_import_id")
+  /// Cortes consecutivos, en ventana, en los que la reserva NO apareció ni venía cancelada / no-show (§5.2): 1 → alerta OPERA_MISSING_IN_SNAPSHOT; la cancelación es manual tras 2. Vuelve a 0 al reaparecer.
+  missingStreak       Int       @default(0) @map("missing_streak")
+  /// `lastModifiedDate` de OHIP (vía C), para la ventana de modificación del async dailySummary.
+  operaLastModifiedAt DateTime? @map("opera_last_modified_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  updatedAt           DateTime  @updatedAt @map("updated_at")
+
+  reservation         Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyId, confirmationNo])
+  @@index([propertyId, lastBusinessDate])
+  @@map("pms_shadow_links")
+}
+
+/// Ejecución de un corte (un fichero recibido o una llamada OHIP) en una propiedad: origen, feed, business date, hash, estado, contadores y alertas. Registro operativo del panel «Modo sombra». El fichero NO se guarda.
+model PmsShadowRun {
+  id                  String    @id @default(cuid())
+  organizationId      String    @map("organization_id")
+  propertyId          String    @map("property_id")
+  /// arrivals · inhouse · departures · changes · revenue · profiles · stats · ohip_delta (PMS_SHADOW_FEEDS).
+  feed                String
+  /// email · sftp · api_key · manual · ohip · cli (PMS_SHADOW_RUN_SOURCES).
+  source              String
+  /// Business date del corte. Opcional en el modelo (un fichero sin fecha reconocible se registra igual); el ingest de L3 siempre la rellena.
+  businessDate        DateTime? @map("business_date") @db.Date
+  fileName            String?   @map("file_name")
+  /// sha256 hex del fichero recibido tal cual: con feed + businessDate forma la idempotencia (409 PMS_SHADOW_RUN_DUPLICATE).
+  contentHash         String    @map("content_hash")
+  /// received · processing · done · partial · failed (PMS_SHADOW_RUN_STATUSES). `received` queda reservado: el ingest procesa en línea y crea el run ya en `processing`.
+  status              String    @default("received")
+  /// Lote de reservas (feeds arrivals · inhouse · departures · changes) producido por el run; SET NULL si el lote desapareciera.
+  reservationImportId String?   @map("reservation_import_id")
+  /// Lote de ingresos (feed revenue) producido por el run.
+  revenueImportId     String?   @map("revenue_import_id")
+  createdCount        Int       @default(0) @map("created_count")
+  updatedCount        Int       @default(0) @map("updated_count")
+  unchangedCount      Int       @default(0) @map("unchanged_count")
+  /// Reservas con transición de estado (cancelación, no-show, check-in, check-out) aplicada en el run.
+  transitionedCount   Int       @default(0) @map("transitioned_count")
+  skippedCount        Int       @default(0) @map("skipped_count")
+  errorCount          Int       @default(0) @map("error_count")
+  /// Resumen del run: valores declarados por OPERA (feed stats: Manager Report / Trial Balance), cabecera reconocida, totales… Sin PII.
+  resultJson          Json      @default("{}") @map("result_json")
+  /// PmsShadowRunAlert[]: alertas emitidas por el run (código, severidad, mensaje sin PII, nº de confirmación si aplica), [] si ninguna.
+  alertsJson          Json      @default("[]") @map("alerts_json")
+  /// Mensaje en español del fallo (sin valores personales) cuando status = failed | partial.
+  errorMessage        String?   @map("error_message")
+  correlationId       String?   @map("correlation_id")
+  /// Usuario o app de desarrollador que originó el run (PMS_SHADOW_SYSTEM_USER_ID para el job y el conector de correo).
+  createdBy           String?   @map("created_by")
+  startedAt           DateTime? @map("started_at")
+  finishedAt          DateTime? @map("finished_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+
+  reservationImport   ReservationImport?      @relation(fields: [reservationImportId], references: [id], onDelete: SetNull)
+  revenueImport       PmsShadowRevenueImport? @relation(fields: [revenueImportId], references: [id], onDelete: SetNull)
+  alerts              PmsShadowAlert[]
+
+  @@unique([propertyId, feed, businessDate, contentHash])
+  @@index([propertyId, businessDate, feed])
+  @@index([propertyId, status, createdAt])
+  @@map("pms_shadow_runs")
+}
+
+/// Lote de ingresos diarios de OPERA (un fichero de un business date: XML GEN_XMLBO_REVENUE, findeptcodes o RESPONSYS_TRX) → un asiento por (hotel, business date) con sourceType pms_shadow_revenue, reversible (patrón de la Tanda 6c). Sin unicidad por (propiedad, día): «un lote no revertido por día» la impone el servicio bajo advisory lock (un reverso + nuevo del mismo día conviven).
+model PmsShadowRevenueImport {
+  id                      String    @id @default(cuid())
+  organizationId          String    @map("organization_id")
+  propertyId              String    @map("property_id")
+  businessDate            DateTime  @map("business_date") @db.Date
+  /// xml_revenue · findeptcodes_xml · findeptcodes_csv · responsys_trx (PMS_SHADOW_REVENUE_SOURCES).
+  source                  String
+  fileName                String?   @map("file_name")
+  /// sha256 hex del fichero recibido (409 PMS_SHADOW_REVENUE_DUPLICATE mientras exista un lote no revertido con el mismo hash en la propiedad).
+  contentHash             String    @map("content_hash")
+  /// draft (previsualizado, sin asiento) · posted (asiento contabilizado) · reversed (asiento revertido; `replacedById` si lo sustituyó otro lote) (PMS_SHADOW_REVENUE_STATUSES).
+  status                  String    @default("draft")
+  /// PmsShadowRevenueLine[]: transaction code, tipo, descripción OPERA, importe neto, ledgers, kind / cuenta / departamento resueltos por el mapeo del perfil.
+  linesJson               Json      @default("[]") @map("lines_json")
+  /// Σ líneas kind revenue (H 705.x), tax (H 477.x), payment (D 57x) y el resto (ignore: informativo, sin asiento).
+  totalRevenue            Decimal   @default(0) @db.Decimal(14, 2) @map("total_revenue")
+  totalTax                Decimal   @default(0) @db.Decimal(14, 2) @map("total_tax")
+  totalPayments           Decimal   @default(0) @db.Decimal(14, 2) @map("total_payments")
+  totalOther              Decimal   @default(0) @db.Decimal(14, 2) @map("total_other")
+  /// Asiento(s) del día y sus reversos (ids de journal_entries).
+  journalEntryIds         String[]  @default([]) @map("journal_entry_ids")
+  reversalJournalEntryIds String[]  @default([]) @map("reversal_journal_entry_ids")
+  /// Valores declarados por OPERA para el cuadre (Trial Balance «Transaction Total Today», Manager Report Room / Total Revenue) y el resultado de la comparación.
+  reconciliationJson      Json      @default("{}") @map("reconciliation_json")
+  /// Avisos del lote en español (códigos ignorados, redondeos…), [] si ninguno.
+  warningsJson            Json      @default("[]") @map("warnings_json")
+  /// Lote que sustituyó a este mediante `replace` (reverso + nuevo en la misma transacción).
+  replacedById            String?   @map("replaced_by_id")
+  createdBy               String?   @map("created_by")
+  createdAt               DateTime  @default(now()) @map("created_at")
+  postedAt                DateTime? @map("posted_at")
+  reversedAt              DateTime? @map("reversed_at")
+  reversedBy              String?   @map("reversed_by")
+  reversalReason          String?   @map("reversal_reason")
+
+  runs                    PmsShadowRun[]
+
+  @@index([propertyId, businessDate, status])
+  @@index([propertyId, contentHash])
+  @@map("pms_shadow_revenue_imports")
+}
+
+/// Alerta del modo sombra (§5.5): reserva ausente del snapshot, conflicto con una reserva local, check-in sin habitación, código sin mapear, desviación de la reconciliación, feed tardío, cabecera cambiada, fichero no reconocido. Se resuelve en el panel con motivo (auditado). Sin datos personales.
+model PmsShadowAlert {
+  id             String    @id @default(cuid())
+  organizationId String    @map("organization_id")
+  propertyId     String    @map("property_id")
+  /// Business date al que se refiere la alerta (null en alertas de fichero sin fecha reconocible).
+  businessDate   DateTime? @map("business_date") @db.Date
+  /// PMS_SHADOW_ALERT_CODES (OPERA_MISSING_IN_SNAPSHOT, OPERA_TRX_CODE_UNMAPPED, OPERA_FEED_LATE…).
+  code           String
+  /// info · warning · error (PMS_SHADOW_ALERT_SEVERITY por código).
+  severity       String
+  /// Mensaje en español SIN datos personales: cita nº de confirmación, código OPERA, métrica e importes; nunca nombre, e-mail ni documento.
+  message        String
+  /// Valor esperado (Anfitorio / perfil) y valor obtenido (OPERA / fichero): métrica, conteo, importe, cabecera…
+  expectedJson   Json      @default("{}") @map("expected_json")
+  actualJson     Json      @default("{}") @map("actual_json")
+  /// Corte que la emitió (SET NULL si el run desapareciera); null en alertas del job (OPERA_FEED_LATE).
+  runId          String?   @map("run_id")
+  /// Nº de confirmación afectado, si la alerta es de una reserva.
+  confirmationNo String?   @map("confirmation_no")
+  resolvedAt     DateTime? @map("resolved_at")
+  resolvedBy     String?   @map("resolved_by")
+  resolutionNote String?   @map("resolution_note")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  run            PmsShadowRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([propertyId, resolvedAt, businessDate])
+  @@index([propertyId, code, createdAt])
+  @@map("pms_shadow_alerts")
 }

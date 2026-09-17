@@ -19,7 +19,14 @@
 //     de nombre completo y `apellidos` no está mapeado);
 //   · normalizadores de valores de catálogo (régimen, canal, segmento, método de
 //     pago, estado, vip, tipo de documento, nacionalidad) y `ROOM_TYPE_SYNONYMS`
-//     (copia de reservation-agent.service.ts:215-243) para la resolución de tipos.
+//     (copia de reservation-agent.service.ts:215-243) para la resolución de tipos;
+//   · Tanda 7b (modo `sync`, perfil OPERA Cloud): `resolveProfileMapping(header,
+//     feedProfile)` casa por `foldHeader` cada cabecera LITERAL del perfil con la
+//     cabecera real y devuelve un mapeo explícito con las cabeceras reales como
+//     clave (`applyMapping` exige que la clave exista en la cabecera), más las
+//     columnas desconocidas y las del perfil que faltan; `foldStatusLiteral` (=
+//     `foldValue`) y `resolveSyncTargetStatus(raw, statusMap)` resuelven el estado
+//     OPERA contra el diccionario del perfil sin tocar `normalizeEstado`.
 //
 // GDPR: ninguna función de este módulo incluye valores del fichero en sus mensajes.
 
@@ -27,6 +34,9 @@ import {
   RESERVATION_IMPORT_FIELDS,
   RESERVATION_IMPORT_LABELS_ES,
   RESERVATION_IMPORT_REQUIRED_FIELDS,
+  RESERVATION_SYNC_TARGET_STATUSES,
+  type PmsShadowFeedProfile,
+  type PmsShadowStatusMap,
   type ReservationImportBoard,
   type ReservationImportChannel,
   type ReservationImportDocumentType,
@@ -35,7 +45,8 @@ import {
   type ReservationImportMapping,
   type ReservationImportMappingSource,
   type ReservationImportPaymentMethod,
-  type ReservationImportSegment
+  type ReservationImportSegment,
+  type ReservationSyncTargetStatus
 } from "@hotelos/shared";
 import { foldLabel } from "../payroll/cost-import.parser.js";
 
@@ -263,7 +274,11 @@ export function applyMapping(header: readonly string[], explicit?: ReservationIm
   const mapping: ReservationImportMapping = {};
   const mappingSource: ReservationImportMappingSource = {};
   const conflicts: ReservationImportMappingConflict[] = [];
-  const warnings = [...suggested.warnings];
+  // Integrador 7b: los avisos «también parece …, queda sin mapear» del sugeridor solo valen para las columnas que
+  // resuelve el sugeridor; con un mapeo explícito por columna (perfil OPERA Cloud: RATE_CODE → tarifa,
+  // NAME_ON_CARD → ignorada…) decían «queda sin mapear» de columnas mapeadas o ignoradas a propósito.
+  const explicitColumns = explicit ? Object.keys(explicit) : [];
+  const warnings = suggested.warnings.filter((warning) => !explicitColumns.some((column) => warning.startsWith(`La columna «${column}»`)));
   const headerSet = new Set(header);
   const explicitByField = new Map<ReservationImportField, string[]>();
 
@@ -328,6 +343,76 @@ export function applyMapping(header: readonly string[], explicit?: ReservationIm
   if (columnIndex.salida === undefined && columnIndex.noches === undefined) missingRequired.push("salida");
 
   return { mapping, mappingSource, unmappedColumns, missingRequired, splitName, conflicts, warnings, columnIndex, mappingByIndex };
+}
+
+// ---------------------------------------------------------------------------
+// Tanda 7b · perfil preinstalado (cabecera literal → campo) y estados del PMS
+// ---------------------------------------------------------------------------
+
+export type ResolveProfileMappingResult = {
+  /** Mapeo EXPLÍCITO con las cabeceras reales del fichero como clave (`null` = ignorada por el perfil). */
+  mapping: ReservationImportMapping;
+  /** Columnas del fichero que el perfil no conoce (en `sync` → 400 RESERVATION_IMPORT_HEADER_MISMATCH). */
+  unknownColumns: string[];
+  /** Columnas del perfil que el fichero no trae (renombradas o suprimidas). */
+  missingProfileColumns: string[];
+};
+
+/**
+ * Casa por `foldHeader` cada cabecera LITERAL del perfil del feed con la cabecera
+ * real del fichero. Una columna real que pliega igual que una del perfil toma su
+ * campo (o `null` si el perfil la ignora); las demás se ignoran EXPLÍCITAMENTE
+ * (`null`, para que `applyMapping` no las sugiera por sinónimo: con un perfil, lo
+ * que el perfil no conoce no se importa) y se devuelven en `unknownColumns`. Un
+ * mismo campo nunca se asigna dos veces (gana la primera columna real, en el
+ * orden del fichero).
+ */
+export function resolveProfileMapping(header: readonly string[], feedProfile: Pick<PmsShadowFeedProfile, "mapping">): ResolveProfileMappingResult {
+  const byFolded = new Map<string, { column: string; field: ReservationImportField | null }>();
+  for (const [column, field] of Object.entries(feedProfile.mapping)) {
+    const folded = foldHeader(column);
+    if (!byFolded.has(folded)) byFolded.set(folded, { column, field });
+  }
+  const mapping: ReservationImportMapping = {};
+  const unknownColumns: string[] = [];
+  const seenProfileColumns = new Set<string>();
+  const taken = new Set<ReservationImportField>();
+  for (const column of header) {
+    const entry = byFolded.get(foldHeader(column));
+    if (!entry) {
+      unknownColumns.push(column);
+      mapping[column] = null;
+      continue;
+    }
+    seenProfileColumns.add(entry.column);
+    if (entry.field !== null && !taken.has(entry.field)) {
+      taken.add(entry.field);
+      mapping[column] = entry.field;
+    } else {
+      mapping[column] = null;
+    }
+  }
+  const missingProfileColumns = Object.keys(feedProfile.mapping).filter((column) => !seenProfileColumns.has(column));
+  return { mapping, unknownColumns, missingProfileColumns };
+}
+
+/** Literal de estado del PMS plegado como clave del diccionario del perfil (= `foldValue`: «Checked In» → `checked_in`, «NO SHOW» → `no_show`). */
+export function foldStatusLiteral(raw: unknown): string {
+  return foldValue(raw);
+}
+
+/**
+ * Estado destino de una fila en modo `sync`: literal plegado → `statusMap` del
+ * perfil. Vacío o fuera del diccionario → null (error RESERVATION_IMPORT_ROW_INVALID_STATUS);
+ * un valor del diccionario fuera de RESERVATION_SYNC_TARGET_STATUSES (perfil
+ * corrupto en BD) también → null.
+ */
+export function resolveSyncTargetStatus(raw: unknown, statusMap: PmsShadowStatusMap): ReservationSyncTargetStatus | null {
+  const folded = foldStatusLiteral(raw);
+  if (folded === "") return null;
+  const target = statusMap[folded];
+  if (target === undefined || !RESERVATION_SYNC_TARGET_STATUSES.includes(target)) return null;
+  return target;
 }
 
 // ---------------------------------------------------------------------------

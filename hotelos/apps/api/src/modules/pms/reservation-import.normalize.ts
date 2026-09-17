@@ -28,6 +28,23 @@
 //     teléfono y documento como celda y como palabras ≥ 3 caracteres; peticiones
 //     y notas solo como celda completa) como tokens completos, nunca un código
 //     de catálogo, un trozo de palabra ni una palabra corriente de una nota.
+//   · Tanda 7b · modo `sync` (OPERA en modo sombra, diseño §4.1, §5, §6.3):
+//     `options.mode = "sync"` + `statusMap` del perfil: `estado` se resuelve con
+//     `resolveSyncTargetStatus` → `normalized.targetStatus` (null → INVALID_STATUS;
+//     `skip` = waitlist → omitida OPERA_WAITLIST_SKIPPED) y el `estado` canónico se
+//     deriva (cancelled → «cancelada», resto → «confirmada»); la frontera temporal
+//     sigue al destino: checked_out con salida ≤ hoy → histórica sin exigir
+//     `historico`; checked_in / checked_out con llegada ≤ hoy → PERMITIDA
+//     (`inHouse`, no IN_HOUSE_PAST: createReservation solo exige que una histórica
+//     haya terminado); cancelled / no_show → sin frontera (se crean y transicionan);
+//     confirmed con llegada pasada → PAST_ARRIVAL como siempre; una fila sin
+//     `referencia_externa` → SYNC_REQUIRES_REFERENCE (sin clave de upsert).
+//     `syncRowHash` es el hash de la fila SIN datos personales (fechas, tipo,
+//     tarifa, habitación, pax, importe del fichero, segmento, canal, grupo,
+//     empresa, agencia, estado destino) que `PmsShadowLink.rowHash` recuerda; el
+//     hash de contenido del lote se SALA con (feed, businessDate) para que el mismo
+//     snapshot en otro business date sea un lote nuevo y el mismo fichero el mismo
+//     día siga siendo 409 (idempotencia por corte).
 //
 // Los mensajes citan columna («Llegada») y nº de fila, nunca valores del fichero.
 
@@ -45,15 +62,19 @@ import {
   type IsoDate,
   type MoneyString,
   type NormalizedReservationRow,
+  type PmsShadowReservationFeed,
+  type PmsShadowStatusMap,
   type ReservationImportEstado,
   type ReservationImportField,
   type ReservationImportGuestFields,
   type ReservationImportIssue,
   type ReservationImportMapping,
+  type ReservationImportMode,
   type ReservationImportRowCode,
   type ReservationImportRowResolved,
   type ReservationImportRowStatus,
-  type ReservationImportTotalSource
+  type ReservationImportTotalSource,
+  type ReservationSyncTargetStatus
 } from "@hotelos/shared";
 import { excelFractionToTime, excelSerialToIso } from "../../lib/xlsx-lite.js";
 import { foldLabel, parseAmount } from "../payroll/cost-import.parser.js";
@@ -69,7 +90,8 @@ import {
   normalizeNationality,
   normalizePaymentMethod,
   normalizeSegment,
-  normalizeVip
+  normalizeVip,
+  resolveSyncTargetStatus
 } from "./reservation-import.mapping.js";
 
 // ---------------------------------------------------------------------------
@@ -116,6 +138,17 @@ export type NormalizeRowOptions = {
   historico: boolean;
   /** La columna de `nombre` trae el nombre completo (`applyMapping`). */
   splitName: boolean;
+  /** Tanda 7b: `sync` resuelve `estado` con `statusMap` y relaja la frontera temporal según el destino. Ausente = `create`. */
+  mode?: ReservationImportMode;
+  /** Diccionario literal OPERA plegado → estado destino (perfil); vacío en `sync` → todo estado es INVALID_STATUS. */
+  statusMap?: PmsShadowStatusMap;
+};
+
+/** Opciones de `normalizeTable` (las de fila menos `splitName`, que calcula `applyMapping`). */
+export type NormalizeTableOptions = {
+  historico: boolean;
+  mode?: ReservationImportMode;
+  statusMap?: PmsShadowStatusMap;
 };
 
 export type NormalizeRowResult = {
@@ -612,14 +645,48 @@ export function normalizeRow(
     err("RESERVATION_IMPORT_ROW_LONG_STAY", `la estancia supera ${RESERVATION_IMPORT_LONG_STAY_NIGHTS} noches: comprueba las fechas.`, "salida");
   }
 
+  // ---- Tanda 7b · estado destino (modo `sync`) ----
+  // Se resuelve ANTES de la frontera temporal porque el destino la decide: una
+  // «Checked In» con llegada ayer es una estancia en curso legítima, no un error.
+  const sync = options.mode === "sync";
+  let targetStatus: ReservationSyncTargetStatus | undefined;
+  if (sync) {
+    const target = resolveSyncTargetStatus(get("estado"), options.statusMap ?? {});
+    if (target === null) err("RESERVATION_IMPORT_ROW_INVALID_STATUS", `${label("estado")} no está en el diccionario de estados del perfil (Reserved, Checked In, Checked Out, Cancelled, No Show, Waitlist…).`, "estado");
+    else {
+      targetStatus = target;
+      if (target === "skip") err("RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED", `${label("estado")} es lista de espera (waitlist): sin equivalente en Anfitorio, se omite la fila.`, "estado");
+    }
+    if (get("referencia_externa") === "") {
+      err("RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE", `falta ${label("referencia_externa")} (nº de confirmación del PMS): sin ella la fila no se puede sincronizar.`, "referencia_externa");
+    }
+  }
+
   // ---- Llegadas pasadas e histórico ----
   // Frontera: el HOY de la propiedad (`catalogs.today`, su zona horaria), la
   // misma que la guarda `historical` de createReservation. La fecha de negocio
   // NO sirve: si hay días sin cerrar va por detrás del calendario y dejaría
   // crear confirmadas llegadas ya pasadas (que la auditoría nocturna marcaría
   // no-show) y rechazaría como «en curso» estancias ya terminadas (T7-FUN-01).
+  // Tanda 7b · `sync`: el destino manda. checked_out con salida ≤ hoy → histórica
+  // sin exigir `historico`; checked_in / checked_out con llegada ≤ hoy → estancia
+  // en curso PERMITIDA (`inHouse`: createReservation no rechaza llegadas pasadas
+  // no históricas, y el commit hace el check-in con `allowEarlyCheckIn`);
+  // cancelled / no_show → sin frontera (no consumen inventario: se crean y se
+  // transicionan en el mismo lote); confirmed → la regla de siempre.
   let historical = false;
-  if (arrivalDate && departureDate && nights !== null) {
+  let inHouse = false;
+  const relaxedFrontier = sync && targetStatus !== undefined && targetStatus !== "confirmed" && targetStatus !== "skip";
+  if (arrivalDate && departureDate && nights !== null && relaxedFrontier) {
+    if (targetStatus === "checked_out" && departureDate <= catalogs.today) {
+      historical = true;
+      err("RESERVATION_IMPORT_ROW_HISTORICAL", "se creará como estancia cerrada (check-out hecho, folio cerrado, sin cargos).", "llegada");
+    } else if ((targetStatus === "checked_in" || targetStatus === "checked_out") && arrivalDate <= catalogs.today) {
+      inHouse = true;
+    } else if (diffDaysIso(catalogs.today, arrivalDate) > RESERVATION_IMPORT_FAR_FUTURE_DAYS) {
+      err("RESERVATION_IMPORT_ROW_FAR_FUTURE", `${label("llegada")} está a más de ${RESERVATION_IMPORT_FAR_FUTURE_DAYS} días de hoy: comprueba el año.`, "llegada");
+    }
+  } else if (arrivalDate && departureDate && nights !== null) {
     if (arrivalDate < catalogs.today) {
       if (!options.historico) {
         err("RESERVATION_IMPORT_ROW_PAST_ARRIVAL", `${label("llegada")} es anterior a hoy (${catalogs.today}): la auditoría nocturna la marcaría no-show con cargo. Activa «histórico» para cargarla como estancia cerrada.`, "llegada", {
@@ -646,8 +713,10 @@ export function normalizeRow(
   } else {
     const resolution = resolveRoomType(roomTypeRaw, catalogs.roomTypes);
     if (resolution.kind === "unknown") {
+      // SC-03: en `sync` el código OPERA (no es un dato personal) viaja en `details.roomTypeCode` para la alerta OPERA_ROOM_TYPE_UNMAPPED.
       err("RESERVATION_IMPORT_ROW_ROOM_TYPE_UNKNOWN", `${label("tipo_habitacion")} no coincide con ningún tipo de la propiedad (por código ni por nombre).`, "tipo_habitacion", {
-        suggestions: resolution.suggestions
+        suggestions: resolution.suggestions,
+        ...(sync ? { roomTypeCode: roomTypeRaw.slice(0, 40) } : {})
       });
     } else {
       roomType = resolution.roomType;
@@ -672,7 +741,13 @@ export function normalizeRow(
     }
   } else {
     ratePlan = resolveRatePlan(rateRaw, catalogs.ratePlans);
-    if (!ratePlan) err("RESERVATION_IMPORT_ROW_RATE_PLAN_UNKNOWN", `${label("tarifa")} no coincide con ninguna tarifa de la propiedad (usa el código o déjala vacía).`, "tarifa");
+    const fallback = !ratePlan && sync && catalogs.defaultRatePlanId ? (catalogs.ratePlans.find((plan) => plan.id === catalogs.defaultRatePlanId) ?? null) : null;
+    if (!ratePlan && fallback) {
+      // SC-03 (diseño §4.2, runbook §3): rate code de OPERA sin entrada en `rateCodes` ni en `RatePlan.code` → tarifa por
+      // defecto (BAR) + aviso; el corte no se queda sin la reserva y el panel recibe OPERA_RATE_CODE_UNMAPPED con el código.
+      ratePlan = fallback;
+      err("RESERVATION_IMPORT_ROW_OPERA_RATE_CODE_UNMAPPED", `${label("tarifa")} «${rateRaw.slice(0, 40)}» no está mapeada en el perfil OPERA: se aplica la tarifa por defecto ${fallback.code}.`, "tarifa", { rateCode: rateRaw.slice(0, 40), ratePlanCode: fallback.code });
+    } else if (!ratePlan) err("RESERVATION_IMPORT_ROW_RATE_PLAN_UNKNOWN", `${label("tarifa")} no coincide con ninguna tarifa de la propiedad (usa el código o déjala vacía).`, "tarifa");
     else if (!ratePlan.active) err("RESERVATION_IMPORT_ROW_RATE_PLAN_INACTIVE", `la tarifa ${ratePlan.code} está desactivada.`, "tarifa", { ratePlanCode: ratePlan.code });
   }
 
@@ -733,9 +808,14 @@ export function normalizeRow(
   const segmentResult = normalizeSegment(get("segmento"));
   if (!segmentResult.known) err("RESERVATION_IMPORT_ROW_SEGMENT_UNKNOWN", `${label("segmento")} no reconocido: se guarda tal cual.`, "segmento");
   let estado: ReservationImportEstado = "confirmada";
-  const estadoParsed = normalizeEstado(get("estado"));
-  if (estadoParsed === null) err("RESERVATION_IMPORT_ROW_INVALID_STATUS", `${label("estado")} no admitido (confirmada, tentativa o cancelada).`, "estado");
-  else estado = estadoParsed;
+  if (sync) {
+    // Estado canónico derivado del destino (el INVALID_STATUS ya se emitió arriba).
+    estado = targetStatus === "cancelled" ? "cancelada" : "confirmada";
+  } else {
+    const estadoParsed = normalizeEstado(get("estado"));
+    if (estadoParsed === null) err("RESERVATION_IMPORT_ROW_INVALID_STATUS", `${label("estado")} no admitido (confirmada, tentativa o cancelada).`, "estado");
+    else estado = estadoParsed;
+  }
   if (historical && estado !== "confirmada") {
     err("RESERVATION_IMPORT_ROW_STATUS_IGNORED_HISTORICAL", `${label("estado")} se ignora en una fila histórica (se crea como estancia cerrada).`, "estado");
     estado = "confirmada";
@@ -902,6 +982,8 @@ export function normalizeRow(
   if (estimatedArrivalTime) normalized.estimatedArrivalTime = estimatedArrivalTime;
   if (specialRequests !== undefined) normalized.specialRequests = specialRequests;
   if (notes !== undefined) normalized.notes = notes;
+  if (targetStatus !== undefined) normalized.targetStatus = targetStatus;
+  if (inHouse) normalized.inHouse = true;
   return { normalized, resolved: resolvedOf(normalized), issues: stripIssueValues(issues, personalValuesOf(row.cells, mappingByIndex)) };
 }
 
@@ -930,10 +1012,12 @@ export function normalizeTable(
   parsed: Pick<ParsedTable, "header" | "rows">,
   mapping: ReservationImportMapping | null | undefined,
   catalogs: ReservationImportCatalogs,
-  options: { historico: boolean }
+  options: NormalizeTableOptions
 ): NormalizeTableResult {
   const applied = applyMapping(parsed.header, mapping);
   const rowOptions: NormalizeRowOptions = { historico: options.historico, splitName: applied.splitName };
+  if (options.mode !== undefined) rowOptions.mode = options.mode;
+  if (options.statusMap !== undefined) rowOptions.statusMap = options.statusMap;
   const seenReferences = new Map<string, number>();
   const seenRooms: Array<{ rowNumber: number; roomId: string; from: IsoDate; to: IsoDate }> = [];
   const seenGuests = new Map<string, number>();
@@ -979,7 +1063,7 @@ export function normalizeTable(
 // Hash de contenido
 // ---------------------------------------------------------------------------
 
-type HashableRow = { normalized?: NormalizedReservationRow; cells?: readonly string[] };
+export type HashableRow = { normalized?: NormalizedReservationRow; cells?: readonly string[] };
 
 function canonicalNormalized(row: NormalizedReservationRow): Record<string, unknown> {
   // Solo lo que depende del fichero: códigos en vez de ids, importe solo si viene del fichero, sin `historical` (opción).
@@ -1019,8 +1103,44 @@ function canonicalNormalized(row: NormalizedReservationRow): Record<string, unkn
     et: row.estimatedArrivalTime ?? null,
     sr: row.specialRequests ?? null,
     no: row.notes ?? null,
-    v: row.vipFlag
+    v: row.vipFlag,
+    // Tanda 7b: el estado destino solo entra en el hash en modo `sync` (una «Reserved»
+    // y una «Checked In» del mismo día son cortes distintos); en `create` la clave no
+    // existe y el hash de la Tanda 7 queda byte a byte igual.
+    ...(row.targetStatus !== undefined ? { ts: row.targetStatus } : {})
   };
+}
+
+/**
+ * Tanda 7b · hash de la fila que recuerda `PmsShadowLink.rowHash`: sha256 hex del
+ * JSON canónico de fechas, noches, tipo, tarifa, habitación, unidades, pax,
+ * importe (solo si viene del fichero: un importe cotizado con la parrilla
+ * cambiaría de corte en corte sin que OPERA haya cambiado nada), segmento,
+ * canal, source code, grupo, empresa, agencia y estado destino. NUNCA nombre,
+ * e-mail, teléfono ni documento: el hash puede vivir en BD y en la auditoría.
+ * Mismo hash → `unchanged`; distinto → diff de campos y actualización.
+ */
+export function syncRowHash(row: NormalizedReservationRow): string {
+  const canonical = {
+    a: row.arrivalDate,
+    d: row.departureDate,
+    n: row.nights,
+    t: row.roomTypeCode,
+    p: row.ratePlanCode ?? null,
+    h: row.roomNumber ?? null,
+    rc: row.roomsCount,
+    ad: row.adults,
+    ch: row.children,
+    ta: row.totalSource === "file" ? row.totalAmount : null,
+    s: row.marketSegment ?? null,
+    c: row.channel,
+    sc: row.sourceCode ?? null,
+    gr: row.groupCode ?? null,
+    co: row.companyName ?? null,
+    ag: row.travelAgentName ?? null,
+    ts: row.targetStatus ?? null
+  };
+  return createHash("sha256").update(JSON.stringify(canonical)).digest("hex");
 }
 
 function sortKey(row: NormalizedReservationRow): string {
@@ -1058,6 +1178,36 @@ const HASH_TODAY: IsoDate = "1900-01-01";
  * estancia respecto a hoy (T7-FUN-03: el mismo fichero con `historico` y sin él
  * era un lote distinto). Solo depende del fichero, del mapeo y de los catálogos.
  */
-export function contentHashRowsOf(parsed: Pick<ParsedTable, "header" | "rows">, mapping: ReservationImportMapping | null | undefined, catalogs: ReservationImportCatalogs): HashableRow[] {
-  return normalizeTable(parsed, mapping, { ...catalogs, today: HASH_TODAY }, { historico: false }).rows;
+export type ContentHashOptions = {
+  mode?: ReservationImportMode;
+  statusMap?: PmsShadowStatusMap;
+  /** Tanda 7b · `sync`: sal del hash (fila sintética `sync:<feed>:<businessDate>`); con `mode` sync los dos son obligatorios. */
+  feed?: PmsShadowReservationFeed;
+  businessDate?: IsoDate;
+};
+
+/**
+ * Tanda 7b: fila sintética que SALA el hash de contenido en modo `sync`. Va como
+ * fila no normalizada (`cells`), así que entra en la lista `invalid` del JSON
+ * canónico: el mismo snapshot con otro (feed, businessDate) es otro lote y el
+ * mismo fichero el mismo día sigue siendo 409 RESERVATION_IMPORT_DUPLICATE.
+ */
+export function syncContentHashSalt(feed: PmsShadowReservationFeed, businessDate: IsoDate): HashableRow {
+  return { cells: [`sync:${feed}:${businessDate}`] };
+}
+
+export function contentHashRowsOf(
+  parsed: Pick<ParsedTable, "header" | "rows">,
+  mapping: ReservationImportMapping | null | undefined,
+  catalogs: ReservationImportCatalogs,
+  options: ContentHashOptions = {}
+): HashableRow[] {
+  const tableOptions: NormalizeTableOptions = { historico: false };
+  if (options.mode !== undefined) tableOptions.mode = options.mode;
+  if (options.statusMap !== undefined) tableOptions.statusMap = options.statusMap;
+  const rows: HashableRow[] = normalizeTable(parsed, mapping, { ...catalogs, today: HASH_TODAY }, tableOptions).rows;
+  if (options.mode === "sync" && options.feed !== undefined && options.businessDate !== undefined) {
+    rows.push(syncContentHashSalt(options.feed, options.businessDate));
+  }
+  return rows;
 }

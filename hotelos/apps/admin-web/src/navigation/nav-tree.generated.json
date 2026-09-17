@@ -5,10 +5,10 @@
     "orderSource": "pilots/tanda5-nav-tree.csv (columna orden)",
     "legacyRoutesSource": "scripts/legacy-backoffice-routes.json (78edb35:hotelos/apps/admin-web/src/routes/backoffice.routes.tsx)",
     "counts": {
-      "csvRows": 285,
+      "csvRows": 286,
       "categories": 9,
       "items": 67,
-      "tabs": 99,
+      "tabs": 100,
       "devOnly": 21,
       "retired": 72,
       "aliases": 24,
@@ -2052,6 +2052,16 @@
               "screenKey": "MarketplaceCatalog",
               "label": "Integraciones",
               "url": "/configuracion/modulos/integraciones",
+              "roles": [
+                "direccion",
+                "admin"
+              ],
+              "modulesAny": []
+            },
+            {
+              "screenKey": "PmsShadowScreen",
+              "label": "Modo sombra OPERA",
+              "url": "/configuracion/modulos/modo-sombra",
               "roles": [
                 "direccion",
                 "admin"

@@ -11,35 +11,35 @@
   },
   "categoryFallback": "sin entrada de menú → carpeta (FOLDER_CATEGORY); el resto → compartido",
   "totals": {
-    "files": 220,
-    "lines": 89029,
+    "files": 221,
+    "lines": 90495,
     "boClasses": 0,
     "boCard": 0,
     "boPageTitle": 0,
     "rawButtons": 0,
-    "cocoaButtons": 1039,
+    "cocoaButtons": 1061,
     "rawTables": 2,
-    "cocoaTables": 288,
+    "cocoaTables": 296,
     "rawInputs": 0,
-    "cocoaInputs": 1032,
+    "cocoaInputs": 1062,
     "inlineStyles": 682,
     "cocoaCards": 33,
     "colourLiterals": 0,
     "colourFallbacks": 0,
     "rawH1": 0,
     "emoji": 0,
-    "withPageHeader": 196,
-    "withTabHost": 87,
+    "withPageHeader": 197,
+    "withTabHost": 88,
     "debtPoints": 194
   },
   "bySize": {
     "S": 93,
     "M": 105,
-    "L": 19,
+    "L": 20,
     "XL": 3
   },
   "byArchetype": {
-    "dashboard": 93,
+    "dashboard": 94,
     "lista": 15,
     "detalle": 3,
     "formulario": 19,
@@ -89,19 +89,19 @@
     },
     "configuracion": {
       "label": "Configuración",
-      "files": 44,
-      "lines": 15658,
+      "files": 45,
+      "lines": 16991,
       "debtPoints": 23,
       "sizes": {
         "S": 19,
         "M": 23,
-        "L": 2,
+        "L": 3,
         "XL": 0
       },
       "archetypes": {
         "formulario": 10,
         "dialogo": 1,
-        "dashboard": 11,
+        "dashboard": 12,
         "detalle": 2,
         "lista": 7,
         "asistente": 2,
@@ -238,7 +238,7 @@
     "recepcion": {
       "label": "Recepción",
       "files": 19,
-      "lines": 9863,
+      "lines": 9996,
       "debtPoints": 26,
       "sizes": {
         "S": 6,
@@ -1083,9 +1083,9 @@
         "configuracion"
       ],
       "archetype": "formulario",
-      "lines": 489,
+      "lines": 532,
       "metrics": {
-        "lines": 489,
+        "lines": 532,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -1094,7 +1094,7 @@
         "rawTables": 0,
         "cocoaTables": 1,
         "rawInputs": 0,
-        "cocoaInputs": 7,
+        "cocoaInputs": 10,
         "inlineStyles": 4,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -3471,6 +3471,44 @@
       "headerExempt": false,
       "debtPoints": 2,
       "size": "M"
+    },
+    {
+      "path": "apps/admin-web/src/screens/integrations/PmsShadowScreen.tsx",
+      "name": "PmsShadowScreen",
+      "screenKeys": [
+        "PmsShadowScreen"
+      ],
+      "category": "configuracion",
+      "categories": [
+        "configuracion"
+      ],
+      "archetype": "dashboard",
+      "lines": 1287,
+      "metrics": {
+        "lines": 1287,
+        "boClasses": 0,
+        "boCard": 0,
+        "boPageTitle": 0,
+        "rawButtons": 0,
+        "cocoaButtons": 22,
+        "rawTables": 0,
+        "cocoaTables": 8,
+        "rawInputs": 0,
+        "cocoaInputs": 26,
+        "inlineStyles": 0,
+        "cocoaCards": 0,
+        "colourLiterals": 0,
+        "colourFallbacks": 0,
+        "rawH1": 0,
+        "hasCocoaPageHeader": true,
+        "usesTabHost": true,
+        "usesSplitView": false,
+        "usesStepper": false,
+        "emoji": 0
+      },
+      "headerExempt": false,
+      "debtPoints": 0,
+      "size": "L"
     },
     {
       "path": "apps/admin-web/src/screens/invoicing/InvoiceRectificationsScreen.tsx",
@@ -6072,9 +6110,9 @@
         "recepcion"
       ],
       "archetype": "asistente",
-      "lines": 999,
+      "lines": 1132,
       "metrics": {
-        "lines": 999,
+        "lines": 1132,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,
@@ -6083,7 +6121,7 @@
         "rawTables": 0,
         "cocoaTables": 4,
         "rawInputs": 0,
-        "cocoaInputs": 7,
+        "cocoaInputs": 8,
         "inlineStyles": 0,
         "cocoaCards": 0,
         "colourLiterals": 0,
@@ -7195,9 +7233,9 @@
       "category": "configuracion",
       "categories": [],
       "archetype": "contenedor",
-      "lines": 34,
+      "lines": 37,
       "metrics": {
-        "lines": 34,
+        "lines": 37,
         "boClasses": 0,
         "boCard": 0,
         "boPageTitle": 0,

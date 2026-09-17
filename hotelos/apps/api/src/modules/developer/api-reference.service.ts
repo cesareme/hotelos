@@ -342,12 +342,17 @@ export const SEGMENT_LABELS: Record<string, string> = {
   categories: "la categoría",
   webhooks: "el webhook",
   "labor-forecast": "la previsión de personal",
-  "labor-costs": "el coste de personal"
+  "labor-costs": "el coste de personal",
+  // OPERA Cloud modo sombra (Tanda 7b): un lote de ingresos por (hotel, business date).
+  revenue: "el lote de ingresos diarios"
 };
 
 /** Recursos únicos (sin colección): GET → «Obtener <label>.», PUT → «Sustituir <label>.». */
 export const SINGLETON_LABELS: Record<string, string> = {
   settings: "los ajustes",
+  // OPERA Cloud modo sombra (Tanda 7b): «/integrations/pms-shadow/ingest» y «…/pms-shadow/reconciliation».
+  "pms-shadow": "el modo sombra OPERA",
+  reconciliation: "la conciliación diaria",
   // Cocoa 22 · ola 11 · R6: segmentos que aún se colaban en inglés como recurso previo de una acción.
   usali: "el informe USALI",
   tbai: "la factura a TicketBAI",

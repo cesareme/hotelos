@@ -34,6 +34,18 @@
 // discards the spent preview so steps 2-3 cannot replay it (FUX-05); one
 // CocoaLiveRegion announces the step and the analysis and the step content
 // takes focus on every change of step (FUX-10).
+//
+// Tanda 7b (L4): modo «sincronizar». The «Modo sombra OPERA» panel opens this
+// wizard with `?modo=sync&perfil=opera_cloud&feed=<feed>&fecha=<YYYY-MM-DD>`
+// (window.location.search: no react-router). In that mode `mode`, `profile`,
+// `feed` and `businessDate` travel in BOTH bodies (preview and commit), a
+// callout names the profile, the feed and the business date (editable), the
+// «Columnas» step is skipped when the profile resolves every column
+// (mappingSource all `explicit`), «Revisión» paints the «Acción» column
+// (crear · actualizar · sin cambios · cambio de estado · omitir) and the three
+// sync counters, and «Resultado» shows the `sync` block (ausentes, conflictos,
+// check-ins sin habitación). `?lote=<id>` opens a lot in read mode (the panel's
+// «Ver lote»). Still born without inline styles.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
@@ -45,7 +57,8 @@ import type {
   ReservationImportPreview,
   ReservationImportPreviewRow,
   ReservationImportRecord,
-  ReservationImportRowRecord
+  ReservationImportRowRecord,
+  ReservationImportSyncResult
 } from "@hotelos/shared";
 import {
   CocoaActionBar,
@@ -76,7 +89,7 @@ import { DownloadIcon } from "../../components/cocoa-icons/ActionIcons";
 import { useToast } from "../../components/Toast";
 import { ACTIONS } from "../../content/actions";
 import { useApiData } from "../../hooks/useApiData";
-import { EMPTY, date, dateRange, dateTime, money, number, plural } from "../../lib/format";
+import { EMPTY, date, dateRange, dateTime, isoDate, money, number, plural } from "../../lib/format";
 import { urlForScreen } from "../../navigation/nav-tree";
 import { useNavGate } from "../../navigation/useEnabledModules";
 import { useActiveProperty } from "../../services/activeProperty";
@@ -143,11 +156,42 @@ import {
   undoSummary,
   type RowFilter
 } from "./reservation-import-helpers";
+import {
+  SYNC_CALLOUT_HELP,
+  isSyncMode,
+  parseImportLotParam,
+  parseSyncSearchParams,
+  skipsMappingStep,
+  syncActionLabel,
+  syncActionTitle,
+  syncActionTone,
+  syncBlockers,
+  syncCalloutText,
+  syncImportButtonLabel,
+  syncRequestFields,
+  syncResultLines,
+  syncResultTitle,
+  syncRowOutcomeLabel,
+  syncRowOutcomeTone,
+  syncSummaryKpis
+} from "./reservation-import-sync";
 
 type PickedFile = { name: string; format: ReservationImportFormat; contentBase64: string; bytes: number };
 
-/** What step 4 paints: the lot just imported (with the commit warnings) or a lot opened from the list. */
-type ResultView = { record: ReservationImportDetail; warnings: string[]; mode: "imported" | "viewed" };
+/** What step 4 paints: the lot just imported (with the commit warnings and, in sync mode, the `sync` block) or a lot opened from the list. */
+type ResultView = { record: ReservationImportDetail; warnings: string[]; mode: "imported" | "viewed"; sync?: ReservationImportSyncResult };
+
+/** The four keys of the sync mode as they travel in the preview and commit bodies (`{}` in create mode). */
+type SyncFields = ReturnType<typeof syncRequestFields>;
+
+/** Outcome label / tone of a result row: the sync outcomes (updated · unchanged · transitioned) first, the Tanda 7 ones otherwise. */
+function outcomeLabel(outcome: ReservationImportRowRecord["outcome"]): string {
+  return syncRowOutcomeLabel(outcome) ?? rowOutcomeLabel(outcome);
+}
+
+function outcomeTone(outcome: ReservationImportRowRecord["outcome"]) {
+  return syncRowOutcomeTone(outcome) ?? rowOutcomeTone(outcome);
+}
 
 type MappingRow = { column: string; field: ReservationImportField | null; source: string; example: string };
 
@@ -168,7 +212,19 @@ function openReservation(reservationId: string): void {
   openTabPath(urlForScreen("ReservationDetailWorkspace", { id: reservationId }) ?? DETAIL_FALLBACK);
 }
 
-function reviewColumns(currency: string): CocoaTableColumn<ReservationImportPreviewRow>[] {
+/** «Acción» of the sync mode (Tanda 7b): what the commit will do with the row, titled with the diffed field names (never values). */
+const SYNC_ACTION_COLUMN: CocoaTableColumn<ReservationImportPreviewRow> = {
+  key: "action",
+  label: "Acción",
+  fit: true,
+  render: (row) => (
+    <CocoaBadge tone={syncActionTone(row.resolved?.sync?.action)} size="small" variant="tinted" uppercase={false} title={syncActionTitle(row.resolved?.sync)}>
+      {syncActionLabel(row.resolved?.sync?.action)}
+    </CocoaBadge>
+  )
+};
+
+function reviewColumns(currency: string, syncMode = false): CocoaTableColumn<ReservationImportPreviewRow>[] {
   return [
     { key: "rowNumber", label: "Fila", fit: true, align: "right", render: (row) => number(row.rowNumber) },
     {
@@ -181,6 +237,7 @@ function reviewColumns(currency: string): CocoaTableColumn<ReservationImportPrev
         </CocoaBadge>
       )
     },
+    ...(syncMode ? [SYNC_ACTION_COLUMN] : []),
     { key: "reference", label: "Referencia", truncate: 140, showFrom: "tablet", render: (row) => row.resolved?.externalReference ?? EMPTY },
     { key: "stay", label: "Estancia", nowrap: true, render: (row) => (row.resolved ? dateRange(row.resolved.arrivalDate, row.resolved.departureDate) : EMPTY) },
     { key: "nights", label: "Noches", fit: true, align: "right", hideOnNarrow: true, render: (row) => (row.resolved ? number(row.resolved.nights) : EMPTY) },
@@ -200,8 +257,8 @@ const RESULT_COLUMNS: CocoaTableColumn<ReservationImportRowRecord>[] = [
     label: "Resultado",
     fit: true,
     render: (row) => (
-      <CocoaBadge tone={rowOutcomeTone(row.outcome)} size="small">
-        {rowOutcomeLabel(row.outcome)}
+      <CocoaBadge tone={outcomeTone(row.outcome)} size="small">
+        {outcomeLabel(row.outcome)}
       </CocoaBadge>
     )
   },
@@ -209,11 +266,14 @@ const RESULT_COLUMNS: CocoaTableColumn<ReservationImportRowRecord>[] = [
     key: "reservation",
     label: "Reserva",
     fit: true,
+    // A sync row that updated / confirmed a reservation carries its code but no id (the reservation belongs to the lot that created it).
     render: (row) =>
       row.reservationId ? (
         <CocoaButton variant="plain" tone="accent" size="small" onClick={() => openReservation(row.reservationId ?? "")} title="Abrir el detalle de la reserva">
           {row.reservationCode ?? ACTIONS.viewDetail}
         </CocoaButton>
+      ) : row.reservationCode ? (
+        <span className="cocoa-mono">{row.reservationCode}</span>
       ) : (
         EMPTY
       )
@@ -253,7 +313,6 @@ function listColumns(session: ActorSession): CocoaTableColumn<ReservationImportR
 export function ReservationImportScreen() {
   const hosted = useTabHost() !== null;
   const gate = useNavGate();
-  const canImport = canDo(gate, "pms.reservation.create") && canDo(gate, "pms.reservation.modify");
   // Undo only needs pms.reservation.modify, like the API (FUX-08).
   const canUndo = canDo(gate, "pms.reservation.modify");
   const { propertyId, propertyName } = useActiveProperty();
@@ -265,6 +324,17 @@ export function ReservationImportScreen() {
   // Accessibility (FUX-10): the step content takes focus on every change of step (not on mount); one live region announces the step and the analysis.
   const stepContentRef = useRef<HTMLDivElement | null>(null);
   const stepMounted = useRef(false);
+  // Sync mode (Tanda 7b): read once from the URL the «Modo sombra OPERA» panel built (no react-router).
+  const search = useMemo(() => (typeof window === "undefined" ? "" : window.location.search), []);
+  const sync = useMemo(() => parseSyncSearchParams(search), [search]);
+  const syncMode = isSyncMode(sync);
+  // Create needs create + modify; the sync commit also applies check-ins / check-outs and the API demands the four keys (FUX-7B-05, diseño §10 nº 8).
+  const canCreateImport = canDo(gate, "pms.reservation.create") && canDo(gate, "pms.reservation.modify");
+  const canImport = syncMode ? canCreateImport && canDo(gate, "pms.checkin.execute") && canDo(gate, "pms.checkout.execute") : canCreateImport;
+  const lotFromUrl = useMemo(() => parseImportLotParam(search), [search]);
+  // Business date of the snapshot: the link's, otherwise today (editable in the callout; it salts the lot hash and stamps the links).
+  const [syncBusinessDate, setSyncBusinessDate] = useState<string>(() => sync.businessDate ?? isoDate(new Date()) ?? "");
+  const syncFields = useMemo<SyncFields>(() => syncRequestFields(sync, syncBusinessDate), [sync, syncBusinessDate]);
 
   const [step, setStep] = useState(FILE_STEP);
   const [file, setFile] = useState<PickedFile | null>(null);
@@ -297,7 +367,7 @@ export function ReservationImportScreen() {
   latest.current = { file, choices, options };
 
   const runPreview = useCallback(
-    async (input: { file: PickedFile; choices: Record<string, ReservationImportField | null>; options: ReservationImportOptions; header?: readonly string[] }): Promise<ReservationImportPreview | null> => {
+    async (input: { file: PickedFile; choices: Record<string, ReservationImportField | null>; options: ReservationImportOptions; header?: readonly string[]; sync?: SyncFields }): Promise<ReservationImportPreview | null> => {
       const seq = requestSeq.current + 1;
       requestSeq.current = seq;
       setPreviewing(true);
@@ -305,8 +375,9 @@ export function ReservationImportScreen() {
       setImportError(null);
       try {
         const mapping: ReservationImportMapping | undefined = input.header ? buildMapping(input.header, input.choices) : undefined;
+        // Sync mode adds mode · profile · feed · businessDate to the body (nothing in create mode).
         const next = await previewReservationImport(
-          { fileName: input.file.name, format: input.file.format, contentBase64: input.file.contentBase64, mapping, ...input.options },
+          { fileName: input.file.name, format: input.file.format, contentBase64: input.file.contentBase64, mapping, ...input.options, ...(input.sync ?? syncFields) },
           propertyId
         );
         if (seq !== requestSeq.current) return null;
@@ -323,7 +394,7 @@ export function ReservationImportScreen() {
         if (seq === requestSeq.current) setPreviewing(false);
       }
     },
-    [propertyId]
+    [propertyId, syncFields]
   );
 
   function cancelDebounce() {
@@ -383,7 +454,16 @@ export function ReservationImportScreen() {
     setImportError(null);
     setRowFilter("all");
     const analysed = await runPreview({ file: next, choices: {}, options });
-    if (analysed) setStep(COLUMNS_STEP);
+    // Sync mode: when the OPERA profile resolved every column there is nothing to map, so «Revisión» comes next.
+    if (analysed) setStep(skipsMappingStep(analysed, sync) ? REVIEW_STEP : COLUMNS_STEP);
+  }
+
+  /** Sync mode: another business date re-analyses the same file (the date salts the lot hash and stamps the links). */
+  function changeSyncBusinessDate(value: string) {
+    setSyncBusinessDate(value);
+    if (!file) return;
+    cancelDebounce();
+    void runPreview({ file, choices, options, header: preview?.header, sync: syncRequestFields(sync, value) });
   }
 
   function removeFile() {
@@ -445,11 +525,12 @@ export function ReservationImportScreen() {
     setImporting(true);
     setImportError(null);
     try {
+      // Sync mode adds mode · profile · feed · businessDate to the commit body too (nothing in create mode).
       const created = await createReservationImport(
-        { fileName: file.name, format: file.format, contentBase64: file.contentBase64, mapping: buildMapping(preview.header, choices), ...options, commit: true },
+        { fileName: file.name, format: file.format, contentBase64: file.contentBase64, mapping: buildMapping(preview.header, choices), ...options, ...syncFields, commit: true },
         propertyId
       );
-      setResult({ record: created, warnings: created.warnings, mode: "imported" });
+      setResult({ record: created, warnings: created.warnings, mode: "imported", sync: created.sync });
       setStep(RESULT_STEP);
       // The preview is spent (FUX-05): a second «Importar» would end in 409
       // RESERVATION_IMPORT_DUPLICATE with no switch to follow its advice, or
@@ -477,6 +558,16 @@ export function ReservationImportScreen() {
       setViewing(null);
     }
   }
+
+  // `?lote=<id>` (the «Ver lote» of the OPERA panel): open that lot in step 4 once, when the property is known.
+  const lotOpened = useRef<string | null>(null);
+  useEffect(() => {
+    if (!lotFromUrl || !propertyId || lotOpened.current === lotFromUrl) return;
+    lotOpened.current = lotFromUrl;
+    void viewImport({ id: lotFromUrl } as ReservationImportRecord);
+    // viewImport is a plain closure over propertyId; the ref keeps the deep link from replaying on every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lotFromUrl, propertyId]);
 
   function openUndo(record: ReservationImportRecord) {
     setUndoTarget(record);
@@ -514,7 +605,10 @@ export function ReservationImportScreen() {
   // ---- derived ----
   const current = IMPORT_STEPS[step] ?? IMPORT_STEPS[FILE_STEP];
   const summary = stepSummary(step);
-  const blockers = previewBlockers(preview);
+  // Sync mode: a snapshot that only updates rows is importable (the create-only blocker of the Tanda 7 helpers does not apply).
+  const blockers = syncMode ? syncBlockers(previewBlockers(preview), preview?.summary) : previewBlockers(preview);
+  // Sync mode: the OPERA profile resolved every column → «Columnas» has nothing to decide and stays out of the path.
+  const skipMapping = skipsMappingStep(preview, sync);
   const mappingView = preview ? effectiveMapping(preview.mapping, choices) : {};
   // Example per column from the RAW sample cells (FUX-04): also for an unmapped column and when every row has errors.
   const mappingRows: MappingRow[] = preview
@@ -522,7 +616,7 @@ export function ReservationImportScreen() {
     : [];
   const filteredRows = preview ? filterRows(preview.rows, rowFilter) : [];
   const currency = preview?.catalog.currency ?? preview?.totals.currency ?? "";
-  const reviewTable = useMemo(() => reviewColumns(currency), [currency]);
+  const reviewTable = useMemo(() => reviewColumns(currency, syncMode), [currency, syncMode]);
   const exceeded = preview ? availabilityExceeded(preview.availability.byRoomType) : [];
   const importDisabled = !preview?.canImport || !canImport || importing || previewing;
   // The preview on screen predates a failed re-analysis (FUX-03): keep it visible, but do not import on it.
@@ -533,7 +627,8 @@ export function ReservationImportScreen() {
 
   const reachable = (index: number): boolean => {
     if (index === FILE_STEP) return true;
-    if (index === COLUMNS_STEP || index === REVIEW_STEP) return preview !== null;
+    if (index === COLUMNS_STEP) return preview !== null && !skipMapping;
+    if (index === REVIEW_STEP) return preview !== null;
     return result !== null;
   };
 
@@ -661,6 +756,9 @@ export function ReservationImportScreen() {
           {summaryKpis(preview.summary).map((kpi) => (
             <CocoaKpi key={kpi.key} label={kpi.label} value={kpi.value} tone={kpi.tone} caption={kpi.caption} size="compact" />
           ))}
+          {syncMode
+            ? syncSummaryKpis(preview.summary).map((kpi) => <CocoaKpi key={kpi.key} label={kpi.label} value={kpi.value} tone={kpi.tone} caption={kpi.caption} size="compact" />)
+            : null}
         </CocoaKpiStrip>
 
         <CocoaSection
@@ -814,6 +912,22 @@ export function ReservationImportScreen() {
           ))}
         </CocoaKpiStrip>
 
+        {result.sync ? (
+          <CocoaCallout tone={result.sync.missing.length > 0 || result.sync.conflicts.length > 0 || result.sync.checkInWithoutRoom.length > 0 ? "warning" : "success"} title={syncResultTitle(result.sync)} role="status">
+            {syncResultLines(result.sync).length > 0 ? (
+              <ul className="c22-section__list">
+                {syncResultLines(result.sync).map((line, index) => (
+                  <li key={index}>
+                    <span>{line}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <span>Sin reservas ausentes, conflictos con reservas locales ni check-ins sin habitación: el corte cuadra con Anfitorio.</span>
+            )}
+          </CocoaCallout>
+        ) : null}
+
         <CocoaSection title="4 · Resultado por fila" meta={`${plural(record.rows.length, "fila", "filas")}`}>
           <CocoaTable
             columns={RESULT_COLUMNS}
@@ -853,19 +967,20 @@ export function ReservationImportScreen() {
   }
 
   // ---- action bar per step ----
+  // Sync mode: «Sincronizar N nuevas · M actualizadas» instead of «Importar N reservas»; the mapping step is skipped when the profile resolved every column.
   const primary =
     step === FILE_STEP
-      ? { label: ACTIONS.next, disabled: preview === null || previewing, onClick: () => setStep(COLUMNS_STEP) }
+      ? { label: ACTIONS.next, disabled: preview === null || previewing, onClick: () => setStep(skipMapping ? REVIEW_STEP : COLUMNS_STEP) }
       : step === COLUMNS_STEP
         ? { label: "Aplicar y validar", disabled: !mappingReady, loading: previewing, onClick: () => void applyMapping() }
         : step === REVIEW_STEP
-          ? { label: importing ? "Importando…" : `Importar ${plural(preview?.summary.toCreate ?? 0, "reserva", "reservas")}`, disabled: importDisabled || previewStale, loading: importing, onClick: () => void runImport(), title: previewStale ? "No se puede importar: la última previsualización falló; cambia una opción o vuelve a «Columnas» para analizar de nuevo." : blockers.length > 0 ? `No se puede importar: ${blockers.join("; ")}.` : undefined }
+          ? { label: importing ? (syncMode ? "Sincronizando…" : "Importando…") : syncMode ? syncImportButtonLabel(preview?.summary) : `Importar ${plural(preview?.summary.toCreate ?? 0, "reserva", "reservas")}`, disabled: importDisabled || previewStale, loading: importing, onClick: () => void runImport(), title: previewStale ? "No se puede importar: la última previsualización falló; cambia una opción o vuelve a «Columnas» para analizar de nuevo." : blockers.length > 0 ? `No se puede importar: ${blockers.join("; ")}.` : undefined }
           : { label: "Descargar informe CSV", icon: <DownloadIcon size={14} aria-hidden="true" />, disabled: !record || record.rows.length === 0, onClick: downloadReport };
   const secondary =
     step === COLUMNS_STEP
       ? { label: ACTIONS.previous, onClick: () => setStep(FILE_STEP), disabled: previewing }
       : step === REVIEW_STEP
-        ? { label: ACTIONS.previous, onClick: () => setStep(COLUMNS_STEP), disabled: importing }
+        ? { label: ACTIONS.previous, onClick: () => setStep(skipMapping ? FILE_STEP : COLUMNS_STEP), disabled: importing }
         : step === RESULT_STEP
           ? { label: "Nueva importación", onClick: resetAll }
           : undefined;
@@ -881,7 +996,25 @@ export function ReservationImportScreen() {
       ]}
     >
       <CocoaLiveRegion message={liveMessage} announceKey={`${step}-${previewing ? "p" : ""}-${importing ? "i" : ""}`} />
-      {!canImport ? <p className="cocoa-note">Necesitas los permisos de crear y modificar reservas para importar un lote{canUndo ? " (deshacer uno solo exige el de modificar, que sí tienes)" : "; deshacer uno exige el de modificar"}: puedes previsualizar el fichero y consultar las importaciones anteriores.</p> : null}
+      {!canImport ? (
+        <p className="cocoa-note">
+          {syncMode
+            ? `Necesitas los permisos de crear y modificar reservas y los de check-in y check-out para sincronizar un corte (las transiciones de estado se aplican como en recepción)${canUndo ? " (deshacer un lote solo exige el de modificar, que sí tienes)" : "; deshacer uno exige el de modificar"}: puedes previsualizar el fichero y consultar las importaciones anteriores.`
+            : `Necesitas los permisos de crear y modificar reservas para importar un lote${canUndo ? " (deshacer uno solo exige el de modificar, que sí tienes)" : "; deshacer uno exige el de modificar"}: puedes previsualizar el fichero y consultar las importaciones anteriores.`}
+        </p>
+      ) : null}
+      {syncMode ? (
+        // FUX-7B-09: no live region here (a `role="status"` container must not hold an editable field); the step live region above announces the analysis.
+        <CocoaCallout tone="info" title={syncCalloutText(sync, syncBusinessDate)}>
+          <div className="cocoa-stack" data-gap="2">
+            <span>{SYNC_CALLOUT_HELP}</span>
+            <CocoaField label="Fecha de negocio del corte" help="Sal del hash del lote y última fecha vista de cada reserva enlazada; cambiarla vuelve a analizar el fichero.">
+              <CocoaInput type="date" value={syncBusinessDate} onChange={changeSyncBusinessDate} disabled={previewing || importing} aria-label="Fecha de negocio del corte" />
+            </CocoaField>
+            <span className="cocoa-caption">Sincronizar exige además los permisos de check-in y check-out (las transiciones de estado se aplican como en recepción, sin correos al huésped).</span>
+          </div>
+        </CocoaCallout>
+      ) : null}
 
       <CocoaGrid columns={12} align="start">
         <CocoaSpan cols={4} min={240}>
@@ -895,7 +1028,7 @@ export function ReservationImportScreen() {
                       {index + 1}. {item.label}
                     </CocoaButton>
                     <CocoaBadge tone={stepTone(index, step)} variant="dot" size="small">
-                      {stepStateLabel(index, step)}
+                      {skipMapping && index === COLUMNS_STEP ? "Resuelto por el perfil" : stepStateLabel(index, step)}
                     </CocoaBadge>
                   </li>
                 ))}

@@ -547,6 +547,14 @@ admin`; dentro, sin `create` + `modify` la pantalla muestra una nota y desactiva
 (el servicio lo vuelve a comprobar). Un rol personalizado con solo `create` no puede importar
 (decisión §11.1-5 del diseño).
 
+**Modo sincronizar (Tanda 7b, §18):** con `mode: "sync"` el mismo `POST /properties/:propertyId/reservations/imports`
+exige **cuatro** claves: `pms.reservation.create` + `pms.reservation.modify` +
+`pms.checkin.execute` + `pms.checkout.execute`, porque además de crear, actualizar, asignar
+habitación y cancelar, el commit ejecuta check-ins sombra (`checkInReservation`) y check-outs sombra
+(`checkOutReservationDetailed` + cierre del folio primario) según el estado que declara OPERA.
+Sin las cuatro → 403 antes de leer el fichero. Comercial (sin `checkin` / `checkout`) no puede
+sincronizar; Recepción, Dirección, Propietario y Administrador sí. Sin claves de permiso nuevas.
+
 ## 11 · Límites y rendimiento
 
 | Límite | Valor | Al superarlo |
@@ -780,6 +788,9 @@ Todos llegan con `details.code` (`RESERVATION_IMPORT_ERROR_CODES` en
 | `RESERVATION_IMPORT_DUPLICATE` | 409 | `{ importId, createdAt, status, fileName }` | mismo hash en un lote no deshecho ni fallido, sin `force` | deshacer el anterior o «Importar de todos modos» |
 | `RESERVATION_IMPORT_NOT_FOUND` | 404 (opaco) | — | lote inexistente, de otra propiedad u organización | — |
 | `RESERVATION_IMPORT_UNDO_IN_PROGRESS` | 409 | `{ importId, undoneAt }` | otro deshacer reclamado hace menos de 15 min | esperar y repetir |
+| `RESERVATION_IMPORT_SYNC_REQUIRES_FEED` | 400 | `{ missing: ["feed" \| "businessDate"] }` | `mode: "sync"` sin `feed` o sin `businessDate` (§18: la idempotencia y la ventana de ausencias dependen de ambos) | indicar `feed` (`arrivals` · `inhouse` · `departures` · `changes`) y `businessDate` (`YYYY-MM-DD`) |
+| `RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED` | 400 | `{ profile, feed }` | el perfil (`opera_cloud`) no tiene mapeo cerrado para ese feed (hoy `inhouse` y `changes`: columnas pendientes de muestra real) | usar `arrivals` (`RESPONSYS_RESV_AUTO`) o `departures` (`departure_all`); entregar la muestra (runbook OPERA §14) |
+| `RESERVATION_IMPORT_HEADER_MISMATCH` | 400 | `{ expected[], received[], missing[], extra[] }` | la cabecera del fichero (o la primera fila con `headerOverride`) no coincide con la del perfil: informe reconfigurado, columna añadida, otro idioma; por el ingest abre además la alerta `OPERA_FEED_COLUMNS_CHANGED` | comprobar formato (Delimited frente a Delimited Data) y parámetros del informe en OPERA; con una cabecera nueva legítima, actualizar el perfil |
 
 ## 15 · GDPR y datos personales
 
@@ -863,3 +874,107 @@ Todos llegan con `details.code` (`RESERVATION_IMPORT_ERROR_CODES` en
 - Permisos y plantillas de rol: [`rbac-sync.md`](rbac-sync.md); navegación y pestañas: [`navegacion-tanda-5.md`](navegacion-tanda-5.md).
 - Guía de la pantalla (Cocoa 22): [`docs/design/COCOA-22.md`](../design/COCOA-22.md).
 - Informe del integrador (cifras reales de la demo): `docs/audits/TANDA-7-RESERVAS-IMPORT-2026-09-16.md`.
+- Modo sombra OPERA Cloud: [`opera-modo-sombra.md`](opera-modo-sombra.md) (alta, feeds, sincronización §7, ingresos §8, reconciliación y alertas §9) y diseño [`docs/design/OPERA-CLOUD-MODO-SOMBRA.md`](../design/OPERA-CLOUD-MODO-SOMBRA.md).
+
+## 18 · Modo sincronizar (Tanda 7b · OPERA Cloud)
+
+El mismo importador (`POST …/reservations/imports/preview` y `POST …/reservations/imports`) admite un
+segundo modo en el que **cada fichero es un snapshot** de una ventana de OPERA Cloud (llegadas de hoy a
++30, salidas de hoy, en casa, cambios del día anterior) y no un lote de altas: las filas conocidas se
+actualizan o se dejan como están, las nuevas se crean, y los estados de OPERA (check-in, check-out,
+cancelación, no-show) se aplican como transiciones. `mode: "create"` (por defecto) **no cambia nada** de
+lo descrito en §1-§17. La operativa completa (alta del perfil, feeds, buzón, SFTP, ingresos,
+reconciliación, alertas, SQL y FAQ) está en [`opera-modo-sombra.md`](opera-modo-sombra.md); aquí solo
+lo que cambia en el importador. Desde la pantalla: Reservas › Importar con
+`?modo=sync&perfil=opera_cloud&feed=arrivals&fecha=2026-09-16` (o el botón «Subir corte manual» del
+panel «Modo sombra OPERA», que enlaza así).
+
+### 18.1 · Parámetros nuevos del cuerpo (preview y commit; `.strict()`)
+
+| Campo | Valores | Regla |
+| --- | --- | --- |
+| `mode` | `"create"` (defecto) · `"sync"` | en `sync`, el análisis resuelve el enlace `PmsShadowLink` por `referencia_externa` **antes** de la validación de duplicados: una referencia conocida ya no es `RESERVATION_IMPORT_ROW_DUPLICATE_REFERENCE` sino candidata a `update` / `unchanged` |
+| `profile` | `"opera_cloud"` | aplica el mapeo **explícito** del perfil preinstalado (`packages/shared/src/pms-shadow-profiles/opera-cloud.ts`: 33 cabeceras de `RESPONSYS_RESV_AUTO` para `arrivals`, 19 de `departure_all` para `departures`), su `statusMap`, sus diccionarios de canal / segmento / método de pago y `dateOrder`; el `mapping` del cuerpo, si viaja, solo puede ignorar columnas (`null`). Sin `profile` en `sync` se aplican los sinónimos de §3 (útil para un PMS distinto de OPERA) |
+| `feed` | `arrivals` · `inhouse` · `departures` · `changes` | **obligatorio en `sync`** (400 `RESERVATION_IMPORT_SYNC_REQUIRES_FEED`); fija qué columnas exige el perfil, la ventana de ausencias y la sal del hash (§18.5). `inhouse` y `changes` → 400 `RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED` hasta recibir la muestra real |
+| `businessDate` | `YYYY-MM-DD` | **obligatorio en `sync`**; business date del corte (la del hotel en OPERA, no la fecha natural del fichero). Es la frontera de «llegada pasada» del lote y el `lastBusinessDate` que reciben los enlaces |
+| `horizonDays` | entero, defecto 30 (540 en el snapshot semanal) | solo `arrivals`: ventana [businessDate, + horizonDays] de enlaces que «deberían» estar en el fichero; los ausentes suman `missingStreak` y abren `OPERA_MISSING_IN_SNAPSHOT` (nunca se cancelan solos) |
+| `headerOverride` | `string[]` (≤ 200) | fichero **sin fila de cabecera** (Delimited Data de OPERA): la lista es la cabecera y **la primera fila del fichero ya es un dato**. El perfil `opera_cloud` la aporta sola para `departures` (`headerless`); para otros ficheros sin cabecera se pasa a mano |
+
+Los demás campos (`fileName`, `format`, `content` XOR `contentBase64`, `sheetName`, `omitirInvalidas`,
+`permitirOverbooking`, `force`, `sampleSize`, `commit`) se comportan igual. `historico` no hace falta:
+en `sync` una fila `Checked Out` con llegada pasada toma sola el camino histórico.
+
+### 18.2 · Permisos
+
+`POST …/reservations/imports` con `mode: "sync"` exige `pms.reservation.create` +
+`pms.reservation.modify` + `pms.checkin.execute` + `pms.checkout.execute` (§10); la preview sigue
+con `pms.reservation.create`. Recepción, Dirección, Propietario y Administrador pueden; Comercial no.
+El ingest por clave de API y el job usan el usuario de sistema `usr_system_pms_shadow`, que las tiene.
+
+### 18.3 · Acción por fila
+
+La preview y el resultado añaden `action` a cada fila (columna «Acción» en la pantalla):
+
+| `action` | Cuándo | En el commit | Fila del lote |
+| --- | --- | --- | --- |
+| `create` | referencia sin enlace (estado destino vivo o cancelado / no-show) | `createReservation` (camino único de §8.1) + alta del enlace; si el estado destino no es `confirmed`, la transición en la misma fila | `outcome created`, `reservationId` y `reservationCode` |
+| `update` | enlace con `rowHash` distinto | `updateReservationShadow`: fechas, tipo, tarifa, ocupación, unidades, importe, segmento, canal, grupo, habitación; **sin correos ni eventos de dominio**; diff sin PII en `warningsJson` | `outcome updated`, **sin `reservationId`** (ver §18.4), con `reservationCode` |
+| `transition` | enlace y estado destino distinto del actual (acompaña a `update` o va sola) | `transitionReservation(cancelled \| no_show)`, check-in sombra (`checkInReservation` con firma centinela `opera:<confirmación>` y `allowEarlyCheckIn`), check-out sombra (`checkOutReservationDetailed` + cierre de folio) | `outcome updated` + aviso con la transición |
+| `unchanged` | enlace y mismo `rowHash` | solo `lastSeenAt`, `lastBusinessDate`, `lastImportId`, `missingStreak = 0` del enlace | `outcome unchanged` |
+| `skip` | waitlist, pseudo room, conflicto con reserva local sin enlace | nada | `outcome skipped` + código |
+
+Códigos de fila nuevos (`RESERVATION_IMPORT_ROW_CODES`): `RESERVATION_IMPORT_ROW_OPERA_TOTAL_ESTIMATED`
+(aviso: `importe_total` = `RATE` × noches × habitaciones; `RATE` es la tarifa de la primera noche),
+`RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED`, `RESERVATION_IMPORT_ROW_OPERA_PSEUDO_ROOM`,
+`RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION` (misma referencia en una reserva sin enlace:
+omitida + alerta), `RESERVATION_IMPORT_ROW_OPERA_CHECKIN_WITHOUT_ROOM` (queda `confirmed` + alerta),
+`RESERVATION_IMPORT_ROW_SYNC_STATUS_REGRESSION` (OPERA «retrocede» un estado: nada),
+`RESERVATION_IMPORT_ROW_SYNC_CANCEL_AFTER_CHECKIN` (cancelación sobre una reserva ya en casa: nada),
+`RESERVATION_IMPORT_ROW_SYNC_ROOM_MOVE_IGNORED` (cambio de habitación de una reserva en casa: se ignora
+la habitación), `RESERVATION_IMPORT_ROW_SYNC_UPDATE_FAILED` y `RESERVATION_IMPORT_ROW_SYNC_TRANSITION_FAILED`
+(errores del commit, mensaje sin valores) y `RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE` (fila sin
+nº de confirmación en un feed que lo exige). Los estados de OPERA se traducen con el `statusMap` del
+perfil a `confirmed` · `checked_in` · `checked_out` · `cancelled` · `no_show` · `skip`
+(`RESERVATION_SYNC_TARGET_STATUSES`), no a los tres estados de §8.3; `Prospect` / `Requested` →
+`confirmed` con `RESERVATION_IMPORT_ROW_TENTATIVE_AS_CONFIRMED`.
+
+### 18.4 · Contadores nuevos y filas `updated`
+
+- `summary` de la preview: además de `valid / warning / error / skipped / historical / toCreate`,
+  `toUpdate`, `toTransition` y `unchanged`; `canImport` en `sync` exige `toCreate + toUpdate +
+  toTransition + unchanged > 0` (un snapshot idéntico al anterior **sí** se importa: sus filas
+  `unchanged` mantienen vivos los enlaces).
+- Lote (`ReservationImport`): `createdCount` como siempre y, en `optionsJson`, `mode`, `profile`,
+  `feed`, `businessDate`, `horizonDays`, `updatedCount`, `unchangedCount`, `transitionedCount` y
+  `shadowRunId` (sin migración de esa tabla). El estado final tiene en cuenta los cuatro contadores:
+  un lote con 0 creadas y N actualizadas / sin cambios es `imported`, no `failed`
+  (`deriveImportStatus` extendido; en `create` sigue igual).
+- Filas `updated` / `unchanged`: **sin `reservationId`** y con `reservationCode`. `ReservationImportRow.reservationId`
+  es `@unique` (una reserva procede de una sola fila: la que la creó, en un lote anterior), así que las
+  filas que la tocan después solo llevan el código para enlazar desde la pantalla; el enlace vivo está en
+  `pms_shadow_links.reservation_id`.
+
+### 18.5 · Idempotencia por corte
+
+El `contentHash` del lote en `sync` es el de §6 (filas normalizadas) **salado con `feed` +
+`businessDate`**: el mismo fichero, el mismo feed y el mismo business date → 409
+`RESERVATION_IMPORT_DUPLICATE` salvo `force`; el mismo fichero en **otro** business date es un lote
+nuevo con todas sus filas `unchanged` (así los enlaces reciben el nuevo `lastBusinessDate` y no se abren
+ausencias falsas). Tras deshacer el lote, el hash queda libre como en `create`.
+
+### 18.6 · Deshacer un lote `sync`
+
+`POST …/reservations/imports/:id/undo` cancela **solo lo creado** por el lote (`bookingSource =
+import:<id>` en `draft` / `confirmed`), como en §9. **No deshace** las actualizaciones (el diff queda en
+`warningsJson`; OPERA manda), ni las transiciones, ni los check-ins / check-outs sombra (`kept`), ni
+toca los enlaces de las reservas conservadas. Las reservas canceladas al deshacer conservan su enlace:
+el siguiente corte las trata como reactivación (reserva nueva con
+`RESERVATION_IMPORT_ROW_REFERENCE_REUSED_CANCELLED` y el enlace pasa a la nueva).
+
+### 18.7 · Lo que no cambia
+
+`bookingSource` sigue siendo `import:<importId>` (clave del lote y del deshacer; la propiedad OPERA de
+la reserva la marca el enlace, no el `bookingSource`); `bookerEmail` vacío y ningún correo; el fichero
+no se guarda; las filas del lote sin datos personales (§15); el CLI `reservations:import` **no** tiene
+`--mode sync`: los cortes de OPERA entran por el ingest (`pms-shadow:pull`), el buzón o el panel
+([`opera-modo-sombra.md`](opera-modo-sombra.md) §5-§6).

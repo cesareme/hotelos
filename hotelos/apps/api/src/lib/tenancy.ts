@@ -292,6 +292,18 @@ const RESOLVERS = {
   reservationImport: byProperty("Importación de reservas no encontrada.", (id) =>
     prisma.reservationImport.findUnique({ where: { id }, select: selectProperty })
   ),
+  // OPERA Cloud · modo sombra (Tanda 7b · L3): corte, alerta y lote de ingresos
+  // cuelgan de UNA propiedad; `:id` de GET runs/:id, alerts/:id/resolve y
+  // revenue/:id(/reverse) cruza además `:propertyId` (404 opaco).
+  pmsShadowRun: byProperty("Corte OPERA no encontrado.", (id) =>
+    prisma.pmsShadowRun.findUnique({ where: { id }, select: selectProperty })
+  ),
+  pmsShadowAlert: byProperty("Alerta no encontrada.", (id) =>
+    prisma.pmsShadowAlert.findUnique({ where: { id }, select: selectProperty })
+  ),
+  pmsShadowRevenueImport: byProperty("Importación de ingresos no encontrada.", (id) =>
+    prisma.pmsShadowRevenueImport.findUnique({ where: { id }, select: selectProperty })
+  ),
   invoice: byProperty("Factura no encontrada.", (id) =>
     prisma.invoice.findUnique({ where: { id }, select: selectProperty })
   ),

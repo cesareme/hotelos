@@ -992,9 +992,15 @@ describe("I · Equivalencia de Faranda (solo lectura)", () => {
     assert.deepEqual(structure.counts, { properties: 8, hotels: 7, offices: 1, others: 0, legalEntities: 1 });
   });
 
-  it("61 asientos previos (sin payroll_cost_import); 4300 = 379,00; 303 2026-Q3: bases 423,62 + 155,04 = 578,66 · 27 = 71 = 74,94 · 37 registros · declarante CEL", async () => {
-    assert.equal(await prisma.journalEntry.count({ where: { organizationId: FARANDA_ORG, sourceType: { not: "payroll_cost_import" } } }), 61);
-    const entryIds = (await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG }, select: { id: true } })).map((e) => e.id);
+  it("61 asientos previos (sin payroll_cost_import ni pms_shadow_revenue); 4300 = 379,00; 303 2026-Q3: bases 423,62 + 155,04 = 578,66 · 27 = 71 = 74,94 · 37 registros · declarante CEL", async () => {
+    // Tanda 7b (modo sombra OPERA, demo del integrador en Rías Altas): Faranda tiene además el asiento diario
+    // `pms_shadow_revenue` del 16/09 (posted), el del 15/09 (reversed) y su reverso (`reversal` con reversalOfId):
+    // se excluyen como las nóminas; el invariante fiscal siguen siendo los 61 previos y el saldo 379,00 de 4300.
+    const shadowEntryIds = (await prisma.journalEntry.findMany({ where: { organizationId: FARANDA_ORG, sourceType: "pms_shadow_revenue" }, select: { id: true } })).map((e) => e.id);
+    // `reversalOfId` es nullable: un `NOT { in }` a secas dejaría fuera los asientos sin reverso (lógica trivaluada).
+    const baseline = { organizationId: FARANDA_ORG, sourceType: { notIn: ["payroll_cost_import", "pms_shadow_revenue"] }, ...(shadowEntryIds.length > 0 ? { OR: [{ reversalOfId: null }, { reversalOfId: { notIn: shadowEntryIds } }] } : {}) };
+    assert.equal(await prisma.journalEntry.count({ where: baseline }), 61);
+    const entryIds = (await prisma.journalEntry.findMany({ where: baseline, select: { id: true } })).map((e) => e.id);
     const lines = await prisma.journalLine.findMany({ where: { accountCode: "4300", journalEntryId: { in: entryIds } }, select: { debit: true, credit: true } });
     const balance = lines.reduce((sum, line) => sum + Number(line.debit) - Number(line.credit), 0);
     assert.equal(balance.toFixed(2), "379.00");

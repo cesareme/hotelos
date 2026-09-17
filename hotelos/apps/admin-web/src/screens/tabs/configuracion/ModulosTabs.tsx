@@ -11,7 +11,9 @@
 // Labels, URLs and roles come from nav-tree.generated.json (pilots/tanda5-nav-tree.csv).
 //
 // L1b registers: screenKey ModuleManager · url /configuracion/modulos · tabs
-// /configuracion/modulos/salud, /integraciones.
+// /configuracion/modulos/salud, /integraciones and, since Tanda 7b (L4),
+// /modo-sombra (PmsShadowScreen: OPERA Cloud shadow-mode panel, design
+// docs/design/OPERA-CLOUD-MODO-SOMBRA.md §6.6 with §10 nº 14).
 
 import { NavItemTabs } from "../NavItemTabs";
 import type { TabLoaders } from "../nav-item-tabs";
@@ -19,7 +21,8 @@ import type { TabLoaders } from "../nav-item-tabs";
 export const loaders: TabLoaders = {
   ModuleManager: () => import("../../ModuleManager").then((m) => ({ default: m.ModuleManager })),
   ModuleHealthCenter: () => import("../../ModuleHealthCenter").then((m) => ({ default: m.ModuleHealthCenter })),
-  MarketplaceCatalog: () => import("../../marketplace/MarketplaceCatalogScreen").then((m) => ({ default: m.MarketplaceCatalogScreen }))
+  MarketplaceCatalog: () => import("../../marketplace/MarketplaceCatalogScreen").then((m) => ({ default: m.MarketplaceCatalogScreen })),
+  PmsShadowScreen: () => import("../../integrations/PmsShadowScreen").then((m) => ({ default: m.PmsShadowScreen }))
 };
 
 export default function ModulosTabs() {
@@ -27,7 +30,7 @@ export default function ModulosTabs() {
     <NavItemTabs
       screenKey="ModuleManager"
       loaders={loaders}
-      subtitle="Módulos activos en la propiedad, qué entradas del menú desbloquea cada uno, su salud y las integraciones disponibles."
+      subtitle="Módulos activos en la propiedad, qué entradas del menú desbloquea cada uno, su salud, las integraciones disponibles y el modo sombra de OPERA Cloud."
     />
   );
 }

@@ -4,7 +4,7 @@
 //   node --import tsx --test src/modules/pms/__tests__/reservation-import-normalize.test.mts
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { RESERVATION_IMPORT_FIELDS, type ReservationImportField, type ReservationImportRowCode } from "@hotelos/shared";
+import { OPERA_CLOUD_STATUS_MAP, RESERVATION_IMPORT_FIELDS, type ReservationImportField, type ReservationImportRowCode } from "@hotelos/shared";
 import { writeXlsx } from "../../financial-statements/xlsx-writer.js";
 import { applyMapping } from "../reservation-import.mapping.js";
 import { parseCsvTable, parseReservationImportFile } from "../reservation-import.parser.js";
@@ -695,5 +695,108 @@ describe("plantilla oficial (diseño §2.4) · ida y vuelta CSV → XLSX", () =>
     assert.deepEqual(parsedXlsx.warnings, []);
     const tableXlsx = normalizeTable(parsedXlsx, null, RIAS_ALTAS, { historico: false });
     assert.equal(reservationImportContentHash(tableXlsx.rows), reservationImportContentHash(table.rows));
+  });
+});
+
+// ---- Tanda 7b · L1 · modo `sync` (estado destino, frontera temporal por destino, referencia obligatoria) ----
+
+describe("normalizeRow · modo sync (Tanda 7b)", () => {
+  const SYNC = { historico: false, splitName: false, mode: "sync" as const, statusMap: OPERA_CLOUD_STATUS_MAP };
+  function sync(overrides: Overrides, options: Partial<typeof SYNC> = {}) {
+    const cells = cellsOf(overrides);
+    return normalizeRow({ rowNumber: 1, cells, kinds: cells.map((cell) => (cell === "" ? "empty" : "string")) }, FIELDS, CATALOGS, { ...SYNC, ...options });
+  }
+
+  it("Reserved → targetStatus confirmed, estado confirmada, sin inHouse; Cancelled → cancelada; NO SHOW → no_show", () => {
+    const reserved = sync({ estado: "Reserved" });
+    assert.equal(reserved.normalized?.targetStatus, "confirmed");
+    assert.equal(reserved.normalized?.estado, "confirmada");
+    assert.equal(reserved.normalized?.inHouse, undefined);
+    assert.equal(rowStatusFromIssues(reserved.issues), "valid");
+    const cancelled = sync({ estado: "Cancelled" });
+    assert.equal(cancelled.normalized?.targetStatus, "cancelled");
+    assert.equal(cancelled.normalized?.estado, "cancelada");
+    assert.equal(sync({ estado: "NO SHOW" }).normalized?.targetStatus, "no_show");
+    assert.equal(sync({ estado: "NO SHOW" }).normalized?.estado, "confirmada", "no-show se crea confirmada y se transiciona en el commit");
+  });
+
+  it("Checked In con llegada ayer y salida futura → PERMITIDA (inHouse), no IN_HOUSE_PAST ni PAST_ARRIVAL", () => {
+    const result = sync({ estado: "Checked In", llegada: "2026-09-15", salida: "2026-09-18" });
+    assert.ok(!codes(result).includes("RESERVATION_IMPORT_ROW_IN_HOUSE_PAST"));
+    assert.ok(!codes(result).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+    assert.equal(result.normalized?.inHouse, true);
+    assert.equal(result.normalized?.historical, false);
+    assert.equal(result.normalized?.targetStatus, "checked_in");
+    const today = sync({ estado: "In House", llegada: "2026-09-16", salida: "2026-09-18" });
+    assert.equal(today.normalized?.inHouse, true);
+    const future = sync({ estado: "Due In", llegada: "2026-09-20", salida: "2026-09-22" });
+    assert.equal(future.normalized?.inHouse, undefined, "llegada futura: sin marca");
+  });
+
+  it("Checked Out con salida pasada → histórica SIN exigir «histórico» (aviso HISTORICAL); con salida futura → inHouse", () => {
+    const past = sync({ estado: "Checked Out", llegada: "2026-09-10", salida: "2026-09-12" });
+    assert.equal(past.normalized?.historical, true);
+    assert.ok(codes(past).includes("RESERVATION_IMPORT_ROW_HISTORICAL"));
+    assert.ok(!codes(past).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+    assert.equal(rowStatusFromIssues(past.issues), "warning");
+    const early = sync({ estado: "Checked Out", llegada: "2026-09-15", salida: "2026-09-18" });
+    assert.equal(early.normalized?.historical, false);
+    assert.equal(early.normalized?.inHouse, true);
+  });
+
+  it("Reserved con llegada pasada → PAST_ARRIVAL (regla de siempre); Cancelled / No Show con llegada pasada → sin frontera", () => {
+    const past = sync({ estado: "Reserved", llegada: "2026-09-10", salida: "2026-09-12" });
+    assert.ok(codes(past).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+    assert.equal(past.normalized, undefined);
+    const historic = sync({ estado: "Reserved", llegada: "2026-09-10", salida: "2026-09-12" }, { historico: true });
+    assert.equal(historic.normalized?.historical, true, "con «histórico» sigue funcionando como en create");
+    const cancelled = sync({ estado: "Cancelled", llegada: "2026-09-10", salida: "2026-09-12" });
+    assert.ok(!codes(cancelled).includes("RESERVATION_IMPORT_ROW_PAST_ARRIVAL"));
+    assert.equal(cancelled.normalized?.estado, "cancelada");
+    const noShow = sync({ estado: "No Show", llegada: "2026-09-15", salida: "2026-09-16" });
+    assert.equal(noShow.normalized?.targetStatus, "no_show");
+    assert.equal(rowStatusFromIssues(noShow.issues), "valid");
+  });
+
+  it("Waitlist → OPERA_WAITLIST_SKIPPED (omitida, con fila normalizada); estado fuera del diccionario o vacío → INVALID_STATUS", () => {
+    const waitlist = sync({ estado: "Waitlist" });
+    assert.ok(codes(waitlist).includes("RESERVATION_IMPORT_ROW_OPERA_WAITLIST_SKIPPED"));
+    assert.equal(rowStatusFromIssues(waitlist.issues), "skipped");
+    assert.equal(waitlist.normalized?.targetStatus, "skip");
+    const unknown = sync({ estado: "tentativa" });
+    assert.ok(codes(unknown).includes("RESERVATION_IMPORT_ROW_INVALID_STATUS"), "en sync manda el diccionario del perfil, no los sinónimos de create");
+    assert.equal(unknown.normalized, undefined);
+    const empty = sync({ estado: "" });
+    assert.ok(codes(empty).includes("RESERVATION_IMPORT_ROW_INVALID_STATUS"));
+    assert.ok(codes(sync({ estado: "Reserved" }, { statusMap: {} })).includes("RESERVATION_IMPORT_ROW_INVALID_STATUS"), "diccionario vacío → todo estado es inválido");
+  });
+
+  it("fila sin referencia_externa → SYNC_REQUIRES_REFERENCE (error); en create sigue siendo opcional", () => {
+    const missing = sync({ estado: "Reserved", referencia_externa: "" });
+    assert.ok(codes(missing).includes("RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE"));
+    assert.equal(rowStatusFromIssues(missing.issues), "error");
+    assert.equal(missing.normalized, undefined);
+    const create = run({ referencia_externa: "" });
+    assert.ok(!codes(create).includes("RESERVATION_IMPORT_ROW_SYNC_REQUIRES_REFERENCE"));
+    assert.ok(create.normalized);
+    for (const issue of missing.issues) assert.doesNotMatch(issue.message, /Ferreiro|example/);
+  });
+
+  it("normalizeTable con mode sync propaga targetStatus e inHouse; en create no existe targetStatus y los sinónimos de estado siguen mandando", () => {
+    const header = ["referencia_externa", "llegada", "salida", "tipo_habitacion", "nombre", "apellidos", "estado"];
+    const rows = [
+      ["RIAS-1", "2026-09-15", "2026-09-18", "DBL", "Lucía", "Ferreiro", "CHECKED IN"],
+      ["RIAS-2", "2026-10-01", "2026-10-03", "DBL", "Marek", "Nowak", "Confirmed"]
+    ];
+    const parsed = { header, rows: rows.map((cells, index) => ({ rowNumber: index + 1, line: index + 2, cells, kinds: cells.map(() => "string" as const) })) };
+    const synced = normalizeTable(parsed, null, CATALOGS, { historico: false, mode: "sync", statusMap: OPERA_CLOUD_STATUS_MAP });
+    assert.equal(synced.rows[0]!.normalized?.targetStatus, "checked_in");
+    assert.equal(synced.rows[0]!.normalized?.inHouse, true);
+    assert.equal(synced.rows[0]!.status, "valid");
+    assert.equal(synced.rows[1]!.normalized?.targetStatus, "confirmed");
+    const created = normalizeTable(parsed, null, CATALOGS, { historico: false });
+    assert.equal(created.rows[0]!.status, "error", "en create «CHECKED IN» no es un estado admitido");
+    assert.equal(created.rows[1]!.normalized?.targetStatus, undefined);
+    assert.equal(created.rows[1]!.normalized?.estado, "confirmada");
   });
 });

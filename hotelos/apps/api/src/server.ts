@@ -98,6 +98,15 @@ import { registerPayrollCostRoutes } from "./modules/payroll/cost-import.routes.
 // reservations/imports* (modules/pms/reservation-import.routes.ts; permisos en
 // modules/pms/route-permissions.partial.ts).
 import { registerReservationImportRoutes } from "./modules/pms/reservation-import.routes.js";
+// OPERA Cloud · modo sombra (Tanda 7b · L3): POST /integrations/pms-shadow/ingest
+// (pública, clave de API) y /properties/:propertyId/pms-shadow/*
+// (modules/pms-shadow/pms-shadow.routes.ts; permisos en
+// modules/pms-shadow/route-permissions.partial.ts); job del líder
+// (modules/pms-shadow/pms-shadow.job.ts) en el bloque de schedulers.
+import { registerPmsShadowRoutes } from "./modules/pms-shadow/pms-shadow.routes.js";
+import { startPmsShadowJob } from "./modules/pms-shadow/pms-shadow.job.js";
+import { CreateEmailConnectionSchema } from "./schemas/email-connections.schemas.js";
+import { parseOr400 } from "./modules/rate-manager/rate-grid.schemas.js";
 import { listRatePlans, createRatePlan, updateRatePlan, deleteRatePlan } from "./modules/rate-manager/rate-plan.service.js";
 import { listForecasts, generateForecasts, getForecastBySegment, getForecastAccuracy, getLiveHistoryForecastReport, parseReportWindow } from "./modules/revenue/forecast.service.js";
 import { getHistoryForecastBoard, parseBoardWindow, writeYesterdayDailySnapshotsForAllProperties } from "./modules/revenue/hf-board.service.js";
@@ -2574,7 +2583,16 @@ export async function buildApiServer() {
   // ---- Email connectors → AI → reservation (HITL) ----
   app.get("/integrations/email/providers", async () => emailProvidersStatus());
   app.get("/properties/:propertyId/email/connections", async (request) => listEmailConnections((request.params as { propertyId: string }).propertyId));
-  app.post("/properties/:propertyId/email/connections", async (request) => createEmailConnection({ context: request.userContext, propertyId: (request.params as { propertyId: string }).propertyId, payload: request.body as never, correlationId: createId("corr") }));
+  // Tanda 7b (L3): cuerpo `.strict()` con `purpose` (reservation_ai | pms_shadow), `fromDomain` y `subjectContains`
+  // (schemas/email-connections.schemas.ts); el payload de EmailConnectorsScreen ({ provider } / imap) sigue válido.
+  app.post("/properties/:propertyId/email/connections", async (request) =>
+    createEmailConnection({
+      context: request.userContext,
+      propertyId: (request.params as { propertyId: string }).propertyId,
+      payload: parseOr400(CreateEmailConnectionSchema, request.body ?? {}, "body"),
+      correlationId: createId("corr")
+    })
+  );
   app.delete("/email/connections/:id", async (request) => {
     await assertEntityAccess(request, { entity: "emailConnection", id: (request.params as { id: string }).id });
     return disconnectEmailConnection({ context: request.userContext, connectionId: (request.params as { id: string }).id, correlationId: createId("corr") });
@@ -2723,6 +2741,10 @@ export async function buildApiServer() {
   // listar, ver un lote, descargar la plantilla y deshacer
   // (/properties/:propertyId/reservations/imports*).
   registerReservationImportRoutes(app); // Importación masiva de reservas (Tanda 7 · L3)
+  // OPERA Cloud · modo sombra (Tanda 7b · L3): ingest público por clave de API,
+  // panel, perfil, cortes, alertas, reconciliación e ingresos diarios
+  // (/integrations/pms-shadow/ingest y /properties/:propertyId/pms-shadow/*).
+  registerPmsShadowRoutes(app);
   // Stub /test removed — superseded by the Prisma-backed aggregator route below (~line 3903) that calls real OTA adapters.
   // Sprint 44: room/rate mapping CRUD rewired off the demoStore stub onto the
   // real Prisma-backed mapping.service so mappings written here are visible to
@@ -8630,5 +8652,15 @@ if (entryFile === argFile) {
     }, intervalMs);
     mailboxTimer.unref();
     app.log.info(`[mailbox.poll] enabled (every ${Math.round(intervalMs / 1000)}s)`);
+  }
+
+  // OPERA Cloud · modo sombra (Tanda 7b · L3): job del líder — OPERA_FEED_LATE por
+  // feed programado sin fichero y cierre de runs `processing` interrumpidos; cada
+  // vuelta bajo pg_try_advisory_xact_lock('pms_shadow.job'). Vive aquí porque
+  // apps/worker no depende de @hotelos/api. Disable with PMS_SHADOW_JOB_DISABLED=true.
+  if (schedulerLeader && process.env.PMS_SHADOW_JOB_DISABLED !== "true") {
+    const job = startPmsShadowJob({ log: app.log, intervalMs: Number(process.env.PMS_SHADOW_JOB_INTERVAL_MS ?? 15 * 60 * 1000) });
+    process.once("SIGTERM", job.stop);
+    process.once("SIGINT", job.stop);
   }
 }

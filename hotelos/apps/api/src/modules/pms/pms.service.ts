@@ -1242,6 +1242,230 @@ export async function patchReservation(input: {
   return after;
 }
 
+/**
+ * Campos que el modo sombra (OPERA Cloud, Tanda 7b · L1, diseño §5.1) puede
+ * actualizar en una reserva enlazada: los de estancia, ocupación, importe,
+ * segmentación y grupo. NUNCA `bookerEmail` ni datos del huésped: no existe en
+ * este tipo, así que ninguna llamada puede colarlo.
+ */
+export type ReservationShadowPatch = {
+  arrivalDate?: string;
+  departureDate?: string;
+  roomTypeId?: string;
+  ratePlanId?: string | null;
+  adults?: number;
+  children?: number;
+  roomsCount?: number;
+  totalAmount?: number | string;
+  marketSegment?: string | null;
+  channel?: string;
+  sourceCode?: string | null;
+  groupCode?: string | null;
+  companyName?: string | null;
+  travelAgentName?: string | null;
+  /** Solo con la reserva `confirmed`; en `checked_in` se ignora (el movimiento de habitación es de recepción). */
+  assignedRoomId?: string | null;
+  internalNotes?: string | null;
+};
+
+export type ReservationShadowUpdateResult = {
+  reservation: ReservationRecord;
+  /** Campos escritos (solo los que de verdad cambiaron). */
+  changedFields: string[];
+  /** Campos del parche que este estado no admite (reserva alojada: llegada, tipo, habitación, unidades). */
+  ignoredFields: string[];
+};
+
+/** Campos que una reserva alojada sí acepta desde el modo sombra (§6.3): salida (≥ hoy), tarifa, importe, pax, segmentación, grupo, notas. */
+const SHADOW_IN_HOUSE_FIELDS: ReadonlySet<keyof ReservationShadowPatch> = new Set<keyof ReservationShadowPatch>([
+  "departureDate",
+  "ratePlanId",
+  "totalAmount",
+  "adults",
+  "children",
+  "marketSegment",
+  "channel",
+  "sourceCode",
+  "groupCode",
+  "companyName",
+  "travelAgentName",
+  "internalNotes"
+]);
+
+function moneyEquals(a: Prisma.Decimal | number | null | undefined, b: number | string): boolean {
+  return new Prisma.Decimal(a ?? 0).toFixed(2) === new Prisma.Decimal(b).toFixed(2);
+}
+
+/**
+ * Actualización SOMBRA de una reserva enlazada a un PMS de registro (OPERA
+ * Cloud, Tanda 7b · L1): la aplica el modo `sync` del importador cuando el corte
+ * trae cambios (§5.1). Aditiva a `patchReservation`, con estas reglas:
+ *   · exige `pms.reservation.modify` y que exista `PmsShadowLink` para la reserva
+ *     (409 PMS_SHADOW_NOT_LINKED: nunca se toca una reserva no OPERA);
+ *   · 409 PMS_SHADOW_RESERVATION_CLOSED si está checked_out / cancelled / no_show;
+ *   · alojada (`checked_in`): solo `departureDate` (≥ hoy en la zona de la
+ *     propiedad), tarifa, importe, pax, segmentación, grupo y notas; llegada,
+ *     tipo, unidades y habitación se ignoran y vuelven en `ignoredFields`;
+ *   · `roomTypeId` / `ratePlanId` deben ser de la propiedad (400);
+ *   · cambio de `assignedRoomId` (solo `confirmed`) o de fechas con habitación
+ *     efectiva → `validateRoomUnderLock` → 409 ROOM_CONFLICT;
+ *   · solo escribe los campos que de verdad cambian; sin cambios no escribe ni audita;
+ *   · auditoría RESERVATION_SHADOW_UPDATED con before / after SOLO de los campos
+ *     cambiados (sin datos personales) y el motivo; SIN `recordDomainEvent`:
+ *     event-hooks.service.ts solo envía correo en ReservationCreated / Confirmed,
+ *     así que «0 correos al huésped» queda garantizado por construcción.
+ */
+export async function updateReservationShadow(input: {
+  context: UserContext;
+  reservationId: string;
+  patch: ReservationShadowPatch;
+  reason: string;
+  correlationId: string;
+}): Promise<ReservationShadowUpdateResult> {
+  requirePermissions(input.context, ["pms.reservation.modify"]);
+
+  const existing = await prisma.reservation.findUnique({ where: { id: input.reservationId } });
+  if (!existing) {
+    throw new NotFoundError("Reserva no encontrada.");
+  }
+  await assertPropertyInOrg(existing.propertyId, input.context.organizationId);
+  const link = await prisma.pmsShadowLink.findUnique({ where: { reservationId: existing.id }, select: { id: true, confirmationNo: true } });
+  if (!link) {
+    throw withDetails(new ConflictError(`La reserva ${existing.code} no está enlazada a un PMS de registro: el modo sombra no la modifica.`), { code: "PMS_SHADOW_NOT_LINKED" });
+  }
+  if (CLOSED_RESERVATION_STATUSES.includes(existing.status)) {
+    throw withDetails(new ConflictError(`La reserva ${existing.code} no se puede modificar en estado ${existing.status}.`), { code: "PMS_SHADOW_RESERVATION_CLOSED", status: existing.status });
+  }
+
+  const inHouse = existing.status === "checked_in";
+  const sentKeys = (Object.keys(input.patch) as Array<keyof ReservationShadowPatch>).filter((key) => input.patch[key] !== undefined);
+  const ignoredFields = inHouse ? sentKeys.filter((key) => !SHADOW_IN_HOUSE_FIELDS.has(key)) : [];
+  const patch: ReservationShadowPatch = {};
+  for (const key of sentKeys) {
+    if (ignoredFields.includes(key)) continue;
+    (patch as Record<string, unknown>)[key] = input.patch[key];
+  }
+
+  const beforeArrival = isoDate(existing.arrivalDate);
+  const beforeDeparture = isoDate(existing.departureDate);
+  const nextArrival = patch.arrivalDate ?? beforeArrival;
+  const nextDeparture = patch.departureDate ?? beforeDeparture;
+  if (!isIsoDateString(nextArrival) || !isIsoDateString(nextDeparture)) {
+    throw new BadRequestError("Las fechas deben tener el formato AAAA-MM-DD.");
+  }
+  if (nextArrival >= nextDeparture) {
+    throw new BadRequestError("La fecha de salida debe ser posterior a la fecha de llegada.");
+  }
+  if (inHouse && patch.departureDate !== undefined) {
+    const property = await prisma.property.findUnique({ where: { id: existing.propertyId }, select: { timezone: true } });
+    if (patch.departureDate < todayInTimezone(property?.timezone ?? "UTC")) {
+      throw new BadRequestError(`La nueva salida de la reserva alojada ${existing.code} no puede ser anterior a hoy.`);
+    }
+  }
+  if (patch.roomTypeId !== undefined) {
+    const rt = await prisma.roomType.findUnique({ where: { id: patch.roomTypeId }, select: { propertyId: true } });
+    if (!rt || rt.propertyId !== existing.propertyId) {
+      throw new BadRequestError("El tipo de habitación no pertenece a esta propiedad.");
+    }
+  }
+  if (patch.ratePlanId) {
+    const rp = await prisma.ratePlan.findUnique({ where: { id: patch.ratePlanId }, select: { propertyId: true } });
+    if (!rp || rp.propertyId !== existing.propertyId) {
+      throw new BadRequestError("El plan de tarifas no pertenece a esta propiedad.");
+    }
+  }
+  if (patch.assignedRoomId) {
+    const room = await prisma.room.findUnique({ where: { id: patch.assignedRoomId }, select: { propertyId: true } });
+    if (!room || room.propertyId !== existing.propertyId) {
+      throw new BadRequestError("La habitación no pertenece a esta propiedad.");
+    }
+  }
+  if ((patch.adults !== undefined && patch.adults < 1) || (patch.children !== undefined && patch.children < 0) || (patch.roomsCount !== undefined && patch.roomsCount < 1)) {
+    throw new BadRequestError("Adultos, niños y unidades deben ser enteros válidos (al menos 1 adulto y 1 unidad).");
+  }
+
+  // Solo lo que de verdad cambia (before / after por campo, sin datos personales).
+  const data: Prisma.ReservationUpdateInput = {};
+  const before: Record<string, unknown> = {};
+  const after: Record<string, unknown> = {};
+  const changedFields: string[] = [];
+  const change = (field: string, current: unknown, next: unknown, write: () => void): void => {
+    if (current === next) return;
+    changedFields.push(field);
+    before[field] = current;
+    after[field] = next;
+    write();
+  };
+  if (patch.arrivalDate !== undefined) change("arrivalDate", beforeArrival, patch.arrivalDate, () => void (data.arrivalDate = dateOnly(patch.arrivalDate!)));
+  if (patch.departureDate !== undefined) change("departureDate", beforeDeparture, patch.departureDate, () => void (data.departureDate = dateOnly(patch.departureDate!)));
+  if (patch.roomTypeId !== undefined) change("roomTypeId", existing.roomTypeId ?? null, patch.roomTypeId, () => void (data.roomTypeId = patch.roomTypeId!));
+  if (patch.ratePlanId !== undefined) change("ratePlanId", existing.ratePlanId ?? null, patch.ratePlanId, () => void (data.ratePlanId = patch.ratePlanId));
+  if (patch.adults !== undefined) change("adults", existing.adults, patch.adults, () => void (data.adults = patch.adults!));
+  if (patch.children !== undefined) change("children", existing.children, patch.children, () => void (data.children = patch.children!));
+  if (patch.roomsCount !== undefined) change("roomsCount", existing.roomsCount, patch.roomsCount, () => void (data.roomsCount = patch.roomsCount!));
+  if (patch.totalAmount !== undefined && !moneyEquals(existing.totalAmount, patch.totalAmount)) {
+    change("totalAmount", new Prisma.Decimal(existing.totalAmount ?? 0).toFixed(2), new Prisma.Decimal(patch.totalAmount).toFixed(2), () => void (data.totalAmount = new Prisma.Decimal(patch.totalAmount!)));
+  }
+  if (patch.marketSegment !== undefined) change("marketSegment", existing.marketSegment ?? null, patch.marketSegment, () => void (data.marketSegment = patch.marketSegment));
+  if (patch.channel !== undefined) change("channel", existing.channel, patch.channel, () => void (data.channel = patch.channel!));
+  if (patch.sourceCode !== undefined) change("sourceCode", existing.sourceCode ?? null, patch.sourceCode, () => void (data.sourceCode = patch.sourceCode));
+  if (patch.groupCode !== undefined) change("groupCode", existing.groupCode ?? null, patch.groupCode, () => void (data.groupCode = patch.groupCode));
+  if (patch.companyName !== undefined) change("companyName", existing.companyName ?? null, patch.companyName, () => void (data.companyName = patch.companyName));
+  if (patch.travelAgentName !== undefined) change("travelAgentName", existing.travelAgentName ?? null, patch.travelAgentName, () => void (data.travelAgentName = patch.travelAgentName));
+  if (patch.assignedRoomId !== undefined) change("assignedRoomId", existing.assignedRoomId ?? null, patch.assignedRoomId, () => void (data.assignedRoomId = patch.assignedRoomId));
+  if (patch.internalNotes !== undefined) change("internalNotes", existing.internalNotes ?? null, patch.internalNotes, () => void (data.internalNotes = patch.internalNotes));
+
+  if (changedFields.length === 0) {
+    return { reservation: await withPrimaryGuestId(existing), changedFields, ignoredFields };
+  }
+
+  // REC-01b, como patchReservation: la habitación que tendrá la reserva tras el
+  // cambio (la nueva o la ya asignada si solo se mueven las fechas) se valida
+  // bajo el lock de la fila de la habitación.
+  const roomChanged = changedFields.includes("assignedRoomId");
+  const datesChanged = changedFields.includes("arrivalDate") || changedFields.includes("departureDate");
+  const effectiveRoomId: string | null = roomChanged ? (patch.assignedRoomId ?? null) : (existing.assignedRoomId ?? null);
+  const roomToValidate = effectiveRoomId && (roomChanged || datesChanged) ? effectiveRoomId : null;
+
+  const updated = await prisma.$transaction(async (tx) => {
+    if (roomToValidate) {
+      const validation = await validateRoomUnderLock(tx, {
+        propertyId: existing.propertyId,
+        reservationId: existing.id,
+        roomId: roomToValidate,
+        arrivalDate: nextArrival,
+        departureDate: nextDeparture
+      });
+      if (!validation.allowed) {
+        const reasons = validation.warnings.join(" ");
+        throw withDetails(
+          new ConflictError(roomChanged ? `No se puede asignar la habitación: ${reasons}` : `Las nuevas fechas entran en conflicto con la habitación asignada: ${reasons}`),
+          { code: "ROOM_CONFLICT", roomId: roomToValidate, arrivalDate: nextArrival, departureDate: nextDeparture, warnings: validation.warnings }
+        );
+      }
+    }
+    return tx.reservation.update({ where: { id: existing.id }, data });
+  });
+  const reservation = await withPrimaryGuestId(updated);
+  mirrorReservation(reservation);
+
+  recordAuditEvent({
+    organizationId: input.context.organizationId,
+    propertyId: existing.propertyId,
+    actorUserId: input.context.userId,
+    actorType: "user",
+    action: "RESERVATION_SHADOW_UPDATED",
+    entityType: "reservation",
+    entityId: existing.id,
+    beforeJson: before,
+    afterJson: { ...after, changedFields, ignoredFields, reason: input.reason, confirmationNo: link.confirmationNo },
+    deviceId: input.context.deviceId,
+    correlationId: input.correlationId
+  });
+
+  return { reservation, changedFields, ignoredFields };
+}
+
 export async function matchGuestToReservation(input: {
   propertyId: string;
   documentFields: GuestIdentityFields;
@@ -1577,6 +1801,15 @@ export type CheckInWindow = {
   dateOverride: boolean;
 };
 
+/**
+ * Check-in de recepción. Tanda 7b · modo sombra (OPERA Cloud): el modo `sync` del
+ * importador reutiliza esta MISMA función para reflejar un check-in ya hecho en
+ * OPERA, con `signatureObjectKey` centinela `opera:<nº de confirmación>` (no hay
+ * firma: el registro del huésped vive en OPERA), `allowEarlyCheckIn: true` y
+ * `overrideReason` «Check-in registrado en OPERA (corte <businessDate>)» para
+ * saltar la ventana de ±1 día en AMBOS sentidos (exige pms.reservation.modify).
+ * Sin habitación mapeada el modo sombra no llama aquí (aviso OPERA_CHECKIN_WITHOUT_ROOM).
+ */
 export async function checkInReservation(input: {
   context: UserContext;
   reservationId: string;

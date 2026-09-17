@@ -46,8 +46,9 @@ describe("nav-tree · generated tree shape", () => {
     );
     // Tanda 5: 64 items · 80 tabs. Tanda 6 (Finanzas): +2 items (Contabilidad, Proveedores y gastos) · +14 tabs.
     // Tanda 6b (Estructura societaria): +1 item (Configuración) · +4 tabs. Tanda 7 (Reservas › Importar): +1 tab.
+    // Tanda 7b (Módulos e integraciones › Modo sombra OPERA): +1 tab.
     assert.equal(NAV_TREE.meta.counts.items, 67);
-    assert.equal(NAV_TREE.meta.counts.tabs, 99);
+    assert.equal(NAV_TREE.meta.counts.tabs, 100);
     assert.equal(NAV_TREE.devOnly.length, 21);
     assert.equal(NAV_TREE.publicScreens.length, 2);
   });
@@ -130,7 +131,7 @@ describe("nav-tree · lookups", () => {
 
   it("lists every URL the router must register, unique and without /backoffice", () => {
     const urls = allUrls();
-    assert.equal(urls.length, 67 + 99 + 21 + 2);
+    assert.equal(urls.length, 67 + 100 + 21 + 2);
     assert.equal(new Set(urls).size, urls.length);
     assert.ok(urls.every((url) => !url.startsWith("/backoffice")));
   });

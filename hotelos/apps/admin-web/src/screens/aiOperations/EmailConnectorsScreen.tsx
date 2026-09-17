@@ -13,6 +13,12 @@
 // configured cannot add a mailbox (no «pending» row is ever created for an
 // authorisation that cannot happen) and disconnected rows offer no further
 // action (qa#4).
+//
+// Tanda 7b (L4): every mailbox carries a purpose — «Reservas por IA» (the flow
+// above) or «Modo sombra OPERA» (the attachments of the OPERA Report Scheduler
+// go to the shadow ingest; optional sender-domain and subject filters travel in
+// the payload as `fromDomain` / `subjectContains`). The list shows the purpose
+// as a badge. No inline style added (the 4 tolerated ones stay as they were).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -26,6 +32,9 @@ import {
   fetchInboundEmails,
   approveInboundEmail,
   rejectInboundEmail,
+  emailConnectionPurpose,
+  type CreateEmailConnectionPayload,
+  type EmailConnectionPurpose,
   type EmailProviders,
   type EmailConnection,
   type InboundEmail
@@ -60,6 +69,11 @@ const PROVIDER_OPTIONS = ["gmail", "microsoft", "imap", "manual"].map((value) =>
 /** Providers whose mailbox needs an external authorisation (the server creates them as `pending_auth`). */
 const OAUTH_PROVIDERS = new Set(["gmail", "microsoft"]);
 const STATUS_LABEL: Record<string, string> = { connected: "conectado", pending_auth: "pendiente de autorizar", disconnected: "desconectado", error: "error" };
+/** Purpose of a mailbox (Tanda 7b): the AI reservation flow or the OPERA shadow-mode ingest. */
+const PURPOSE_LABEL: Record<EmailConnectionPurpose, string> = { reservation_ai: "Reservas por IA", pms_shadow: "Modo sombra OPERA" };
+const PURPOSE_OPTIONS = (Object.keys(PURPOSE_LABEL) as EmailConnectionPurpose[]).map((value) => ({ value, label: PURPOSE_LABEL[value] }));
+const PURPOSE_TONE: Record<EmailConnectionPurpose, CocoaTone> = { reservation_ai: "ai", pms_shadow: "info" };
+const FILTER_MAX = 120;
 const INBOUND_STATUS: Record<string, { label: string; tone: CocoaTone }> = {
   received: { label: "recibido", tone: "info" },
   review: { label: "en revisión", tone: "warning" },
@@ -160,6 +174,10 @@ export function EmailConnectorsScreen() {
   const [host, setHost] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  // purpose (Tanda 7b): pms_shadow adds the optional sender-domain and subject filters
+  const [purpose, setPurpose] = useState<EmailConnectionPurpose>("reservation_ai");
+  const [fromDomain, setFromDomain] = useState("");
+  const [subjectContains, setSubjectContains] = useState("");
 
   // manual ingest
   const [mFrom, setMFrom] = useState("");
@@ -207,18 +225,27 @@ export function EmailConnectorsScreen() {
   // A provider the server declares as not configured cannot serve a mailbox: no row is created until it is.
   const providerUnavailable = providerInfo ? !providerInfo.configured : false;
   const imapIncomplete = provider === "imap" && (!host.trim() || !username.trim() || !password);
-  const canAdd = !busy && !providerUnavailable && !imapIncomplete;
+  // SEC-03: a shadow-mode mailbox must name the sender domain (the API schema rejects `pms_shadow` without `fromDomain`).
+  const shadowIncomplete = purpose === "pms_shadow" && fromDomain.trim() === "";
+  const canAdd = !busy && !providerUnavailable && !imapIncomplete && !shadowIncomplete;
 
   async function addConnection() {
     if (!canAdd) return;
-    const payload: Record<string, unknown> = { provider };
+    const payload: CreateEmailConnectionPayload = { provider, purpose };
     if (provider === "imap") Object.assign(payload, { host, username, password, port: 993 });
+    // The filters only make sense for the shadow-mode ingest; blank ones never travel (the API schema rejects empty strings).
+    if (purpose === "pms_shadow") {
+      if (fromDomain.trim()) payload.fromDomain = fromDomain.trim();
+      if (subjectContains.trim()) payload.subjectContains = subjectContains.trim();
+    }
     await run(
       async () => {
         const conn = await createEmailConnection(payload);
         setHost("");
         setUsername("");
         setPassword("");
+        setFromDomain("");
+        setSubjectContains("");
         // OAuth providers: the authorisation opens in the same step, so the new mailbox never sits «pending» unannounced.
         if (conn.needsOAuth && conn.authorizeAvailable) {
           const { url } = await getEmailAuthorizeUrl(conn.id);
@@ -320,6 +347,9 @@ export function EmailConnectorsScreen() {
                           <CocoaBadge tone={connectionTone(c.status)} variant="tinted" size="small">
                             {STATUS_LABEL[c.status] ?? c.status}
                           </CocoaBadge>
+                          <CocoaBadge tone={PURPOSE_TONE[emailConnectionPurpose(c)]} variant="outline" size="small" uppercase={false} title={c.config?.fromDomain || c.config?.subjectContains ? `Filtros: ${[c.config?.fromDomain ? `remitente ${c.config.fromDomain}` : null, c.config?.subjectContains ? `asunto «${c.config.subjectContains}»` : null].filter(Boolean).join(" · ")}` : undefined}>
+                            {PURPOSE_LABEL[emailConnectionPurpose(c)]}
+                          </CocoaBadge>
                         </div>
                         <span className="cocoa-note">
                           {c.emailAddress ?? "—"} · última sincronización {dateTime(c.lastSyncAt)}
@@ -360,7 +390,7 @@ export function EmailConnectorsScreen() {
 
             <CocoaFormSection
               title="Añadir buzón"
-              description="Gmail y Microsoft 365 abren la autorización externa en el mismo paso; IMAP pide los datos del servidor."
+              description="Gmail y Microsoft 365 abren la autorización externa en el mismo paso; IMAP pide los datos del servidor. El propósito decide qué se hace con cada correo: extraer reservas con IA o entregar los adjuntos al modo sombra de OPERA."
               actions={
                 <CocoaButton variant="filled" tone="accent" size="small" disabled={!canAdd} loading={busy} onClick={() => void addConnection()}>
                   {oauthProvider ? "Iniciar autorización" : "Añadir buzón"}
@@ -378,6 +408,19 @@ export function EmailConnectorsScreen() {
                 <CocoaField label="Proveedor">
                   <CocoaSelect value={provider} onChange={setProvider} options={PROVIDER_OPTIONS} />
                 </CocoaField>
+                <CocoaField label="Propósito" help={purpose === "pms_shadow" ? "Los adjuntos (CSV, XML, XLSX) van al ingest del modo sombra; ningún correo pasa por la IA." : "Cada correo se convierte en un borrador de reserva que una persona revisa."}>
+                  <CocoaSelect value={purpose} onChange={(value) => setPurpose(value === "pms_shadow" ? "pms_shadow" : "reservation_ai")} options={PURPOSE_OPTIONS} />
+                </CocoaField>
+                {purpose === "pms_shadow" ? (
+                  <CocoaField label="Dominio remitente" required help="Obligatorio: solo se procesan los correos cuyo remitente pertenece a este dominio (o a un subdominio); sin él cualquier remitente podría contabilizar ingresos o cancelar reservas.">
+                    <CocoaInput value={fromDomain} onChange={setFromDomain} placeholder="oracle.com" autoComplete="off" maxLength={FILTER_MAX} />
+                  </CocoaField>
+                ) : null}
+                {purpose === "pms_shadow" ? (
+                  <CocoaField label="Asunto contiene" hint="opcional" help="Texto que debe aparecer en el asunto (sin distinguir mayúsculas).">
+                    <CocoaInput value={subjectContains} onChange={setSubjectContains} placeholder="Scheduled report" autoComplete="off" maxLength={FILTER_MAX} />
+                  </CocoaField>
+                ) : null}
                 {provider === "imap" ? (
                   <CocoaField label="Servidor" required>
                     <CocoaInput value={host} onChange={setHost} placeholder="imap.dominio.com" autoComplete="off" />

@@ -31,6 +31,8 @@ export const JOURNAL_SOURCE_TYPES = [
   "payroll_payment",
   /** Tanda 6c: devengo del coste de personal importado (agregado), un asiento por (centro, mes); sourceId `<importId>:<propertyId>:<periodCode>`. */
   "payroll_cost_import",
+  /** Tanda 7b: ingresos diarios de OPERA (modo sombra), un asiento por (hotel, business date); sourceId `<propertyId>:<YYYY-MM-DD>`. */
+  "pms_shadow_revenue",
   "commission",
   "commission_settlement",
   "depreciation",

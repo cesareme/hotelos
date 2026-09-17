@@ -87,7 +87,14 @@ const PUBLIC_PREFIXES = [
   // over the raw body) and the customer's landing after the hosted payment
   // page. Both carry no staff token; their manifest entries are riskLevel public.
   "/payments/webhooks",
-  "/payments/return"
+  "/payments/return",
+  // OPERA Cloud · modo sombra (Tanda 7b · L3): el agente SFTP / cron sube cada
+  // fichero con `X-Api-Key: <clientId>.<clientSecret>` de una DeveloperApp (scope
+  // pms.shadow.ingest), no con un JWT de personal: la clave se verifica en el
+  // handler (modules/pms-shadow/ingest-auth.ts) y la tenencia con
+  // assertPropertyInOrg(body.propertyId, app.organizationId). Prefijo fijo (no
+  // `/properties/:propertyId/...`, que abriría todo /properties); manifest public.
+  "/integrations/pms-shadow/ingest"
 ];
 
 /**

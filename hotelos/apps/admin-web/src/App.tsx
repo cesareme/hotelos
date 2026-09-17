@@ -339,6 +339,7 @@ const SCREEN_COMPONENTS = {
   ModuleManager: ModulosTabs,
   ModuleHealthCenter: ModulosTabs,
   MarketplaceCatalog: ModulosTabs,
+  PmsShadowScreen: ModulosTabs,
   PropertyAiScreen: InteligenciaArtificialTabs,
   AiToolRegistryScreen: InteligenciaArtificialTabs,
   AiPipelineStatusScreen: InteligenciaArtificialTabs,

@@ -45,10 +45,35 @@
 // GDPR: el fichero nunca se persiste; la fila del lote guarda nº de fila,
 // referencia, fechas, tipo/tarifa, unidades, código de reserva o código de error;
 // todo mensaje pasa por `stripRowValues`. Sin correos: nunca se rellena `bookerEmail`.
+//
+// Modo `sync` (Tanda 7b · L1, OPERA Cloud en modo sombra, diseño §5 y §6.3):
+// `mode: "sync"` + `feed` + `businessDate` (+ `profile: "opera_cloud"`,
+// `horizonDays`, `headerOverride`). El fichero es un SNAPSHOT: en `analyse`, tras
+// parsear, se aplica la cabecera sintética (`applyHeaderOverride`), el perfil
+// (`resolveProfileMapping` → 400 HEADER_MISMATCH si la cabecera no es la del
+// perfil; diccionarios del `PmsShadowProfile` de la propiedad con
+// `applyProfileValueMaps`; `estimateTotals` para `RATE`; `injectReferences` para
+// los informes sin nº de confirmación) ANTES de `applyMapping`; la normalización
+// recibe `mode` y `statusMap`; en vez de `annotateReferences`, `annotateSync`
+// resuelve los enlaces (`resolveLinks`) y decide por fila (`decideSyncAction`):
+// create / update / transition / unchanged / skip con diff SIN valores. El commit
+// exige además pms.checkin.execute y pms.checkout.execute (§6.3): `create` sigue el
+// camino de la Tanda 7 y da de alta el `PmsShadowLink`; `update` pasa por
+// `updateReservationShadow`; las transiciones reutilizan transitionReservation,
+// checkInReservation (centinela `opera:<confirmación>`, allowEarlyCheckIn) y
+// checkOutReservationDetailed + closeFolio (como la ruta de check-out). Las filas
+// `updated | unchanged | transitioned` se persisten con `reservationId` null y
+// `reservationCode` relleno (`reservationId` es único por fila). El hash de
+// contenido se SALA con (feed, businessDate): mismo fichero el mismo día → 409;
+// otro día → lote nuevo. Tras el bucle, `computeMissing` sube `missingStreak` de
+// los enlaces en ventana ausentes (alerta, nunca cancelación). `bookingSource`
+// sigue siendo `import:<importId>` (deshacer y cierre tardío buscan por él); la
+// procedencia OPERA vive en el enlace.
 
 import { prisma } from "@hotelos/database";
 import { Prisma } from "@prisma/client";
 import {
+  OPERA_CLOUD_PROFILE,
   RESERVATION_IMPORT_BOOKING_SOURCE_PREFIX,
   RESERVATION_IMPORT_DEFAULT_SAMPLE_SIZE,
   RESERVATION_IMPORT_ERROR_LABELS_ES,
@@ -60,11 +85,18 @@ import {
   RESERVATION_IMPORT_MAX_UNDO_REASON,
   RESERVATION_IMPORT_ROW_BATCH_SIZE,
   RESERVATION_IMPORT_ROW_CODE_SEVERITY,
+  RESERVATION_IMPORT_SYNC_DEFAULT_HORIZON_DAYS,
+  RESERVATION_IMPORT_SYNC_DIFF_CODE,
+  RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS,
   RESERVATION_IMPORT_UNDO_CLAIM_MINUTES,
   RESERVATION_IMPORT_UNDO_DEFAULT_REASON,
   type IsoDate,
   type MoneyString,
   type NormalizedReservationRow,
+  type PmsShadowFeedProfile,
+  type PmsShadowPropertyMapping,
+  type PmsShadowReservationFeed,
+  type PmsShadowStatusMap,
   type ReservationImportAvailability,
   type ReservationImportBlocker,
   type ReservationImportCatalog,
@@ -85,6 +117,7 @@ import {
   type ReservationImportPreview,
   type ReservationImportPreviewBody,
   type ReservationImportPreviewRow,
+  type ReservationImportProfile,
   type ReservationImportRecord,
   type ReservationImportResult,
   type ReservationImportRowAvailability,
@@ -92,24 +125,39 @@ import {
   type ReservationImportRowOutcome,
   type ReservationImportRowRecord,
   type ReservationImportRowResolved,
+  type ReservationImportRowSync,
   type ReservationImportSource,
   type ReservationImportStatus,
   type ReservationImportStoredOptions,
   type ReservationImportSummary,
+  type ReservationImportSyncResult,
   type ReservationImportTotals,
   type ReservationImportUndoOutcome,
-  type ReservationImportUndoResult
+  type ReservationImportUndoResult,
+  type ReservationSyncTargetStatus
 } from "@hotelos/shared";
 import type { UserContext } from "../../lib/demo-store.js";
 import { BadRequestError, ConflictError, HttpError, NotFoundError, describePrismaError } from "../../lib/http-error.js";
 import { recordAuditEvent } from "../audit/audit.service.js";
 import { requirePermissions } from "../auth/auth.service.js";
+import { closeFolio, findReservationFolio } from "../folio/folio.service.js";
 import { getCurrentBusinessDate } from "../night-audit/night-audit.service.js";
 import { canAssignRoom } from "./inventory.engine.js";
-import { assertPropertyInOrg, assignRoom, createReservation, todayInTimezone, transitionReservation } from "./pms.service.js";
-import { planAvailability, type AvailabilityInventory, type AvailabilityPlanRow } from "./reservation-import.availability.js";
-import { applyMapping, foldValue } from "./reservation-import.mapping.js";
 import {
+  assertPropertyInOrg,
+  assignRoom,
+  checkInReservation,
+  checkOutReservationDetailed,
+  createReservation,
+  todayInTimezone,
+  transitionReservation,
+  updateReservationShadow,
+  type ReservationShadowPatch
+} from "./pms.service.js";
+import { planAvailability, type AvailabilityInventory, type AvailabilityPlanRow } from "./reservation-import.availability.js";
+import { applyMapping, foldValue, resolveProfileMapping } from "./reservation-import.mapping.js";
+import {
+  addDaysIso,
   contentHashRowsOf,
   normalizeTable,
   personalValuesOf,
@@ -117,10 +165,30 @@ import {
   resolvedOf,
   rowStatusFromIssues,
   stripRowValues,
+  syncRowHash,
+  type NormalizeTableOptions,
   type NormalizedTableRow,
   type ReservationImportCatalogs
 } from "./reservation-import.normalize.js";
 import { ReservationImportParseError, parseReservationImportFile, type ParsedTable } from "./reservation-import.parser.js";
+import {
+  applyHeaderOverride,
+  applyProfileValueMaps,
+  columnIndexOf,
+  computeMissing,
+  decideSyncAction,
+  estimateTotals,
+  injectReferences,
+  resolveLinks,
+  resolveLinksByStay,
+  stayKeyOf,
+  stayKeysOf,
+  type MissingCandidate,
+  type SyncDecision,
+  type SyncLinkedReservation,
+  type SyncRowIssue,
+  type SyncTransition
+} from "./reservation-import.sync.js";
 import { quoteReservationTotal } from "./room-charge.service.js";
 
 // ---------------------------------------------------------------------------
@@ -144,6 +212,23 @@ type LoadedCatalogs = ReservationImportCatalogs & {
   wire: ReservationImportCatalog;
 };
 
+/** Plan de sincronización de una fila (modo `sync`): veredicto + enlace para el commit. */
+type SyncPlan = SyncDecision & {
+  /** Nº de confirmación (referencia externa recortada). */
+  confirmationNo: string;
+  rowHash: string;
+  link: SyncLinkedReservation | null;
+};
+
+/** Contexto del modo `sync` de un análisis. */
+type AnalysisSync = {
+  feed: PmsShadowReservationFeed;
+  businessDate: IsoDate;
+  horizonDays: number;
+  profile: ReservationImportProfile | null;
+  statusMap: PmsShadowStatusMap;
+};
+
 /** Fila analizada: la fila normalizada de L1 más lo que solo la BD sabe. */
 type AnalysedRow = NormalizedTableRow & {
   /** Valores personales de la fila (`personalValuesOf`): lo único que `stripRowValues` borra de un mensaje (T7-FUN-02). */
@@ -152,6 +237,14 @@ type AnalysedRow = NormalizedTableRow & {
   guestId?: string;
   guestReuse: ReservationImportGuestReuse | null;
   availability?: ReservationImportRowAvailability;
+  /** Modo `sync`: veredicto y enlace (solo filas normalizadas sin error ni omisión). */
+  sync?: SyncPlan;
+  /**
+   * SC-01 (Tanda 7b): nº de confirmación tal como viene en la celda `referencia_externa`,
+   * también en las filas `error` / `skipped` (que no llevan `normalized` ni `sync`). Una fila
+   * PRESENTE en el corte pero inválida no es una reserva AUSENTE: `computeMissing` la ve.
+   */
+  rawReference?: string;
 };
 
 type Analysis = {
@@ -178,6 +271,8 @@ type Analysis = {
   canImport: boolean;
   blockers: ReservationImportBlocker[];
   warnings: string[];
+  /** Solo en modo `sync`. */
+  sync?: AnalysisSync;
 };
 
 /** Resultado de una fila durante el commit (lo que se persiste, sin datos personales). */
@@ -185,6 +280,7 @@ type RowOutcome = {
   rowNumber: number;
   outcome: ReservationImportRowOutcome;
   resolved?: ReservationImportRowResolved;
+  /** Solo la fila que CREA la reserva (columna única): las filas updated / unchanged / transitioned no lo llevan. */
   reservationId?: string;
   reservationCode?: string;
   errorCode?: ReservationImportRowCode;
@@ -192,6 +288,12 @@ type RowOutcome = {
   warnings: ReservationImportIssue[];
   /** Importe de la reserva creada (Σ del lote). */
   totalAmount?: MoneyString;
+  /** Modo `sync`: campos actualizados (solo nombres) → entrada SYNC_DIFF de `warningsJson`. */
+  syncDiff?: string[];
+  /** Modo `sync`: nº de confirmación de la fila (para `missing` y los resúmenes). */
+  confirmationNo?: string;
+  /** Modo `sync`: la fila quedó confirmada porque OPERA la tiene en casa sin habitación válida. */
+  checkInWithoutRoom?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -258,6 +360,16 @@ function isPlanned(row: AnalysedRow): row is AnalysedRow & { normalized: Normali
   return row.normalized !== undefined && row.status !== "error" && row.status !== "skipped";
 }
 
+/** Fila planificada que CREARÁ una reserva: toda fila planificada en `create`; en `sync`, solo las de acción `create`. */
+function isCreatePlanned(row: AnalysedRow): row is AnalysedRow & { normalized: NormalizedReservationRow } {
+  return isPlanned(row) && (row.sync === undefined || row.sync.action === "create");
+}
+
+/** ¿El veredicto de sincronización aplica una transición de estado sobre una reserva enlazada? */
+function isLinkedTransition(plan: SyncPlan): boolean {
+  return plan.link !== null && !plan.reactivate && plan.transition !== null && (plan.action === "update" || plan.action === "transition");
+}
+
 function clip(text: string, max = RESERVATION_IMPORT_MAX_ERROR_MESSAGE): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
@@ -268,13 +380,66 @@ function unique(values: Iterable<string | undefined>): string[] {
   return Array.from(out);
 }
 
+/**
+ * Opciones efectivas. En `create` son EXACTAMENTE las cuatro banderas de la Tanda
+ * 7 (la preview y `optionsJson` no cambian); en `sync` se añaden mode, profile,
+ * feed, businessDate y horizonDays (acotado a 1..730, por defecto 30).
+ */
 function optionsOf(body: ReservationImportPreviewBody): ReservationImportOptions {
-  return {
+  const out: ReservationImportOptions = {
     omitirInvalidas: body.omitirInvalidas === true,
     permitirOverbooking: body.permitirOverbooking === true,
     historico: body.historico === true,
     force: body.force === true
   };
+  if (body.profile !== undefined) out.profile = body.profile;
+  if (body.mode === "sync") {
+    out.mode = "sync";
+    if (body.feed !== undefined) out.feed = body.feed;
+    if (body.businessDate !== undefined) out.businessDate = body.businessDate;
+    const horizon = body.horizonDays;
+    out.horizonDays = horizon !== undefined && Number.isFinite(horizon) ? Math.min(Math.max(Math.trunc(horizon), 1), RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS) : RESERVATION_IMPORT_SYNC_DEFAULT_HORIZON_DAYS;
+  }
+  return out;
+}
+
+const BUSINESS_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function isValidIsoDate(value: string): boolean {
+  if (!BUSINESS_DATE_RE.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function mappingJsonOf(raw: Prisma.JsonValue | null | undefined): PmsShadowPropertyMapping {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const value = raw as Record<string, unknown>;
+  const dictionary = (key: string): Record<string, string> | undefined => {
+    const entry = value[key];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
+    const out: Record<string, string> = {};
+    for (const [code, target] of Object.entries(entry as Record<string, unknown>)) if (typeof target === "string") out[code] = target;
+    return out;
+  };
+  const out: PmsShadowPropertyMapping = {};
+  const roomTypes = dictionary("roomTypes");
+  if (roomTypes) out.roomTypes = roomTypes;
+  const rateCodes = dictionary("rateCodes");
+  if (rateCodes) out.rateCodes = rateCodes;
+  const marketCodes = dictionary("marketCodes");
+  if (marketCodes) out.marketCodes = marketCodes;
+  const sourceCodes = dictionary("sourceCodes");
+  if (sourceCodes) out.sourceCodes = sourceCodes;
+  const paymentTypes = dictionary("paymentTypes");
+  if (paymentTypes) out.paymentTypes = paymentTypes;
+  if (Array.isArray(value.pseudoRoomTypes)) out.pseudoRoomTypes = value.pseudoRoomTypes.filter((code): code is string => typeof code === "string");
+  return out;
+}
+
+/** Diccionarios del `PmsShadowProfile` de la propiedad; sin perfil → vacíos (exigirlo es cosa del ingest de L3). */
+async function loadPropertyMapping(propertyId: string): Promise<PmsShadowPropertyMapping> {
+  const profile = await prisma.pmsShadowProfile.findUnique({ where: { propertyId_system: { propertyId, system: "opera_cloud" } }, select: { mappingJson: true } });
+  return profile ? mappingJsonOf(profile.mappingJson) : {};
 }
 
 function sampleSizeOf(body: ReservationImportPreviewBody): number {
@@ -382,12 +547,52 @@ async function annotateReferences(rows: AnalysedRow[], propertyId: string): Prom
   }
 }
 
+/** `resolved.sync` de una fila (sin datos personales) a partir de su plan. */
+function rowSyncOf(plan: SyncPlan, totalEstimated: boolean): ReservationImportRowSync {
+  const out: ReservationImportRowSync = { action: plan.action, targetStatus: plan.targetStatus };
+  if (plan.currentStatus !== undefined) out.currentStatus = plan.currentStatus;
+  if (plan.link && !plan.reactivate) out.reservationCode = plan.link.reservation.code;
+  if (plan.diff.length > 0) out.diff = [...plan.diff];
+  if (totalEstimated) out.totalEstimated = true;
+  return out;
+}
+
+/**
+ * Modo `sync` (§5.1, §6.3): resuelve los enlaces por nº de confirmación ANTES de
+ * la validación de duplicados (una referencia conocida ya no es
+ * DUPLICATE_REFERENCE sino candidata a update / unchanged; una reserva activa sin
+ * enlace sí es un conflicto local) y decide por fila con `decideSyncAction`.
+ * Anota `row.sync` (plan para el commit) y `row.resolved.sync` (wire, sin PII).
+ */
+async function annotateSync(rows: AnalysedRow[], propertyId: string, estimated: ReadonlySet<number>): Promise<void> {
+  const references = unique(rows.map((row) => row.normalized?.externalReference?.trim()));
+  const { links, activeUnlinked } = await resolveLinks(propertyId, references);
+  for (const row of rows) {
+    if (!isPlanned(row)) continue;
+    const confirmationNo = row.normalized.externalReference?.trim();
+    if (!confirmationNo) continue; // SYNC_REQUIRES_REFERENCE ya la dejó en error.
+    const key = confirmationNo.toLowerCase();
+    const link = links.get(key) ?? null;
+    const local = activeUnlinked.get(key) ?? null;
+    const rowHash = syncRowHash(row.normalized);
+    const decision = decideSyncAction({ rowNumber: row.rowNumber, normalized: row.normalized, rowHash, link, activeUnlinkedReservation: local });
+    for (const issue of decision.issues) {
+      if (row.issues.some((existing) => existing.code === issue.code && existing.column === issue.column)) continue;
+      row.issues.push({ ...issue, message: stripRowValues(issue.message, row.personalValues) });
+    }
+    row.sync = { ...decision, confirmationNo, rowHash, link };
+    if (row.resolved) row.resolved.sync = rowSyncOf(row.sync, estimated.has(row.rowNumber));
+    refreshStatus(row);
+  }
+}
+
 function documentKey(value: string | null | undefined): string {
   return (value ?? "").toUpperCase().replace(/\s+/g, "");
 }
 
-/** Huésped existente de la organización por documento o e-mail (nunca por nombre); la ficha nunca se sobreescribe. */
-async function annotateGuests(rows: AnalysedRow[], organizationId: string): Promise<void> {
+/** Huésped existente de la organización por documento o e-mail (nunca por nombre); la ficha nunca se sobreescribe. En `sync` solo las filas que crean (una actualización no toca al huésped). */
+async function annotateGuests(allRows: AnalysedRow[], organizationId: string): Promise<void> {
+  const rows = allRows.filter((row) => row.sync === undefined || row.sync.action === "create");
   const documents = unique(rows.map((row) => row.normalized?.guest.documentNumber));
   const emails = unique(rows.map((row) => row.normalized?.guest.email));
   if (documents.length === 0 && emails.length === 0) return;
@@ -452,13 +657,15 @@ async function annotatePossibleDuplicates(rows: AnalysedRow[], propertyId: strin
   }
 }
 
-/** La habitación pedida debe estar libre en esas fechas (`canAssignRoom`, la misma comprobación de recepción). */
+/** La habitación pedida debe estar libre en esas fechas (`canAssignRoom`, la misma comprobación de recepción). En `sync`, una fila enlazada se valida como SU reserva (su propia asignación no es un conflicto). */
 async function annotateRooms(rows: AnalysedRow[], propertyId: string): Promise<void> {
   for (const row of rows) {
     if (!isPlanned(row) || !row.normalized.roomId) continue;
+    // Una reserva alojada no cambia de habitación desde el corte (SYNC_ROOM_MOVE_IGNORED): no hay nada que validar.
+    if (row.sync?.link && !row.sync.reactivate && row.sync.link.reservation.status === "checked_in") continue;
     const validation = await canAssignRoom({
       propertyId,
-      reservationId: PREVIEW_RESERVATION_ID,
+      reservationId: row.sync?.link && !row.sync.reactivate ? row.sync.link.reservation.id : PREVIEW_RESERVATION_ID,
       roomId: row.normalized.roomId,
       arrivalDate: row.normalized.arrivalDate,
       departureDate: row.normalized.departureDate
@@ -483,10 +690,10 @@ function annotatePermissions(rows: AnalysedRow[], context: UserContext): void {
   }
 }
 
-/** Avisos de estado: tentativa → confirmada con nota interna; cancelada → creada y cancelada en el mismo lote. */
+/** Avisos de estado: tentativa → confirmada con nota interna; cancelada → creada y cancelada en el mismo lote. Solo filas que crean. */
 function annotateEstado(rows: AnalysedRow[]): void {
   for (const row of rows) {
-    if (!isPlanned(row) || row.normalized.historical) continue;
+    if (!isCreatePlanned(row) || row.normalized.historical) continue;
     if (row.normalized.estado === "tentativa") {
       pushIssue(row, "RESERVATION_IMPORT_ROW_TENTATIVE_AS_CONFIRMED", `${label("estado")} tentativa: se crea confirmada con la nota interna «confirmar con el cliente».`, "estado");
     } else if (row.normalized.estado === "cancelada") {
@@ -495,11 +702,11 @@ function annotateEstado(rows: AnalysedRow[]): void {
   }
 }
 
-/** Importe vacío → cotización con la tarifa (`quoteReservationTotal` × habitaciones); sin precio → 0 con aviso. */
+/** Importe vacío → cotización con la tarifa (`quoteReservationTotal` × habitaciones); sin precio → 0 con aviso. Solo filas que crean (una actualización sin importe no cotiza: OPERA no ha dicho nada del importe). */
 async function annotateTotals(rows: AnalysedRow[], propertyId: string): Promise<void> {
   const quotes = new Map<string, Awaited<ReturnType<typeof quoteReservationTotal>>>();
   for (const row of rows) {
-    if (!isPlanned(row) || row.normalized.totalSource !== "none") continue;
+    if (!isCreatePlanned(row) || row.normalized.totalSource !== "none") continue;
     const normalized = row.normalized;
     const key = `${normalized.roomTypeId}|${normalized.ratePlanId ?? ""}|${normalized.arrivalDate}|${normalized.departureDate}`;
     let quote = quotes.get(key);
@@ -520,7 +727,8 @@ async function annotateTotals(rows: AnalysedRow[], propertyId: string): Promise<
 
 /** Regla de rango del PMS sobre BD + filas anteriores (planificador puro) → error NO_AVAILABILITY o aviso OVERBOOKING. */
 async function annotateAvailability(rows: AnalysedRow[], propertyId: string, catalogs: LoadedCatalogs, options: ReservationImportOptions): Promise<ReservationImportAvailability> {
-  const planned = rows.filter((row): row is AnalysedRow & { normalized: NormalizedReservationRow } => isPlanned(row) && !row.normalized.historical);
+  // En `sync` solo entran las filas que crean: las enlazadas ya ocupan su inventario en la BD.
+  const planned = rows.filter((row): row is AnalysedRow & { normalized: NormalizedReservationRow } => isCreatePlanned(row) && !row.normalized.historical);
   if (planned.length === 0) return { byRoomType: [], overbookingRows: [] };
   const typeIds = unique(planned.map((row) => row.normalized.roomTypeId));
   const minArrival = planned.map((row) => row.normalized.arrivalDate).sort()[0]!;
@@ -583,16 +791,31 @@ async function findLiveImport(db: Db, propertyId: string, contentHash: string): 
   return db.reservationImport.findFirst({ where: { propertyId, contentHash, status: { notIn: ["undone", "failed"] } }, orderBy: { createdAt: "desc" } });
 }
 
-function summarize(rows: readonly AnalysedRow[]): ReservationImportSummary {
+function summarize(rows: readonly AnalysedRow[], sync: boolean): ReservationImportSummary {
   const summary: ReservationImportSummary = { valid: 0, warning: 0, error: 0, skipped: 0, historical: 0, toCreate: 0 };
+  if (sync) {
+    summary.toUpdate = 0;
+    summary.unchanged = 0;
+    summary.toTransition = 0;
+  }
   for (const row of rows) {
     summary[row.status] += 1;
-    if (row.status === "valid" || row.status === "warning") {
+    if (row.status !== "valid" && row.status !== "warning") continue;
+    if (!sync || row.sync === undefined || row.sync.action === "create") {
       summary.toCreate += 1;
       if (row.normalized?.historical) summary.historical += 1;
+      continue;
     }
+    if (row.sync.action === "update" || row.sync.action === "transition") summary.toUpdate = (summary.toUpdate ?? 0) + 1;
+    else if (row.sync.action === "unchanged") summary.unchanged = (summary.unchanged ?? 0) + 1;
+    if (isLinkedTransition(row.sync)) summary.toTransition = (summary.toTransition ?? 0) + 1;
   }
   return summary;
+}
+
+/** Filas que el commit procesará: las que crean y, en `sync`, las que actualizan o dejan sin cambios. */
+function plannedCount(summary: ReservationImportSummary): number {
+  return summary.toCreate + (summary.toUpdate ?? 0) + (summary.unchanged ?? 0);
 }
 
 function rowsWithCode(rows: readonly AnalysedRow[], code: ReservationImportRowCode): number[] {
@@ -603,7 +826,7 @@ function totalsOf(rows: readonly AnalysedRow[], currency: string): ReservationIm
   let fromFile: Prisma.Decimal = ZERO;
   let quoted: Prisma.Decimal = ZERO;
   for (const row of rows) {
-    if (!isPlanned(row)) continue;
+    if (!isCreatePlanned(row)) continue;
     if (row.normalized.totalSource === "file") fromFile = fromFile.plus(row.normalized.totalAmount);
     else if (row.normalized.totalSource === "quoted") quoted = quoted.plus(row.normalized.totalAmount);
   }
@@ -656,9 +879,83 @@ export async function analyse(input: { context: UserContext; propertyId: string;
     blockers.push({ code: error.code, message: error.message, ...(error.details ? { details: error.details } : {}) });
     return emptyAnalysis({ propertyId, format: body.format ?? "csv", fileName, catalogs, options, blockers, warnings });
   }
+  // ---- Tanda 7b · modo `sync` y perfil preinstalado (antes de applyMapping) ----
+  const sync = options.mode === "sync";
+  let syncContext: AnalysisSync | undefined;
+  let mapping: ReservationImportMapping | null | undefined = body.mapping;
+  const profileIssues: SyncRowIssue[] = [];
+  const estimatedRows = new Set<number>();
+  const rateFirstNightOf = new Map<number, MoneyString>();
+  let profileApplied = false;
+  /** Impedimento de fichero previo a la normalización: 400 en estricto, blocker en la preview. */
+  const fail = (code: ReservationImportErrorCode, message: string, details: Record<string, unknown> = {}): Analysis => {
+    if (strict) throw importBadRequest(code, message, details);
+    blockers.push({ code, message, ...(Object.keys(details).length > 0 ? { details } : {}) });
+    return emptyAnalysis({ propertyId, format: parsed.format, fileName, catalogs, options, blockers, warnings });
+  };
+  if (sync) {
+    if (options.feed === undefined || options.businessDate === undefined) {
+      return fail("RESERVATION_IMPORT_SYNC_REQUIRES_FEED", RESERVATION_IMPORT_ERROR_LABELS_ES.RESERVATION_IMPORT_SYNC_REQUIRES_FEED, { feed: options.feed ?? null, businessDate: options.businessDate ?? null });
+    }
+    if (!isValidIsoDate(options.businessDate)) {
+      return fail("RESERVATION_IMPORT_SYNC_REQUIRES_FEED", "businessDate debe ser una fecha real con el formato AAAA-MM-DD.", { businessDate: options.businessDate });
+    }
+    syncContext = { feed: options.feed, businessDate: options.businessDate, horizonDays: options.horizonDays ?? RESERVATION_IMPORT_SYNC_DEFAULT_HORIZON_DAYS, profile: options.profile ?? null, statusMap: {} };
+  }
+  if (body.headerOverride !== undefined) {
+    try {
+      parsed = applyHeaderOverride(parsed, body.headerOverride);
+    } catch (error) {
+      if (!(error instanceof ReservationImportParseError)) throw error;
+      return fail(error.code, error.message, error.details ?? {});
+    }
+  }
+  // Los avisos de fichero se recogen tras la cabecera sintética (retira los de «cabecera repetida» que no aplican a un fichero sin cabecera).
   warnings.push(...parsed.warnings);
+  if (options.profile === "opera_cloud") {
+    const feed = options.feed;
+    const feedProfile: PmsShadowFeedProfile | undefined = feed !== undefined ? OPERA_CLOUD_PROFILE.feeds[feed] : undefined;
+    if (!feedProfile) {
+      return fail("RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED", feed === undefined ? "El perfil de mapeo exige indicar el feed (arrivals, inhouse, departures o changes)." : RESERVATION_IMPORT_ERROR_LABELS_ES.RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED, { profile: options.profile, feed: feed ?? null });
+    }
+    const resolved = resolveProfileMapping(parsed.header, feedProfile);
+    if (resolved.unknownColumns.length > 0 || resolved.missingProfileColumns.length > 0) {
+      const detail = `${resolved.missingProfileColumns.length} columna(s) del perfil ausente(s) y ${resolved.unknownColumns.length} columna(s) desconocida(s)`;
+      // SEC-02: en `sync` (y con «Delimited Data» sin fila de cabecera) lo que el parser tomó por cabecera puede ser
+      // la primera fila de DATOS (apellidos, nombre, NAME_ON_CARD…): los detalles llevan solo la cabecera esperada,
+      // conteos y las columnas del perfil ausentes (nombres del perfil, nunca celdas recibidas).
+      const details = { expected: Object.keys(feedProfile.mapping), receivedCount: parsed.header.length, unknownCount: resolved.unknownColumns.length, missingProfileColumns: resolved.missingProfileColumns };
+      if (sync) return fail("RESERVATION_IMPORT_HEADER_MISMATCH", `La cabecera del fichero no coincide con la del perfil OPERA Cloud (${feed}): ${detail}.`, details);
+      warnings.push(`La cabecera no coincide del todo con la del perfil OPERA Cloud (${feed}): ${detail}; se importa con las columnas reconocidas.`);
+    }
+    // El mapeo explícito del cuerpo prevalece sobre el del perfil (por columna).
+    mapping = { ...resolved.mapping, ...(body.mapping ?? {}) };
+    if (syncContext) syncContext.statusMap = OPERA_CLOUD_PROFILE.statusMap;
+    const propertyMapping = await loadPropertyMapping(propertyId);
+    const valueMaps = applyProfileValueMaps(parsed, mapping, propertyMapping, OPERA_CLOUD_PROFILE);
+    parsed = valueMaps.parsed;
+    profileIssues.push(...valueMaps.issues);
+    const totals = estimateTotals(parsed, mapping);
+    parsed = totals.parsed;
+    mapping = totals.mapping;
+    profileIssues.push(...totals.issues);
+    for (const [rowNumber, estimate] of totals.estimates) {
+      rateFirstNightOf.set(rowNumber, estimate.rateFirstNight);
+      if (estimate.estimatedTotal !== null) estimatedRows.add(rowNumber);
+    }
+    if (sync && columnIndexOf(parsed.header, mapping, "referencia_externa") < 0) {
+      // Informe sin nº de confirmación (departure_all): se casa por (habitación, llegada, salida) con un enlace vivo.
+      const stays = stayKeysOf(parsed, mapping);
+      const byStay = await resolveLinksByStay(propertyId, stays);
+      const injected = injectReferences(parsed, mapping, (stay) => byStay.get(stayKeyOf(stay.roomNumber, stay.arrivalDate, stay.departureDate)) ?? null);
+      parsed = injected.parsed;
+      mapping = injected.mapping;
+      if (injected.applied) warnings.push(`El informe no trae nº de confirmación: ${injected.resolved} de ${parsed.rows.length} fila(s) se han casado con una reserva enlazada por habitación, llegada y salida.`);
+    }
+    profileApplied = true;
+  }
 
-  const applied = applyMapping(parsed.header, body.mapping);
+  const applied = applyMapping(parsed.header, mapping);
   warnings.push(...applied.warnings);
   if (applied.conflicts.length > 0) {
     const first = applied.conflicts[0]!;
@@ -671,7 +968,8 @@ export async function analyse(input: { context: UserContext; propertyId: string;
     if (strict) throw importBadRequest("RESERVATION_IMPORT_MAPPING_INCOMPLETE", message, { missing: applied.missingRequired });
     blockers.push({ code: "RESERVATION_IMPORT_MAPPING_INCOMPLETE", message, details: { missing: applied.missingRequired } });
   }
-  if (applied.unmappedColumns.length > 0) {
+  // Con perfil, las columnas ignoradas lo son por diseño (PII de tarjeta, descuentos…): sin aviso.
+  if (applied.unmappedColumns.length > 0 && !profileApplied) {
     warnings.push(`${applied.unmappedColumns.length} columna(s) del fichero sin mapear se ignoran: ${applied.unmappedColumns.map((column) => `«${column}»`).join(", ")}.`);
   }
 
@@ -683,10 +981,42 @@ export async function analyse(input: { context: UserContext; propertyId: string;
     );
   }
 
-  const table = normalizeTable(parsed, body.mapping, catalogs, { historico: options.historico });
-  const rows: AnalysedRow[] = table.rows.map((row) => ({ ...row, issues: [...row.issues], personalValues: personalValuesOf(row.cells, table.mappingByIndex), guestReuse: null }));
+  const tableOptions: NormalizeTableOptions = { historico: options.historico };
+  if (syncContext) {
+    tableOptions.mode = "sync";
+    tableOptions.statusMap = syncContext.statusMap;
+  }
+  const table = normalizeTable(parsed, mapping, catalogs, tableOptions);
+  const referenceIndex = table.mappingByIndex.indexOf("referencia_externa");
+  const rows: AnalysedRow[] = table.rows.map((row) => {
+    const rawReference = referenceIndex >= 0 ? (row.cells[referenceIndex] ?? "").trim() : "";
+    return { ...row, issues: [...row.issues], personalValues: personalValuesOf(row.cells, table.mappingByIndex), guestReuse: null, ...(rawReference ? { rawReference } : {}) };
+  });
+  if (profileIssues.length > 0 || rateFirstNightOf.size > 0) {
+    const byRow = new Map(rows.map((row) => [row.rowNumber, row] as const));
+    for (const { rowNumber, issue } of profileIssues) {
+      const row = byRow.get(rowNumber);
+      if (!row || row.issues.some((existing) => existing.code === issue.code && existing.column === issue.column)) continue;
+      // Integrador 7b: una pseudo room del perfil (PM, HOUSE…) no es un tipo de habitación por diseño: la fila se
+      // OMITE con OPERA_PSEUDO_ROOM; el error ROOM_TYPE_UNKNOWN que la normalización le puso por la misma celda
+      // sobra (ganaba a la omisión, la fila salía `error` y PM entraba en unmappedRoomTypes / OPERA_ROOM_TYPE_UNMAPPED).
+      if (issue.code === "RESERVATION_IMPORT_ROW_OPERA_PSEUDO_ROOM") row.issues = row.issues.filter((existing) => existing.code !== "RESERVATION_IMPORT_ROW_ROOM_TYPE_UNKNOWN");
+      row.issues.push({ ...issue, message: stripRowValues(issue.message, row.personalValues) });
+      refreshStatus(row);
+      // Una omisión del perfil (pseudo room) deja la fila sin plan, como cualquier otra omitida.
+      if (row.status === "skipped" || row.status === "error") {
+        delete row.normalized;
+        delete row.resolved;
+      }
+    }
+    for (const [rowNumber, rate] of rateFirstNightOf) {
+      const row = byRow.get(rowNumber);
+      if (row?.normalized) row.normalized.rateFirstNight = rate;
+    }
+  }
 
-  await annotateReferences(rows, propertyId);
+  if (syncContext) await annotateSync(rows, propertyId, estimatedRows);
+  else await annotateReferences(rows, propertyId);
   for (const row of rows) refreshStatus(row);
   await annotateGuests(rows, input.context.organizationId);
   await annotatePossibleDuplicates(rows, propertyId);
@@ -697,9 +1027,12 @@ export async function analyse(input: { context: UserContext; propertyId: string;
   const availability = await annotateAvailability(rows, propertyId, catalogs, options);
   for (const row of rows) refreshStatus(row);
 
-  const summary = summarize(rows);
+  const summary = summarize(rows, sync);
   // Hash sin frontera temporal ni opción «histórico» (T7-FUN-03): el mismo fichero es el mismo lote con cualquier opción.
-  const contentHash = reservationImportContentHash(contentHashRowsOf(parsed, body.mapping, catalogs));
+  // Tanda 7b · `sync`: salado con (feed, businessDate) → el mismo snapshot en otro business date es un lote nuevo.
+  const contentHash = reservationImportContentHash(
+    contentHashRowsOf(parsed, mapping, catalogs, syncContext ? { mode: "sync", statusMap: syncContext.statusMap, feed: syncContext.feed, businessDate: syncContext.businessDate } : {})
+  );
   const ofImport = rows.length > 0 ? await findLiveImport(prisma, propertyId, contentHash) : null;
   const duplicates: ReservationImportDuplicates = {
     byReferenceRows: rowsWithCode(rows, "RESERVATION_IMPORT_ROW_DUPLICATE_REFERENCE"),
@@ -716,7 +1049,9 @@ export async function analyse(input: { context: UserContext; propertyId: string;
         rows: invalid.slice(0, 50).map((row) => ({ rowNumber: row.rowNumber, code: row.issues.find((issue) => severityOf(issue.code) === "error")?.code ?? null }))
       });
     }
-    if (summary.toCreate === 0) throw importBadRequest("RESERVATION_IMPORT_EMPTY", "No hay ninguna reserva que crear: todas las filas están omitidas o tienen errores.");
+    if (plannedCount(summary) === 0) {
+      throw importBadRequest("RESERVATION_IMPORT_EMPTY", sync ? "No hay ninguna reserva que sincronizar: todas las filas están omitidas o tienen errores." : "No hay ninguna reserva que crear: todas las filas están omitidas o tienen errores.");
+    }
     if (ofImport && !options.force) {
       throw importConflict("RESERVATION_IMPORT_DUPLICATE", `Este fichero ya se importó (lote ${ofImport.id}): deshaz el lote anterior o activa «Importar de todos modos».`, duplicateRefOf(ofImport) as unknown as Record<string, unknown>);
     }
@@ -724,7 +1059,7 @@ export async function analyse(input: { context: UserContext; propertyId: string;
     if (summary.error > 0 && !options.omitirInvalidas) {
       blockers.push({ code: "RESERVATION_IMPORT_INVALID", message: `Hay ${summary.error} fila(s) con errores: corrígelas o activa «Omitir filas inválidas».`, details: { errorCount: summary.error } });
     }
-    if (rows.length > 0 && summary.toCreate === 0) {
+    if (rows.length > 0 && plannedCount(summary) === 0) {
       blockers.push({ code: "RESERVATION_IMPORT_EMPTY", message: RESERVATION_IMPORT_ERROR_LABELS_ES.RESERVATION_IMPORT_EMPTY });
     }
     if (ofImport && !options.force) {
@@ -733,7 +1068,7 @@ export async function analyse(input: { context: UserContext; propertyId: string;
   }
   if (ofImport && options.force) warnings.push(`Este fichero ya se importó (lote ${ofImport.id}); con «Importar de todos modos» se creará un lote nuevo.`);
 
-  const canImport = blockers.length === 0 && summary.toCreate > 0;
+  const canImport = blockers.length === 0 && plannedCount(summary) > 0;
   return {
     propertyId,
     format: parsed.format,
@@ -757,7 +1092,8 @@ export async function analyse(input: { context: UserContext; propertyId: string;
     options,
     canImport,
     blockers,
-    warnings
+    warnings,
+    ...(syncContext ? { sync: syncContext } : {})
   };
 }
 
@@ -845,6 +1181,23 @@ function storedOptionsOf(raw: Prisma.JsonValue): ReservationImportStoredOptions 
   const duplicateOfImportId = text("duplicateOfImportId");
   if (duplicateOfImportId !== undefined) out.duplicateOfImportId = duplicateOfImportId;
   if (typeof value.durationMs === "number") out.durationMs = value.durationMs;
+  if (value.source === "email" || value.source === "api_key" || value.source === "job") out.source = value.source;
+  // Tanda 7b · modo `sync` (ausente en los lotes de la Tanda 7 = create).
+  if (value.mode === "sync") out.mode = "sync";
+  if (value.profile === "opera_cloud") out.profile = "opera_cloud";
+  const feed = text("feed");
+  if (feed === "arrivals" || feed === "inhouse" || feed === "departures" || feed === "changes") out.feed = feed;
+  const businessDate = text("businessDate");
+  if (businessDate !== undefined) out.businessDate = businessDate;
+  if (typeof value.horizonDays === "number") out.horizonDays = value.horizonDays;
+  const shadowRunId = text("shadowRunId");
+  if (shadowRunId !== undefined) out.shadowRunId = shadowRunId;
+  const syncCounts = value.sync;
+  if (syncCounts && typeof syncCounts === "object" && !Array.isArray(syncCounts)) {
+    const counts = syncCounts as Record<string, unknown>;
+    const count = (key: string): number => (typeof counts[key] === "number" ? (counts[key] as number) : 0);
+    out.sync = { updated: count("updated"), unchanged: count("unchanged"), transitioned: count("transitioned") };
+  }
   return out;
 }
 
@@ -888,6 +1241,8 @@ function warningsOf(raw: Prisma.JsonValue): ReservationImportIssue[] {
     const issue: ReservationImportIssue = { code: value.code as ReservationImportRowCode, message: value.message };
     if (typeof value.column === "string") issue.column = value.column as ReservationImportField;
     if (value.details && typeof value.details === "object" && !Array.isArray(value.details)) issue.details = value.details as Record<string, unknown>;
+    // Tanda 7b: la entrada SYNC_DIFF lleva los nombres de los campos actualizados (nunca valores).
+    if (Array.isArray(value.fields)) issue.fields = value.fields.filter((field): field is string => typeof field === "string");
     out.push(issue);
   }
   return out;
@@ -934,9 +1289,21 @@ export async function previewReservationImport(input: { context: UserContext; pr
 // Commit: helpers puros (exportados para los tests)
 // ---------------------------------------------------------------------------
 
-/** Estado final del lote a partir de los contadores. */
-export function deriveImportStatus(counts: { createdCount: number; skippedCount: number; errorCount: number }): Extract<ReservationImportStatus, "imported" | "partial" | "failed"> {
-  if (counts.createdCount === 0) return "failed";
+/**
+ * Estado final del lote a partir de los contadores. `failed` solo cuando no se
+ * aplicó NADA (Tanda 7b: un corte en el que todo está `unchanged` es `imported`,
+ * no `failed`); los contadores de `sync` son opcionales (firma compatible).
+ */
+export function deriveImportStatus(counts: {
+  createdCount: number;
+  skippedCount: number;
+  errorCount: number;
+  updatedCount?: number;
+  unchangedCount?: number;
+  transitionedCount?: number;
+}): Extract<ReservationImportStatus, "imported" | "partial" | "failed"> {
+  const applied = counts.createdCount + (counts.updatedCount ?? 0) + (counts.unchangedCount ?? 0) + (counts.transitionedCount ?? 0);
+  if (applied === 0) return "failed";
   return counts.errorCount + counts.skippedCount > 0 ? "partial" : "imported";
 }
 
@@ -1099,15 +1466,275 @@ function rowData(importId: string, organizationId: string, propertyId: string, o
     reservationCode: outcome.reservationCode ?? null,
     errorCode: outcome.errorCode ?? null,
     errorMessage: outcome.errorMessage ? clip(outcome.errorMessage) : null,
-    warningsJson: outcome.warnings as unknown as Prisma.InputJsonValue
+    warningsJson: [
+      ...outcome.warnings,
+      // Tanda 7b: el diff de una fila actualizada, SOLO nombres de campo (nunca valores).
+      ...(outcome.syncDiff && outcome.syncDiff.length > 0
+        ? [{ code: RESERVATION_IMPORT_SYNC_DIFF_CODE, message: `Fila ${outcome.rowNumber}: campos actualizados desde el PMS de registro: ${outcome.syncDiff.join(", ")}.`, fields: outcome.syncDiff }]
+        : [])
+    ] as unknown as Prisma.InputJsonValue
   };
 }
 
-async function commitRow(params: { context: UserContext; propertyId: string; importId: string; row: AnalysedRow; options: ReservationImportOptions; correlationId: string }): Promise<RowOutcome> {
+// ---------------------------------------------------------------------------
+// Commit · modo `sync`: enlace, transiciones y check-out sombra
+// ---------------------------------------------------------------------------
+
+/** Parche de `updateReservationShadow` con los campos del diff (solo los que OPERA afirma). */
+function shadowPatchOf(normalized: NormalizedReservationRow, diff: readonly string[]): ReservationShadowPatch {
+  const patch: ReservationShadowPatch = {};
+  for (const field of diff) {
+    switch (field) {
+      case "arrivalDate":
+        patch.arrivalDate = normalized.arrivalDate;
+        break;
+      case "departureDate":
+        patch.departureDate = normalized.departureDate;
+        break;
+      case "roomTypeId":
+        patch.roomTypeId = normalized.roomTypeId;
+        break;
+      case "ratePlanId":
+        if (normalized.ratePlanId) patch.ratePlanId = normalized.ratePlanId;
+        break;
+      case "adults":
+        patch.adults = normalized.adults;
+        break;
+      case "children":
+        patch.children = normalized.children;
+        break;
+      case "roomsCount":
+        patch.roomsCount = normalized.roomsCount;
+        break;
+      case "totalAmount":
+        patch.totalAmount = normalized.totalAmount;
+        break;
+      case "marketSegment":
+        if (normalized.marketSegment !== undefined) patch.marketSegment = normalized.marketSegment;
+        break;
+      case "channel":
+        patch.channel = normalized.channel;
+        break;
+      case "sourceCode":
+        if (normalized.sourceCode !== undefined) patch.sourceCode = normalized.sourceCode;
+        break;
+      case "groupCode":
+        if (normalized.groupCode !== undefined) patch.groupCode = normalized.groupCode;
+        break;
+      case "companyName":
+        if (normalized.companyName !== undefined) patch.companyName = normalized.companyName;
+        break;
+      case "travelAgentName":
+        if (normalized.travelAgentName !== undefined) patch.travelAgentName = normalized.travelAgentName;
+        break;
+      case "assignedRoomId":
+        if (normalized.roomId) patch.assignedRoomId = normalized.roomId;
+        break;
+      default:
+        break;
+    }
+  }
+  return patch;
+}
+
+/**
+ * Check-out sombra: `checkOutReservationDetailed` con el saldo reconocido (los
+ * cargos viven en OPERA) y cierre del folio principal EXACTAMENTE como la ruta
+ * POST /reservations/:id/check-out de server.ts: solo si existe folio y
+ * |balanceDue| < 0,005; un fallo del cierre no deshace el check-out (se registra).
+ */
+async function shadowCheckOut(input: { context: UserContext; reservationId: string; correlationId: string }): Promise<void> {
+  const primaryBefore = await findReservationFolio(input.reservationId);
+  await checkOutReservationDetailed({ context: input.context, reservationId: input.reservationId, acknowledgeBalance: true, correlationId: input.correlationId });
+  if (primaryBefore && Math.abs(primaryBefore.balanceDue) < 0.005) {
+    try {
+      await closeFolio({ context: input.context, folioId: primaryBefore.folio.id, correlationId: input.correlationId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`${LOG} shadow check-out of reservation ${input.reservationId}: primary folio ${primaryBefore.folio.id} could not be closed (correlation ${input.correlationId}): ${message}`);
+    }
+  }
+}
+
+/** Transición de §5.3 sobre una reserva (creada o enlazada), con los motivos y el centinela de OPERA. */
+async function applySyncTransition(input: {
+  context: UserContext;
+  reservationId: string;
+  transition: SyncTransition;
+  roomId: string | null;
+  confirmationNo: string;
+  businessDate: IsoDate;
+  correlationId: string;
+}): Promise<void> {
+  const { context, reservationId, correlationId, businessDate } = input;
+  const checkIn = async (): Promise<void> => {
+    if (!input.roomId) throw new ConflictError("Sin habitación válida para el check-in.");
+    await checkInReservation({
+      context,
+      reservationId,
+      roomId: input.roomId,
+      signatureObjectKey: `opera:${input.confirmationNo}`,
+      allowEarlyCheckIn: true,
+      overrideReason: `Check-in registrado en OPERA (corte ${businessDate})`,
+      correlationId
+    });
+  };
+  switch (input.transition) {
+    case "cancel":
+      await transitionReservation({ context, reservationId, status: "cancelled", reason: `Cancelada en OPERA · ${businessDate}`, correlationId });
+      return;
+    case "no_show":
+      await transitionReservation({ context, reservationId, status: "no_show", reason: `No-show en OPERA · ${businessDate}`, correlationId });
+      return;
+    case "check_in":
+      await checkIn();
+      return;
+    case "check_out":
+      await shadowCheckOut({ context, reservationId, correlationId });
+      return;
+    case "check_in_and_out":
+      await checkIn();
+      await shadowCheckOut({ context, reservationId, correlationId });
+      return;
+    default:
+      return;
+  }
+}
+
+/** Estado que recuerda el enlace (`lastStatus`): el destino aplicado o el actual de la reserva (draft cuenta como confirmada). */
+function linkStatusOf(status: string): ReservationSyncTargetStatus {
+  return status === "checked_in" || status === "checked_out" || status === "cancelled" || status === "no_show" ? status : "confirmed";
+}
+
+/** Alta del enlace tras crear la reserva (o re-apuntado en una reactivación), ANTES de las transiciones. */
+async function upsertShadowLink(input: { context: UserContext; propertyId: string; importId: string; plan: SyncPlan; reservationId: string; lastStatus: ReservationSyncTargetStatus; businessDate: IsoDate }): Promise<void> {
+  const now = new Date();
+  const lastBusinessDate = dateOnly(input.businessDate);
+  if (input.plan.reactivate && input.plan.link) {
+    await prisma.pmsShadowLink.update({
+      where: { id: input.plan.link.link.id },
+      data: { reservationId: input.reservationId, rowHash: input.plan.rowHash, lastStatus: input.lastStatus, lastSeenAt: now, lastBusinessDate, lastImportId: input.importId, missingStreak: 0 }
+    });
+    return;
+  }
+  await prisma.pmsShadowLink.create({
+    data: {
+      organizationId: input.context.organizationId,
+      propertyId: input.propertyId,
+      confirmationNo: input.plan.confirmationNo,
+      reservationId: input.reservationId,
+      rowHash: input.plan.rowHash,
+      lastStatus: input.lastStatus,
+      lastSeenAt: now,
+      lastBusinessDate,
+      firstImportId: input.importId,
+      lastImportId: input.importId
+    }
+  });
+}
+
+/** Fila enlazada (update / transition / unchanged): actualización sombra, transición y refresco del enlace. */
+async function commitSyncLinkedRow(params: { context: UserContext; importId: string; row: AnalysedRow & { normalized: NormalizedReservationRow; sync: SyncPlan }; sync: AnalysisSync; base: RowOutcome; correlationId: string }): Promise<RowOutcome> {
+  const { row, importId, context, correlationId, base } = params;
+  const n = row.rowNumber;
+  const plan = row.sync;
+  const link = plan.link!;
+  const reservation = link.reservation;
+  const businessDate = params.sync.businessDate;
+  const lastBusinessDate = dateOnly(businessDate);
+  const now = new Date();
+
+  if (plan.action === "unchanged") {
+    await prisma.pmsShadowLink.update({ where: { id: link.link.id }, data: { lastSeenAt: now, lastBusinessDate, missingStreak: 0 } });
+    return { ...base, outcome: "unchanged", reservationCode: reservation.code };
+  }
+
+  let updatedFields: string[] = [];
+  let ignoredFields: string[] = [];
+  if (plan.diff.length > 0) {
+    try {
+      const result = await updateReservationShadow({
+        context,
+        reservationId: reservation.id,
+        patch: shadowPatchOf(row.normalized, plan.diff),
+        reason: `Sincronizada desde OPERA (corte ${businessDate}, lote ${importId})`,
+        correlationId
+      });
+      updatedFields = result.changedFields;
+      ignoredFields = result.ignoredFields;
+    } catch (error) {
+      const sanitized = sanitizeRowError(error, row.personalValues);
+      console.error(`${LOG} row ${n} of import ${importId}: shadow update of reservation ${reservation.code} failed (correlation ${correlationId}): ${sanitized.message}`);
+      return {
+        ...base,
+        outcome: "error",
+        errorCode: "RESERVATION_IMPORT_ROW_SYNC_UPDATE_FAILED",
+        errorMessage: stripRowValues(`Fila ${n}: la reserva ${reservation.code} no se pudo actualizar (${sanitized.message.replace(/^el PMS rechazó la reserva: /, "")}).`, row.personalValues),
+        reservationCode: reservation.code
+      };
+    }
+  }
+  // SC-08: SYNC_DIFF solo con lo realmente aplicado; lo que `updateReservationShadow` ignoró en casa
+  // (roomsCount, tipo, tarifa…) no se persiste como «actualizado».
+  const syncDiff = updatedFields;
+
+  let transitioned = false;
+  if (plan.transition) {
+    try {
+      await applySyncTransition({
+        context,
+        reservationId: reservation.id,
+        transition: plan.transition,
+        roomId: row.normalized.roomId ?? reservation.assignedRoomId,
+        confirmationNo: plan.confirmationNo,
+        businessDate,
+        correlationId
+      });
+      transitioned = true;
+    } catch (error) {
+      const sanitized = sanitizeRowError(error, row.personalValues);
+      console.error(`${LOG} row ${n} of import ${importId}: transition ${plan.transition} of reservation ${reservation.code} failed (correlation ${correlationId}): ${sanitized.message}`);
+      // Los campos ya actualizados se quedan: el enlace recuerda el hash para no repetirlos; el estado sigue siendo el actual.
+      await prisma.pmsShadowLink.update({ where: { id: link.link.id }, data: { rowHash: plan.rowHash, lastSeenAt: now, lastBusinessDate, lastImportId: importId, missingStreak: 0 } });
+      return {
+        ...base,
+        outcome: "error",
+        errorCode: "RESERVATION_IMPORT_ROW_SYNC_TRANSITION_FAILED",
+        errorMessage: stripRowValues(`Fila ${n}: la reserva ${reservation.code} no pudo pasar a ${plan.targetStatus} (${sanitized.message.replace(/^el PMS rechazó la reserva: /, "")})${updatedFields.length > 0 ? "; sus campos sí se actualizaron" : ""}.`, row.personalValues),
+        reservationCode: reservation.code,
+        ...(updatedFields.length > 0 ? { syncDiff: updatedFields } : {})
+      };
+    }
+  }
+
+  // SC-08: si nada se aplicó (todo el diff eran campos ignorados en casa) y no hubo transición, la fila
+  // es `unchanged` y el enlace NO memoriza el hash nuevo: la discrepancia con OPERA sigue visible en la
+  // preview de los cortes siguientes en vez de darse por sincronizada.
+  const nothingApplied = !transitioned && updatedFields.length === 0 && ignoredFields.length > 0;
+  await prisma.pmsShadowLink.update({
+    where: { id: link.link.id },
+    data: { ...(nothingApplied ? {} : { rowHash: plan.rowHash }), lastStatus: transitioned ? plan.targetStatus : linkStatusOf(reservation.status), lastSeenAt: now, lastBusinessDate, lastImportId: importId, missingStreak: 0 }
+  });
+  if (nothingApplied) {
+    return {
+      ...base,
+      outcome: "unchanged",
+      reservationCode: reservation.code,
+      warnings: [...base.warnings, { code: "RESERVATION_IMPORT_ROW_SYNC_IN_HOUSE_FIELD_IGNORED", message: `Fila ${n}: la reserva ${reservation.code} está alojada; OPERA cambia ${ignoredFields.join(", ")} y en casa no se aplica (se resuelve por recepción).`, fields: [...ignoredFields] }]
+    };
+  }
+  return { ...base, outcome: transitioned ? "transitioned" : "updated", reservationCode: reservation.code, ...(syncDiff.length > 0 ? { syncDiff: [...syncDiff] } : {}) };
+}
+
+async function commitRow(params: { context: UserContext; propertyId: string; importId: string; row: AnalysedRow; options: ReservationImportOptions; correlationId: string; sync?: AnalysisSync }): Promise<RowOutcome> {
   const { row, importId, context, correlationId } = params;
   const n = row.rowNumber;
   const warnings = row.issues.filter((issue) => severityOf(issue.code) === "warning");
   const base: RowOutcome = { rowNumber: n, outcome: "skipped", warnings, ...(row.resolved ? { resolved: row.resolved } : {}) };
+  // SC-01: en filas error / skipped la referencia sale de la celda (`rawReference`): la fila está en el corte.
+  const confirmationNo = row.sync?.confirmationNo ?? row.normalized?.externalReference?.trim() ?? row.rawReference;
+  if (params.sync && confirmationNo) base.confirmationNo = confirmationNo;
+  if (row.sync?.checkInWithoutRoom) base.checkInWithoutRoom = true;
 
   if (row.status === "skipped") {
     const issue = row.issues.find((candidate) => severityOf(candidate.code) === "skipped")!;
@@ -1123,6 +1750,13 @@ async function commitRow(params: { context: UserContext; propertyId: string; imp
   }
 
   const normalized = row.normalized;
+  const plan = params.sync && row.sync ? row.sync : null;
+  if (params.sync && plan && plan.action !== "create") {
+    return commitSyncLinkedRow({ context, importId, row: row as AnalysedRow & { normalized: NormalizedReservationRow; sync: SyncPlan }, sync: params.sync, base, correlationId });
+  }
+  // Un destino checked_in / checked_out asigna la habitación en el propio check-in (validación bajo lock): sin assignRoom previo.
+  const roomAssignedByCheckIn = plan?.transition === "check_in" || plan?.transition === "check_in_and_out";
+
   let created: Awaited<ReturnType<typeof createReservation>> | undefined;
   try {
     const guest = await resolveGuest({ organizationId: context.organizationId, guest: normalized.guest });
@@ -1140,7 +1774,12 @@ async function commitRow(params: { context: UserContext; propertyId: string; imp
         correlationId
       })
     );
-    if (!normalized.historical && normalized.roomId) {
+    if (params.sync && plan) {
+      // El enlace nace ANTES de las transiciones: si una falla, el siguiente corte
+      // encuentra la reserva enlazada (y no un conflicto local por su referencia).
+      await upsertShadowLink({ context, propertyId: params.propertyId, importId, plan, reservationId: created.id, lastStatus: normalized.historical ? "checked_out" : "confirmed", businessDate: params.sync.businessDate });
+    }
+    if (!normalized.historical && normalized.roomId && !roomAssignedByCheckIn) {
       try {
         await assignRoom({ context, reservationId: created.id, roomId: normalized.roomId, correlationId });
       } catch (error) {
@@ -1153,7 +1792,26 @@ async function commitRow(params: { context: UserContext; propertyId: string; imp
         });
       }
     }
-    if (!normalized.historical && normalized.estado === "cancelada") {
+    if (params.sync && plan) {
+      if (plan.transition) {
+        try {
+          await applySyncTransition({ context, reservationId: created.id, transition: plan.transition, roomId: normalized.roomId ?? null, confirmationNo: plan.confirmationNo, businessDate: params.sync.businessDate, correlationId });
+        } catch (error) {
+          const sanitized = sanitizeRowError(error, row.personalValues);
+          console.error(`${LOG} row ${n} of import ${importId}: transition ${plan.transition} of new reservation ${created.code} failed (correlation ${correlationId}): ${sanitized.message}`);
+          return {
+            ...base,
+            outcome: "error",
+            errorCode: "RESERVATION_IMPORT_ROW_SYNC_TRANSITION_FAILED",
+            errorMessage: stripRowValues(`Fila ${n}: la reserva ${created.code} quedó creada pero no pudo pasar a ${plan.targetStatus} (${sanitized.message.replace(/^el PMS rechazó la reserva: /, "")}): revísala desde recepción.`, row.personalValues),
+            reservationId: created.id,
+            reservationCode: created.code,
+            totalAmount: normalized.totalAmount
+          };
+        }
+        await prisma.pmsShadowLink.update({ where: { reservationId: created.id }, data: { lastStatus: plan.targetStatus } });
+      }
+    } else if (!normalized.historical && normalized.estado === "cancelada") {
       await transitionReservation({ context, reservationId: created.id, status: "cancelled", reason: `Importada como cancelada (lote ${importId})`, correlationId });
     }
     return { ...base, outcome: "created", reservationId: created.id, reservationCode: created.code, totalAmount: normalized.totalAmount, warnings };
@@ -1186,8 +1844,15 @@ export async function importReservations(input: {
   createdBy?: string | null;
   correlationId: string;
   source?: ReservationImportSource;
+  /** Tanda 7b: `PmsShadowRun` que produce el lote (ingest / correo / CLI / job); se guarda en `optionsJson.shadowRunId`. */
+  shadowRunId?: string;
 }): Promise<ReservationImportResult> {
-  requirePermissions(input.context, ["pms.reservation.create", "pms.reservation.modify"]);
+  // Modo `sync` (§6.3): los check-in / check-out sombra reutilizan checkInReservation y
+  // checkOutReservationDetailed, que exigen sus propias claves (la plantilla manager las tiene).
+  requirePermissions(
+    input.context,
+    input.body.mode === "sync" ? ["pms.reservation.create", "pms.reservation.modify", "pms.checkin.execute", "pms.checkout.execute"] : ["pms.reservation.create", "pms.reservation.modify"]
+  );
   await assertPropertyInOrg(input.propertyId, input.context.organizationId);
   const startedAt = Date.now();
   const { context, propertyId, correlationId } = input;
@@ -1198,7 +1863,8 @@ export async function importReservations(input: {
     encoding: analysis.encoding,
     ...(analysis.delimiter !== undefined ? { delimiter: analysis.delimiter } : {}),
     ...(analysis.sheetName !== undefined ? { sheetName: analysis.sheetName } : {}),
-    source: input.source ?? "http"
+    source: input.source ?? "http",
+    ...(input.shadowRunId !== undefined ? { shadowRunId: input.shadowRunId } : {})
   };
 
   // Transacción corta: hash bajo lock por propiedad + alta del lote en `processing`.
@@ -1238,7 +1904,7 @@ export async function importReservations(input: {
     pending = [];
   };
   for (const row of analysis.rows) {
-    const outcome = await commitRow({ context, propertyId, importId, row, options: analysis.options, correlationId });
+    const outcome = await commitRow({ context, propertyId, importId, row, options: analysis.options, correlationId, ...(analysis.sync ? { sync: analysis.sync } : {}) });
     outcomes.push(outcome);
     pending.push(outcome);
     if (pending.length >= RESERVATION_IMPORT_ROW_BATCH_SIZE) await flush();
@@ -1247,16 +1913,67 @@ export async function importReservations(input: {
 
   // Cierre del lote.
   const created = outcomes.filter((outcome) => outcome.outcome === "created");
+  const syncCounts = {
+    updated: outcomes.filter((outcome) => outcome.outcome === "updated").length,
+    unchanged: outcomes.filter((outcome) => outcome.outcome === "unchanged").length,
+    transitioned: outcomes.filter((outcome) => outcome.outcome === "transitioned").length
+  };
   const counts = {
     createdCount: created.length,
     skippedCount: outcomes.filter((outcome) => outcome.outcome === "skipped").length,
     errorCount: outcomes.filter((outcome) => outcome.outcome === "error").length,
-    warningCount: outcomes.filter((outcome) => outcome.warnings.length > 0).length
+    warningCount: outcomes.filter((outcome) => outcome.warnings.length > 0 || (outcome.syncDiff?.length ?? 0) > 0).length
   };
   const arrivals = created.map((outcome) => outcome.resolved?.arrivalDate).filter((value): value is IsoDate => Boolean(value)).sort();
   let totalAmount: Prisma.Decimal = ZERO;
   for (const outcome of created) totalAmount = totalAmount.plus(outcome.totalAmount ?? "0");
-  const status = deriveImportStatus(counts);
+  const status = deriveImportStatus({ ...counts, updatedCount: syncCounts.updated, unchangedCount: syncCounts.unchanged, transitionedCount: syncCounts.transitioned });
+
+  // Tanda 7b · §5.2: enlaces vivos en la ventana del feed que no aparecen en el corte → missingStreak + 1 (alerta, nunca cancelación).
+  // SC-01: «vistas» = toda referencia presente en el fichero, también la de las filas inválidas u omitidas
+  // (outcome.confirmationNo sale de `rawReference` en ellas): presente pero inválida ≠ ausente.
+  let syncResult: ReservationImportSyncResult | undefined;
+  if (analysis.sync) {
+    storedOptions.sync = syncCounts;
+    const candidates = await loadMissingCandidates(propertyId, analysis.sync);
+    const seenConfirmationNos = unique([
+      ...outcomes.map((outcome) => outcome.confirmationNo),
+      ...analysis.rows.map((row) => row.sync?.confirmationNo ?? row.normalized?.externalReference?.trim() ?? row.rawReference)
+    ]);
+    const missing = computeMissing({
+      feed: analysis.sync.feed,
+      businessDate: analysis.sync.businessDate,
+      horizonDays: analysis.sync.horizonDays,
+      links: candidates,
+      seenConfirmationNos
+    });
+    if (missing.length > 0) {
+      const ids = missing.map((entry) => candidates.find((candidate) => candidate.confirmationNo === entry.confirmationNo)?.linkId).filter((id): id is string => Boolean(id));
+      await prisma.pmsShadowLink.updateMany({ where: { id: { in: ids } }, data: { missingStreak: { increment: 1 } } });
+    }
+    const conflicts: ReservationImportSyncResult["conflicts"] = [];
+    for (const row of analysis.rows) {
+      const issue = row.issues.find((candidate) => candidate.code === "RESERVATION_IMPORT_ROW_OPERA_CONFLICT_LOCAL_RESERVATION");
+      const confirmationNo = row.sync?.confirmationNo ?? row.normalized?.externalReference?.trim();
+      if (!issue || !confirmationNo) continue;
+      conflicts.push({ rowNumber: row.rowNumber, confirmationNo, reservationCode: String(issue.details?.reservationCode ?? "") });
+    }
+    // SC-03: códigos maestros de OPERA sin mapear (solo códigos, nunca datos del huésped) → alertas del run.
+    const unmappedRateCodes = unique(analysis.rows.map((row) => String(row.issues.find((issue) => issue.code === "RESERVATION_IMPORT_ROW_OPERA_RATE_CODE_UNMAPPED")?.details?.rateCode ?? "") || undefined)).sort();
+    const unmappedRoomTypes = unique(analysis.rows.map((row) => String(row.issues.find((issue) => issue.code === "RESERVATION_IMPORT_ROW_ROOM_TYPE_UNKNOWN")?.details?.roomTypeCode ?? "") || undefined)).sort();
+    syncResult = {
+      feed: analysis.sync.feed,
+      businessDate: analysis.sync.businessDate,
+      counts: { created: counts.createdCount, ...syncCounts, skipped: counts.skippedCount, error: counts.errorCount },
+      missing: missing.map((entry) => ({ confirmationNo: entry.confirmationNo, reservationCode: entry.reservationCode, arrivalDate: entry.arrivalDate, missingStreak: entry.missingStreak + 1 })),
+      conflicts,
+      checkInWithoutRoom: outcomes
+        .filter((outcome) => outcome.checkInWithoutRoom && outcome.confirmationNo && outcome.reservationCode && outcome.outcome !== "error" && outcome.outcome !== "skipped")
+        .map((outcome) => ({ confirmationNo: outcome.confirmationNo!, reservationCode: outcome.reservationCode! })),
+      ...(unmappedRateCodes.length > 0 ? { unmappedRateCodes } : {}),
+      ...(unmappedRoomTypes.length > 0 ? { unmappedRoomTypes } : {})
+    };
+  }
   storedOptions.durationMs = Date.now() - startedAt;
   await prisma.reservationImport.update({
     where: { id: importId },
@@ -1296,14 +2013,47 @@ export async function importReservations(input: {
       fileName: analysis.fileName,
       arrivalFrom: arrivals[0] ?? null,
       arrivalTo: arrivals[arrivals.length - 1] ?? null,
-      totalAmount: money(totalAmount)
+      totalAmount: money(totalAmount),
+      // Tanda 7b · modo `sync`: modo, feed, business date y contadores (sin datos personales).
+      ...(analysis.sync
+        ? { mode: "sync", feed: analysis.sync.feed, businessDate: analysis.sync.businessDate, sync: syncResult ? { ...syncResult.counts, missing: syncResult.missing.length, conflicts: syncResult.conflicts.length } : syncCounts }
+        : {})
     },
     deviceId: context.deviceId,
     correlationId
   });
 
   const rows = await prisma.reservationImportRow.findMany({ where: { importId }, orderBy: { rowNumber: "asc" } });
-  return { ...toImportRecord(closed), rows: rows.map(toRowRecord), warnings: analysis.warnings };
+  return { ...toImportRecord(closed), rows: rows.map(toRowRecord), warnings: analysis.warnings, ...(syncResult ? { sync: syncResult } : {}) };
+}
+
+/**
+ * Enlaces vivos (reserva confirmada o alojada) de la propiedad cuya estancia cae
+ * en la ventana del feed (§5.2): candidatos de `computeMissing`. `changes` no tiene ventana.
+ */
+async function loadMissingCandidates(propertyId: string, sync: AnalysisSync): Promise<Array<MissingCandidate & { linkId: string }>> {
+  if (sync.feed === "changes") return [];
+  const businessDate = dateOnly(sync.businessDate);
+  const window: Prisma.ReservationWhereInput =
+    sync.feed === "arrivals"
+      ? { arrivalDate: { gte: businessDate, lte: dateOnly(addDaysIso(sync.businessDate, sync.horizonDays)) } }
+      : sync.feed === "inhouse"
+        ? { arrivalDate: { lte: businessDate }, departureDate: { gt: businessDate } }
+        : { departureDate: businessDate };
+  const rows = await prisma.pmsShadowLink.findMany({
+    where: { propertyId, reservation: { status: { in: ["confirmed", "checked_in"] }, ...window } },
+    select: { id: true, confirmationNo: true, missingStreak: true, reservation: { select: { code: true, status: true, arrivalDate: true, departureDate: true } } },
+    orderBy: [{ confirmationNo: "asc" }]
+  });
+  return rows.map((row) => ({
+    linkId: row.id,
+    confirmationNo: row.confirmationNo,
+    reservationCode: row.reservation.code,
+    status: row.reservation.status,
+    arrivalDate: isoDate(row.reservation.arrivalDate),
+    departureDate: isoDate(row.reservation.departureDate),
+    missingStreak: row.missingStreak
+  }));
 }
 
 /**
@@ -1409,6 +2159,11 @@ export async function undoReservationImport(input: { context: UserContext; prope
   await markRows(cancelled, "cancelled");
   await markRows(kept, "kept");
   await markRows(skipped, "skipped");
+  // Tanda 7b: los enlaces de las reservas canceladas al deshacer se conservan con lastStatus cancelled
+  // (el siguiente corte que las traiga vivas las reactivará como reserva nueva, §5.3).
+  if (cancelled.length > 0) {
+    await prisma.pmsShadowLink.updateMany({ where: { reservationId: { in: cancelled } }, data: { lastStatus: "cancelled" } });
+  }
   const closed = await prisma.reservationImport.update({
     where: { id: importId },
     data: { status: "undone", undoneAt: now, undoneBy: context.userId, undoReason: reason, undoneCount: cancelled.length, undoKeptCount: kept.length }

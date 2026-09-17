@@ -828,6 +828,54 @@
         "apps/api/src/server.ts"
       ]
     },
+    "PMS_SHADOW_API_KEY": {
+      "section": "Schedulers",
+      "format": "string",
+      "severity": "warn",
+      "tags": [
+        "tool",
+        "secret"
+      ],
+      "pattern": "^cli_[A-Za-z0-9_-]+\\.[^\\s]+$",
+      "doc": "Agente pms-shadow:pull (VPS): clave <clientId>.<clientSecret> de la DeveloperApp con scope pms.shadow.ingest; equivale a --api-key (preferible al flag: no queda en ps ni en el historial).",
+      "readBy": [
+        "apps/api/src/scripts/pms-shadow-pull.ts"
+      ]
+    },
+    "PMS_SHADOW_INGEST_URL": {
+      "section": "Schedulers",
+      "format": "url",
+      "severity": "warn",
+      "tags": [
+        "tool"
+      ],
+      "doc": "Agente pms-shadow:pull (VPS): origen del API o URL completa de POST /integrations/pms-shadow/ingest; equivale a --ingest-url.",
+      "readBy": [
+        "apps/api/src/scripts/pms-shadow-pull.ts"
+      ]
+    },
+    "PMS_SHADOW_JOB_DISABLED": {
+      "section": "Schedulers",
+      "format": "bool",
+      "default": "false",
+      "doc": "true desactiva el job del modo sombra OPERA (alertas OPERA_FEED_LATE y cierre de runs interrumpidos). Solo actúa en el líder (RUN_SCHEDULERS).",
+      "readBy": [
+        "apps/api/src/modules/pms-shadow/pms-shadow.job.ts",
+        "apps/api/src/server.ts"
+      ]
+    },
+    "PMS_SHADOW_JOB_INTERVAL_MS": {
+      "section": "Schedulers",
+      "format": "int",
+      "min": 10000,
+      "max": 86400000,
+      "default": "900000",
+      "doc": "Periodo del job del modo sombra OPERA (ms); por defecto 15 minutos.",
+      "readBy": [
+        "apps/api/src/modules/pms-shadow/pms-shadow.job.ts",
+        "apps/api/src/server.ts"
+      ]
+    },
     "PORT": {
       "section": "Proceso",
       "format": "int",
@@ -923,9 +971,10 @@
       "format": "bool",
       "default": "true",
       "example": "true",
-      "doc": "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false).",
+      "doc": "Esta instancia ejecuta los schedulers in-process (SES, VeriFactu, pace, cupos, grupos, buzón, modo sombra OPERA). En multi-réplica solo UNA a true o se duplican envíos a AEAT. El worker la ignora (siempre false).",
       "readBy": [
-        "apps/api/src/lib/scheduler-leader.ts"
+        "apps/api/src/lib/scheduler-leader.ts",
+        "apps/api/src/modules/pms-shadow/pms-shadow.job.ts"
       ]
     },
     "SEED_ALLOW_REAL": {

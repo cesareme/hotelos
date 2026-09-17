@@ -30,6 +30,12 @@ import { payrollRoutePermissions } from "../modules/payroll/route-permissions.pa
 // pms.reservation.read / create / modify ya existentes (sin rbac:sync); el
 // remap de accounting.reports.read no las toca.
 import { reservationImportRoutePermissions } from "../modules/pms/route-permissions.partial.js";
+// OPERA Cloud modo sombra (Tanda 7b · L3): POST /integrations/pms-shadow/ingest
+// (pública, clave de API de DeveloperApp verificada en el handler) y
+// /properties/:propertyId/pms-shadow/* (modules/pms-shadow/pms-shadow.routes.ts).
+// Claves integrations.read / connect y accounting.read / journal.post ya
+// existentes (sin rbac:sync).
+import { pmsShadowRoutePermissions as pmsShadowRoutePermissionsAsWritten } from "../modules/pms-shadow/route-permissions.partial.js";
 
 // Audit 2026-06 · #3: dedupe log of GET routes hitting the fail-open path, so
 // manifest gaps are auditable in the logs. Logged once per path to avoid spam.
@@ -84,6 +90,10 @@ const fiscalRoutePermissions = requireAccountingReportsKey(fiscalRoutePermission
 const payablesRoutePermissions = requireAccountingReportsKey(payablesRoutePermissionsAsWritten);
 const fixedAssetsRoutePermissions = requireAccountingReportsKey(fixedAssetsRoutePermissionsAsWritten);
 const FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS = requireAccountingReportsKey(FINANCIAL_STATEMENTS_ROUTE_PERMISSIONS_AS_WRITTEN);
+// OPERA Cloud modo sombra (Tanda 7b · L3): la reconciliación y los lotes de
+// ingresos muestran importes → misma remap que las finanzas (accounting.read del
+// partial → accounting.reports.read en el manifiesto en vigor; el resto intacto).
+const pmsShadowRoutePermissions = requireAccountingReportsKey(pmsShadowRoutePermissionsAsWritten);
 
 /**
  * Calendar reads that legitimately keep `accounting.read` (no amounts):
@@ -130,6 +140,8 @@ export const routePermissionManifest: ApiRoutePermission[] = [
   ...payrollRoutePermissions,
   // Importación masiva de reservas (Tanda 7): 6 entradas, ver modules/pms/route-permissions.partial.ts.
   ...reservationImportRoutePermissions,
+  // OPERA Cloud modo sombra (Tanda 7b): 15 entradas, ver modules/pms-shadow/route-permissions.partial.ts.
+  ...pmsShadowRoutePermissions,
   { method: "GET", path: "/health", permissions: [], riskLevel: "public" },
   { method: "GET", path: "/metrics", permissions: ["audit.read"], riskLevel: "low" },
   { method: "POST", path: "/auth/login", permissions: [], riskLevel: "public" },

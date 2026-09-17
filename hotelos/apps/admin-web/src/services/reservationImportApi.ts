@@ -111,7 +111,11 @@ export const RESERVATION_IMPORT_ERROR_MESSAGES: Readonly<Record<ReservationImpor
   RESERVATION_IMPORT_INVALID: "Hay filas con errores: corrígelas o activa «Omitir filas inválidas».",
   RESERVATION_IMPORT_DUPLICATE: "Este fichero ya se importó: deshaz el lote anterior o activa «Importar de todos modos».",
   RESERVATION_IMPORT_NOT_FOUND: "Importación de reservas no encontrada.",
-  RESERVATION_IMPORT_UNDO_IN_PROGRESS: "Otro deshacer de este lote está en curso: espera unos minutos."
+  RESERVATION_IMPORT_UNDO_IN_PROGRESS: "Otro deshacer de este lote está en curso: espera unos minutos.",
+  // Tanda 7b · modo «sync» (OPERA Cloud en modo sombra)
+  RESERVATION_IMPORT_SYNC_REQUIRES_FEED: "El modo sincronizar exige indicar el feed y la fecha de negocio del corte.",
+  RESERVATION_IMPORT_PROFILE_UNSUPPORTED_FEED: "El perfil de mapeo no define las columnas de ese feed: hace falta una salida real del informe.",
+  RESERVATION_IMPORT_HEADER_MISMATCH: "La cabecera del fichero no coincide con la del perfil: revisa las columnas del informe o del export."
 });
 
 const DEFAULT_IMPORT_ERROR = "No se pudo completar la importación de reservas.";

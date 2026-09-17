@@ -143,6 +143,17 @@ describe("applyMapping", () => {
     assert.equal(result.columnIndex.deposito, 10);
   });
 
+  it("integrador 7b: con mapeo explícito no se avisa «también parece» de las columnas explícitas (mapeadas o ignoradas)", () => {
+    const ambiguous = ["Importe", "Total", "Llegada", "Tipo", "Nombre", "Apellidos"];
+    const suggested = applyMapping(ambiguous);
+    assert.ok(suggested.warnings.some((warning) => warning.startsWith("La columna «Total»")), "sin explícito el sugeridor avisa de la columna repetida");
+    const explicit = applyMapping(ambiguous, { Importe: "importe_total", Total: null });
+    assert.ok(!explicit.warnings.some((warning) => warning.startsWith("La columna «Total»")), "con «Total» explícita (ignorada) no hay aviso");
+    assert.equal(explicit.mapping.Total, null);
+    assert.equal(explicit.mapping.Importe, "importe_total");
+    assert.deepEqual(explicit.conflicts, []);
+  });
+
   it("explícito sobre un campo ya sugerido en otra columna: el explícito manda y la otra queda sin mapear", () => {
     const result = applyMapping(["Llegada", "Fecha"], { Fecha: "llegada" });
     assert.equal(result.mapping.Fecha, "llegada");

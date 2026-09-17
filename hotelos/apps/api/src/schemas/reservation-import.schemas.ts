@@ -19,9 +19,15 @@
 // la forma: exactamente uno de `content` (texto: CLI y tests) o `contentBase64`
 // (bytes: siempre desde el navegador), `commit` literal `true`, `limit` 1..200,
 // `reason` ≤ 500 y un mapeo columna → campo canónico (o null = ignorar).
+// Tanda 7b (modo sombra OPERA): `mode` create | sync (por defecto create),
+// `profile` opera_cloud, `feed` arrivals | inhouse | departures | changes,
+// `businessDate` AAAA-MM-DD, `horizonDays` 1..730 y `headerOverride` (cabecera
+// sintética para un fichero sin fila de cabecera); `mode: "sync"` exige `feed` y
+// `businessDate` (refine en español). Perfil, cabecera y enlaces los resuelve el servicio.
 
 import { z } from "zod";
 import {
+  PMS_SHADOW_RESERVATION_FEEDS,
   RESERVATION_IMPORT_FIELDS,
   RESERVATION_IMPORT_FORMATS,
   RESERVATION_IMPORT_LIST_DEFAULT_LIMIT,
@@ -29,14 +35,21 @@ import {
   RESERVATION_IMPORT_MAX_BASE64_CHARS,
   RESERVATION_IMPORT_MAX_CONTENT_CHARS,
   RESERVATION_IMPORT_MAX_FILE_NAME,
+  RESERVATION_IMPORT_MAX_HEADER_OVERRIDE,
   RESERVATION_IMPORT_MAX_MAPPING_KEYS,
   RESERVATION_IMPORT_MAX_SAMPLE_SIZE,
   RESERVATION_IMPORT_MAX_SHEET_NAME,
   RESERVATION_IMPORT_MAX_UNDO_REASON,
-  RESERVATION_IMPORT_STATUSES
+  RESERVATION_IMPORT_MODES,
+  RESERVATION_IMPORT_PROFILES,
+  RESERVATION_IMPORT_STATUSES,
+  RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS
 } from "@hotelos/shared";
 
 const STRICT_BODY = { message: "Campo no admitido en el cuerpo de la petición." };
+
+/** Mensaje del refine de modo `sync` (feed y businessDate obligatorios). */
+export const SYNC_REQUIRES_FEED_MESSAGE = "El modo sincronizar exige feed (arrivals, inhouse, departures o changes) y businessDate (AAAA-MM-DD).";
 
 /** base64 estándar (con `=` de relleno y saltos de línea tolerados). */
 export const BASE64_PATTERN = /^[A-Za-z0-9+/=\r\n]+$/;
@@ -106,6 +119,30 @@ const previewShape = {
     .int({ message: `sampleSize debe ser un entero entre 1 y ${groupEs(RESERVATION_IMPORT_MAX_SAMPLE_SIZE)}.` })
     .min(1, { message: `sampleSize debe ser un entero entre 1 y ${groupEs(RESERVATION_IMPORT_MAX_SAMPLE_SIZE)}.` })
     .max(RESERVATION_IMPORT_MAX_SAMPLE_SIZE, { message: `sampleSize debe ser un entero entre 1 y ${groupEs(RESERVATION_IMPORT_MAX_SAMPLE_SIZE)}.` })
+    .optional(),
+  // ---- Tanda 7b · modo `sync` (perfil OPERA Cloud) ----
+  mode: z.enum(RESERVATION_IMPORT_MODES, { errorMap: () => ({ message: `mode debe ser uno de: ${RESERVATION_IMPORT_MODES.join(", ")}.` }) }).default("create"),
+  profile: z.enum(RESERVATION_IMPORT_PROFILES, { errorMap: () => ({ message: `profile debe ser uno de: ${RESERVATION_IMPORT_PROFILES.join(", ")}.` }) }).optional(),
+  feed: z.enum(PMS_SHADOW_RESERVATION_FEEDS, { errorMap: () => ({ message: `feed debe ser uno de: ${PMS_SHADOW_RESERVATION_FEEDS.join(", ")}.` }) }).optional(),
+  businessDate: z
+    .string({ invalid_type_error: "businessDate debe ser una fecha AAAA-MM-DD." })
+    .regex(/^\d{4}-\d{2}-\d{2}$/, { message: "businessDate debe ser una fecha AAAA-MM-DD." })
+    .optional(),
+  horizonDays: z.coerce
+    .number({ invalid_type_error: `horizonDays debe ser un entero entre 1 y ${RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS}.` })
+    .int({ message: `horizonDays debe ser un entero entre 1 y ${RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS}.` })
+    .min(1, { message: `horizonDays debe ser un entero entre 1 y ${RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS}.` })
+    .max(RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS, { message: `horizonDays debe ser un entero entre 1 y ${RESERVATION_IMPORT_SYNC_MAX_HORIZON_DAYS}.` })
+    .optional(),
+  headerOverride: z
+    .array(
+      z
+        .string({ invalid_type_error: "headerOverride: cada columna debe ser un texto." })
+        .min(1, { message: "headerOverride: la columna no puede estar vacía." })
+        .max(200, { message: "headerOverride: la columna no puede superar 200 caracteres." }),
+      { invalid_type_error: "headerOverride debe ser la lista de columnas del fichero (sin fila de cabecera)." }
+    )
+    .max(RESERVATION_IMPORT_MAX_HEADER_OVERRIDE, { message: `headerOverride no puede tener más de ${RESERVATION_IMPORT_MAX_HEADER_OVERRIDE} columnas.` })
     .optional()
 };
 
@@ -114,10 +151,16 @@ function hasExactlyOneContent(body: { content?: string; contentBase64?: string }
   return (body.content !== undefined) !== (body.contentBase64 !== undefined);
 }
 
+/** `mode: "sync"` ⇒ `feed` y `businessDate` presentes (400 en la frontera; el servicio repite la guarda como RESERVATION_IMPORT_SYNC_REQUIRES_FEED). */
+function syncHasFeed(body: { mode?: string; feed?: string; businessDate?: string }): boolean {
+  return body.mode !== "sync" || (body.feed !== undefined && body.businessDate !== undefined);
+}
+
 export const PreviewReservationImportSchema = z
   .object(previewShape)
   .strict(STRICT_BODY)
-  .refine(hasExactlyOneContent, { path: ["content"], message: CONTENT_XOR_MESSAGE });
+  .refine(hasExactlyOneContent, { path: ["content"], message: CONTENT_XOR_MESSAGE })
+  .refine(syncHasFeed, { path: ["feed"], message: SYNC_REQUIRES_FEED_MESSAGE });
 export type PreviewReservationImportInput = z.infer<typeof PreviewReservationImportSchema>;
 
 // ── POST /properties/:propertyId/reservations/imports ───────────────────────
@@ -128,7 +171,8 @@ export const CreateReservationImportSchema = z
     commit: z.literal(true, { errorMap: () => ({ message: "commit debe ser true: confirma que quieres crear las reservas (la previsualización es POST …/imports/preview)." }) })
   })
   .strict(STRICT_BODY)
-  .refine(hasExactlyOneContent, { path: ["content"], message: CONTENT_XOR_MESSAGE });
+  .refine(hasExactlyOneContent, { path: ["content"], message: CONTENT_XOR_MESSAGE })
+  .refine(syncHasFeed, { path: ["feed"], message: SYNC_REQUIRES_FEED_MESSAGE });
 export type CreateReservationImportInput = z.infer<typeof CreateReservationImportSchema>;
 
 // ── GET /properties/:propertyId/reservations/imports ────────────────────────

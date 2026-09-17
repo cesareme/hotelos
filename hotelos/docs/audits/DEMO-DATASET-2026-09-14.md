@@ -317,6 +317,17 @@ corepack pnpm --filter @hotelos/api demo:fix-identity -- --apply --confirm cmrhw
 corepack pnpm --filter @hotelos/api backfill:snapshots -- --from 2026-07-15 --to 2026-09-13 --dry-run
 ```
 
+> **Nota 2026-09-17 (ensayo del VPS demo).** En una BD que ya tenga las migraciones
+> de la Tanda 6b (`legal_entities`, `verifactu_installations`, `accounts`,
+> `accounting_settings`), los pasos 1-3 de arriba deben ejecutarse **antes** de
+> `backfill-legal-structure.ts --apply` y de `accounting:provision-chart --apply`:
+> `demo:refresh` no conoce `legal_entities` (con las sociedades ya creadas borra las
+> orgs AUDIT, deja sus 5 sociedades huérfanas y termina con exit 1 «Filas
+> residuales de orgs AUDIT: legal_entities=5») y `demo:fix-identity` no corrige
+> `legal_entities` (la sociedad de Faranda quedaría «AUDIT-T1 SL» con `tax_id`
+> nulo). Orden validado y procedimiento completo:
+> `docs/runbooks/vps-demo-actualizacion-2026-09-17.md` §7.
+
 Identidad legal (dry-run 2026-09-14): Faranda org `legalName` «AUDIT-T1 SL» →
 «Faranda Hotels & Resorts», `taxId` B99999999 → B99999997; property
 `legalName` → «Hotel Faranda Rías Altas by Ascend Collection», `address` →

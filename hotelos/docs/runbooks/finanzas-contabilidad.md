@@ -1532,7 +1532,15 @@ Orden en el VPS (fuera de este workflow, con backup y API parado): `db:migrate:d
 --dry-run` → `--apply --confirm all` → reiniciar el API con UNA instancia (la clave del
 advisory lock de un centro con instalación pasa de `<propertyId>` a `installation:<id>`
 y dos versiones en paralelo no se serializarían entre sí) → `rbac:sync` → en sandbox
-nada más cambia (Rías Altas emite con la instalación `DEV-001` del backfill). ANTES de
+nada más cambia (Rías Altas emite con la instalación `DEV-001` del backfill). En el
+**VPS demo** (org_123 + Faranda + residuos AUDIT) `demo:refresh --apply` y
+`demo:fix-identity --apply` van ANTES de `backfill-legal-structure.ts --apply`:
+`refresh-demo-dataset.ts` no conoce `legal_entities` (si el backfill ya corrió deja
+las sociedades de las orgs AUDIT huérfanas y sale con exit 1 «Filas residuales de orgs
+AUDIT: legal_entities=5») y `fix-demo-legal-identity.ts` no toca `legal_entities`
+(la sociedad de Faranda quedaría «AUDIT-T1 SL» con NIF nulo y el backfill la daría
+por convergida). Orden ensayado el 2026-09-17 y procedimiento completo en
+`docs/runbooks/vps-demo-actualizacion-2026-09-17.md` §7. ANTES de
 `VERIFACTU_MODE=preproduction`: retirar las instalaciones de relleno (`active = false`,
 `retired_at`) y abrir por hotel una instalación con el número real del registro del
 productor (la cadena nueva empieza en `PrimerRegistro`; los registros sandbox nunca

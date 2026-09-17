@@ -119,7 +119,9 @@ describe("aiOperations · contratos de fuente del lote fix:10-B", () => {
     assert.match(source, /\{c\.status !== "disconnected" \? \(/);
     // A provider the server declares as not configured cannot create a row.
     assert.match(source, /const providerUnavailable = providerInfo \? !providerInfo\.configured : false;/);
-    assert.match(source, /const canAdd = !busy && !providerUnavailable && !imapIncomplete;/);
+    // SEC-03: a shadow-mode mailbox needs the sender domain (the API schema rejects `pms_shadow` without `fromDomain`).
+    assert.match(source, /const shadowIncomplete = purpose === "pms_shadow" && fromDomain\.trim\(\) === "";/);
+    assert.match(source, /const canAdd = !busy && !providerUnavailable && !imapIncomplete && !shadowIncomplete;/);
     assert.match(source, /if \(!canAdd\) return;/);
     assert.match(source, /\{oauthProvider \? "Iniciar autorización" : "Añadir buzón"\}/);
   });
