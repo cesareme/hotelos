@@ -57,6 +57,10 @@ kv "uptime / carga" "$(uptime 2>/dev/null | sed 's/^ *//')"
 kv "memoria" "$(free -h 2>/dev/null | awk '/Mem:/ {print $3" usados de "$2}' || echo n/d)"
 kv "disco /" "$(df -h / 2>/dev/null | awk 'NR==2 {print $3" usados de "$2" ("$5")"}')"
 kv "swap" "$(swapon --show --noheadings 2>/dev/null | awk '{print $1" "$3}' | tr '\n' ' ' || echo ninguno)"
+# deploy.sh needs `sudo -n systemctl restart …` (restart step) and a writable backup dir (backup step);
+# install-from-scratch.sh creates both, a hand-made server usually has neither.
+kv "/etc/sudoers.d/anfitorio-deploy" "$( (maybe_root test -e /etc/sudoers.d/anfitorio-deploy >/dev/null 2>&1 && echo existe) || echo 'no existe o no legible (deploy.sh necesita sudo -n systemctl restart/reload)')"
+kv "/var/backups/anfitorio" "$(stat -c '%U:%G %a' /var/backups/anfitorio 2>/dev/null || echo 'no existe (deploy.sh hace mkdir -p sin sudo: créalo como root con owner del usuario de deploy)')"
 
 section "Servicios systemd (anfitorio-*, hotelos-*, caddy, postgresql, redis)"
 if have systemctl; then
@@ -93,9 +97,10 @@ if [[ -n "$CLONE" ]]; then
     kv "ficheros modificados" "$(git -C "$CLONE" status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
     kv "node_modules/.pnpm (paquetes)" "$(ls "$CLONE/node_modules/.pnpm" 2>/dev/null | wc -l | tr -d ' ')"
     kv "cliente Prisma generado" "$([[ -d "$CLONE/node_modules/.pnpm/node_modules/.prisma/client" || -d "$CLONE/packages/database/node_modules/.prisma/client" || -n "$(find "$CLONE/node_modules/.pnpm" -maxdepth 4 -type d -name '.prisma' 2>/dev/null | head -1)" ]] && echo sí || echo NO)"
-    kv "hotelos/.env presente" "$([[ -f "$CLONE/.env" ]] && echo 'SÍ (ojo: el worker lo prioriza sobre el entorno)' || echo no)"
+    kv "hotelos/.env presente" "$([[ -f "$CLONE/.env" ]] && echo 'SÍ (ojo: los cargadores solo rellenan claves ausentes, pero lo que falte en api.env saldrá de aquí)' || echo no)"
     kv "admin-web/dist" "$([[ -d "$CLONE/apps/admin-web/dist" ]] && stat -c '%y' "$CLONE/apps/admin-web/dist/index.html" 2>/dev/null || echo 'no construido')"
     kv "migraciones locales" "$(ls "$CLONE/packages/database/prisma/migrations" 2>/dev/null | grep -c '^[0-9]' | tr -d ' ') dirs"
+    kv "schema.prisma del clon" "$(grep -cE '^model ' "$CLONE/packages/database/prisma/schema.prisma" 2>/dev/null | tr -d ' ') modelos · $(grep -cE '^enum ' "$CLONE/packages/database/prisma/schema.prisma" 2>/dev/null | tr -d ' ') enums (= tablas/enums que la BD debe tener tras migrar ESTE clon; la baseline crea 251/11)"
 else
     kv "raíz pnpm" "NO ENCONTRADA (busca con: sudo find / -name pnpm-workspace.yaml -not -path '*/node_modules/*')"
 fi
@@ -104,7 +109,8 @@ section "Runtime"
 kv "node" "$(node -v 2>/dev/null || echo 'NO INSTALADO') ($(command -v node 2>/dev/null))"
 kv "corepack" "$(corepack -v 2>/dev/null || echo n/d)"
 kv "pnpm (corepack)" "$(COREPACK_ENABLE_DOWNLOAD_PROMPT=0 timeout 20 corepack pnpm -v 2>/dev/null || echo 'n/d')  (esperado 9.15.0)"
-kv "pnpm global" "$(pnpm -v 2>/dev/null || echo 'no en PATH')"
+kv "pnpm global" "$(pnpm -v 2>/dev/null || echo 'no en PATH (los scripts raíz db:* lo exigen; deploy.sh llama a --filter directamente)')"
+kv "node ≥ 22.9 (--env-file-if-exists)" "$(node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.stdout.write((a>22||(a===22&&b>=9))?"sí":"NO: db:* y las CLI de apps/api no arrancan con este Node")' 2>/dev/null || echo n/d)"
 kv "npm" "$(npm -v 2>/dev/null || echo n/d)"
 kv "tsx en apps/api" "$([[ -n "$CLONE" && -d "$CLONE/apps/api/node_modules/tsx" ]] && echo sí || echo no)"
 
@@ -149,9 +155,12 @@ if have psql; then
         kv "DATABASE_URL host/db" "$(printf '%s' "$DBURL" | sed -E 's#^[a-z]+://[^@]*@##')"
         q() { psql "$DBURL" -XtA -v ON_ERROR_STOP=1 -c "$1" 2>&1 | head -5; }
         kv "version()" "$(q 'select version()' | cut -c1-80)"
-        # The baseline creates 251 application tables; a migrated database also
-        # carries _prisma_migrations (252 in pg_tables), so compare without it.
-        kv "tablas en public" "$(q "select count(*) from pg_tables where schemaname='public' and tablename<>'_prisma_migrations'") sin _prisma_migrations (esperado 251 con el esquema actual; pg_tables total = 252 en una BD migrada)"
+        # The baseline creates 251 application tables and 11 enums; every later
+        # migration adds tables/enums (276/32 on 2026-09-17, b32601a), so the reference is
+        # the `model`/`enum` count of the schema.prisma you are about to deploy
+        # (printed above for the clone). A migrated database also carries
+        # _prisma_migrations, so compare without it.
+        kv "tablas en public" "$(q "select count(*) from pg_tables where schemaname='public' and tablename<>'_prisma_migrations'") sin _prisma_migrations (baseline = 251; tras migrar debe coincidir con los \`model\` del schema.prisma desplegado)"
         kv "enums" "$(q "select count(*) from pg_type t join pg_namespace n on n.oid=t.typnamespace where t.typtype='e' and n.nspname='public'")"
         kv "_prisma_migrations" "$(q "select coalesce(to_regclass('_prisma_migrations')::text,'NO EXISTE')")"
         if [[ "$(q "select to_regclass('_prisma_migrations') is not null")" == "t" ]]; then
@@ -169,7 +178,7 @@ fi
 kv "postgresql (systemd)" "$(systemctl is-active postgresql 2>/dev/null || echo n/d)"
 kv "backups cron (usuario)" "$(crontab -l 2>/dev/null | grep -Ei 'pg_dump|backup' | head -2 | tr '\n' ';' || echo ninguno)"
 kv "backups /etc/cron.d" "$(grep -lEi 'pg_dump|backup' /etc/cron.d/* 2>/dev/null | tr '\n' ' ' || echo ninguno)"
-kv "/var/backups/anfitorio" "$(ls -1 /var/backups/anfitorio 2>/dev/null | tail -3 | tr '\n' ' ' || echo 'no existe')"
+kv "/var/backups/anfitorio (últimos)" "$(ls -1 /var/backups/anfitorio 2>/dev/null | tail -3 | tr '\n' ' ' || echo 'no existe')"
 
 section "Caddy y front"
 kv "caddy" "$(caddy version 2>/dev/null | head -1 || echo 'no instalado')"

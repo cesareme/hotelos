@@ -123,7 +123,10 @@ if [[ "$MODE" == "adopt" ]]; then
      del .env actual + NODE_ENV=production, HOST=127.0.0.1, TRUST_PROXY=1, APP_BASE_URL=https://<dominio>,
      VITE_API_URL=https://<dominio>/api, RUN_SCHEDULERS=true; borra hotelos/.env del clon.
      Valida: node scripts/validate-env.mjs $ENV_FILE --role production-native
-  3. Código y dependencias:   git fetch && git reset --hard origin/$BRANCH && corepack pnpm install --frozen-lockfile
+  3. Código y dependencias:   git fetch && git reset --hard origin/$BRANCH && corepack pnpm install --frozen-lockfile --prod=false
+                              (--prod=false: con NODE_ENV=production exportado pnpm 9 omite/borra las devDependencies, y tsx es el runtime;
+                              si el lockfile de origin/main no está al día, ERR_PNPM_OUTDATED_LOCKFILE: commitear pnpm-lock.yaml o
+                              instalar con --no-frozen-lockfile --prod=false y luego git checkout -- pnpm-lock.yaml)
                               corepack pnpm --filter @hotelos/database db:generate
   4. Esquema (sin db push):   si _prisma_migrations NO existe o la BD nació con db push:
                                 corepack pnpm db:adopt-baseline            (plan)
@@ -131,12 +134,16 @@ if [[ "$MODE" == "adopt" ]]; then
                               corepack pnpm db:migrate:deploy && corepack pnpm db:drift:check   (exit 0 obligatorio)
                               Si el esquema del VPS es ANTERIOR a la baseline (faltan tablas/columnas), adopt-baseline
                               se niega. NUNCA «db push» en una BD compartida: alinéala restaurando un dump ya
-                              alineado con la baseline, o crea una BD vacía + db:migrate:deploy (aplica la baseline)
-                              y vuelca los datos con pg_restore --data-only revisado; después repite adopt/migrate/drift.
+                              alineado con la baseline, o crea una BD vacía + SOLO la baseline por psql
+                              (prisma/migrations/20260914000000_baseline_squash/migration.sql) + pg_restore --data-only
+                              --disable-triggers revisado; después adopt/migrate/drift sobre esa BD (así las migraciones
+                              posteriores ejecutan sus UPDATE de datos; con migrate deploy antes del volcado se perderían).
   5. Front:                   VITE_API_URL=https://<dominio>/api corepack pnpm --filter @hotelos/admin-web build
                               rsync -a --delete apps/admin-web/dist/ $WEB_ROOT/
   6. Servicios:               instala deploy/systemd/anfitorio-api.service (+ worker) y deploy/caddy/Caddyfile.native
                               (sustituye rutas/dominio), systemctl daemon-reload && systemctl enable --now anfitorio-api
+                              + /etc/sudoers.d/anfitorio-deploy (sudo -n systemctl restart/reload para $APP_USER) y
+                              /var/backups/anfitorio propiedad de $APP_USER (750): deploy.sh los necesita en backup y restart
   7. Verificación:            bash deploy/scripts/smoke.sh --base-url https://<dominio>/api --web-url https://<dominio> \\
                                 --web-dist $WEB_ROOT --email <SMOKE_EMAIL> --password <SMOKE_PASSWORD>
   A partir de ahí, cada actualización = bash deploy/scripts/deploy.sh --pull --yes
@@ -276,12 +283,14 @@ else
 fi
 ok "raíz pnpm: $ROOT"
 if [[ -f "$ROOT/.env" ]]; then
-    warn "$ROOT/.env existe: el worker lo prioriza sobre systemd. Muévelo fuera del clon (la configuración vive en $ENV_FILE)."
+    warn "$ROOT/.env existe: los cargadores del API y del worker solo rellenan claves ausentes, pero cualquier clave que falte en $ENV_FILE se tomaría de ahí. Muévelo fuera del clon (la configuración vive en $ENV_FILE)."
 fi
 
 # ---------- 6. dependencias ----------
-step "6/15 · corepack pnpm install --frozen-lockfile (sin --prod: tsx es el runtime)"
-as_app "$ROOT" corepack pnpm install --frozen-lockfile
+step "6/15 · corepack pnpm install --frozen-lockfile --prod=false (tsx es el runtime)"
+# as_app exports $ENV_FILE when it already exists (re-runs): NODE_ENV=production would
+# make pnpm 9 skip/prune the devDependencies (tsx, prisma, vite) without --prod=false.
+as_app "$ROOT" corepack pnpm install --frozen-lockfile --prod=false
 ok "dependencias instaladas"
 
 # ---------- 7. fichero de entorno ----------

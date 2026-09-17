@@ -6,12 +6,14 @@
 #
 #   pull       git fetch + reset a origin/<rama> (solo con --pull)
 #   env        validate-env del fichero de entorno y carga en el proceso
-#   install    corepack pnpm install --frozen-lockfile (sin --prod: tsx y prisma son
-#              devDependencies pero el runtime oficial es `node --import tsx`)
+#   install    corepack pnpm install --frozen-lockfile --prod=false (tsx y prisma son
+#              devDependencies pero el runtime oficial es `node --import tsx`; el
+#              --prod=false es obligatorio porque el paso env exporta NODE_ENV=production
+#              y pnpm 9 omitiría/borraría las devDependencies sin él)
 #   generate   pnpm --filter @hotelos/database db:generate
 #   backup     pg_dump custom-format en BACKUP_DIR (antes de tocar el esquema)
-#   adopt      pnpm db:adopt-baseline -- --apply (idempotente; BD creadas con db push)
-#   migrate    pnpm db:migrate:deploy + pnpm db:drift:check (exit 0 obligatorio)
+#   adopt      pnpm --filter @hotelos/database db:adopt-baseline -- --apply (idempotente; BD con db push)
+#   migrate    pnpm --filter @hotelos/database db:migrate:deploy + db:drift:check (exit 0 obligatorio)
 #   rbac       pnpm --filter @hotelos/api rbac:sync -- --dry-run (informe; el boot sincroniza)
 #   backfills  solo con --with-backfills: payment-hash, taxes, guest-register --apply
 #              (+ snapshots si BACKFILL_FROM/BACKFILL_TO están definidos)
@@ -34,7 +36,9 @@
 #   --skip-PASO / --only-PASO p. ej. --skip-backup, --only-web --only-restart
 #   --dry-run                 imprime los comandos sin ejecutarlos (si APP_BASE_URL no
 #                             está definida usa el marcador <APP_BASE_URL> para mostrar
-#                             el plan completo; fuera de --dry-run es un error fatal)
+#                             el plan completo; fuera de --dry-run es un error fatal;
+#                             sin fichero de entorno añade --skip-backup: el paso backup
+#                             exige DATABASE_URL incluso en --dry-run)
 #   --yes                     no pedir confirmación antes de tocar la BD
 #
 # Variables opcionales: WEB_ROOT (/srv/anfitorio/admin-web), BACKUP_DIR
@@ -80,7 +84,7 @@ ok_or_plan() { if [[ $DRY_RUN -eq 1 ]]; then printf '  · plan: %s\n' "$*"; else
 warn()    { c_yellow "  ⚠ $*"; }
 die()     { c_red "  ✗ $1"; exit "${2:-1}"; }
 # Help = the comment header above, up to its last line (never the `set` line).
-usage()   { sed -n '2,45p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage()   { sed -n '2,49p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 is_step() { local s; for s in "${ALL_STEPS[@]}"; do [[ "$s" == "$1" ]] && return 0; done; return 1; }
 
@@ -109,6 +113,7 @@ esac
 if [[ -z "$ENV_FILE" ]]; then
     [[ "$ROLE" == "compose" ]] && ENV_FILE="$ROOT/deploy/.env.production" || ENV_FILE="/etc/anfitorio/api.env"
 fi
+[[ "$ONLY_LIST" == *" pull "* ]] && PULL=1   # --only-pull implica --pull
 [[ $PULL -eq 1 ]] || SKIP_LIST="${SKIP_LIST}pull "
 [[ $WITH_BACKFILLS -eq 1 ]] || SKIP_LIST="${SKIP_LIST}backfills "
 
@@ -126,6 +131,8 @@ run_sh() {
     [[ $DRY_RUN -eq 1 ]] && return 0
     bash -c "$1"
 }
+# mask_url URL — hides the password of a postgresql://user:pass@host/db URL when printing.
+mask_url() { printf '%s' "$1" | sed -E 's#(://[^:/@]+:)[^@]*@#\1***@#'; }
 # in_app CMD… — run a pnpm/node command in the workspace: locally (native) or
 # inside a throw-away api container (compose), whose image carries the whole
 # repo, pnpm and the Prisma CLI.
@@ -232,9 +239,10 @@ else
     [[ -n "$APP_BASE_URL" ]] && export VITE_API_URL="$APP_BASE_URL/api"
 fi
 # --dry-run must print the whole plan (web/restart/smoke included) even when no
-# env file provides APP_BASE_URL (e.g. --skip-env --env-file /dev/null on a dev
-# machine). A placeholder keeps the later `${APP_BASE_URL:?}` guards, which stay
-# fatal outside dry-run, from aborting the preview.
+# env file provides APP_BASE_URL (e.g. --skip-env --skip-backup --env-file /dev/null
+# on a dev machine; the backup step needs DATABASE_URL even in --dry-run). A
+# placeholder keeps the later `${APP_BASE_URL:?}` guards, which stay fatal outside
+# dry-run, from aborting the preview.
 if [[ $DRY_RUN -eq 1 && -z "${APP_BASE_URL:-}" ]]; then
     warn "APP_BASE_URL no definida: en --dry-run se usa el marcador <APP_BASE_URL> (fuera de --dry-run sería fatal)."
     APP_BASE_URL="<APP_BASE_URL>"
@@ -247,8 +255,12 @@ if should_run install; then
         step "install · construir imágenes (pnpm --frozen-lockfile dentro del Dockerfile)"
         VITE_API_URL="${VITE_API_URL:-}" run $COMPOSE build --pull api worker
     else
-        step "install · corepack pnpm install --frozen-lockfile (sin --prod: tsx es devDependency y es el runtime)"
-        run $PNPM install --frozen-lockfile
+        step "install · corepack pnpm install --frozen-lockfile --prod=false (tsx es devDependency y es el runtime)"
+        # The env step exported NODE_ENV=production from api.env: without --prod=false
+        # pnpm 9 skips the devDependencies on a clean install and PRUNES them from an
+        # existing node_modules (tsx, prisma and vite disappear; `node --import tsx`
+        # and `prisma generate` stop working). Verified with pnpm 9.15.0 (2026-09-17).
+        run $PNPM install --frozen-lockfile --prod=false
     fi
 else skipped install; fi
 
@@ -273,7 +285,9 @@ if should_run backup; then
         run_sh "$COMPOSE exec -T postgres pg_dump -U '${POSTGRES_USER:-hotelos}' -d '${POSTGRES_DB:-hotelos}' -Fc > '$dump'"
     else
         command -v pg_dump >/dev/null 2>&1 || die "pg_dump no está instalado (apt install postgresql-client)."
-        run pg_dump --dbname="$DATABASE_URL" -Fc -f "$dump"
+        # Not through run(): it would echo the Postgres password (DATABASE_URL) to the terminal and the journal.
+        printf '  $ pg_dump --dbname=%s -Fc -f %s\n' "$(mask_url "$DATABASE_URL")" "$dump"
+        [[ $DRY_RUN -eq 1 ]] || pg_dump --dbname="$DATABASE_URL" -Fc -f "$dump"
     fi
     [[ $DRY_RUN -eq 1 ]] || ok "$(du -h "$dump" | cut -f1) · $dump"
     run_sh "find '$BACKUP_DIR' -name 'anfitorio-*.pgcustom' -mtime +$BACKUP_KEEP_DAYS -delete"
@@ -282,17 +296,19 @@ else skipped backup; fi
 # ---------- adopt ----------
 if should_run adopt; then
     step "adopt · marcar la baseline como aplicada si la BD nació con db push (idempotente)"
-    in_app "$PNPM db:adopt-baseline"
+    # Straight to the package script: the root `db:*` aliases chain a bare `pnpm`
+    # and need a pnpm shim in PATH (corepack enable), which a hand-made VPS may lack.
+    in_app "$PNPM --filter @hotelos/database db:adopt-baseline"
     echo "  Aplicar el plan anterior (no escribe nada si ya está adoptada o la BD está vacía)."
     confirm
-    in_app "$PNPM db:adopt-baseline -- --apply"
+    in_app "$PNPM --filter @hotelos/database db:adopt-baseline -- --apply"
 else skipped adopt; fi
 
 # ---------- migrate ----------
 if should_run migrate; then
     step "migrate · prisma migrate deploy + comprobación de drift"
-    in_app "$PNPM db:migrate:deploy"
-    if in_app "$PNPM db:drift:check"; then
+    in_app "$PNPM --filter @hotelos/database db:migrate:deploy"
+    if in_app "$PNPM --filter @hotelos/database db:drift:check"; then
         ok_or_plan "BD == schema.prisma (sin drift)"
     else
         die "Drift entre la BD y schema.prisma tras migrate deploy: falta una migración (prisma migrate dev --create-only) o alguien hizo db push. No se continúa."

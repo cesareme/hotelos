@@ -10,8 +10,9 @@
 # and the workspace packages resolve through tsconfig paths, so
 # `pnpm install --frozen-lockfile` (WITHOUT --prod) must have been run in the
 # repo. All configuration comes from /etc/anfitorio/api.env (never create a
-# hotelos/.env on the server: the API's .env loader only fills missing
-# variables, but the worker's loader overrides the process environment).
+# hotelos/.env on the server: the API and worker loaders only fill variables
+# missing from the process environment, so any key absent from api.env would
+# silently be read from that file).
 #
 # This is the ONLY instance that runs the in-process schedulers
 # (RUN_SCHEDULERS=true → SES, VeriFactu, pace, allotments, mailbox). Add a

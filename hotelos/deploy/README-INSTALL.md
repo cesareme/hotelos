@@ -23,10 +23,14 @@ Decisiones fijadas en esta tanda:
   `dist/` ejecutable: `tsc` no resuelve los paquetes `@hotelos/*` (se consumen
   desde `packages/*/src` vía `tsconfig` paths). `tsx` (y la CLI `prisma`) están
   en `devDependencies`, no en `dependencies`; por eso **`pnpm install
-  --frozen-lockfile` se ejecuta SIN `--prod`**: la decisión es instalar el
-  árbol completo (lo que hace el install por defecto) en vez de promover `tsx`
-  a dependencia de producción, para que el runtime y `migrate deploy` funcionen
-  con el mismo lockfile que CI.
+  --frozen-lockfile` se ejecuta SIN `--prod` y CON `--prod=false`**: la decisión
+  es instalar el árbol completo en vez de promover `tsx` a dependencia de
+  producción, para que el runtime y `migrate deploy` funcionen con el mismo
+  lockfile que CI. El `--prod=false` explícito es obligatorio porque en el VPS
+  `NODE_ENV=production` está exportado (api.env) y pnpm 9 lo interpreta como
+  `--prod`: en un install limpio omite las devDependencies y sobre un
+  `node_modules` existente las BORRA (verificado con pnpm 9.15.0 el
+  2026-09-17: 734 paquetes sin tsx/prisma/vite frente a 806 con `--prod=false`).
 - **Esquema = migraciones versionadas.** `prisma db push` solo para prototipar
   en local. Producción: `pnpm db:adopt-baseline -- --apply` (idempotente; solo
   escribe `_prisma_migrations` en BD nacidas con `db push`) → `pnpm
@@ -47,8 +51,8 @@ Decisiones fijadas en esta tanda:
 | Componente | Versión | Notas |
 |---|---|---|
 | Ubuntu | 24.04 LTS | Probado; otras Debian/Ubuntu deberían funcionar con los mismos paquetes |
-| Node | 22.x | NodeSource (`install-from-scratch.sh` lo instala) |
-| pnpm | 9.15.0 vía corepack | `corepack enable && corepack prepare pnpm@9.15.0 --activate` |
+| Node | 22.x, **≥ 22.9** | NodeSource (`install-from-scratch.sh` lo instala). Los scripts `db:*` y las CLI de `apps/api` usan `node --env-file-if-exists` (añadido en 22.9.0): con un Node 22 anterior no arrancan |
+| pnpm | 9.15.0 vía corepack | `corepack enable && corepack prepare pnpm@9.15.0 --activate`. El shim `pnpm` en PATH solo lo exigen los alias raíz (`pnpm db:*`, `pnpm test`…); `deploy.sh` llama a `corepack pnpm --filter …` directamente |
 | PostgreSQL | 16 | Local en el VPS (paquete `postgresql` de 24.04) o gestionado |
 | Caddy | 2.x | HTTPS automático; opcional con `--no-caddy` si traes tu proxy |
 | Redis | 7 | **Opcional** (hoy ningún código lo exige; `/health` lo reporta como configurado/no) |
@@ -60,7 +64,10 @@ Puertos: 22, 80, 443 abiertos; el API escucha solo en `127.0.0.1:3000`.
 
 Fuente: `.env.example` (raíz `hotelos/`). En el VPS nativo la configuración
 vive **solo** en `/etc/anfitorio/api.env` (root:anfitorio 640); no crees
-`hotelos/.env` en el servidor (el loader del worker lo prioriza sobre systemd).
+`hotelos/.env` en el servidor: los cargadores del API y del worker solo
+rellenan claves ausentes del entorno del proceso, así que cualquier clave que
+falte en `api.env` se tomaría en silencio de ese fichero (y los CLI `node
+--env-file-if-exists=../../.env` también lo leen).
 
 Rol `production-native` (systemd + Caddy) — mínimas:
 
@@ -120,7 +127,8 @@ te imprime la llamada `POST /onboarding/bootstrap`) → build de admin-web con
 
 Opciones útiles: `--app-dir` (alias `--dir`; mismo nombre que en
 `vps-inventory.sh`), `--user`, `--db-name/--db-user`, `--web-root`,
-`--branch`, `--no-caddy`, `--no-worker`, `--skip-smoke`, `--acme-email`.
+`--branch`, `--repo`, `--env-file`, `--no-caddy`, `--no-worker`,
+`--skip-smoke`, `--acme-email`, `--yes`.
 
 ### Primer arranque en modo `--real`
 
@@ -144,6 +152,19 @@ El resto del equipo entra por invitación (`user_invitations`,
 
 ## 4. Adopción de un VPS existente (desplegado a mano)
 
+Para el VPS demo `76.13.55.180` existe el procedimiento completo, ensayado en
+local el 2026-09-17 y con las salidas esperadas de cada paso:
+`docs/runbooks/vps-demo-actualizacion-2026-09-17.md`. Lo de abajo es el esquema
+general.
+
+0. **Prerrequisitos del usuario de deploy** (lo que `install-from-scratch.sh`
+   crea y una instalación a mano no tiene): Node ≥ 22.9 (`node -v`),
+   `corepack pnpm -v` = 9.15.0, `/etc/sudoers.d/anfitorio-deploy` con
+   `sudo -n systemctl restart anfitorio-api …` y `reload caddy` para el
+   usuario de deploy, y `/var/backups/anfitorio` propiedad de ese usuario
+   (750): `deploy.sh` los necesita en los pasos `backup` y `restart`.
+   Ejecuta los CLI de datos **con el API parado**: la cadena de auditoría
+   mantiene su tip en memoria por instancia y dos escritores la bifurcan.
 1. **Inventario, sin tocar nada**
    `bash deploy/scripts/vps-inventory.sh --app-dir /opt/anfitorio --domain demo.hotelos.es`
    (`/opt/anfitorio` es el default de los scripts; pasa `--app-dir` si el clon
@@ -156,19 +177,25 @@ El resto del equipo entra por invitación (`user_invitations`,
 3. **Entorno en un solo sitio**: crea `/etc/anfitorio/api.env` a partir del
    `.env` actual + las claves del rol `production-native` (sección 2); elimina
    `hotelos/.env` del clon. `node scripts/validate-env.mjs /etc/anfitorio/api.env --role production-native`.
-4. **Código**: `git fetch && git reset --hard origin/main`, `corepack pnpm install --frozen-lockfile`, `corepack pnpm --filter @hotelos/database db:generate`.
+4. **Código**: `git fetch && git reset --hard origin/main`, `corepack pnpm install --frozen-lockfile --prod=false` (sin `NODE_ENV=production` exportado en la shell, o con ese `--prod=false`: ver «Decisiones fijadas»), `corepack pnpm --filter @hotelos/database db:generate`. Si `--frozen-lockfile` falla con `ERR_PNPM_OUTDATED_LOCKFILE`, el `pnpm-lock.yaml` de `origin/main` no está al día con los `package.json`: la solución correcta es commitear el lockfile regenerado; el rodeo es `corepack pnpm install --no-frozen-lockfile --prod=false` seguido de `git checkout -- pnpm-lock.yaml` (el install reescribe el lockfile y `deploy.sh --pull` se niega a continuar con el árbol sucio).
 5. **Esquema**:
    - Si el esquema del servidor es **anterior** a la baseline (faltan tablas o
      columnas de Tandas 2-3, caso del demo público), `db:adopt-baseline` se
      niega. **No se usa `db push` en una BD compartida** (ninguna excepción):
      alinea el esquema restaurando un dump ya alineado con la baseline, o crea
-     una BD vacía, aplica la baseline con `corepack pnpm db:migrate:deploy` y
-     vuelca los datos con `pg_restore --data-only` revisado (backup previo,
-     ensayo en una BD de prueba). Después repite adopt → migrate → drift.
+     una BD vacía, aplica **solo la baseline** con `psql -v ON_ERROR_STOP=1 -f
+     packages/database/prisma/migrations/20260914000000_baseline_squash/migration.sql`,
+     vuelca los datos con `pg_restore --data-only --disable-triggers` revisado
+     (backup previo, ensayo en una BD de prueba) y después adopt → `migrate
+     deploy` → drift sobre la BD nueva: así las migraciones posteriores ejecutan
+     sus `UPDATE` de datos sobre las filas restauradas (con `migrate deploy`
+     sobre la BD vacía antes del volcado esos `UPDATE` se perderían). Ensayado
+     en local el 17-sep: `docs/runbooks/vps-demo-actualizacion-2026-09-17.md` §6.5.
    - `corepack pnpm db:adopt-baseline` (plan) → `corepack pnpm db:adopt-baseline -- --apply`
      → `corepack pnpm db:migrate:deploy` → `corepack pnpm db:drift:check` (exit 0).
 6. **Servicios**: copia `deploy/systemd/*.service` (ajusta `WorkingDirectory`
-   al clon real) y `deploy/caddy/Caddyfile.native` (dominio y `root`), `systemctl daemon-reload && systemctl enable --now anfitorio-api anfitorio-worker`, `caddy validate && systemctl reload caddy`.
+   y `Documentation` al clon real, como hace `render_unit` en
+   `install-from-scratch.sh`) y `deploy/caddy/Caddyfile.native` (dominio y `root`), `systemctl daemon-reload && systemctl enable --now anfitorio-api anfitorio-worker`, `caddy validate && systemctl reload caddy`; crea `/etc/sudoers.d/anfitorio-deploy` y `/var/backups/anfitorio` (paso 0).
 7. **Front**: `VITE_API_URL=https://<dominio>/api corepack pnpm --filter @hotelos/admin-web build && rsync -a --delete apps/admin-web/dist/ /srv/anfitorio/admin-web/`.
 8. **Smoke** (sección 6). Desde aquí cada actualización es `deploy.sh`.
 
@@ -181,9 +208,10 @@ bash deploy/scripts/deploy.sh --role compose --pull --yes             # Docker
 ```
 
 Pasos (todos idempotentes; `--skip-X` / `--only-X`; `--dry-run` imprime sin
-ejecutar): `pull` (solo con `--pull`, aborta si hay cambios locales) → `env`
-(validate-env + carga) → `install` → `generate` → `backup` (pg_dump en
-`/var/backups/anfitorio`, 14 días) → `adopt` → `migrate` (+ drift check) →
+ejecutar): `pull` (solo con `--pull` o `--only-pull`, aborta si hay cambios locales) → `env`
+(validate-env + carga: exporta `NODE_ENV=production`) → `install`
+(`--frozen-lockfile --prod=false`) → `generate` → `backup` (pg_dump en
+`/var/backups/anfitorio`, 14 días; la URL se imprime sin contraseña) → `adopt` → `migrate` (+ drift check) →
 `rbac` (informe `--dry-run`; el arranque del API sincroniza el catálogo) →
 `backfills` (**solo** con `--with-backfills`: `backfill:payment-hash`,
 `backfill:taxes`, `backfill:guest-register` con `--apply`; `backfill:snapshots`
@@ -253,10 +281,14 @@ con contraseña conocida.
 
 ## 9. Checklist para el VPS demo 76.13.55.180 (demo.hotelos.es) cuando haya acceso
 
-Nada del despliegue actual de esa máquina está versionado; lo que se sabe
-(usuario `anfitorio`, Caddy nativo, `anfitorio-api` en systemd, build viejo
-anterior a Tandas 0-3, esquema anterior) procede de la memoria del proyecto.
-Orden estricto — un `git pull` sin migrar tumba el API público:
+**Procedimiento completo, paso a paso y con las salidas esperadas:**
+`docs/runbooks/vps-demo-actualizacion-2026-09-17.md` (ensayado en local el
+2026-09-17 sobre una copia del dump `hotelos-pre-tanda4`). Esta lista es el
+resumen. Nada del despliegue actual de esa máquina está versionado; lo que se
+sabe por HTTP (17-sep-2026): front del 11-jul-2026 (≤ `dd2124c`, 250 modelos),
+API anterior a Tanda 2, `/api/admin/tenants` → 500, **modo demo activo**
+(`GET /api/properties` sin token → 200), Faranda no visible. Orden estricto —
+un `git pull` sin migrar tumba el API público:
 
 1. `bash deploy/scripts/vps-inventory.sh --domain demo.hotelos.es` (solo lectura) y guardar la salida.
 2. Autorizar la clave SSH del Mac; comprobar `sudo -n systemctl restart anfitorio-api` para el usuario de deploy.
@@ -265,9 +297,9 @@ Orden estricto — un `git pull` sin migrar tumba el API público:
    `_prisma_migrations`): `db:adopt-baseline -- --apply` **antes** de
    `db:migrate:deploy` (sección 7).
 4. `/etc/anfitorio/api.env` con las claves de la sección 2 (reutilizando los secretos actuales: cambiar `JWT_SECRET` cierra todas las sesiones, cambiar `ENCRYPTION_KEY` rompe la PII).
-5. `git fetch && git reset --hard origin/main`, `corepack pnpm install --frozen-lockfile`, `db:generate`.
+5. Parar el API (`systemctl stop anfitorio-api`), `git fetch && git reset --hard origin/main`, `corepack pnpm install --frozen-lockfile --prod=false` (lockfile: sección 4.4), `db:generate`.
 6. Esquema: `db:adopt-baseline -- --apply` → `db:migrate:deploy` → `db:drift:check` = 0. Si adopt-baseline se niega porque el esquema es anterior a la baseline, alinear según la sección 4.5 (dump alineado o BD nueva + `migrate deploy` + `pg_restore --data-only`); **nunca `db push`** en esa BD.
-7. `corepack pnpm --filter @hotelos/api rbac:sync -- --dry-run`; backfills con `deploy.sh --with-backfills` solo tras revisar el informe dry-run de cada uno.
+7. CLI de datos, **en este orden y con el API parado** (ensayo 2026-09-17): `rbac:sync -- --dry-run` → `demo:refresh -- --scope all` (dry-run) y `--apply` → `demo:fix-identity -- --dry-run` y `--apply --confirm …` → `backfill-legal-structure.ts --dry-run` y `--apply --confirm all` → `accounting:provision-chart … --dry-run` y `--apply --confirm …` → `backfill:payment-hash`, `backfill:taxes`, `backfill:guest-register` (dry-run y `--apply`). `demo:refresh` y `demo:fix-identity` van ANTES del backfill de estructura: `refresh-demo-dataset.ts` no conoce `legal_entities` (deja sociedades huérfanas y sale con exit 1 si el backfill ya corrió) y `fix-demo-legal-identity.ts` no corrige `legal_entities` (la sociedad quedaría con la razón social contaminada y NIF nulo).
 8. Build del front con `VITE_API_URL=https://demo.hotelos.es/api` → `/srv/anfitorio/admin-web`.
 9. Instalar las unidades y el Caddyfile versionados; `systemctl restart anfitorio-api anfitorio-worker`; `systemctl reload caddy`.
 10. `smoke.sh` con `reception@example.com` (y sin `HOTELOS_ALLOW_DEMO_AUTH`: preferible usuario demo real a modo demo sin token; si se mantiene el modo demo, exige `HOTELOS_ALLOW_DEMO_AUTH_UNSAFE_OVERRIDE=true` y el smoke fallará en el 401 por diseño).
@@ -289,7 +321,9 @@ de usar esa vía con invitaciones o VeriFactu fuera de sandbox.
 - `npm install` / `npm --workspace` / `npx` sobre este monorepo.
 - `prisma db push` en cualquier BD compartida (dev VPS, demo VPS, piloto,
   producción): sin excepciones. Solo en BD locales desechables.
-- `pnpm install --prod` (elimina `tsx` y `prisma`; el runtime deja de arrancar).
+- `pnpm install --prod` (elimina `tsx` y `prisma`; el runtime deja de arrancar),
+  ni `pnpm install` con `NODE_ENV=production` exportado y sin `--prod=false`
+  (mismo efecto: pnpm 9 lo trata como `--prod`).
 - `hotelos/.env` en un servidor con systemd.
 - `HOTELOS_ALLOW_DEMO_AUTH=true` fuera de una demo pública sin datos reales.
 - Los playbooks antiguos (`README-HOSTINGER.md`, `README-REMOTE-DEV.md`,
